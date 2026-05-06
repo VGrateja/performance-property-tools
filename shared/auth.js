@@ -451,12 +451,14 @@ async function _completeLogin() {
   const loginScreen = document.getElementById('loginScreen');
   if (loginScreen) loginScreen.style.display = 'none';
   applyAccessRestrictions();
-  if (profile.tier === 'admin' || profile.tier === 'dev') {
-    const name = ADMIN_NAMES[profile.email] || profile.full_name || (profile.email || '').split('@')[0] || 'there';
-    showWelcomeAndProceed(name);
-  } else {
-    showMain();
-  }
+  /* Welcome overlay for every tier — admins get the named greeting via
+     ADMIN_NAMES, non-admins get their full_name (set during registration)
+     or the email's local-part as a fallback. */
+  const name = ADMIN_NAMES[profile.email]
+            || profile.full_name
+            || (profile.email || '').split('@')[0]
+            || 'there';
+  showWelcomeAndProceed(name);
 }
 
 /* ── Step 1: email + (optional) password ── */
@@ -923,6 +925,37 @@ async function _initAuth() {
     _refreshPwVisibility();
     _refreshLoginButtonLabel();
 
+    /* "Forgot password?" — sends a Supabase recovery email. The
+       resulting link logs the user in and fires PASSWORD_RECOVERY,
+       handled by the auth-state subscription further down. Only
+       Vandolf has a password today, so this rarely fires. */
+    const forgotBtn = document.getElementById('forgotPwBtn');
+    if (forgotBtn) {
+      forgotBtn.addEventListener('click', async () => {
+        const email = (emailIn && emailIn.value || '').trim().toLowerCase();
+        const errEl = document.getElementById('loginError');
+        if (errEl) errEl.textContent = '';
+        if (!email) {
+          if (errEl) errEl.textContent = 'Enter your email above first, then click Forgot password.';
+          if (emailIn) emailIn.focus();
+          return;
+        }
+        if (!confirm('Send a password reset email to ' + email + '?')) return;
+        forgotBtn.textContent = 'Sending…';
+        forgotBtn.disabled = true;
+        const { error } = await window.sb.auth.resetPasswordForEmail(email, {
+          redirectTo: location.origin + location.pathname
+        });
+        forgotBtn.disabled = false;
+        forgotBtn.textContent = 'Forgot password?';
+        if (error) {
+          if (errEl) errEl.textContent = error.message || 'Could not send recovery email.';
+          return;
+        }
+        showLoginNotice('Recovery email sent to ' + email + '. Click the link inside to set a new password.');
+      });
+    }
+
     /* Hidden trigger — Ctrl+Shift+D toggles the password field. Useful
        if you want to sign in with a password before typing the email,
        or if the email-based reveal hasn't fired (e.g. an old browser
@@ -1011,8 +1044,33 @@ async function _initAuth() {
     }
 
     /* Subscribe to auth changes (e.g. token refresh, sign-out from another tab). */
-    window.sb.auth.onAuthStateChange((event, _session) => {
+    window.sb.auth.onAuthStateChange(async (event, _session) => {
       if (event === 'SIGNED_OUT') _setSessionMirror(null);
+      if (event === 'PASSWORD_RECOVERY') {
+        /* Supabase has parsed the recovery link's tokens out of the URL
+           and authenticated the user. Now we need to capture a new
+           password and call updateUser. Simple browser prompt is fine
+           — only one user has a password (Vandolf) and recovery is
+           rare. */
+        const next = window.prompt(
+          'Enter your new password (min 6 characters):',
+          ''
+        );
+        if (!next) {
+          alert('Password unchanged. You are still signed in.');
+          return;
+        }
+        if (next.length < 6) {
+          alert('Password must be at least 6 characters. Try again from the recovery email.');
+          return;
+        }
+        const { error } = await window.sb.auth.updateUser({ password: next });
+        if (error) {
+          alert('Could not update password: ' + (error.message || 'unknown error'));
+          return;
+        }
+        alert('Password updated. You are signed in.');
+      }
     });
   }
 }
