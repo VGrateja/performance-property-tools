@@ -1,0 +1,2093 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Runway v Demand — Performance Property</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<link rel="stylesheet" href="../shared/common.css"/>
+<script src="../shared/theme.js"></script>
+<style>
+#runwayView{
+  display:none;flex-direction:column;width:100%;min-height:100vh;
+  /* bg lives on <body> below so the body's padding area also picks
+     up the animated gradient — otherwise the padding shows the html
+     canvas (default white) and you get a white edge around the tool
+     in dark mode. */
+  background: transparent;
+  position: relative;
+  overflow: visible;
+}
+/* Keep all chart-tool content above the body-level orbs. */
+#runwayView .runway-back-btn,
+#runwayView .header,
+#runwayView .tabs,
+#runwayView .chart-wrap,
+#runwayView .timeline,
+#runwayView .legend,
+#runwayView .copyright{ position: relative; z-index: 1; }
+/* .controls bumped to a higher z-index so its region-picker dropdown
+   (z-index:200 inside this stacking context) can rise above the
+   .chart-wrap that follows it in DOM order. Without this, .controls
+   and .chart-wrap shared z-index:1 and .chart-wrap (later DOM) won
+   the stacking battle, hiding the dropdown behind the chart. */
+#runwayView .controls{ position: relative; z-index: 50; }
+
+/* ═══ LIGHT-MODE OVERRIDES ═══
+   Body + most controls auto-flip via the shared --bg/--text/--panel2/
+   --border vars in common.css. The block below only targets bits that
+   hardcode dark colours (h1 color:#fff, dropdown bg:#1a2236, header
+   border tint, copyright text, timeline tick colours). The chart wrap
+   gradient and tooltip stay as-is — they sit on a light surface
+   already, and the dark tooltip reads well on the chart's light bg. */
+[data-theme="light"] .header{border-bottom-color:rgba(0,182,203,.22)}
+[data-theme="light"] .header-left h1{color:#1a2236}
+[data-theme="light"] .header-left .sub{color:rgba(31,40,63,.55)}
+[data-theme="light"] #runwayView .tab:hover:not(.active){color:#1a2236}
+[data-theme="light"] #runwayView .rwpdf-btn:hover{color:#1a2236;background:rgba(0,182,203,.10)}
+[data-theme="light"] .region-dropdown{
+  background:#ffffff;border-color:rgba(0,182,203,.30);
+  box-shadow:0 8px 32px rgba(31,40,63,.18);
+}
+[data-theme="light"] .region-dropdown-header button:hover{color:var(--accent)}
+[data-theme="light"] #regionSearch{
+  background:rgba(31,40,63,.04);color:#1a2236;
+}
+[data-theme="light"] #regionSearch::placeholder{color:rgba(31,40,63,.40)}
+[data-theme="light"] .region-option:hover{background:rgba(0,182,203,.08)}
+[data-theme="light"] .region-option span{color:#1a2236}
+[data-theme="light"] .cb-group input[type=checkbox]{background:#ffffff}
+[data-theme="light"] .tl-tick{background:rgba(31,40,63,.10)}
+[data-theme="light"] .tl-tick.past{background:rgba(0,182,203,.32)}
+[data-theme="light"] .tl-tick:hover{background:rgba(0,182,203,.55)}
+[data-theme="light"] .copyright{color:rgba(31,40,63,.20)}
+.header-copyright{color:rgba(255,255,255,.25)}
+[data-theme="light"] .header-copyright{color:rgba(31,40,63,.45)}
+
+/* Chart wrap + tooltip — bump light-mode border + give the wrap a
+   real shadow so it reads as a raised card on the light canvas. The
+   wrap already has a light gradient bg by design, but the cyan-tint
+   border at 15% disappears against the now-lighter surrounding body. */
+[data-theme="light"] .chart-wrap{
+  border-color:rgba(0,182,203,.32);
+  box-shadow:0 8px 28px rgba(31,40,63,.10),0 2px 8px rgba(31,40,63,.05);
+}
+[data-theme="light"] .legend-sep{background:rgba(31,40,63,.18)}
+/* ══════════ Back to hub button — EXACT copy of the Demand Dashboard
+   pattern (#pp-back-to-hub). Fixed top-left, frosted dark pill, no
+   bar/strip behind it. ══════════ */
+#pp-back-to-hub{
+  position:fixed; top:16px; left:16px; z-index:10000;
+  display:inline-flex; align-items:center; gap:8px;
+  padding:9px 14px 9px 10px;
+  background:rgba(15,23,42,.85);        /* dark slate with opacity */
+  border:1px solid rgba(71,85,105,.5);  /* slate border */
+  border-radius:10px;
+  color:#e2e8f0;
+  font-family:'DM Sans',system-ui,-apple-system,sans-serif;
+  font-size:13px; font-weight:600; letter-spacing:.01em;
+  text-decoration:none; cursor:pointer;
+  white-space:nowrap;                   /* keep "Back to Hub" on one line */
+  backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+  transition:all .15s ease;
+}
+#pp-back-to-hub:hover{
+  background:rgba(30,41,59,.95);
+  border-color:rgba(148,163,184,.5);
+  color:#f8fafc;
+  transform:translateX(-1px);
+}
+#pp-back-to-hub svg{ width:14px; height:14px; }
+[data-theme="light"] #pp-back-to-hub{
+  background:rgba(255,255,255,.85);
+  border-color:rgba(31,40,63,.18);
+  color:#1a2236;
+}
+[data-theme="light"] #pp-back-to-hub:hover{
+  background:rgba(255,255,255,.97);
+  border-color:rgba(0,182,203,.55);
+  color:#0a1520;
+}
+
+/* ══════════ Theme toggle — same visual vocabulary, round 36px,
+   sits at left:160px just past the back-to-hub pill. ══════════ */
+#rw-theme-toggle{
+  position:fixed; top:16px; left:160px; z-index:10000;
+  display:inline-flex; align-items:center; justify-content:center;
+  width:36px; height:36px; border-radius:50%;
+  padding:0; cursor:pointer;
+  background:rgba(15,23,42,.85);
+  border:1px solid rgba(71,85,105,.5);
+  color:#e2e8f0;
+  backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+  transition:all .15s ease;
+}
+#rw-theme-toggle:hover{
+  background:rgba(30,41,59,.95);
+  border-color:rgba(148,163,184,.5);
+  color:#f8fafc;
+  transform:translateY(-1px);
+}
+#rw-theme-toggle svg{ width:15px; height:15px; display:block; }
+#rw-theme-toggle .pp-sun{display:block}
+#rw-theme-toggle .pp-moon{display:none}
+[data-theme="light"] #rw-theme-toggle{
+  background:rgba(255,255,255,.85);
+  border-color:rgba(31,40,63,.18);
+  color:#1a2236;
+}
+[data-theme="light"] #rw-theme-toggle:hover{
+  background:rgba(255,255,255,.97);
+  border-color:rgba(0,182,203,.55);
+  color:#0a1520;
+}
+[data-theme="light"] #rw-theme-toggle .pp-sun{display:none}
+[data-theme="light"] #rw-theme-toggle .pp-moon{display:block}
+#runwayView .runway-inner{
+  display:flex;flex-direction:column;align-items:center;
+  padding:24px 16px 40px;
+}
+/* Force right-side logo to absolute far right */
+#runwayView .header {
+  position: relative;
+}
+
+#runwayView .header .brand:last-child {
+  position: absolute;
+  right: -30px;   /* adjust spacing if needed */
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+
+/* APP */
+#appContent{display:none}
+/* Static futuristic gradient on body so the entire viewport
+   (including the 24/16/40 padding around #runwayView) carries
+   the same colour. No animation, no orbs — keeps the tool fast
+   while D3 renders the runway chart. */
+body{
+  background: linear-gradient(160deg, #0f172a 0%, #1e1b4b 50%, #082f49 100%);
+  color:var(--text);font-family:'Roboto',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px 40px;
+}
+[data-theme="light"] body{
+  background: linear-gradient(160deg, #f0f9ff 0%, #e0e7ff 50%, #cffafe 100%);
+}
+.header{width:100%;max-width:1120px;display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid rgba(0,182,203,0.2)}
+.header-left h1{font-family:'Roboto Condensed',sans-serif;font-size:2.3rem;font-weight:800;letter-spacing:.03em;line-height:1;color:#fff}
+.header-left h1 em{color:var(--accent);font-style:normal}
+.header-left .sub{font-size:.7rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-top:4px}
+.brand{display:flex;align-items:center}
+#runwayView .tabs{width:100%;max-width:1120px;display:flex;gap:6px;margin-bottom:14px}
+#runwayView .tab{padding:7px 26px;border:1px solid var(--border);border-radius:5px;background:transparent;color:var(--muted);font-family:'Roboto',sans-serif;font-size:.78rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:all .18s}
+#runwayView .tab.active{background:var(--accent);color:#1f283f;border-color:var(--accent)}
+#runwayView .rwpdf-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 18px;border:1px solid var(--border);border-radius:5px;background:transparent;color:var(--muted);font-family:'Roboto',sans-serif;font-size:.78rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:all .18s;margin-left:8px}
+#runwayView .rwpdf-btn:hover{border-color:var(--accent);color:#fff;background:rgba(0,182,203,.12)}
+#runwayView .rwpdf-btn:active{transform:translateY(1px)}
+#runwayView .rwpdf-btn svg{width:12px;height:12px;flex-shrink:0;display:inline-block;opacity:.85}
+#runwayView .rwpdf-btn:hover svg{opacity:1}
+#runwayView .tab:hover:not(.active){border-color:var(--accent);color:#fff}
+.controls{width:100%;max-width:1120px;display:flex;align-items:flex-end;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.ctrl-group{display:flex;flex-direction:column}
+.ctrl-group label{display:block;font-size:.66rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;height:16px}
+
+/* Multi-select region picker */
+.region-picker{position:relative}
+.region-btn{appearance:none;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-family:'Roboto',sans-serif;font-size:.86rem;padding:8px 36px 8px 12px;border-radius:6px;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2300b6cb'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;transition:border-color .18s;min-width:260px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:38px}
+.region-btn:hover,.region-btn.open{border-color:var(--accent)}
+.region-dropdown{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:200;background:#1a2236;border:1px solid rgba(0,182,203,.3);border-radius:8px;min-width:280px;max-height:280px;overflow-x:hidden;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.region-dropdown.open{display:block}
+.region-dropdown-header{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)}
+.region-dropdown-header button{flex:1;font-family:'Roboto',sans-serif;font-size:.7rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:4px 8px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;transition:all .15s}
+.region-dropdown-header button:hover{border-color:var(--accent);color:var(--accent)}
+/* Smooth header button — same dark-mode shift as the rows. Inline
+   style on the button uses var(--smooth); !important to win over
+   it in dark mode. Light mode keeps the brand navy on white. */
+html:not([data-theme="light"]) #selectSmoothBtn{
+  color:#6F9AE6 !important;
+  border-color:#6F9AE6 !important;
+}
+.region-search-wrap{padding:7px 10px;border-bottom:1px solid var(--border)}
+#regionSearch{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--border);color:var(--text);font-family:'Roboto',sans-serif;font-size:.82rem;padding:5px 10px;border-radius:5px;outline:none;transition:border-color .15s}
+#regionSearch:focus{border-color:var(--accent)}
+#regionSearch::placeholder{color:var(--muted)}
+/* Region rows — text size, checkbox size, gap rebalanced
+   2026-05-03. CRITICAL: each row is rendered as a <label>
+   element (the JS uses document.createElement('label')) and lives
+   inside .ctrl-group. The `.ctrl-group label{font-size:.66rem;
+   font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+   color:var(--muted);height:16px}` rule above (intended for the
+   section-header label "HIGHLIGHT REGIONS") was matching every
+   row at higher specificity (0,1,1 vs .region-option's 0,1,0),
+   so the rows came out tiny + UPPERCASE + bold + crushed to 16
+   px height regardless of what we set on .region-option.
+   Fix: prefix `#regionList` to bump specificity to 1,1,0 (wins
+   decisively), AND explicitly reset every inherited property
+   the section-header rule was leaking through. */
+#regionList .region-option{
+  display:flex; align-items:center;
+  gap:8px;
+  padding:8px 16px;
+  cursor:pointer;
+  /* Resets — undo .ctrl-group label leakage. */
+  height:auto;
+  margin-bottom:0;
+  font-size:1rem;
+  font-weight:normal;
+  letter-spacing:normal;
+  text-transform:none;
+  color:var(--text);
+  transition:background .12s;
+}
+#regionList .region-option:hover{background:rgba(0,182,203,.08)}
+#regionList .region-option input[type=checkbox]{
+  accent-color:var(--accent);
+  width:14px; height:14px;
+  cursor:pointer; flex-shrink:0;
+  margin:0; vertical-align:middle;
+}
+#regionList .region-option span{
+  white-space:nowrap;
+  color:var(--text);
+  line-height:1;
+  vertical-align:middle;
+  /* Belt-and-braces resets in case any text-transform / weight /
+     letter-spacing inherits down to the span. */
+  font-weight:normal;
+  letter-spacing:normal;
+  text-transform:none;
+}
+.region-option .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+/* Smooth/Workforce row text — class-based so a theme flip restyles
+   without re-rendering. Dark mode uses #6F9AE6 because the brand
+   --smooth (#000080) vanishes on the dark dropdown bg; light mode
+   reverts to brand navy on the white dropdown. Specificity bumped
+   via span.<class> so it beats the .region-option span colour rule
+   above and the [data-theme="light"] .region-option span rule
+   defined earlier. */
+/* Specificity bumped to 1,2,1 (with the #regionList prefix) so
+   these win over the new #regionList .region-option span base
+   color rule above (1,1,1). Without the bump the base color
+   rule would clobber the smooth/workforce tints. */
+#regionList .region-option span.rg-opt-smooth{color:#6F9AE6}
+#regionList .region-option span.rg-opt-workforce{color:var(--workforce)}
+[data-theme="light"] #regionList .region-option span.rg-opt-smooth{color:var(--smooth)}
+
+select{appearance:none;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-family:'Roboto',sans-serif;font-size:.86rem;padding:8px 36px 8px 12px;border-radius:6px;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2300b6cb'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;transition:border-color .18s;height:38px}
+select:focus{outline:none;border-color:var(--accent)}
+#speedSelect{min-width:105px}
+
+/* Checkbox toggle */
+.cb-group{display:flex;align-items:center;gap:7px;cursor:pointer;user-select:none;margin-top:18px}
+.cb-group input[type=checkbox]{appearance:none;width:16px;height:16px;border:1.5px solid var(--border);border-radius:4px;background:var(--panel2);cursor:pointer;position:relative;flex-shrink:0;transition:all .15s}
+.cb-group input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
+.cb-group input[type=checkbox]:checked::after{content:'✓';position:absolute;top:-1px;left:2px;color:#1f283f;font-size:11px;font-weight:700}
+.cb-group span{font-size:.7rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+
+.playbar{display:flex;align-items:flex-end;gap:10px;margin-left:auto}
+.play-btn{width:30px;height:30px;border-radius:50%;border:2px solid var(--accent);background:var(--accent);color:#1f283f;font-size:0.78rem;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .18s;flex-shrink:0}
+.play-btn:hover{background:#00cee8;border-color:#00cee8}
+.month-display{font-family:'Roboto Condensed',sans-serif;font-size:1.85rem;font-weight:700;color:var(--accent);letter-spacing:.04em;line-height:1;padding-bottom:2px;min-width:120px;text-align:right}
+.chart-wrap{width:100%;max-width:1120px;background:linear-gradient(to top,#fafafa 0%,#ebfdff 100%);border-radius:12px;border:1px solid rgba(0,182,203,.15);padding:20px;box-shadow:0 12px 60px rgba(0,0,0,.4);position:relative}
+.chart-copyright{position:absolute;top:14px;left:22px;font-family:'Roboto',sans-serif;font-size:10px;color:rgba(0,0,0,.42);letter-spacing:.02em;pointer-events:none;z-index:2;font-weight:500}
+.chart-month{position:absolute;top:14px;right:22px;font-family:'Roboto',sans-serif;font-style:italic;font-size:12.5px;color:rgba(0,0,0,.6);letter-spacing:.02em;pointer-events:none;z-index:2;font-weight:500}
+#runwayView svg{width:100%;display:block;overflow:visible}
+.city-dot{cursor:pointer}
+.trail-path{fill:none;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.tooltip{position:absolute;pointer-events:none;background:#1a2236;border:1px solid rgba(0,182,203,.4);color:#fff;border-radius:8px;padding:10px 14px;font-size:.8rem;line-height:1.7;box-shadow:0 4px 24px rgba(0,0,0,.55);opacity:0;transition:opacity .15s;white-space:nowrap;z-index:10}
+.tooltip strong{color:var(--accent);font-size:.88rem;display:block;margin-bottom:2px}
+
+/* Chart-level loading overlay — fades in/out when toggling to Live
+   Sheet or hitting the refresh button. Sits above the SVG inside
+   .chart-wrap; backdrop-filter blurs the chart underneath so the
+   "Refreshing…" message is unmissable without obscuring the data
+   completely. Pointer-events:none on the spinner/text wrapper so
+   tooltips on dots still register if the user moves the cursor
+   over them while the overlay is fading. */
+.chart-loading-overlay{
+  position:absolute; inset:0;
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  gap:14px;
+  background:rgba(255,255,255,0.55);
+  backdrop-filter:blur(2px); -webkit-backdrop-filter:blur(2px);
+  border-radius:12px;
+  opacity:0; pointer-events:none;
+  transition:opacity .22s ease;
+  z-index:20;
+}
+.chart-loading-overlay.active{ opacity:1; pointer-events:auto; }
+.chart-loading-spinner{
+  width:40px; height:40px;
+  border:3px solid rgba(0,182,203,0.18);
+  border-top-color:#00b6cb;
+  border-radius:50%;
+  animation:rwdSpin .85s linear infinite;
+}
+.chart-loading-text{
+  font-family:'Roboto',sans-serif;
+  font-size:12px; font-weight:600; letter-spacing:.04em;
+  color:#0a8493;
+  text-shadow:0 1px 2px rgba(255,255,255,.6);
+}
+@keyframes rwdSpin{ to{ transform:rotate(360deg); } }
+[data-theme="light"] .chart-loading-overlay{ background:rgba(255,255,255,0.70); }
+.timeline{width:100%;max-width:1120px;margin-top:12px;display:flex;align-items:center;gap:10px}
+.tl-track{flex:1;display:flex;gap:3px}
+.tl-tick{flex:1;height:5px;border-radius:3px;background:rgba(255,255,255,.07);cursor:pointer;transition:background .18s}
+.tl-tick.past{background:rgba(0,182,203,.28)}.tl-tick.active{background:var(--accent)}.tl-tick:hover{background:rgba(0,182,203,.55)}
+.tl-label{font-size:.62rem;color:var(--muted);white-space:nowrap}
+.legend{width:100%;max-width:1120px;display:flex;gap:16px;margin-top:12px;align-items:center;flex-wrap:nowrap}
+.legend-item{display:flex;align-items:center;gap:7px;font-size:.76rem;color:var(--muted)}
+.legend-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.legend-dot.smooth{background:#000080}.legend-dot.workforce{background:#e57373}
+.legend-sep{width:1px;height:14px;background:var(--border);margin:0 4px}
+.legend-quad{display:flex;align-items:center;gap:6px;font-size:.72rem;color:var(--muted)}
+.legend-swatch{width:13px;height:13px;border-radius:3px;flex-shrink:0}
+.copyright{margin-top:16px;font-size:.65rem;color:rgba(255,255,255,.16);letter-spacing:.04em}
+
+/* ─────── Live data loading overlay ───────
+   Visible by default in HTML; JS hides it after the initial chart
+   render + clock-type sync (with min 3s visible to prevent flash). */
+.live-loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center,
+      rgba(15, 25, 34, 0.40) 0%,
+      rgba(8, 16, 24, 0.72) 100%);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 99999;
+  opacity: 1;
+  transition: opacity 0.45s ease;
+  pointer-events: all;
+}
+.live-loading-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.live-loading-card {
+  background: linear-gradient(160deg,
+      rgba(28, 44, 60, 0.95) 0%,
+      rgba(18, 30, 42, 0.95) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 28px 38px 26px;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  color: rgba(255, 255, 255, 0.92);
+  font-family: 'DM Sans', 'Roboto', system-ui, sans-serif;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(22, 191, 214, 0.06) inset;
+  animation:
+    live-card-enter 0.5s cubic-bezier(0.22, 1, 0.36, 1) both,
+    live-card-float 4s ease-in-out 0.5s infinite;
+}
+.live-loading-dots {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  height: 14px;
+}
+.live-loading-dots span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #16bfd6;
+  box-shadow: 0 0 10px rgba(22, 191, 214, 0.55);
+  animation: live-dot-wave 1.2s ease-in-out infinite;
+}
+.live-loading-dots span:nth-child(2) { animation-delay: 0.15s; }
+.live-loading-dots span:nth-child(3) { animation-delay: 0.30s; }
+.live-loading-region {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #16bfd6;
+  line-height: 1.2;
+  text-align: center;
+  margin-top: 4px;
+}
+.live-loading-sub {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  text-align: center;
+}
+@keyframes live-card-enter {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0)     scale(1);    }
+}
+@keyframes live-card-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-4px); }
+}
+@keyframes live-dot-wave {
+  0%, 60%, 100% { transform: translateY(0)   scale(1);    opacity: 0.5; }
+  30%           { transform: translateY(-6px) scale(1.15); opacity: 1;   }
+}
+
+/* ══ PDF / JPEG DOWNLOAD OVERLAY ══
+   Shown while exportRunwayPDF / exportRunwayJPEG run html2canvas + jsPDF.
+   Mirrors the Property Clock overlay so both tools feel identical. */
+#pdf-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+#pdf-overlay.show{display:flex}
+.pdf-spinner{width:40px;height:40px;border:4px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pdf-msg{color:#fff;font-family:'Montserrat',sans-serif;font-weight:700;font-size:15px;letter-spacing:1px}
+
+/* ══ EMBED MODE ══ Activated by ?embed=1. Mirrors the in-tool
+   layout (header + tabs + chart) but strips the chrome that
+   doesn't belong in an embedded slide: back-to-hub, theme toggle,
+   download / manage admin buttons, region picker controls,
+   mobile bar, rotate notice. zoom auto-scales the page so the
+   whole layout fits a 1280-ish iframe viewport. */
+body.embed-mode #pp-back-to-hub,
+body.embed-mode #rw-theme-toggle,
+body.embed-mode #runwayPdfBtn,
+body.embed-mode #runwayJpegBtn,
+body.embed-mode #runwayManageBtn,
+body.embed-mode .header,
+body.embed-mode .tabs,
+body.embed-mode .controls,
+body.embed-mode .timeline,
+body.embed-mode .legend,
+body.embed-mode .mobile-control-bar,
+body.embed-mode .rotate-notice { display:none !important; }
+body.embed-mode .runway-inner { padding:6px 8px !important; }
+/* With every piece of chrome trimmed only the chart wrapper
+   remains. The wrapper has `max-width: 1120px` in its base
+   styles so the chart was capped to ~1120px no matter how big
+   the slide was, leaving visible empty space around it. Drop
+   the cap in embed mode + force the wrapper to 100% width so
+   the chart fills the slide. SVG aspect ratio (1060:540) means
+   at 1264 wide the chart is ~640 tall — fits a 720 slide
+   comfortably. No zoom needed; layout is now natural-size. */
+body.embed-mode .chart-wrap {
+  max-width: none !important;
+  width: 100% !important;
+}
+body.embed-mode { overflow: hidden; }
+body.embed-mode html { overflow: hidden; }
+
+</style>
+</head>
+<body>
+<script>
+  /* Embed mode — when iframed by the Presentation tool with
+     ?embed=1, add a body class that the CSS uses to hide all
+     chrome (header, tabs, controls, back button, theme toggle)
+     so only the runway chart shows. The optional &view=unit (or
+     view=house, default) auto-clicks the matching tab once the
+     tab handler is ready, so callers can deep-link to one chart
+     view per slide. */
+  (function(){
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('embed') === '1') {
+      document.body.classList.add('embed-mode');
+      /* Forward Enter to the parent presentation so the deck can
+         still advance even when the user clicked into this embed
+         (focus would otherwise be trapped inside the iframe and
+         the parent's keydown handler never sees the press). The
+         parent listens for `pres-nav` messages. Skipped when
+         typing in an input / textarea / contenteditable so the
+         embed's own text editing isn't disrupted. */
+      document.addEventListener('keydown', ev => {
+        if (ev.key !== 'Enter') return;
+        if (ev.ctrlKey || ev.altKey || ev.metaKey || ev.shiftKey) return;
+        const t = ev.target;
+        if (t && (
+          t.tagName === 'INPUT'
+          || t.tagName === 'TEXTAREA'
+          || t.isContentEditable
+        )) return;
+        try { window.parent.postMessage({ type: 'pres-nav', key: 'Enter' }, '*'); } catch (_) {}
+      });
+    }
+    const view = qs.get('view');
+    if (view === 'unit' || view === 'house') {
+      /* Wait for the tab handler to register, then synth-click
+         the tab. The tabs receive their click listeners later in
+         page setup; scheduling on the next tick after DOMContent-
+         Loaded gives them time to wire up. */
+      const fire = () => {
+        const tab = document.querySelector('.tab[data-type="' + view + '"]');
+        if (tab && !tab.classList.contains('active')) tab.click();
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => setTimeout(fire, 0));
+      } else {
+        setTimeout(fire, 0);
+      }
+    }
+  })();
+</script>
+
+<!-- Rotate-to-landscape notice — visible only on narrow viewports
+     in portrait orientation. CSS in common.css gates it on
+     @media (max-width: 900px) and (orientation: portrait). The
+     runway chart's x-axis (months across decades) needs horizontal
+     room; rotating reveals the tool. -->
+<div class="rotate-notice" role="alert" aria-live="assertive">
+  <div class="rotate-notice-inner">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="6" y="2" width="12" height="20" rx="2.5"/>
+      <line x1="11" y1="18.5" x2="13" y2="18.5"/>
+    </svg>
+    <h2>Rotate to <em>landscape</em></h2>
+    <p>Runway v Demand is designed for landscape view. Please rotate your phone to continue.</p>
+  </div>
+</div>
+
+<!-- Live data loading overlay — visible by default; JS hides it once
+     the chart has rendered + clock-type sync settles (min 3s visible). -->
+<div id="live-loading-overlay" class="live-loading-overlay" role="status" aria-live="polite">
+  <div class="live-loading-card">
+    <div class="live-loading-dots" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+    <div class="live-loading-region">Loading Runway v Demand</div>
+    <div class="live-loading-sub">Fetching live data</div>
+  </div>
+</div>
+
+<!-- PDF / JPEG download overlay — shown while html2canvas + jsPDF run.
+     Hidden by default; exportRunwayPDF / exportRunwayJPEG add .show. -->
+<div id="pdf-overlay"><div class="pdf-spinner"></div><div class="pdf-msg">Generating PDF…</div></div>
+
+<!-- ══════════ RUNWAY V DEMAND ══════════ -->
+<!-- ══════════ RUNWAY VIEW ══════════ -->
+<div id="runwayView" style="display:flex;flex-direction:column">
+  <!-- Back to hub + theme toggle — exact copy of the Demand Dashboard
+       pattern: an <a> anchor pill at top-left and a round 36px theme
+       toggle at left:160px. The previous .back-btn-wrap strip + dark
+       bar is gone; the body's gradient reads continuously from the
+       top edge. -->
+  <a id="pp-back-to-hub" href="../index.html" title="Back to hub" onclick="event.preventDefault(); navigateToHub();">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="15 18 9 12 15 6"/>
+    </svg>
+    <span>Back to Hub</span>
+  </a>
+  <button id="rw-theme-toggle" type="button" onclick="PP_toggleTheme()" title="Toggle light / dark mode" aria-label="Toggle theme">
+    <svg class="pp-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    <svg class="pp-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+  </button>
+  <div class="runway-inner">
+    
+<div class="header">
+  <div class="header-left">
+    <h1>RUNWAY <em>v</em> DEMAND</h1>
+    <div class="header-copyright" style="font-size:.62rem;letter-spacing:.04em;margin-top:4px">© 2026 PPA Services Pty Ltd</div>
+  </div>
+  <div class="brand" style="gap:20px;">
+    <img class="pp-logo-dark" src="../assets/logo.png" alt="Performance Property" style="height:52px;width:260px"/>
+    <img class="pp-logo-light" src="../assets/Reports/logo-color-black.png" alt="Performance Property" style="height:52px;width:260px"/>
+  </div>
+</div>
+<div class="tabs">
+  <button class="tab active" data-type="house">House</button>
+  <button class="tab" data-type="unit">Unit</button>
+  <button type="button" id="runwayPdfBtn" class="rwpdf-btn" onclick="exportRunwayPDF()" title="Download HD PDF of current chart">
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download HD PDF
+  </button>
+  <button type="button" id="runwayJpegBtn" class="rwpdf-btn" onclick="exportRunwayJPEG()" title="Download HD JPEG of current chart">
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>Download HD JPEG
+  </button>
+  <button type="button" id="runwayManageBtn" class="rwpdf-btn" style="display:none;color:#fbbf24;border-color:rgba(251,191,36,.45)" onclick="openManageMonthsModal()" title="Delete a pushed month (admin only)">
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>Manage Pushed Months
+  </button>
+</div>
+<div class="controls">
+  <!-- Multi-select region picker -->
+  <div class="ctrl-group">
+    <label>Highlight Regions</label>
+    <div class="region-picker">
+      <button class="region-btn" id="regionBtn">All Regions</button>
+      <div class="region-dropdown" id="regionDropdown">
+        <div class="region-dropdown-header" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border)">
+          <button id="selectAllBtn">Select All</button>
+          <button id="clearAllBtn">Clear</button>
+          <button id="selectSmoothBtn" style="color:var(--smooth);border-color:var(--smooth)">Smooth</button>
+          <button id="selectWorkforceBtn" style="color:var(--workforce);border-color:var(--workforce)">Workforce</button>
+        </div>
+        <div class="region-search-wrap">
+          <input type="text" id="regionSearch" placeholder="Search regions…" autocomplete="off"/>
+        </div>
+        <div id="regionList"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ctrl-group">
+    <label>Trail Length</label>
+    <select id="trailSelect">
+      <option value="3">Last 3 months</option>
+      <option value="6">Last 6 months</option>
+      <option value="99" selected>All history</option>
+    </select>
+  </div>
+  <div class="ctrl-group">
+    <label>Trail Lines</label>
+    <select id="trailVisSelect">
+      <option value="show">Show Trail</option>
+      <option value="hide" selected>Hide Trail</option>
+    </select>
+  </div>
+  <div class="ctrl-group">
+    <label>Speed</label>
+    <select id="speedSelect">
+      <option value="1600">Slow</option>
+      <option value="950" selected>Normal</option>
+      <option value="500">Fast</option>
+    </select>
+  </div>
+  <div class="ctrl-group">
+    <label>Runway Source</label>
+    <div style="display:flex;align-items:center;gap:8px;height:38px">
+      <select id="runwayDataSelect" style="height:38px">
+        <option value="v1" selected>Demand Dashboard</option>
+        <option value="v2">Live Sheet</option>
+      </select>
+      <!-- Refresh: clears the in-memory V2 cache + refetches from the
+           Apps Script. Visible only when "Live Sheet" is active —
+           hidden in Demand Dashboard mode since there's nothing to
+           refresh. -->
+      <button id="runwayRefreshBtn" type="button"
+              title="Refresh from Live Sheet"
+              aria-label="Refresh runway data"
+              style="display:none;height:38px;width:38px;padding:0;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);cursor:pointer;font-size:16px;line-height:1;flex-shrink:0">↻</button>
+      <!-- Secret: tick to SHOW the runway axis tick labels + bottom
+           legend. Unlabelled on purpose so it isn't discoverable to
+           non-advisor users. Default unchecked = axis hidden. -->
+      <input type="checkbox" id="showRunwayAxis" title=""
+             aria-label="Show runway axis (advisor)"
+             style="accent-color:var(--accent);width:14px;height:14px;cursor:pointer;flex-shrink:0;opacity:.55">
+    </div>
+  </div>
+
+
+  <div class="playbar">
+    <div class="ctrl-group">
+      <label>&nbsp;</label>
+      <button class="play-btn" id="playBtn">▶</button>
+    </div>
+    <div class="month-display" id="monthDisplay">—</div>
+  </div>
+</div>
+<div class="chart-wrap">
+  <div class="chart-copyright" id="chartCopyright">© 2026 PPA Services Pty Ltd</div>
+  <div class="chart-month" id="chartMonthLabel">April 2026</div>
+  <svg id="chart"></svg>
+  <div class="tooltip" id="tooltip"></div>
+  <!-- Chart-level loading overlay shown while the V2 sheet fetch
+       is in flight (toggle to Live Sheet, refresh button click).
+       Sits above the SVG inside chart-wrap so the existing PDF/JPEG
+       export still captures only chart content (overlay is removed
+       from the DOM tree visually before export, since this is just
+       a transient indicator). -->
+  <div class="chart-loading-overlay" id="chartLoadingOverlay" aria-hidden="true">
+    <div class="chart-loading-spinner"></div>
+    <div class="chart-loading-text">Refreshing runway data…</div>
+  </div>
+</div>
+<div class="timeline">
+  <span class="tl-label" id="tlStart"></span>
+  <div class="tl-track" id="tlTrack"></div>
+  <span class="tl-label" id="tlEnd"></span>
+</div>
+<div class="legend">
+  <!-- Smooth/Workforce markers moved inside the chart (lower-left) -->
+  <div class="legend-item" style="display:none"><div class="legend-dot smooth"></div>Smooth Markets</div>
+  <div class="legend-item" style="display:none"><div class="legend-dot workforce"></div>Workforce Markets</div>
+  <div class="legend-quad"><div class="legend-swatch" style="background:rgba(255,213,79,.45)"></div>High Demand / Low Runway</div>
+  <div class="legend-quad"><div class="legend-swatch" style="background:rgba(100,181,246,.45)"></div>High Demand / High Runway</div>
+  <div class="legend-quad"><div class="legend-swatch" style="background:rgba(229,115,115,.45)"></div>Low Demand / Low Runway</div>
+  <div class="legend-quad"><div class="legend-swatch" style="background:rgba(129,199,132,.45)"></div>Low Demand / High Runway</div>
+
+  </div>
+</div>
+
+<!-- ══════════ SCRIPTS ══════════ -->
+
+<!-- ══════════ TIER SWITCHER (Tier 0 only) ══════════ -->
+<!-- ══════════ TIER SWITCHER (Tier 0 / dev only) ══════════ -->
+<div id="tier-switcher">
+  <button class="ts-toggle" onclick="toggleTierSwitcher()" title="View as tier — dev tool">
+    <span class="ts-eye">👁</span>
+    <span>View as: </span>
+    <span id="ts-current-label">TIER 0</span>
+  </button>
+  <div id="ts-menu">
+    <div class="ts-menu-header">Switch Tier Perspective</div>
+    <button data-tier="dev" onclick="setViewAs('dev')">TIER 0 <span class="ts-sub">Dev / Full access</span></button>
+    <button data-tier="admin" onclick="setViewAs('admin')">TIER 1 <span class="ts-sub">Admin</span></button>
+    <button data-tier="company" onclick="setViewAs('company')">TIER 2 <span class="ts-sub">Company staff</span></button>
+    <button data-tier="guest" onclick="setViewAs('guest')">TIER 3 <span class="ts-sub">External viewer</span></button>
+  </div>
+</div>
+
+<!-- shared auth (constants + helpers) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../shared/supabase-client.js"></script>
+<script src="../shared/auth.js"></script>
+<!-- gate: redirect to /index.html if not signed in, and run applyAccessRestrictions -->
+<script src="../shared/auth-gate.js"></script>
+
+<!-- Runway-specific inline scripts -->
+<script>
+
+/* ═══ RUNWAY DATA & RENDER ═══ */
+
+
+
+// ── DATA ──
+const RAW = {"house_Jan 2025":[{"city":"Adelaide","rw":29.3,"ds":34,"type":"smooth"},{"city":"Albury","rw":37.24,"ds":19,"type":"smooth"},{"city":"Ballarat","rw":60.69,"ds":-20,"type":"smooth"},{"city":"Bendigo","rw":49.78,"ds":7,"type":"smooth"},{"city":"Brisbane","rw":40.94,"ds":49,"type":"smooth"},{"city":"Bunbury","rw":65.35,"ds":28,"type":"workforce"},{"city":"Bundaberg","rw":36.56,"ds":33,"type":"workforce"},{"city":"Cairns","rw":92.92,"ds":34,"type":"workforce"},{"city":"Canberra","rw":26.23,"ds":23,"type":"smooth"},{"city":"Central Coast","rw":2.25,"ds":24,"type":"smooth"},{"city":"Coffs Harbour","rw":14.61,"ds":-7,"type":"smooth"},{"city":"Darwin","rw":100.57,"ds":22,"type":"workforce"},{"city":"Geelong","rw":34.17,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":109.6,"ds":37,"type":"workforce"},{"city":"Gold Coast","rw":19.08,"ds":34,"type":"smooth"},{"city":"Perth","rw":74.67,"ds":49,"type":"workforce"},{"city":"Sydney","rw":-2.99,"ds":31,"type":"smooth"},{"city":"Hobart","rw":32.77,"ds":21,"type":"smooth"},{"city":"Ipswich","rw":23.33,"ds":46,"type":"smooth"},{"city":"Launceston","rw":26.47,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":82.23,"ds":34,"type":"workforce"},{"city":"Melbourne","rw":41.64,"ds":22,"type":"smooth"},{"city":"Mildura","rw":52.8,"ds":19,"type":"smooth"},{"city":"Newcastle","rw":-0.62,"ds":-4,"type":"smooth"},{"city":"Orange","rw":16.19,"ds":3,"type":"smooth"},{"city":"Port Macquarie","rw":15.08,"ds":20,"type":"smooth"},{"city":"Rockhampton","rw":49.34,"ds":48,"type":"workforce"},{"city":"Rockingham","rw":50.4,"ds":49,"type":"workforce"},{"city":"Sunshine Coast","rw":21.36,"ds":25,"type":"smooth"},{"city":"Tamworth","rw":35.43,"ds":21,"type":"workforce"},{"city":"Toowoomba","rw":30.73,"ds":37,"type":"smooth"},{"city":"Townsville","rw":83.04,"ds":32,"type":"workforce"},{"city":"Wagga Wagga","rw":25.3,"ds":34,"type":"smooth"},{"city":"Wodonga","rw":60.51,"ds":21,"type":"smooth"},{"city":"Wollongong","rw":1.95,"ds":34,"type":"smooth"}],"unit_Jan 2025":[{"city":"Adelaide","rw":34.09,"ds":51,"type":"smooth"},{"city":"Albury","rw":82.36,"ds":36,"type":"smooth"},{"city":"Ballarat","rw":87.46,"ds":-20,"type":"smooth"},{"city":"Bendigo","rw":71.67,"ds":9,"type":"smooth"},{"city":"Brisbane","rw":54.47,"ds":66,"type":"smooth"},{"city":"Bunbury","rw":115.93,"ds":43,"type":"workforce"},{"city":"Bundaberg","rw":114.3,"ds":48,"type":"workforce"},{"city":"Cairns","rw":104.03,"ds":48,"type":"workforce"},{"city":"Canberra","rw":60.7,"ds":23,"type":"smooth"},{"city":"Central Coast","rw":25.02,"ds":33,"type":"smooth"},{"city":"Coffs Harbour","rw":9.55,"ds":5,"type":"smooth"},{"city":"Darwin","rw":140.46,"ds":23,"type":"workforce"},{"city":"Geelong","rw":44.42,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":212.06,"ds":44,"type":"workforce"},{"city":"Gold Coast","rw":30.29,"ds":49,"type":"smooth"},{"city":"Perth","rw":107.02,"ds":66,"type":"workforce"},{"city":"Sydney","rw":39.92,"ds":41,"type":"smooth"},{"city":"Hobart","rw":33.3,"ds":32,"type":"smooth"},{"city":"Ipswich","rw":53.02,"ds":63,"type":"smooth"},{"city":"Launceston","rw":25.92,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":125.46,"ds":43,"type":"workforce"},{"city":"Melbourne","rw":62.03,"ds":28,"type":"smooth"},{"city":"Mildura","rw":135.17,"ds":37,"type":"smooth"},{"city":"Newcastle","rw":23.66,"ds":5,"type":"smooth"},{"city":"Orange","rw":51.34,"ds":0,"type":"smooth"},{"city":"Port Macquarie","rw":18.09,"ds":30,"type":"smooth"},{"city":"Rockhampton","rw":132.85,"ds":63,"type":"workforce"},{"city":"Rockingham","rw":63.59,"ds":64,"type":"workforce"},{"city":"Sunshine Coast","rw":33.11,"ds":36,"type":"smooth"},{"city":"Tamworth","rw":80.15,"ds":34,"type":"workforce"},{"city":"Toowoomba","rw":43.11,"ds":53,"type":"smooth"},{"city":"Townsville","rw":155.06,"ds":36,"type":"workforce"},{"city":"Wagga Wagga","rw":77.51,"ds":52,"type":"smooth"},{"city":"Wodonga","rw":93.97,"ds":33,"type":"smooth"},{"city":"Wollongong","rw":38.34,"ds":48,"type":"smooth"}],"house_Feb 2025":[{"city":"Adelaide","rw":26.83,"ds":38,"type":"smooth"},{"city":"Albury","rw":33.02,"ds":23,"type":"smooth"},{"city":"Ballarat","rw":61.67,"ds":-20,"type":"smooth"},{"city":"Bendigo","rw":48.48,"ds":9,"type":"smooth"},{"city":"Brisbane","rw":39.39,"ds":53,"type":"smooth"},{"city":"Bunbury","rw":62.64,"ds":36,"type":"workforce"},{"city":"Bundaberg","rw":36.17,"ds":38,"type":"workforce"},{"city":"Cairns","rw":89.32,"ds":37,"type":"workforce"},{"city":"Canberra","rw":29.44,"ds":34,"type":"smooth"},{"city":"Central Coast","rw":0.22,"ds":32,"type":"smooth"},{"city":"Coffs Harbour","rw":16.07,"ds":-5,"type":"smooth"},{"city":"Darwin","rw":97.02,"ds":31,"type":"workforce"},{"city":"Geelong","rw":31.43,"ds":-11,"type":"smooth"},{"city":"Gladstone","rw":105.7,"ds":45,"type":"workforce"},{"city":"Gold Coast","rw":17.9,"ds":50,"type":"smooth"},{"city":"Perth","rw":65.94,"ds":53,"type":"workforce"},{"city":"Sydney","rw":-2.49,"ds":37,"type":"smooth"},{"city":"Hobart","rw":36.71,"ds":24,"type":"smooth"},{"city":"Ipswich","rw":22.47,"ds":52,"type":"smooth"},{"city":"Launceston","rw":25.37,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":76.55,"ds":38,"type":"workforce"},{"city":"Melbourne","rw":39.53,"ds":30,"type":"smooth"},{"city":"Mildura","rw":45.19,"ds":22,"type":"smooth"},{"city":"Newcastle","rw":-2.37,"ds":11,"type":"smooth"},{"city":"Orange","rw":13.3,"ds":15,"type":"smooth"},{"city":"Port Macquarie","rw":15.1,"ds":30,"type":"smooth"},{"city":"Rockhampton","rw":46.87,"ds":53,"type":"workforce"},{"city":"Rockingham","rw":48.26,"ds":53,"type":"workforce"},{"city":"Sunshine Coast","rw":19.61,"ds":25,"type":"smooth"},{"city":"Tamworth","rw":32.14,"ds":26,"type":"workforce"},{"city":"Toowoomba","rw":27.84,"ds":42,"type":"smooth"},{"city":"Townsville","rw":78.7,"ds":38,"type":"workforce"},{"city":"Wagga Wagga","rw":23.48,"ds":38,"type":"smooth"},{"city":"Wodonga","rw":57.85,"ds":32,"type":"smooth"},{"city":"Wollongong","rw":3.98,"ds":37,"type":"smooth"}],"unit_Feb 2025":[{"city":"Adelaide","rw":32.67,"ds":58,"type":"smooth"},{"city":"Albury","rw":91.66,"ds":44,"type":"smooth"},{"city":"Ballarat","rw":82.07,"ds":-20,"type":"smooth"},{"city":"Bendigo","rw":71.88,"ds":16,"type":"smooth"},{"city":"Brisbane","rw":52.86,"ds":75,"type":"smooth"},{"city":"Bunbury","rw":123.91,"ds":53,"type":"workforce"},{"city":"Bundaberg","rw":108.2,"ds":55,"type":"workforce"},{"city":"Cairns","rw":102.41,"ds":54,"type":"workforce"},{"city":"Canberra","rw":64.34,"ds":40,"type":"smooth"},{"city":"Central Coast","rw":23.16,"ds":44,"type":"smooth"},{"city":"Coffs Harbour","rw":6.39,"ds":-3,"type":"smooth"},{"city":"Darwin","rw":133.78,"ds":37,"type":"workforce"},{"city":"Geelong","rw":43.25,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":200.21,"ds":56,"type":"workforce"},{"city":"Gold Coast","rw":31.12,"ds":69,"type":"smooth"},{"city":"Perth","rw":104.0,"ds":75,"type":"workforce"},{"city":"Sydney","rw":38.19,"ds":54,"type":"smooth"},{"city":"Hobart","rw":33.3,"ds":39,"type":"smooth"},{"city":"Ipswich","rw":51.75,"ds":75,"type":"smooth"},{"city":"Launceston","rw":27.02,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":113.24,"ds":49,"type":"workforce"},{"city":"Melbourne","rw":62.03,"ds":40,"type":"smooth"},{"city":"Mildura","rw":142.38,"ds":40,"type":"smooth"},{"city":"Newcastle","rw":21.85,"ds":7,"type":"smooth"},{"city":"Orange","rw":57.07,"ds":25,"type":"smooth"},{"city":"Port Macquarie","rw":18.4,"ds":44,"type":"smooth"},{"city":"Rockhampton","rw":139.33,"ds":71,"type":"workforce"},{"city":"Rockingham","rw":60.29,"ds":73,"type":"workforce"},{"city":"Sunshine Coast","rw":30.53,"ds":42,"type":"smooth"},{"city":"Tamworth","rw":83.72,"ds":43,"type":"workforce"},{"city":"Toowoomba","rw":40.13,"ds":62,"type":"smooth"},{"city":"Townsville","rw":145.51,"ds":49,"type":"workforce"},{"city":"Wagga Wagga","rw":76.52,"ds":61,"type":"smooth"},{"city":"Wodonga","rw":78.92,"ds":49,"type":"smooth"},{"city":"Wollongong","rw":36.84,"ds":56,"type":"smooth"}],"house_Mar 2025":[{"city":"Adelaide","rw":29.33,"ds":39,"type":"smooth"},{"city":"Albury","rw":26.36,"ds":23,"type":"smooth"},{"city":"Ballarat","rw":64.92,"ds":-20,"type":"smooth"},{"city":"Bendigo","rw":49.54,"ds":9,"type":"smooth"},{"city":"Brisbane","rw":41.7,"ds":55,"type":"smooth"},{"city":"Bunbury","rw":64.12,"ds":37,"type":"workforce"},{"city":"Bundaberg","rw":35.25,"ds":37,"type":"workforce"},{"city":"Cairns","rw":93.51,"ds":38,"type":"workforce"},{"city":"Canberra","rw":29.63,"ds":33,"type":"smooth"},{"city":"Central Coast","rw":2.16,"ds":28,"type":"smooth"},{"city":"Coffs Harbour","rw":18.06,"ds":-8,"type":"smooth"},{"city":"Darwin","rw":103.72,"ds":34,"type":"workforce"},{"city":"Geelong","rw":34.86,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":105.99,"ds":43,"type":"workforce"},{"city":"Gold Coast","rw":20.57,"ds":51,"type":"smooth"},{"city":"Perth","rw":70.89,"ds":55,"type":"workforce"},{"city":"Sydney","rw":0.02,"ds":38,"type":"smooth"},{"city":"Hobart","rw":37.25,"ds":23,"type":"smooth"},{"city":"Ipswich","rw":24.44,"ds":52,"type":"smooth"},{"city":"Launceston","rw":23.74,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":80.9,"ds":40,"type":"workforce"},{"city":"Melbourne","rw":44.26,"ds":29,"type":"smooth"},{"city":"Mildura","rw":44.95,"ds":27,"type":"smooth"},{"city":"Newcastle","rw":-0.38,"ds":27,"type":"smooth"},{"city":"Orange","rw":15.4,"ds":16,"type":"smooth"},{"city":"Port Macquarie","rw":18.13,"ds":36,"type":"smooth"},{"city":"Rockhampton","rw":49.3,"ds":55,"type":"workforce"},{"city":"Rockingham","rw":54.22,"ds":55,"type":"workforce"},{"city":"Sunshine Coast","rw":22.9,"ds":26,"type":"smooth"},{"city":"Tamworth","rw":34.05,"ds":19,"type":"workforce"},{"city":"Toowoomba","rw":29.87,"ds":41,"type":"smooth"},{"city":"Townsville","rw":79.93,"ds":39,"type":"workforce"},{"city":"Wagga Wagga","rw":24.01,"ds":38,"type":"smooth"},{"city":"Wodonga","rw":61.42,"ds":30,"type":"smooth"},{"city":"Wollongong","rw":6.45,"ds":39,"type":"smooth"}],"unit_Mar 2025":[{"city":"Adelaide","rw":35.33,"ds":56,"type":"smooth"},{"city":"Albury","rw":81.2,"ds":39,"type":"smooth"},{"city":"Ballarat","rw":89.4,"ds":-20,"type":"smooth"},{"city":"Bendigo","rw":79.22,"ds":7,"type":"smooth"},{"city":"Brisbane","rw":57.1,"ds":73,"type":"smooth"},{"city":"Bunbury","rw":118.61,"ds":55,"type":"workforce"},{"city":"Bundaberg","rw":115.27,"ds":52,"type":"workforce"},{"city":"Cairns","rw":104.06,"ds":50,"type":"workforce"},{"city":"Canberra","rw":60.01,"ds":33,"type":"smooth"},{"city":"Central Coast","rw":25.42,"ds":38,"type":"smooth"},{"city":"Coffs Harbour","rw":8.98,"ds":-14,"type":"smooth"},{"city":"Darwin","rw":138.55,"ds":37,"type":"workforce"},{"city":"Geelong","rw":46.23,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":208.53,"ds":53,"type":"workforce"},{"city":"Gold Coast","rw":35.03,"ds":63,"type":"smooth"},{"city":"Perth","rw":109.33,"ds":73,"type":"workforce"},{"city":"Sydney","rw":42.64,"ds":50,"type":"smooth"},{"city":"Hobart","rw":38.65,"ds":32,"type":"smooth"},{"city":"Ipswich","rw":54.08,"ds":71,"type":"smooth"},{"city":"Launceston","rw":32.25,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":131.51,"ds":47,"type":"workforce"},{"city":"Melbourne","rw":68.15,"ds":37,"type":"smooth"},{"city":"Mildura","rw":130.59,"ds":39,"type":"smooth"},{"city":"Newcastle","rw":23.82,"ds":4,"type":"smooth"},{"city":"Orange","rw":59.85,"ds":22,"type":"smooth"},{"city":"Port Macquarie","rw":24.97,"ds":49,"type":"smooth"},{"city":"Rockhampton","rw":137.12,"ds":71,"type":"workforce"},{"city":"Rockingham","rw":61.81,"ds":71,"type":"workforce"},{"city":"Sunshine Coast","rw":34.0,"ds":38,"type":"smooth"},{"city":"Tamworth","rw":90.69,"ds":33,"type":"workforce"},{"city":"Toowoomba","rw":39.96,"ds":57,"type":"smooth"},{"city":"Townsville","rw":146.07,"ds":46,"type":"workforce"},{"city":"Wagga Wagga","rw":70.08,"ds":55,"type":"smooth"},{"city":"Wodonga","rw":78.24,"ds":42,"type":"smooth"},{"city":"Wollongong","rw":41.18,"ds":55,"type":"smooth"}],"house_Apr 2025":[{"city":"Adelaide","rw":28.79,"ds":36,"type":"smooth"},{"city":"Albury","rw":27.04,"ds":27,"type":"smooth"},{"city":"Ballarat","rw":63.87,"ds":-20,"type":"smooth"},{"city":"Bendigo","rw":48.37,"ds":13,"type":"smooth"},{"city":"Brisbane","rw":43.25,"ds":52,"type":"smooth"},{"city":"Bunbury","rw":61.76,"ds":34,"type":"workforce"},{"city":"Bundaberg","rw":34.87,"ds":36,"type":"workforce"},{"city":"Cairns","rw":91.43,"ds":36,"type":"workforce"},{"city":"Canberra","rw":34.01,"ds":30,"type":"smooth"},{"city":"Central Coast","rw":6.31,"ds":28,"type":"smooth"},{"city":"Coffs Harbour","rw":19.89,"ds":-7,"type":"smooth"},{"city":"Darwin","rw":103.17,"ds":32,"type":"workforce"},{"city":"Geelong","rw":37.55,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":104.14,"ds":41,"type":"workforce"},{"city":"Gold Coast","rw":19.27,"ds":39,"type":"smooth"},{"city":"Perth","rw":71.97,"ds":53,"type":"workforce"},{"city":"Sydney","rw":0.02,"ds":34,"type":"smooth"},{"city":"Hobart","rw":38.43,"ds":22,"type":"smooth"},{"city":"Ipswich","rw":24.44,"ds":43,"type":"smooth"},{"city":"Launceston","rw":16.03,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":80.55,"ds":40,"type":"workforce"},{"city":"Melbourne","rw":48.04,"ds":27,"type":"smooth"},{"city":"Mildura","rw":46.44,"ds":25,"type":"smooth"},{"city":"Newcastle","rw":-1.76,"ds":21,"type":"smooth"},{"city":"Orange","rw":14.87,"ds":23,"type":"smooth"},{"city":"Port Macquarie","rw":20.84,"ds":30,"type":"smooth"},{"city":"Rockhampton","rw":47.89,"ds":54,"type":"workforce"},{"city":"Rockingham","rw":53.85,"ds":45,"type":"workforce"},{"city":"Sunshine Coast","rw":22.36,"ds":22,"type":"smooth"},{"city":"Tamworth","rw":35.53,"ds":19,"type":"workforce"},{"city":"Toowoomba","rw":26.1,"ds":39,"type":"smooth"},{"city":"Townsville","rw":75.36,"ds":38,"type":"workforce"},{"city":"Wagga Wagga","rw":28.24,"ds":35,"type":"smooth"},{"city":"Wodonga","rw":58.13,"ds":29,"type":"smooth"},{"city":"Wollongong","rw":6.11,"ds":37,"type":"smooth"}],"unit_Apr 2025":[{"city":"Adelaide","rw":32.03,"ds":53,"type":"smooth"},{"city":"Albury","rw":84.82,"ds":39,"type":"smooth"},{"city":"Ballarat","rw":94.91,"ds":-20,"type":"smooth"},{"city":"Bendigo","rw":67.64,"ds":4,"type":"smooth"},{"city":"Brisbane","rw":54.72,"ds":68,"type":"smooth"},{"city":"Bunbury","rw":118.61,"ds":50,"type":"workforce"},{"city":"Bundaberg","rw":97.0,"ds":44,"type":"workforce"},{"city":"Cairns","rw":106.74,"ds":47,"type":"workforce"},{"city":"Canberra","rw":66.93,"ds":26,"type":"smooth"},{"city":"Central Coast","rw":31.64,"ds":35,"type":"smooth"},{"city":"Coffs Harbour","rw":5.84,"ds":-17,"type":"smooth"},{"city":"Darwin","rw":138.94,"ds":35,"type":"workforce"},{"city":"Geelong","rw":48.38,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":47,"type":"workforce"},{"city":"Gold Coast","rw":33.36,"ds":50,"type":"smooth"},{"city":"Perth","rw":107.44,"ds":68,"type":"workforce"},{"city":"Sydney","rw":45.35,"ds":44,"type":"smooth"},{"city":"Hobart","rw":32.9,"ds":30,"type":"smooth"},{"city":"Ipswich","rw":48.97,"ds":64,"type":"smooth"},{"city":"Launceston","rw":15.94,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":128.78,"ds":50,"type":"workforce"},{"city":"Melbourne","rw":71.52,"ds":33,"type":"smooth"},{"city":"Mildura","rw":128.44,"ds":39,"type":"smooth"},{"city":"Newcastle","rw":24.84,"ds":3,"type":"smooth"},{"city":"Orange","rw":52.48,"ds":34,"type":"smooth"},{"city":"Port Macquarie","rw":25.69,"ds":40,"type":"smooth"},{"city":"Rockhampton","rw":126.02,"ds":67,"type":"workforce"},{"city":"Rockingham","rw":62.94,"ds":66,"type":"workforce"},{"city":"Sunshine Coast","rw":33.53,"ds":34,"type":"smooth"},{"city":"Tamworth","rw":85.6,"ds":26,"type":"workforce"},{"city":"Toowoomba","rw":36.34,"ds":54,"type":"smooth"},{"city":"Townsville","rw":140.65,"ds":46,"type":"workforce"},{"city":"Wagga Wagga","rw":77.56,"ds":51,"type":"smooth"},{"city":"Wodonga","rw":88.33,"ds":40,"type":"smooth"},{"city":"Wollongong","rw":40.49,"ds":51,"type":"smooth"}],"house_May 2025":[{"city":"Adelaide","rw":31.78,"ds":31,"type":"smooth"},{"city":"Albury","rw":32.46,"ds":27,"type":"smooth"},{"city":"Ballarat","rw":66.23,"ds":-20,"type":"smooth"},{"city":"Bendigo","rw":53.21,"ds":11,"type":"smooth"},{"city":"Brisbane","rw":44.85,"ds":48,"type":"smooth"},{"city":"Bunbury","rw":63.85,"ds":30,"type":"workforce"},{"city":"Bundaberg","rw":33.15,"ds":28,"type":"workforce"},{"city":"Cairns","rw":91.27,"ds":34,"type":"workforce"},{"city":"Canberra","rw":33.55,"ds":25,"type":"smooth"},{"city":"Central Coast","rw":4.25,"ds":24,"type":"smooth"},{"city":"Coffs Harbour","rw":21.03,"ds":-10,"type":"smooth"},{"city":"Darwin","rw":106.92,"ds":31,"type":"workforce"},{"city":"Geelong","rw":39.65,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":104.88,"ds":34,"type":"workforce"},{"city":"Gold Coast","rw":20.84,"ds":36,"type":"smooth"},{"city":"Perth","rw":74.99,"ds":48,"type":"workforce"},{"city":"Sydney","rw":1.14,"ds":29,"type":"smooth"},{"city":"Hobart","rw":50.44,"ds":20,"type":"smooth"},{"city":"Ipswich","rw":24.41,"ds":37,"type":"smooth"},{"city":"Launceston","rw":19.32,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":81.72,"ds":36,"type":"workforce"},{"city":"Melbourne","rw":52.97,"ds":23,"type":"smooth"},{"city":"Mildura","rw":49.35,"ds":22,"type":"smooth"},{"city":"Newcastle","rw":-0.92,"ds":15,"type":"smooth"},{"city":"Orange","rw":17.57,"ds":20,"type":"smooth"},{"city":"Port Macquarie","rw":22.24,"ds":24,"type":"smooth"},{"city":"Rockhampton","rw":47.86,"ds":45,"type":"workforce"},{"city":"Rockingham","rw":56.21,"ds":38,"type":"workforce"},{"city":"Sunshine Coast","rw":21.79,"ds":21,"type":"smooth"},{"city":"Tamworth","rw":38.36,"ds":15,"type":"workforce"},{"city":"Toowoomba","rw":26.6,"ds":37,"type":"smooth"},{"city":"Townsville","rw":74.85,"ds":34,"type":"workforce"},{"city":"Wagga Wagga","rw":29.99,"ds":34,"type":"smooth"},{"city":"Wodonga","rw":55.53,"ds":31,"type":"smooth"},{"city":"Wollongong","rw":8.85,"ds":34,"type":"smooth"}],"unit_May 2025":[{"city":"Adelaide","rw":32.28,"ds":48,"type":"smooth"},{"city":"Albury","rw":95.02,"ds":39,"type":"smooth"},{"city":"Ballarat","rw":93.57,"ds":-20,"type":"smooth"},{"city":"Bendigo","rw":66.66,"ds":2,"type":"smooth"},{"city":"Brisbane","rw":54.11,"ds":66,"type":"smooth"},{"city":"Bunbury","rw":117.67,"ds":44,"type":"workforce"},{"city":"Bundaberg","rw":92.18,"ds":38,"type":"workforce"},{"city":"Cairns","rw":106.07,"ds":47,"type":"workforce"},{"city":"Canberra","rw":64.2,"ds":22,"type":"smooth"},{"city":"Central Coast","rw":28.06,"ds":32,"type":"smooth"},{"city":"Coffs Harbour","rw":9.17,"ds":-15,"type":"smooth"},{"city":"Darwin","rw":141.61,"ds":34,"type":"workforce"},{"city":"Geelong","rw":50.04,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":38,"type":"workforce"},{"city":"Gold Coast","rw":34.6,"ds":47,"type":"smooth"},{"city":"Perth","rw":108.26,"ds":65,"type":"workforce"},{"city":"Sydney","rw":48.85,"ds":39,"type":"smooth"},{"city":"Hobart","rw":39.36,"ds":30,"type":"smooth"},{"city":"Ipswich","rw":49.31,"ds":58,"type":"smooth"},{"city":"Launceston","rw":13.23,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":146.82,"ds":44,"type":"workforce"},{"city":"Melbourne","rw":76.37,"ds":26,"type":"smooth"},{"city":"Mildura","rw":125.03,"ds":35,"type":"smooth"},{"city":"Newcastle","rw":26.54,"ds":-5,"type":"smooth"},{"city":"Orange","rw":54.77,"ds":37,"type":"smooth"},{"city":"Port Macquarie","rw":28.88,"ds":33,"type":"smooth"},{"city":"Rockhampton","rw":126.14,"ds":54,"type":"workforce"},{"city":"Rockingham","rw":65.92,"ds":58,"type":"workforce"},{"city":"Sunshine Coast","rw":32.12,"ds":34,"type":"smooth"},{"city":"Tamworth","rw":103.33,"ds":7,"type":"workforce"},{"city":"Toowoomba","rw":44.15,"ds":54,"type":"smooth"},{"city":"Townsville","rw":141.85,"ds":40,"type":"workforce"},{"city":"Wagga Wagga","rw":72.71,"ds":51,"type":"smooth"},{"city":"Wodonga","rw":105.44,"ds":41,"type":"smooth"},{"city":"Wollongong","rw":42.81,"ds":48,"type":"smooth"}],"house_Jun 2025":[{"city":"Adelaide","rw":28.13,"ds":29,"type":"smooth"},{"city":"Albury","rw":30.21,"ds":26,"type":"smooth"},{"city":"Ballarat","rw":61.51,"ds":-6,"type":"smooth"},{"city":"Bendigo","rw":49.15,"ds":10,"type":"smooth"},{"city":"Brisbane","rw":40.06,"ds":47,"type":"smooth"},{"city":"Bunbury","rw":58.52,"ds":29,"type":"workforce"},{"city":"Bundaberg","rw":28.73,"ds":29,"type":"workforce"},{"city":"Cairns","rw":85.24,"ds":32,"type":"workforce"},{"city":"Canberra","rw":32.54,"ds":27,"type":"smooth"},{"city":"Central Coast","rw":1.11,"ds":23,"type":"smooth"},{"city":"Coffs Harbour","rw":20.28,"ds":-9,"type":"smooth"},{"city":"Darwin","rw":100.14,"ds":30,"type":"workforce"},{"city":"Geelong","rw":36.11,"ds":-15,"type":"smooth"},{"city":"Gladstone","rw":99.2,"ds":32,"type":"workforce"},{"city":"Gold Coast","rw":15.51,"ds":34,"type":"smooth"},{"city":"Perth","rw":68.91,"ds":45,"type":"workforce"},{"city":"Sydney","rw":-1.08,"ds":27,"type":"smooth"},{"city":"Hobart","rw":47.6,"ds":19,"type":"smooth"},{"city":"Ipswich","rw":21.27,"ds":39,"type":"smooth"},{"city":"Launceston","rw":19.35,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":72.99,"ds":33,"type":"workforce"},{"city":"Melbourne","rw":45.54,"ds":21,"type":"smooth"},{"city":"Mildura","rw":46.35,"ds":22,"type":"smooth"},{"city":"Newcastle","rw":-4.14,"ds":2,"type":"smooth"},{"city":"Orange","rw":13.07,"ds":17,"type":"smooth"},{"city":"Port Macquarie","rw":18.99,"ds":24,"type":"smooth"},{"city":"Rockhampton","rw":44.39,"ds":47,"type":"workforce"},{"city":"Rockingham","rw":48.86,"ds":41,"type":"workforce"},{"city":"Sunshine Coast","rw":18.77,"ds":22,"type":"smooth"},{"city":"Tamworth","rw":33.85,"ds":21,"type":"workforce"},{"city":"Toowoomba","rw":20.48,"ds":37,"type":"smooth"},{"city":"Townsville","rw":68.2,"ds":32,"type":"workforce"},{"city":"Wagga Wagga","rw":25.85,"ds":35,"type":"smooth"},{"city":"Wodonga","rw":45.03,"ds":31,"type":"smooth"},{"city":"Wollongong","rw":7.63,"ds":30,"type":"smooth"}],"unit_Jun 2025":[{"city":"Adelaide","rw":29.38,"ds":41,"type":"smooth"},{"city":"Albury","rw":100.89,"ds":33,"type":"smooth"},{"city":"Ballarat","rw":91.03,"ds":-11,"type":"smooth"},{"city":"Bendigo","rw":58.56,"ds":2,"type":"smooth"},{"city":"Brisbane","rw":48.52,"ds":58,"type":"smooth"},{"city":"Bunbury","rw":107.88,"ds":41,"type":"workforce"},{"city":"Bundaberg","rw":106.69,"ds":33,"type":"workforce"},{"city":"Cairns","rw":102.12,"ds":41,"type":"workforce"},{"city":"Canberra","rw":69.37,"ds":21,"type":"smooth"},{"city":"Central Coast","rw":28.01,"ds":28,"type":"smooth"},{"city":"Coffs Harbour","rw":10.32,"ds":-13,"type":"smooth"},{"city":"Darwin","rw":129.93,"ds":29,"type":"workforce"},{"city":"Geelong","rw":49.84,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":33,"type":"workforce"},{"city":"Gold Coast","rw":30.81,"ds":41,"type":"smooth"},{"city":"Perth","rw":99.76,"ds":57,"type":"workforce"},{"city":"Sydney","rw":41.95,"ds":33,"type":"smooth"},{"city":"Hobart","rw":34.82,"ds":24,"type":"smooth"},{"city":"Ipswich","rw":41.87,"ds":54,"type":"smooth"},{"city":"Launceston","rw":21.55,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":130.31,"ds":39,"type":"workforce"},{"city":"Melbourne","rw":69.63,"ds":22,"type":"smooth"},{"city":"Mildura","rw":119.26,"ds":27,"type":"smooth"},{"city":"Newcastle","rw":21.33,"ds":-6,"type":"smooth"},{"city":"Orange","rw":22.95,"ds":28,"type":"smooth"},{"city":"Port Macquarie","rw":25.07,"ds":31,"type":"smooth"},{"city":"Rockhampton","rw":110.8,"ds":54,"type":"workforce"},{"city":"Rockingham","rw":62.86,"ds":54,"type":"workforce"},{"city":"Sunshine Coast","rw":25.61,"ds":31,"type":"smooth"},{"city":"Tamworth","rw":75.3,"ds":18,"type":"workforce"},{"city":"Toowoomba","rw":38.56,"ds":50,"type":"smooth"},{"city":"Townsville","rw":127.58,"ds":35,"type":"workforce"},{"city":"Wagga Wagga","rw":75.16,"ds":50,"type":"smooth"},{"city":"Wodonga","rw":111.31,"ds":37,"type":"smooth"},{"city":"Wollongong","rw":33.48,"ds":41,"type":"smooth"}],"house_Jul 2025":[{"city":"Adelaide","rw":27.38,"ds":24,"type":"smooth"},{"city":"Albury","rw":28.51,"ds":20,"type":"smooth"},{"city":"Ballarat","rw":60.99,"ds":-1,"type":"smooth"},{"city":"Bendigo","rw":49.02,"ds":5,"type":"smooth"},{"city":"Brisbane","rw":37.16,"ds":42,"type":"smooth"},{"city":"Bunbury","rw":53.25,"ds":23,"type":"workforce"},{"city":"Bundaberg","rw":27.7,"ds":26,"type":"workforce"},{"city":"Cairns","rw":84.8,"ds":28,"type":"workforce"},{"city":"Canberra","rw":32.31,"ds":23,"type":"smooth"},{"city":"Central Coast","rw":0.76,"ds":20,"type":"smooth"},{"city":"Coffs Harbour","rw":18.95,"ds":-7,"type":"smooth"},{"city":"Darwin","rw":92.35,"ds":27,"type":"workforce"},{"city":"Geelong","rw":34.6,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":95.57,"ds":28,"type":"workforce"},{"city":"Gold Coast","rw":13.65,"ds":28,"type":"smooth"},{"city":"Perth","rw":65.91,"ds":40,"type":"workforce"},{"city":"Sydney","rw":-4.47,"ds":23,"type":"smooth"},{"city":"Hobart","rw":47.6,"ds":18,"type":"smooth"},{"city":"Ipswich","rw":18.48,"ds":31,"type":"smooth"},{"city":"Launceston","rw":19.35,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":70.01,"ds":30,"type":"workforce"},{"city":"Melbourne","rw":42.51,"ds":18,"type":"smooth"},{"city":"Mildura","rw":40.51,"ds":20,"type":"smooth"},{"city":"Newcastle","rw":-3.51,"ds":7,"type":"smooth"},{"city":"Orange","rw":15.95,"ds":18,"type":"smooth"},{"city":"Port Macquarie","rw":19.17,"ds":19,"type":"smooth"},{"city":"Rockhampton","rw":45.22,"ds":42,"type":"workforce"},{"city":"Rockingham","rw":49.13,"ds":35,"type":"workforce"},{"city":"Sunshine Coast","rw":17.72,"ds":18,"type":"smooth"},{"city":"Tamworth","rw":33.85,"ds":13,"type":"workforce"},{"city":"Toowoomba","rw":23.07,"ds":35,"type":"smooth"},{"city":"Townsville","rw":68.43,"ds":30,"type":"workforce"},{"city":"Wagga Wagga","rw":22.06,"ds":34,"type":"smooth"},{"city":"Wodonga","rw":39.4,"ds":26,"type":"smooth"},{"city":"Wollongong","rw":6.34,"ds":26,"type":"smooth"}],"unit_Jul 2025":[{"city":"Adelaide","rw":29.38,"ds":34,"type":"smooth"},{"city":"Albury","rw":90.13,"ds":28,"type":"smooth"},{"city":"Ballarat","rw":82.8,"ds":-1,"type":"smooth"},{"city":"Bendigo","rw":60.31,"ds":1,"type":"smooth"},{"city":"Brisbane","rw":47.43,"ds":50,"type":"smooth"},{"city":"Bunbury","rw":97.54,"ds":33,"type":"workforce"},{"city":"Bundaberg","rw":101.14,"ds":27,"type":"workforce"},{"city":"Cairns","rw":95.52,"ds":34,"type":"workforce"},{"city":"Canberra","rw":69.37,"ds":17,"type":"smooth"},{"city":"Central Coast","rw":24.28,"ds":21,"type":"smooth"},{"city":"Coffs Harbour","rw":15.75,"ds":-11,"type":"smooth"},{"city":"Darwin","rw":127.47,"ds":25,"type":"workforce"},{"city":"Geelong","rw":45.79,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":26,"type":"workforce"},{"city":"Gold Coast","rw":30.89,"ds":32,"type":"smooth"},{"city":"Perth","rw":98.02,"ds":49,"type":"workforce"},{"city":"Sydney","rw":40.2,"ds":26,"type":"smooth"},{"city":"Hobart","rw":32.75,"ds":21,"type":"smooth"},{"city":"Ipswich","rw":42.41,"ds":42,"type":"smooth"},{"city":"Launceston","rw":21.55,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":133.01,"ds":33,"type":"workforce"},{"city":"Melbourne","rw":66.85,"ds":16,"type":"smooth"},{"city":"Mildura","rw":117.69,"ds":26,"type":"smooth"},{"city":"Newcastle","rw":21.75,"ds":-6,"type":"smooth"},{"city":"Orange","rw":22.12,"ds":26,"type":"smooth"},{"city":"Port Macquarie","rw":30.09,"ds":22,"type":"smooth"},{"city":"Rockhampton","rw":114.79,"ds":47,"type":"workforce"},{"city":"Rockingham","rw":55.76,"ds":43,"type":"workforce"},{"city":"Sunshine Coast","rw":26.67,"ds":25,"type":"smooth"},{"city":"Tamworth","rw":76.23,"ds":7,"type":"workforce"},{"city":"Toowoomba","rw":35.33,"ds":43,"type":"smooth"},{"city":"Townsville","rw":127.58,"ds":34,"type":"workforce"},{"city":"Wagga Wagga","rw":59.11,"ds":47,"type":"smooth"},{"city":"Wodonga","rw":116.27,"ds":32,"type":"smooth"},{"city":"Wollongong","rw":30.57,"ds":33,"type":"smooth"}],"house_Aug 2025":[{"city":"Adelaide","rw":29.51,"ds":24,"type":"smooth"},{"city":"Albury","rw":30.14,"ds":20,"type":"smooth"},{"city":"Ballarat","rw":59.35,"ds":-5,"type":"smooth"},{"city":"Bendigo","rw":47.16,"ds":6,"type":"smooth"},{"city":"Brisbane","rw":37.98,"ds":41,"type":"smooth"},{"city":"Bunbury","rw":57.97,"ds":25,"type":"workforce"},{"city":"Bundaberg","rw":28.71,"ds":25,"type":"workforce"},{"city":"Cairns","rw":85.5,"ds":28,"type":"workforce"},{"city":"Canberra","rw":28.9,"ds":22,"type":"smooth"},{"city":"Central Coast","rw":1.97,"ds":18,"type":"smooth"},{"city":"Coffs Harbour","rw":20.72,"ds":-8,"type":"smooth"},{"city":"Darwin","rw":92.29,"ds":27,"type":"workforce"},{"city":"Geelong","rw":35.98,"ds":-14,"type":"smooth"},{"city":"Gladstone","rw":95.81,"ds":28,"type":"workforce"},{"city":"Gold Coast","rw":13.98,"ds":28,"type":"smooth"},{"city":"Perth","rw":67.45,"ds":39,"type":"workforce"},{"city":"Sydney","rw":-3.14,"ds":22,"type":"smooth"},{"city":"Hobart","rw":41.93,"ds":18,"type":"smooth"},{"city":"Ipswich","rw":19.42,"ds":33,"type":"smooth"},{"city":"Launceston","rw":26.51,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":71.42,"ds":29,"type":"workforce"},{"city":"Melbourne","rw":44.56,"ds":16,"type":"smooth"},{"city":"Mildura","rw":47.36,"ds":18,"type":"smooth"},{"city":"Newcastle","rw":-2.02,"ds":3,"type":"smooth"},{"city":"Orange","rw":17.89,"ds":16,"type":"smooth"},{"city":"Port Macquarie","rw":20.83,"ds":18,"type":"smooth"},{"city":"Rockhampton","rw":44.42,"ds":41,"type":"workforce"},{"city":"Rockingham","rw":50.64,"ds":33,"type":"workforce"},{"city":"Sunshine Coast","rw":21.03,"ds":17,"type":"smooth"},{"city":"Tamworth","rw":36.09,"ds":14,"type":"workforce"},{"city":"Toowoomba","rw":21.94,"ds":33,"type":"smooth"},{"city":"Townsville","rw":70.13,"ds":30,"type":"workforce"},{"city":"Wagga Wagga","rw":24.11,"ds":34,"type":"smooth"},{"city":"Wodonga","rw":42.83,"ds":28,"type":"smooth"},{"city":"Wollongong","rw":8.12,"ds":25,"type":"smooth"}],"unit_Aug 2025":[{"city":"Adelaide","rw":31.99,"ds":34,"type":"smooth"},{"city":"Albury","rw":93.31,"ds":26,"type":"smooth"},{"city":"Ballarat","rw":90.33,"ds":-3,"type":"smooth"},{"city":"Bendigo","rw":60.05,"ds":5,"type":"smooth"},{"city":"Brisbane","rw":47.75,"ds":50,"type":"smooth"},{"city":"Bunbury","rw":105.11,"ds":33,"type":"workforce"},{"city":"Bundaberg","rw":95.28,"ds":32,"type":"workforce"},{"city":"Cairns","rw":95.71,"ds":34,"type":"workforce"},{"city":"Canberra","rw":63.93,"ds":16,"type":"smooth"},{"city":"Central Coast","rw":26.76,"ds":22,"type":"smooth"},{"city":"Coffs Harbour","rw":17.01,"ds":-9,"type":"smooth"},{"city":"Darwin","rw":126.14,"ds":26,"type":"workforce"},{"city":"Geelong","rw":45.17,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":26,"type":"workforce"},{"city":"Gold Coast","rw":32.23,"ds":31,"type":"smooth"},{"city":"Perth","rw":97.9,"ds":49,"type":"workforce"},{"city":"Sydney","rw":41.67,"ds":26,"type":"smooth"},{"city":"Hobart","rw":32.61,"ds":24,"type":"smooth"},{"city":"Ipswich","rw":44.75,"ds":44,"type":"smooth"},{"city":"Launceston","rw":28.68,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":125.56,"ds":34,"type":"workforce"},{"city":"Melbourne","rw":66.91,"ds":16,"type":"smooth"},{"city":"Mildura","rw":145.59,"ds":22,"type":"smooth"},{"city":"Newcastle","rw":23.64,"ds":-3,"type":"smooth"},{"city":"Orange","rw":24.17,"ds":25,"type":"smooth"},{"city":"Port Macquarie","rw":32.02,"ds":22,"type":"smooth"},{"city":"Rockhampton","rw":111.77,"ds":49,"type":"workforce"},{"city":"Rockingham","rw":52.64,"ds":44,"type":"workforce"},{"city":"Sunshine Coast","rw":30.69,"ds":25,"type":"smooth"},{"city":"Tamworth","rw":79.18,"ds":10,"type":"workforce"},{"city":"Toowoomba","rw":32.61,"ds":43,"type":"smooth"},{"city":"Townsville","rw":127.84,"ds":35,"type":"workforce"},{"city":"Wagga Wagga","rw":61.78,"ds":47,"type":"smooth"},{"city":"Wodonga","rw":107.01,"ds":34,"type":"smooth"},{"city":"Wollongong","rw":32.76,"ds":33,"type":"smooth"}],"house_Sep 2025":[{"city":"Adelaide","rw":32.06,"ds":25,"type":"smooth"},{"city":"Albury","rw":33.77,"ds":20,"type":"smooth"},{"city":"Ballarat","rw":59.74,"ds":-2,"type":"smooth"},{"city":"Bendigo","rw":47.72,"ds":8,"type":"smooth"},{"city":"Brisbane","rw":36.69,"ds":41,"type":"smooth"},{"city":"Bunbury","rw":52.47,"ds":24,"type":"workforce"},{"city":"Bundaberg","rw":28.64,"ds":21,"type":"workforce"},{"city":"Cairns","rw":85.5,"ds":29,"type":"workforce"},{"city":"Canberra","rw":31.43,"ds":20,"type":"smooth"},{"city":"Central Coast","rw":2.8,"ds":18,"type":"smooth"},{"city":"Coffs Harbour","rw":18.64,"ds":-10,"type":"smooth"},{"city":"Darwin","rw":94.36,"ds":27,"type":"workforce"},{"city":"Geelong","rw":36.47,"ds":-14,"type":"smooth"},{"city":"Gladstone","rw":97.3,"ds":26,"type":"workforce"},{"city":"Gold Coast","rw":14.58,"ds":27,"type":"smooth"},{"city":"Perth","rw":65.5,"ds":40,"type":"workforce"},{"city":"Sydney","rw":-0.56,"ds":22,"type":"smooth"},{"city":"Hobart","rw":42.32,"ds":19,"type":"smooth"},{"city":"Ipswich","rw":17.37,"ds":38,"type":"smooth"},{"city":"Launceston","rw":35.44,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":70.04,"ds":29,"type":"workforce"},{"city":"Melbourne","rw":48.68,"ds":16,"type":"smooth"},{"city":"Mildura","rw":43.42,"ds":20,"type":"smooth"},{"city":"Newcastle","rw":0.65,"ds":8,"type":"smooth"},{"city":"Orange","rw":22.13,"ds":17,"type":"smooth"},{"city":"Port Macquarie","rw":24.88,"ds":21,"type":"smooth"},{"city":"Rockhampton","rw":42.68,"ds":38,"type":"workforce"},{"city":"Rockingham","rw":49.41,"ds":35,"type":"workforce"},{"city":"Sunshine Coast","rw":19.74,"ds":17,"type":"smooth"},{"city":"Tamworth","rw":40.2,"ds":18,"type":"workforce"},{"city":"Toowoomba","rw":19.17,"ds":35,"type":"smooth"},{"city":"Townsville","rw":69.67,"ds":30,"type":"workforce"},{"city":"Wagga Wagga","rw":30.44,"ds":35,"type":"smooth"},{"city":"Wodonga","rw":42.82,"ds":28,"type":"smooth"},{"city":"Wollongong","rw":8.42,"ds":24,"type":"smooth"}],"unit_Sep 2025":[{"city":"Adelaide","rw":33.25,"ds":33,"type":"smooth"},{"city":"Albury","rw":97.59,"ds":25,"type":"smooth"},{"city":"Ballarat","rw":83.42,"ds":-5,"type":"smooth"},{"city":"Bendigo","rw":58.32,"ds":9,"type":"smooth"},{"city":"Brisbane","rw":46.4,"ds":48,"type":"smooth"},{"city":"Bunbury","rw":102.29,"ds":31,"type":"workforce"},{"city":"Bundaberg","rw":91.38,"ds":25,"type":"workforce"},{"city":"Cairns","rw":92.85,"ds":32,"type":"workforce"},{"city":"Canberra","rw":68.68,"ds":13,"type":"smooth"},{"city":"Central Coast","rw":27.58,"ds":22,"type":"smooth"},{"city":"Coffs Harbour","rw":25.56,"ds":-15,"type":"smooth"},{"city":"Darwin","rw":123.67,"ds":26,"type":"workforce"},{"city":"Geelong","rw":50.46,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":21,"type":"workforce"},{"city":"Gold Coast","rw":30.63,"ds":29,"type":"smooth"},{"city":"Perth","rw":97.73,"ds":48,"type":"workforce"},{"city":"Sydney","rw":47.31,"ds":26,"type":"smooth"},{"city":"Hobart","rw":40.31,"ds":24,"type":"smooth"},{"city":"Ipswich","rw":44.31,"ds":48,"type":"smooth"},{"city":"Launceston","rw":27.58,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":134.42,"ds":34,"type":"workforce"},{"city":"Melbourne","rw":70.1,"ds":15,"type":"smooth"},{"city":"Mildura","rw":150.0,"ds":22,"type":"smooth"},{"city":"Newcastle","rw":25.0,"ds":0,"type":"smooth"},{"city":"Orange","rw":52.2,"ds":24,"type":"smooth"},{"city":"Port Macquarie","rw":30.4,"ds":25,"type":"smooth"},{"city":"Rockhampton","rw":117.48,"ds":47,"type":"workforce"},{"city":"Rockingham","rw":54.01,"ds":44,"type":"workforce"},{"city":"Sunshine Coast","rw":28.52,"ds":24,"type":"smooth"},{"city":"Tamworth","rw":103.1,"ds":18,"type":"workforce"},{"city":"Toowoomba","rw":33.65,"ds":43,"type":"smooth"},{"city":"Townsville","rw":129.07,"ds":34,"type":"workforce"},{"city":"Wagga Wagga","rw":65.85,"ds":45,"type":"smooth"},{"city":"Wodonga","rw":108.06,"ds":32,"type":"smooth"},{"city":"Wollongong","rw":35.65,"ds":30,"type":"smooth"}],"house_Oct 2025":[{"city":"Adelaide","rw":32.06,"ds":23,"type":"smooth"},{"city":"Albury","rw":35.59,"ds":19,"type":"smooth"},{"city":"Ballarat","rw":58.3,"ds":4,"type":"smooth"},{"city":"Bendigo","rw":47.64,"ds":10,"type":"smooth"},{"city":"Brisbane","rw":36.55,"ds":41,"type":"smooth"},{"city":"Bunbury","rw":55.34,"ds":22,"type":"workforce"},{"city":"Bundaberg","rw":27.29,"ds":20,"type":"workforce"},{"city":"Cairns","rw":85.39,"ds":29,"type":"workforce"},{"city":"Canberra","rw":31.88,"ds":17,"type":"smooth"},{"city":"Central Coast","rw":4.1,"ds":19,"type":"smooth"},{"city":"Coffs Harbour","rw":22.81,"ds":-12,"type":"smooth"},{"city":"Darwin","rw":86.98,"ds":26,"type":"workforce"},{"city":"Geelong","rw":38.82,"ds":-17,"type":"smooth"},{"city":"Gladstone","rw":95.62,"ds":25,"type":"workforce"},{"city":"Gold Coast","rw":14.66,"ds":28,"type":"smooth"},{"city":"Perth","rw":65.5,"ds":41,"type":"workforce"},{"city":"Sydney","rw":1.36,"ds":22,"type":"smooth"},{"city":"Hobart","rw":42.45,"ds":20,"type":"smooth"},{"city":"Ipswich","rw":16.9,"ds":38,"type":"smooth"},{"city":"Launceston","rw":33.73,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":67.63,"ds":29,"type":"workforce"},{"city":"Melbourne","rw":49.56,"ds":16,"type":"smooth"},{"city":"Mildura","rw":42.05,"ds":22,"type":"smooth"},{"city":"Newcastle","rw":0.69,"ds":9,"type":"smooth"},{"city":"Orange","rw":21.24,"ds":14,"type":"smooth"},{"city":"Port Macquarie","rw":25.88,"ds":22,"type":"smooth"},{"city":"Rockhampton","rw":39.12,"ds":37,"type":"workforce"},{"city":"Rockingham","rw":47.9,"ds":37,"type":"workforce"},{"city":"Sunshine Coast","rw":20.18,"ds":19,"type":"smooth"},{"city":"Tamworth","rw":36.92,"ds":18,"type":"workforce"},{"city":"Toowoomba","rw":16.78,"ds":33,"type":"smooth"},{"city":"Townsville","rw":66.24,"ds":29,"type":"workforce"},{"city":"Wagga Wagga","rw":29.15,"ds":29,"type":"smooth"},{"city":"Wodonga","rw":43.96,"ds":27,"type":"smooth"},{"city":"Wollongong","rw":5.3,"ds":23,"type":"smooth"}],"unit_Oct 2025":[{"city":"Adelaide","rw":32.53,"ds":35,"type":"smooth"},{"city":"Albury","rw":97.59,"ds":28,"type":"smooth"},{"city":"Ballarat","rw":84.96,"ds":9,"type":"smooth"},{"city":"Bendigo","rw":69.63,"ds":16,"type":"smooth"},{"city":"Brisbane","rw":43.61,"ds":53,"type":"smooth"},{"city":"Bunbury","rw":100.36,"ds":34,"type":"workforce"},{"city":"Bundaberg","rw":91.09,"ds":29,"type":"workforce"},{"city":"Cairns","rw":89.01,"ds":38,"type":"workforce"},{"city":"Canberra","rw":66.62,"ds":12,"type":"smooth"},{"city":"Central Coast","rw":30.81,"ds":25,"type":"smooth"},{"city":"Coffs Harbour","rw":25.7,"ds":-16,"type":"smooth"},{"city":"Darwin","rw":126.54,"ds":28,"type":"workforce"},{"city":"Geelong","rw":53.45,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":21,"type":"workforce"},{"city":"Gold Coast","rw":30.37,"ds":34,"type":"smooth"},{"city":"Perth","rw":92.79,"ds":52,"type":"workforce"},{"city":"Sydney","rw":46.95,"ds":29,"type":"smooth"},{"city":"Hobart","rw":43.0,"ds":28,"type":"smooth"},{"city":"Ipswich","rw":40.77,"ds":50,"type":"smooth"},{"city":"Launceston","rw":29.82,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":129.41,"ds":36,"type":"workforce"},{"city":"Melbourne","rw":72.19,"ds":16,"type":"smooth"},{"city":"Mildura","rw":142.16,"ds":25,"type":"smooth"},{"city":"Newcastle","rw":24.12,"ds":3,"type":"smooth"},{"city":"Orange","rw":49.97,"ds":24,"type":"smooth"},{"city":"Port Macquarie","rw":25.38,"ds":28,"type":"smooth"},{"city":"Rockhampton","rw":106.44,"ds":49,"type":"workforce"},{"city":"Rockingham","rw":57.65,"ds":49,"type":"workforce"},{"city":"Sunshine Coast","rw":26.55,"ds":28,"type":"smooth"},{"city":"Tamworth","rw":107.72,"ds":20,"type":"workforce"},{"city":"Toowoomba","rw":31.99,"ds":46,"type":"smooth"},{"city":"Townsville","rw":126.9,"ds":35,"type":"workforce"},{"city":"Wagga Wagga","rw":70.99,"ds":42,"type":"smooth"},{"city":"Wodonga","rw":105.04,"ds":32,"type":"smooth"},{"city":"Wollongong","rw":36.23,"ds":32,"type":"smooth"}],"house_Nov 2025":[{"city":"Adelaide","rw":29.77,"ds":23,"type":"smooth"},{"city":"Albury","rw":33.91,"ds":22,"type":"smooth"},{"city":"Ballarat","rw":56.56,"ds":7,"type":"smooth"},{"city":"Bendigo","rw":46.41,"ds":7,"type":"smooth"},{"city":"Brisbane","rw":32.41,"ds":43,"type":"smooth"},{"city":"Bunbury","rw":51.71,"ds":41,"type":"workforce"},{"city":"Bundaberg","rw":24.68,"ds":25,"type":"workforce"},{"city":"Cairns","rw":81.96,"ds":30,"type":"workforce"},{"city":"Canberra","rw":31.15,"ds":20,"type":"smooth"},{"city":"Central Coast","rw":5.58,"ds":18,"type":"smooth"},{"city":"Coffs Harbour","rw":24.14,"ds":-12,"type":"smooth"},{"city":"Darwin","rw":85.49,"ds":36,"type":"workforce"},{"city":"Geelong","rw":38.55,"ds":-3,"type":"smooth"},{"city":"Gladstone","rw":93.91,"ds":24,"type":"workforce"},{"city":"Gold Coast","rw":13.07,"ds":26,"type":"smooth"},{"city":"Perth","rw":63.53,"ds":43,"type":"workforce"},{"city":"Sydney","rw":1.47,"ds":25,"type":"smooth"},{"city":"Hobart","rw":40.82,"ds":17,"type":"smooth"},{"city":"Ipswich","rw":14.94,"ds":38,"type":"smooth"},{"city":"Launceston","rw":32.62,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":66.49,"ds":30,"type":"workforce"},{"city":"Melbourne","rw":49.56,"ds":17,"type":"smooth"},{"city":"Mildura","rw":35.3,"ds":21,"type":"smooth"},{"city":"Newcastle","rw":0.27,"ds":12,"type":"smooth"},{"city":"Orange","rw":20.79,"ds":7,"type":"smooth"},{"city":"Port Macquarie","rw":22.69,"ds":22,"type":"smooth"},{"city":"Rockhampton","rw":35.42,"ds":33,"type":"workforce"},{"city":"Rockingham","rw":47.23,"ds":43,"type":"workforce"},{"city":"Sunshine Coast","rw":16.81,"ds":20,"type":"smooth"},{"city":"Tamworth","rw":30.51,"ds":16,"type":"workforce"},{"city":"Toowoomba","rw":14.95,"ds":38,"type":"smooth"},{"city":"Townsville","rw":63.37,"ds":30,"type":"workforce"},{"city":"Wagga Wagga","rw":26.87,"ds":9,"type":"smooth"},{"city":"Wodonga","rw":44.27,"ds":24,"type":"smooth"},{"city":"Wollongong","rw":9.79,"ds":20,"type":"smooth"}],"unit_Nov 2025":[{"city":"Adelaide","rw":28.77,"ds":33,"type":"smooth"},{"city":"Albury","rw":96.69,"ds":26,"type":"smooth"},{"city":"Ballarat","rw":78.34,"ds":9,"type":"smooth"},{"city":"Bendigo","rw":70.99,"ds":9,"type":"smooth"},{"city":"Brisbane","rw":41.63,"ds":53,"type":"smooth"},{"city":"Bunbury","rw":83.43,"ds":52,"type":"workforce"},{"city":"Bundaberg","rw":87.75,"ds":32,"type":"workforce"},{"city":"Cairns","rw":83.88,"ds":38,"type":"workforce"},{"city":"Canberra","rw":65.14,"ds":16,"type":"smooth"},{"city":"Central Coast","rw":30.74,"ds":22,"type":"smooth"},{"city":"Coffs Harbour","rw":25.77,"ds":-19,"type":"smooth"},{"city":"Darwin","rw":120.88,"ds":38,"type":"workforce"},{"city":"Geelong","rw":54.16,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":20,"type":"workforce"},{"city":"Gold Coast","rw":26.06,"ds":28,"type":"smooth"},{"city":"Perth","rw":90.57,"ds":53,"type":"workforce"},{"city":"Sydney","rw":46.41,"ds":29,"type":"smooth"},{"city":"Hobart","rw":41.72,"ds":22,"type":"smooth"},{"city":"Ipswich","rw":37.51,"ds":48,"type":"smooth"},{"city":"Launceston","rw":35.29,"ds":-20,"type":"smooth"},{"city":"Mackay","rw":128.44,"ds":38,"type":"workforce"},{"city":"Melbourne","rw":69.69,"ds":16,"type":"smooth"},{"city":"Mildura","rw":112.68,"ds":21,"type":"smooth"},{"city":"Newcastle","rw":22.33,"ds":3,"type":"smooth"},{"city":"Orange","rw":49.59,"ds":14,"type":"smooth"},{"city":"Port Macquarie","rw":29.15,"ds":26,"type":"smooth"},{"city":"Rockhampton","rw":89.29,"ds":40,"type":"workforce"},{"city":"Rockingham","rw":54.83,"ds":52,"type":"workforce"},{"city":"Sunshine Coast","rw":22.08,"ds":27,"type":"smooth"},{"city":"Tamworth","rw":113.86,"ds":13,"type":"workforce"},{"city":"Toowoomba","rw":27.28,"ds":48,"type":"smooth"},{"city":"Townsville","rw":124.62,"ds":36,"type":"workforce"},{"city":"Wagga Wagga","rw":68.01,"ds":22,"type":"smooth"},{"city":"Wodonga","rw":99.83,"ds":27,"type":"smooth"},{"city":"Wollongong","rw":37.42,"ds":28,"type":"smooth"}],"house_Dec 2025":[{"city":"Adelaide","rw":25.92,"ds":24,"type":"smooth"},{"city":"Albury","rw":26.23,"ds":21,"type":"smooth"},{"city":"Ballarat","rw":50.42,"ds":10,"type":"smooth"},{"city":"Bendigo","rw":41.91,"ds":5,"type":"smooth"},{"city":"Brisbane","rw":27.58,"ds":42,"type":"smooth"},{"city":"Bunbury","rw":41.17,"ds":39,"type":"workforce"},{"city":"Bundaberg","rw":19.33,"ds":22,"type":"workforce"},{"city":"Cairns","rw":72.02,"ds":30,"type":"workforce"},{"city":"Canberra","rw":28.25,"ds":21,"type":"smooth"},{"city":"Central Coast","rw":3.24,"ds":17,"type":"smooth"},{"city":"Coffs Harbour","rw":22.03,"ds":-6,"type":"smooth"},{"city":"Darwin","rw":75.85,"ds":29,"type":"workforce"},{"city":"Geelong","rw":34.93,"ds":-2,"type":"smooth"},{"city":"Gladstone","rw":81.97,"ds":24,"type":"workforce"},{"city":"Gold Coast","rw":9.16,"ds":25,"type":"smooth"},{"city":"Perth","rw":57.12,"ds":41,"type":"workforce"},{"city":"Sydney","rw":-2.74,"ds":24,"type":"smooth"},{"city":"Hobart","rw":32.46,"ds":16,"type":"smooth"},{"city":"Ipswich","rw":10.81,"ds":34,"type":"smooth"},{"city":"Launceston","rw":28.69,"ds":-8,"type":"smooth"},{"city":"Mackay","rw":60.92,"ds":28,"type":"workforce"},{"city":"Melbourne","rw":43.72,"ds":16,"type":"smooth"},{"city":"Mildura","rw":30.3,"ds":18,"type":"smooth"},{"city":"Newcastle","rw":-3.34,"ds":7,"type":"smooth"},{"city":"Orange","rw":18.36,"ds":11,"type":"smooth"},{"city":"Port Macquarie","rw":15.83,"ds":19,"type":"smooth"},{"city":"Rockhampton","rw":28.79,"ds":36,"type":"workforce"},{"city":"Rockingham","rw":40.31,"ds":41,"type":"workforce"},{"city":"Sunshine Coast","rw":12.67,"ds":19,"type":"smooth"},{"city":"Tamworth","rw":24.63,"ds":16,"type":"workforce"},{"city":"Toowoomba","rw":11.95,"ds":36,"type":"smooth"},{"city":"Townsville","rw":56.92,"ds":28,"type":"workforce"},{"city":"Wagga Wagga","rw":23.92,"ds":10,"type":"smooth"},{"city":"Wodonga","rw":41.13,"ds":20,"type":"smooth"},{"city":"Wollongong","rw":2.86,"ds":24,"type":"smooth"}],"unit_Dec 2025":[{"city":"Adelaide","rw":24.97,"ds":34,"type":"smooth"},{"city":"Albury","rw":91.26,"ds":27,"type":"smooth"},{"city":"Ballarat","rw":73.0,"ds":16,"type":"smooth"},{"city":"Bendigo","rw":69.04,"ds":7,"type":"smooth"},{"city":"Brisbane","rw":36.28,"ds":53,"type":"smooth"},{"city":"Bunbury","rw":69.8,"ds":52,"type":"workforce"},{"city":"Bundaberg","rw":88.86,"ds":28,"type":"workforce"},{"city":"Cairns","rw":75.11,"ds":38,"type":"workforce"},{"city":"Canberra","rw":66.57,"ds":15,"type":"smooth"},{"city":"Central Coast","rw":25.44,"ds":22,"type":"smooth"},{"city":"Coffs Harbour","rw":20.61,"ds":-15,"type":"smooth"},{"city":"Darwin","rw":117.41,"ds":35,"type":"workforce"},{"city":"Geelong","rw":46.66,"ds":-10,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":18,"type":"workforce"},{"city":"Gold Coast","rw":21.41,"ds":29,"type":"smooth"},{"city":"Perth","rw":81.59,"ds":52,"type":"workforce"},{"city":"Sydney","rw":41.47,"ds":27,"type":"smooth"},{"city":"Hobart","rw":39.07,"ds":22,"type":"smooth"},{"city":"Ipswich","rw":31.46,"ds":44,"type":"smooth"},{"city":"Launceston","rw":34.84,"ds":-14,"type":"smooth"},{"city":"Mackay","rw":106.73,"ds":35,"type":"workforce"},{"city":"Melbourne","rw":63.31,"ds":17,"type":"smooth"},{"city":"Mildura","rw":100.36,"ds":20,"type":"smooth"},{"city":"Newcastle","rw":17.46,"ds":8,"type":"smooth"},{"city":"Orange","rw":44.62,"ds":21,"type":"smooth"},{"city":"Port Macquarie","rw":25.98,"ds":24,"type":"smooth"},{"city":"Rockhampton","rw":70.68,"ds":44,"type":"workforce"},{"city":"Rockingham","rw":44.5,"ds":52,"type":"workforce"},{"city":"Sunshine Coast","rw":19.39,"ds":26,"type":"smooth"},{"city":"Tamworth","rw":106.04,"ds":18,"type":"workforce"},{"city":"Toowoomba","rw":23.57,"ds":48,"type":"smooth"},{"city":"Townsville","rw":114.45,"ds":35,"type":"workforce"},{"city":"Wagga Wagga","rw":69.08,"ds":23,"type":"smooth"},{"city":"Wodonga","rw":92.03,"ds":31,"type":"smooth"},{"city":"Wollongong","rw":32.08,"ds":31,"type":"smooth"}],"house_Jan 2026":[{"city":"Adelaide","rw":23.38,"ds":23,"type":"smooth"},{"city":"Albury","rw":23.67,"ds":18,"type":"smooth"},{"city":"Ballarat","rw":47.4,"ds":9,"type":"smooth"},{"city":"Bendigo","rw":38.77,"ds":8,"type":"smooth"},{"city":"Brisbane","rw":20.96,"ds":41,"type":"smooth"},{"city":"Bunbury","rw":35.34,"ds":39,"type":"workforce"},{"city":"Bundaberg","rw":17.27,"ds":22,"type":"workforce"},{"city":"Cairns","rw":65.62,"ds":30,"type":"workforce"},{"city":"Canberra","rw":27.6,"ds":16,"type":"smooth"},{"city":"Central Coast","rw":1.16,"ds":16,"type":"smooth"},{"city":"Coffs Harbour","rw":17.49,"ds":-4,"type":"smooth"},{"city":"Darwin","rw":71.5,"ds":29,"type":"workforce"},{"city":"Geelong","rw":31.8,"ds":-9,"type":"smooth"},{"city":"Gladstone","rw":78.22,"ds":21,"type":"workforce"},{"city":"Gold Coast","rw":7.19,"ds":24,"type":"smooth"},{"city":"Perth","rw":50.94,"ds":41,"type":"workforce"},{"city":"Sydney","rw":-6.48,"ds":21,"type":"smooth"},{"city":"Hobart","rw":29.69,"ds":16,"type":"smooth"},{"city":"Ipswich","rw":7.68,"ds":33,"type":"smooth"},{"city":"Launceston","rw":29.73,"ds":-4,"type":"smooth"},{"city":"Mackay","rw":57.86,"ds":27,"type":"workforce"},{"city":"Melbourne","rw":38.13,"ds":17,"type":"smooth"},{"city":"Mildura","rw":26.83,"ds":20,"type":"smooth"},{"city":"Newcastle","rw":-8.69,"ds":-5,"type":"smooth"},{"city":"Orange","rw":16.29,"ds":12,"type":"smooth"},{"city":"Port Macquarie","rw":14.86,"ds":15,"type":"smooth"},{"city":"Rockhampton","rw":26.68,"ds":36,"type":"workforce"},{"city":"Rockingham","rw":36.2,"ds":40,"type":"workforce"},{"city":"Sunshine Coast","rw":8.44,"ds":16,"type":"smooth"},{"city":"Tamworth","rw":21.71,"ds":11,"type":"workforce"},{"city":"Toowoomba","rw":9.09,"ds":35,"type":"smooth"},{"city":"Townsville","rw":53.6,"ds":26,"type":"workforce"},{"city":"Wagga Wagga","rw":20.25,"ds":7,"type":"smooth"},{"city":"Wodonga","rw":39.15,"ds":20,"type":"smooth"},{"city":"Wollongong","rw":3.49,"ds":22,"type":"smooth"}],"unit_Jan 2026":[{"city":"Adelaide","rw":21.12,"ds":29,"type":"smooth"},{"city":"Albury","rw":87.86,"ds":22,"type":"smooth"},{"city":"Ballarat","rw":68.25,"ds":13,"type":"smooth"},{"city":"Bendigo","rw":58.87,"ds":11,"type":"smooth"},{"city":"Brisbane","rw":31.29,"ds":46,"type":"smooth"},{"city":"Bunbury","rw":73.1,"ds":47,"type":"workforce"},{"city":"Bundaberg","rw":87.13,"ds":27,"type":"workforce"},{"city":"Cairns","rw":67.97,"ds":32,"type":"workforce"},{"city":"Canberra","rw":65.47,"ds":4,"type":"smooth"},{"city":"Central Coast","rw":20.69,"ds":16,"type":"smooth"},{"city":"Coffs Harbour","rw":16.85,"ds":-10,"type":"smooth"},{"city":"Darwin","rw":108.24,"ds":31,"type":"workforce"},{"city":"Geelong","rw":41.98,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":12,"type":"workforce"},{"city":"Gold Coast","rw":18.25,"ds":22,"type":"smooth"},{"city":"Perth","rw":75.12,"ds":48,"type":"workforce"},{"city":"Sydney","rw":39.78,"ds":21,"type":"smooth"},{"city":"Hobart","rw":30.75,"ds":19,"type":"smooth"},{"city":"Ipswich","rw":26.79,"ds":37,"type":"smooth"},{"city":"Launceston","rw":32.84,"ds":-13,"type":"smooth"},{"city":"Mackay","rw":98.9,"ds":30,"type":"workforce"},{"city":"Melbourne","rw":60.76,"ds":13,"type":"smooth"},{"city":"Mildura","rw":94.28,"ds":17,"type":"smooth"},{"city":"Newcastle","rw":14.74,"ds":-4,"type":"smooth"},{"city":"Orange","rw":39.98,"ds":19,"type":"smooth"},{"city":"Port Macquarie","rw":28.8,"ds":14,"type":"smooth"},{"city":"Rockhampton","rw":68.16,"ds":36,"type":"workforce"},{"city":"Rockingham","rw":36.73,"ds":46,"type":"workforce"},{"city":"Sunshine Coast","rw":16.91,"ds":21,"type":"smooth"},{"city":"Tamworth","rw":85.55,"ds":7,"type":"workforce"},{"city":"Toowoomba","rw":20.0,"ds":43,"type":"smooth"},{"city":"Townsville","rw":108.46,"ds":28,"type":"workforce"},{"city":"Wagga Wagga","rw":67.22,"ds":16,"type":"smooth"},{"city":"Wodonga","rw":86.92,"ds":21,"type":"smooth"},{"city":"Wollongong","rw":33.23,"ds":22,"type":"smooth"}],"house_Feb 2026":[{"city":"Adelaide","rw":15.8,"ds":22,"type":"smooth"},{"city":"Albury","rw":14.35,"ds":17,"type":"smooth"},{"city":"Ballarat","rw":37.92,"ds":9,"type":"smooth"},{"city":"Bendigo","rw":30.0,"ds":10,"type":"smooth"},{"city":"Brisbane","rw":12.27,"ds":42,"type":"smooth"},{"city":"Bunbury","rw":26.63,"ds":41,"type":"workforce"},{"city":"Bundaberg","rw":10.97,"ds":22,"type":"workforce"},{"city":"Cairns","rw":56.4,"ds":30,"type":"workforce"},{"city":"Canberra","rw":19.98,"ds":17,"type":"smooth"},{"city":"Central Coast","rw":-7.31,"ds":17,"type":"smooth"},{"city":"Coffs Harbour","rw":7.52,"ds":-2,"type":"smooth"},{"city":"Darwin","rw":60.44,"ds":30,"type":"workforce"},{"city":"Geelong","rw":23.24,"ds":-8,"type":"smooth"},{"city":"Gladstone","rw":67.36,"ds":22,"type":"workforce"},{"city":"Gold Coast","rw":1.35,"ds":25,"type":"smooth"},{"city":"Perth","rw":39.37,"ds":43,"type":"workforce"},{"city":"Sydney","rw":-10.0,"ds":21,"type":"smooth"},{"city":"Hobart","rw":22.79,"ds":17,"type":"smooth"},{"city":"Ipswich","rw":0.81,"ds":31,"type":"smooth"},{"city":"Launceston","rw":23.48,"ds":-4,"type":"smooth"},{"city":"Mackay","rw":48.35,"ds":29,"type":"workforce"},{"city":"Melbourne","rw":28.83,"ds":17,"type":"smooth"},{"city":"Mildura","rw":22.14,"ds":20,"type":"smooth"},{"city":"Newcastle","rw":-10.0,"ds":-4,"type":"smooth"},{"city":"Orange","rw":8.16,"ds":14,"type":"smooth"},{"city":"Port Macquarie","rw":9.26,"ds":17,"type":"smooth"},{"city":"Rockhampton","rw":19.06,"ds":36,"type":"workforce"},{"city":"Rockingham","rw":24.63,"ds":42,"type":"workforce"},{"city":"Sunshine Coast","rw":1.83,"ds":19,"type":"smooth"},{"city":"Tamworth","rw":13.01,"ds":12,"type":"workforce"},{"city":"Toowoomba","rw":1.14,"ds":36,"type":"smooth"},{"city":"Townsville","rw":44.61,"ds":29,"type":"workforce"},{"city":"Wagga Wagga","rw":13.33,"ds":10,"type":"smooth"},{"city":"Wodonga","rw":30.47,"ds":22,"type":"smooth"},{"city":"Wollongong","rw":-6.9,"ds":23,"type":"smooth"}],"house_Mar 2026":[{"city":"Adelaide","rw":29.19,"ds":25,"type":"smooth"},{"city":"Albury","rw":30.63,"ds":19,"type":"smooth"},{"city":"Ballarat","rw":58.11,"ds":15,"type":"smooth"},{"city":"Bendigo","rw":49.40,"ds":13,"type":"smooth"},{"city":"Brisbane","rw":28.13,"ds":46,"type":"smooth"},{"city":"Bunbury","rw":49.21,"ds":43,"type":"workforce"},{"city":"Bundaberg","rw":27.37,"ds":26,"type":"workforce"},{"city":"Cairns","rw":80.64,"ds":32,"type":"workforce"},{"city":"Canberra","rw":36.20,"ds":24,"type":"smooth"},{"city":"Central Coast","rw":4.14,"ds":21,"type":"smooth"},{"city":"Coffs Harbour","rw":17.49,"ds":-1,"type":"smooth"},{"city":"Darwin","rw":78.50,"ds":38,"type":"workforce"},{"city":"Geelong","rw":39.24,"ds":2,"type":"smooth"},{"city":"Gladstone","rw":95.00,"ds":25,"type":"workforce"},{"city":"Gold Coast","rw":16.50,"ds":29,"type":"smooth"},{"city":"Perth","rw":55.81,"ds":46,"type":"workforce"},{"city":"Sydney","rw":2.93,"ds":24,"type":"smooth"},{"city":"Hobart","rw":40.14,"ds":19,"type":"smooth"},{"city":"Ipswich","rw":14.73,"ds":41,"type":"smooth"},{"city":"Launceston","rw":21.71,"ds":-4,"type":"smooth"},{"city":"Mackay","rw":73.10,"ds":29,"type":"workforce"},{"city":"Melbourne","rw":49.52,"ds":18,"type":"smooth"},{"city":"Mildura","rw":43.74,"ds":24,"type":"smooth"},{"city":"Newcastle","rw":-7.32,"ds":13,"type":"smooth"},{"city":"Orange","rw":18.44,"ds":18,"type":"smooth"},{"city":"Port Macquarie","rw":26.79,"ds":20,"type":"smooth"},{"city":"Rockhampton","rw":49.15,"ds":35,"type":"workforce"},{"city":"Rockingham","rw":42.75,"ds":45,"type":"workforce"},{"city":"Sunshine Coast","rw":16.80,"ds":23,"type":"smooth"},{"city":"Tamworth","rw":25.16,"ds":15,"type":"workforce"},{"city":"Toowoomba","rw":17.16,"ds":38,"type":"smooth"},{"city":"Townsville","rw":64.50,"ds":30,"type":"workforce"},{"city":"Wagga Wagga","rw":27.45,"ds":13,"type":"smooth"},{"city":"Wodonga","rw":50.53,"ds":26,"type":"smooth"},{"city":"Wollongong","rw":1.14,"ds":26,"type":"smooth"}],"unit_Mar 2026":[{"city":"Adelaide","rw":29.26,"ds":35,"type":"smooth"},{"city":"Albury","rw":93.09,"ds":24,"type":"smooth"},{"city":"Ballarat","rw":80.70,"ds":23,"type":"smooth"},{"city":"Bendigo","rw":69.41,"ds":20,"type":"smooth"},{"city":"Brisbane","rw":39.58,"ds":57,"type":"smooth"},{"city":"Bunbury","rw":66.79,"ds":52,"type":"workforce"},{"city":"Bundaberg","rw":85.89,"ds":34,"type":"workforce"},{"city":"Cairns","rw":79.92,"ds":39,"type":"workforce"},{"city":"Canberra","rw":78.87,"ds":17,"type":"smooth"},{"city":"Central Coast","rw":27.79,"ds":24,"type":"smooth"},{"city":"Coffs Harbour","rw":21.77,"ds":-4,"type":"smooth"},{"city":"Darwin","rw":113.16,"ds":42,"type":"workforce"},{"city":"Geelong","rw":48.97,"ds":-13,"type":"smooth"},{"city":"Gladstone","rw":130.00,"ds":24,"type":"workforce"},{"city":"Gold Coast","rw":30.71,"ds":29,"type":"smooth"},{"city":"Perth","rw":81.67,"ds":57,"type":"workforce"},{"city":"Sydney","rw":51.04,"ds":27,"type":"smooth"},{"city":"Hobart","rw":43.49,"ds":26,"type":"smooth"},{"city":"Ipswich","rw":29.79,"ds":50,"type":"smooth"},{"city":"Launceston","rw":33.89,"ds":-6,"type":"smooth"},{"city":"Mackay","rw":129.66,"ds":38,"type":"workforce"},{"city":"Melbourne","rw":76.50,"ds":17,"type":"smooth"},{"city":"Mildura","rw":125.88,"ds":27,"type":"smooth"},{"city":"Newcastle","rw":23.63,"ds":7,"type":"smooth"},{"city":"Orange","rw":51.58,"ds":26,"type":"smooth"},{"city":"Port Macquarie","rw":36.84,"ds":26,"type":"smooth"},{"city":"Rockhampton","rw":90.79,"ds":43,"type":"workforce"},{"city":"Rockingham","rw":44.21,"ds":54,"type":"workforce"},{"city":"Sunshine Coast","rw":27.10,"ds":29,"type":"smooth"},{"city":"Tamworth","rw":89.38,"ds":20,"type":"workforce"},{"city":"Toowoomba","rw":21.70,"ds":50,"type":"smooth"},{"city":"Townsville","rw":112.26,"ds":37,"type":"workforce"},{"city":"Wagga Wagga","rw":52.66,"ds":21,"type":"smooth"},{"city":"Wodonga","rw":106.08,"ds":31,"type":"smooth"},{"city":"Wollongong","rw":42.94,"ds":29,"type":"smooth"}],"unit_Feb 2026":[{"city":"Adelaide","rw":14.72,"ds":33,"type":"smooth"},{"city":"Albury","rw":81.71,"ds":24,"type":"smooth"},{"city":"Ballarat","rw":57.07,"ds":15,"type":"smooth"},{"city":"Bendigo","rw":45.9,"ds":17,"type":"smooth"},{"city":"Brisbane","rw":22.9,"ds":51,"type":"smooth"},{"city":"Bunbury","rw":57.79,"ds":53,"type":"workforce"},{"city":"Bundaberg","rw":77.97,"ds":32,"type":"workforce"},{"city":"Cairns","rw":56.08,"ds":36,"type":"workforce"},{"city":"Canberra","rw":59.24,"ds":3,"type":"smooth"},{"city":"Central Coast","rw":13.71,"ds":21,"type":"smooth"},{"city":"Coffs Harbour","rw":9.68,"ds":-8,"type":"smooth"},{"city":"Darwin","rw":98.75,"ds":37,"type":"workforce"},{"city":"Geelong","rw":32.6,"ds":-20,"type":"smooth"},{"city":"Gladstone","rw":150.0,"ds":18,"type":"workforce"},{"city":"Gold Coast","rw":12.03,"ds":27,"type":"smooth"},{"city":"Perth","rw":62.37,"ds":53,"type":"workforce"},{"city":"Sydney","rw":31.83,"ds":23,"type":"smooth"},{"city":"Hobart","rw":23.73,"ds":23,"type":"smooth"},{"city":"Ipswich","rw":14.89,"ds":40,"type":"smooth"},{"city":"Launceston","rw":27.26,"ds":-12,"type":"smooth"},{"city":"Mackay","rw":86.31,"ds":33,"type":"workforce"},{"city":"Melbourne","rw":52.72,"ds":14,"type":"smooth"},{"city":"Mildura","rw":88.46,"ds":25,"type":"smooth"},{"city":"Newcastle","rw":7.34,"ds":-2,"type":"smooth"},{"city":"Orange","rw":31.01,"ds":24,"type":"smooth"},{"city":"Port Macquarie","rw":18.15,"ds":20,"type":"smooth"},{"city":"Rockhampton","rw":75.61,"ds":40,"type":"workforce"},{"city":"Rockingham","rw":27.23,"ds":51,"type":"workforce"},{"city":"Sunshine Coast","rw":9.7,"ds":26,"type":"smooth"},{"city":"Tamworth","rw":73.03,"ds":9,"type":"workforce"},{"city":"Toowoomba","rw":11.78,"ds":47,"type":"smooth"},{"city":"Townsville","rw":94.03,"ds":33,"type":"workforce"},{"city":"Wagga Wagga","rw":40.11,"ds":19,"type":"smooth"},{"city":"Wodonga","rw":78.05,"ds":27,"type":"smooth"},{"city":"Wollongong","rw":25.8,"ds":26,"type":"smooth"}],"house_Apr 2026":[{"city":"Adelaide","rw":27.82,"ds":27,"type":"smooth"},{"city":"Albury","rw":26.90,"ds":20,"type":"smooth"},{"city":"Ballarat","rw":56.81,"ds":17,"type":"smooth"},{"city":"Bendigo","rw":50.40,"ds":13,"type":"smooth"},{"city":"Brisbane","rw":28.13,"ds":50,"type":"smooth"},{"city":"Bunbury","rw":48.33,"ds":44,"type":"workforce"},{"city":"Bundaberg","rw":24.65,"ds":31,"type":"workforce"},{"city":"Cairns","rw":79.09,"ds":35,"type":"workforce"},{"city":"Canberra","rw":35.00,"ds":29,"type":"smooth"},{"city":"Central Coast","rw":3.31,"ds":21,"type":"smooth"},{"city":"Coffs Harbour","rw":14.50,"ds":-2,"type":"smooth"},{"city":"Darwin","rw":74.73,"ds":48,"type":"workforce"},{"city":"Geelong","rw":39.24,"ds":3,"type":"smooth"},{"city":"Gladstone","rw":95.93,"ds":29,"type":"workforce"},{"city":"Gold Coast","rw":15.63,"ds":30,"type":"smooth"},{"city":"Perth","rw":53.37,"ds":50,"type":"workforce"},{"city":"Sydney","rw":6.01,"ds":29,"type":"smooth"},{"city":"Hobart","rw":39.21,"ds":23,"type":"smooth"},{"city":"Ipswich","rw":12.76,"ds":47,"type":"smooth"},{"city":"Launceston","rw":19.03,"ds":2,"type":"smooth"},{"city":"Mackay","rw":70.61,"ds":33,"type":"workforce"},{"city":"Melbourne","rw":52.84,"ds":20,"type":"smooth"},{"city":"Mildura","rw":46.40,"ds":22,"type":"smooth"},{"city":"Newcastle","rw":-4.37,"ds":19,"type":"smooth"},{"city":"Orange","rw":17.65,"ds":20,"type":"smooth"},{"city":"Port Macquarie","rw":24.67,"ds":20,"type":"smooth"},{"city":"Rockhampton","rw":32.32,"ds":44,"type":"workforce"},{"city":"Rockingham","rw":37.65,"ds":49,"type":"workforce"},{"city":"Sunshine Coast","rw":16.34,"ds":24,"type":"smooth"},{"city":"Tamworth","rw":22.28,"ds":14,"type":"workforce"},{"city":"Toowoomba","rw":17.31,"ds":42,"type":"smooth"},{"city":"Townsville","rw":63.30,"ds":31,"type":"workforce"},{"city":"Wagga Wagga","rw":27.08,"ds":15,"type":"smooth"},{"city":"Wodonga","rw":49.66,"ds":29,"type":"smooth"},{"city":"Wollongong","rw":-0.49,"ds":30,"type":"smooth"}],"unit_Apr 2026":[{"city":"Adelaide","rw":28.30,"ds":40,"type":"smooth"},{"city":"Albury","rw":93.09,"ds":26,"type":"smooth"},{"city":"Ballarat","rw":82.16,"ds":27,"type":"smooth"},{"city":"Bendigo","rw":69.41,"ds":19,"type":"smooth"},{"city":"Brisbane","rw":37.15,"ds":62,"type":"smooth"},{"city":"Bunbury","rw":67.97,"ds":59,"type":"workforce"},{"city":"Bundaberg","rw":83.76,"ds":41,"type":"workforce"},{"city":"Cairns","rw":80.88,"ds":44,"type":"workforce"},{"city":"Canberra","rw":78.72,"ds":27,"type":"smooth"},{"city":"Central Coast","rw":30.13,"ds":24,"type":"smooth"},{"city":"Coffs Harbour","rw":28.97,"ds":-11,"type":"smooth"},{"city":"Darwin","rw":113.16,"ds":57,"type":"workforce"},{"city":"Geelong","rw":46.62,"ds":-4,"type":"smooth"},{"city":"Gladstone","rw":130.00,"ds":28,"type":"workforce"},{"city":"Gold Coast","rw":28.05,"ds":32,"type":"smooth"},{"city":"Perth","rw":78.40,"ds":62,"type":"workforce"},{"city":"Sydney","rw":52.49,"ds":33,"type":"smooth"},{"city":"Hobart","rw":44.07,"ds":32,"type":"smooth"},{"city":"Ipswich","rw":23.21,"ds":58,"type":"smooth"},{"city":"Launceston","rw":27.93,"ds":-3,"type":"smooth"},{"city":"Mackay","rw":126.09,"ds":42,"type":"workforce"},{"city":"Melbourne","rw":80.70,"ds":20,"type":"smooth"},{"city":"Mildura","rw":130.00,"ds":30,"type":"smooth"},{"city":"Newcastle","rw":24.59,"ds":11,"type":"smooth"},{"city":"Orange","rw":52.66,"ds":31,"type":"smooth"},{"city":"Port Macquarie","rw":34.22,"ds":27,"type":"smooth"},{"city":"Rockhampton","rw":87.93,"ds":57,"type":"workforce"},{"city":"Rockingham","rw":44.21,"ds":61,"type":"workforce"},{"city":"Sunshine Coast","rw":25.36,"ds":33,"type":"smooth"},{"city":"Tamworth","rw":94.30,"ds":23,"type":"workforce"},{"city":"Toowoomba","rw":21.12,"ds":54,"type":"smooth"},{"city":"Townsville","rw":105.08,"ds":41,"type":"workforce"},{"city":"Wagga Wagga","rw":52.66,"ds":25,"type":"smooth"},{"city":"Wodonga","rw":93.97,"ds":33,"type":"smooth"},{"city":"Wollongong","rw":41.14,"ds":36,"type":"smooth"}]};
+
+// ── MERGE DATA PUSHED FROM THE DEMAND SCORE DASHBOARD ──
+// Pushed months live in localStorage under 'ppt-runway-pushed-data' as:
+//   { "May 2026": { houses:[{city,rw,ds}], units:[{city,rw,ds}], pushedAt } , ... }
+// We merge them into RAW here (before name-rename) so the rest of the pipeline treats
+// them identically to baseline months. Types are inferred from baseline cityTypeMap.
+const PUSH_STORAGE_KEY='ppt-runway-pushed-data';
+(function mergePushedIntoRAW(){
+  let pushed={};
+  try{ pushed=JSON.parse(localStorage.getItem(PUSH_STORAGE_KEY)||'{}')||{}; }catch(e){ pushed={}; }
+  const typeLookup={};
+  Object.values(RAW).flat().forEach(d=>{ if(d&&d.city&&d.type&&!typeLookup[d.city]) typeLookup[d.city]=d.type; });
+  Object.entries(pushed).forEach(([month,payload])=>{
+    if(!payload) return;
+    [['houses','house_'],['units','unit_']].forEach(([grp,pref])=>{
+      const list=payload[grp];
+      if(!Array.isArray(list)) return;
+      RAW[pref+month]=list.filter(r=>r&&r.city).map(r=>({
+        city:String(r.city),
+        rw:Number(r.rw)||0,
+        ds:Number(r.ds)||0,
+        type:typeLookup[r.city]||'smooth'
+      }));
+    });
+  });
+})();
+
+// ── CITY NAME NORMALIZATION ──
+// Standardise names so all months use the same 36 city names
+const CITY_RENAMES={'Sydney':'Greater Sydney','Perth':'Greater Perth','Greater Hobart':'Hobart','Central Coast':'Central Coast (NSW)','Greater Geelong':'Geelong','Greater Bendigo':'Bendigo','Port Macquarie-Hastings':'Port Macquarie','Tamworth Regional':'Tamworth'};
+Object.values(RAW).flat().forEach(d=>{if(CITY_RENAMES[d.city])d.city=CITY_RENAMES[d.city];});
+
+// ── CHART SETUP ──
+const M={top:18,right:110,bottom:52,left:58};
+const W=1060,H=540,iW=W-M.left-M.right,iH=H-M.top-M.bottom;
+const svgEl=document.getElementById('chart');
+svgEl.setAttribute('viewBox',`0 0 ${W} ${H}`);
+const svg=d3.select('#chart');
+
+// Graph background gradient (fafafa bottom → ebfdff top)
+const defs=svg.append('defs');
+const bgGrad=defs.append('linearGradient').attr('id','bgGrad').attr('x1','0').attr('y1','1').attr('x2','0').attr('y2','0');
+bgGrad.append('stop').attr('offset','0%').attr('stop-color','#fafafa');
+bgGrad.append('stop').attr('offset','100%').attr('stop-color','#ebfdff');
+
+const g=svg.append('g').attr('transform',`translate(${M.left},${M.top})`);
+
+// Draw gradient background rect behind everything
+g.append('rect').attr('x',0).attr('y',0).attr('width',iW).attr('height',iH).attr('fill','url(#bgGrad)').attr('rx',4);
+
+Object.values(RAW).flat().forEach(d=>{if(d.rw>130)d.rw=130;if(d.rw<-15)d.rw=-15;});
+const xScale=d3.scaleLinear().domain([-15,135]).range([0,iW]);
+const yScale=d3.scaleLinear().domain([-25,82]).range([iH,0]);
+/* runwayTickMid drives only the x-axis tick LABELS — the dashed
+   centre line and the four coloured quadrant rectangles stay anchored
+   at 60% so the threshold zones keep their meaning. Smooth → 40,
+   Workforce → 70, Select All / Clear → 60. setRunwayAxisMid() below
+   keeps tick POSITIONS locked at [0,20,40,60,80,100,120] (so columns
+   line up with the dashed midpoint at 60%) and just relabels them
+   via tickFormat — the label at the dashed line reads "70%" in
+   Workforce mode, "40%" in Smooth, etc. */
+let runwayTickMid = 60;
+const RUNWAY_MID_DEFAULT = 60;
+const BASE_RUNWAY_TICKS = [0, 20, 40, 60, 80, 100, 120];
+const xMid=xScale(60);
+const yMid=yScale(30);
+const x0=xScale(0);
+const y0=yScale(0);
+
+// Quadrants with new colors
+const Q=g.append('g');
+Q.append('rect').attr('x',0).attr('y',0).attr('width',xMid).attr('height',yMid).attr('fill','rgba(255,213,79,.18)');
+Q.append('rect').attr('x',xMid).attr('y',0).attr('width',iW-xMid).attr('height',yMid).attr('fill','rgba(100,181,246,.2)');
+Q.append('rect').attr('x',0).attr('y',yMid).attr('width',xMid).attr('height',iH-yMid).attr('fill','rgba(229,115,115,.18)');
+Q.append('rect').attr('x',xMid).attr('y',yMid).attr('width',iW-xMid).attr('height',iH-yMid).attr('fill','rgba(129,199,132,.2)');
+
+// Soft grid lines — dark on light background
+[-20,-10,10,20,40,50,60,70,80].forEach(v=>{
+  g.append('line').attr('x1',0).attr('x2',iW).attr('y1',yScale(v)).attr('y2',yScale(v)).attr('stroke','rgba(0,0,0,.06)').attr('stroke-width',1);
+});
+// Demand=30 divider — same weight as other lines, not bold
+g.append('line').attr('x1',0).attr('x2',iW).attr('y1',yMid).attr('y2',yMid).attr('stroke','rgba(0,0,0,.15)').attr('stroke-width',1);
+// Runway=60 divider (dashed) — fixed at 60% regardless of tick-shift mode.
+g.append('line').attr('x1',xMid).attr('x2',xMid).attr('y1',0).attr('y2',iH).attr('stroke','rgba(0,0,0,.12)').attr('stroke-width',1).attr('stroke-dasharray','4,4');
+
+// Solid 0-axis lines — darker to stand out
+g.append('line').attr('id','xZeroLine').attr('x1',x0).attr('x2',x0).attr('y1',0).attr('y2',iH).attr('stroke','rgba(0,0,0,.35)').attr('stroke-width',1.8);
+g.append('line').attr('id','yZeroLine').attr('x1',0).attr('x2',iW).attr('y1',y0).attr('y2',y0).attr('stroke','rgba(0,0,0,.35)').attr('stroke-width',1.8);
+
+// Axes
+const xAxis=d3.axisBottom(xScale).tickValues(BASE_RUNWAY_TICKS.slice()).tickFormat(d=>d+'%').tickSize(-iH);
+const yAxis=d3.axisLeft(yScale).tickValues([-20,-10,0,10,20,30,40,50,60,70,80]).tickSize(-iW);
+const gX=g.append('g').attr('transform',`translate(0,${iH})`).call(xAxis);
+const gY=g.append('g').call(yAxis);
+[gX,gY].forEach(ax=>{
+  ax.selectAll('.domain').attr('stroke','rgba(0,0,0,.12)');
+  ax.selectAll('.tick line').attr('stroke','rgba(0,0,0,.05)');
+  ax.selectAll('.tick text').attr('fill','#555').attr('font-size','10px').attr('font-family','Roboto,sans-serif');
+});
+
+/* Retune ONLY the runway-axis tick LABELS to a new midpoint.
+   Smooth → 40, Workforce → 70, default (Select All / Clear) → 60.
+   The tick positions stay anchored at the default [0,20,40,60,80,
+   100,120] columns so "70%" sits exactly under the dashed centre
+   line at xScale(60), "40%" under the same line for Smooth, etc.
+   Only the displayed text shifts, by (mid - 60). The dashed centre
+   line and four quadrant rectangles also stay fixed at 60%. */
+function setRunwayAxisMid(mid){
+  if(typeof mid!=='number'||!Number.isFinite(mid)) return;
+  runwayTickMid = mid;
+  const shift = mid - RUNWAY_MID_DEFAULT;
+
+  // Tick POSITIONS unchanged; tickFormat adds the shift so the LABEL
+  // at xScale(60) reads "70%" in Workforce mode, "40%" in Smooth, etc.
+  gX.call(
+    d3.axisBottom(xScale)
+      .tickValues(BASE_RUNWAY_TICKS.slice())
+      .tickFormat(d => (d + shift) + '%')
+      .tickSize(-iH)
+  );
+  gX.selectAll('.domain').attr('stroke','rgba(0,0,0,.12)');
+  gX.selectAll('.tick line').attr('stroke','rgba(0,0,0,.05)');
+  gX.selectAll('.tick text').attr('fill','#555').attr('font-size','10px').attr('font-family','Roboto,sans-serif');
+  // Re-apply the secret advisor show/hide state — call() above
+  // rebuilt the tick DOM, wiping any prior style('display','none').
+  // Default (checkbox missing or unchecked) = hidden.
+  const _s = document.getElementById('showRunwayAxis');
+  if(!_s || !_s.checked) gX.selectAll('.tick text').style('display','none');
+}
+
+/* Data-x helper: maps a runway % data value to its pixel position
+   under the *currently displayed* tick label. Since tick positions
+   are fixed but their labels shift by (runwayTickMid - 60), we
+   subtract that same shift from the data value before passing to
+   xScale. So in Smooth mode a city with rw=60.7 lands at xScale(80.7)
+   — under the column now labelled "60.7%". Default mode is identity.
+
+   Clamps to [0, iW] so dots, trail lines, and labels stay inside
+   the chart edges even when the runway value (or the active axis
+   shift) would push them past the runway-axis bounds. Applies to
+   both Demand Dashboard and Live Sheet data. */
+function dataX(rw){
+  const px = xScale(rw - (runwayTickMid - RUNWAY_MID_DEFAULT));
+  return Math.max(0, Math.min(iW, px));
+}
+
+/* Data-y helper: same edge-clamp policy as dataX but for the demand
+   score axis. Pins any dot whose ds is above the top tick (82) or
+   below the bottom tick (-25) to the chart's top/bottom edge instead
+   of rendering off the plot. Applies to both Demand Dashboard and
+   Live Sheet data. */
+function dataY(ds){
+  const py = yScale(ds);
+  return Math.max(0, Math.min(iH, py));
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   V1 / V2 RUNWAY DATA SOURCE
+   ───────────────────────────────────────────────────────────────────
+   V1 (default): runway values come from RAW (the Demand Dashboard
+   feed). The legend stays "Runway - 5 Year Wage Growth | PP
+   Variable Rate: 4.94%".
+
+   V2: runway values for every region are overridden by a single live
+   value from a Google Sheet (the "Wage growth Prediction" / "Wage
+   (Units)" tabs). The legend year + rate also come from the sheet
+   (cells I9/S10 for houses, O9/J10 for units). Trails go vertical
+   in V2 since the sheet only carries one snapshot per region — the
+   x-position is constant across months and only the demand score
+   (y) animates.
+
+   Region naming: the sheet often suffixes names ("Greater Geelong",
+   "Port Macquarie-Hastings"). We do a fuzzy contains-test against
+   the canonical list this tool already uses (Sydney, Melbourne, ...,
+   Wollongong) — sheet names that contain a canonical name match it.
+   "Mandurah" doesn't match anything and is silently dropped.
+
+   Cache: none — every page reload fetches fresh from the Apps
+   Script. Internal-only tool, low traffic, and edits to the sheet
+   should reflect on next reload. The in-memory runwayV2Data still
+   sticks for the duration of a single session so dropdown / tab
+   flips don't trigger redundant fetches mid-session. To pick up
+   sheet edits without touching the cache: reload the page.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Apps Script Web App URL — exposes the "Wage growth Prediction"
+   (houses) and "Wage (Units)" tabs as JSON. Source script lives at
+   /scripts/apps-script-runway-v2.js. */
+const RUNWAY_V2_URL = 'https://script.google.com/macros/s/AKfycbyjcKNRRrKxNiosaAxNBfrXrPdpnkdyM36kg3YlTRPGcCT7K3Mt1dveEqIxfsrEjIA/exec';
+
+let runwayDataMode = 'v1';   // 'v1' | 'v2'
+let runwayV2Data = null;     // { house:{year,rate,regions}, unit:{...} }
+let runwayV2ByName = null;   // { house:{ "Sydney":65.2, ... }, unit:{...} } — keyed by canonical name
+
+/* Default legend values — preserved verbatim for V1 + as fallbacks
+   if a V2 cell is blank. */
+const RUNWAY_V1_LEGEND = { year: 5, rate: 4.94 };
+
+/* Sheet percentage cells come back from Apps Script as decimals
+   (0.0635 for 6.35%, 0.652 for 65.2%). V1 stores values in raw
+   percent form (4.94, 65.2). Normalise to V1's format: if the value
+   looks like a decimal share (≤ 2) multiply by 100; otherwise pass
+   through. Threshold 2 (not 1) gives a small safety margin for cells
+   that are typed in as 1.5 etc. without changing the unit. */
+function _normPercent(v){
+  if(typeof v !== 'number' || !Number.isFinite(v)) return v;
+  return v <= 2 ? v * 100 : v;
+}
+
+/* Read the legend block (year + rate) off the most-recent push from
+   Demand Dashboard. Pushes live under PUSH_STORAGE_KEY as
+   { "May 2026": { houses, units, legend, pushedAt } , ... }; we pick
+   the entry with the latest pushedAt so the chart reflects the
+   freshest macro values regardless of which calendar month they
+   correspond to. Returns the legend object ({ house, unit }) or
+   null if no push has carried legend data yet. */
+function _readPushedLegend(){
+  try {
+    const pushed = JSON.parse(localStorage.getItem(PUSH_STORAGE_KEY) || '{}') || {};
+    let latest = null;
+    Object.values(pushed).forEach(p => {
+      if(!p || !p.pushedAt) return;
+      if(!latest || p.pushedAt > latest.pushedAt) latest = p;
+    });
+    return (latest && latest.legend) ? latest.legend : null;
+  } catch(_) { return null; }
+}
+
+/* Repaint the runway-axis legend with current year/rate values.
+   Past months show just "Runway" — the macro values (wage-growth
+   year + PP variable rate) only apply to the most recent month, so
+   we don't retroactively label April with May's numbers. */
+function applyRunwayLegend(){
+  if(!isLatestMonth()){
+    if(runwayAxisLabel) runwayAxisLabel.text('Runway');
+    return;
+  }
+  let year = RUNWAY_V1_LEGEND.year;
+  let rate = RUNWAY_V1_LEGEND.rate;
+  const tabKey = (typeof activeType !== 'undefined' && activeType === 'unit') ? 'unit' : 'house';
+
+  if(runwayDataMode === 'v2' && runwayV2Data){
+    const block = runwayV2Data[tabKey];
+    if(block){
+      if(typeof block.year === 'number' && Number.isFinite(block.year)) year = block.year;
+      if(typeof block.rate === 'number' && Number.isFinite(block.rate)) rate = _normPercent(block.rate);
+    }
+  } else if(runwayDataMode === 'v1'){
+    // V1 (Demand Dashboard) reads its legend off the most-recent
+    // push from the Demand Score tool. Falls back to the hardcoded
+    // 5 / 4.94 defaults if no push has carried a legend block yet.
+    const pushed = _readPushedLegend();
+    const block = pushed && pushed[tabKey];
+    if(block){
+      if(typeof block.year === 'number' && Number.isFinite(block.year)) year = block.year;
+      if(typeof block.rate === 'number' && Number.isFinite(block.rate)) rate = _normPercent(block.rate);
+    }
+  }
+  // Format rate to 2 dp so 6.35 doesn't appear as 6.350000000000001
+  // when it comes through as 0.0635 * 100.
+  const rateStr = (typeof rate === 'number') ? rate.toFixed(2) : String(rate);
+  if(runwayAxisLabel){
+    runwayAxisLabel.text('Runway - ' + year + ' Year Wage Growth | PP Variable Rate: ' + rateStr + '%');
+  }
+}
+
+/* Build a canonical-name → runway-value lookup from a V2 tab block.
+   sheetRegions is the raw { "Greater Geelong": 53.4, ... } object
+   from the Apps Script. Match rule: sheet entry's normalised name
+   contains the canonical normalised name (case-insensitive). */
+function _buildV2Lookup(sheetRegions){
+  if(!sheetRegions) return {};
+  const out = {};
+  if(typeof allCities === 'undefined') return out;
+  const norm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const sheetEntries = Object.entries(sheetRegions).map(([name, val]) => ({
+    raw: name, n: norm(name), val: Number(val)
+  }));
+  allCities.forEach(canonical => {
+    const cn = norm(canonical);
+    // Prefer an exact match if the sheet has one
+    let hit = sheetEntries.find(e => e.n === cn);
+    if(!hit) hit = sheetEntries.find(e => e.n.includes(cn));
+    if(hit && Number.isFinite(hit.val)) out[canonical] = _normPercent(hit.val);
+  });
+  return out;
+}
+
+/* Lookup helper used by render(): returns the runway value to plot
+   for a given data point. V1 → d.rw unchanged. V2 → sheet override
+   when the region matches, falling back to d.rw if the sheet is
+   missing that region. */
+function getRunwayValue(d){
+  if(runwayDataMode !== 'v2' || !runwayV2ByName) return d.rw;
+  // Live Sheet override only applies to the most recent month —
+  // scrubbing back into archived months should preserve their
+  // historical runway values regardless of the dropdown setting.
+  if(!isLatestMonth()) return d.rw;
+  const tabKey = (typeof activeType !== 'undefined' && activeType === 'unit') ? 'unit' : 'house';
+  const lookup = runwayV2ByName[tabKey];
+  if(lookup && Object.prototype.hasOwnProperty.call(lookup, d.city)){
+    return lookup[d.city];
+  }
+  return d.rw;
+}
+
+async function _fetchRunwayV2(){
+  if(!RUNWAY_V2_URL){
+    console.warn('[runway-v2] no URL configured — V2 will fall back to V1 values');
+    return null;
+  }
+  const res = await fetch(RUNWAY_V2_URL, { cache: 'no-store' });
+  if(!res.ok) throw new Error('runway-v2 fetch ' + res.status);
+  return await res.json();
+}
+
+/* Chart-level loading overlay show/hide. Used by both the Live-Sheet
+   toggle and the refresh button so users get a visible "data is
+   updating" cue regardless of how the fetch was triggered. */
+function showChartLoading(){
+  const el = document.getElementById('chartLoadingOverlay');
+  if(el){ el.classList.add('active'); el.setAttribute('aria-hidden', 'false'); }
+}
+function hideChartLoading(){
+  const el = document.getElementById('chartLoadingOverlay');
+  if(el){ el.classList.remove('active'); el.setAttribute('aria-hidden', 'true'); }
+}
+
+/* Load V2 data on demand. Idempotent — once loaded, subsequent calls
+   return immediately. Errors are swallowed and surfaced as a console
+   warning + a fallback to V1 so the chart never breaks just because
+   the sheet is unreachable. */
+async function ensureRunwayV2Loaded(){
+  if(runwayV2Data) return;
+  try {
+    const data = await _fetchRunwayV2();
+    if(!data) return;
+    runwayV2Data = data;
+    runwayV2ByName = {
+      house: _buildV2Lookup(data.house && data.house.regions),
+      unit:  _buildV2Lookup(data.unit  && data.unit.regions)
+    };
+  } catch(err){
+    console.warn('[runway-v2] load failed:', err);
+  }
+}
+
+/* Toggle handler wired to #runwayDataSelect below.
+   Switching INTO V2 always force-refreshes the sheet — same behaviour
+   as clicking the refresh button — so users get the latest numbers
+   without an extra step. The chart-loading overlay shows during the
+   fetch so the data update is visible. V2→V1 doesn't fetch anything. */
+async function setRunwayDataMode(mode){
+  runwayDataMode = (mode === 'v2') ? 'v2' : 'v1';
+  if(runwayDataMode === 'v2'){
+    runwayV2Data = null;
+    runwayV2ByName = null;
+    showChartLoading();
+    try { await ensureRunwayV2Loaded(); }
+    finally { hideChartLoading(); }
+  }
+  applyRunwayLegend();
+  applyRunwaySrcVisibility();
+  if(typeof render === 'function') render(false);
+}
+
+/* Show/hide the Runway Source dropdown + refresh button based on
+   month + mode. Past months don't get the V2 override (it'd
+   retroactively rewrite history) so the controls disappear; the
+   refresh button is also gated on V2 mode since it's meaningless
+   for V1. The "Runway Source" label hides too — leaving a label
+   with no control reads as an empty UI element. */
+function applyRunwaySrcVisibility(){
+  const latest = isLatestMonth();
+  const sel = document.getElementById('runwayDataSelect');
+  const btn = document.getElementById('runwayRefreshBtn');
+  if(sel) sel.style.display = latest ? '' : 'none';
+  if(btn) btn.style.display = (latest && runwayDataMode === 'v2') ? '' : 'none';
+  if(sel){
+    const grp = sel.closest('.ctrl-group');
+    const lbl = grp ? grp.querySelector(':scope > label') : null;
+    if(lbl) lbl.style.display = latest ? '' : 'none';
+  }
+}
+
+/* Manual cache-bust: drop the in-memory V2 snapshot, refetch, repaint.
+   Called by the refresh button next to the Runway Source dropdown.
+   Wraps the fetch in the chart-loading overlay for the same visual
+   cue as the auto-refresh on V1→V2 toggle. */
+async function refreshRunwayV2(){
+  if(runwayDataMode !== 'v2') return;
+  runwayV2Data = null;
+  runwayV2ByName = null;
+  showChartLoading();
+  try { await ensureRunwayV2Loaded(); }
+  finally { hideChartLoading(); }
+  applyRunwayLegend();
+  if(typeof render === 'function') render(false);
+}
+
+/* Runway axis label — always visible. The content (year + variable
+   rate) is swapped by applyRunwayLegend() when the V1/V2 toggle
+   changes; V1 stays at the hardcoded 5/4.94 default, V2 reads the
+   numbers off the live sheet. */
+const runwayAxisG=g.append('g').attr('id','runwayAxisGroup');
+const runwayAxisLabel=runwayAxisG.append('text').attr('id','runwayAxisLabel').attr('x',iW/2).attr('y',iH+42).attr('text-anchor','middle').attr('fill','#555').attr('font-size','11px').attr('font-family','Roboto,sans-serif').attr('font-weight','600').text('Runway - 5 Year Wage Growth | PP Variable Rate: 4.94%');
+
+g.append('text').attr('transform','rotate(-90)').attr('x',-iH/2).attr('y',-44).attr('text-anchor','middle').attr('fill','#555').attr('font-size','11px').attr('font-family','Roboto,sans-serif').attr('font-weight','600').text('Demand Score');
+
+// Market-type legend — SVG text below the x-axis, lower-left, same typography as "Demand Score".
+const mktLegend = g.append('g').attr('class','mkt-legend').attr('pointer-events','none');
+mktLegend.append('circle').attr('cx',6).attr('cy',iH+42).attr('r',4.5).attr('fill','#000080');
+mktLegend.append('text').attr('x',16).attr('y',iH+42).attr('dominant-baseline','middle').attr('fill','#555').attr('font-size','11px').attr('font-family','Roboto,sans-serif').attr('font-weight','600').text('Smooth Markets');
+mktLegend.append('circle').attr('cx',130).attr('cy',iH+42).attr('r',4.5).attr('fill','#e57373');
+mktLegend.append('text').attr('x',140).attr('y',iH+42).attr('dominant-baseline','middle').attr('fill','#555').attr('font-size','11px').attr('font-family','Roboto,sans-serif').attr('font-weight','600').text('Workforce Markets');
+
+// Right-side rental growth labels
+[{ds:70,t:'10%+'},{ds:50,t:'5%+'},{ds:30,t:'CPI+'},{ds:10,t:'0%'},{ds:-8,t:'-5%'}].forEach(({ds,t})=>{
+  g.append('text').attr('x',iW+7).attr('y',yScale(ds)+4).attr('fill','rgba(0,0,0,.55)').attr('font-size','9.5px').attr('font-family','Roboto,sans-serif').attr('font-weight','600').text(t);
+});
+g.append('text').attr('x',iW+68).attr('y',yScale(30)).attr('transform',`rotate(-90,${iW+68},${yScale(30)})`).attr('text-anchor','middle').attr('fill','#555').attr('font-size','9.5px').attr('font-family','Roboto,sans-serif').attr('font-weight','700').attr('letter-spacing','0.1em').text('Possible Rental Growth');
+
+// Layers
+const trailLayer=g.append('g');
+const dotLayer=g.append('g');
+const labelLayer=g.append('g');
+
+// ── STATE ──
+let activeType='house';
+const BASELINE_MONTHS=['Jan 2025','Feb 2025','Mar 2025','Apr 2025','May 2025','Jun 2025','Jul 2025','Aug 2025','Sep 2025','Oct 2025','Nov 2025','Dec 2025','Jan 2026','Feb 2026','Mar 2026','Apr 2026'];
+const MONTH_ORDER={Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+function _monthKeyToNum(s){const p=(s||'').split(' ');const mi=MONTH_ORDER[p[0]];const y=Number(p[1]);return (Number.isFinite(y)?y:0)*12+(mi==null?0:mi);}
+function _computeMonths(){
+  const all=new Set(BASELINE_MONTHS);
+  Object.keys(RAW).forEach(k=>{const i=k.indexOf('_');if(i>0) all.add(k.slice(i+1));});
+  return [...all].sort((a,b)=>_monthKeyToNum(a)-_monthKeyToNum(b));
+}
+let months=_computeMonths();
+// Default view = the most recent month (rightmost on the timeline) so
+// users land on the freshest data instead of having to scrub forward.
+// Math.max guards against an empty months array even though the
+// baseline set is always populated.
+let currentIdx=Math.max(0, months.length-1), selectedCities=new Set(), playing=false, playTimer=null, showTrail=false;
+
+/* True only when the timeline cursor is on the most recent month.
+   The Live-Sheet override and the full "Runway - N Year Wage Growth |
+   PP Variable Rate: X.XX%" legend only apply to the latest month;
+   past months stay on their archived state with a plain "Runway"
+   legend so we don't retroactively rewrite history with macro values
+   that didn't exist at the time. */
+function isLatestMonth(){
+  return currentIdx >= months.length - 1;
+}
+
+// ── HELPERS ──
+function getData(type,month){return RAW[`${type}_${month}`]||[];}
+
+// All unique city names across all data
+const allCities=[...new Set(Object.values(RAW).flat().map(d=>d.city))].sort();
+// City type lookup — kept per tab so Houses vs Units can classify differently.
+const houseTypeMap={}, unitTypeMap={};
+Object.entries(RAW).forEach(([key,list])=>{
+  const map=key.startsWith('unit_')?unitTypeMap:houseTypeMap;
+  list.forEach(d=>{if(d&&d.city&&!map[d.city])map[d.city]=d.type;});
+});
+// Back-compat alias used elsewhere; resolves against the active tab.
+const cityTypeMap=new Proxy({},{get(_,city){
+  const m=activeType==='unit'?unitTypeMap:houseTypeMap;
+  return m[city]||houseTypeMap[city]||unitTypeMap[city];
+}});
+
+// ── MULTI-SELECT REGION PICKER (feature #1) ──
+function buildRegionList(){
+  const list=document.getElementById('regionList');
+  list.innerHTML='';
+  allCities.forEach(city=>{
+    const row=document.createElement('label');
+    row.className='region-option';
+    const cb=document.createElement('input');
+    cb.type='checkbox'; cb.value=city;
+    cb.addEventListener('change',()=>{
+      if(cb.checked) selectedCities.add(city); else selectedCities.delete(city);
+      updateRegionBtn(); render();
+    });
+    const span=document.createElement('span');
+    span.textContent=city;
+    // Class-based colouring so theme toggles re-style the rows
+    // without re-rendering. CSS picks brand --smooth (#000080) in
+    // light mode and the lighter #6F9AE6 in dark mode where the
+    // navy would vanish on the dark dropdown bg.
+    span.classList.add(cityTypeMap[city]==='workforce'?'rg-opt-workforce':'rg-opt-smooth');
+    row.appendChild(cb); row.appendChild(span);
+    list.appendChild(row);
+  });
+}
+buildRegionList();
+
+function updateRegionBtn(){
+  const btn=document.getElementById('regionBtn');
+  if(selectedCities.size===0) btn.textContent='All Regions';
+  else if(selectedCities.size===1) btn.textContent=[...selectedCities][0];
+  else btn.textContent=`${selectedCities.size} Regions Selected`;
+}
+
+// Toggle dropdown
+const regionBtn=document.getElementById('regionBtn');
+const regionDropdown=document.getElementById('regionDropdown');
+regionBtn.addEventListener('click',e=>{
+  e.stopPropagation();
+  regionBtn.classList.toggle('open');
+  regionDropdown.classList.toggle('open');
+  if(regionDropdown.classList.contains('open')){
+    setTimeout(()=>document.getElementById('regionSearch').focus(),50);
+  }
+});
+document.addEventListener('click',()=>{
+  regionBtn.classList.remove('open');
+  regionDropdown.classList.remove('open');
+  document.getElementById('regionSearch').value='';
+  document.querySelectorAll('#regionList .region-option').forEach(r=>r.style.display='');
+});
+regionDropdown.addEventListener('click',e=>e.stopPropagation());
+
+// Search filter
+document.getElementById('regionSearch').addEventListener('input',function(){
+  const q=this.value.toLowerCase();
+  document.querySelectorAll('#regionList .region-option').forEach(row=>{
+    const name=row.querySelector('span').textContent.toLowerCase();
+    row.style.display=name.includes(q)?'':'none';
+  });
+});
+// Prevent dropdown closing when typing in search
+document.getElementById('regionSearch').addEventListener('click',e=>e.stopPropagation());
+
+document.getElementById('selectAllBtn').addEventListener('click',()=>{
+  allCities.forEach(c=>selectedCities.add(c));
+  regionDropdown.querySelectorAll('input[type=checkbox]').forEach(cb=>cb.checked=true);
+  setRunwayAxisMid(RUNWAY_MID_DEFAULT); // reset to 60% — mixed-market view
+  updateRegionBtn(); render();
+});
+document.getElementById('clearAllBtn').addEventListener('click',()=>{
+  selectedCities.clear();
+  regionDropdown.querySelectorAll('input[type=checkbox]').forEach(cb=>cb.checked=false);
+  setRunwayAxisMid(RUNWAY_MID_DEFAULT); // reset to 60% — neutral view
+  updateRegionBtn(); render();
+});
+
+// ── TIMELINE ──
+function buildTimeline(){
+  const track=document.getElementById('tlTrack');
+  track.innerHTML='';
+  document.getElementById('tlStart').textContent=months[0];
+  document.getElementById('tlEnd').textContent=months[months.length-1];
+  months.forEach((m,i)=>{
+    const tick=document.createElement('div');
+    tick.className='tl-tick'; tick.title=m;
+    tick.addEventListener('click',()=>goTo(i));
+    track.appendChild(tick);
+  });
+  updateTimeline();
+}
+function updateTimeline(){
+  document.querySelectorAll('.tl-tick').forEach((t,i)=>{
+    t.classList.toggle('active',i===currentIdx);
+    t.classList.toggle('past',i<currentIdx);
+  });
+}
+buildTimeline();
+
+// ── TOOLTIP ──
+const tooltip=document.getElementById('tooltip');
+function showTip(event,d){
+  tooltip.innerHTML=`<strong>${d.city}</strong>Runway: ${getRunwayValue(d).toFixed(2)}%<br>Demand Score: ${d.ds}<br>Type: ${d.type==='workforce'?'Workforce Market':'Smooth Market'}`;
+  tooltip.style.opacity='1'; moveTip(event);
+}
+function moveTip(event){
+  const rect=document.querySelector('.chart-wrap').getBoundingClientRect();
+  let x=event.clientX-rect.left+14, y=event.clientY-rect.top-40;
+  if(x+170>rect.width) x=event.clientX-rect.left-180;
+  tooltip.style.left=x+'px'; tooltip.style.top=y+'px';
+}
+function hideTip(){tooltip.style.opacity='0';}
+
+// ── TRAIL DATA ──
+function getTrailData(city,upToIdx,trailLen){
+  const pts=[], start=Math.max(0,upToIdx-trailLen+1);
+  for(let i=start;i<=upToIdx;i++){
+    const d=getData(activeType,months[i]).find(r=>r.city===city);
+    if(d) pts.push({...d,monthIdx:i});
+  }
+  return pts;
+}
+
+// ── RENDER ──
+function render(animate=false){
+  const month=months[currentIdx];
+  const data=getData(activeType,month);
+  const trailLen=parseInt(document.getElementById('trailSelect').value);
+  document.getElementById('monthDisplay').textContent=month;
+  // Sync the in-chart month label to the currently-viewed data month
+  const _chartMl = document.getElementById('chartMonthLabel');
+  if(_chartMl){
+    const _mm = {Jan:'January',Feb:'February',Mar:'March',Apr:'April',May:'May',Jun:'June',Jul:'July',Aug:'August',Sep:'September',Oct:'October',Nov:'November',Dec:'December'};
+    const _parts = month.split(' ');
+    _chartMl.textContent = (_mm[_parts[0]] || _parts[0]) + ' ' + (_parts[1] || '');
+  }
+  updateTimeline();
+
+  const highlight=selectedCities.size>0;
+  const focusCities=highlight?[...selectedCities]:data.map(d=>d.city);
+
+  const trans=d3.transition().duration(animate?750:0).ease(d3.easeCubicInOut);
+
+  // Trails — last point follows the dot in real-time during transition
+  if(showTrail){
+    const line=d3.line().x(d=>dataX(getRunwayValue(d))).y(d=>dataY(d.ds)).curve(d3.curveCatmullRom.alpha(0.5));
+
+    const trailData=focusCities.map(city=>{
+      const pts=getTrailData(city,currentIdx,trailLen);
+      if(pts.length<2) return null;
+      // Previous point = second-to-last (where dot was before this step)
+      const prevPt=getTrailData(city,Math.max(0,currentIdx-1),trailLen);
+      return {city, pts, prevPts:prevPt};
+    }).filter(Boolean);
+
+    const trails=trailLayer.selectAll('path.trail-path').data(trailData,d=>d.city);
+
+    // Enter: draw immediately at current position (no prev to tween from)
+    trails.enter().append('path').attr('class','trail-path')
+      .attr('stroke',d=>d.pts[d.pts.length-1].type==='workforce'?'var(--workforce)':'var(--smooth)')
+      .attr('stroke-width',2).attr('opacity',0.7)
+      .attr('d',d=>line(d.pts));
+
+    // Update: tween the last point from prev→current so it moves with the dot
+    trails.merge(trailLayer.selectAll('path.trail-path'))
+      .attr('stroke',d=>d.pts[d.pts.length-1].type==='workforce'?'var(--workforce)':'var(--smooth)')
+      .transition(trans)
+      .attrTween('d',function(d){
+        const cur=d.pts[d.pts.length-1];
+        const prev=d.prevPts.length>0?d.prevPts[d.prevPts.length-1]:cur;
+        // Fixed history points (all except the last)
+        const historyPts=d.pts.slice(0,-1);
+        const x0=dataX(getRunwayValue(prev)), y0=dataY(prev.ds);
+        const x1=dataX(getRunwayValue(cur)),  y1=dataY(cur.ds);
+        return t=>{
+          const tx=x0+(x1-x0)*t, ty=y0+(y1-y0)*t;
+          // Build pts with interpolated last point
+          const tweenPts=historyPts.map(p=>({px:dataX(getRunwayValue(p)),py:dataY(p.ds)}));
+          tweenPts.push({px:tx,py:ty});
+          return d3.line().x(p=>p.px).y(p=>p.py).curve(d3.curveCatmullRom.alpha(0.5))(tweenPts);
+        };
+      });
+
+    trails.exit().transition(trans).attr('opacity',0).remove();
+  } else {
+    trailLayer.selectAll('path.trail-path').transition(trans).attr('opacity',0).remove();
+  }
+
+  // Dots
+  const dots=dotLayer.selectAll('.city-dot').data(data,d=>d.city);
+  const enterDots=dots.enter().append('circle').attr('class','city-dot')
+    .attr('cx',d=>dataX(getRunwayValue(d))).attr('cy',d=>dataY(d.ds))
+    .attr('r',d=>highlight&&selectedCities.has(d.city)?7:5)
+    .attr('fill',d=>d.type==='workforce'?'var(--workforce)':'var(--smooth)')
+    .attr('opacity',d=>highlight&&!selectedCities.has(d.city)?0.12:0.88)
+    .attr('stroke',d=>highlight&&selectedCities.has(d.city)?'white':'none')
+    .attr('stroke-width',1.5)
+    .on('mouseover',(e,d)=>showTip(e,d)).on('mousemove',e=>moveTip(e)).on('mouseout',()=>hideTip())
+    .on('click',(e,d)=>{
+      if(selectedCities.has(d.city)) selectedCities.delete(d.city); else selectedCities.add(d.city);
+      // sync checkboxes
+      regionDropdown.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+        if(cb.value===d.city) cb.checked=selectedCities.has(d.city);
+      });
+      updateRegionBtn(); render();
+    });
+  dots.merge(enterDots).transition(trans)
+    .attr('cx',d=>dataX(getRunwayValue(d))).attr('cy',d=>dataY(d.ds))
+    .attr('r',d=>highlight&&selectedCities.has(d.city)?7:5)
+    .attr('fill',d=>d.type==='workforce'?'var(--workforce)':'var(--smooth)')
+    .attr('opacity',d=>highlight&&!selectedCities.has(d.city)?0.12:0.88)
+    .attr('stroke',d=>highlight&&selectedCities.has(d.city)?'white':'none');
+  dots.exit().remove();
+
+  // ── ANIMATED LABELS (feature #2) ──
+  const visibleData=highlight ? data.filter(d=>selectedCities.has(d.city)) : data;
+  const charW=5.8, lh=11;
+  const candidates=[[8,-8],[8,16],[-8,-8],[-8,16],[8,-20],[8,28],[-8,-20],[-8,28],[18,-8],[-18,-8],[0,-20],[0,20]];
+  const placed=[];
+
+  // Pre-populate placed with all dot positions so labels won't render on top of dots
+  data.forEach(d=>{
+    const cx=dataX(getRunwayValue(d)), cy=dataY(d.ds);
+    const r=highlight&&selectedCities.has(d.city)?8:6;
+    placed.push({x:cx-r,y:cy+r,w:r*2,h:r*2});
+  });
+
+  // Compute target positions for all visible labels
+  const labelTargets=[];
+  visibleData.forEach(d=>{
+    const cx=dataX(getRunwayValue(d)), cy=dataY(d.ds);
+    const tw=d.city.length*charW;
+    let best=null, bestScore=Infinity;
+    candidates.forEach(([dx,dy])=>{
+      const lx=cx+dx, ly=cy+dy;
+      if(lx<0||lx+tw>iW+20||ly-lh<-10||ly>iH+10) return;
+      let overlap=0;
+      placed.forEach(p=>{
+        const ox=Math.max(0,Math.min(lx+tw,p.x+p.w)-Math.max(lx,p.x));
+        const oy=Math.max(0,Math.min(ly,p.y)-Math.max(ly-lh,p.y-p.h));
+        overlap+=ox*oy;
+      });
+      if(overlap<bestScore){bestScore=overlap;best=[lx,ly,dx,dy];}
+    });
+    if(!best) best=[cx+6,cy-7,6,-7];
+    const [lx,ly]=best;
+    placed.push({x:lx,y:ly,w:tw,h:lh});
+    labelTargets.push({city:d.city,cx,cy,lx,ly,dx:best[2],isSelected:highlight&&selectedCities.has(d.city)});
+  });
+
+  // Animated labels: use D3 enter/update/exit with transition (same as dots)
+  const labels=labelLayer.selectAll('text.city-label').data(labelTargets,d=>d.city);
+  const enterLabels=labels.enter().append('text').attr('class','city-label')
+    .attr('x',d=>d.lx).attr('y',d=>d.ly)
+    .attr('fill',d=>d.isSelected?'#000':'rgba(0,0,0,.65)')
+    .attr('font-weight',d=>d.isSelected?'700':'400')
+    .attr('font-family','Roboto,sans-serif').attr('font-size','10px').attr('pointer-events','none')
+    .text(d=>d.city);
+  labels.merge(enterLabels).transition(trans)
+    .attr('x',d=>d.lx).attr('y',d=>d.ly)
+    .attr('fill',d=>d.isSelected?'#000':'rgba(0,0,0,.65)')
+    .attr('font-weight',d=>d.isSelected?'700':'400');
+  labels.exit().transition(trans).attr('opacity',0).remove();
+
+  // Leader lines (re-draw, no animation needed)
+  labelLayer.selectAll('line.leader').remove();
+  labelTargets.forEach(t=>{
+    const dist=Math.sqrt((t.lx-(t.cx+3))**2+(t.ly-3-(t.cy-3))**2);
+    if(dist>18){
+      labelLayer.insert('line','text').attr('class','leader')
+        .attr('x1',t.cx).attr('y1',t.cy)
+        .attr('x2',t.lx+(t.dx<0?t.city.length*charW:0)).attr('y2',t.ly-3)
+        .attr('stroke','rgba(0,0,0,.2)').attr('stroke-width',0.7).attr('pointer-events','none');
+    }
+  });
+}
+
+function goTo(idx,animate=false){
+  currentIdx=Math.max(0,Math.min(months.length-1,idx));
+  // Legend swaps between full ("Runway - N Year Wage Growth | PP
+  // Variable Rate: X.XX%") and bare ("Runway") depending on whether
+  // the cursor is on the latest month. Same gate hides the Runway
+  // Source dropdown + refresh button on archived months. Repaint
+  // on every move.
+  applyRunwayLegend();
+  applyRunwaySrcVisibility();
+  render(animate);
+}
+
+// ── TABS ──
+document.querySelectorAll('.tab').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active'); activeType=btn.dataset.type;
+    // V2 reads year/rate from per-tab cells, so refresh the legend
+    // whenever House/Unit toggles.
+    applyRunwayLegend();
+    buildRegionList(); render(false);
+  });
+});
+
+// ── CONTROLS ──
+document.getElementById('selectSmoothBtn').addEventListener('click',()=>{
+  const month=months[currentIdx];
+  const key=`${activeType}_${month}`;
+  const data=RAW[key]||[];
+  selectedCities.clear();
+  data.filter(d=>d.type==='smooth').forEach(d=>selectedCities.add(d.city));
+  setRunwayAxisMid(40); // smooth markets typically sit around the 30-50% runway band
+  buildRegionList(); updateRegionBtn(); render();
+});
+document.getElementById('selectWorkforceBtn').addEventListener('click',()=>{
+  const month=months[currentIdx];
+  const key=`${activeType}_${month}`;
+  const data=RAW[key]||[];
+  selectedCities.clear();
+  data.filter(d=>d.type==='workforce').forEach(d=>selectedCities.add(d.city));
+  setRunwayAxisMid(70); // workforce markets typically sit around the 60-80% runway band
+  buildRegionList(); updateRegionBtn(); render();
+});
+document.getElementById('trailVisSelect').addEventListener('change',e=>{showTrail=e.target.value==='show';render();});
+document.getElementById('trailSelect').addEventListener('change',()=>render());
+
+// V1/V2 runway-source toggle
+const _runwaySrcSel = document.getElementById('runwayDataSelect');
+if(_runwaySrcSel){
+  // Always start in Demand Dashboard (V1) on tool entry — saved
+  // preferences are intentionally ignored. Mid-session toggling
+  // still works as expected; only the fresh-load default is forced.
+  _runwaySrcSel.value = 'v1';
+  _runwaySrcSel.addEventListener('change', () => setRunwayDataMode(_runwaySrcSel.value));
+}
+
+// Refresh-from-sheet button — disables itself + spins while fetching
+const _refreshBtn = document.getElementById('runwayRefreshBtn');
+if(_refreshBtn){
+  _refreshBtn.addEventListener('click', async () => {
+    if(_refreshBtn.disabled) return;
+    _refreshBtn.disabled = true;
+    const prev = _refreshBtn.style.opacity || '';
+    _refreshBtn.style.opacity = '0.5';
+    _refreshBtn.style.transform = 'rotate(180deg)';
+    _refreshBtn.style.transition = 'transform .35s ease';
+    try { await refreshRunwayV2(); }
+    finally {
+      _refreshBtn.disabled = false;
+      _refreshBtn.style.opacity = prev;
+      // Reset transform on the next frame so it's ready for the next click
+      setTimeout(() => { _refreshBtn.style.transform = ''; _refreshBtn.style.transition = ''; }, 400);
+    }
+  });
+}
+
+// Secret advisor toggle: tick to SHOW the runway axis tick labels +
+// bottom legend (kept off the visible labelling so non-advisor users
+// don't know it exists). Always starts UNCHECKED (axis hidden) on
+// every tool entry — preferences are not persisted across reloads,
+// so a previously-ticked state from another session won't leak.
+const _showRwAxisCb = document.getElementById('showRunwayAxis');
+if(_showRwAxisCb){
+  function applyShowRunwayAxis(shown){
+    const grp = document.getElementById('runwayAxisGroup');
+    if(grp) grp.style.display = shown ? '' : 'none';
+    gX.selectAll('.tick text').style('display', shown ? '' : 'none');
+  }
+  _showRwAxisCb.checked = false;
+  applyShowRunwayAxis(false);
+  _showRwAxisCb.addEventListener('change', () => {
+    applyShowRunwayAxis(_showRwAxisCb.checked);
+  });
+}
+
+
+// ── PLAYBACK ──
+const playBtn=document.getElementById('playBtn');
+function startPlay(){
+  playing=true; playBtn.textContent='⏸';
+  const speed=parseInt(document.getElementById('speedSelect').value);
+  playTimer=setInterval(()=>{
+    if(currentIdx>=months.length-1){stopPlay();return;}
+    goTo(currentIdx+1,true);
+  },speed);
+}
+function stopPlay(){playing=false;playBtn.textContent='▶';clearInterval(playTimer);}
+playBtn.addEventListener('click',()=>{if(playing){stopPlay();}else{if(currentIdx>=months.length-1)goTo(0);startPlay();}});
+document.getElementById('speedSelect').addEventListener('change',()=>{if(playing){stopPlay();startPlay();}});
+
+/* ── KEYBOARD ARROW NAV ──
+   ← / → step the timeline cursor by one month. Works for every
+   tier (no auth gate — month nav is read-only navigation, same
+   permission level as clicking timeline ticks). Skipped if the
+   user is typing in an input/textarea/select/contenteditable, or
+   if a modifier key (ctrl/alt/meta/shift) is held so we don't
+   collide with browser shortcuts. Pattern matches the region-
+   switcher arrow handler in online-reports.html. */
+document.addEventListener('keydown', ev => {
+  if(ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+  if(ev.ctrlKey || ev.altKey || ev.metaKey || ev.shiftKey) return;
+  const t = ev.target;
+  if(t && (
+    t.tagName === 'INPUT'
+    || t.tagName === 'TEXTAREA'
+    || t.tagName === 'SELECT'
+    || t.isContentEditable
+  )) return;
+  // Stop playback if the user grabs the timeline manually.
+  if(playing) stopPlay();
+  const dir = ev.key === 'ArrowRight' ? 1 : -1;
+  const next = currentIdx + dir;
+  if(next < 0 || next > months.length - 1) return;
+  ev.preventDefault();
+  goTo(next, false);
+});
+
+/* ── KEYBOARD SPACEBAR PLAY/PAUSE ──
+   Space toggles the timeline play button — same as clicking ▶/⏸.
+   Same guards as the arrow handler so typing in an input or
+   pressing Space inside a focused button doesn't double-fire.
+   ev.key 'Space' on older Safari, ' ' (space char) on everyone
+   else — match both. */
+document.addEventListener('keydown', ev => {
+  if(ev.key !== ' ' && ev.key !== 'Space' && ev.code !== 'Space') return;
+  if(ev.ctrlKey || ev.altKey || ev.metaKey || ev.shiftKey) return;
+  const t = ev.target;
+  if(t && (
+    t.tagName === 'INPUT'
+    || t.tagName === 'TEXTAREA'
+    || t.tagName === 'SELECT'
+    || t.tagName === 'BUTTON'  /* button gets default Space-as-click — let native handle */
+    || t.isContentEditable
+  )) return;
+  ev.preventDefault();
+  playBtn.click();
+});
+
+/* ── KEYBOARD LETTER SHORTCUTS ──
+   Bare letter:
+     T → toggle Trail Lines (Show ↔ Hide).
+     L → cycle Trail Length (Last 3 → 6 → All → 3 …).
+     S → cycle Speed (Slow → Normal → Fast → Slow …).
+     C → Clear (clearAllBtn — deselects every region).
+   Shift + letter:
+     Shift+S → "Smooth only" preset (selectSmoothBtn).
+     Shift+W → "Workforce only" preset (selectWorkforceBtn).
+   Modifier-light to match the spacebar play/pause pattern.
+   Standard input / select / button / contenteditable guards
+   keep typing intact. Ctrl+T was tried first for trail
+   visibility but Chrome reserves it for "new tab" — bare
+   letters are the only combo that works reliably. */
+function _runwayCycleSelect(sel) {
+  if(!sel) return;
+  const opts = sel.options;
+  if(!opts || !opts.length) return;
+  const next = (sel.selectedIndex + 1) % opts.length;
+  sel.selectedIndex = next;
+  sel.dispatchEvent(new Event('change'));
+}
+document.addEventListener('keydown', ev => {
+  if(ev.ctrlKey || ev.altKey || ev.metaKey) return;
+  const t = ev.target;
+  if(t && (
+    t.tagName === 'INPUT'
+    || t.tagName === 'TEXTAREA'
+    || t.tagName === 'SELECT'
+    || t.tagName === 'BUTTON'
+    || t.isContentEditable
+  )) return;
+  const k = ev.key;
+  /* Shift+letter → preset filter buttons. ev.key on a shifted
+     letter comes through uppercase, so we match against the
+     capital. */
+  if(ev.shiftKey) {
+    if(k === 'S') {
+      ev.preventDefault();
+      const btn = document.getElementById('selectSmoothBtn');
+      if(btn) btn.click();
+    } else if(k === 'W') {
+      ev.preventDefault();
+      const btn = document.getElementById('selectWorkforceBtn');
+      if(btn) btn.click();
+    }
+    return;
+  }
+  /* Bare letters (no shift) → trail / speed controls. */
+  if(k === 't' || k === 'T') {
+    /* Trail visibility is binary, so a flat flip reads cleaner
+       than _runwayCycleSelect — also keeps the show/hide value
+       contract explicit. */
+    ev.preventDefault();
+    const sel = document.getElementById('trailVisSelect');
+    if(!sel) return;
+    sel.value = (sel.value === 'show') ? 'hide' : 'show';
+    sel.dispatchEvent(new Event('change'));
+  } else if(k === 'l' || k === 'L') {
+    ev.preventDefault();
+    _runwayCycleSelect(document.getElementById('trailSelect'));
+  } else if(k === 's' || k === 'S') {
+    ev.preventDefault();
+    _runwayCycleSelect(document.getElementById('speedSelect'));
+  } else if(k === 'c' || k === 'C') {
+    /* Maps directly to the in-UI "Clear" button — deselects
+       every region (no dots on the chart). User can re-build
+       a selection from there or hit Shift+S / Shift+W to jump
+       to a preset. */
+    ev.preventDefault();
+    const btn = document.getElementById('clearAllBtn');
+    if(btn) btn.click();
+  }
+});
+
+render(false);
+// Initial legend paint — currentIdx defaults to the latest month
+// so this puts the full "Runway - N Year Wage Growth | PP Variable
+// Rate: X.XX%" text in place. (If currentIdx were ever 0 / a past
+// month at boot, the helper would short-circuit to plain "Runway".)
+applyRunwayLegend();
+applyRunwaySrcVisibility();
+
+// ── SYNC MARKET TYPES FROM PROPERTY CLOCK (Supabase) ──
+// Property Clock is the source of truth for smooth/workforce classification.
+// After the initial render, fetch the clock state and override local types so
+// a region flipped on the clock recolours here too.
+(function syncTypesFromClock(){
+  // Normalise city names across the two datasets (clock uses uppercase and no
+  // "Greater "/"(NSW)" modifiers; runway uses mixed case with those suffixes).
+  function canon(s){
+    return String(s||'')
+      .toUpperCase()
+      .replace(/^GREATER\s+/,'')
+      .replace(/\s*\(NSW\)\s*$/,'')
+      .replace(/[-\s]+/g,' ')
+      .trim();
+  }
+  if(!window.sb){ scheduleOverlayHide(); return; }
+  window.sb.from('clock_state').select('payload').eq('id', 1).single()
+    .then(({ data, error })=>{
+      if(error) throw error;
+      const state = data && data.payload;
+      if(!state){ scheduleOverlayHide(); return; }
+      const houseClockMap={}, unitClockMap={};
+      (Array.isArray(state.houses)?state.houses:[]).forEach(r=>{
+        if(r&&r.name&&r.type) houseClockMap[canon(r.name)]=r.type;
+      });
+      (Array.isArray(state.units)?state.units:[]).forEach(r=>{
+        if(r&&r.name&&r.type) unitClockMap[canon(r.name)]=r.type;
+      });
+      if(!Object.keys(houseClockMap).length && !Object.keys(unitClockMap).length) return;
+      let changed=false;
+      Object.entries(RAW).forEach(([key,list])=>{
+        const isUnit=key.startsWith('unit_');
+        const map=isUnit?unitClockMap:houseClockMap;
+        list.forEach(d=>{
+          const t=map[canon(d.city)];
+          if(t && t!==d.type){ d.type=t; changed=true; }
+        });
+      });
+      if(!changed) return;
+      // Rebuild the per-tab type maps from the updated RAW entries
+      Object.keys(houseTypeMap).forEach(k=>delete houseTypeMap[k]);
+      Object.keys(unitTypeMap).forEach(k=>delete unitTypeMap[k]);
+      Object.entries(RAW).forEach(([key,list])=>{
+        const map=key.startsWith('unit_')?unitTypeMap:houseTypeMap;
+        list.forEach(d=>{if(d&&d.city&&!map[d.city])map[d.city]=d.type;});
+      });
+      buildRegionList();
+      render(false);
+    })
+    .catch(e=>{ console.warn('Clock type sync failed:',e); })
+    .finally(()=>{ scheduleOverlayHide(); });
+})();
+
+/* ═══ Live-data loading overlay control ═══
+   Overlay is visible by default in the HTML so it paints with the
+   page. T0 captured at script-eval time so elapsed measurement
+   starts close to when the user picked the tool. The clock-type
+   sync's .finally() above hides it (success + failure both route
+   through). Min LIVE_OVERLAY_MIN_MS visible so the animation
+   doesn't flash on a fast resolve. */
+const LIVE_OVERLAY_MIN_MS = 3000;
+const LIVE_OVERLAY_T0 = Date.now();
+function hideLiveLoadingOverlay(){
+  const ov = document.getElementById('live-loading-overlay');
+  if (ov) ov.classList.add('hidden');
+}
+function scheduleOverlayHide(){
+  const elapsed = Date.now() - LIVE_OVERLAY_T0;
+  const remaining = Math.max(0, LIVE_OVERLAY_MIN_MS - elapsed);
+  if (remaining === 0) hideLiveLoadingOverlay();
+  else setTimeout(hideLiveLoadingOverlay, remaining);
+}
+
+/* Re-shows the loading overlay with a "Returning to Hub" message
+   and navigates after the fade-in completes. Reuses the existing
+   .live-loading-overlay element so the visual matches the inbound
+   transition. */
+function navigateToHub(){
+  const ov = document.getElementById('live-loading-overlay');
+  if (ov){
+    const head = ov.querySelector('.live-loading-region');
+    const sub  = ov.querySelector('.live-loading-sub');
+    if (head) head.textContent = 'Returning to Hub';
+    if (sub)  sub.textContent  = 'Loading hub';
+    ov.classList.remove('hidden');
+  }
+  setTimeout(() => { location.href = '../index.html'; }, 450);
+}
+
+/* Defensive 30 s fallback — hides the overlay even if the clock-
+   sync fetch never resolves (network entirely dead etc.). */
+setTimeout(hideLiveLoadingOverlay, 30000);
+
+
+/* ═══ RUNWAY HD PDF / JPEG EXPORT ═══ */
+/* ═══ RUNWAY HD PDF EXPORT (Tier 1 only) ═══
+   Captures the runway chart wrapper at scale:4 (PNG) and saves as landscape A4.
+   Filename includes current tab (House/Unit) and current month. */
+async function exportRunwayPDF(){
+  if(typeof isViewOnly==='function' && isViewOnly()){
+    if(typeof toast==='function') toast('HD PDF download is not available for viewer accounts.');
+    else alert('HD PDF download is not available for viewer accounts.');
+    return;
+  }
+  const overlay=document.getElementById('pdf-overlay');
+  const msgEl=overlay?overlay.querySelector('.pdf-msg'):null;
+  if(msgEl) msgEl.textContent='Generating HD PDF...';
+  if(overlay) overlay.classList.add('show');
+  await new Promise(r=>setTimeout(r,80));
+  try{
+    const el=document.querySelector('#runwayView .chart-wrap');
+    if(!el) throw new Error('Chart not found');
+    const scaleF=4;
+    const canvas=await html2canvas(el,{scale:scaleF,useCORS:true,backgroundColor:'#f4f6fa',logging:false});
+    const{jsPDF}=window.jspdf;
+    const pdf=new jsPDF({orientation:'landscape',unit:'mm',format:'a4',compress:false});
+    const PW=297,PH=210,margin=8;
+    const aW=PW-margin*2,aH=PH-margin*2;
+    const iW=canvas.width/scaleF*25.4/96, iH=canvas.height/scaleF*25.4/96;
+    const sc=Math.min(aW/iW,aH/iH,1);
+    const dataUrl=canvas.toDataURL('image/png');
+    pdf.addImage(dataUrl,'PNG',margin+(aW-iW*sc)/2,margin+(aH-iH*sc)/2,iW*sc,iH*sc,undefined,'SLOW');
+    const tag=(typeof activeType!=='undefined')?activeType:'chart';
+    const month=(typeof months!=='undefined'&&typeof currentIdx!=='undefined')?months[currentIdx].replace(' ','-'):'';
+    pdf.save('Runway-v-Demand-'+tag.charAt(0).toUpperCase()+tag.slice(1)+(month?'-'+month:'')+'-HD.pdf');
+    if(typeof toast==='function') toast('HD PDF downloaded!');
+  }catch(err){
+    console.error(err);
+    alert('PDF failed - please try again.');
+  }finally{
+    if(overlay) overlay.classList.remove('show');
+    if(msgEl) msgEl.textContent='Generating PDF...';
+  }
+}
+
+/* ═══ RUNWAY HD JPEG EXPORT (Tier 1 only) ═══
+   Captures the runway chart wrapper at scale:3 as a JPEG (quality 0.95).
+   Output is ~3360px wide — ideal for 4K presentations while staying
+   email-friendly. Filename includes current tab and month. */
+async function exportRunwayJPEG(){
+  if(typeof isViewOnly==='function' && isViewOnly()){
+    if(typeof toast==='function') toast('HD JPEG download is not available for viewer accounts.');
+    else alert('HD JPEG download is not available for viewer accounts.');
+    return;
+  }
+  const overlay=document.getElementById('pdf-overlay');
+  const msgEl=overlay?overlay.querySelector('.pdf-msg'):null;
+  if(msgEl) msgEl.textContent='Generating HD JPEG...';
+  if(overlay) overlay.classList.add('show');
+  await new Promise(r=>setTimeout(r,80));
+  try{
+    const el=document.querySelector('#runwayView .chart-wrap');
+    if(!el) throw new Error('Chart not found');
+    const scaleF=3;
+    const canvas=await html2canvas(el,{scale:scaleF,useCORS:true,backgroundColor:'#ffffff',logging:false});
+    const dataUrl=canvas.toDataURL('image/jpeg',0.95);
+    const tag=(typeof activeType!=='undefined')?activeType:'chart';
+    const month=(typeof months!=='undefined'&&typeof currentIdx!=='undefined')?months[currentIdx].replace(' ','-'):'';
+    const filename='Runway-v-Demand-'+tag.charAt(0).toUpperCase()+tag.slice(1)+(month?'-'+month:'')+'-HD.jpg';
+    const a=document.createElement('a');
+    a.href=dataUrl;
+    a.download=filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    if(typeof toast==='function') toast('HD JPEG downloaded!');
+  }catch(err){
+    console.error(err);
+    alert('JPEG failed - please try again.');
+  }finally{
+    if(overlay) overlay.classList.remove('show');
+    if(msgEl) msgEl.textContent='Generating PDF...';
+  }
+}
+
+
+
+/* ═══ MANAGE PUSHED MONTHS (Tier 0 / Tier 1 only) ═══
+   Lets admins remove a month that was pushed from the Demand Score
+   Dashboard — useful if a push happened prematurely (e.g. clicked "Push"
+   early in May while the sheet still held April data). Baseline months
+   cannot be deleted here; only entries under PUSH_STORAGE_KEY. */
+function _listPushedMonths(){
+  let pushed={};
+  try{ pushed=JSON.parse(localStorage.getItem(PUSH_STORAGE_KEY)||'{}')||{}; }catch(e){ pushed={}; }
+  return Object.keys(pushed).sort((a,b)=>_monthKeyToNum(a)-_monthKeyToNum(b));
+}
+
+function _deletePushedMonth(key){
+  let pushed={};
+  try{ pushed=JSON.parse(localStorage.getItem(PUSH_STORAGE_KEY)||'{}')||{}; }catch(e){ pushed={}; }
+  if(!(key in pushed)) return false;
+  // Remember what the user was viewing, so if we delete an earlier month
+  // we can re-anchor currentIdx on the same month label afterwards.
+  const wasViewing = months[currentIdx];
+  delete pushed[key];
+  try{ localStorage.setItem(PUSH_STORAGE_KEY, JSON.stringify(pushed)); }catch(e){ return false; }
+  // Remove from the live RAW so the chart stops showing that month immediately.
+  delete RAW['house_'+key];
+  delete RAW['unit_'+key];
+  // Rebuild timeline from the new month set, re-anchor currentIdx, re-render.
+  months = _computeMonths();
+  const reIdx = months.indexOf(wasViewing);
+  currentIdx = reIdx >= 0 ? reIdx : Math.min(Math.max(currentIdx,0), months.length-1);
+  buildTimeline();
+  if(typeof render==='function') render();
+  return true;
+}
+
+function openManageMonthsModal(){
+  const existing=document.getElementById('rw-manage-modal');
+  if(existing) existing.remove();
+
+  function makeRow(key){
+    const row=document.createElement('div');
+    row.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.02);margin-bottom:6px';
+    const label=document.createElement('div');
+    label.style.cssText='display:flex;flex-direction:column;gap:2px';
+    const title=document.createElement('div');
+    title.textContent=key;
+    title.style.cssText='font-weight:700;color:var(--text);font-size:13px;letter-spacing:.02em';
+    const meta=document.createElement('div');
+    meta.style.cssText='font-size:10.5px;color:var(--muted)';
+    let houseCt=0, unitCt=0;
+    try{
+      const pushed=JSON.parse(localStorage.getItem(PUSH_STORAGE_KEY)||'{}')||{};
+      houseCt=(pushed[key]&&pushed[key].houses||[]).length;
+      unitCt=(pushed[key]&&pushed[key].units||[]).length;
+      const pushedAt=pushed[key]&&pushed[key].pushedAt;
+      if(pushedAt){
+        const d=new Date(pushedAt);
+        if(!isNaN(d.getTime())){
+          meta.textContent=houseCt+' houses · '+unitCt+' units · pushed '+d.toLocaleString();
+        } else {
+          meta.textContent=houseCt+' houses · '+unitCt+' units';
+        }
+      } else {
+        meta.textContent=houseCt+' houses · '+unitCt+' units';
+      }
+    }catch(e){ meta.textContent='—'; }
+    label.appendChild(title); label.appendChild(meta);
+    const del=document.createElement('button');
+    del.type='button';
+    del.textContent='Delete';
+    del.style.cssText='background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.45);color:#ef4444;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;font-family:inherit';
+    del.addEventListener('mouseenter',()=>del.style.background='rgba(239,68,68,.22)');
+    del.addEventListener('mouseleave',()=>del.style.background='rgba(239,68,68,.12)');
+    del.addEventListener('click',()=>{
+      if(!confirm('Delete pushed data for '+key+' from Runway v Demand?\n\nThis only removes the pushed entry — baseline months are never affected.')) return;
+      const ok=_deletePushedMonth(key);
+      if(ok){
+        row.remove();
+        // Refresh the modal (empty-state, etc.)
+        openManageMonthsModal();
+      } else {
+        alert('Could not delete. Try again.');
+      }
+    });
+    row.appendChild(label); row.appendChild(del);
+    return row;
+  }
+
+  const pushedKeys=_listPushedMonths();
+
+  const modal=document.createElement('div');
+  modal.id='rw-manage-modal';
+  modal.style.cssText='position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center';
+
+  const backdrop=document.createElement('div');
+  backdrop.style.cssText='position:absolute;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(4px)';
+  backdrop.addEventListener('click',()=>modal.remove());
+
+  const panel=document.createElement('div');
+  panel.style.cssText='position:relative;background:var(--panel);border:1px solid var(--border);border-radius:14px;width:520px;max-width:92vw;max-height:80vh;overflow:auto;padding:24px 26px;box-shadow:0 20px 60px rgba(0,0,0,.6);font-family:Roboto,sans-serif';
+
+  const header=document.createElement('div');
+  header.style.cssText='display:flex;align-items:center;gap:12px;margin-bottom:4px';
+  header.innerHTML='<div style="width:38px;height:38px;border-radius:10px;background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.4);color:#fbbf24;display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></div><div><div style="font-size:16px;font-weight:800;color:#fff">Manage Pushed Months</div><div style="font-size:11px;color:var(--muted);margin-top:2px;letter-spacing:.04em">Remove a month pushed from the Demand Score Dashboard</div></div>';
+  panel.appendChild(header);
+
+  const hint=document.createElement('div');
+  hint.style.cssText='font-size:12px;color:var(--muted);line-height:1.55;margin:14px 0 16px';
+  hint.textContent='Baseline months (Jan 2025 – Apr 2026) are built into the chart and cannot be deleted here. Only pushes made from the Demand Score Dashboard appear below.';
+  panel.appendChild(hint);
+
+  const list=document.createElement('div');
+  if(pushedKeys.length===0){
+    const empty=document.createElement('div');
+    empty.style.cssText='padding:22px 12px;text-align:center;color:var(--muted);border:1px dashed var(--border);border-radius:10px;font-size:13px';
+    empty.textContent='No pushed months yet. Push from the Demand Score Dashboard to add one.';
+    list.appendChild(empty);
+  } else {
+    pushedKeys.forEach(k=>list.appendChild(makeRow(k)));
+  }
+  panel.appendChild(list);
+
+  const footer=document.createElement('div');
+  footer.style.cssText='display:flex;justify-content:flex-end;margin-top:18px';
+  const closeBtn=document.createElement('button');
+  closeBtn.type='button';
+  closeBtn.textContent='Close';
+  closeBtn.style.cssText='background:transparent;border:1px solid var(--border);color:var(--muted);padding:10px 18px;border-radius:8px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:700';
+  closeBtn.addEventListener('click',()=>modal.remove());
+  footer.appendChild(closeBtn);
+  panel.appendChild(footer);
+
+  modal.appendChild(backdrop);
+  modal.appendChild(panel);
+  document.body.appendChild(modal);
+}
+
+// Show the Manage Pushed Months button to Tier 0 (dev) / Tier 1 (admin)
+// users only. Auth helpers live in ../shared/auth.js which is loaded above
+// this script. getAccessLevel() reflects the dev's "view as" tier — so a
+// dev previewing Tier 2 will correctly see the button hidden.
+(function showManageBtnIfAdmin(){
+  function apply(){
+    try{
+      const btn=document.getElementById('runwayManageBtn');
+      if(!btn) return;
+      const admin = (typeof isAdmin==='function' && isAdmin());
+      btn.style.display = admin ? '' : 'none';
+    }catch(e){}
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded', apply);
+  } else {
+    apply();
+  }
+})();
+
+/* ═══ COPYRIGHT YEAR ═══ */
+/* ═══ CHART COPYRIGHT YEAR ═══
+   Month label is driven by render() (follows currentIdx / the data month
+   being viewed). Only the copyright year needs a live updater — it reflects
+   the current calendar year, not the data year. */
+function updateChartCopyrightYear(){
+  const cr = document.getElementById('chartCopyright');
+  if(cr) cr.textContent = '© ' + new Date().getFullYear() + ' PPA Services Pty Ltd';
+}
+try{ updateChartCopyrightYear(); }catch(e){}
+document.addEventListener('DOMContentLoaded', updateChartCopyrightYear);
+
+
+</script>
+</body>
+</html>

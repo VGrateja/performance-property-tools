@@ -1,0 +1,2546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Performance Property — Analytics Hub</title>
+<link rel="icon" href="assets/logo.png" type="image/png"/>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,600;1,700;1,800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="shared/supabase-client.js"></script>
+<link rel="stylesheet" href="shared/common.css"/>
+
+<!-- Pre-paint auth check. Runs synchronously in <head> BEFORE the
+     body parses, so we can mark the page as already-authed before
+     any pixels are painted. Without this, navigating back to the
+     hub from a tool on an existing session would briefly flash the
+     login screen during the few frames between body parse and the
+     end-of-page auth-check script. The CSS rules immediately below
+     consume the html.is-authed class to hide #loginScreen and
+     reveal #mainPage instantly. -->
+<script>
+  try {
+    if (sessionStorage.getItem('pp_auth') === '1') {
+      document.documentElement.classList.add('is-authed');
+    }
+  } catch (e) { /* sessionStorage blocked — fall through to login */ }
+</script>
+<script src="shared/theme.js"></script>
+<style>
+  /* Hide login + reveal main instantly when the pre-paint auth
+     script set html.is-authed. The end-of-page showMain() still
+     runs and adds body.on-hub for the reveal animation; this just
+     prevents the visual flash before that script is reached. */
+  html.is-authed #loginScreen { display: none !important; }
+  html.is-authed #mainPage    { display: flex !important; }
+</style>
+</head>
+<body>
+
+<!-- ══════════ LOGIN ══════════ -->
+
+<!-- Celestial Corner theme toggle styles — login-only, self-contained.
+     The whole quadrant is the click target; SVG handles visuals; CSS
+     drives the idle + hover animations. Replaces the small round
+     pp-theme-toggle-login button that lived here previously. -->
+<style>
+  /* Vignette backdrop behind the sun — light-mode only. Adds a
+     soft warm-dark tint at the sun's visual centre that fades
+     smoothly outward to transparent so the page bg shows through
+     by the time the eye reaches the rest of the screen. Two jobs:
+       1. The warm sun pops against a darker substrate (instead of
+          getting washed out by the cream-light login bg).
+       2. The amber far-field motes (.cel-sun-far) read clearly
+          against the slightly-darker mid-range fade — they were
+          previously dissolving into the cream bg.
+     Was a 520×520 fixed box, but its hard left/bottom edges left a
+     visible "tint boundary" against the page bg even at very low
+     alpha. Stretched to the full viewport (inset:0) so there are
+     no box edges to see — the only colour boundary is the gradient
+     itself, which fades to fully transparent inside the visible
+     fall-off radius. Centre offset 70 px from the right edge + 70
+     px down sits directly behind the sun's disc (which lives at
+     SVG (170, 70) inside the 240×240 toggle pinned top:0;right:0).
+     Hidden in dark mode (the moon already contrasts against dark slate). */
+  .pp-celestial-backdrop{
+    position:fixed; inset:0;
+    pointer-events:none;
+    z-index:4;     /* above bg orbs, below the celestial toggle (z:5) */
+    display:none;
+  }
+  [data-theme="light"] .pp-celestial-backdrop{
+    display:block;
+    background:radial-gradient(
+      circle at calc(100% - 70px) 70px,
+      rgba(50, 35, 18, 0.30) 0px,
+      rgba(50, 35, 18, 0.26) 80px,
+      rgba(50, 35, 18, 0.20) 160px,
+      rgba(50, 35, 18, 0.14) 240px,
+      rgba(50, 35, 18, 0.09) 330px,
+      rgba(50, 35, 18, 0.05) 430px,
+      rgba(50, 35, 18, 0.02) 540px,
+      rgba(50, 35, 18, 0)    680px
+    );
+  }
+
+  .pp-celestial-toggle{
+    position:fixed; top:0; right:0;
+    width:240px; height:240px;
+    background:transparent; border:none; padding:0;
+    cursor:pointer;
+    z-index:5; /* above bg orbs (z:1-2), below modals (z:9000+) */
+    overflow:hidden;
+  }
+  .pp-celestial-toggle:focus{ outline:none }
+  .pp-celestial-toggle:focus-visible{
+    outline:2px solid rgba(255,216,107,0.5);
+    outline-offset:-4px;
+    border-radius:8px;
+  }
+  .pp-celestial-svg{ width:100%; height:100%; display:block }
+
+  /* Sun shows in LIGHT mode, moon in DARK (default). Cross-fade via opacity.
+     Both bodies are now centred at (170, 70) in their 240×240 SVG box —
+     fully visible, no longer corner-cropped. The transform-origin is set
+     to that centre so the click-swap rotate/scale animations pivot from
+     the body's visual centre. */
+  .cel-sun, .cel-moon{ transition:opacity .55s ease }
+  .cel-sun{ opacity:0; transform-origin:170px 70px }
+  .cel-moon{ opacity:1; transform-origin:170px 70px }
+  [data-theme="light"] .cel-sun{ opacity:1 }
+  [data-theme="light"] .cel-moon{ opacity:0 }
+
+  /* ─── Click-swap animation ───
+     On click, the visible body does a quick exit (shrink + spin
+     toward its anchor while fading), and the other body enters
+     with a counter-spin scale-up. JS adds .cel-sun-out (sun is
+     leaving) or .cel-moon-out (moon is leaving) before flipping
+     the theme, so the keyframes know which side is in/out
+     regardless of when data-theme actually changes mid-animation. */
+  .pp-celestial-toggle.cel-flipping .cel-sun,
+  .pp-celestial-toggle.cel-flipping .cel-moon{
+    transition:none; /* keyframes own opacity + transform during swap */
+  }
+  /* Sun exits, moon enters */
+  .pp-celestial-toggle.cel-sun-out .cel-sun{
+    animation:cel-sun-exit .42s cubic-bezier(.5,0,.75,0) forwards;
+  }
+  .pp-celestial-toggle.cel-sun-out .cel-moon{
+    animation:cel-moon-enter .58s cubic-bezier(.16,1,.3,1) .26s forwards;
+  }
+  /* Moon exits, sun enters */
+  .pp-celestial-toggle.cel-moon-out .cel-moon{
+    animation:cel-moon-exit .42s cubic-bezier(.5,0,.75,0) forwards;
+  }
+  .pp-celestial-toggle.cel-moon-out .cel-sun{
+    animation:cel-sun-enter .58s cubic-bezier(.16,1,.3,1) .26s forwards;
+  }
+  @keyframes cel-sun-exit{
+    0%   { opacity:1; transform:scale(1)   rotate(0deg) }
+    100% { opacity:0; transform:scale(0.3) rotate(70deg) }
+  }
+  @keyframes cel-sun-enter{
+    0%   { opacity:0; transform:scale(0.3) rotate(-70deg) }
+    60%  { opacity:1 }
+    100% { opacity:1; transform:scale(1)   rotate(0deg) }
+  }
+  @keyframes cel-moon-exit{
+    0%   { opacity:1; transform:scale(1)   rotate(0deg) }
+    100% { opacity:0; transform:scale(0.3) rotate(-70deg) }
+  }
+  @keyframes cel-moon-enter{
+    0%   { opacity:0; transform:scale(0.3) rotate(70deg) }
+    60%  { opacity:1 }
+    100% { opacity:1; transform:scale(1)   rotate(0deg) }
+  }
+
+  /* ═══ Sun design — fully-visible disc with floating + glow + spin
+        rays + sparkles + twinkle dots. Replaced the previous
+        corner-anchored sunburst (16 long rays + JS-injected stippled
+        fines + cream halo). All sun coords are translated relative
+        to a centre at (170, 70) of the 240x240 SVG. ═══ */
+
+  /* Pulsing glow layers — pulse opacity + scale in place. They sit
+     OUTSIDE .cel-sun-float so they don't share the floating drift;
+     the result is a steady halo behind a body that bobs around.
+     Hover drama is delivered via a CSS-transitioned filter
+     (brightness + saturate) rather than swapping in a "hover"
+     keyframe — swapping animations mid-pulse caused a visible
+     jump where the glow snapped to a higher-opacity solid disk
+     that read as a "solid yellow circle" appearing on hover. */
+  .cel-sun-glow-outer,
+  .cel-sun-glow-inner{
+    transform-origin:170px 70px;
+    animation:cel-sun-glow 5s ease-in-out infinite;
+    transition:filter .4s ease;
+  }
+  .cel-sun-glow-inner{ animation-delay:.5s }
+  @keyframes cel-sun-glow{
+    0%,100%{ opacity:.08; transform:scale(1) }
+    50%    { opacity:.15; transform:scale(1.06) }
+  }
+  .pp-celestial-toggle:hover .cel-sun-glow-outer,
+  .pp-celestial-toggle:hover .cel-sun-glow-inner{
+    filter:brightness(1.55) saturate(1.20);
+  }
+
+  /* Hover wrapper — scales the entire sun up on hover for a
+     dramatic "warm up" feel. Sits between .cel-sun and
+     .cel-sun-float so it composes cleanly with the click-swap
+     (on .cel-sun) and the idle drift (on .cel-sun-float). */
+  .cel-sun-hover{
+    transform-origin:170px 70px;
+    transform-box:view-box;
+    transition:transform .45s cubic-bezier(.22,1,.36,1), filter .4s ease;
+  }
+  .pp-celestial-toggle:hover .cel-sun-hover{
+    transform:scale(1.10);
+    filter:brightness(1.10) saturate(1.10);
+  }
+
+  /* Idle 4-point drift shared with the moon. Both bodies use the
+     same keyframe (cel-body-float) so the visual cadence matches
+     across light/dark themes. */
+  .cel-sun-float{
+    animation:cel-body-float 7s ease-in-out infinite;
+  }
+  @keyframes cel-body-float{
+    0%,100%{ transform:translate(0, 0) }
+    25%   { transform:translate(-2px, -6px) }
+    50%   { transform:translate(1px, -3px) }
+    75%   { transform:translate(2px, -8px) }
+  }
+
+  /* Slow ray rotation. Hover bumps animation-duration only — the
+     change applies to the running animation so the rays just spin
+     faster from where they were. Rays are radially symmetric so
+     any tiny re-projection from the duration recalc is masked. */
+  .cel-sun-rays{
+    transform-origin:170px 70px;
+    animation:cel-sun-spin 30s linear infinite;
+  }
+  .pp-celestial-toggle:hover .cel-sun-rays{ animation-duration:10s }
+  @keyframes cel-sun-spin{ to{ transform:rotate(360deg) } }
+
+  /* Ray-pulse group — subtle global breathing on top of the per-ray
+     flame flicker. Reduced amplitude so it doesn't compound with the
+     per-ray scale animation. */
+  .cel-sun-ray-pulse{
+    transform-origin:170px 70px;
+    animation:cel-sun-ray-pulse 5s ease-in-out infinite;
+  }
+  @keyframes cel-sun-ray-pulse{
+    0%,100%{ opacity:1;   transform:scale(1) }
+    50%    { opacity:.92; transform:scale(1.02) }
+  }
+
+  /* Per-ray fire flicker — each ray scales outward from the disc
+     centre and brightens/dims on its own phase (set via the inline
+     --d animation-delay) so the rays look like dancing flames
+     instead of a uniform pulse. transform-box:view-box makes
+     transform-origin resolve in viewBox coords so the scale pivot
+     is the disc centre, not the polygon's bounding box. */
+  .cel-sun-ray{
+    transform-origin:170px 70px;
+    transform-box:view-box;
+    animation:cel-sun-ray-flame 1.6s ease-in-out infinite;
+    animation-delay:var(--d, 0s);
+  }
+  @keyframes cel-sun-ray-flame{
+    0%,100%{ transform:scale(1);    filter:brightness(1) }
+    30%    { transform:scale(1.14); filter:brightness(1.45) }
+    65%    { transform:scale(.92);  filter:brightness(.75) }
+  }
+
+  /* Sun disc — soft amber drop-shadow at idle, intense bloom on
+     hover so the disc looks like it's radiating heat. Filter
+     transitions cleanly with no animation-swap snap. */
+  .cel-sun-disc{
+    transition:filter .4s ease;
+    filter:drop-shadow(0 0 6px rgba(239,168,50,0.30));
+  }
+  .pp-celestial-toggle:hover .cel-sun-disc{
+    filter:drop-shadow(0 0 22px rgba(255,180,80,0.78));
+  }
+
+  /* Twinkling dots — single keyframe; hover brightens via filter. */
+  .cel-sun-dot{
+    fill:#e8a832;
+    animation:cel-sun-twinkle var(--tu, 3s) ease-in-out var(--td, 0s) infinite;
+    transition:filter .4s ease;
+  }
+  @keyframes cel-sun-twinkle{
+    0%,100%{ opacity:.05; transform:scale(.6) }
+    50%    { opacity:.30; transform:scale(1.2) }
+  }
+  .pp-celestial-toggle:hover .cel-sun-dot{
+    filter:brightness(1.65) drop-shadow(0 0 3px rgba(232,168,50,0.55));
+  }
+
+  /* Sparkle crosses — single keyframe; hover brightens + glows. */
+  .cel-sun-sparkle line{
+    stroke:#e8a832;
+    stroke-linecap:round;
+  }
+  .cel-sun-sparkle{
+    animation:cel-sun-sparkle var(--tu, 2.5s) ease-in-out var(--td, 0s) infinite;
+    transition:filter .4s ease;
+  }
+  @keyframes cel-sun-sparkle{
+    0%,100%{ opacity:0;  transform:scale(0)   rotate(0deg)  }
+    30%    { opacity:.5; transform:scale(1)   rotate(30deg) }
+    50%    { opacity:.7; transform:scale(1.1) rotate(45deg) }
+    70%    { opacity:.4; transform:scale(.9)  rotate(60deg) }
+  }
+  .pp-celestial-toggle:hover .cel-sun-sparkle{
+    filter:brightness(1.7) drop-shadow(0 0 5px rgba(232,168,50,0.6));
+  }
+
+  /* ─── Moon ─── float wrapper carries the same idle drift as the
+     sun (cel-body-float). The float sits OUTSIDE .cel-moon (which
+     keeps the click-swap scale+rotate). On hover, the float pauses
+     and the moon body lifts up so the hover state reads cleanly. */
+  .cel-moon-float{
+    animation:cel-body-float 7s ease-in-out infinite;
+  }
+  .pp-celestial-toggle:hover .cel-moon-float{
+    animation-play-state:paused;
+  }
+  .cel-moon-stack{
+    transform-origin:170px 70px;
+    transition:transform .5s ease, filter .5s ease;
+  }
+  .pp-celestial-toggle:hover .cel-moon-stack{
+    transform:translateY(-6px);
+    filter:drop-shadow(0 0 18px rgba(176,196,255,0.55));
+  }
+
+  /* Stars twinkle — each carries its own --td (delay) and --tu (duration) */
+  .cel-star{
+    transform-origin:center;
+    animation:cel-star-twinkle var(--tu, 2.5s) ease-in-out var(--td, 0s) infinite;
+  }
+  @keyframes cel-star-twinkle{
+    0%,100%{ opacity:.55; transform:scale(1) }
+    50%{ opacity:1; transform:scale(1.55) }
+  }
+
+  /* Moon sparkle crosses — 4-point crosses that scale + rotate
+     + fade on a loop. Mirrors the sun's .cel-sun-sparkle pattern
+     but with white strokes so they read against the night sky.
+     Reuses the same keyframe (cel-sun-sparkle) since the motion
+     is identical. */
+  .cel-moon-sparkle line{
+    stroke:#fff;
+    stroke-linecap:round;
+  }
+  .cel-moon-sparkle{
+    animation:cel-sun-sparkle var(--tu, 2.5s) ease-in-out var(--td, 0s) infinite;
+    transition:filter .4s ease;
+  }
+  .pp-celestial-toggle:hover .cel-moon-sparkle{
+    filter:brightness(1.7) drop-shadow(0 0 5px rgba(255,255,255,0.7));
+  }
+
+  /* Comets — three staggered shooting stars that streak from
+     top-right to bottom-left on hover. Each has its own keyframe
+     so they take different paths through the quadrant; the
+     stagger delays make them feel naturally random rather than
+     synchronised. Use forwards so each settles invisible at the
+     end (no flash on the leave-hover side). */
+  .cel-comet{ opacity:0 }
+  .pp-celestial-toggle:hover .cel-comet-1{
+    animation:cel-comet-1-anim 1.5s cubic-bezier(.3,0,.7,1) .25s 1 forwards;
+  }
+  .pp-celestial-toggle:hover .cel-comet-2{
+    animation:cel-comet-2-anim 1.4s cubic-bezier(.3,0,.7,1) .85s 1 forwards;
+  }
+  .pp-celestial-toggle:hover .cel-comet-3{
+    animation:cel-comet-3-anim 1.6s cubic-bezier(.3,0,.7,1) 1.45s 1 forwards;
+  }
+  @keyframes cel-comet-1-anim{
+    0%   { opacity:0;  transform:translate(220px, 10px) }
+    14%  { opacity:1 }
+    100% { opacity:0;  transform:translate(20px, 200px) }
+  }
+  @keyframes cel-comet-2-anim{
+    0%   { opacity:0;  transform:translate(180px, 60px) }
+    16%  { opacity:.95 }
+    100% { opacity:0;  transform:translate(-10px, 190px) }
+  }
+  @keyframes cel-comet-3-anim{
+    0%   { opacity:0;  transform:translate(230px, 100px) }
+    14%  { opacity:.9 }
+    100% { opacity:0;  transform:translate(40px, 240px) }
+  }
+
+  /* Respect prefers-reduced-motion — kill the spinning + drifting +
+     twinkle so the corner sits as a static decorative element. */
+  @media (prefers-reduced-motion: reduce){
+    .cel-sun-glow-outer,
+    .cel-sun-glow-inner,
+    .cel-sun-float,
+    .cel-sun-rays,
+    .cel-sun-ray-pulse,
+    .cel-sun-dot,
+    .cel-sun-sparkle,
+    .cel-moon-float,
+    .cel-star,
+    .cel-comet,
+    .pp-celestial-toggle:hover .cel-comet-1,
+    .pp-celestial-toggle:hover .cel-comet-2,
+    .pp-celestial-toggle:hover .cel-comet-3,
+    .pp-celestial-toggle.cel-sun-out .cel-sun,
+    .pp-celestial-toggle.cel-sun-out .cel-moon,
+    .pp-celestial-toggle.cel-moon-out .cel-moon,
+    .pp-celestial-toggle.cel-moon-out .cel-sun{ animation:none !important }
+    .cel-sun-hover,
+    .cel-sun-glow-outer,
+    .cel-sun-glow-inner,
+    .cel-sun-disc,
+    .cel-sun-dot,
+    .cel-sun-sparkle{ transition:none !important }
+    .pp-celestial-toggle:hover .cel-sun-hover{ transform:none !important; filter:none !important }
+    .pp-celestial-toggle:hover .cel-sun-glow-outer,
+    .pp-celestial-toggle:hover .cel-sun-glow-inner,
+    .pp-celestial-toggle:hover .cel-sun-disc,
+    .pp-celestial-toggle:hover .cel-sun-dot,
+    .pp-celestial-toggle:hover .cel-sun-sparkle{ filter:none !important }
+  }
+</style>
+
+<div id="loginScreen">
+  <!-- Light-mode backdrop — soft warm-dark gradient behind the sun
+       so the warm-yellow sunburst stands out against the otherwise
+       cream/light page bg. Fades smoothly to transparent within
+       its own 520x520 box; hidden in dark mode via CSS. -->
+  <div class="pp-celestial-backdrop" aria-hidden="true"></div>
+
+  <!-- Celestial Corner — quarter-circle theme toggle. Sun (in light
+       mode) and crescent + stars (in dark) are anchored to the
+       top-right corner; the whole 240x240 quadrant is the click
+       target. Replaces the small round button that lived here
+       previously. Sits above the drifting bg orbs on z-index:5;
+       choice persists via PP_toggleTheme() → localStorage so the
+       rest of the app honours it after auth. -->
+  <button class="pp-celestial-toggle" id="ppLoginCelestial" type="button" onclick="celestialFlip()" aria-label="Toggle theme — switch between light and dark">
+    <svg class="pp-celestial-svg" viewBox="0 0 240 240" aria-hidden="true">
+      <defs>
+        <radialGradient id="celMoonGlow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#b0c4ff" stop-opacity="0.35"/>
+          <stop offset="100%" stop-color="#b0c4ff" stop-opacity="0"/>
+        </radialGradient>
+        <!-- Comet trail gradient — opaque at the head (bottom-left
+             of the line's bbox, at coord 0,0) fading to transparent
+             at the tail (top-right of bbox, at 32,-26). Direction
+             matches a top-right→bottom-left meteor with the trail
+             extending BEHIND the head, i.e. toward where it came
+             from. -->
+        <linearGradient id="celCometGrad" x1="100%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#b0c4ff" stop-opacity="0"/>
+          <stop offset="60%" stop-color="#ffffff" stop-opacity="0.55"/>
+          <stop offset="100%" stop-color="#ffffff" stop-opacity="0.95"/>
+        </linearGradient>
+        <mask id="celMoonMask">
+          <rect width="240" height="240" fill="black"/>
+          <circle cx="170" cy="70" r="50" fill="white"/>
+          <circle cx="195" cy="50" r="48" fill="black"/>
+        </mask>
+      </defs>
+
+      <!-- ─── SUN (light mode) ─── -->
+      <!-- New design: fully-visible disc centred at (170, 70) with
+           pulsing glow layers, a floating sun-group containing
+           rotating + pulsing rays, a 3-layer disc with specular
+           highlight, twinkling dots and sparkle crosses. Coords
+           translated from the reference design (sun centred at
+           (285, 48) in 320×220) by Δ = (-115, +22). -->
+      <g class="cel-sun">
+        <!-- Pulsing glow layers — sit OUTSIDE both the hover scale
+             and the float wrapper so they pulse in place behind a
+             body that bobs around. Bumped (78→92, 58→72) for
+             matching the moon's halo presence at idle. -->
+        <circle class="cel-sun-glow-outer" cx="170" cy="70" r="92" fill="#f5c96b"/>
+        <circle class="cel-sun-glow-inner" cx="170" cy="70" r="72" fill="#f0b840"/>
+
+        <!-- Hover wrapper — scales the entire sun up on hover so
+             the body grows visibly larger. Sits between .cel-sun
+             (click-swap) and .cel-sun-float (idle drift) so all
+             three transforms compose cleanly. -->
+        <g class="cel-sun-hover">
+        <!-- Floating wrapper — drifts in 4-point loop. All disc /
+             ray / dot / sparkle layers drift together. -->
+        <g class="cel-sun-float">
+
+          <!-- Rotating rays -->
+          <g class="cel-sun-rays">
+            <g class="cel-sun-ray-pulse">
+              <!-- Cardinal rays (top, bottom, left, right). Tips
+                   extended outward by ~6 units so the rays read
+                   slightly longer than before. -->
+              <polygon class="cel-sun-ray" style="--d:0s"    points="170,0 165,28 175,28"     fill="#e8a832" opacity="0.42"/>
+              <polygon class="cel-sun-ray" style="--d:.4s"   points="170,140 165,114 175,114" fill="#e8a832" opacity="0.36"/>
+              <polygon class="cel-sun-ray" style="--d:.8s"   points="100,70 126,65 126,75"    fill="#e8a832" opacity="0.36"/>
+              <polygon class="cel-sun-ray" style="--d:1.2s"  points="240,70 214,65 214,75"    fill="#e8a832" opacity="0.42"/>
+
+              <!-- Diagonal rays — tips extended along their own
+                   direction so the elongation is uniform. -->
+              <polygon class="cel-sun-ray" style="--d:.2s"   points="120,22 135,37 141,31"    fill="#e8a832" opacity="0.30"/>
+              <polygon class="cel-sun-ray" style="--d:.6s"   points="220,22 205,37 199,31"    fill="#e8a832" opacity="0.30"/>
+              <polygon class="cel-sun-ray" style="--d:1.0s"  points="120,118 135,103 141,109" fill="#e8a832" opacity="0.27"/>
+              <polygon class="cel-sun-ray" style="--d:1.4s"  points="220,118 205,103 199,109" fill="#e8a832" opacity="0.27"/>
+
+              <!-- Smaller waving rays in between the long ones — at
+                   every 22.5° between cardinal/diagonal rays. Slim
+                   triangles (base ~4 wide, length ~14) so they read
+                   as secondary tongues of flame, not full rays.
+                   Each carries its own --d phase so the small rays
+                   flicker independently of the long ones. -->
+              <polygon class="cel-sun-ray" style="--d:.1s"   points="192,16 189,30 185,29"    fill="#e8a832" opacity="0.28"/>
+              <polygon class="cel-sun-ray" style="--d:.5s"   points="224,48 211,55 210,51"    fill="#e8a832" opacity="0.28"/>
+              <polygon class="cel-sun-ray" style="--d:.9s"   points="224,92 210,89 211,85"    fill="#e8a832" opacity="0.25"/>
+              <polygon class="cel-sun-ray" style="--d:1.3s"  points="192,124 185,111 189,110" fill="#e8a832" opacity="0.25"/>
+              <polygon class="cel-sun-ray" style="--d:.3s"   points="148,124 151,110 155,111" fill="#e8a832" opacity="0.25"/>
+              <polygon class="cel-sun-ray" style="--d:.7s"   points="116,92 129,85 130,89"    fill="#e8a832" opacity="0.25"/>
+              <polygon class="cel-sun-ray" style="--d:1.1s"  points="116,48 130,51 129,55"    fill="#e8a832" opacity="0.28"/>
+              <polygon class="cel-sun-ray" style="--d:1.5s"  points="148,16 155,29 151,30"    fill="#e8a832" opacity="0.28"/>
+            </g>
+          </g>
+
+          <!-- Core sun disc — bumped from r=34 to r=44 so the disc
+               reads at a similar scale to the moon's r=50 crescent. -->
+          <circle class="cel-sun-disc" cx="170" cy="70" r="44" fill="#efa832"/>
+
+          <!-- Highlight crescents — offset toward upper-left to give
+               the disc a 3D-sphere read with light from that side.
+               Radii bumped to track the larger disc. -->
+          <circle cx="162" cy="62" r="33" fill="#f7cf6a" opacity="0.45"/>
+          <circle cx="158" cy="58" r="20" fill="#fae0a0" opacity="0.35"/>
+
+          <!-- Specular highlight — small bright spot near the upper-
+               left of the disc. -->
+          <circle cx="156" cy="56" r="6"  fill="#fff5dc" opacity="0.55"/>
+
+          <!-- Twinkling decorative dots — mirror of the moon's stars
+               (warm amber instead of white). Each carries its own
+               --tu (duration) and --td (delay) so they twinkle out
+               of phase. transform-origin set per-dot via inline
+               style so the scale pivots from the dot centre. -->
+          <circle class="cel-sun-dot" cx="111" cy="80" r="2.4" style="--tu:3s;   --td:0s;   transform-origin:111px 80px"/>
+          <circle class="cel-sun-dot" cx="99"  cy="56" r="1.8" style="--tu:4s;   --td:1s;   transform-origin:99px 56px"/>
+          <circle class="cel-sun-dot" cx="129" cy="42" r="2.0" style="--tu:3.5s; --td:2s;   transform-origin:129px 42px"/>
+          <circle class="cel-sun-dot" cx="85"  cy="36" r="1.5" style="--tu:4.5s; --td:.5s;  transform-origin:85px 36px"/>
+
+          <!-- Sparkle crosses — the sun's analogue of the moon's
+               shooting stars. Each is a 4-point cross that scales
+               up + rotates + fades, on its own cadence. -->
+          <g class="cel-sun-sparkle" style="--tu:2.5s; --td:0s; transform-origin:104px 96px">
+            <line x1="99"  y1="96" x2="109" y2="96" stroke-width="1.1"/>
+            <line x1="104" y1="91" x2="104" y2="101" stroke-width="1.1"/>
+          </g>
+          <g class="cel-sun-sparkle" style="--tu:3s; --td:1.2s; transform-origin:138px 110px">
+            <line x1="134" y1="110" x2="142" y2="110" stroke-width="0.9"/>
+            <line x1="138" y1="106" x2="138" y2="114" stroke-width="0.9"/>
+          </g>
+        </g>
+        </g>
+
+        <!-- ─── Far-field motes & twinkles ───
+             Sit OUTSIDE .cel-sun-hover so they don't scale on hover
+             (constellation-style "background sky" particles —
+             distant things shouldn't grow when the foreground sun
+             does), and OUTSIDE .cel-sun-float so they don't drift
+             with the sun (depth: distant stars stay still while a
+             closer body bobs around). They still inherit:
+               • the idle twinkle animation (cel-sun-twinkle / -sparkle)
+                 via the shared .cel-sun-dot / .cel-sun-sparkle classes,
+               • the hover brightness filter via the same selectors,
+               • the .cel-sun opacity gating (light mode only).
+             All distances are >100 px from the sun centre (170, 70). -->
+        <g class="cel-sun-far">
+          <circle class="cel-sun-dot" cx="35"  cy="165" r="1.4" style="--tu:3.2s; --td:0s;   transform-origin:35px 165px"/>
+          <circle class="cel-sun-dot" cx="60"  cy="200" r="1.0" style="--tu:4.1s; --td:1.2s; transform-origin:60px 200px"/>
+          <circle class="cel-sun-dot" cx="85"  cy="220" r="1.2" style="--tu:2.7s; --td:.4s;  transform-origin:85px 220px"/>
+          <circle class="cel-sun-dot" cx="120" cy="225" r="0.9" style="--tu:3.6s; --td:1.8s; transform-origin:120px 225px"/>
+          <circle class="cel-sun-dot" cx="155" cy="215" r="1.3" style="--tu:4.5s; --td:.7s;  transform-origin:155px 215px"/>
+          <circle class="cel-sun-dot" cx="190" cy="230" r="1.0" style="--tu:3.0s; --td:2.1s; transform-origin:190px 230px"/>
+          <circle class="cel-sun-dot" cx="220" cy="195" r="1.1" style="--tu:5.0s; --td:.3s;  transform-origin:220px 195px"/>
+          <circle class="cel-sun-dot" cx="215" cy="165" r="0.8" style="--tu:2.5s; --td:1.5s; transform-origin:215px 165px"/>
+          <circle class="cel-sun-dot" cx="28"  cy="115" r="1.2" style="--tu:3.8s; --td:.9s;  transform-origin:28px 115px"/>
+          <circle class="cel-sun-dot" cx="55"  cy="145" r="0.9" style="--tu:4.7s; --td:2.3s; transform-origin:55px 145px"/>
+          <circle class="cel-sun-dot" cx="95"  cy="175" r="1.1" style="--tu:3.3s; --td:.6s;  transform-origin:95px 175px"/>
+          <circle class="cel-sun-dot" cx="135" cy="195" r="0.8" style="--tu:5.2s; --td:1.0s; transform-origin:135px 195px"/>
+
+          <!-- Two more sparkle crosses scattered far-field -->
+          <g class="cel-sun-sparkle" style="--tu:2.8s; --td:.6s;  transform-origin:50px 180px">
+            <line x1="46"  y1="180" x2="54"  y2="180" stroke-width="0.9"/>
+            <line x1="50"  y1="176" x2="50"  y2="184" stroke-width="0.9"/>
+          </g>
+          <g class="cel-sun-sparkle" style="--tu:3.5s; --td:1.8s; transform-origin:205px 218px">
+            <line x1="201" y1="218" x2="209" y2="218" stroke-width="0.9"/>
+            <line x1="205" y1="214" x2="205" y2="222" stroke-width="0.9"/>
+          </g>
+        </g>
+      </g>
+
+      <!-- ─── MOON (dark mode) ─── -->
+      <!-- .cel-moon-float wraps the entire moon body so it picks up
+           the same idle drift as the sun (cel-body-float). The
+           click-swap rotate/scale stays on the outer .cel-moon —
+           separate elements, separate transforms, no conflict. -->
+      <g class="cel-moon">
+        <g class="cel-moon-float">
+          <g class="cel-moon-stack">
+            <circle class="cel-moon-halo" cx="170" cy="70" r="100" fill="url(#celMoonGlow)"/>
+            <rect class="cel-moon-body" width="240" height="240" fill="#dde7ff" mask="url(#celMoonMask)"/>
+          </g>
+          <g class="cel-moon-stars">
+            <circle class="cel-star" cx="48"  cy="38"  r="1.5" fill="#fff" style="--td:0s;   --tu:2.1s"/>
+            <circle class="cel-star" cx="96"  cy="22"  r="1"   fill="#fff" style="--td:.5s;  --tu:2.8s"/>
+            <circle class="cel-star" cx="38"  cy="92"  r="1.2" fill="#fff" style="--td:1.2s; --tu:1.9s"/>
+            <circle class="cel-star" cx="78"  cy="68"  r="0.9" fill="#fff" style="--td:.3s;  --tu:3.4s"/>
+            <circle class="cel-star" cx="118" cy="94"  r="1"   fill="#fff" style="--td:.8s;  --tu:2.4s"/>
+            <circle class="cel-star" cx="22"  cy="48"  r="1"   fill="#fff" style="--td:0s;   --tu:3.0s"/>
+            <!-- Additional near-moon stars to match the sun's
+                 4-dot near density. -->
+            <circle class="cel-star" cx="62"  cy="14"  r="0.9" fill="#fff" style="--td:1.6s; --tu:2.6s"/>
+            <circle class="cel-star" cx="14"  cy="80"  r="0.8" fill="#fff" style="--td:.9s;  --tu:3.2s"/>
+            <circle class="cel-star" cx="100" cy="50"  r="0.8" fill="#fff" style="--td:.4s;  --tu:2.2s"/>
+            <circle class="cel-star" cx="60"  cy="62"  r="1.0" fill="#fff" style="--td:1.8s; --tu:2.7s"/>
+          </g>
+          <!-- Near-moon sparkle crosses — moon's analogue of the
+               sun's near-disc sparkles, in white. Each on its own
+               cadence so they fire out of phase. -->
+          <g class="cel-moon-sparkle" style="--tu:2.6s; --td:.4s; transform-origin:135px 38px">
+            <line x1="130" y1="38" x2="140" y2="38" stroke-width="1.1"/>
+            <line x1="135" y1="33" x2="135" y2="43" stroke-width="1.1"/>
+          </g>
+          <g class="cel-moon-sparkle" style="--tu:3.2s; --td:1.4s; transform-origin:62px 110px">
+            <line x1="57" y1="110" x2="67" y2="110" stroke-width="1.1"/>
+            <line x1="62" y1="105" x2="62" y2="115" stroke-width="1.1"/>
+          </g>
+          <!-- Far-field stars + sparkles — scattered across the
+               lower half of the SVG (away from the moon body in the
+               upper-right) to mirror the sun's .cel-sun-far group.
+               Same scatter pattern, white fill, so the toggle has
+               equal "sky depth" on both themes. -->
+          <g class="cel-moon-far">
+            <circle class="cel-star" cx="35"  cy="165" r="1.4" fill="#fff" style="--td:0s;   --tu:3.2s"/>
+            <circle class="cel-star" cx="60"  cy="200" r="1.0" fill="#fff" style="--td:1.2s; --tu:4.1s"/>
+            <circle class="cel-star" cx="85"  cy="220" r="1.2" fill="#fff" style="--td:.4s;  --tu:2.7s"/>
+            <circle class="cel-star" cx="120" cy="225" r="0.9" fill="#fff" style="--td:1.8s; --tu:3.6s"/>
+            <circle class="cel-star" cx="155" cy="215" r="1.3" fill="#fff" style="--td:.7s;  --tu:4.5s"/>
+            <circle class="cel-star" cx="190" cy="230" r="1.0" fill="#fff" style="--td:2.1s; --tu:3.0s"/>
+            <circle class="cel-star" cx="220" cy="195" r="1.1" fill="#fff" style="--td:.3s;  --tu:5.0s"/>
+            <circle class="cel-star" cx="215" cy="165" r="0.8" fill="#fff" style="--td:1.5s; --tu:2.5s"/>
+            <circle class="cel-star" cx="28"  cy="115" r="1.2" fill="#fff" style="--td:.9s;  --tu:3.8s"/>
+            <circle class="cel-star" cx="55"  cy="145" r="0.9" fill="#fff" style="--td:2.3s; --tu:4.7s"/>
+            <circle class="cel-star" cx="95"  cy="175" r="1.1" fill="#fff" style="--td:.6s;  --tu:3.3s"/>
+            <circle class="cel-star" cx="135" cy="195" r="0.8" fill="#fff" style="--td:1.0s; --tu:5.2s"/>
+            <!-- Far sparkle crosses — mirror the sun's two far
+                 sparkle positions for visual symmetry across
+                 themes. -->
+            <g class="cel-moon-sparkle" style="--tu:2.8s; --td:.6s;  transform-origin:50px 180px">
+              <line x1="45" y1="180" x2="55" y2="180" stroke-width="1.1"/>
+              <line x1="50" y1="175" x2="50" y2="185" stroke-width="1.1"/>
+            </g>
+            <g class="cel-moon-sparkle" style="--tu:3.5s; --td:1.8s; transform-origin:205px 218px">
+              <line x1="200" y1="218" x2="210" y2="218" stroke-width="1.1"/>
+              <line x1="205" y1="213" x2="205" y2="223" stroke-width="1.1"/>
+            </g>
+          </g>
+          <!-- Shooting stars — 3 staggered comets that streak from
+               top-right to bottom-left on hover. Each is a <g> that
+               translates from its start to its end coordinate; inside
+               the g, a short line acts as the trail (gradient fades
+               to transparent toward the back) and a small bright
+               circle is the meteor head. The line sits at (-32,-26)
+               → (0,0) so the trail naturally points top-right while
+               the head leads the motion bottom-left. -->
+          <g class="cel-comets">
+            <g class="cel-comet cel-comet-1">
+              <line x1="32" y1="-26" x2="0" y2="0" stroke="url(#celCometGrad)" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="0" cy="0" r="1.6" fill="#ffffff"/>
+            </g>
+            <g class="cel-comet cel-comet-2">
+              <line x1="28" y1="-22" x2="0" y2="0" stroke="url(#celCometGrad)" stroke-width="1.2" stroke-linecap="round"/>
+              <circle cx="0" cy="0" r="1.3" fill="#ffffff"/>
+            </g>
+            <g class="cel-comet cel-comet-3">
+              <line x1="30" y1="-24" x2="0" y2="0" stroke="url(#celCometGrad)" stroke-width="1.3" stroke-linecap="round"/>
+              <circle cx="0" cy="0" r="1.4" fill="#ffffff"/>
+            </g>
+          </g>
+        </g>
+      </g>
+    </svg>
+  </button>
+
+  <script>
+  /* Click-driven sun↔moon swap. Adds .cel-flipping + a side-out
+     class so the keyframes know which body is leaving, fires the
+     theme flip mid-animation (after exit completes, while the
+     entering body is mid-arc), then clears the classes after the
+     enter animation settles. Re-entrancy guarded so rapid clicks
+     don't stack animations. Falls back to a plain theme flip when
+     the user has prefers-reduced-motion set. */
+  function celestialFlip(){
+    var btn = document.getElementById('ppLoginCelestial');
+    if (!btn) { try { PP_toggleTheme(); } catch(_){} return; }
+    if (btn.classList.contains('cel-flipping')) return;
+    var reduce = false;
+    try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch(_){}
+    if (reduce) { try { PP_toggleTheme(); } catch(_){} return; }
+    var isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    btn.classList.add('cel-flipping', isLight ? 'cel-sun-out' : 'cel-moon-out');
+    /* Flip the theme just after the exit animation completes
+       (~280ms) — this is when the leaving body has shrunk to its
+       smallest, so the entering body's growth feels causal. */
+    setTimeout(function(){ try { PP_toggleTheme(); } catch(_){} }, 280);
+    /* Clear the swap classes after the enter animation settles
+       (.26s delay + .58s duration ≈ 840ms; pad to 900ms). */
+    setTimeout(function(){
+      btn.classList.remove('cel-flipping','cel-sun-out','cel-moon-out');
+    }, 900);
+  }
+  </script>
+
+  <div class="login-box">
+    <div class="login-logo-wrap">
+      <img class="pp-logo-dark" src="assets/logo.png" alt="Performance Property" style="height:56px;width:280px"/>
+      <img class="pp-logo-light" src="assets/Reports/logo-color-black.png" alt="Performance Property" style="height:56px;width:280px"/>
+    </div>
+    <div class="login-divider"></div>
+    
+
+    <!-- STEP 1: Email + Password -->
+    <div class="login-step" id="step1">
+      <!-- Status banner — surfaces post-registration messages (e.g. "Your
+           account is being verified") and any other transient cross-step
+           notice. JS toggles .show + the inner text via showLoginNotice(). -->
+      <div class="login-notice" id="loginNotice" hidden>
+        <span class="login-notice-text" id="loginNoticeText"></span>
+      </div>
+      <div class="login-field">
+        <label>Email</label>
+        <input type="email" id="emailInput" placeholder="you@example.com" autocomplete="email"/>
+      </div>
+      <div class="login-field">
+        <label>Password <span style="color:var(--muted);font-weight:400;font-size:.7rem">(admin only — leave blank for code)</span></label>
+        <div style="position:relative;width:100%">
+          <input type="password" id="pwInput" placeholder="Leave blank to receive a verification code" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding-right:44px"/>
+          <button type="button" id="togglePw" onclick="const i=document.getElementById('pwInput');i.type=i.type==='password'?'text':'password';this.textContent=i.type==='password'?'👁️':'🙈'" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:1rem;padding:0;line-height:1;color:var(--muted)">👁️</button>
+        </div>
+      </div>
+      <div class="login-error" id="loginError"></div>
+      <button class="login-btn" id="loginBtn">Send Verification Code</button>
+      <div style="text-align:center;margin-top:6px">
+        <button class="resend-btn" id="showRegisterBtn" onclick="showStep(3)">New here? Register for viewer access</button>
+      </div>
+    </div>
+
+    <!-- STEP 2: OTP -->
+    <div class="login-step hidden" id="step2">
+      <div class="otp-info">A 6-digit code was sent to<br><span id="otpEmailDisplay"></span></div>
+      <div class="otp-spam-hint">Don't see it? Check your spam or junk folder.</div>
+      <div class="otp-inputs">
+        <input type="text" maxlength="1" class="otp-digit" inputmode="numeric" pattern="[0-9]"/>
+        <input type="text" maxlength="1" class="otp-digit" inputmode="numeric" pattern="[0-9]"/>
+        <input type="text" maxlength="1" class="otp-digit" inputmode="numeric" pattern="[0-9]"/>
+        <input type="text" maxlength="1" class="otp-digit" inputmode="numeric" pattern="[0-9]"/>
+        <input type="text" maxlength="1" class="otp-digit" inputmode="numeric" pattern="[0-9]"/>
+        <input type="text" maxlength="1" class="otp-digit" inputmode="numeric" pattern="[0-9]"/>
+      </div>
+      <div class="login-error" id="otpError"></div>
+      <button class="login-btn" id="verifyBtn">Verify Code</button>
+      <div style="text-align:center">
+        <button class="resend-btn" id="resendBtn" disabled>Resend code (<span id="resendTimer">60</span>s)</button>
+      </div>
+      <div style="text-align:center">
+        <button class="resend-btn" id="backBtn" style="color:var(--muted)">← Use a different email</button>
+      </div>
+    </div>
+
+    <!-- STEP 3: REGISTER -->
+    <div class="login-step hidden" id="step3">
+      <div style="font-size:.72rem;color:var(--muted);text-align:center;line-height:1.6;padding:0 4px">Create a viewer account using any email.<br><span style="color:var(--accent);font-weight:600">Performance Property</span> staff — use Sign In.</div>
+      <div class="login-field">
+        <label>First Name</label>
+        <input type="text" id="regFirstName" placeholder="Your first name" autocomplete="given-name"/>
+      </div>
+      <div class="login-field">
+        <label>Email</label>
+        <input type="email" id="regEmail" placeholder="you@example.com" autocomplete="email"/>
+      </div>
+      <div style="font-size:.7rem;color:var(--muted);text-align:center;line-height:1.5;margin:-4px 0 4px">No password needed — we send a 6-digit code to your email each time you sign in.</div>
+
+      <!-- Client / Guest split.
+           ▸ Ticked  → Tier 3 (client). Account is created with
+                       status='pending', user is told to wait for an
+                       approval email; the OTP they verify here only
+                       confirms email ownership.
+           ▸ Unticked → Tier 4 (guest). Account is created active and
+                       OTP verification logs them straight in. -->
+      <label class="login-check" for="regIsClient">
+        <input type="checkbox" id="regIsClient"/>
+        <span class="login-check-text">
+          <span class="login-check-title">I'm registering as a Client</span>
+          <span class="login-check-sub">Clients get full report access. Your account will be reviewed and you'll receive an email once it's active.</span>
+        </span>
+      </label>
+
+      <div class="login-error" id="regError"></div>
+      <button class="login-btn" id="registerBtn">Create Account</button>
+      <div style="text-align:center;margin-top:6px">
+        <button class="resend-btn" id="backToLoginBtn" onclick="showStep(1)" style="color:var(--muted)">← Back to Sign In</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ══════════ WELCOME OVERLAY ══════════ -->
+<div id="welcomeOverlay" style="display:none;position:fixed;inset:0;background:linear-gradient(135deg,#1a2236 0%,#0f1726 40%,#162032 100%);z-index:2000;flex-direction:column;align-items:center;justify-content:center;gap:20px;">
+  <div id="welcomeMsg" style="font-family:'Montserrat',sans-serif;font-weight:900;font-size:clamp(26px,4.5vw,48px);color:#fff;letter-spacing:2px;text-align:center;opacity:0;transition:opacity 0.6s ease;text-transform:uppercase"></div>
+  <div style="width:60px;height:3px;background:#00b6cb;border-radius:2px;opacity:0;transition:opacity 0.6s ease 0.2s" id="welcomeBar"></div>
+  <div style="font-family:'Montserrat',sans-serif;font-weight:600;font-size:11px;letter-spacing:3px;text-transform:uppercase;color:rgba(255,255,255,.35);opacity:0;transition:opacity 0.6s ease 0.4s" id="welcomeSub">Performance Property Analytics</div>
+</div>
+
+<!-- ══════════ HUB (post-login landing) ══════════ -->
+<!-- ══════════ MAIN PAGE (HUB) ══════════ -->
+<div id="mainPage" style="display:none">
+
+  <!-- Top bar -->
+  <header class="hub-topbar">
+    <div class="hub-brand main-logo-wrap">
+      <img class="pp-logo-dark" src="assets/logo.png" alt="Performance Property"/>
+      <img class="pp-logo-light" src="assets/Reports/logo-color-black.png" alt="Performance Property"/>
+    </div>
+    <div class="hub-nav-meta">
+      <!-- Pending approvals pill — visible only to Tier 0/1 (admin),
+           and only when the cache reports ≥1 pending user. JS in
+           shared/auth.js or below toggles its visibility. -->
+      <button class="hub-pending-pill" id="hubPendingPill" type="button" hidden onclick="openPendingApprovalsModal()">
+        <span class="hub-pending-dot"></span>
+        <span>Pending Approvals</span>
+        <span class="hub-pending-count" id="hubPendingCount">0</span>
+      </button>
+      <div class="hub-identity-pill" id="hubIdentityPill">
+        <span class="hub-identity-dot"></span>
+        <span>Signed in as <span class="hub-identity-tier" id="hubIdentityTier">—</span></span>
+      </div>
+      <button class="pp-theme-toggle is-hub" type="button" onclick="PP_toggleTheme()" title="Toggle light / dark mode" aria-label="Toggle theme">
+        <svg class="pp-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="pp-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <button class="logout-btn logout-hub" onclick="logout()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Sign Out
+      </button>
+    </div>
+  </header>
+
+  <!-- ══════════ PENDING APPROVALS MODAL (Tier 0/1) ══════════
+       Lists every user record where status='pending'. Each row has
+       Approve / Reject buttons that hit the users function. Updates
+       live via the 'pp-users-changed' custom event dispatched by
+       auth.js after every register / approve / reject. ═══════════ -->
+  <div id="pendingApprovalsModal" class="pending-modal" aria-hidden="true" onclick="if(event.target===this) closePendingApprovalsModal()">
+    <div class="pending-modal-inner" role="dialog" aria-labelledby="pa-title">
+      <button class="pending-modal-close" onclick="closePendingApprovalsModal()" aria-label="Close">×</button>
+      <div class="pending-modal-eyebrow">Admin · Tier 0/1</div>
+      <h2 class="pending-modal-title" id="pa-title">Pending Client Approvals</h2>
+      <p class="pending-modal-sub">Review accounts that registered as Client. Approving flips their status to active and emails them a confirmation.</p>
+
+      <div class="pending-modal-list" id="pendingApprovalsList">
+        <!-- Rows injected by renderPendingApprovals() -->
+      </div>
+
+      <div class="pending-modal-empty" id="pendingApprovalsEmpty" hidden>
+        <div class="pending-modal-empty-icon">✓</div>
+        <div class="pending-modal-empty-text">All caught up — nothing pending.</div>
+      </div>
+
+      <div class="pending-modal-footer">
+        <button class="pending-modal-refresh" onclick="refreshPendingApprovals()" type="button">↻ Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hero -->
+  <section class="hub-hero">
+    <div class="hub-hero-eyebrow">Analytics Hub</div>
+    <h1 class="hub-hero-title">Performance <em>Property</em></h1>
+    <div class="hub-hero-subtitle">Select an analytics tool below to explore the latest market intelligence.</div>
+  </section>
+
+  <!-- At-a-glance stats — moved ABOVE the tool grid so the four
+       headline numbers (regions tracked, latest data, history,
+       edition) stay in view on first paint. Previously this strip
+       sat below the cards and got pushed below the fold once a
+       second row of cards landed. -->
+  <section class="hub-stats-wrap">
+    <div class="hub-stats-title">At a glance</div>
+    <div class="hub-stats">
+      <div class="hub-stat">
+        <div class="hub-stat-value" id="hs-regions">—</div>
+        <div class="hub-stat-label">Regions Tracked</div>
+      </div>
+      <div class="hub-stat">
+        <div class="hub-stat-value" id="hs-latest">—</div>
+        <div class="hub-stat-label">Latest Data</div>
+      </div>
+      <div class="hub-stat">
+        <div class="hub-stat-value" id="hs-history">—</div>
+        <div class="hub-stat-label">Months of History</div>
+      </div>
+      <div class="hub-stat">
+        <div class="hub-stat-value">Q2 · 2026</div>
+        <div class="hub-stat-label">Current Edition</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main tool cards.
+       Tiers 0-3 see all five pills as a normal grid. Tier 4 (guest) sees
+       a blur wall over pills 1-4 + a "Contact Us for full access" notice
+       (CSS rules under body.tier-guest at the bottom of this file).
+       Pill 5 (Lite Online Reports) is the only pill Tier 4 can interact
+       with — it always renders sharp and stays clickable. -->
+  <section class="hub-tools" id="hubToolsGrid">
+
+    <!-- ─── Tier-4 "Contact Us" notice ───
+         Hidden by default, surfaced only when body.tier-guest is set.
+         Sits above the locked pills inside the same grid via
+         grid-column:1/-1 so it spans the full width. The lock icon
+         + headline + solid CTA pill make it read as a proper call-to-
+         action rather than an inline aside — Tier-4 viewers should
+         notice this immediately without scanning past it. -->
+    <div class="hub-tier4-notice" aria-hidden="true">
+      <div class="hub-tier4-notice-icon" aria-hidden="true">🔒</div>
+      <div class="hub-tier4-notice-body">
+        <div class="hub-tier4-notice-eyebrow">Lite Access</div>
+        <h3 class="hub-tier4-notice-title">Unlock the full suite</h3>
+        <p class="hub-tier4-notice-text">
+          Property Clock, Runway v Demand, Demand Score, and the full Online Reports — with complete data, interactive dashboards, and detailed regional analysis — are available to our clients.
+        </p>
+      </div>
+      <a href="https://performanceproperty.com.au/enquiry-form/" target="_blank" rel="noopener" class="hub-tier4-notice-cta">
+        Contact Us for Full Access <span aria-hidden="true">›</span>
+      </a>
+    </div>
+
+    <!-- ─── Locked-for-Tier-4 pills (1-4) ───
+         The .tier4-locked class is the CSS hook that the blur wall +
+         pointer-events block target. For Tiers 0-3 the class has no
+         visual effect — they render and behave like ordinary pills. -->
+    <button class="hub-tool-card nav-pill tier4-locked" onclick="navigateToTool('tools/property-clock.html', 'Property Clock')">
+      <div class="hub-tool-icon">🕐</div>
+      <div class="hub-tool-badge" id="clockEditionBadge">Edition 3 · 2026</div>
+      <h2 class="hub-tool-title nav-pill-title">National Property Clock</h2>
+      <p class="hub-tool-desc">Visualise where every Australian capital and major regional market sits on the property cycle — houses and units, side by side.</p>
+      <div class="hub-tool-cta">Launch Clock <span>›</span></div>
+    </button>
+
+    <button class="hub-tool-card nav-pill tier4-locked" onclick="navigateToTool('tools/runway-demand.html', 'Runway v Demand')">
+      <div class="hub-tool-icon">📈</div>
+      <div class="hub-tool-badge">2026 Series</div>
+      <h2 class="hub-tool-title nav-pill-title">Runway V Demand Score</h2>
+      <p class="hub-tool-desc">Track supply runway against demand score month-over-month to spot markets tipping from oversupply toward acute demand pressure.</p>
+      <div class="hub-tool-cta">Launch Runway <span>›</span></div>
+    </button>
+
+    <button class="hub-tool-card nav-pill tier4-locked" onclick="navigateToTool('tools/demand-score.html', 'Demand Score Dashboard')">
+      <div class="hub-tool-icon">📊</div>
+      <div class="hub-tool-badge">Live · Weekly</div>
+      <h2 class="hub-tool-title nav-pill-title">Demand Score Dashboard</h2>
+      <p class="hub-tool-desc">Explore live demand scores across all Australian capital and regional markets, with benchmark comparisons, movement flags, and interactive map &amp; compare views.</p>
+      <div class="hub-tool-cta">Launch Dashboard <span>›</span></div>
+    </button>
+
+    <!-- Presentation tool — slide-deck shell with live tool embeds.
+         Demo build for the referral-partner pitch; replaces static
+         Slides decks with always-current pages that pull the Clock
+         and Runway v Demand straight from the analyst platform. -->
+    <button class="hub-tool-card nav-pill tier4-locked" onclick="navigateToTool('tools/presentation.html', 'Presentation')">
+      <div class="hub-tool-icon">🎤</div>
+      <div class="hub-tool-badge">Beta · Demo</div>
+      <h2 class="hub-tool-title nav-pill-title">Presentation</h2>
+      <p class="hub-tool-desc">Build advisor-to-client decks with live research embedded — Clock and Runway v Demand stay current on every open, no manual refresh.</p>
+      <div class="hub-tool-cta">Open Presentation <span>›</span></div>
+    </button>
+
+    <!-- Documents — picker-style page listing research links,
+         whitepapers/strategies, and slide decks. User-managed
+         sections; each card opens its source in a new tab. -->
+    <button class="hub-tool-card nav-pill tier4-locked" onclick="navigateToTool('tools/whitepapers-strategies.html', 'Documents')">
+      <div class="hub-tool-icon">📚</div>
+      <div class="hub-tool-badge">Library</div>
+      <h2 class="hub-tool-title nav-pill-title">Documents</h2>
+      <p class="hub-tool-desc">Research links, whitepapers and strategies, and selling/buying slide decks — pick a folder, then every card opens its source in a new tab.</p>
+      <div class="hub-tool-cta">Open Documents <span>›</span></div>
+    </button>
+
+    <!-- Online Reports: opens a cluster picker so the user chooses which
+         set of regions they want before the report tool itself loads.
+         Tier 2 (company) sees view-only; Tier 3 (client) sees view-only
+         with no PDF download; Tier 0/1 get full edit access. Tier 4
+         (guest) sees this pill blurred behind the wall. -->
+    <button class="hub-tool-card nav-pill tier4-locked" onclick="openOnlineReports({ lite: false })">
+      <div class="hub-tool-icon">📑</div>
+      <div class="hub-tool-badge">Q2 · 2026</div>
+      <h2 class="hub-tool-title nav-pill-title">Online Reports</h2>
+      <p class="hub-tool-desc">Browse in-depth research reports for every Australian capital and major regional market — affordability, yields, demographics, and long-term trends.</p>
+      <div class="hub-tool-cta">Browse Reports <span>›</span></div>
+    </button>
+
+    <!-- ─── Tier-4-allowed pill (Lite Online Reports) ───
+         Reuses the full Online Reports tool — the cluster picker opens,
+         the user picks a region, and online-reports.html boots with the
+         Tier-4 lite gating active (locked pages blurred, synthetic data
+         on locked-page charts, tooltips off everywhere). One source of
+         truth, no duplicate report file to maintain.
+
+         Hidden for Tier 2 + Tier 3 via CSS (they already have full
+         access). Visible to Tier 0/1 for preview/admin oversight, and
+         to Tier 4 as their only usable pill. -->
+    <button class="hub-tool-card nav-pill hub-tool-card-wide tier4-allowed" onclick="openOnlineReports({ lite: true })">
+      <div class="hub-tool-icon">✨</div>
+      <div class="hub-tool-badge">Lite Edition</div>
+      <h2 class="hub-tool-title nav-pill-title">Lite Online Reports</h2>
+      <p class="hub-tool-desc">A streamlined preview of our research reports — top headline metrics, market summaries, and key charts at a glance.</p>
+      <div class="hub-tool-cta">Open Lite Reports <span>›</span></div>
+    </button>
+  </section>
+
+  <!-- Footer -->
+  <footer class="hub-footer main-footer">
+    <div class="hub-footer-text">© 2026 PPA Services Pty Ltd · Performance Property Analytics</div>
+    <div class="hub-footer-right">
+      <span>Confidential · Internal Use</span>
+    </div>
+  </footer>
+
+</div>
+
+<!-- ══════════ ONLINE REPORTS — CLUSTER → REGION PICKER MODAL ══════════
+     Two-step flow:
+       1. Cluster view (default) → 4 tiles: Capital Cities, QLD Regions,
+          NSW Regions, VIC/WA/TAS Regions.
+       2. Region view → list of regions in the chosen cluster, each with
+          an icon. Click → navigates to tools/online-reports.html with
+          ?cluster=...&region=<slug>.
+     The "← Back" link in region view returns to cluster view without
+     closing the modal. ═══════════════════════════════════════════════ -->
+<div id="reportsClusterModal" class="reports-cluster-modal" aria-hidden="true" onclick="if(event.target===this)closeOnlineReports()">
+  <div class="rcm-inner" role="dialog" aria-labelledby="rcm-title">
+    <button class="rcm-close" onclick="closeOnlineReports()" aria-label="Close">×</button>
+
+    <!-- ─── Cluster view (step 1) ─── -->
+    <div class="rcm-view" id="rcmClustersView">
+      <div class="rcm-eyebrow">Online Reports</div>
+      <h2 class="rcm-title" id="rcm-title">Choose a region cluster</h2>
+      <p class="rcm-sub">Reports group by source dataset. Pick the cluster you want to browse — you'll choose a specific region next.</p>
+
+      <div class="rcm-grid">
+        <button class="rcm-tile" onclick="showRegions('capital')">
+          <div class="rcm-icon">🏙️</div>
+          <h3>Capital Cities</h3>
+          <div class="rcm-count">8 markets</div>
+          <p>Sydney, Perth, Melbourne, Brisbane, Adelaide, Canberra, Hobart, Darwin</p>
+        </button>
+
+        <button class="rcm-tile" onclick="showRegions('qld')">
+          <div class="rcm-icon">🌴</div>
+          <h3>QLD Regions</h3>
+          <div class="rcm-count">10 markets</div>
+          <p>Gold Coast, Sunshine Coast, Cairns, Townsville, Toowoomba, Mackay, Bundaberg, Ipswich, Rockhampton, Gladstone</p>
+        </button>
+
+        <button class="rcm-tile" onclick="showRegions('nsw')">
+          <div class="rcm-icon">🏖️</div>
+          <h3>NSW Regions</h3>
+          <div class="rcm-count">9 markets</div>
+          <p>Newcastle, Wollongong, Central Coast, Coffs Harbour, Port Macquarie, Tamworth, Wagga Wagga, Albury, Orange</p>
+        </button>
+
+        <button class="rcm-tile" onclick="showRegions('vicwatas')">
+          <div class="rcm-icon">🏔️</div>
+          <h3>VIC / WA / TAS Regions</h3>
+          <div class="rcm-count">8 markets</div>
+          <p>Geelong, Ballarat, Bendigo, Mildura, Wodonga, Rockingham, Bunbury, Launceston</p>
+        </button>
+      </div>
+    </div>
+
+    <!-- ─── Region view (step 2) ─── -->
+    <div class="rcm-view" id="rcmRegionsView" hidden>
+      <button class="rcm-back" onclick="showClusters()" type="button">← Back to clusters</button>
+      <div class="rcm-eyebrow" id="rcmRegionEyebrow">Cluster</div>
+      <h2 class="rcm-title">Choose a region</h2>
+      <p class="rcm-sub">Each region opens its own research report. Once inside, you can switch to another region in the same cluster from the top-bar dropdown.</p>
+
+      <div class="rcm-grid rcm-region-grid" id="rcmRegionGrid">
+        <!-- region tiles injected by showRegions() -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ─── Cluster picker modal styling — translucent + blurred to
+        match the rest of the hub aesthetic. The frame, tiles, and
+        buttons reuse the cyan accent + Montserrat type from the hub
+        cards. Backdrop opacity bumped DOWN from 0.72 → 0.50 so the
+        hub bg + drifting orbs read through, instead of the modal
+        sitting on a "darker than dark" overlay that felt detached
+        from the dark theme. ─── */
+  .reports-cluster-modal {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(5, 12, 18, 0.50);
+    backdrop-filter: blur(14px) saturate(1.4);
+    -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    z-index: 9100;
+    align-items: center; justify-content: center;
+    padding: 24px;
+    opacity: 0;
+    transition: opacity 0.22s ease;
+  }
+  .reports-cluster-modal.show { display: flex; opacity: 1; }
+
+  /* Inner card scales + lifts subtly on open — matches the hub reveal
+     vocabulary (same ease curve, same lift distance). Replays via the
+     .rcm-inner-active class swap done in JS so reopen-after-close
+     re-triggers the animation. */
+  .reports-cluster-modal .rcm-inner {
+    transform: translateY(14px) scale(0.97);
+    opacity: 0;
+    transition: opacity 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+                transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .reports-cluster-modal.show .rcm-inner {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+
+  /* View-swap (cluster ↔ region step) staggered reveal. JS removes
+     and re-adds the .rcm-view-active class to retrigger animations
+     each time a view is shown. Same cubic-bezier as the hub reveal. */
+  .rcm-view-active .rcm-eyebrow {
+    animation: rcm-fade 0.40s cubic-bezier(0.22, 1, 0.36, 1) 0.00s both;
+  }
+  .rcm-view-active .rcm-title {
+    animation: rcm-fade 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both;
+  }
+  .rcm-view-active .rcm-sub,
+  .rcm-view-active .rcm-back {
+    animation: rcm-fade 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.10s both;
+  }
+  .rcm-view-active .rcm-tile {
+    opacity: 0; transform: translateY(14px);
+    animation: rcm-tile-enter 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  /* 8 tiles in capital cluster, 10 in QLD — stagger 60 ms each. */
+  .rcm-view-active .rcm-tile:nth-of-type(1)  { animation-delay: 0.16s; }
+  .rcm-view-active .rcm-tile:nth-of-type(2)  { animation-delay: 0.22s; }
+  .rcm-view-active .rcm-tile:nth-of-type(3)  { animation-delay: 0.28s; }
+  .rcm-view-active .rcm-tile:nth-of-type(4)  { animation-delay: 0.34s; }
+  .rcm-view-active .rcm-tile:nth-of-type(5)  { animation-delay: 0.40s; }
+  .rcm-view-active .rcm-tile:nth-of-type(6)  { animation-delay: 0.46s; }
+  .rcm-view-active .rcm-tile:nth-of-type(7)  { animation-delay: 0.50s; }
+  .rcm-view-active .rcm-tile:nth-of-type(8)  { animation-delay: 0.54s; }
+  .rcm-view-active .rcm-tile:nth-of-type(9)  { animation-delay: 0.58s; }
+  .rcm-view-active .rcm-tile:nth-of-type(10) { animation-delay: 0.62s; }
+
+  @keyframes rcm-fade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  @keyframes rcm-tile-enter {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0);    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reports-cluster-modal .rcm-inner,
+    .rcm-view-active .rcm-eyebrow,
+    .rcm-view-active .rcm-title,
+    .rcm-view-active .rcm-sub,
+    .rcm-view-active .rcm-back,
+    .rcm-view-active .rcm-tile {
+      opacity: 1; transform: none; animation: none !important; transition: none !important;
+    }
+  }
+
+  .rcm-inner {
+    position: relative;
+    /* Translucent slate gradient + backdrop-filter so the hub bg
+       (and drifting orbs behind it) tint through the modal —
+       matches the hub-tool-card frosted aesthetic. Was a near-
+       opaque rgba(20,35,50,0.98)→rgba(15,25,38,0.99) slab that
+       read as "darker than the hub" instead of part of it. */
+    background: linear-gradient(135deg, rgba(38,49,72,0.78) 0%, rgba(31,40,63,0.82) 100%);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    border: 1.5px solid rgba(0, 182, 203, 0.28);
+    border-radius: 18px;
+    padding: 36px 40px 32px;
+    width: min(960px, 96vw);
+    max-height: 92vh;
+    overflow-y: auto;
+    color: #fff;
+    font-family: 'Montserrat', sans-serif;
+    box-shadow: 0 20px 80px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.05);
+  }
+  .rcm-close {
+    position: absolute; top: 14px; right: 14px;
+    width: 32px; height: 32px;
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 50%;
+    color: rgba(255,255,255,0.7);
+    font-size: 20px; line-height: 1;
+    cursor: pointer;
+    transition: all 0.16s;
+  }
+  .rcm-close:hover { background: rgba(255,255,255,0.08); color: #fff; border-color: rgba(0,182,203,0.5); }
+
+  .rcm-eyebrow {
+    font-size: 10px; font-weight: 800;
+    letter-spacing: 3px; text-transform: uppercase;
+    color: var(--accent, #00b6cb);
+    opacity: 0.85;
+    margin-bottom: 10px;
+  }
+  .rcm-title {
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 900;
+    font-size: clamp(22px, 2.4vw, 30px);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #fff;
+    margin: 0 0 8px;
+    line-height: 1.15;
+  }
+  .rcm-sub {
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1.55;
+    color: rgba(255,255,255,0.55);
+    margin: 0 0 26px;
+    max-width: 720px;
+  }
+
+  .rcm-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+  @media (max-width: 720px) { .rcm-grid { grid-template-columns: 1fr; } }
+
+  .rcm-tile {
+    text-align: left;
+    background: linear-gradient(135deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%);
+    border: 1.5px solid rgba(0, 182, 203, 0.22);
+    border-radius: 14px;
+    padding: 22px 24px;
+    color: inherit;
+    cursor: pointer;
+    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    font-family: inherit;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.18);
+  }
+  .rcm-tile:hover {
+    border-color: rgba(0, 182, 203, 0.7);
+    transform: translateY(-3px);
+    box-shadow: 0 12px 36px rgba(0, 182, 203, 0.18);
+  }
+  .rcm-tile:active { transform: translateY(-1px); }
+  .rcm-icon {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, rgba(0,182,203,0.18) 0%, rgba(0,182,203,0.05) 100%);
+    border: 1px solid rgba(0,182,203,0.28);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+    margin-bottom: 12px;
+  }
+  .rcm-tile h3 {
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 800;
+    font-size: 14px;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    margin: 0 0 4px;
+    color: #fff;
+  }
+  .rcm-count {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    color: var(--accent, #00b6cb);
+    opacity: 0.78;
+    margin-bottom: 10px;
+  }
+  .rcm-tile p {
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: rgba(255,255,255,0.55);
+    margin: 0;
+  }
+
+  /* ─── Region view (step 2) ─── */
+  .rcm-back {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.14);
+    color: rgba(255,255,255,0.78);
+    font-family: 'Montserrat', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-bottom: 16px;
+    transition: all 0.16s;
+  }
+  .rcm-back:hover {
+    background: rgba(0,182,203,0.12);
+    border-color: rgba(0,182,203,0.5);
+    color: #fff;
+  }
+
+  /* Region tiles are slightly more compact than cluster tiles since
+     clusters fan out to 5–8 regions each. 3-up at desktop, 2-up at
+     narrower viewports, 1-up on small screens. */
+  .rcm-region-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  @media (max-width: 880px) { .rcm-region-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 540px) { .rcm-region-grid { grid-template-columns: 1fr; } }
+  .rcm-region-grid .rcm-tile { padding: 18px 20px; }
+  .rcm-region-grid .rcm-icon {
+    width: 36px; height: 36px;
+    font-size: 18px;
+    margin-bottom: 10px;
+  }
+  .rcm-region-grid .rcm-tile h3 { font-size: 13px; letter-spacing: 1.4px; }
+
+  /* ─────────────────────────────────────────────────────────────────
+     Hub reveal animation
+     ─────────────────────────────────────────────────────────────────
+     Triggered when body.on-hub is set — that happens in showMain()
+     (shared/auth.js) on (a) successful login and (b) every fresh hub
+     load (e.g. clicking "Back to Hub" from a tool). Bfcache restores
+     skip the animation since the class is already on body — that's
+     intentional, "instant restore" is bfcache's promise.
+
+     Aesthetic: restrained, professional. No bounce. No scale beyond
+     a subtle 18 px lift on the cards. Same cubic-bezier(0.22, 1, 0.36, 1)
+     ease-out used throughout the toolset for visual consistency.
+
+     Total reveal length ≈ 0.9 s — fast enough to feel responsive,
+     paced enough to be noticeable. */
+
+  /* Hero block: subtle opacity-only reveal — no movement on the
+     headline copy, which keeps the page composed and the user's
+     focus on the staggered tool cards below. */
+  .hub-hero-eyebrow,
+  .hub-hero-title,
+  .hub-hero-subtitle { opacity: 0; }
+  body.on-hub .hub-hero-eyebrow  { animation: hub-hero-fade 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.00s both; }
+  body.on-hub .hub-hero-title    { animation: hub-hero-fade 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both; }
+  body.on-hub .hub-hero-subtitle { animation: hub-hero-fade 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both; }
+
+  /* Tool cards: fade up from 18 px below their final position.
+     Stagger 80 ms between cards so they cascade into place left-to-
+     right (or top-to-bottom on smaller viewports). */
+  .hub-tool-card {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  body.on-hub .hub-tool-card {
+    animation: hub-card-enter 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  body.on-hub .hub-tool-card:nth-of-type(1) { animation-delay: 0.26s; }
+  body.on-hub .hub-tool-card:nth-of-type(2) { animation-delay: 0.32s; }
+  body.on-hub .hub-tool-card:nth-of-type(3) { animation-delay: 0.38s; }
+  body.on-hub .hub-tool-card:nth-of-type(4) { animation-delay: 0.44s; }
+  body.on-hub .hub-tool-card:nth-of-type(5) { animation-delay: 0.50s; }
+  body.on-hub .hub-tool-card:nth-of-type(6) { animation-delay: 0.56s; }
+  body.on-hub .hub-tool-card:nth-of-type(7) { animation-delay: 0.62s; }
+  body.on-hub .hub-tool-card:nth-of-type(8) { animation-delay: 0.68s; }
+  body.on-hub .hub-tool-card:nth-of-type(9) { animation-delay: 0.74s; }
+
+  /* ─── Lite Online Reports pill ───
+     Tier-4 users only ever see this pill usable; the others are
+     blurred + click-blocked. With the auto-fill grid we keep the
+     pill at a single cell on the new tighter layout (a full-row
+     span looks lopsided when there are 7+ cards), but bump the
+     min-height a hair so it reads as the "primary" pill for tier 4. */
+  .hub-tool-card-wide {
+    /* On tier-4 we span the row so the lite pill is the obvious
+       call to action with nothing else in view. For tiers 0-3 it
+       blends in as a normal cell — see body.tier-guest below. */
+    min-height: 210px;
+    padding: 22px 22px 20px;
+  }
+  body.tier-guest .hub-tool-card-wide {
+    grid-column: 1 / -1;
+    min-height: auto;
+    padding: 28px 32px 26px;
+  }
+  .hub-tool-card-wide .hub-tool-title {
+    font-size: clamp(15px, 1.5vw, 20px);
+  }
+  /* Subtle distinction so the Lite pill blends but reads as its own
+     thing — the badge gets a slightly warmer accent so it doesn't
+     compete with the cyan badges above it. */
+  .hub-tool-card-wide .hub-tool-badge {
+    background: rgba(0, 182, 203, 0.06);
+    border-color: rgba(0, 182, 203, 0.18);
+    opacity: 0.75;
+  }
+  @media (max-width: 900px) {
+    /* Phones already pack to fewer columns, so the tier-4 wide pill
+       drops back to a single cell naturally. */
+    body.tier-guest .hub-tool-card-wide { grid-column: auto; padding: 22px 22px 20px; }
+  }
+
+  /* Stats strip now sits between the hero and the tool grid, so it
+     should fade in BEFORE the cards (with the hero subtitle) — not
+     last. Previously it animated at 0.65s as supporting content;
+     keeping that timing now would leave a visible gap. */
+  .hub-stats-wrap { opacity: 0; }
+  body.on-hub .hub-stats-wrap {
+    animation: hub-hero-fade 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.18s both;
+  }
+
+  @keyframes hub-card-enter {
+    from { opacity: 0; transform: translateY(18px); }
+    to   { opacity: 1; transform: translateY(0);    }
+  }
+  @keyframes hub-hero-fade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  /* Honour user accessibility preferences — no animation if they've
+     asked for reduced motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .hub-hero-eyebrow, .hub-hero-title, .hub-hero-subtitle,
+    .hub-tool-card, .hub-stats-wrap { opacity: 1; transform: none; animation: none !important; }
+  }
+
+  /* ─────────────────────────────────────────────────────────────────
+     Tier-4 (Guest / Lite) blur wall
+     ─────────────────────────────────────────────────────────────────
+     Pills 1-4 (.tier4-locked) get blurred and click-blocked when
+     body.tier-guest is set on the hub. The 5th pill (.tier4-allowed,
+     "Lite Online Reports") stays sharp + clickable. A "Contact Us
+     for full access" notice spans the top of the grid pointing
+     locked users at the enquiry form. */
+
+  /* Notice is hidden by default for every tier except guest.
+     Layout: icon (left) — body (middle, flex:1) — CTA pill (right).
+     Stacks vertically on narrow screens. Stronger background tint +
+     accent edge make it read as a banner rather than an inline aside. */
+  .hub-tier4-notice {
+    display: none;
+    grid-column: 1 / -1;
+    margin-bottom: 12px;
+    padding: 24px 28px;
+    background: linear-gradient(135deg,
+        rgba(0, 182, 203, 0.22) 0%,
+        rgba(0, 182, 203, 0.08) 100%);
+    border: 1px solid rgba(0, 182, 203, 0.55);
+    border-left: 4px solid var(--accent, #00b6cb);
+    border-radius: 14px;
+    box-shadow: 0 10px 32px rgba(0, 182, 203, 0.18);
+    align-items: center;
+    gap: 22px;
+    text-align: left;
+  }
+  body.tier-guest .hub-tier4-notice { display: flex; }
+
+  .hub-tier4-notice-icon {
+    font-size: 36px;
+    line-height: 1;
+    flex: 0 0 auto;
+    /* Soft glow under the lock icon — pure cosmetic to draw the eye. */
+    filter: drop-shadow(0 0 14px rgba(0, 182, 203, 0.55));
+  }
+  .hub-tier4-notice-body {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .hub-tier4-notice-eyebrow {
+    font-family: 'Montserrat', sans-serif;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 3.4px;
+    text-transform: uppercase;
+    color: var(--accent, #00b6cb);
+    opacity: 0.95;
+    margin-bottom: 4px;
+  }
+  .hub-tier4-notice-title {
+    font-family: 'Montserrat', sans-serif;
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    color: #fff;
+    margin: 0 0 6px 0;
+    line-height: 1.2;
+  }
+  .hub-tier4-notice-text {
+    font-family: 'Montserrat', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.55;
+    color: rgba(255, 255, 255, 0.82);
+    margin: 0;
+    letter-spacing: 0.2px;
+  }
+  /* Solid teal pill — same visual language as the in-tool
+     lite-locked-overlay-link, so a Tier-4 viewer sees the same CTA
+     style on the hub and inside Lite Online Reports. */
+  .hub-tier4-notice-cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    padding: 13px 26px;
+    background: rgba(0, 182, 203, 0.95);
+    color: #fff;
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 800;
+    font-size: 12px;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    text-decoration: none;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 182, 203, 0.45);
+    transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+    /* Subtle pulse to catch the eye without becoming distracting. */
+    animation: hubTier4CtaPulse 2.6s ease-in-out infinite;
+  }
+  .hub-tier4-notice-cta:hover {
+    background: rgba(0, 200, 218, 1);
+    transform: translateY(-1px);
+    box-shadow: 0 12px 32px rgba(0, 182, 203, 0.6);
+    animation: none;
+  }
+  @keyframes hubTier4CtaPulse {
+    0%, 100% { box-shadow: 0 8px 24px rgba(0, 182, 203, 0.45); }
+    50%      { box-shadow: 0 8px 30px rgba(0, 182, 203, 0.85); }
+  }
+  /* Stack on narrow screens so the icon, copy, and CTA each get a
+     full row. Centred text reads better when the layout collapses. */
+  @media (max-width: 720px) {
+    .hub-tier4-notice {
+      flex-direction: column;
+      text-align: center;
+      gap: 14px;
+      padding: 22px;
+    }
+    .hub-tier4-notice-cta { width: 100%; justify-content: center; }
+  }
+  /* Honour reduced-motion preferences — kill the pulse for users
+     who've asked for less animation. */
+  @media (prefers-reduced-motion: reduce) {
+    .hub-tier4-notice-cta { animation: none !important; }
+  }
+
+  /* Locked pills — blur + click-block + dimming overlay.
+     pointer-events:none on the button stops clicks; the ::after layer
+     adds the dim/blur "wall" feel without a separate DOM element. */
+  body.tier-guest .hub-tool-card.tier4-locked {
+    pointer-events: none;
+    cursor: not-allowed;
+    filter: blur(2.4px) saturate(0.85);
+    transition: filter 0.3s ease;
+  }
+  body.tier-guest .hub-tool-card.tier4-locked:hover {
+    /* Suppress the pill hover lift since it's not interactive. */
+    transform: none;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.28),
+                inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    border-color: rgba(0, 182, 203, 0.22);
+  }
+  body.tier-guest .hub-tool-card.tier4-locked::before {
+    /* Override the normal hover glow — keep the pill looking dim. */
+    opacity: 0.4;
+  }
+  /* Sharp, fully clickable Lite pill — no blur, full hover state. */
+  body.tier-guest .hub-tool-card.tier4-allowed {
+    /* Bump the border so the eye finds it after the blur establishes
+       a visual hierarchy on the rest of the grid. */
+    border-color: rgba(0, 182, 203, 0.55);
+    box-shadow: 0 14px 48px rgba(0, 182, 203, 0.20),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+  body.tier-guest .hub-tool-card.tier4-allowed::before {
+    opacity: 0.45;
+  }
+
+  /* Tier 2 (company) and Tier 3 (client) don't need a "lite" version —
+     they already have access to the full Online Reports tool. Hide the
+     pill for them. Tier 0/1 keep it visible for preview/admin oversight,
+     and Tier 4 sees it as their only usable pill. */
+  body.tier-company .hub-tool-card.tier4-allowed,
+  body.tier-client  .hub-tool-card.tier4-allowed {
+    display: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body.tier-guest .hub-tool-card.tier4-locked {
+      transition: none !important;
+    }
+  }
+
+  /* ─────── Hub → tool page-transition overlay ───────
+     Fades in over the hub when the user clicks a tool pill, hands off
+     visually to the destination tool's loading overlay (which is
+     already visible by default in those tools' HTML). The result reads
+     as one continuous load: hub overlay fades in → navigate → tool's
+     loading overlay is already there → tool's overlay fades out → graphs. */
+  .hub-page-transition {
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse at center,
+        rgba(15, 25, 34, 0.40) 0%,
+        rgba(8, 16, 24, 0.92) 100%);
+    backdrop-filter: blur(14px) saturate(120%);
+    -webkit-backdrop-filter: blur(14px) saturate(120%);
+    z-index: 99999;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.35s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .hub-page-transition.active {
+    opacity: 1;
+    pointer-events: all;
+  }
+  /* The card matches the tools' loading-card so the visual handoff
+     feels continuous — same gradient, same dot wave, same heading
+     slot. The only difference is no region/cluster sub-line. */
+  .hub-page-transition .htp-card {
+    background: linear-gradient(160deg,
+        rgba(28, 44, 60, 0.95) 0%,
+        rgba(18, 30, 42, 0.95) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    padding: 28px 38px 26px;
+    min-width: 320px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    color: rgba(255, 255, 255, 0.92);
+    font-family: var(--hub-font-sans, 'DM Sans', 'Roboto', system-ui, sans-serif);
+    box-shadow:
+      0 20px 60px rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(22, 191, 214, 0.06) inset;
+    /* Card slides up + scales in only when the overlay is .active —
+       otherwise it sits invisible. Animation runs once per click. */
+    transform: translateY(12px) scale(0.96);
+    opacity: 0;
+    transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .hub-page-transition.active .htp-card {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+  .hub-page-transition .htp-dots {
+    display: flex; gap: 8px; align-items: center; height: 14px;
+  }
+  .hub-page-transition .htp-dots span {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: #16bfd6;
+    box-shadow: 0 0 10px rgba(22, 191, 214, 0.55);
+    animation: htp-dot-wave 1.2s ease-in-out infinite;
+  }
+  .hub-page-transition .htp-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .hub-page-transition .htp-dots span:nth-child(3) { animation-delay: 0.30s; }
+  .hub-page-transition .htp-label {
+    font-size: 19px; font-weight: 600; letter-spacing: 0.01em;
+    color: #16bfd6; line-height: 1.2; text-align: center;
+    margin-top: 4px;
+  }
+  .hub-page-transition .htp-sub {
+    font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.45); text-align: center;
+  }
+  @keyframes htp-dot-wave {
+    0%, 60%, 100% { transform: translateY(0)   scale(1);    opacity: 0.5; }
+    30%           { transform: translateY(-6px) scale(1.15); opacity: 1;   }
+  }
+
+  /* ═══ LIGHT-MODE OVERRIDES — Choose a Cluster / Choose a Region ═══
+     The reports-cluster-modal (and its rcm-* descendants) is defined
+     above with hardcoded dark colours, so the [data-theme="light"]
+     token flip in common.css doesn't reach it. The block below
+     mirrors the dark styles with light equivalents — softer backdrop,
+     translucent + blurred card to match hub-tool-card aesthetic,
+     dark text, slate borders, no white-on-white low-contrast surfaces. */
+  [data-theme="light"] .reports-cluster-modal {
+    /* Softer backdrop — was rgba(31,40,63,0.42), which read as a
+       solid dark grey over the light page and made the whole modal
+       feel dark-themed. Lighter slate at lower opacity + a stronger
+       blur lets the hub's drifting orbs tint through, the way the
+       rest of the light-mode UI does. */
+    background: rgba(31, 40, 63, 0.18);
+    backdrop-filter: blur(14px) saturate(1.4);
+    -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  }
+  [data-theme="light"] .rcm-inner {
+    /* Translucent + blurred to match .hub-tool-card light styling
+       (rgba white .62/.50 + blur 18 + saturate 1.5). Was solid
+       white-to-#f8fafd which felt heavy and disconnected from
+       the rest of the light hub. */
+    background: linear-gradient(135deg, rgba(255,255,255,0.72) 0%, rgba(250,251,253,0.62) 100%);
+    backdrop-filter: blur(18px) saturate(1.5);
+    -webkit-backdrop-filter: blur(18px) saturate(1.5);
+    border-color: rgba(0, 182, 203, 0.30);
+    color: #1a2236;
+    box-shadow: 0 20px 80px rgba(31, 40, 63, 0.18),
+                inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  }
+  [data-theme="light"] .rcm-close {
+    border-color: rgba(31, 40, 63, 0.14);
+    color: rgba(31, 40, 63, 0.65);
+  }
+  [data-theme="light"] .rcm-close:hover {
+    background: rgba(31, 40, 63, 0.06);
+    color: #1a2236;
+    border-color: rgba(0, 182, 203, 0.5);
+  }
+  [data-theme="light"] .rcm-title { color: #1a2236; }
+  [data-theme="light"] .rcm-sub { color: rgba(31, 40, 63, 0.60); }
+  [data-theme="light"] .rcm-tile {
+    /* Same translucent treatment as hub-tool-card so the modal
+       cards feel like siblings of the underlying hub tiles. */
+    background: linear-gradient(135deg, rgba(255,255,255,0.62) 0%, rgba(250,251,253,0.50) 100%);
+    backdrop-filter: blur(18px) saturate(1.5);
+    -webkit-backdrop-filter: blur(18px) saturate(1.5);
+    border-color: rgba(0, 182, 203, 0.22);
+    box-shadow: 0 4px 18px rgba(31, 40, 63, 0.06);
+  }
+  [data-theme="light"] .rcm-tile:hover {
+    background: linear-gradient(135deg, rgba(255,255,255,0.72) 0%, rgba(250,251,253,0.60) 100%);
+    border-color: rgba(0, 182, 203, 0.7);
+    box-shadow: 0 12px 36px rgba(0, 182, 203, 0.16);
+  }
+  [data-theme="light"] .rcm-icon {
+    background: linear-gradient(135deg, rgba(0, 182, 203, 0.16) 0%, rgba(0, 182, 203, 0.05) 100%);
+    border-color: rgba(0, 182, 203, 0.30);
+  }
+  [data-theme="light"] .rcm-tile h3 { color: #1a2236; }
+  [data-theme="light"] .rcm-tile p { color: rgba(31, 40, 63, 0.62); }
+  [data-theme="light"] .rcm-back {
+    border-color: rgba(31, 40, 63, 0.16);
+    color: rgba(31, 40, 63, 0.72);
+  }
+  [data-theme="light"] .rcm-back:hover {
+    background: rgba(0, 182, 203, 0.10);
+    border-color: rgba(0, 182, 203, 0.5);
+    color: #1a2236;
+  }
+
+  /* ═══ FIRST-TIME HUB TOUR ═══ */
+  .hub-tour{
+    display:none;position:fixed;inset:0;z-index:9400;
+    background:rgba(5,12,18,.78);backdrop-filter:blur(10px);
+    align-items:center;justify-content:center;padding:24px;
+    opacity:0;transition:opacity .28s ease;
+  }
+  [data-theme="light"] .hub-tour{background:rgba(31,40,63,.55)}
+  .hub-tour.show{display:flex;opacity:1}
+  .hub-tour-card{
+    width:min(460px,96vw);
+    background:linear-gradient(135deg,rgba(20,35,50,.98) 0%,rgba(15,25,38,.99) 100%);
+    border:1.5px solid rgba(0,182,203,.32);border-radius:18px;
+    padding:34px 36px 28px;color:#fff;font-family:'Montserrat',sans-serif;
+    box-shadow:0 24px 80px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.05);
+    animation:hub-tour-pop .42s cubic-bezier(.22,1,.36,1) both;
+  }
+  [data-theme="light"] .hub-tour-card{
+    background:linear-gradient(135deg,#ffffff 0%,#f8fafd 100%);
+    border-color:rgba(0,182,203,.30);color:#1a2236;
+    box-shadow:0 24px 80px rgba(31,40,63,.22);
+  }
+  @keyframes hub-tour-pop{
+    from{opacity:0;transform:translateY(14px) scale(.97)}
+    to  {opacity:1;transform:translateY(0)     scale(1)}
+  }
+  .hub-tour-step-num{
+    font-size:10px;font-weight:800;letter-spacing:3px;text-transform:uppercase;
+    color:var(--accent,#00b6cb);opacity:.85;margin-bottom:8px;
+  }
+  .hub-tour-title{
+    font-weight:900;font-size:22px;letter-spacing:1.4px;text-transform:uppercase;
+    margin:0 0 12px;line-height:1.2;
+  }
+  .hub-tour-text{
+    font-size:13.5px;line-height:1.6;font-weight:500;
+    color:rgba(255,255,255,.72);margin:0 0 26px;
+  }
+  [data-theme="light"] .hub-tour-text{color:rgba(31,40,63,.70)}
+  .hub-tour-actions{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+  }
+  .hub-tour-skip{
+    background:transparent;border:none;cursor:pointer;
+    font-family:inherit;font-size:11px;font-weight:700;
+    letter-spacing:1.5px;text-transform:uppercase;
+    color:rgba(255,255,255,.5);padding:6px 4px;
+    transition:color .15s;
+  }
+  .hub-tour-skip:hover{color:rgba(255,255,255,.85)}
+  [data-theme="light"] .hub-tour-skip{color:rgba(31,40,63,.5)}
+  [data-theme="light"] .hub-tour-skip:hover{color:rgba(31,40,63,.85)}
+  .hub-tour-nav{display:flex;gap:8px}
+  .hub-tour-prev,.hub-tour-next{
+    font-family:inherit;font-weight:800;font-size:11px;
+    letter-spacing:1.5px;text-transform:uppercase;
+    padding:9px 18px;border-radius:6px;cursor:pointer;
+    transition:all .16s;
+  }
+  .hub-tour-prev{
+    background:transparent;color:rgba(255,255,255,.78);
+    border:1px solid rgba(255,255,255,.18);
+  }
+  .hub-tour-prev:hover{background:rgba(255,255,255,.06);color:#fff;border-color:rgba(255,255,255,.32)}
+  .hub-tour-prev:disabled{opacity:.35;cursor:not-allowed}
+  [data-theme="light"] .hub-tour-prev{
+    color:rgba(31,40,63,.72);border-color:rgba(31,40,63,.18);
+  }
+  [data-theme="light"] .hub-tour-prev:hover{
+    background:rgba(31,40,63,.05);color:#0a1520;border-color:rgba(0,182,203,.5);
+  }
+  .hub-tour-next{
+    background:var(--accent,#00b6cb);color:#1f283f;border:1px solid var(--accent,#00b6cb);
+  }
+  .hub-tour-next:hover{background:#00cee8;transform:translateY(-1px);box-shadow:0 6px 18px rgba(0,182,203,.32)}
+  @media (prefers-reduced-motion: reduce){
+    .hub-tour-card{animation:none}
+    .hub-tour-next:hover{transform:none}
+  }
+</style>
+
+<script>
+/* ─── Region cluster catalogue ───
+   Single source of truth for which regions belong to which cluster
+   and how each region is presented (icon + display name + state).
+   Each region's `slug` becomes the ?region=<slug> query param so the
+   report tool can load that region's data file. */
+const REGION_CLUSTERS = {
+  /* Region order in each cluster mirrors the in-tool region dropdown
+     (compareClusterRegions in tools/online-reports.html): alpha by
+     name for capital/qld/nsw, with VIC→WA→TAS state grouping +
+     alpha-within-state for vicwatas. Keeps the hub's "Choose a region"
+     tile order identical to the in-tool dropdown so users find the
+     same region in the same position in both UIs. */
+  capital: {
+    name:  'Capital Cities',
+    intro: 'Capital city research reports — the eight Australian capitals.',
+    regions: [
+      { slug: 'adelaide',  name: 'Adelaide',  state: 'SA',  icon: '🍷' },
+      { slug: 'brisbane',  name: 'Brisbane',  state: 'QLD', icon: '🌞' },
+      { slug: 'canberra',  name: 'Canberra',  state: 'ACT', icon: '🏛️' },
+      { slug: 'darwin',    name: 'Darwin',    state: 'NT',  icon: '🌴' },
+      { slug: 'hobart',    name: 'Hobart',    state: 'TAS', icon: '🏞️' },
+      { slug: 'melbourne', name: 'Melbourne', state: 'VIC', icon: '🚋' },
+      { slug: 'perth',     name: 'Perth',     state: 'WA',  icon: '🌅' },
+      { slug: 'sydney',    name: 'Sydney',    state: 'NSW', icon: '🌉' },
+    ],
+  },
+  qld: {
+    name:  'QLD Regions',
+    intro: 'Major regional Queensland markets.',
+    regions: [
+      { slug: 'bundaberg',      name: 'Bundaberg',      state: 'QLD', icon: '🥃' },
+      { slug: 'cairns',         name: 'Cairns',         state: 'QLD', icon: '🐠' },
+      { slug: 'gladstone',      name: 'Gladstone',      state: 'QLD', icon: '🛢️' },
+      { slug: 'gold-coast',     name: 'Gold Coast',     state: 'QLD', icon: '🏄' },
+      { slug: 'ipswich',        name: 'Ipswich',        state: 'QLD', icon: '🏭' },
+      { slug: 'mackay',         name: 'Mackay',         state: 'QLD', icon: '🍬' },
+      { slug: 'rockhampton',    name: 'Rockhampton',    state: 'QLD', icon: '🐂' },
+      { slug: 'sunshine-coast', name: 'Sunshine Coast', state: 'QLD', icon: '🌊' },
+      { slug: 'toowoomba',      name: 'Toowoomba',      state: 'QLD', icon: '🌹' },
+      { slug: 'townsville',     name: 'Townsville',     state: 'QLD', icon: '🌺' },
+    ],
+  },
+  nsw: {
+    name:  'NSW Regions',
+    intro: 'Major regional New South Wales markets.',
+    regions: [
+      { slug: 'albury',         name: 'Albury',         state: 'NSW', icon: '🌳' },
+      { slug: 'central-coast',  name: 'Central Coast',  state: 'NSW', icon: '🐚' },
+      { slug: 'coffs-harbour',  name: 'Coffs Harbour',  state: 'NSW', icon: '🍌' },
+      { slug: 'newcastle',      name: 'Newcastle',      state: 'NSW', icon: '⚓' },
+      { slug: 'orange',         name: 'Orange',         state: 'NSW', icon: '🍊' },
+      { slug: 'port-macquarie', name: 'Port Macquarie', state: 'NSW', icon: '🐨' },
+      { slug: 'tamworth',       name: 'Tamworth',       state: 'NSW', icon: '🎵' },
+      { slug: 'wagga-wagga',    name: 'Wagga Wagga',    state: 'NSW', icon: '🌾' },
+      { slug: 'wollongong',     name: 'Wollongong',     state: 'NSW', icon: '🏖️' },
+    ],
+  },
+  vicwatas: {
+    name:  'VIC / WA / TAS Regions',
+    intro: 'Major regional markets across Victoria, Western Australia and Tasmania. Mandurah data is sourced from Rockingham.',
+    regions: [
+      { slug: 'ballarat',   name: 'Ballarat',   state: 'VIC', icon: '⛏️' },
+      { slug: 'bendigo',    name: 'Bendigo',    state: 'VIC', icon: '🪙' },
+      { slug: 'geelong',    name: 'Geelong',    state: 'VIC', icon: '🏉' },
+      { slug: 'mildura',    name: 'Mildura',    state: 'VIC', icon: '🍇' },
+      { slug: 'wodonga',    name: 'Wodonga',    state: 'VIC', icon: '🌄' },
+      { slug: 'bunbury',    name: 'Bunbury',    state: 'WA',  icon: '🐋' },
+      { slug: 'rockingham', name: 'Rockingham', state: 'WA',  icon: '🐬' },
+      { slug: 'launceston', name: 'Launceston', state: 'TAS', icon: '🏔️' },
+    ],
+  },
+};
+
+/* Show / hide the picker modal — wired to the hub card's onclick
+   and the modal's own backdrop / × button. Escape also closes. */
+/* Helper: re-trigger CSS entrance animations on a view by toggling
+   the .rcm-view-active class. Removing the class + forcing a reflow
+   + re-adding it makes the keyframe animations restart from frame 0
+   each time the user switches views — without this they'd only run
+   once per session. */
+function activateRcmView(viewEl) {
+  if (!viewEl) return;
+  viewEl.classList.remove('rcm-view-active');
+  /* Force reflow so the browser commits the class removal before the
+     re-add — otherwise the engine batches them and the animation
+     doesn't restart. */
+  void viewEl.offsetWidth;
+  viewEl.classList.add('rcm-view-active');
+}
+
+/* When true, the next region tile click adds &lite=1 to the tool URL
+   so the tool boots in lite mode (blur wall + synthetic data) for any
+   tier — not just guests. Set by the Lite Online Reports pill,
+   cleared by the regular Online Reports pill. Used by showRegions. */
+let __reportsLiteMode = false;
+
+function openOnlineReports(opts) {
+  const wantLite = !!(opts && opts.lite);
+  __reportsLiteMode = wantLite;
+  /* Note: tier-4 protection lives at the BOUNDARIES, not here.
+       1. The regular Online Reports pill has its onclick stripped for
+          guests by neuterTier4LockedPills, so guest clicks can't even
+          reach this function.
+       2. If a guest somehow opens the cluster modal (e.g. via the
+          auto-open round-trip from btn-cluster on a regular report),
+          the tile click that follows hits navigateToTool, which
+          refuses any URL that doesn't carry &lite=1.
+     A guard HERE used to early-return for `isGuestTier() && !wantLite`
+     — but that broke the cluster-button round-trip from the regular
+     report (URL has no &lite=1, guard misfires, modal never opens
+     even for legitimate admin perspectives via the tier-switcher). */
+  const m = document.getElementById('reportsClusterModal');
+  if (!m) return;
+  /* Always reset to the cluster step when (re)opening — never leave
+     the user on a stale region view from a previous session. */
+  showClusters();
+  m.classList.add('show');
+  m.setAttribute('aria-hidden', 'false');
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   PENDING APPROVALS — Admin UI (Tier 0/1)
+   ════════════════════════════════════════════════════════════════════
+   Pill in the topbar shows current pending count and is hidden when
+   there's nothing to action. Modal lists each pending user with
+   Approve / Reject buttons that call the server helpers in auth.js.
+   The 'pp-users-changed' custom event is fired by auth.js after every
+   register / approve / reject — that's our cue to re-render. */
+function isAdminTier() {
+  try {
+    return typeof isAdmin === 'function' && isAdmin();
+  } catch (e) { return false; }
+}
+
+function updatePendingApprovalsPill() {
+  const pill  = document.getElementById('hubPendingPill');
+  const count = document.getElementById('hubPendingCount');
+  if (!pill || !count) return;
+  if (!isAdminTier()) { pill.hidden = true; return; }
+  const pending = (typeof getPendingUsers === 'function') ? getPendingUsers() : [];
+  if (!pending.length) { pill.hidden = true; return; }
+  pill.hidden = false;
+  count.textContent = pending.length;
+}
+
+function openPendingApprovalsModal() {
+  if (!isAdminTier()) return;
+  const m = document.getElementById('pendingApprovalsModal');
+  if (!m) return;
+  renderPendingApprovals();
+  m.classList.add('show');
+  m.setAttribute('aria-hidden', 'false');
+  /* Fire-and-forget refresh so the list reflects any approvals made
+     from another browser since this tab last fetched. */
+  if (typeof fetchUsersFromServer === 'function') {
+    fetchUsersFromServer().then(() => renderPendingApprovals());
+  }
+}
+function closePendingApprovalsModal() {
+  const m = document.getElementById('pendingApprovalsModal');
+  if (!m) return;
+  m.classList.remove('show');
+  m.setAttribute('aria-hidden', 'true');
+}
+
+function refreshPendingApprovals() {
+  if (typeof fetchUsersFromServer !== 'function') { renderPendingApprovals(); return; }
+  fetchUsersFromServer().then(() => renderPendingApprovals());
+}
+
+function renderPendingApprovals() {
+  const list  = document.getElementById('pendingApprovalsList');
+  const empty = document.getElementById('pendingApprovalsEmpty');
+  if (!list || !empty) return;
+  const pending = (typeof getPendingUsers === 'function') ? getPendingUsers() : [];
+
+  if (!pending.length) {
+    list.innerHTML = '';
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+
+  /* Build rows. Each row binds the email into both buttons via
+     data-email so we don't have to re-render after every action —
+     the click handler just reads the attribute. */
+  list.innerHTML = pending.map(u => {
+    const created = u.createdAt ? new Date(u.createdAt).toLocaleString() : '—';
+    const safeName  = String(u.firstName || '').replace(/[<>&]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;' }[c]));
+    const safeEmail = String(u.email || '').replace(/[<>&]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;' }[c]));
+    return ''
+      + '<div class="pending-row">'
+      +   '<div class="pending-row-info">'
+      +     '<div class="pending-row-name">' + safeName + ' &middot; ' + safeEmail + '</div>'
+      +     '<div class="pending-row-meta">Registered ' + created + '</div>'
+      +   '</div>'
+      +   '<button class="pending-row-btn pending-row-reject" data-email="' + safeEmail + '" onclick="handlePendingReject(this)">Reject</button>'
+      +   '<button class="pending-row-btn pending-row-approve" data-email="' + safeEmail + '" onclick="handlePendingApprove(this)">Approve</button>'
+      + '</div>';
+  }).join('');
+}
+
+async function handlePendingApprove(btn) {
+  const email = btn && btn.getAttribute('data-email');
+  if (!email) return;
+  if (typeof approveUserOnServer !== 'function') return;
+  /* Disable both row buttons during the in-flight call — pressing
+     Approve and Reject in quick succession would race the server. */
+  const row = btn.closest('.pending-row');
+  if (row) row.querySelectorAll('button').forEach(b => b.disabled = true);
+  btn.textContent = 'Approving…';
+  const r = await approveUserOnServer(email);
+  if (!r.ok) {
+    alert('Approval failed: ' + (r.error || 'unknown error'));
+    if (row) row.querySelectorAll('button').forEach(b => b.disabled = false);
+    btn.textContent = 'Approve';
+    return;
+  }
+  /* Server cache is refreshed inside approveUserOnServer — re-render
+     the list and pill from the new cache. */
+  renderPendingApprovals();
+  updatePendingApprovalsPill();
+}
+
+async function handlePendingReject(btn) {
+  const email = btn && btn.getAttribute('data-email');
+  if (!email) return;
+  if (typeof rejectUserOnServer !== 'function') return;
+  if (!confirm('Reject and remove the registration for ' + email + '?')) return;
+  const row = btn.closest('.pending-row');
+  if (row) row.querySelectorAll('button').forEach(b => b.disabled = true);
+  btn.textContent = 'Removing…';
+  const r = await rejectUserOnServer(email);
+  if (!r.ok) {
+    alert('Reject failed: ' + (r.error || 'unknown error'));
+    if (row) row.querySelectorAll('button').forEach(b => b.disabled = false);
+    btn.textContent = 'Reject';
+    return;
+  }
+  renderPendingApprovals();
+  updatePendingApprovalsPill();
+}
+
+/* Listen for cross-tab user changes — auth.js fires this event after
+   register / approve / reject. Keeps the topbar pill and modal in
+   sync if the admin has the modal open while another tab approves. */
+document.addEventListener('pp-users-changed', () => {
+  updatePendingApprovalsPill();
+  /* Only re-render the list while the modal is visible. */
+  const m = document.getElementById('pendingApprovalsModal');
+  if (m && m.classList.contains('show')) renderPendingApprovals();
+});
+
+/* Sync the Property Clock card's edition badge with whatever
+   subtitle the clock currently has saved (HDR.subtitleL — e.g.
+   "EDITION 3 – 2026"). Falls back silently to the hardcoded
+   "Edition 3 · 2026" if the cloud bin is unreachable (live-server,
+   offline, etc.) or empty. Format conversion: clock stores
+   uppercase + en-dash; the hub reads better with title-case + a
+   middle dot, so we re-emit it that way.
+
+   `cache: 'no-store'` belt-and-braces: the Netlify function already
+   sends `Cache-Control: no-store`, but adding it on the request side
+   too prevents any stale browser-cache or CDN edge response from
+   slipping through (the symptom user reported: hub shows "Edition 3"
+   even after saving "EDITION 4" inside the clock tool).
+
+   In-flight guard avoids piling up parallel fetches when watchHubReveal
+   triggers tryUpdate multiple times in quick succession (initial load
+   + 1.5 s + 4 s settles + every body-class mutation + pageshow). */
+let _syncClockBadgeInFlight = false;
+function syncClockEditionBadge(){
+  if (_syncClockBadgeInFlight) return;
+  if (!window.sb) return;
+  _syncClockBadgeInFlight = true;
+  window.sb.from('clock_state').select('payload').eq('id', 1).single()
+    .then(({ data, error }) => {
+      if (error) return;
+      const state = data && data.payload;
+      const sub = state && state.hdr && (state.hdr.subtitleL || state.hdr.subtitleR);
+      if (!sub) return;
+      const m = String(sub).match(/EDITION\s*(\d+)\s*[–—\-]\s*(\d{4})/i);
+      const text = m ? ('Edition ' + m[1] + ' · ' + m[2]) : String(sub);
+      const badge = document.getElementById('clockEditionBadge');
+      if (badge) badge.textContent = text;
+    })
+    .catch(() => {})
+    .finally(() => { _syncClockBadgeInFlight = false; });
+}
+/* Initial fire — covers the cold-load path. watchHubReveal below
+   will re-fire it on every hub appearance after that. */
+syncClockEditionBadge();
+
+/* Initial pill state — runs once the hub paints. showMain() in
+   auth.js sets body.on-hub; we hook off that via a MutationObserver
+   so the pill update fires whether the user just logged in OR
+   restored from bfcache. */
+(function watchHubReveal() {
+  function tryUpdate() {
+    if (document.body.classList.contains('on-hub')) {
+      updatePendingApprovalsPill();
+      /* Re-fetch the clock edition badge every time the hub becomes
+         visible — covers the user-reported case where the clock tool
+         saved "Edition 4" but the hub kept showing "Edition 3" because
+         the IIFE that originally fired this only ran once at first
+         page-load. The in-flight guard inside the fn dedupes the
+         multi-trigger pattern (initial + observer + pageshow + 1.5/4 s
+         settles). */
+      if (typeof syncClockEditionBadge === 'function') syncClockEditionBadge();
+    }
+    /* Idempotent — strips onclick + sets disabled on every fire.
+       Subsequent calls are no-ops (attributes already gone). Catches
+       the fresh-login path too, where applyAccessRestrictions runs
+       inside auth.js after the bootstrap above already ran.
+       typeof guard because neuterTier4LockedPills is declared in a
+       LATER inline <script> block, so it isn't yet defined when this
+       IIFE first fires. Hoisting doesn't cross script-block
+       boundaries — without the guard the immediate tryUpdate() call
+       throws ReferenceError and halts the rest of THIS script block,
+       which also breaks the cluster-modal auto-open IIFE further
+       below. The MutationObserver-driven fires that come later will
+       see the function defined and run it normally. */
+    if (typeof neuterTier4LockedPills === 'function') neuterTier4LockedPills();
+  }
+  tryUpdate();
+  const obs = new MutationObserver(tryUpdate);
+  obs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  /* Also re-check after the cache settles — the initial fetch in
+     auth.js races our initial render. */
+  setTimeout(tryUpdate, 1500);
+  setTimeout(tryUpdate, 4000);
+  /* Restore-from-bfcache path. */
+  window.addEventListener('pageshow', () => setTimeout(tryUpdate, 50));
+})();
+function closeOnlineReports() {
+  const m = document.getElementById('reportsClusterModal');
+  if (!m) return;
+  m.classList.remove('show');
+  m.setAttribute('aria-hidden', 'true');
+  /* Strip view-active classes on close so the next open replays the
+     entrance animation from frame 0. */
+  document.querySelectorAll('#reportsClusterModal .rcm-view').forEach(v => {
+    v.classList.remove('rcm-view-active');
+  });
+}
+
+/* Step 1 → step 2: render the cluster's regions and switch views. */
+function showRegions(clusterKey) {
+  const cluster = REGION_CLUSTERS[clusterKey];
+  if (!cluster) return;
+
+  const eyebrow = document.getElementById('rcmRegionEyebrow');
+  const grid    = document.getElementById('rcmRegionGrid');
+  if (eyebrow) eyebrow.textContent = cluster.name;
+  if (!grid) return;
+
+  grid.innerHTML = '';
+  cluster.regions.forEach((r) => {
+    const tile = document.createElement('button');
+    tile.className = 'rcm-tile';
+    tile.type = 'button';
+    /* Build the URL with both cluster + region params so the report
+       tool knows the source dataset and the specific market. Click
+       routes through navigateToTool() so the same blur-overlay
+       transition the user sees on the other tool pills plays here
+       too — keeps the entire flow visually consistent. */
+    tile.onclick = () => {
+      const url = 'tools/online-reports.html'
+                + '?cluster=' + encodeURIComponent(clusterKey)
+                + '&region='  + encodeURIComponent(r.slug)
+                + (__reportsLiteMode ? '&lite=1' : '');
+      navigateToTool(url, r.name);
+    };
+    tile.innerHTML =
+      '<div class="rcm-icon">' + r.icon + '</div>' +
+      '<h3>' + r.name + '</h3>' +
+      '<div class="rcm-count">' + r.state + '</div>';
+    grid.appendChild(tile);
+  });
+
+  document.getElementById('rcmClustersView').hidden = true;
+  document.getElementById('rcmRegionsView').hidden  = false;
+  /* Reset scroll on the modal frame so step-2 starts at the top. */
+  const inner = document.querySelector('#reportsClusterModal .rcm-inner');
+  if (inner) inner.scrollTop = 0;
+  /* Trigger the entrance stagger for the region view. */
+  activateRcmView(document.getElementById('rcmRegionsView'));
+}
+
+/* Step 2 → step 1: back to clusters. */
+function showClusters() {
+  const c = document.getElementById('rcmClustersView');
+  const r = document.getElementById('rcmRegionsView');
+  if (c) c.hidden = false;
+  if (r) r.hidden = true;
+  /* Trigger the entrance stagger for the cluster view. */
+  activateRcmView(c);
+}
+
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Escape') return;
+  const m = document.getElementById('reportsClusterModal');
+  if (!m || !m.classList.contains('show')) return;
+  /* Escape goes back-step-by-step: if on the region view, return to
+     cluster view; if already on cluster view, close the modal. */
+  const onRegions = !document.getElementById('rcmRegionsView').hidden;
+  if (onRegions) showClusters();
+  else           closeOnlineReports();
+});
+
+/* ── Auto-open Online Reports modal when arriving from the report
+      tool's "Cluster" button. The tool sends users back with
+      ?openReports=cluster in the URL; we open the modal at the
+      first step — the 4-tile cluster picker.
+
+   Robust open sequence: tries DOMContentLoaded, window.load, a
+   short setTimeout, AND pageshow (bfcache restore). The `opened`
+   flag makes the call idempotent — only the FIRST successful open
+   actually shows the modal; subsequent fire-points become no-ops.
+   Belt-and-braces because earlier reports of "modal doesn't open"
+   pointed at one or another of these timings being unreliable on
+   some browsers / cache states. */
+(function () {
+  const params = new URLSearchParams(location.search);
+  const want = params.get('openReports');
+  if (want !== 'cluster') return;
+  let opened = false;
+  const open = () => {
+    if (opened) return;
+    if (typeof openOnlineReports !== 'function') return;
+    const m = document.getElementById('reportsClusterModal');
+    if (!m) return;
+    opened = true;
+    /* Preserve lite mode round-trip: if the in-tool "Cluster" button
+       sent ?lite=1 along with ?openReports=cluster, re-open the modal
+       in lite mode so the next region tile gets &lite=1 too. */
+    const liteFlag = params.get('lite') === '1';
+    try {
+      openOnlineReports({ lite: liteFlag });
+    } catch (e) {
+      /* Restore so a later event can retry. */
+      opened = false;
+      return;
+    }
+    /* Strip the param so a refresh doesn't keep re-opening. */
+    if (history && history.replaceState) {
+      const url = new URL(location.href);
+      url.searchParams.delete('openReports');
+      history.replaceState({}, '', url.toString());
+    }
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', open, { once: true });
+  } else {
+    open();
+  }
+  /* Fallbacks — if DOMContentLoaded already fired or the registered
+     handler missed (e.g. a stylesheet was still blocking layout),
+     these catch the gap. window.load is the latest safety net. */
+  window.addEventListener('load', open, { once: true });
+  /* Microtask + small tick — runs after the current script block
+     finishes (so the bootstrap's showMain() has set body.on-hub etc.)
+     but before any external resources finish. Doubles as an
+     immediate retry if the IIFE itself ran with the document ready. */
+  setTimeout(open, 0);
+  setTimeout(open, 200);
+})();
+</script>
+
+<!-- ══════════ FIRST-TIME HUB TOUR ══════════
+     A 4-step welcome overlay shown to a user the first time they
+     land on the hub (per browser, persisted in localStorage). Skips
+     on later visits. Skipped for Tier 4 guests (their blur wall +
+     CTA banner already onboard them). Kept light: 4 short cards,
+     no element-spotlight magic, no positioning fragility — just
+     centered modal with prev/next/skip. -->
+<div id="hub-tour" class="hub-tour" aria-hidden="true">
+  <div class="hub-tour-card" role="dialog" aria-labelledby="hub-tour-title">
+    <div class="hub-tour-step-num">Step <span id="hub-tour-step">1</span> of 4</div>
+    <h2 class="hub-tour-title" id="hub-tour-title"></h2>
+    <p class="hub-tour-text" id="hub-tour-text"></p>
+    <div class="hub-tour-actions">
+      <button class="hub-tour-skip" id="hub-tour-skip" type="button">Skip tour</button>
+      <div class="hub-tour-nav">
+        <button class="hub-tour-prev" id="hub-tour-prev" type="button">Back</button>
+        <button class="hub-tour-next" id="hub-tour-next" type="button">Next</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* Hub first-time tour — runs once per browser, persisted in
+   localStorage. Skips for Tier 4 guests (their tier already has
+   its own onboarding via the locked-tools blur wall + CTA). 4
+   short steps, centered modal, no element-spotlight tricks. */
+(function setupHubTour(){
+  const KEY = 'pp-hub-tour-v1';
+  const tier = sessionStorage.getItem('pp_auth_level') || '';
+  if (tier === 'guest') return;
+  try { if (localStorage.getItem(KEY) === 'seen') return; } catch (_) {}
+
+  const steps = [
+    {
+      title: 'Welcome aboard',
+      text: 'This is the Performance Property workspace — your suite of property-data tools. Let\'s do a quick 30-second tour.'
+    },
+    {
+      title: 'Pick a tool',
+      text: 'Each card opens a different view: Property Clock, Demand Score Dashboard, Runway v Demand, Online Reports. Click any tile to dive in.'
+    },
+    {
+      title: 'Light or dark — your call',
+      text: 'The sun/moon toggle in the top-right flips the whole app between dark and light. Your choice persists across sessions and devices.'
+    },
+    {
+      title: 'You\'re ready',
+      text: 'That\'s the tour. Click any tool to start. If you ever want this tour again, ask an admin to reset it for you.'
+    }
+  ];
+
+  let cur = 0;
+  const tour = document.getElementById('hub-tour');
+  const stepEl = document.getElementById('hub-tour-step');
+  const titleEl = document.getElementById('hub-tour-title');
+  const textEl = document.getElementById('hub-tour-text');
+  const prevBtn = document.getElementById('hub-tour-prev');
+  const nextBtn = document.getElementById('hub-tour-next');
+  const skipBtn = document.getElementById('hub-tour-skip');
+  if (!tour || !stepEl || !nextBtn) return;
+
+  function render(){
+    const step = steps[cur];
+    stepEl.textContent = String(cur + 1);
+    titleEl.textContent = step.title;
+    textEl.textContent = step.text;
+    prevBtn.disabled = cur === 0;
+    nextBtn.textContent = cur === steps.length - 1 ? 'Got it' : 'Next';
+  }
+  function show(){ tour.classList.add('show'); render(); }
+  function dismiss(){
+    tour.classList.remove('show');
+    try { localStorage.setItem(KEY, 'seen'); } catch (_) {}
+  }
+  prevBtn.addEventListener('click', () => { if (cur > 0) { cur--; render(); } });
+  nextBtn.addEventListener('click', () => {
+    if (cur < steps.length - 1) { cur++; render(); }
+    else dismiss();
+  });
+  skipBtn.addEventListener('click', dismiss);
+
+  /* Show after the hub-reveal animation finishes (~0.9 s of staggered
+     card fades). 1500 ms gives a comfortable beat after the welcome
+     overlay clears. Only fires when body.on-hub is set, so we don't
+     pop the tour on the login screen. */
+  function maybeShow(){
+    if (document.body && document.body.classList.contains('on-hub')) {
+      show();
+    } else {
+      setTimeout(maybeShow, 250);
+    }
+  }
+  setTimeout(maybeShow, 1500);
+})();
+</script>
+
+<!-- ══════════ TIER SWITCHER (Tier 0 / dev only) ══════════ -->
+<!-- ══════════ TIER SWITCHER (Tier 0 / dev only) ══════════ -->
+<div id="tier-switcher">
+  <button class="ts-toggle" onclick="toggleTierSwitcher()" title="View as tier — dev tool">
+    <span class="ts-eye">👁</span>
+    <span>View as: </span>
+    <span id="ts-current-label">TIER 0</span>
+  </button>
+  <div id="ts-menu">
+    <div class="ts-menu-header">Switch Tier Perspective</div>
+    <button data-tier="dev" onclick="setViewAs('dev')">TIER 0 <span class="ts-sub">Dev / Full access</span></button>
+    <button data-tier="admin" onclick="setViewAs('admin')">TIER 1 <span class="ts-sub">Admin</span></button>
+    <button data-tier="company" onclick="setViewAs('company')">TIER 2 <span class="ts-sub">Company staff</span></button>
+    <button data-tier="guest" onclick="setViewAs('guest')">TIER 3 <span class="ts-sub">External viewer</span></button>
+  </div>
+</div>
+
+<script src="shared/auth.js"></script>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+ * HUB "AT A GLANCE" STATS — manually kept in sync with the Runway tool's data.
+ *
+ * When Van's Python script updates tools/runway-demand.html with a new month
+ * of data, it should ALSO update these three values so the hub stays accurate:
+ *
+ *   regions  — total unique markets tracked (count HR + UR names, deduped)
+ *   months   — total number of monthly data points in RAW
+ *   latest   — the most recent month label, e.g. "Apr 2026"
+ *
+ * These are manually maintained because the Runway data isn't loaded on the
+ * hub page (it would be a waste of bandwidth for the brief moment users spend
+ * on the landing screen).
+ * ═══════════════════════════════════════════════════════════════════════════ */
+window.PP_HUB_STATS = {
+  /* 35 markets: 8 capitals + 10 QLD + 9 NSW + 8 VIC/WA/TAS regions.
+     Was 36 — dropped to 35 when Mandurah was retired in favour of
+     Rockingham as its data source (so Mandurah no longer counts as
+     its own market). Keep this in sync with REGION_CLUSTERS below
+     and the Runway tool's region list. */
+  regions: 35,
+  months:  16,
+  latest:  'Apr 2026',
+};
+
+/* Strip onclick attributes from .tier4-locked pills for guest users
+   so they have no inline handler at all — devtools shows a button
+   with no click action wired up. Combined with the JS-level guards
+   in navigateToTool / openOnlineReports, this means even bypassing
+   the CSS pointer-events:none and the blur leaves the pills inert.
+   (URL typing into the address bar is still possible — that's the
+   server-side gate that comes with the Supabase migration.) */
+function neuterTier4LockedPills() {
+  if (!isGuestTier()) return;
+  document.querySelectorAll('.hub-tool-card.tier4-locked').forEach(btn => {
+    btn.removeAttribute('onclick');
+    /* Also disable so keyboard tabbing + Enter / Space don't trigger
+       a click-equivalent on the button. */
+    btn.disabled = true;
+  });
+}
+
+/* Hub-page bootstrap: if a session is already active, skip straight to the hub.
+   Otherwise auth.js has wired up the login form and we stay on step 1. */
+if (sessionStorage.getItem('pp_auth') === '1') {
+  const login = document.getElementById('loginScreen');
+  if (login) login.style.display = 'none';
+  applyAccessRestrictions();
+  neuterTier4LockedPills();
+  showMain();
+}
+
+/* Re-show the hub if the user navigates BACK from a tool with bfcache —
+   without this, Safari/Chrome restore the page mid-transition (overlay
+   still active) and the hub feels frozen. */
+window.addEventListener('pageshow', (ev) => {
+  const overlay = document.getElementById('hub-page-transition');
+  if (overlay) overlay.classList.remove('active');
+});
+
+/* ─── Hub → tool page transition ───
+   Smoother experience: clicking a tool pill fades the hub out behind
+   a blurred card before navigating. The destination tool's own
+   loading overlay is visible by default in its HTML, so the user's
+   experience reads as one continuous load:
+     pill click → fade-in (350 ms) → navigate → tool's loading
+     overlay (3 s+) → fade-out (450 ms) → graphs.
+   Card heading is set per tool so the user sees what they're
+   loading even during the hub-side transition. */
+/* Tier-4 guests cannot navigate to the locked tools, even if they
+   defeat the visual blur via devtools. The CSS `pointer-events:none`
+   blocks UI clicks but leaves both the inline onclick handler and
+   this function callable from the console. Guard at navigateToTool
+   below so console / programmatic calls fail closed. The Lite
+   Online Reports flow always emits a URL with &lite=1, which the
+   guard whitelists — that's the only path Tier-4 is allowed to
+   navigate. openOnlineReports itself has no tier guard; the cluster
+   modal can be opened freely (the navigation guard catches the tile
+   click downstream). */
+function isGuestTier() {
+  try {
+    const v = sessionStorage.getItem('pp_view_as') ||
+              sessionStorage.getItem('pp_auth_level') || '';
+    return v === 'guest';
+  } catch (e) { return false; }
+}
+
+function navigateToTool(url, label) {
+  if (isGuestTier() && !/[?&]lite=1(?:&|$)/.test(String(url))) {
+    /* Tier-4 can only navigate to lite-mode URLs (?lite=1 set by the
+       Lite Online Reports flow — pill → cluster picker → region tile).
+       Every other tool URL silently no-ops. No alert; landing them
+       back on the hub with its "Contact Us" CTA is the right outcome. */
+    return;
+  }
+  const overlay = document.getElementById('hub-page-transition');
+  const lab = document.getElementById('hub-page-transition-label');
+  if (lab && label) lab.textContent = 'Loading ' + label;
+  if (!overlay) { location.href = url; return; }
+  overlay.classList.add('active');
+  /* Match the CSS opacity transition (0.35 s) before navigating so
+     the hub fully blurs out before the page tear-down. */
+  setTimeout(() => { location.href = url; }, 350);
+}
+</script>
+
+<!-- Page-transition overlay: hidden by default; activated by
+     navigateToTool() when the user clicks a tool pill. The label
+     ("Loading [tool]") is set per pill so the user sees what they're
+     loading even before the destination page has started. -->
+<div id="hub-page-transition" class="hub-page-transition" role="status" aria-live="polite" aria-hidden="true">
+  <div class="htp-card">
+    <div class="htp-dots" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+    <div class="htp-label" id="hub-page-transition-label">Loading…</div>
+    <div class="htp-sub">Fetching live data</div>
+  </div>
+</div>
+</body>
+</html>

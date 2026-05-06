@@ -1,0 +1,3394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Property Clock — Performance Property</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<link rel="stylesheet" href="../shared/common.css"/>
+<script src="../shared/theme.js"></script>
+<style>
+/* Static futuristic gradient — same phase-1 palette as the hub
+   animation but without the per-frame keyframe interpolation or
+   GPU-heavy blurred orbs. Keeps the deep-tech vibe without the
+   compositor cost on a tool that's already running ECharts/D3
+   rendering. */
+#clockView{
+  display:none;flex-direction:column;width:100%;min-height:100vh;
+  background: linear-gradient(160deg, #0f172a 0%, #1e1b4b 50%, #082f49 100%);
+}
+[data-theme="light"] #clockView{
+  background: linear-gradient(160deg, #f0f9ff 0%, #e0e7ff 50%, #cffafe 100%);
+}
+#clockView .view-inner{
+  flex:1;display:flex;flex-direction:column;align-items:center;
+  padding:12px 6px 60px;
+}
+
+/* ══════════ Back to hub button — EXACT copy of the Demand Dashboard
+   pattern (#pp-back-to-hub). Fixed top-left, frosted dark pill, no
+   bar/strip behind it. ══════════ */
+#pp-back-to-hub{
+  position:fixed; top:16px; left:16px; z-index:10000;
+  display:inline-flex; align-items:center; gap:8px;
+  padding:9px 14px 9px 10px;
+  background:rgba(15,23,42,.85);        /* dark slate with opacity */
+  border:1px solid rgba(71,85,105,.5);  /* slate border */
+  border-radius:10px;
+  color:#e2e8f0;
+  font-family:'DM Sans',system-ui,-apple-system,sans-serif;
+  font-size:13px; font-weight:600; letter-spacing:.01em;
+  text-decoration:none; cursor:pointer;
+  white-space:nowrap;                   /* keep "Back to Hub" on one line */
+  backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+  transition:all .15s ease;
+}
+#pp-back-to-hub:hover{
+  background:rgba(30,41,59,.95);
+  border-color:rgba(148,163,184,.5);
+  color:#f8fafc;
+  transform:translateX(-1px);
+}
+#pp-back-to-hub svg{ width:14px; height:14px; }
+[data-theme="light"] #pp-back-to-hub{
+  background:rgba(255,255,255,.85);
+  border-color:rgba(31,40,63,.18);
+  color:#1a2236;
+}
+[data-theme="light"] #pp-back-to-hub:hover{
+  background:rgba(255,255,255,.97);
+  border-color:rgba(0,182,203,.55);
+  color:#0a1520;
+}
+
+/* ══════════ Theme toggle — same visual vocabulary, round 36px,
+   sits at left:160px just past the back-to-hub pill. ══════════ */
+#cl-theme-toggle{
+  position:fixed; top:16px; left:160px; z-index:10000;
+  display:inline-flex; align-items:center; justify-content:center;
+  width:36px; height:36px; border-radius:50%;
+  padding:0; cursor:pointer;
+  background:rgba(15,23,42,.85);
+  border:1px solid rgba(71,85,105,.5);
+  color:#e2e8f0;
+  backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+  transition:all .15s ease;
+}
+#cl-theme-toggle:hover{
+  background:rgba(30,41,59,.95);
+  border-color:rgba(148,163,184,.5);
+  color:#f8fafc;
+  transform:translateY(-1px);
+}
+#cl-theme-toggle svg{ width:15px; height:15px; display:block; }
+#cl-theme-toggle .pp-sun{display:block}
+#cl-theme-toggle .pp-moon{display:none}
+[data-theme="light"] #cl-theme-toggle{
+  background:rgba(255,255,255,.85);
+  border-color:rgba(31,40,63,.18);
+  color:#1a2236;
+}
+[data-theme="light"] #cl-theme-toggle:hover{
+  background:rgba(255,255,255,.97);
+  border-color:rgba(0,182,203,.55);
+  color:#0a1520;
+}
+[data-theme="light"] #cl-theme-toggle .pp-sun{display:none}
+[data-theme="light"] #cl-theme-toggle .pp-moon{display:block}
+
+
+/* ═══ CLOCK CSS ═══ */
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+#clockView .page{background:#fff;width:100%;max-width:1700px;box-shadow:0 8px 60px rgba(0,0,0,.5);border-radius:4px;overflow:hidden}
+
+/* ══ HEADER ══ */
+#clockView .page-header{display:flex;align-items:stretch;justify-content:space-between;padding:18px 28px 10px;border-bottom:none;gap:18px;background:#e8ebef}
+#clockView .page-header.single-clock-view{justify-content:center;gap:40px}
+.brand{display:flex;align-items:center;justify-content:center;flex:0 0 auto;padding:10px 20px;background:transparent;border-radius:0;min-height:80px}
+#clockView .brand img{height:50px;width:auto;display:block;filter:invert(1) hue-rotate(180deg)}
+/* Dark-navy title blocks that flank the centre logo */
+.clock-title-block{display:flex;flex-direction:column;justify-content:center;align-items:flex-start;background:transparent;color:#1f283f;padding:6px 4px;border-radius:0;min-width:250px;flex:0 0 auto;position:relative}
+.clock-title-block.right{align-items:flex-end;text-align:right}
+.ctb-kicker{font-family:'Montserrat',sans-serif;font-weight:800;font-size:11px;letter-spacing:3px;text-transform:uppercase;color:#6c7689;line-height:1.1}
+.ctb-main{font-family:'Montserrat',sans-serif;font-weight:900;font-size:30px;letter-spacing:4px;text-transform:uppercase;color:#1f283f;line-height:1.05;margin-top:4px}
+.ctb-edition-pill{display:inline-block;margin-top:9px;padding:3px 10px;background:#00b6cb;color:#000;font-family:'Montserrat',sans-serif;font-weight:800;font-size:9.5px;letter-spacing:2px;text-transform:uppercase;border-radius:10px}
+@media(max-width:900px){
+  .clock-title-block{min-width:auto;padding:10px 16px}
+  .ctb-main{font-size:18px}
+}
+
+/* ══ TOOLBAR ══ */
+/* Toolbar lives OUTSIDE .page now (see DOM) so it floats directly
+   on the #clockView gradient. Transparent bg + no border makes it
+   read as part of the gradient — the bg follows the dark/light
+   theme automatically. Buttons inside stay white-pill so they're
+   readable on either gradient. */
+#clockView .toolbar{display:flex;align-items:center;justify-content:center;gap:18px;background:transparent;border:none;padding:8px 16px;flex-wrap:wrap}
+#clockView .tabs{display:flex;gap:6px}
+/* Both / Houses / Units tabs — Online-Reports cyan-pill design.
+   Inactive: cyan-tint background + light text. Active: solid cyan
+   pill + ink text — same active-state vocabulary as the page-jump
+   buttons in online-reports' .pager. */
+#clockView .tab{
+  padding:7px 14px;
+  font-family:'Roboto',sans-serif;font-weight:600;font-size:11px;
+  letter-spacing:.04em;
+  border:1px solid rgba(92,200,224,0.5);
+  border-radius:6px;
+  background:rgba(92,200,224,0.18);
+  color:#fff;
+  cursor:pointer;transition:.15s;white-space:nowrap;
+  margin-bottom:0;
+}
+#clockView .tab:hover:not(.active){
+  background:rgba(92,200,224,0.36);
+  border-color:rgba(92,200,224,0.75);
+}
+#clockView .tab.active{
+  background:#5cc8e0;
+  color:#0a1520;
+  border-color:#5cc8e0;
+  font-weight:700;
+}
+[data-theme="light"] #clockView .tab{
+  color:#0a1520;
+  background:rgba(0,182,203,.16);
+  border-color:rgba(0,182,203,.55);
+}
+[data-theme="light"] #clockView .tab:hover:not(.active){
+  background:rgba(0,182,203,.30);
+  border-color:rgba(0,182,203,.75);
+}
+[data-theme="light"] #clockView .tab.active{
+  background:#5cc8e0;
+  color:#0a1520;
+  border-color:#5cc8e0;
+}
+.toolbar-right{display:flex;align-items:center;justify-content:center;gap:5px;padding:6px 0;flex-wrap:wrap}
+
+/* View / Edit segmented pill (Tier 0/1 only) — exact vocabulary
+   from Online Reports' .mode-toggle. Cyan border, transparent
+   inactive bg, solid cyan + ink active. */
+#clockView .mode-toggle{
+  display:inline-flex;
+  border:1px solid rgba(92,200,224,0.55);
+  border-radius:6px;
+  overflow:hidden;
+}
+#clockView .mode-toggle button{
+  border:none;
+  background:transparent;
+  color:rgba(255,255,255,.7);
+  padding:6px 14px;cursor:pointer;
+  font-family:'Roboto',sans-serif;font-weight:600;font-size:11px;
+  letter-spacing:.04em;transition:.15s;white-space:nowrap;
+}
+#clockView .mode-toggle button + button{border-left:1px solid rgba(92,200,224,0.32)}
+#clockView .mode-toggle button:hover:not(.on){background:rgba(92,200,224,0.18);color:#fff}
+#clockView .mode-toggle button.on{background:#5cc8e0;color:#0a1520;font-weight:700}
+[data-theme="light"] #clockView .mode-toggle{border-color:rgba(0,182,203,0.55)}
+[data-theme="light"] #clockView .mode-toggle button{color:rgba(31,40,63,.78)}
+[data-theme="light"] #clockView .mode-toggle button + button{border-left-color:rgba(0,182,203,0.32)}
+[data-theme="light"] #clockView .mode-toggle button:hover:not(.on){background:rgba(0,182,203,.18);color:#0a1520}
+[data-theme="light"] #clockView .mode-toggle button.on{background:#5cc8e0;color:#0a1520}
+
+/* Hide every .edit-only control until body.edit-mode is set by the
+   Edit pill click. Tier 0/1 admins land on a clean read-only canvas
+   matching the Online Reports default. Tier 2/3/4 never see the pill
+   (it's .tier1-only) and applyAccessRestrictions in shared/auth.js
+   already handles their separate restrictions, so this rule just
+   layers cleanly on top. */
+body:not(.edit-mode) #clockView .edit-only{display:none !important}
+/* View mode: neutralise the canvas-level edit affordances too. The
+   drag-start handlers themselves also bail out when edit-mode is
+   off (belt-and-braces), but killing the cursors + hover hints
+   keeps the canvas from advertising interactions a viewer can't
+   actually perform. Region labels, custom text labels, header
+   inline-edit fields, and overlay images are all covered. */
+body:not(.edit-mode) #clockView .city-label,
+body:not(.edit-mode) #clockView .ct-label .ct-hit,
+body:not(.edit-mode) #clockView .hdr-editable,
+body:not(.edit-mode) #clockView .overlay-img-group{cursor:default}
+body:not(.edit-mode) #clockView .city-label:hover .lbl-hit{fill:transparent}
+body:not(.edit-mode) #clockView .ct-label:hover .ct-hit{stroke:none!important}
+body:not(.edit-mode) #clockView .hdr-editable:hover{background:transparent}
+body:not(.edit-mode) #clockView .overlay-img-group:hover .resize-handle,
+body:not(.edit-mode) #clockView .overlay-img-group:hover .img-border-rect{opacity:0;stroke:transparent!important}
+/* ═══ TOOLBAR BUTTONS — Online-Reports cyan-pill design ═══
+   Matches the .pager button vocabulary from online-reports.html:
+   cyan-tinted bg + cyan border + light text in dark mode; lighter
+   cyan tint + slate text in light mode. Save/Reset get accent
+   tints (green / red) so the state distinction stays clear. */
+.tbtn{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:7px 12px;
+  font-family:'Roboto',sans-serif;font-weight:600;font-size:11px;
+  letter-spacing:.04em;
+  border:1px solid rgba(92,200,224,0.5);
+  border-radius:6px;
+  background:rgba(92,200,224,0.18);
+  color:#fff;
+  cursor:pointer;transition:.15s;white-space:nowrap;
+}
+.tbtn:hover{
+  background:rgba(92,200,224,0.36);
+  border-color:rgba(92,200,224,0.75);
+}
+.tbtn svg{width:13px;height:13px;flex-shrink:0}
+[data-theme="light"] .tbtn{
+  color:#0a1520;
+  background:rgba(0,182,203,.16);
+  border-color:rgba(0,182,203,.55);
+}
+[data-theme="light"] .tbtn:hover{
+  background:rgba(0,182,203,.30);
+  border-color:rgba(0,182,203,.75);
+}
+
+/* Save / Reset accent tints — use online-reports' base styling but
+   with green / red alpha so the action category stays readable. */
+.tbtn.save-btn{
+  background:rgba(34,197,94,.18);
+  border-color:rgba(34,197,94,.55);
+}
+.tbtn.save-btn:hover{
+  background:rgba(34,197,94,.32);
+  border-color:rgba(34,197,94,.75);
+}
+.tbtn.save-btn.saved{
+  background:rgba(34,197,94,.30);
+  border-color:rgba(34,197,94,.7);
+}
+[data-theme="light"] .tbtn.save-btn{
+  background:rgba(34,197,94,.14);
+  border-color:rgba(34,197,94,.50);
+}
+[data-theme="light"] .tbtn.save-btn:hover{
+  background:rgba(34,197,94,.26);
+  border-color:rgba(34,197,94,.70);
+}
+
+.tbtn.danger:hover{
+  background:rgba(239,68,68,.22);
+  border-color:rgba(239,68,68,.6);
+}
+[data-theme="light"] .tbtn.danger:hover{
+  background:rgba(239,68,68,.16);
+  border-color:rgba(239,68,68,.55);
+}
+
+.save-indicator{
+  font-size:10px;color:rgba(255,255,255,.55);
+  font-family:'Roboto',sans-serif;letter-spacing:.04em;
+  white-space:nowrap;align-self:center;
+}
+[data-theme="light"] .save-indicator{color:rgba(31,40,63,.55)}
+
+/* ══ FONT SIZE BAR ══ */
+.font-bar{display:flex;align-items:center;justify-content:center;gap:20px;padding:8px 20px;background:#f8f9fb;border-bottom:1px solid #e4e6ee;flex-wrap:wrap}
+
+/* ══ CENTERED TABS BAR (Tier 0/1 layout — view tabs in middle, replaces font-bar) ══ */
+/* center-tabs-bar (Tier 0/1 layout) — also outside .page now,
+   floating on the gradient. Transparent + no border, same vibe
+   as the toolbar. */
+.center-tabs-bar{display:flex;align-items:center;justify-content:center;gap:12px;padding:8px 20px;background:transparent;border:none}
+.center-tabs-bar .tabs{display:flex;gap:6px}
+.font-bar-label{font-family:'Montserrat',sans-serif;font-weight:700;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#666;white-space:nowrap}
+.font-bar-group{display:flex;align-items:center;gap:8px}
+.fbar-btn{width:30px;height:30px;border:1.5px solid #d0d3dc;border-radius:6px;background:#fff;cursor:pointer;font-size:16px;font-weight:700;color:#444;display:flex;align-items:center;justify-content:center;transition:.14s;flex-shrink:0;line-height:1}
+.fbar-btn:hover{border-color:#0057b8;color:#0057b8;background:#f0f5ff}
+.fbar-slider{-webkit-appearance:none;appearance:none;width:160px;height:5px;border-radius:3px;background:linear-gradient(to right,#0057b8 0%,#0057b8 calc(var(--pct,40%)),#dde0e8 calc(var(--pct,40%)),#dde0e8 100%);outline:none;cursor:pointer}
+.fbar-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#0057b8;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.2);cursor:pointer}
+.fbar-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:#0057b8;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.2);cursor:pointer}
+.fbar-val{font-family:'Montserrat',sans-serif;font-weight:700;font-size:13px;color:#0057b8;min-width:36px;text-align:center}
+.fbar-divider{width:1px;height:22px;background:#dde0e8;flex-shrink:0}
+
+/* ══ CLOCKS AREA ══ */
+.clocks-area{display:flex;justify-content:center;padding:4px 8px 4px;background:#e8ebef}
+#svg-combined{width:100%;display:block;cursor:default;user-select:none}
+
+/* ══ LEGEND ══ */
+.legend-bar{display:flex;justify-content:center;gap:32px;padding:10px 0 8px;border-top:none;flex-wrap:wrap;background:#e8ebef}
+.leg-item{display:flex;align-items:center;gap:7px;font-size:9.5px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:#555}
+.leg-dot{width:12px;height:12px;border-radius:50%}
+.leg-swatch{width:18px;height:10px;border-radius:3px}
+
+/* ══ SETTINGS PANEL ══ */
+.settings-panel{display:none;border-top:2px solid #dde0e8;background:#f7f8fb}
+.settings-panel.open{display:block}
+.sp-tabs{display:flex;border-bottom:1px solid #dde0e8;background:#eef0f4;flex-wrap:wrap}
+.sp-tab{padding:8px 16px;font-family:'Montserrat',sans-serif;font-weight:700;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;border:none;background:transparent;color:#888;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:.18s;white-space:nowrap}
+.sp-tab.active{color:#0057b8;background:#f7f8fb;border-bottom-color:#0057b8}
+.sp-close{margin-left:auto;padding:8px 14px;border:none;background:transparent;cursor:pointer;font-size:16px;color:#aaa}
+.sp-close:hover{color:#444}
+.sp-body{padding:16px 24px 22px}
+.sec-title{font-family:'Montserrat',sans-serif;font-weight:800;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:#222;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.sec-title::after{content:'';flex:1;height:1px;background:#e0e4ea}
+
+/* ══ REGION SETTINGS — new searchable dropdown style ══ */
+.rsp-wrap{display:flex;flex-direction:column;gap:14px}
+.rsp-cols{display:flex;gap:32px;flex-wrap:wrap}
+.rsp-col{flex:1;min-width:280px}
+.rsp-col-label{font-family:'Montserrat',sans-serif;font-weight:800;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#0057b8;margin-bottom:10px}
+/* search + filter bar */
+.rsp-bar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.rsp-search{flex:1;min-width:120px;border:1.5px solid #ddd;border-radius:6px;padding:5px 10px;font-family:'Montserrat',sans-serif;font-size:12px;outline:none}
+.rsp-search:focus{border-color:#0057b8}
+.rsp-filter-btn{padding:4px 10px;border:1.5px solid #ddd;border-radius:5px;background:#fff;font-family:'Montserrat',sans-serif;font-size:10px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;cursor:pointer;color:#666;transition:.14s}
+.rsp-filter-btn:hover,.rsp-filter-btn.active{background:#0057b8;border-color:#0057b8;color:#fff}
+.rsp-filter-btn.act-w{background:#E53935;border-color:#E53935;color:#fff}
+/* region list */
+.rsp-list{display:flex;flex-direction:column;gap:4px;max-height:360px;overflow-y:auto;padding-right:4px}
+.rsp-list::-webkit-scrollbar{width:4px}
+.rsp-list::-webkit-scrollbar-thumb{background:#d0d0d0;border-radius:2px}
+.rsp-item{display:flex;align-items:center;gap:7px;padding:6px 10px;background:#fff;border:1.5px solid #e8eaef;border-radius:7px;cursor:pointer;transition:.14s;user-select:none;color:#1a2236}
+.rsp-item:hover{border-color:#0057b8;background:#f5f8ff}
+.rsp-item.selected{border-color:#0057b8;background:#eef3ff}
+.rsp-item-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.rsp-item-name{font-family:'Montserrat',sans-serif;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.4px;flex:1;color:#1a2236}
+.rsp-item-hour{font-size:10px;color:#999;white-space:nowrap}
+.rsp-item-vis{font-size:11px;opacity:.6}
+/* detail panel for selected regions */
+.rsp-detail{background:#fff;border:1.5px solid #dde0e8;border-radius:8px;padding:14px 16px;min-height:60px;color:#1a2236}
+.rsp-detail-empty{font-size:11px;color:#aaa;text-align:center;padding:14px 0}
+.rsp-selected-tags{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}
+.rsp-tag{display:flex;align-items:center;gap:4px;padding:3px 8px 3px 6px;border-radius:12px;font-family:'Montserrat',sans-serif;font-weight:700;font-size:10px;letter-spacing:.5px;text-transform:uppercase;cursor:pointer}
+.rsp-tag.ts{background:#dbeeff;color:#0057b8;border:1px solid #b0d4f5}
+.rsp-tag.tw{background:#ffe0de;color:#c0200f;border:1px solid #f0b0ac}
+.rsp-tag:hover{opacity:.8}
+/* controls for selected region(s) */
+.rsp-controls{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px}
+.rsp-ctrl-row{display:flex;flex-direction:column;gap:4px}
+.rsp-ctrl-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888}
+.rsp-ctrl-inner{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+/* type toggle */
+.rsp-type-tog{display:flex;border:1.5px solid #ddd;border-radius:5px;overflow:hidden}
+.rsp-type-tog button{padding:3px 9px;border:none;background:#f5f5f5;font-family:'Montserrat',sans-serif;font-size:9.5px;font-weight:700;text-transform:uppercase;cursor:pointer;color:#aaa;transition:.14s}
+.rsp-type-tog button.a-s{background:#64B5F6;color:#fff}
+.rsp-type-tog button.a-w{background:#E53935;color:#fff}
+/* hour select */
+.rsp-hsel{border:1.5px solid #ddd;border-radius:5px;padding:3px 6px;font-family:'Montserrat',sans-serif;font-size:10.5px;font-weight:600;color:#333;background:#f7f8fb;cursor:pointer;outline:none;width:100%}
+.rsp-hsel:focus{border-color:#0057b8}
+/* font stepper */
+.rsp-fsz{display:flex;align-items:center;gap:4px}
+.rsp-fsz button{width:22px;height:22px;border:1.5px solid #ddd;border-radius:4px;background:#f5f5f5;font-size:14px;line-height:1;cursor:pointer;color:#555;display:flex;align-items:center;justify-content:center;transition:.14s}
+.rsp-fsz button:hover{border-color:#0057b8;color:#0057b8;background:#f0f5ff}
+.rsp-fsz span{font-size:11px;font-weight:700;min-width:24px;text-align:center;color:#555}
+/* vis + delete */
+.rsp-vis-del{display:flex;gap:6px;align-items:center}
+.rsp-vis{padding:3px 9px;border:1.5px solid #ddd;border-radius:5px;background:#f5f5f5;font-size:10px;cursor:pointer;color:#666;transition:.14s}
+.rsp-vis:hover,.rsp-vis.on{background:#e8f0ff;border-color:#0057b8;color:#0057b8}
+.rsp-vis.off-v{background:#fff0f0;border-color:#e08080;color:#c0392b}
+.rsp-del{padding:3px 9px;border:1.5px solid #fcc;border-radius:5px;background:#fff5f5;font-size:10px;cursor:pointer;color:#c0392b;transition:.14s}
+.rsp-del:hover{background:#ffe0de;border-color:#e08080}
+
+/* ── Appearance ── */
+.app-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px 20px}
+.app-item{display:flex;flex-direction:column;gap:5px}
+.app-lbl{font-size:10px;font-weight:600;color:#777;text-transform:uppercase;letter-spacing:1px}
+.app-ctrl{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+input[type=range]{flex:1;min-width:70px;accent-color:#0057b8;cursor:pointer}
+.app-val{font-size:11px;font-weight:600;color:#555;min-width:28px}
+/* Hex code input shown next to a colour picker — read/write, accepts
+   #RRGGBB. Mirrors and updates the adjacent <input type="color">. */
+.hex-inp{
+  width:78px;border:1.5px solid #ddd;border-radius:5px;padding:3px 6px;
+  font-family:'JetBrains Mono','Roboto Mono','SFMono-Regular',ui-monospace,monospace;
+  font-size:11px;font-weight:600;color:#333;text-transform:uppercase;
+  letter-spacing:.04em;outline:none;background:#fff;
+}
+.hex-inp:focus{border-color:#0057b8}
+html:not([data-theme="light"]) .hex-inp{
+  background:rgba(15,23,42,.45);border-color:rgba(148,163,184,.35);color:#e2e8f0;
+}
+html:not([data-theme="light"]) .hex-inp:focus{border-color:#5cc8e0}
+.tog-grp{display:flex;background:#e8e8e8;border-radius:16px;padding:2px;gap:2px}
+.tog-grp button{padding:3px 10px;border:none;border-radius:12px;font-family:'Montserrat',sans-serif;font-size:10px;font-weight:700;text-transform:uppercase;cursor:pointer;background:transparent;color:#888;transition:.14s}
+.tog-grp button.active{background:#0057b8;color:#fff}
+
+/* Clock partitions editor */
+.part-editor{display:flex;flex-direction:column;gap:10px}
+.part-row{display:flex;align-items:center;gap:8px;background:#fff;border:1.5px solid #e6e8ee;border-radius:7px;padding:8px 10px}
+.part-row:hover{border-color:#0057b8}
+.part-color{width:28px;height:28px;border:none;cursor:pointer;border-radius:5px;flex-shrink:0;padding:0}
+.part-name-inp{flex:1;border:1.5px solid #ddd;border-radius:5px;padding:3px 7px;font-family:'Montserrat',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;outline:none}
+.part-name-inp:focus{border-color:#0057b8}
+.part-lbl{font-size:9.5px;color:#888;white-space:nowrap}
+.part-angle{width:60px;border:1.5px solid #ddd;border-radius:5px;padding:3px 6px;font-family:'Montserrat',sans-serif;font-size:11px;outline:none;text-align:center}
+.part-angle:focus{border-color:#0057b8}
+.part-del{border:none;background:transparent;color:#ccc;cursor:pointer;font-size:14px;padding:0 2px;transition:.14s}
+.part-del:hover{color:#c0392b}
+.part-add{display:flex;align-items:center;gap:6px;padding:6px 12px;border:1.5px dashed #ccc;border-radius:7px;background:transparent;cursor:pointer;font-family:'Montserrat',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;color:#888;transition:.14s}
+.part-add:hover{border-color:#0057b8;color:#0057b8;background:#f0f5ff}
+
+/* zone colours (legacy) */
+.zone-colors{display:flex;gap:16px;flex-wrap:wrap;margin-top:6px}
+.zc-item{display:flex;flex-direction:column;gap:4px;align-items:center}
+.zc-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666}
+input[type=color]{width:34px;height:26px;border:none;cursor:pointer;border-radius:4px;padding:0}
+
+/* ── Add Region ── */
+.arf{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;padding:10px 0 4px}
+.arf-f{display:flex;flex-direction:column;gap:3px}
+.arf-lbl{font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:#888}
+.arf-inp{border:1.5px solid #ddd;border-radius:5px;padding:4px 8px;font-family:'Montserrat',sans-serif;font-size:11.5px;outline:none;width:145px}
+.arf-inp:focus{border-color:#0057b8}
+.arf-sel{border:1.5px solid #ddd;border-radius:5px;padding:4px 6px;font-family:'Montserrat',sans-serif;font-size:11.5px;outline:none;cursor:pointer}
+.arf-add{padding:5px 14px;background:#0057b8;color:#fff;border:none;border-radius:5px;font-family:'Montserrat',sans-serif;font-weight:700;font-size:11.5px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;transition:.14s}
+.arf-add:hover{background:#0044a0}
+.ei-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.ei-btn{padding:6px 13px;border-radius:5px;font-family:'Montserrat',sans-serif;font-weight:700;font-size:10.5px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border:1.5px solid #ddd;background:#fff;color:#444;display:inline-flex;align-items:center;gap:5px;transition:.14s}
+.ei-btn:hover{border-color:#0057b8;color:#0057b8;background:#f0f5ff}
+.ei-ta{width:100%;min-height:75px;border:1.5px solid #ddd;border-radius:5px;font-family:monospace;font-size:10.5px;padding:7px;resize:vertical;outline:none;color:#333}
+.ei-ta:focus{border-color:#0057b8}
+
+/* ══ DRAG LABELS ══ */
+.city-label{cursor:grab}
+.city-label:hover .lbl-hit{fill:rgba(255,255,255,0.10)}
+.city-label.dragging{cursor:grabbing}
+.city-label.dragging .lbl-hit{fill:rgba(255,255,255,0.18)}
+.lbl-hit{fill:transparent;transition:fill .12s}
+
+/* ══ CUSTOM TEXT ══ */
+.ct-label .ct-hit{cursor:grab;transition:stroke .12s}
+.ct-label:hover .ct-hit{stroke:rgba(0,87,184,0.45)!important}
+.ct-label.dragging .ct-hit{cursor:grabbing;stroke:rgba(0,87,184,0.7)!important}
+/* PDF export — hide interactive decorations */
+.pdf-export-mode .ct-hit{stroke:none!important;stroke-width:0!important}
+.pdf-export-mode .img-border-rect{stroke:none!important}
+.pdf-export-mode .resize-handle{opacity:0!important}
+.ct-add-form{display:flex;flex-direction:column;gap:10px;padding:10px 0}
+.ct-form-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.ct-form-style{display:flex;gap:4px;align-items:center}
+.ct-style-btn{width:26px;height:26px;border:1.5px solid #ddd;border-radius:4px;background:#f5f5f5;cursor:pointer;font-size:13px;font-weight:700;color:#555;display:flex;align-items:center;justify-content:center;transition:.14s}
+.ct-style-btn:hover{border-color:#0057b8;color:#0057b8;background:#f0f5ff}
+.ct-style-btn.on{background:#0057b8;border-color:#0057b8;color:#fff}
+.ct-list{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.ct-list-row{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fff;border:1.5px solid #e8eaef;border-radius:7px}
+.ct-list-row:hover{border-color:#b0c8f0}
+.ct-list-preview{flex:1;min-width:60px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ct-list-meta{font-size:10px;color:#aaa;white-space:nowrap;font-family:'Montserrat',sans-serif}
+.ct-size-ctrl{display:flex;align-items:center;gap:4px}
+.ct-size-ctrl button{width:22px;height:22px;border:1.5px solid #ddd;border-radius:4px;background:#f5f5f5;font-size:14px;line-height:1;cursor:pointer;color:#555;display:flex;align-items:center;justify-content:center;transition:.14s}
+.ct-size-ctrl button:hover{border-color:#0057b8;color:#0057b8;background:#f0f5ff}
+.ct-size-ctrl span{font-size:11px;font-weight:700;min-width:24px;text-align:center;color:#555}
+
+/* ══ PDF OVERLAY ══ */
+#pdf-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+#pdf-overlay.show{display:flex}
+.pdf-spinner{width:40px;height:40px;border:4px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pdf-msg{color:#fff;font-family:'Montserrat',sans-serif;font-weight:700;font-size:15px;letter-spacing:1px}
+.disc{font-size:9px;color:#888;text-align:center;padding:4px 30px 14px;border-top:none;line-height:1.6;background:#e8ebef}
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(50px);background:#1a1a1a;color:#fff;padding:8px 18px;border-radius:6px;font-size:12px;font-weight:600;transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:99999;pointer-events:none;white-space:nowrap;box-shadow:0 4px 20px rgba(0,0,0,.4)}
+#toast.show{transform:translateX(-50%) translateY(0)}
+
+/* ══ IMAGE OVERLAYS ══ */
+.img-list{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.img-list-row{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#fff;border:1.5px solid #e8eaef;border-radius:7px;transition:.14s}
+.img-list-row:hover{border-color:#b0c8f0}
+.img-preview{width:40px;height:40px;object-fit:contain;border-radius:4px;border:1px solid #eee;flex-shrink:0;background:#f5f5f5}
+.img-list-name{flex:1;font-size:11px;font-weight:700;color:#333;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.img-size-ctrl{display:flex;align-items:center;gap:4px}
+.img-size-ctrl button{width:22px;height:22px;border:1.5px solid #ddd;border-radius:4px;background:#f5f5f5;font-size:13px;line-height:1;cursor:pointer;color:#555;display:flex;align-items:center;justify-content:center;transition:.14s}
+.img-size-ctrl button:hover{border-color:#0057b8;color:#0057b8;background:#f0f5ff}
+.img-size-ctrl span{font-size:10px;font-weight:700;min-width:36px;text-align:center;color:#555}
+.img-upload-area{border:2px dashed #c8cdd8;border-radius:10px;padding:22px 16px;text-align:center;cursor:pointer;transition:.15s;background:#fafbfd}
+.img-upload-area:hover{border-color:#0057b8;background:#f0f5ff}
+.img-upload-area.dragover{border-color:#0057b8;background:#e8f0ff}
+.img-upload-icon{font-size:28px;margin-bottom:6px}
+.img-upload-text{font-size:11px;font-weight:700;color:#666;letter-spacing:.5px}
+.img-upload-sub{font-size:10px;color:#aaa;margin-top:3px}
+.img-vis-toggle{padding:3px 8px;border:1.5px solid #ddd;border-radius:5px;background:#f5f5f5;font-size:10px;cursor:pointer;color:#666;transition:.14s}
+.img-vis-toggle:hover,.img-vis-toggle.on{background:#e8f0ff;border-color:#0057b8;color:#0057b8}
+.img-vis-toggle.off-v{background:#fff0f0;border-color:#e08080;color:#c0392b}
+/* SVG image drag handles */
+.overlay-img-group{cursor:move}
+.overlay-img-group.selected .img-border-rect{stroke:#0057b8;stroke-width:2;stroke-dasharray:5,3}
+.overlay-img-group .img-border-rect{stroke:transparent;stroke-width:1;fill:none}
+.overlay-img-group .resize-handle{cursor:nwse-resize;fill:#0057b8;stroke:#fff;stroke-width:1.5;opacity:0}
+.overlay-img-group:hover .resize-handle,.overlay-img-group.selected .resize-handle{opacity:1}
+.overlay-img-group:hover .img-border-rect{stroke:rgba(0,87,184,0.3);stroke-width:1.5;stroke-dasharray:4,3}
+
+/* ══ EDITABLE HEADER ══ */
+.hdr-editable{cursor:pointer;border-radius:3px;transition:background .15s;padding:1px 4px;margin:-1px -4px}
+.hdr-editable:hover{background:rgba(255,255,255,0.08)}
+.hdr-editing-wrap{display:inline-flex;align-items:center}
+.hdr-inp{background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.35);border-radius:3px;outline:none;color:inherit;font:inherit;letter-spacing:inherit;text-transform:inherit;padding:1px 5px;width:auto;min-width:80px}
+@media(max-width:720px){#clockView .page-header{flex-wrap:wrap;justify-content:center}#clockView .toolbar{justify-content:center}}
+@media print{body{background:#20283f;padding:0}#clockView .page{box-shadow:none;max-width:100%}.toolbar,.settings-panel,.font-bar{display:none!important}}
+
+/* ══ EMBED MODE ══ Activated by ?embed=1 in the URL. Embed mode
+   shows the SAME content the in-tool view does (tab pills, brand
+   banner, both clocks, legend at the bottom) — only the chrome
+   (back button, theme toggle, settings panel, mobile bar, rotate
+   notice, the right-side mode-toggle) is hidden. The page is
+   zoomed to fit the iframe viewport so an embedding caller (e.g.
+   the Presentation tool's 1280×720 slide) sees the whole layout
+   in one glance with no scrolling. */
+body.embed-mode #pp-back-to-hub,
+body.embed-mode #cl-theme-toggle,
+body.embed-mode .toolbar-right,
+body.embed-mode .settings-panel,
+body.embed-mode .font-bar,
+body.embed-mode .mobile-control-bar,
+body.embed-mode .rotate-notice { display:none !important; }
+body.embed-mode #clockView .view-inner { padding-top:0 !important; }
+body.embed-mode #clockView .page { box-shadow:none; max-width:100%; margin:0 auto; }
+/* The clock layout is ~1700px wide × ~1150px tall (toolbar +
+   brand strip + two clocks + legend). To fit the whole thing in
+   a 1280×720 iframe (Presentation slide) we have to zoom by the
+   smaller of width-fit (1280/1700≈0.75) and height-fit (720/1150
+   ≈0.62) so neither axis overflows. 0.55 gives a comfortable
+   margin and matches what the user wants — small enough that
+   nothing scrolls and the whole layout reads at a glance.
+   overflow:hidden is a belt-and-braces guard against any rounding
+   that might still produce a 1px scrollbar. */
+/* Without the toolbar the clock content (brand banner + both
+   clocks + legend) is roughly 1700×900. 0.72 zoom fits both axes
+   inside a 1280×720 iframe with the clock filling most of the
+   slide; previous 0.55 left too much whitespace. overflow:hidden
+   guards against any rounding scrollbar. */
+body.embed-mode { zoom: 0.72; overflow: hidden; }
+body.embed-mode html { overflow: hidden; }
+/* Embed only ever shows the combined (both clocks) view — the
+   tab row is clipped so the user can't break the layout by
+   switching to a single-clock view. The brand banner + clock
+   graph + legend are what remain visible. Higher-specificity
+   selector + redundant .tabs rule beats the `#clockView .toolbar
+   { display:flex }` rule cleanly even if a future stylesheet
+   loads with conflicting properties. */
+body.embed-mode #clockView .toolbar,
+body.embed-mode .toolbar,
+body.embed-mode .tabs { display: none !important; visibility: hidden !important; }
+
+
+/* ═══════════════════════════════════════════════════════════════
+   AUDIT LOG MODAL — read-only edit-history viewer (Tier 0/1)
+   ═══════════════════════════════════════════════════════════════ */
+.audit-modal{
+  display:none;position:fixed;inset:0;
+  background:rgba(5,12,18,.72);backdrop-filter:blur(8px);
+  z-index:9300;
+  align-items:center;justify-content:center;
+  padding:24px;opacity:0;
+  transition:opacity .22s ease;
+}
+.audit-modal.show{display:flex;opacity:1}
+.audit-modal .audit-inner{
+  position:relative;width:min(640px,96vw);max-height:88vh;overflow-y:auto;
+  background:linear-gradient(135deg,#ffffff 0%,#f8fafd 100%);
+  border:1.5px solid rgba(0,182,203,0.30);border-radius:16px;
+  padding:28px 30px 24px;color:#1a2236;font-family:'Roboto',sans-serif;
+  box-shadow:0 20px 60px rgba(31,40,63,.20);
+}
+html:not([data-theme="light"]) .audit-modal .audit-inner{
+  background:linear-gradient(135deg,#1e293b 0%,#0f172a 100%);
+  border-color:rgba(92,200,224,.3);color:#e2e8f0;
+  box-shadow:0 20px 60px rgba(0,0,0,.55);
+}
+.audit-modal .audit-close{
+  position:absolute;top:14px;right:14px;
+  width:32px;height:32px;background:transparent;
+  border:1px solid rgba(31,40,63,.14);border-radius:50%;
+  color:rgba(31,40,63,.65);font-size:20px;line-height:1;cursor:pointer;
+  transition:all .16s;
+}
+.audit-modal .audit-close:hover{
+  background:rgba(31,40,63,.06);color:#0a1520;
+  border-color:rgba(0,182,203,.5);
+}
+html:not([data-theme="light"]) .audit-modal .audit-close{
+  border-color:rgba(255,255,255,.18);color:rgba(255,255,255,.65);
+}
+html:not([data-theme="light"]) .audit-modal .audit-close:hover{
+  background:rgba(255,255,255,.08);color:#fff;border-color:rgba(92,200,224,.6);
+}
+.audit-modal .audit-title{
+  font-family:'Roboto',sans-serif;font-weight:800;
+  font-size:20px;letter-spacing:1.6px;text-transform:uppercase;
+  margin:0 0 6px;line-height:1.2;
+}
+.audit-modal .audit-sub{
+  font-size:12px;color:rgba(31,40,63,.55);margin:0 0 22px;
+}
+html:not([data-theme="light"]) .audit-modal .audit-sub{color:rgba(255,255,255,.55)}
+.audit-list{display:flex;flex-direction:column;gap:8px}
+.audit-empty{
+  padding:38px 12px;text-align:center;
+  font-size:13px;color:rgba(31,40,63,.55);
+}
+html:not([data-theme="light"]) .audit-empty{color:rgba(255,255,255,.55)}
+.audit-entry{
+  background:rgba(31,40,63,.04);
+  border:1px solid rgba(31,40,63,.08);
+  border-radius:10px;
+  padding:12px 14px;
+  font-size:12.5px;
+}
+html:not([data-theme="light"]) .audit-entry{
+  background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.08);
+}
+.audit-entry-top{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+}
+.audit-action{
+  font-weight:800;letter-spacing:.5px;
+  text-transform:uppercase;font-size:10.5px;
+  color:#0a1520;
+  background:rgba(92,200,224,.18);
+  border:1px solid rgba(92,200,224,.45);
+  padding:2px 8px;border-radius:5px;
+}
+html:not([data-theme="light"]) .audit-action{
+  color:#5cc8e0;background:rgba(92,200,224,.10);border-color:rgba(92,200,224,.35);
+}
+.audit-time{
+  font-size:11px;color:rgba(31,40,63,.55);
+  font-variant-numeric:tabular-nums;
+}
+html:not([data-theme="light"]) .audit-time{color:rgba(255,255,255,.55)}
+.audit-user{
+  margin-top:6px;font-size:13px;font-weight:600;
+  display:flex;align-items:center;gap:8px;
+}
+.audit-email{
+  font-size:11px;font-weight:400;color:rgba(31,40,63,.55);
+}
+html:not([data-theme="light"]) .audit-email{color:rgba(255,255,255,.55)}
+.audit-details{
+  margin-top:6px;font-size:11.5px;color:rgba(31,40,63,.65);
+  line-height:1.5;
+}
+html:not([data-theme="light"]) .audit-details{color:rgba(255,255,255,.65)}
+
+/* ═══════════════════════════════════════════════════════════════
+   SETTINGS PANEL — DARK-MODE OVERRIDES + MODERN POLISH
+   ═══════════════════════════════════════════════════════════════
+   The .settings-panel under the clock canvas (Region Settings,
+   Appearance, Add/Remove, Custom Text, Images, Export) was
+   designed for the always-light .page card, so it stayed glaringly
+   light when the rest of the app moved to dark mode. These rules
+   use html:not([data-theme="light"]) selectors so they only apply
+   in dark mode — light mode keeps every existing rule as-is, no
+   risk of regression. Cyan accent (#5cc8e0) replaces the legacy
+   #0057b8 brand-blue for active/hover states to match the toolbar
+   redesign. ═════════════════════════════════════════════════════ */
+
+/* ── Panel container + tab strip ── */
+html:not([data-theme="light"]) .settings-panel{
+  background:#1e293b;
+  border-top-color:rgba(148,163,184,.18);
+  color:#e2e8f0;
+}
+html:not([data-theme="light"]) .sp-tabs{
+  background:#0f172a;
+  border-bottom-color:rgba(148,163,184,.18);
+}
+html:not([data-theme="light"]) .sp-tab{color:rgba(255,255,255,.55)}
+html:not([data-theme="light"]) .sp-tab.active{
+  color:#5cc8e0;background:#1e293b;border-bottom-color:#5cc8e0;
+}
+html:not([data-theme="light"]) .sp-close{color:rgba(255,255,255,.45)}
+html:not([data-theme="light"]) .sp-close:hover{color:#e2e8f0}
+
+/* Section title — slate text + slate hairline */
+html:not([data-theme="light"]) .sec-title{color:#f1f5f9}
+html:not([data-theme="light"]) .sec-title::after{background:rgba(148,163,184,.18)}
+
+/* ── Region settings ── */
+html:not([data-theme="light"]) .rsp-col-label{color:#5cc8e0}
+html:not([data-theme="light"]) .rsp-search{
+  background:#0f172a;color:#e2e8f0;border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .rsp-search:focus{border-color:#5cc8e0}
+html:not([data-theme="light"]) .rsp-filter-btn{
+  background:#0f172a;color:rgba(255,255,255,.65);
+  border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .rsp-filter-btn:hover,
+html:not([data-theme="light"]) .rsp-filter-btn.active{
+  background:#5cc8e0;border-color:#5cc8e0;color:#0a1520;
+}
+/* .act-w workforce filter keeps its red brand colour in both themes. */
+
+html:not([data-theme="light"]) .rsp-list::-webkit-scrollbar-thumb{background:rgba(148,163,184,.4)}
+html:not([data-theme="light"]) .rsp-item{
+  background:#0f172a;color:#e2e8f0;
+  border-color:rgba(148,163,184,.18);
+}
+html:not([data-theme="light"]) .rsp-item:hover{
+  border-color:#5cc8e0;background:rgba(92,200,224,.08);
+}
+html:not([data-theme="light"]) .rsp-item.selected{
+  border-color:#5cc8e0;background:rgba(92,200,224,.14);
+}
+html:not([data-theme="light"]) .rsp-item-name{color:#f1f5f9}
+html:not([data-theme="light"]) .rsp-item-hour{color:rgba(255,255,255,.45)}
+
+html:not([data-theme="light"]) .rsp-detail{
+  background:#0f172a;border-color:rgba(148,163,184,.18);color:#e2e8f0;
+}
+html:not([data-theme="light"]) .rsp-detail-empty{color:rgba(255,255,255,.40)}
+
+/* Tags — keep colour intent (smooth=blue, workforce=red) but lift readability for dark bg */
+html:not([data-theme="light"]) .rsp-tag.ts{
+  background:rgba(100,181,246,.18);color:#90c8f9;
+  border-color:rgba(100,181,246,.40);
+}
+html:not([data-theme="light"]) .rsp-tag.tw{
+  background:rgba(229,57,53,.18);color:#f08989;
+  border-color:rgba(229,57,53,.40);
+}
+
+html:not([data-theme="light"]) .rsp-ctrl-lbl{color:rgba(255,255,255,.55)}
+html:not([data-theme="light"]) .rsp-type-tog{border-color:rgba(148,163,184,.25)}
+html:not([data-theme="light"]) .rsp-type-tog button{
+  background:#0f172a;color:rgba(255,255,255,.55);
+}
+/* .a-s and .a-w keep their hardcoded colour states — work on either theme. */
+
+html:not([data-theme="light"]) .rsp-hsel{
+  background:#0f172a;color:#e2e8f0;border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .rsp-hsel:focus{border-color:#5cc8e0}
+
+html:not([data-theme="light"]) .rsp-fsz button{
+  background:#0f172a;color:rgba(255,255,255,.65);
+  border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .rsp-fsz button:hover{
+  border-color:#5cc8e0;color:#5cc8e0;background:rgba(92,200,224,.10);
+}
+html:not([data-theme="light"]) .rsp-fsz span{color:#e2e8f0}
+
+html:not([data-theme="light"]) .rsp-vis{
+  background:#0f172a;color:rgba(255,255,255,.65);
+  border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .rsp-vis:hover,
+html:not([data-theme="light"]) .rsp-vis.on{
+  background:rgba(92,200,224,.14);border-color:#5cc8e0;color:#5cc8e0;
+}
+html:not([data-theme="light"]) .rsp-vis.off-v{
+  background:rgba(229,57,53,.14);border-color:rgba(229,57,53,.55);color:#f08989;
+}
+html:not([data-theme="light"]) .rsp-del{
+  background:rgba(229,57,53,.14);color:#f08989;
+  border-color:rgba(229,57,53,.40);
+}
+html:not([data-theme="light"]) .rsp-del:hover{
+  background:rgba(229,57,53,.24);border-color:rgba(229,57,53,.55);
+}
+
+/* ── Appearance ── */
+html:not([data-theme="light"]) .app-lbl{color:rgba(255,255,255,.55)}
+html:not([data-theme="light"]) .app-val{color:#e2e8f0}
+html:not([data-theme="light"]) .tog-grp{background:#0f172a}
+html:not([data-theme="light"]) .tog-grp button{color:rgba(255,255,255,.55)}
+html:not([data-theme="light"]) .tog-grp button.active{background:#5cc8e0;color:#0a1520}
+
+html:not([data-theme="light"]) .part-row{
+  background:#0f172a;border-color:rgba(148,163,184,.18);
+}
+html:not([data-theme="light"]) .part-row:hover{border-color:#5cc8e0}
+html:not([data-theme="light"]) .part-name-inp{
+  background:#0f172a;color:#e2e8f0;border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .part-name-inp:focus{border-color:#5cc8e0}
+html:not([data-theme="light"]) .part-lbl{color:rgba(255,255,255,.55)}
+html:not([data-theme="light"]) .part-angle{
+  background:#0f172a;color:#e2e8f0;border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .part-angle:focus{border-color:#5cc8e0}
+html:not([data-theme="light"]) .part-del{color:rgba(255,255,255,.35)}
+html:not([data-theme="light"]) .part-del:hover{color:#f08989}
+html:not([data-theme="light"]) .part-add{
+  border-color:rgba(148,163,184,.30);color:rgba(255,255,255,.55);
+}
+html:not([data-theme="light"]) .part-add:hover{
+  border-color:#5cc8e0;color:#5cc8e0;background:rgba(92,200,224,.08);
+}
+html:not([data-theme="light"]) .zc-label{color:rgba(255,255,255,.55)}
+
+/* ── Add / Remove + Export ── */
+html:not([data-theme="light"]) .arf-lbl{color:rgba(255,255,255,.55)}
+html:not([data-theme="light"]) .arf-inp,
+html:not([data-theme="light"]) .arf-sel{
+  background:#0f172a;color:#e2e8f0;border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .arf-inp:focus,
+html:not([data-theme="light"]) .arf-sel:focus{border-color:#5cc8e0}
+html:not([data-theme="light"]) .arf-add{background:#5cc8e0;color:#0a1520}
+html:not([data-theme="light"]) .arf-add:hover{background:#7cd7e9}
+html:not([data-theme="light"]) .ei-btn{
+  background:#0f172a;color:rgba(255,255,255,.85);
+  border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .ei-btn:hover{
+  border-color:#5cc8e0;color:#5cc8e0;background:rgba(92,200,224,.10);
+}
+html:not([data-theme="light"]) .ei-ta{
+  background:#0f172a;color:#e2e8f0;border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .ei-ta:focus{border-color:#5cc8e0}
+
+/* ── Custom Text ── */
+html:not([data-theme="light"]) .ct-style-btn{
+  background:#0f172a;color:rgba(255,255,255,.65);
+  border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .ct-style-btn:hover{
+  border-color:#5cc8e0;color:#5cc8e0;background:rgba(92,200,224,.10);
+}
+html:not([data-theme="light"]) .ct-style-btn.on{
+  background:#5cc8e0;border-color:#5cc8e0;color:#0a1520;
+}
+html:not([data-theme="light"]) .ct-list-row{
+  background:#0f172a;border-color:rgba(148,163,184,.18);
+}
+html:not([data-theme="light"]) .ct-list-row:hover{border-color:#5cc8e0}
+html:not([data-theme="light"]) .ct-list-meta{color:rgba(255,255,255,.45)}
+html:not([data-theme="light"]) .ct-size-ctrl button{
+  background:#0f172a;color:rgba(255,255,255,.65);
+  border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .ct-size-ctrl button:hover{
+  border-color:#5cc8e0;color:#5cc8e0;background:rgba(92,200,224,.10);
+}
+html:not([data-theme="light"]) .ct-size-ctrl span{color:#e2e8f0}
+
+/* ── Images ── */
+html:not([data-theme="light"]) .img-list-row{
+  background:#0f172a;border-color:rgba(148,163,184,.18);
+}
+html:not([data-theme="light"]) .img-list-row:hover{border-color:#5cc8e0}
+html:not([data-theme="light"]) .img-preview{
+  background:#0f172a;border-color:rgba(148,163,184,.20);
+}
+html:not([data-theme="light"]) .img-list-name{color:#e2e8f0}
+html:not([data-theme="light"]) .img-size-ctrl button{
+  background:#0f172a;color:rgba(255,255,255,.65);
+  border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .img-size-ctrl button:hover{
+  border-color:#5cc8e0;color:#5cc8e0;background:rgba(92,200,224,.10);
+}
+html:not([data-theme="light"]) .img-size-ctrl span{color:#e2e8f0}
+html:not([data-theme="light"]) .img-upload-area{
+  background:rgba(92,200,224,.04);border-color:rgba(148,163,184,.30);
+}
+html:not([data-theme="light"]) .img-upload-area:hover{
+  border-color:#5cc8e0;background:rgba(92,200,224,.10);
+}
+html:not([data-theme="light"]) .img-upload-area.dragover{
+  border-color:#5cc8e0;background:rgba(92,200,224,.16);
+}
+html:not([data-theme="light"]) .img-upload-text{color:rgba(255,255,255,.65)}
+html:not([data-theme="light"]) .img-upload-sub{color:rgba(255,255,255,.40)}
+html:not([data-theme="light"]) .img-vis-toggle{
+  background:#0f172a;color:rgba(255,255,255,.65);
+  border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .img-vis-toggle:hover,
+html:not([data-theme="light"]) .img-vis-toggle.on{
+  background:rgba(92,200,224,.14);border-color:#5cc8e0;color:#5cc8e0;
+}
+html:not([data-theme="light"]) .img-vis-toggle.off-v{
+  background:rgba(229,57,53,.14);border-color:rgba(229,57,53,.55);color:#f08989;
+}
+
+/* ── Font bar (size sliders below toolbar) ── */
+html:not([data-theme="light"]) .font-bar{
+  background:#0f172a;border-bottom-color:rgba(148,163,184,.18);
+}
+html:not([data-theme="light"]) .font-bar-label{color:rgba(255,255,255,.65)}
+html:not([data-theme="light"]) .fbar-btn{
+  background:#0f172a;color:rgba(255,255,255,.85);
+  border-color:rgba(148,163,184,.25);
+}
+html:not([data-theme="light"]) .fbar-btn:hover{
+  border-color:#5cc8e0;color:#5cc8e0;background:rgba(92,200,224,.10);
+}
+html:not([data-theme="light"]) .fbar-slider{
+  background:linear-gradient(to right,#5cc8e0 0%,#5cc8e0 calc(var(--pct,40%)),rgba(148,163,184,.18) calc(var(--pct,40%)),rgba(148,163,184,.18) 100%);
+}
+html:not([data-theme="light"]) .fbar-slider::-webkit-slider-thumb{background:#5cc8e0;border-color:#0f172a}
+html:not([data-theme="light"]) .fbar-slider::-moz-range-thumb{background:#5cc8e0;border-color:#0f172a}
+html:not([data-theme="light"]) .fbar-val{color:#5cc8e0}
+html:not([data-theme="light"]) .fbar-divider{background:rgba(148,163,184,.20)}
+
+
+/* ═══ OVERRIDES ═══ */
+#clockView .page{max-width:1700px;width:100%}
+
+
+
+/* ═══ OVERRIDES ═══ */
+#clockView .page{max-width:1700px;width:100%}
+
+/* ═══ LOGOUT BUTTON ═══ */
+.logout-btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  font-family:'Montserrat',sans-serif;font-weight:700;font-size:10px;
+  letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,.4);
+  background:none;border:1.5px solid rgba(255,255,255,.12);border-radius:20px;
+  padding:0 14px;cursor:pointer;transition:all .18s;height:36px;white-space:nowrap;
+  margin-left:auto;
+}
+.logout-btn:hover{color:rgba(255,255,255,.8);border-color:rgba(255,255,255,.35);}
+.logout-btn svg{width:12px;height:12px;flex-shrink:0;}
+.logout-hub{
+  /* Sits inside the hub topbar flex row — no absolute positioning needed */
+  position:static;
+  font-size:9px;letter-spacing:1.5px;padding:0 14px;height:32px;
+  border-width:1px;margin-left:0;
+}
+.logout-hub svg{width:10px;height:10px;}
+
+/* ═══ WELCOME OVERLAY ═══ */
+#welcomeOverlay{
+  background:radial-gradient(ellipse 80% 60% at 50% 40%,rgba(0,182,203,.09) 0%,transparent 70%),
+             linear-gradient(135deg,#1a2236 0%,#0f1726 40%,#162032 100%);
+}
+#welcomeMsg{
+  text-shadow:0 4px 40px rgba(0,182,203,.3);
+  letter-spacing:3px;
+}
+
+/* ─────── Live data loading overlay ───────
+   Shown on page load while state is fetched from JSONBin. Visible
+   by default in the HTML so it paints with the page (no flash of
+   bare content while the JS boots). Hidden by JS after load
+   completes, with a minimum visible window so the animation doesn't
+   feel jittery on cache hits. */
+.live-loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center,
+      rgba(15, 25, 34, 0.40) 0%,
+      rgba(8, 16, 24, 0.72) 100%);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 99999;
+  opacity: 1;
+  transition: opacity 0.45s ease;
+  pointer-events: all;
+}
+.live-loading-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.live-loading-card {
+  background: linear-gradient(160deg,
+      rgba(28, 44, 60, 0.95) 0%,
+      rgba(18, 30, 42, 0.95) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 28px 38px 26px;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  color: rgba(255, 255, 255, 0.92);
+  font-family: 'Roboto', system-ui, sans-serif;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(22, 191, 214, 0.06) inset;
+  animation:
+    live-card-enter 0.5s cubic-bezier(0.22, 1, 0.36, 1) both,
+    live-card-float 4s ease-in-out 0.5s infinite;
+}
+.live-loading-dots {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  height: 14px;
+}
+.live-loading-dots span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #16bfd6;
+  box-shadow: 0 0 10px rgba(22, 191, 214, 0.55);
+  animation: live-dot-wave 1.2s ease-in-out infinite;
+}
+.live-loading-dots span:nth-child(2) { animation-delay: 0.15s; }
+.live-loading-dots span:nth-child(3) { animation-delay: 0.30s; }
+.live-loading-region {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #16bfd6;
+  line-height: 1.2;
+  text-align: center;
+  margin-top: 4px;
+}
+.live-loading-sub {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  text-align: center;
+}
+@keyframes live-card-enter {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0)     scale(1);    }
+}
+@keyframes live-card-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-4px); }
+}
+@keyframes live-dot-wave {
+  0%, 60%, 100% { transform: translateY(0)   scale(1);    opacity: 0.5; }
+  30%           { transform: translateY(-6px) scale(1.15); opacity: 1;   }
+}
+
+</style>
+</head>
+<body>
+<script>
+  /* Embed mode — when iframed by the Presentation tool with
+     ?embed=1, add a body class that the CSS uses to hide all
+     chrome (back button, theme toggle, toolbar, etc.) so only
+     the clock visualization shows. */
+  if (new URLSearchParams(location.search).get('embed') === '1') {
+    document.body.classList.add('embed-mode');
+    /* Forward Enter to the parent so the presentation deck can
+       still advance even when the user clicked into this embed
+       (focus would otherwise be trapped inside the iframe and
+       the parent's keydown handler never sees the press). The
+       parent presentation listens for `pres-nav` messages and
+       calls renderSlide(_slideIdx + 1). Skipped when typing in
+       an input / textarea / contenteditable so embed-internal
+       text editing isn't disrupted. */
+    document.addEventListener('keydown', ev => {
+      if (ev.key !== 'Enter') return;
+      if (ev.ctrlKey || ev.altKey || ev.metaKey || ev.shiftKey) return;
+      const t = ev.target;
+      if (t && (
+        t.tagName === 'INPUT'
+        || t.tagName === 'TEXTAREA'
+        || t.isContentEditable
+      )) return;
+      try { window.parent.postMessage({ type: 'pres-nav', key: 'Enter' }, '*'); } catch (_) {}
+    });
+  }
+</script>
+
+<!-- Rotate-to-landscape notice — visible only on narrow viewports
+     in portrait orientation. CSS in common.css gates it on
+     @media (max-width: 900px) and (orientation: portrait). The
+     clock graph is too wide for portrait phones; rotating fixes
+     it instantly without a layout reflow. -->
+<div class="rotate-notice" role="alert" aria-live="assertive">
+  <div class="rotate-notice-inner">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="6" y="2" width="12" height="20" rx="2.5"/>
+      <line x1="11" y1="18.5" x2="13" y2="18.5"/>
+    </svg>
+    <h2>Rotate to <em>landscape</em></h2>
+    <p>The Property Clock is designed for landscape view. Please rotate your phone to continue.</p>
+  </div>
+</div>
+
+<!-- Live data loading overlay — visible by default; JS hides it after
+     loadState completes (with min 3s display so the animation doesn't
+     flash on a cache hit). -->
+<div id="live-loading-overlay" class="live-loading-overlay" role="status" aria-live="polite">
+  <div class="live-loading-card">
+    <div class="live-loading-dots" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+    <div class="live-loading-region">Loading Property Clock</div>
+    <div class="live-loading-sub">Fetching live data</div>
+  </div>
+</div>
+
+<!-- ══════════ PROPERTY CLOCK ══════════ -->
+<!-- ══════════ CLOCK VIEW ══════════ -->
+<div id="clockView" style="display:flex">
+  <!-- Back to hub + theme toggle — exact copy of the Demand Dashboard
+       pattern: an <a> anchor pill at top-left and a round 36px theme
+       toggle at left:160px. The previous .back-btn-wrap dark strip
+       is gone; the body's #clockView gradient now reads continuously
+       from the top edge. -->
+  <a id="pp-back-to-hub" href="../index.html" title="Back to hub" onclick="event.preventDefault(); navigateToHub();">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="15 18 9 12 15 6"/>
+    </svg>
+    <span>Back to Hub</span>
+  </a>
+  <button id="cl-theme-toggle" type="button" onclick="PP_toggleTheme()" title="Toggle light / dark mode" aria-label="Toggle theme">
+    <svg class="pp-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    <svg class="pp-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+  </button>
+  <div class="view-inner">
+    
+<div id="pdf-overlay"><div class="pdf-spinner"></div><div class="pdf-msg">Generating PDF…</div></div>
+<div id="toast"></div>
+
+<!-- TOOLBAR — moved out of .page so it floats on the #clockView
+     gradient. The JPEG/PDF export only captures #clock-capture
+     below, so this restructure has no effect on downloads but
+     lets the bar follow the dark/light theme naturally. -->
+<div class="toolbar">
+  <div class="tabs">
+    <button class="tab active" onclick="setView('both',this)">Both Clocks</button>
+    <button class="tab" onclick="setView('houses',this)">Houses</button>
+    <button class="tab" onclick="setView('units',this)">Units</button>
+  </div>
+  <div class="toolbar-right">
+    <!-- View / Edit segmented pill — Tier 0/1 only. View hides every
+         editing button (.edit-only); Edit reveals them. Default state
+         is View so admins land on a clean read-only canvas, same as
+         Online Reports. applyAccessRestrictions() in shared/auth.js
+         hides this pill for Tier 2+, who never get to enter Edit. -->
+    <div class="mode-toggle tier1-only" role="tablist" aria-label="View / Edit mode">
+      <button id="clock-mode-view" class="on" type="button" role="tab" aria-selected="true" title="Read-only: editing tools hidden">View</button>
+      <button id="clock-mode-edit"          type="button" role="tab" aria-selected="false" title="Editing tools enabled">Edit</button>
+    </div>
+    <button class="tbtn edit-only" onclick="openSettings('regions')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
+      Region Settings
+    </button>
+    <button class="tbtn edit-only" onclick="openSettings('appearance')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+      Appearance
+    </button>
+    <button class="tbtn edit-only" onclick="openSettings('manage')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add / Remove
+    </button>
+    <button class="tbtn edit-only" onclick="openSettings('custom-text')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+      Custom Text
+    </button>
+    <button class="tbtn edit-only" onclick="openSettings('images')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      Images
+    </button>
+    <button class="tbtn edit-only" onclick="openSettings('export')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Export
+    </button>
+    <button class="tbtn tier1-only" onclick="openAuditLog()" title="View edit history (Tier 0/1 only)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      Audit Log
+    </button>
+    <button class="tbtn save-btn edit-only" id="save-btn" onclick="saveState()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+      Save
+    </button>
+    <span class="save-indicator edit-only" id="save-indicator"></span>
+    <button class="tbtn pdf-btn" onclick="exportPDF()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+      Download PDF (A4)
+    </button>
+    <button class="tbtn pdf-btn" onclick="exportClockJPEG()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      Download JPEG (HD)
+    </button>
+    <button class="tbtn danger edit-only" onclick="resetAll()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+      Reset
+    </button>
+  </div>
+</div>
+
+
+<!-- CENTERED VIEW TABS (shown for Tier 0/1 only — Tier 2 sees tabs inside toolbar).
+     Also outside .page now so it floats on the gradient. -->
+<div class="center-tabs-bar" id="center-tabs-bar" style="display:none"></div>
+
+
+<!-- .page is now ONLY the clock-capture wrap — toolbar + tabs-bar
+     live above it on the gradient. -->
+<div class="page" id="page-root">
+
+<!-- CLOCK + HEADER captured for PDF -->
+<div id="clock-capture">
+
+<!-- HEADER with logo and clock titles — included in PDF -->
+<div class="page-header">
+  <div class="clock-title-block left">
+    <div id="hdr-title-l" class="hdr-editable ctb-kicker" data-field="title">NATIONAL PROPERTY CLOCK</div>
+    <div id="hdr-main-l" class="ctb-main">HOUSES</div>
+    <div id="hdr-sub-l" class="hdr-editable ctb-edition-pill" data-field="subtitle-l">EDITION 3 – 2026</div>
+  </div>
+  <div class="brand" style="padding:8px 0">
+    <!-- Property Clock keeps a single logo across both themes —
+         the rendered clock graph below already supplies its own
+         black brand mark; swapping this header logo in light mode
+         would double up on it. -->
+    <img src="../assets/logo.png" alt="Performance Property" style="height:56px;width:auto;display:block">
+  </div>
+  <div class="clock-title-block right">
+    <div id="hdr-title-r" class="hdr-editable ctb-kicker" data-field="title">NATIONAL PROPERTY CLOCK</div>
+    <div id="hdr-main-r" class="ctb-main">UNITS</div>
+    <div id="hdr-sub-r" class="hdr-editable ctb-edition-pill" data-field="subtitle-r">EDITION 3 – 2026</div>
+  </div>
+</div>
+
+
+  <div class="clocks-area" id="clocks-area">
+    <svg id="svg-combined" viewBox="0 0 1660 740" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
+  <!-- LEGEND -->
+  <div class="legend-bar">
+    <div class="leg-item"><div class="leg-dot" id="leg-s" style="background:#64B5F6"></div>Smooth Markets</div>
+    <div class="leg-item"><div class="leg-dot" id="leg-w" style="background:#E53935"></div>Workforce Markets</div>
+  </div>
+  <div class="disc"><strong>DISCLAIMER:</strong> Selling Window: A decision to sell should always be made when considering your overall Portfolio Strategy. Talk to your advisor to decide whether to sell or hold through another cycle.</div>
+</div>
+
+<!-- SETTINGS PANEL -->
+<div class="settings-panel" id="settings-panel">
+  <div class="sp-tabs">
+    <button class="sp-tab active" id="spt-regions"    onclick="switchSPTab('regions',this)">Region Settings</button>
+    <button class="sp-tab"        id="spt-appearance" onclick="switchSPTab('appearance',this)">Appearance</button>
+    <button class="sp-tab"        id="spt-manage"     onclick="switchSPTab('manage',this)">Add / Remove</button>
+    <button class="sp-tab"        id="spt-export"      onclick="switchSPTab('export',this)">Export / Import</button>
+    <button class="sp-tab"        id="spt-custom-text" onclick="switchSPTab('custom-text',this)">✏ Custom Text</button>
+    <button class="sp-tab"        id="spt-images"      onclick="switchSPTab('images',this)">🖼 Images</button>
+    <button class="sp-close" onclick="closeSettings()">✕</button>
+  </div>
+
+  <!-- REGION SETTINGS — searchable dropdown style -->
+  <div class="sp-body" id="spb-regions">
+    <div class="rsp-cols">
+      <!-- Houses -->
+      <div class="rsp-col">
+        <div class="rsp-col-label">🏠 Houses</div>
+        <div class="rsp-bar">
+          <input class="rsp-search" id="rsp-search-h" type="text" placeholder="Search city…" oninput="renderRSP('h')">
+          <button class="rsp-filter-btn active" id="rsp-fall-h" onclick="setRSPFilter('h','all',this)">All</button>
+          <button class="rsp-filter-btn" id="rsp-fs-h" onclick="setRSPFilter('h','smooth',this)">Smooth</button>
+          <button class="rsp-filter-btn" id="rsp-fw-h" onclick="setRSPFilter('h','workforce',this)">Workforce</button>
+        </div>
+        <div class="rsp-list" id="rsp-list-h"></div>
+        <div style="margin-top:10px">
+          <div class="sec-title">Selected Region Settings</div>
+          <div class="rsp-detail" id="rsp-detail-h"><div class="rsp-detail-empty">Click a region above to edit it</div></div>
+        </div>
+      </div>
+      <!-- Units -->
+      <div class="rsp-col">
+        <div class="rsp-col-label">🏢 Units</div>
+        <div class="rsp-bar">
+          <input class="rsp-search" id="rsp-search-u" type="text" placeholder="Search city…" oninput="renderRSP('u')">
+          <button class="rsp-filter-btn active" id="rsp-fall-u" onclick="setRSPFilter('u','all',this)">All</button>
+          <button class="rsp-filter-btn" id="rsp-fs-u" onclick="setRSPFilter('u','smooth',this)">Smooth</button>
+          <button class="rsp-filter-btn" id="rsp-fw-u" onclick="setRSPFilter('u','workforce',this)">Workforce</button>
+        </div>
+        <div class="rsp-list" id="rsp-list-u"></div>
+        <div style="margin-top:10px">
+          <div class="sec-title">Selected Region Settings</div>
+          <div class="rsp-detail" id="rsp-detail-u"><div class="rsp-detail-empty">Click a region above to edit it</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- APPEARANCE -->
+  <div class="sp-body" id="spb-appearance" style="display:none">
+    <div class="sec-title">Label Display</div>
+    <div class="app-grid" style="margin-bottom:20px">
+      <div class="app-item">
+        <div class="app-lbl">Global Font Scale</div>
+        <div class="app-ctrl">
+          <input type="range" id="gfs-range" min="60" max="160" value="120" oninput="applyGlobalFontScale(this.value)">
+          <span class="app-val" id="gfs-val">120%</span>
+        </div>
+      </div>
+      <div class="app-item">
+        <div class="app-lbl">Label Radius</div>
+        <div class="app-ctrl">
+          <input type="range" id="lrad-range" min="10" max="100" value="38" oninput="applyLabelRadius(this.value)">
+          <span class="app-val" id="lrad-val">38</span>
+        </div>
+      </div>
+      <div class="app-item">
+        <div class="app-lbl">Show Market Type</div>
+        <div class="app-ctrl">
+          <div class="tog-grp">
+            <button id="mkt-both-btn" class="active" onclick="setMktFilter('both',this)">Both</button>
+            <button onclick="setMktFilter('smooth',this)">Smooth</button>
+            <button onclick="setMktFilter('workforce',this)">Workforce</button>
+            <button id="mkt-none-btn" class="tier1-only" onclick="setMktFilter('none',this)" title="Tier 1 only - hide all regions">Hide All</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="sec-title">Label Colours</div>
+    <div class="app-grid" style="margin-bottom:20px">
+      <div class="app-item">
+        <div class="app-lbl">Smooth Markets</div>
+        <div class="app-ctrl">
+          <input type="color" id="col-smooth" value="#64B5F6" oninput="applyColors()">
+          <input type="text" id="col-smooth-hex" class="hex-inp" value="#64B5F6"
+                 maxlength="7" placeholder="#RRGGBB"
+                 oninput="applyHexInput('smooth')" spellcheck="false">
+        </div>
+      </div>
+      <div class="app-item">
+        <div class="app-lbl">Workforce Markets</div>
+        <div class="app-ctrl">
+          <input type="color" id="col-workforce" value="#E53935" oninput="applyColors()">
+          <input type="text" id="col-workforce-hex" class="hex-inp" value="#E53935"
+                 maxlength="7" placeholder="#RRGGBB"
+                 oninput="applyHexInput('workforce')" spellcheck="false">
+        </div>
+      </div>
+    </div>
+    <!-- CLOCK PARTITIONS EDITOR -->
+    <div class="sec-title">Clock Partitions <span style="font-size:9px;color:#aaa;font-weight:normal;letter-spacing:0;text-transform:none">— freely add, remove, recolour and resize wedge zones</span></div>
+    <div class="part-editor" id="part-editor"></div>
+    <button class="part-add" style="margin-top:8px" onclick="addPartition()">+ Add Partition</button>
+    <div style="margin-top:10px;font-size:10px;color:#aaa">Start and End angles: 0° = top (12 o'clock), clockwise. E.g. Red zone: 30°→135°</div>
+  </div>
+
+  <!-- ADD / REMOVE -->
+  <div class="sp-body" id="spb-manage" style="display:none">
+    <div class="sec-title">Add New Region</div>
+    <div class="arf">
+      <div class="arf-f"><div class="arf-lbl">City Name</div><input class="arf-inp" id="arf-name" type="text" placeholder="e.g. HOBART"></div>
+      <div class="arf-f"><div class="arf-lbl">Clock</div>
+        <select class="arf-sel" id="arf-clock"><option value="houses">Houses</option><option value="units">Units</option><option value="both">Both</option></select>
+      </div>
+      <div class="arf-f"><div class="arf-lbl">Market Type</div>
+        <select class="arf-sel" id="arf-type"><option value="smooth">Smooth</option><option value="workforce">Workforce</option></select>
+      </div>
+      <div class="arf-f"><div class="arf-lbl">Hour Position</div><select class="arf-sel" id="arf-hour"></select></div>
+      <button class="arf-add" onclick="addRegion()">+ Add</button>
+    </div>
+    <div class="sec-title" style="margin-top:18px">Bulk Actions</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="ei-btn" onclick="hideAllWorkforce()">Hide All Workforce</button>
+      <button class="ei-btn" onclick="showAllRegions()">Show All</button>
+      <button class="ei-btn" onclick="resetDragOffsets()">Reset Label Positions</button>
+    </div>
+  </div>
+
+  <!-- CUSTOM TEXT -->
+  <div class="sp-body" id="spb-custom-text" style="display:none">
+    <div class="sec-title">Add Custom Text <span style="font-size:9px;color:#aaa;font-weight:normal;letter-spacing:0;text-transform:none">— drag labels anywhere on the clock</span></div>
+    <div class="ct-add-form">
+      <div class="ct-form-row">
+        <div class="arf-f" style="flex:2;min-width:150px">
+          <div class="arf-lbl">Text Content</div>
+          <input class="arf-inp" id="ct-text-inp" type="text" placeholder="e.g. RISING FAST" style="width:100%;max-width:300px">
+        </div>
+        <div class="arf-f">
+          <div class="arf-lbl">Font</div>
+          <select class="arf-sel" id="ct-font-sel">
+            <option value="Montserrat">Montserrat</option>
+            <option value="Arial">Arial</option>
+            <option value="Georgia">Georgia</option>
+            <option value="Impact">Impact</option>
+          </select>
+        </div>
+        <div class="arf-f">
+          <div class="arf-lbl">Size (px)</div>
+          <div class="ct-size-ctrl">
+            <button onclick="stepCTAddSize(-1)">−</button>
+            <span id="ct-size-val">14</span>
+            <button onclick="stepCTAddSize(+1)">+</button>
+          </div>
+        </div>
+        <div class="arf-f">
+          <div class="arf-lbl">Color</div>
+          <input type="color" id="ct-color-inp" value="#111111" style="width:34px;height:26px;border:none;cursor:pointer;border-radius:4px;padding:0">
+        </div>
+        <div class="arf-f">
+          <div class="arf-lbl">Style</div>
+          <div class="ct-form-style">
+            <button class="ct-style-btn" id="ct-bold-btn" onclick="toggleCTAddStyle('bold')" title="Bold"><b>B</b></button>
+            <button class="ct-style-btn" id="ct-italic-btn" onclick="toggleCTAddStyle('italic')" title="Italic"><i>I</i></button>
+            <button class="ct-style-btn" id="ct-upper-btn" onclick="toggleCTAddStyle('upper')" title="Uppercase" style="font-size:9px;letter-spacing:.5px">AA</button>
+          </div>
+        </div>
+        <button class="arf-add" onclick="addCustomTextFromForm()">+ Add to Clock</button>
+      </div>
+    </div>
+    <div class="sec-title" style="margin-top:18px">Text Labels on Clock</div>
+    <div class="ct-list" id="ct-list"><div style="font-size:11px;color:#aaa;padding:6px 0">No custom text added yet.</div></div>
+  </div>
+
+  <!-- IMAGES -->
+  <div class="sp-body" id="spb-images" style="display:none">
+    <div class="sec-title">Add Image <span style="font-size:9px;color:#aaa;font-weight:normal;letter-spacing:0;text-transform:none">— drag images anywhere on the clock, drag corner handle to resize</span></div>
+    <div id="img-upload-area" class="img-upload-area" onclick="document.getElementById('img-file-input').click()"
+         ondragover="event.preventDefault();this.classList.add('dragover')"
+         ondragleave="this.classList.remove('dragover')"
+         ondrop="handleImgDrop(event)">
+      <input type="file" id="img-file-input" accept="image/png,image/jpeg,image/gif,image/svg+xml,image/webp" multiple style="display:none" onchange="handleImgFileInput(this)">
+      <div class="img-upload-icon">📁</div>
+      <div class="img-upload-text">Click to upload or drag & drop images here</div>
+      <div class="img-upload-sub">PNG, JPG, GIF, SVG, WebP supported</div>
+    </div>
+    <div class="sec-title" style="margin-top:18px">Images on Clock</div>
+    <div class="img-list" id="img-list"><div style="font-size:11px;color:#aaa;padding:6px 0">No images added yet.</div></div>
+  </div>
+
+  <!-- EXPORT / IMPORT -->
+  <div class="sp-body" id="spb-export" style="display:none">
+    <div class="sec-title">Export</div>
+    <div class="ei-row">
+      <button class="ei-btn" onclick="exportJSON()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download JSON
+      </button>
+      <button class="ei-btn" onclick="exportCSV()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Download CSV
+      </button>
+      <button class="ei-btn" onclick="copyConfig()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Copy Config
+      </button>
+    </div>
+    <div class="sec-title">Import</div>
+    <textarea class="ei-ta" id="import-json" placeholder="Paste exported JSON config here…"></textarea>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="ei-btn" onclick="importJSON()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Import
+      </button>
+      <button class="ei-btn" onclick="saveStateOffline()" title="Save current state to this browser only — useful when running on a live-server / no cloud connection">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Offline Save
+      </button>
+    </div>
+  </div>
+</div>
+
+</div><!-- /page -->
+
+<script>
+/* ═══ GEOMETRY ═══ */
+const SVG_W=1660, SVG_H=740;
+const CLOCK_H={cx:400,cy:370};
+const CLOCK_U={cx:1260,cy:370};
+const CX=CLOCK_H.cx, CY=CLOCK_H.cy;
+const R=230, OUTER=R+28;
+const WALL_PAD=0.2; // hugs the chart edge — labels can be dragged right up to the SVG bounds for max headroom
+
+/* ═══ PARTITIONS — fully editable, replaces hardcoded WEDGES ═══
+   Each partition: { id, label, color, a1, a2 }
+   a1/a2 in degrees, 0=top, clockwise.
+*/
+let PARTITIONS = [
+  {id:'red',    label:'Correction / Hold',      color:'#D93025', a1:30,  a2:135},
+  {id:'green',  label:'Buy / Value / Momentum', color:'#4DB648', a1:135, a2:285},
+  {id:'orange', label:'Selling Window / Peak',  color:'#F47C20', a1:285, a2:30 },
+];
+
+const DEF_PARTITIONS = JSON.parse(JSON.stringify(PARTITIONS));
+
+/* ═══ COLOURS ═══ */
+let LCOL = {smooth:'#64B5F6', workforce:'#E53935'};
+let GFS=1.2, LRAD=38, MKT_FILTER='both';
+const FS_DEF=12;
+// ZCOL kept for legacy reset compatibility
+let ZCOL = {red:'#D93025', green:'#4DB648', orange:'#F47C20'};
+
+const AUS_MAP="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAN4AAADNCAYAAADXJc6CAAAJ0UlEQVR4nO3d63nbNhSHccBPF3BGaEdwR0hGSEdIR0hGaEdIRrBHsEawR7BHsEY4/VBSpmheQNwOLu/vS93IliBRfx4AJEFrACUiIuPP1lqr2ZbcbrQbgD6JyOPs/1+02qKhq71MKcY9/dpefloJplqqCkvvsaX3t+c37Qb0bC1gE2djzG2OtiAvupqZicj93u9M9vxXoZNBkoYhq25Keyn2grPU3RKRN7NS+WrsnvXQld5DxSvHeeOLt9rdlHc/915ARO68W5fBfMKlZd3sYUonInJ0smXH2Vr7aenvrbVWayrf5b30UPmYXCnAOJUeefx26/p8W6FHGgRPkdZEiYg8abwu3jHGU6I8Ozkf6z2otGJFDzO3dC8UlPbFKm2MZ0z74zwqXmalhc4Y85zrhY50cVs/hazpvUqJSgteidVu1HLVo+LpylZtll635S926fjgM5nt7Z/NxwmObLQCR8V71+wbK01JXUyCp4+upiMReZmcnlVMiFAngrdhFrTfZ489iYjTJTsi8jlJAxs3nBzeJM5cmRCRJ2vtn8PPe1XtzhjzZna66wVWx1/aDTjgsmPbu3i4Nk28iVg8Q3Ky1n6J/JzJaH5xY30WLYSPrubA5bKaFZ93vlB/ez5vClqHL6IK2FbFqH7PEUOMPfHkUpsHY8zXca88jAOLGKtoV4oU1V/7PfmqstGxJe4OvprZxIwW7S8pwXtXZaNjKW38lYPyGG91CYsQNYaPMV5nROQfxZdnxbRBdXuKGHqsdAserLV/5XzBVJ97jRWvugbHQPDelXx1gqsag0dXs3PDiTm7a33GeJ3Ur1GT6vYUMfAl2PQ8nr0TU8rPnIpXoGGPzuI+7u7YMaXXZPBE5Ovsn+64suCYmDsrPvOPqivRWyYbeHUxVxwX2pXLsQ1q6242WfHM9WKuTZyfqGm4BOpNRIo4A2dJbYsjVbWX2LK0Vx3On/xqjPlpOHgb06u19g+XX0x1tsqaWipfFY3cQ3dShdPsZ+5tQ/AyIng69r7kuavdqIbwVT/GI3R6hnHf4ucvIt8M3ftVxe8Z9hC8ckyuQVTdJlS8/F61G9AzjpO6K37P4IKNjSkqHoBF1Qev5bUX0a5qgyci90MXk5kzXKlh6FF8X3hNDR8u9JQ+zquy4nGZD2pXZfCM4i2uUIfSd85Fl+MldDFxVIndzuIatIXQIVQpIaymq6m8HiQaISKP2m0wpoKKR5VDAtnXFJ0rLnjDoJjJE+RwWSIkN+2bWDwaY7hbKtTlHvupjPFE5OfQhSR0KELuww9ZUz4sSFPsgjnonvNaMqGSB4/JEdQkV5czSldTRF5kRYznB1oTnG7ChdbkqHreFW+scjEbA/TCK9kEDq1LXfUOV7zZKTfniG0BipH68IJzqqly6E3KqvfhiceAlbJGIqApVfiuuprzkBE6dCzpMOoqzQQNuDbccUpiV75qrscDNIzFaP7fUJfglb5GBaAtZvgu5ZNuJuAutOtJVxPwEHrrZyoe4Cmk6lHxAAUED1BA8AA/QTdB5bQwIIDvOI+KBwTwvT8jFQ+I5Ej1s4QOiMslgHQ1AQUED4hMRL7t/Q5jPCCNzfsyEDwgobXx3s3WgwDSYIwHJLTWm7wEj6oHpLEUvpvZA6yTCWRwNbkyLuyi2ySgTdNeJWM8QMGHdTUnqaTbCUQ07U1+OI5HdxNIZyxsN6weDeTHGA9QcMPxOyCbH+MPVDwgn9P4w/RczaDFWwDsuh9/4G5BQEaXWc2Fx6h8QGKrd4QFEN9WxQOQiIg8GkPFA7Kz1loqHqBg8eA5VQ9I6kzwAAVrXc3nrK0AOrN6nuZwM4bbjG0BurF5gjRdTiCNvVnN087jADzsXhIkIi/GmN8ztAXohtO1eHQ5gXg4gA4oIXiAAoIHKCB4gAKCB2TE9XiAIoIHKHANHuuwABE5L2bLQXQgHGM8IL9Lz/HQ8u1UPcAfN6YElB0KHjc4AeLwqXjcKRY47t/p/3hVMMZ68Ux7ESLyZIy5mzx8Niy/0YR5b5HgJebTPV8IIOr2aq39Y/oPTK7Ed7ITPk9grf3TsOxGM+ahM4bgxfTvkLUvMZ7MWvtlEl6WW6zX4rajqxnHJ2tttkknuqL1WOv1ELx1l3759P2Wdkilk21RLYJ3QGnh2tP69qjM1Uz02nepxzHeWpfwV8iEiKYa29ywMXTPW9uFimfa+OLOtgnH/xS5fJ96rHij51ornANCp8T1+/Rb6oaUqMWwje+Jlb/rcLjiicj3FA3JpcXQTS0drEUW5yPfLaeK19CYroslLKy1NmCbna21n4zheOER42fm/Psuv9RK8FqvdlMh22wI7r0x5mvEJjXt6HerpzFeF9Vu5FH1Fk8YQBq1zGpenXg87F1cTyJ+MMY8dDr2cT7RutPPJ5bD59IW2dXsqUuYmsu2m3/eVLxjfL6vxVU8QpfXQuietNpSKa+T452ClysMhC6+jc/0tPIYs5gHHJ3NHDlXvNn46sHnxfaeP/ZzYp3rdYPDdvmVuDm18r4UzPvLHmG6+RTrolFsm4/ZtnZya7/LuO+jkGIRVGVCjxWFvDaO2bumcG1bErx1Id/hoON4PmdIEDgdPp872yqd4FnN+fG1pbHg7N9QmNnOk/Vd3AR9TgQBPt3QkzHmc+p2lSy0iBA87GJ8dy1Gz624A+jIT5a9jI/Nf7/zYUOUrnivHx4GO9Xs1QwX1XJa2f9i7XAIXud8zuU88reNuVyrGIrgdW4rPHt7996CF7N7TfAQpKfwxQwekysI0vEkSxCCByggeIACggcoIHiAAoIHKCB4gAKChxhav5ToIfZhE47BIIrGD6RfFvuNhYqHKBo+kH5Ksdhvqx8WFLRY9VLtUAgeoqoofGdjzK1WpSZ4SKLkAJbQLWaMhyQSXqUeOoNaxOK86slHH0TkzUS4N7vPkpIT0WcnfVHxkMutMcvLQRrHKhZYQX+UEjqgCCJyKyJvK4su/XT4+28rfysi8pjjPQBVE5H7aWoc/+bzUuJStxXARA3BY4wHAAAAoFelj9d8MMZD0VKFTnsChuChdN73GQfgKVVlmhzue4r93ED1hnC8JXpete5m0D3QgdRKuIQnBcZ46J6IdH1baSAbEXkRke8tHqoAoos1NhOR77HaBDRv5dKfQzOTQ7XjKgbA1UrwRvcHf18teE3OGKFdKYKiMXPKrCaggOABCggeqtLKAXWChxqdtBsQqom9B/oTc5KFyRXA3at2A0IQPFQp4uK0Kt1WupqoVozuptZkDRUPUEDwAAUEDzULmmDRPCbIGA9VCxnnaQaPigcoIHioWq2nkBE8QAHBQ/WGqrd3b/MfC3eiVVNlmQaWbE20aAdtjooHKPgPvv569v8dtwIAAAAASUVORK5CYII=";
+
+/* ═══ REGION DATA ═══ */
+const WORKFORCE_SET=new Set(["TAMWORTH","CAIRNS","MACKAY","GLADSTONE","ROCKHAMPTON","ROCKINGHAM","BUNDABERG","BUNBURY","PERTH","TOWNSVILLE","DARWIN","MANDURAH"]);
+
+const DEF_H=[
+  {name:"GOLD COAST",     hour:11.5,  type:"smooth",   vis:true,fs:null},
+  {name:"SUNSHINE COAST", hour:11.7,  type:"smooth",   vis:true,fs:null},
+  {name:"WAGGA WAGGA",    hour:12,    type:"smooth",   vis:true,fs:null},
+  {name:"PORT MACQUARIE", hour:1,     type:"smooth",   vis:true,fs:null},
+  {name:"HOBART",         hour:2,     type:"smooth",   vis:true,fs:null},
+  {name:"WOLLONGONG",     hour:2.3,   type:"smooth",   vis:true,fs:null},
+  {name:"COFFS HARBOUR",  hour:2.5,   type:"smooth",   vis:true,fs:null},
+  {name:"ORANGE",         hour:2.7,   type:"smooth",   vis:true,fs:null},
+  {name:"NEWCASTLE",      hour:2.9,   type:"smooth",   vis:true,fs:null},
+  {name:"CANBERRA",       hour:3,     type:"smooth",   vis:true,fs:null},
+  {name:"SYDNEY",         hour:4.5,   type:"smooth",   vis:true,fs:16},
+  {name:"CENTRAL COAST",  hour:4.7,   type:"smooth",   vis:true,fs:null},
+  {name:"LAUNCESTON",     hour:4.9,   type:"smooth",   vis:true,fs:null},
+  {name:"GEELONG",        hour:5.8,   type:"smooth",   vis:true,fs:null},
+  {name:"MELBOURNE",      hour:6.5,   type:"smooth",   vis:true,fs:16},
+  {name:"BENDIGO",        hour:7.3,   type:"smooth",   vis:true,fs:null},
+  {name:"BALLARAT",       hour:7.5,   type:"smooth",   vis:true,fs:null},
+  {name:"WODONGA",        hour:7.7,   type:"smooth",   vis:true,fs:null},
+  {name:"DARWIN",         hour:8.3,   type:"smooth",   vis:true,fs:null},
+  {name:"CAIRNS",         hour:9,     type:"workforce",vis:true,fs:null},
+  {name:"MACKAY",         hour:9.2,   type:"workforce",vis:true,fs:null},
+  {name:"GLADSTONE",      hour:9.4,   type:"workforce",vis:true,fs:null},
+  {name:"ROCKHAMPTON",    hour:9.6,   type:"workforce",vis:true,fs:null},
+  {name:"ROCKINGHAM",     hour:9.8,   type:"workforce",vis:true,fs:null},
+  {name:"ALBURY",         hour:10,    type:"smooth",   vis:true,fs:null},
+  {name:"BUNDABERG",      hour:10.1,  type:"workforce",vis:true,fs:null},
+  {name:"BUNBURY",        hour:10.2,  type:"workforce",vis:true,fs:null},
+  {name:"PERTH",          hour:10.3,  type:"workforce",vis:true,fs:null},
+  {name:"TOWNSVILLE",     hour:10.5,  type:"workforce",vis:true,fs:null},
+  {name:"MILDURA",        hour:10.7,  type:"smooth",   vis:true,fs:null},
+  {name:"TAMWORTH",       hour:10.9,  type:"workforce",vis:true,fs:null},
+  {name:"ADELAIDE",       hour:11,    type:"smooth",   vis:true,fs:null},
+  {name:"BRISBANE",       hour:11.2,  type:"smooth",   vis:true,fs:null},
+  {name:"IPSWICH",        hour:11.3,  type:"smooth",   vis:true,fs:null},
+  {name:"TOOWOOMBA",      hour:11.4,  type:"smooth",   vis:true,fs:null},
+];
+const DEF_U=[
+  {name:"ORANGE",         hour:11.2,  type:"smooth",   vis:true,fs:null},
+  {name:"GOLD COAST",     hour:11.4,  type:"smooth",   vis:true,fs:null},
+  {name:"ADELAIDE",       hour:10.4,  type:"smooth",   vis:true,fs:null},
+  {name:"BRISBANE",       hour:10.6,  type:"smooth",   vis:true,fs:null},
+  {name:"WOLLONGONG",     hour:10.8,  type:"smooth",   vis:true,fs:null},
+  {name:"SUNSHINE COAST", hour:11,    type:"smooth",   vis:true,fs:null},
+  {name:"MILDURA",        hour:11.1,  type:"smooth",   vis:true,fs:null},
+  {name:"TOOWOOMBA",      hour:11.25, type:"smooth",   vis:true,fs:null},
+  {name:"IPSWICH",        hour:11.35, type:"smooth",   vis:true,fs:null},
+  {name:"PORT MACQUARIE", hour:12,    type:"smooth",   vis:true,fs:null},
+  {name:"CENTRAL COAST",  hour:12.2,  type:"smooth",   vis:true,fs:null},
+  {name:"NEWCASTLE",      hour:12.5,  type:"smooth",   vis:true,fs:null},
+  {name:"COFFS HARBOUR",  hour:1.7,   type:"smooth",   vis:true,fs:null},
+  {name:"HOBART",         hour:1.9,   type:"smooth",   vis:true,fs:null},
+  {name:"LAUNCESTON",     hour:3.1,   type:"smooth",   vis:true,fs:null},
+  {name:"BALLARAT",       hour:3.3,   type:"smooth",   vis:true,fs:null},
+  {name:"BENDIGO",        hour:3.5,   type:"smooth",   vis:true,fs:null},
+  {name:"GEELONG",        hour:3.7,   type:"smooth",   vis:true,fs:null},
+  {name:"CANBERRA",       hour:4,     type:"smooth",   vis:true,fs:null},
+  {name:"ALBURY-WODONGA", hour:4.8,   type:"smooth",   vis:true,fs:null},
+  {name:"SYDNEY",         hour:5,     type:"smooth",   vis:true,fs:16},
+  {name:"CAIRNS",         hour:5.1,   type:"workforce",vis:true,fs:null},
+  {name:"TAMWORTH",       hour:5.3,   type:"workforce",vis:true,fs:null},
+  {name:"ROCKINGHAM",     hour:5.5,   type:"workforce",vis:true,fs:null},
+  {name:"WAGGA WAGGA",    hour:5.7,   type:"smooth",   vis:true,fs:null},
+  {name:"BUNBURY",        hour:6,     type:"workforce",vis:true,fs:null},
+  {name:"TOWNSVILLE",     hour:6.1,   type:"workforce",vis:true,fs:null},
+  {name:"PERTH",          hour:6.3,   type:"workforce",vis:true,fs:null},
+  {name:"ROCKHAMPTON",    hour:6.5,   type:"workforce",vis:true,fs:null},
+  {name:"BUNDABERG",      hour:6.7,   type:"workforce",vis:true,fs:null},
+  {name:"MACKAY",         hour:6.9,   type:"workforce",vis:true,fs:null},
+  {name:"DARWIN",         hour:7.1,   type:"workforce",vis:true,fs:null},
+  {name:"GLADSTONE",      hour:7.3,   type:"workforce",vis:true,fs:null},
+  {name:"MELBOURNE",      hour:7.5,   type:"smooth",   vis:true,fs:16},
+];
+
+let HR=[
+  {"name":"GOLD COAST","hour":11.5,"type":"smooth","vis":true,"fs":null,"dx":83.40031881546008,"dy":-14.380657054820468},
+  {"name":"SUNSHINE COAST","hour":11.7,"type":"smooth","vis":true,"fs":null,"dx":56.71221679451287,"dy":26.6882045921934},
+  {"name":"WAGGA WAGGA","hour":12,"type":"smooth","vis":true,"fs":null,"dx":4.448017003491259,"dy":20.01615344414506},
+  {"name":"PORT MACQUARIE","hour":1,"type":"smooth","vis":true,"fs":null,"dx":45.592174285784836,"dy":12.232093771422},
+  {"name":"HOBART","hour":2,"type":"smooth","vis":true,"fs":null,"dx":-36.69614027880243,"dy":-46.70435803633845},
+  {"name":"WOLLONGONG","hour":2.3,"type":"smooth","vis":true,"fs":null,"dx":-7.7840297561095895,"dy":-23.352179018169238},
+  {"name":"COFFS HARBOUR","hour":2.5,"type":"smooth","vis":true,"fs":null,"dx":17.792068013964922,"dy":-48.92837508568792},
+  {"name":"ORANGE","hour":2.7,"type":"smooth","vis":true,"fs":null,"dx":-36.696140278802545,"dy":-63.38448590645933},
+  {"name":"NEWCASTLE","hour":2.9,"type":"smooth","vis":true,"fs":null,"dx":2.224008501745857,"dy":-86.7366649246286},
+  {"name":"CANBERRA","hour":3,"type":"smooth","vis":true,"fs":null,"dx":-10.008038257855219,"dy":-61.16046885710989},
+  {"name":"SYDNEY","hour":4.5,"type":"smooth","vis":true,"fs":16,"dx":101.19238682942489,"dy":-220.17768788559562},
+  {"name":"CENTRAL COAST","hour":4.7,"type":"smooth","vis":true,"fs":null,"dx":131.21650160299043,"dy":-244.64187542843962},
+  {"name":"LAUNCESTON","hour":4.9,"type":"smooth","vis":true,"fs":null,"dx":160.1286121256834,"dy":-231.29777313234285},
+  {"name":"GEELONG","hour":5.8,"type":"smooth","vis":true,"fs":null,"dx":234.63289693416112,"dy":-151.23315935576267},
+  {"name":"MELBOURNE","hour":6.5,"type":"smooth","vis":true,"fs":16,"dx":270.2170329620907,"dy":-38.9202983636153},
+  {"name":"BENDIGO","hour":7.3,"type":"smooth","vis":true,"fs":null,"dx":91.18434857156967,"dy":40.03230688829012},
+  {"name":"BALLARAT","hour":7.5,"type":"smooth","vis":true,"fs":null,"dx":128.99249310124492,"dy":57.82444328308566},
+  {"name":"WODONGA","hour":7.7,"type":"smooth","vis":true,"fs":null,"dx":132.3285058538633,"dy":110.0888439427979},
+  {"name":"DARWIN","hour":8.3,"type":"smooth","vis":true,"fs":null,"dx":50.04019128927605,"dy":90.07269049865278},
+  {"name":"CAIRNS","hour":9,"type":"workforce","vis":true,"fs":null,"dx":12.232046759600806,"dy":-86.73666492462854},
+  {"name":"MACKAY","hour":9.2,"type":"workforce","vis":true,"fs":null,"dx":25.576097770074426,"dy":-41.144315412964886},
+  {"name":"GLADSTONE","hour":9.4,"type":"workforce","vis":true,"fs":null,"dx":-20.016076515710424,"dy":-1.1120085246747067},
+  {"name":"ROCKHAMPTON","hour":9.6,"type":"workforce","vis":true,"fs":null,"dx":-22.240085017456025,"dy":48.92837508568795},
+  {"name":"ROCKINGHAM","hour":9.8,"type":"workforce","vis":true,"fs":null,"dx":-53.376204041894454,"dy":96.74474164670112},
+  {"name":"ALBURY","hour":10,"type":"smooth","vis":true,"fs":null,"dx":-28.912110522692814,"dy":147.8971337817384},
+  {"name":"BUNDABERG","hour":6,"type":"workforce","vis":true,"fs":null,"dx":-320.4809489895264,"dy":-319.1464465816462},
+  {"name":"BUNBURY","hour":6,"type":"workforce","vis":true,"fs":null,"dx":-310.24918599351145,"dy":-331.3785403530681},
+  {"name":"PERTH","hour":10.3,"type":"workforce","vis":true,"fs":17,"dx":-77.84029756109607,"dy":212.3936282128724},
+  {"name":"TOWNSVILLE","hour":10.5,"type":"workforce","vis":true,"fs":null,"dx":-94.52036132418807,"dy":263.5460203479099},
+  {"name":"MILDURA","hour":10.7,"type":"smooth","vis":true,"fs":null,"dx":7.784029756109632,"dy":-18.904144919470326},
+  {"name":"TAMWORTH","hour":10.9,"type":"workforce","vis":true,"fs":null,"dx":-10.00803825785519,"dy":31.136238690892313},
+  {"name":"ADELAIDE","hour":11,"type":"smooth","vis":true,"fs":17,"dx":-65.60825080149526,"dy":83.40063935060441},
+  {"name":"BRISBANE","hour":11.2,"type":"smooth","vis":true,"fs":17,"dx":-111.20042508728008,"dy":117.87290361552088},
+  {"name":"IPSWICH","hour":11.3,"type":"smooth","vis":true,"fs":null,"dx":-110.08842083640732,"dy":160.12922755316043},
+  {"name":"TOOWOOMBA","hour":11.4,"type":"smooth","vis":true,"fs":null,"dx":-147.8965653660825,"dy":199.04952591677585}
+];
+let UR=[
+  {"name":"ORANGE","hour":11.2,"type":"smooth","vis":true,"fs":null,"dx":3.336012752618444,"dy":3.336025574024177},
+  {"name":"GOLD COAST","hour":11.4,"type":"smooth","vis":true,"fs":null,"dx":-40.03215303142065,"dy":47.81636656101319},
+  {"name":"ADELAIDE","hour":10.4,"type":"smooth","vis":true,"fs":17,"dx":-28.912110522692842,"dy":0},
+  {"name":"BRISBANE","hour":10.6,"type":"smooth","vis":true,"fs":17,"dx":-46.70417853665754,"dy":54.48841770906154},
+  {"name":"WOLLONGONG","hour":10.8,"type":"smooth","vis":true,"fs":null,"dx":-114.53643783989844,"dy":95.63273312202637},
+  {"name":"SUNSHINE COAST","hour":11,"type":"smooth","vis":true,"fs":null,"dx":-134.552514355609,"dy":165.68927017653408},
+  {"name":"MILDURA","hour":11.1,"type":"smooth","vis":true,"fs":null,"dx":-116.76044634164396,"dy":206.8335855894989},
+  {"name":"TOOWOOMBA","hour":11.25,"type":"smooth","vis":true,"fs":null,"dx":-167.9126418817931,"dy":283.5621737920549},
+  {"name":"IPSWICH","hour":11.35,"type":"smooth","vis":true,"fs":null,"dx":-161.2406163765562,"dy":324.70648920501986},
+  {"name":"PORT MACQUARIE","hour":12,"type":"smooth","vis":true,"fs":null,"dx":0,"dy":8.896068197397796},
+  {"name":"CENTRAL COAST","hour":12.2,"type":"smooth","vis":true,"fs":null,"dx":-35.584136027929844,"dy":43.368332462314285},
+  {"name":"NEWCASTLE","hour":12.5,"type":"smooth","vis":true,"fs":null,"dx":88.96034006982381,"dy":38.92029836361539},
+  {"name":"COFFS HARBOUR","hour":1.7,"type":"smooth","vis":true,"fs":null,"dx":24.464093519201697,"dy":-8.896068197397824},
+  {"name":"HOBART","hour":1.9,"type":"smooth","vis":true,"fs":null,"dx":-28.912110522692956,"dy":-8.896068197397824},
+  {"name":"LAUNCESTON","hour":3.1,"type":"smooth","vis":true,"fs":null,"dx":28.912110522692956,"dy":-13.344102296096708},
+  {"name":"BALLARAT","hour":3.3,"type":"smooth","vis":true,"fs":null,"dx":-11.120042508728147,"dy":10.00807672207253},
+  {"name":"BENDIGO","hour":3.5,"type":"smooth","vis":true,"fs":null,"dx":10.00803825785556,"dy":-4.44803409869894},
+  {"name":"GEELONG","hour":3.7,"type":"smooth","vis":true,"fs":null,"dx":-4.448017003491259,"dy":-28.912221641542885},
+  {"name":"CANBERRA","hour":4,"type":"smooth","vis":true,"fs":15,"dx":-583.8022317082206,"dy":-147.89713378173843},
+  {"name":"ALBURY-WODONGA","hour":4.8,"type":"smooth","vis":true,"fs":null,"dx":-514.8579681541067,"dy":-179.03337247263067},
+  {"name":"SYDNEY","hour":5,"type":"smooth","vis":true,"fs":17,"dx":-452.5857301052299,"dy":-161.24123607783525},
+  {"name":"CAIRNS","hour":5.1,"type":"workforce","vis":true,"fs":null,"dx":-447.02570885086595,"dy":-231.2977731323429},
+  {"name":"TAMWORTH","hour":5.3,"type":"workforce","vis":true,"fs":null,"dx":-394.76150905984434,"dy":-147.8971337817385},
+  {"name":"ROCKINGHAM","hour":5.5,"type":"workforce","vis":true,"fs":null,"dx":-369.18541128976995,"dy":-166.80127870120873},
+  {"name":"WAGGA WAGGA","hour":5.7,"type":"smooth","vis":true,"fs":null,"dx":-331.3772667600946,"dy":-139.0010655843406},
+  {"name":"BUNBURY","hour":6,"type":"workforce","vis":true,"fs":null,"dx":-235.74490118503388,"dy":-132.32901443629225},
+  {"name":"TOWNSVILLE","hour":6.1,"type":"workforce","vis":true,"fs":null,"dx":-219.0648374219419,"dy":-96.74474164670119},
+  {"name":"PERTH","hour":6.3,"type":"workforce","vis":true,"fs":17,"dx":-147.89656536608254,"dy":-90.0726904986526},
+  {"name":"ROCKHAMPTON","hour":6.5,"type":"workforce","vis":true,"fs":null,"dx":-121.20846334513544,"dy":-48.92837508568789},
+  {"name":"BUNDABERG","hour":6.7,"type":"workforce","vis":true,"fs":null,"dx":-55.60021254364017,"dy":-48.928375085688},
+  {"name":"MACKAY","hour":6.9,"type":"workforce","vis":true,"fs":null,"dx":33.360127526184215,"dy":2.2240170493494134},
+  {"name":"DARWIN","hour":7.1,"type":"workforce","vis":true,"fs":15,"dx":60.048229547131314,"dy":11.120085246747294},
+  {"name":"GLADSTONE","hour":7.3,"type":"workforce","vis":true,"fs":null,"dx":191.26473115012163,"dy":50.040383610362596},
+  {"name":"MELBOURNE","hour":7.5,"type":"smooth","vis":true,"fs":17,"dx":229.0728756797971,"dy":68.94452852983295}
+];
+function deep(x){return JSON.parse(JSON.stringify(x));}
+
+/* ═══ RSP SELECTION STATE ═══ */
+const RSP_SEL = {h:new Set(), u:new Set()};
+const RSP_FILTER = {h:'all', u:'all'};
+
+/* ═══ POLAR POSITIONING ═══ */
+const SPREAD_STEP=22;
+function getPosition(hour, radius, cx, cy) {
+  const angle=(hour%12)*(Math.PI/6);
+  return {x:cx+radius*Math.sin(angle), y:cy-radius*Math.cos(angle)};
+}
+
+/*
+ * computeLabelPositions
+ * ─────────────────────────────────────────────────────────────────────
+ * Places each visible region label at the base radius for its clock
+ * position. No anti-collision stacking — labels are allowed to overlap
+ * and can be manually repositioned using the drag feature (dx/dy offsets).
+ * Removing the auto-stacking prevents one region's position change from
+ * inadvertently shifting neighbouring labels.
+ */
+function computeLabelPositions(regions, cx, cy) {
+  const baseRadius = OUTER + LRAD;
+
+  const visible = regions.filter(r =>
+    r.vis && MKT_FILTER !== 'none' && (MKT_FILTER === 'both' || r.type === MKT_FILTER)
+  );
+
+  return visible.map(r => ({
+    r,
+    ...getPosition(r.hour, baseRadius, cx, cy)
+  }));
+}
+
+/* ═══ SVG HELPERS ═══ */
+const NS='http://www.w3.org/2000/svg';
+function mk(tag,attrs,txt){
+  const e=document.createElementNS(NS,tag);
+  for(const[k,v]of Object.entries(attrs))e.setAttribute(k,v);
+  if(txt!=null)e.textContent=txt;
+  return e;
+}
+function toXY(cx,cy,r,deg){
+  const rad=((deg-90)*Math.PI)/180;
+  return [cx+r*Math.cos(rad),cy+r*Math.sin(rad)];
+}
+function wedgePath(cx,cy,r,a1,a2){
+  const[sx,sy]=toXY(cx,cy,r,a1),[ex,ey]=toXY(cx,cy,r,a2);
+  let d=a2-a1;if(d<=0)d+=360;
+  return `M${cx},${cy} L${sx},${sy} A${r},${r} 0 ${d>180?1:0} 1 ${ex},${ey} Z`;
+}
+function openArc(cx,cy,r,a1,a2){
+  const[sx,sy]=toXY(cx,cy,r,a1),[ex,ey]=toXY(cx,cy,r,a2);
+  let d=a2-a1;if(d<=0)d+=360;
+  return `M${sx},${sy} A${r},${r} 0 ${d>180?1:0} 1 ${ex},${ey}`;
+}
+function arrowHead(cx,cy,r,atDeg,cw){
+  const[ax,ay]=toXY(cx,cy,r,atDeg),[bx,by]=toXY(cx,cy,r,cw?atDeg+6:atDeg-6);
+  const tx=ax-bx,ty=ay-by,len=Math.sqrt(tx*tx+ty*ty)||1;
+  const nx=tx/len,ny=ty/len,px=-ny*5,py=nx*5;
+  return `${ax},${ay} ${ax-nx*12+px},${ay-ny*12+py} ${ax-nx*12-px},${ay-ny*12-py}`;
+}
+
+/* ═══ RENDER CLOCK FACE ═══ */
+function renderClockFace(svgEl, cx, cy, clockId) {
+  const uid=clockId;
+  let defs=svgEl.querySelector('defs');
+  if(!defs){defs=mk('defs',{});svgEl.appendChild(defs);}
+  if(!svgEl.querySelector(`#sh-${uid}`)){
+    const filt=mk('filter',{id:`sh-${uid}`});
+    filt.appendChild(mk('feDropShadow',{dx:'0',dy:'3',stdDeviation:'8','flood-opacity':'0.13'}));
+    defs.appendChild(filt);
+  }
+  if(!svgEl.querySelector(`#face-${uid}`)){
+    const rg=mk('radialGradient',{id:`face-${uid}`,cx:'45%',cy:'40%',r:'60%'});
+    rg.appendChild(mk('stop',{offset:'0%','stop-color':'#ffffff'}));
+    rg.appendChild(mk('stop',{offset:'100%','stop-color':'#e8e8e8'}));
+    defs.appendChild(rg);
+  }
+  const grp=mk('g',{class:`clock-face clock-face-${uid}`});
+
+  /* outer rings */
+  grp.appendChild(mk('circle',{cx,cy,r:OUTER+6,fill:'#d8d8d8'}));
+  grp.appendChild(mk('circle',{cx,cy,r:OUTER+2,fill:'#ececec'}));
+  grp.appendChild(mk('circle',{cx,cy,r:OUTER-2,fill:`url(#face-${uid})`,filter:`url(#sh-${uid})`}));
+
+  /* arcs */
+  const arcColor1=PARTITIONS.find(p=>p.id==='red')?.color||'#D93025';
+  const arcColor2=PARTITIONS.find(p=>p.id==='green')?.color||'#4DB648';
+  grp.appendChild(mk('path',{d:openArc(cx,cy,OUTER-8,2,177),fill:'none',stroke:arcColor1,'stroke-width':'2.2','stroke-linecap':'round',opacity:'0.7'}));
+  grp.appendChild(mk('polygon',{points:arrowHead(cx,cy,OUTER-8,177,false),fill:arcColor1,opacity:'0.75'}));
+  grp.appendChild(mk('path',{d:openArc(cx,cy,OUTER-8,183,358),fill:'none',stroke:arcColor2,'stroke-width':'2.2','stroke-linecap':'round',opacity:'0.7'}));
+  grp.appendChild(mk('polygon',{points:arrowHead(cx,cy,OUTER-8,358,false),fill:arcColor2,opacity:'0.75'}));
+
+  /* wedges from PARTITIONS */
+  PARTITIONS.forEach(p=>{
+    grp.appendChild(mk('path',{
+      d:wedgePath(cx,cy,R,p.a1,p.a2),
+      fill:p.color,stroke:'white','stroke-width':'2.5','stroke-linejoin':'round'
+    }));
+  });
+  grp.appendChild(mk('circle',{cx,cy,r:R,fill:'none',stroke:'white','stroke-width':'2'}));
+
+  /* 24 dots */
+  for(let i=0;i<24;i++){
+    const isHour=i%2===0;
+    const[dx,dy]=toXY(cx,cy,R-17,i*15);
+    grp.appendChild(mk('circle',{cx:dx,cy:dy,r:isHour?7:4,fill:'rgba(255,255,255,0.85)'}));
+  }
+
+  /* aus map */
+  const mapW=322,mapH=297;
+  grp.appendChild(mk('image',{
+    href:AUS_MAP,
+    x:(cx-mapW/2).toFixed(1),y:(cy-mapH/2-10).toFixed(1),
+    width:mapW,height:mapH,opacity:'0.25','pointer-events':'none'
+  }));
+
+  svgEl.appendChild(grp);
+}
+
+/* ═══ RENDER LABELS ═══ */
+function renderLabels(svgEl, regions, cx, cy, clockId) {
+  const old=svgEl.querySelector(`.labels-group-${clockId}`);
+  if(old)old.remove();
+  const grp=mk('g',{class:`labels-group labels-group-${clockId}`});
+  const positioned=computeLabelPositions(regions,cx,cy);
+  positioned.forEach(({r,x,y})=>{
+    const col=r.type==='smooth'?LCOL.smooth:LCOL.workforce;
+    const fs=(r.fs||FS_DEF)*GFS;
+    const fx=x+(r.dx||0), fy=y+(r.dy||0);
+    const words=r.name.split(' ');
+    const lineH=fs*1.22;
+    const lines=buildLines(words);
+    const maxChars=Math.max(...lines.map(l=>l.length));
+    const estW=maxChars*fs*0.62+16;
+    const estH=lines.length*lineH+8;
+    const g=mk('g',{class:'city-label','data-name':r.name,'data-clockid':clockId});
+    const hit=mk('rect',{class:'lbl-hit',x:(fx-estW/2).toFixed(2),y:(fy-estH/2).toFixed(2),width:estW.toFixed(2),height:estH.toFixed(2),rx:'3',fill:'transparent'});
+    g.appendChild(hit);
+    const t=mk('text',{x:fx.toFixed(2),y:fy.toFixed(2),'text-anchor':'middle','dominant-baseline':'middle','font-family':"'Montserrat',sans-serif",'font-weight':'800','font-size':fs.toFixed(1),fill:col,'pointer-events':'none'});
+    if(lines.length===1){t.textContent=lines[0];}
+    else{
+      lines.forEach((line,i)=>{
+        const span=mk('tspan',{x:fx.toFixed(2),dy:i===0?(-(lines.length-1)*lineH/2).toFixed(2):lineH.toFixed(2)},line);
+        t.appendChild(span);
+      });
+    }
+    g.appendChild(t);
+    grp.appendChild(g);
+  });
+  svgEl.appendChild(grp);
+  attachDragListeners(svgEl,regions,clockId);
+}
+
+function buildLines(words){
+  if(words.length<=2)return[words.join(' ')];
+  const mid=Math.ceil(words.length/2);
+  return[words.slice(0,mid).join(' '),words.slice(mid).join(' ')];
+}
+
+/* ═══ DRAG ENGINE ═══ */
+let _drag=null;
+function attachDragListeners(svgEl,regions,clockId){
+  svgEl.querySelectorAll(`.labels-group-${clockId} .city-label`).forEach(g=>{
+    const name=g.getAttribute('data-name');
+    const region=regions.find(r=>r.name===name);
+    if(!region)return;
+    const hit=g.querySelector('.lbl-hit');
+    if(!hit)return;
+    hit.addEventListener('mousedown',e=>startDrag(e,g,region,svgEl,clockId),{passive:false});
+    hit.addEventListener('touchstart',e=>startDrag(e,g,region,svgEl,clockId),{passive:false});
+  });
+}
+
+function startDrag(e,g,region,svgEl,clockId){
+  if(isLimitedUser()) return; // Limited users: view only
+  if(!document.body.classList.contains('edit-mode')) return; // View mode: no drag
+  e.preventDefault();e.stopPropagation();
+  const pt=svgPoint(e,svgEl);
+  const hit=g.querySelector('.lbl-hit');
+  const hw=hit?parseFloat(hit.getAttribute('width'))/2:30;
+  const hh=hit?parseFloat(hit.getAttribute('height'))/2:10;
+  _drag={g,region,svgEl,clockId,startSVGX:pt.x,startSVGY:pt.y,startDX:region.dx||0,startDY:region.dy||0,hw,hh};
+  g.classList.add('dragging');svgEl.style.cursor='grabbing';
+}
+
+function onDragMove(e){
+  if(_imgDrag){onImgDragMove(e);return;}
+  if(!_drag)return;e.preventDefault();
+  if(_drag.type==='custom'){
+    const{g,ct,svgEl,startSVGX,startSVGY,startX,startY}=_drag;
+    const pt=svgPoint(e,svgEl);
+    const newX=Math.max(10,Math.min(SVG_W-10,startX+(pt.x-startSVGX)));
+    const newY=Math.max(10,Math.min(SVG_H-10,startY+(pt.y-startSVGY)));
+    ct.x=newX;ct.y=newY;
+    g.setAttribute('transform',`translate(${newX-startX},${newY-startY})`);
+    return;
+  }
+  const{g,region,svgEl,startSVGX,startSVGY,startDX,startDY,hw,hh}=_drag;
+  const pt=svgPoint(e,svgEl);
+  let newDX=startDX+(pt.x-startSVGX),newDY=startDY+(pt.y-startSVGY);
+  const clk=_drag.clockId==='h'?CLOCK_H:CLOCK_U;
+  const anchor=getPosition(region.hour,OUTER+LRAD,clk.cx,clk.cy);
+  newDX=Math.max(WALL_PAD+hw-anchor.x,Math.min(SVG_W-WALL_PAD-hw-anchor.x,newDX));
+  newDY=Math.max(WALL_PAD+hh-anchor.y,Math.min(SVG_H-WALL_PAD-hh-anchor.y,newDY));
+  region.dx=newDX;region.dy=newDY;
+  g.setAttribute('transform',`translate(${newDX-startDX},${newDY-startDY})`);
+}
+
+function onDragEnd(e){
+  if(_imgDrag){onImgDragEnd();return;}
+  if(!_drag)return;
+  const{g,svgEl}=_drag;
+  if(_drag.type==='custom'){
+    g.classList.remove('dragging');g.removeAttribute('transform');svgEl.style.cursor='';
+    renderCustomTexts(svgEl);
+    _drag=null;return;
+  }
+  const{clockId,region}=_drag;
+  g.classList.remove('dragging');g.removeAttribute('transform');svgEl.style.cursor='';
+  const regions=clockId==='h'?HR:UR;
+  const clk=clockId==='h'?CLOCK_H:CLOCK_U;
+  // Dragging only moves the label visually (dx/dy offset).
+  // The region's hour is never changed by dragging — only by Region Settings.
+  renderLabels(svgEl,regions,clk.cx,clk.cy,clockId);
+  _drag=null;
+}
+
+function svgPoint(e,svgEl){
+  const rect=svgEl.getBoundingClientRect();
+  const clientX=e.touches?e.touches[0].clientX:(e.changedTouches?e.changedTouches[0].clientX:e.clientX);
+  const clientY=e.touches?e.touches[0].clientY:(e.changedTouches?e.changedTouches[0].clientY:e.clientY);
+  return{x:(clientX-rect.left)*(SVG_W/rect.width),y:(clientY-rect.top)*(SVG_H/rect.height)};
+}
+
+/* ═══ CUSTOM TEXT ENGINE ═══ */
+let CUSTOM_TEXTS=[];
+let _ctNextId=1;
+let _ctAddState={size:14,bold:false,italic:false,upper:false};
+
+function stepCTAddSize(d){
+  _ctAddState.size=Math.max(6,Math.min(80,_ctAddState.size+d));
+  document.getElementById('ct-size-val').textContent=_ctAddState.size;
+}
+function toggleCTAddStyle(s){
+  _ctAddState[s]=!_ctAddState[s];
+  const btn=document.getElementById('ct-'+s+'-btn');
+  if(btn)btn.classList.toggle('on',_ctAddState[s]);
+}
+
+function addCustomTextFromForm(){
+  const rawText=document.getElementById('ct-text-inp').value.trim();
+  if(!rawText){toast('Enter some text first');return;}
+  const text=_ctAddState.upper?rawText.toUpperCase():rawText;
+  const font=document.getElementById('ct-font-sel').value;
+  const color=document.getElementById('ct-color-inp').value;
+  CUSTOM_TEXTS.push({
+    id:_ctNextId++,
+    text,font,color,
+    size:_ctAddState.size,
+    bold:_ctAddState.bold,
+    italic:_ctAddState.italic,
+    x:SVG_W/2, y:60
+  });
+  document.getElementById('ct-text-inp').value='';
+  renderCTList();
+  const svg=document.getElementById('svg-combined');
+  renderCustomTexts(svg);
+  toast('Text added — drag it on the clock!');
+}
+
+function removeCustomText(id){
+  CUSTOM_TEXTS=CUSTOM_TEXTS.filter(c=>c.id!==id);
+  renderCTList();
+  const svg=document.getElementById('svg-combined');
+  renderCustomTexts(svg);
+}
+
+function updateCTField(id,field,val){
+  const ct=CUSTOM_TEXTS.find(c=>c.id===id);
+  if(!ct)return;
+  ct[field]=val;
+  renderCTList();
+  const svg=document.getElementById('svg-combined');
+  renderCustomTexts(svg);
+}
+
+function renderCTList(){
+  const el=document.getElementById('ct-list');
+  if(!el)return;
+  if(!CUSTOM_TEXTS.length){
+    el.innerHTML='<div style="font-size:11px;color:#aaa;padding:6px 0">No custom text added yet. Use the form above.</div>';
+    return;
+  }
+  el.innerHTML='';
+  CUSTOM_TEXTS.forEach(ct=>{
+    const row=document.createElement('div');
+    row.className='ct-list-row';
+
+    // Live preview
+    const prev=document.createElement('span');
+    prev.className='ct-list-preview';
+    prev.style.cssText=`font-family:'${ct.font}',sans-serif;font-size:${Math.min(ct.size,22)}px;font-weight:${ct.bold?'700':'400'};font-style:${ct.italic?'italic':'normal'};color:${ct.color}`;
+    prev.textContent=ct.text;
+    row.appendChild(prev);
+
+    // Font select
+    const fsel=document.createElement('select');
+    fsel.className='arf-sel';fsel.style.fontSize='10px';fsel.style.padding='2px 4px';
+    ['Montserrat','Arial','Georgia','Impact'].forEach(f=>{
+      const o=document.createElement('option');o.value=f;o.textContent=f;if(f===ct.font)o.selected=true;
+      fsel.appendChild(o);
+    });
+    fsel.onchange=()=>updateCTField(ct.id,'font',fsel.value);
+    row.appendChild(fsel);
+
+    // Size stepper
+    const szc=document.createElement('div');szc.className='ct-size-ctrl';
+    const sm=document.createElement('button');sm.textContent='−';sm.onclick=()=>updateCTField(ct.id,'size',Math.max(6,ct.size-1));
+    const sv=document.createElement('span');sv.textContent=ct.size;
+    const sp=document.createElement('button');sp.textContent='+';sp.onclick=()=>updateCTField(ct.id,'size',Math.min(80,ct.size+1));
+    szc.appendChild(sm);szc.appendChild(sv);szc.appendChild(sp);
+    row.appendChild(szc);
+
+    // Color
+    const ci=document.createElement('input');ci.type='color';ci.value=ct.color;
+    ci.style.cssText='width:24px;height:24px;border:none;cursor:pointer;border-radius:3px;padding:0;flex-shrink:0';
+    ci.onchange=()=>updateCTField(ct.id,'color',ci.value);
+    row.appendChild(ci);
+
+    // Bold / Italic buttons
+    const bs=document.createElement('button');bs.className='ct-style-btn'+(ct.bold?' on':'');bs.innerHTML='<b>B</b>';
+    bs.onclick=()=>updateCTField(ct.id,'bold',!ct.bold);
+    const is=document.createElement('button');is.className='ct-style-btn'+(ct.italic?' on':'');is.innerHTML='<i>I</i>';
+    is.onclick=()=>updateCTField(ct.id,'italic',!ct.italic);
+    row.appendChild(bs);row.appendChild(is);
+
+    // Delete
+    const del=document.createElement('button');del.className='rsp-del';del.textContent='✕';del.title='Remove';
+    del.onclick=()=>removeCustomText(ct.id);
+    row.appendChild(del);
+
+    el.appendChild(row);
+  });
+}
+
+function renderCustomTexts(svgEl){
+  const old=svgEl.querySelector('.custom-texts-group');
+  if(old)old.remove();
+  if(!CUSTOM_TEXTS.length)return;
+  const grp=mk('g',{class:'custom-texts-group'});
+  CUSTOM_TEXTS.forEach(ct=>{
+    const fs=ct.size||14;
+    const lines=ct.text.split('\n');
+    const lineH=fs*1.3;
+    const maxLen=Math.max(...lines.map(l=>l.length));
+    const estW=maxLen*fs*0.65+16;
+    const estH=lines.length*lineH+10;
+    const g=mk('g',{class:'ct-label','data-ctid':ct.id});
+    const hit=mk('rect',{
+      class:'ct-hit',
+      x:(ct.x-estW/2).toFixed(2),y:(ct.y-estH/2).toFixed(2),
+      width:estW.toFixed(2),height:estH.toFixed(2),
+      rx:'3',fill:'transparent',
+      stroke:'none','stroke-dasharray':'3,2','stroke-width':'1.2'
+    });
+    g.appendChild(hit);
+    const t=mk('text',{
+      x:ct.x.toFixed(2),y:ct.y.toFixed(2),
+      'text-anchor':'middle','dominant-baseline':'middle',
+      'font-family':`'${ct.font}',sans-serif`,
+      'font-weight':ct.bold?'700':'500',
+      'font-style':ct.italic?'italic':'normal',
+      'font-size':fs,
+      fill:ct.color||'#111',
+      'pointer-events':'none'
+    });
+    if(lines.length===1){t.textContent=ct.text;}
+    else{
+      lines.forEach((line,i)=>{
+        const span=mk('tspan',{x:ct.x.toFixed(2),dy:i===0?(-(lines.length-1)*lineH/2).toFixed(2):lineH.toFixed(2)},line);
+        t.appendChild(span);
+      });
+    }
+    g.appendChild(t);
+    grp.appendChild(g);
+  });
+  svgEl.appendChild(grp);
+  attachCTDragListeners(svgEl);
+}
+
+function attachCTDragListeners(svgEl){
+  svgEl.querySelectorAll('.ct-label').forEach(g=>{
+    const id=parseInt(g.getAttribute('data-ctid'));
+    const ct=CUSTOM_TEXTS.find(c=>c.id===id);
+    if(!ct)return;
+    const hit=g.querySelector('.ct-hit');
+    if(!hit)return;
+    hit.style.cursor='grab';
+    hit.addEventListener('mousedown',e=>startCTDrag(e,g,ct,svgEl),{passive:false});
+    hit.addEventListener('touchstart',e=>startCTDrag(e,g,ct,svgEl),{passive:false});
+  });
+}
+
+function startCTDrag(e,g,ct,svgEl){
+  if(isLimitedUser()) return; // Limited users: view only
+  if(!document.body.classList.contains('edit-mode')) return; // View mode: no drag
+  e.preventDefault();e.stopPropagation();
+  const pt=svgPoint(e,svgEl);
+  _drag={type:'custom',g,ct,svgEl,startSVGX:pt.x,startSVGY:pt.y,startX:ct.x,startY:ct.y};
+  g.classList.add('dragging');svgEl.style.cursor='grabbing';
+}
+
+/* ═══ IMAGE OVERLAY ENGINE ═══ */
+let OVERLAY_IMAGES = [];
+let _imgNextId = 1;
+let _selectedImgId = null;
+let _imgDrag = null; // {type:'move'|'resize', id, startSVGX, startSVGY, startX, startY, startW, startH}
+
+function handleImgDrop(e) {
+  e.preventDefault();
+  document.getElementById('img-upload-area').classList.remove('dragover');
+  const files = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/'));
+  files.forEach(loadImageFile);
+}
+
+function handleImgFileInput(input) {
+  [...input.files].forEach(loadImageFile);
+  input.value = '';
+}
+
+function loadImageFile(file) {
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    const dataURL = ev.target.result;
+    // Get natural dimensions
+    const img = new Image();
+    img.onload = function() {
+      const maxW = 200;
+      const scale = img.width > maxW ? maxW / img.width : 1;
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      OVERLAY_IMAGES.push({
+        id: _imgNextId++,
+        name: file.name,
+        dataURL,
+        x: SVG_W / 2 - w / 2,
+        y: SVG_H / 2 - h / 2,
+        w, h,
+        vis: true
+      });
+      renderImgList();
+      const svg = document.getElementById('svg-combined');
+      renderOverlayImages(svg);
+      toast('Image added — drag to reposition, drag corner to resize!');
+    };
+    img.src = dataURL;
+  };
+  reader.readAsDataURL(file);
+}
+
+function removeOverlayImage(id) {
+  OVERLAY_IMAGES = OVERLAY_IMAGES.filter(im => im.id !== id);
+  if (_selectedImgId === id) _selectedImgId = null;
+  renderImgList();
+  const svg = document.getElementById('svg-combined');
+  renderOverlayImages(svg);
+}
+
+function updateImgField(id, field, val) {
+  const im = OVERLAY_IMAGES.find(i => i.id === id);
+  if (!im) return;
+  im[field] = val;
+  renderImgList();
+  const svg = document.getElementById('svg-combined');
+  renderOverlayImages(svg);
+}
+
+function scaleImage(id, factor) {
+  const im = OVERLAY_IMAGES.find(i => i.id === id);
+  if (!im) return;
+  const newW = Math.max(20, Math.round(im.w * factor));
+  const newH = Math.max(20, Math.round(im.h * factor));
+  im.x = im.x + (im.w - newW) / 2;
+  im.y = im.y + (im.h - newH) / 2;
+  im.w = newW;
+  im.h = newH;
+  renderImgList();
+  const svg = document.getElementById('svg-combined');
+  renderOverlayImages(svg);
+}
+
+function setImgWidth(id, newW) {
+  const im = OVERLAY_IMAGES.find(i => i.id === id);
+  if (!im) return;
+  newW = Math.max(20, Math.min(SVG_W, newW));
+  const ratio = im.h / im.w;
+  im.h = Math.round(newW * ratio);
+  im.w = newW;
+  renderImgList();
+  const svg = document.getElementById('svg-combined');
+  renderOverlayImages(svg);
+}
+
+function renderImgList() {
+  const el = document.getElementById('img-list');
+  if (!el) return;
+  if (!OVERLAY_IMAGES.length) {
+    el.innerHTML = '<div style="font-size:11px;color:#aaa;padding:6px 0">No images added yet. Upload one above.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  OVERLAY_IMAGES.forEach(im => {
+    const row = document.createElement('div');
+    row.className = 'img-list-row';
+
+    // Preview
+    const prev = document.createElement('img');
+    prev.className = 'img-preview';
+    prev.src = im.dataURL;
+    prev.alt = im.name;
+    row.appendChild(prev);
+
+    // Name
+    const name = document.createElement('div');
+    name.className = 'img-list-name';
+    name.title = im.name;
+    name.textContent = im.name;
+    row.appendChild(name);
+
+    // Width control
+    const szc = document.createElement('div');
+    szc.className = 'img-size-ctrl';
+    const sm = document.createElement('button');
+    sm.textContent = '−';
+    sm.title = 'Shrink (−10%)';
+    sm.onclick = () => scaleImage(im.id, 0.9);
+    const sv = document.createElement('span');
+    sv.textContent = im.w + 'px';
+    const sp = document.createElement('button');
+    sp.textContent = '+';
+    sp.title = 'Grow (+10%)';
+    sp.onclick = () => scaleImage(im.id, 1.1);
+    szc.appendChild(sm); szc.appendChild(sv); szc.appendChild(sp);
+    row.appendChild(szc);
+
+    // Width input
+    const wi = document.createElement('input');
+    wi.type = 'number';
+    wi.value = im.w;
+    wi.min = 20; wi.max = SVG_W;
+    wi.style.cssText = 'width:58px;border:1.5px solid #ddd;border-radius:5px;padding:3px 5px;font-family:Montserrat,sans-serif;font-size:10px;font-weight:700;outline:none;text-align:center';
+    wi.title = 'Width in SVG units (height scales proportionally)';
+    wi.onchange = () => setImgWidth(im.id, parseInt(wi.value) || im.w);
+    wi.onfocus = () => wi.style.borderColor = '#0057b8';
+    wi.onblur = () => wi.style.borderColor = '#ddd';
+    row.appendChild(wi);
+
+    // Visibility
+    const visBtn = document.createElement('button');
+    visBtn.className = 'img-vis-toggle ' + (im.vis ? 'on' : 'off-v');
+    visBtn.textContent = im.vis ? '👁' : '🚫';
+    visBtn.title = im.vis ? 'Hide' : 'Show';
+    visBtn.onclick = () => updateImgField(im.id, 'vis', !im.vis);
+    row.appendChild(visBtn);
+
+    // Delete
+    const del = document.createElement('button');
+    del.className = 'rsp-del';
+    del.textContent = '✕';
+    del.title = 'Remove image';
+    del.onclick = () => removeOverlayImage(im.id);
+    row.appendChild(del);
+
+    el.appendChild(row);
+  });
+}
+
+function renderOverlayImages(svgEl) {
+  const old = svgEl.querySelector('.overlay-images-group');
+  if (old) old.remove();
+  if (!OVERLAY_IMAGES.length) return;
+  const grp = mk('g', { class: 'overlay-images-group' });
+  OVERLAY_IMAGES.forEach(im => {
+    if (!im.vis) return;
+    const g = mk('g', {
+      class: 'overlay-img-group' + (im.id === _selectedImgId ? ' selected' : ''),
+      'data-imgid': im.id
+    });
+    // Image element
+    const imgEl = mk('image', {
+      href: im.dataURL,
+      x: im.x.toFixed(1), y: im.y.toFixed(1),
+      width: im.w, height: im.h,
+      preserveAspectRatio: 'xMidYMid meet'
+    });
+    g.appendChild(imgEl);
+    // Border rect (for hover / selected state)
+    const border = mk('rect', {
+      class: 'img-border-rect',
+      x: im.x.toFixed(1), y: im.y.toFixed(1),
+      width: im.w, height: im.h,
+      rx: '2'
+    });
+    g.appendChild(border);
+    // Resize handle (bottom-right corner)
+    const hSize = 10;
+    const hx = im.x + im.w - hSize / 2;
+    const hy = im.y + im.h - hSize / 2;
+    const handle = mk('rect', {
+      class: 'resize-handle',
+      x: hx.toFixed(1), y: hy.toFixed(1),
+      width: hSize, height: hSize,
+      rx: '2'
+    });
+    g.appendChild(handle);
+    grp.appendChild(g);
+  });
+  svgEl.appendChild(grp);
+  attachImgDragListeners(svgEl);
+}
+
+function attachImgDragListeners(svgEl) {
+  svgEl.querySelectorAll('.overlay-img-group').forEach(g => {
+    const id = parseInt(g.getAttribute('data-imgid'));
+    const im = OVERLAY_IMAGES.find(i => i.id === id);
+    if (!im) return;
+    const handle = g.querySelector('.resize-handle');
+    const imgEl = g.querySelector('image');
+    const borderEl = g.querySelector('.img-border-rect');
+
+    // Move drag on image
+    [imgEl, borderEl].forEach(el => {
+      if (!el) return;
+      el.style.cursor = 'move';
+      el.addEventListener('mousedown', e => startImgMoveDrag(e, im, svgEl), { passive: false });
+      el.addEventListener('touchstart', e => startImgMoveDrag(e, im, svgEl), { passive: false });
+    });
+
+    // Resize drag on handle
+    if (handle) {
+      handle.addEventListener('mousedown', e => startImgResizeDrag(e, im, svgEl), { passive: false });
+      handle.addEventListener('touchstart', e => startImgResizeDrag(e, im, svgEl), { passive: false });
+    }
+
+    // Select on click
+    g.addEventListener('mousedown', () => {
+      _selectedImgId = id;
+      renderOverlayImages(svgEl);
+    });
+  });
+
+  // Click on background = deselect
+  svgEl.addEventListener('mousedown', e => {
+    if (!e.target.closest('.overlay-img-group')) {
+      if (_selectedImgId !== null) {
+        _selectedImgId = null;
+        renderOverlayImages(svgEl);
+      }
+    }
+  }, { passive: true });
+}
+
+function startImgMoveDrag(e, im, svgEl) {
+  if(isLimitedUser()) return;
+  if(!document.body.classList.contains('edit-mode')) return; // View mode: no drag
+  e.preventDefault(); e.stopPropagation();
+  const pt = svgPoint(e, svgEl);
+  _imgDrag = { type: 'move', im, svgEl, startSVGX: pt.x, startSVGY: pt.y, startX: im.x, startY: im.y };
+  svgEl.style.cursor = 'move';
+}
+
+function startImgResizeDrag(e, im, svgEl) {
+  if(isLimitedUser()) return;
+  if(!document.body.classList.contains('edit-mode')) return; // View mode: no resize
+  e.preventDefault(); e.stopPropagation();
+  const pt = svgPoint(e, svgEl);
+  _imgDrag = { type: 'resize', im, svgEl, startSVGX: pt.x, startSVGY: pt.y, startW: im.w, startH: im.h };
+  svgEl.style.cursor = 'nwse-resize';
+}
+
+function onImgDragMove(e) {
+  if (!_imgDrag) return;
+  e.preventDefault();
+  const { type, im, svgEl, startSVGX, startSVGY } = _imgDrag;
+  const pt = svgPoint(e, svgEl);
+  const dx = pt.x - startSVGX;
+  const dy = pt.y - startSVGY;
+
+  if (type === 'move') {
+    im.x = Math.max(0, Math.min(SVG_W - im.w, _imgDrag.startX + dx));
+    im.y = Math.max(0, Math.min(SVG_H - im.h, _imgDrag.startY + dy));
+  } else if (type === 'resize') {
+    const ratio = _imgDrag.startH / _imgDrag.startW;
+    const newW = Math.max(20, _imgDrag.startW + dx);
+    im.w = Math.round(newW);
+    im.h = Math.round(newW * ratio);
+  }
+  renderOverlayImages(svgEl);
+  if (document.getElementById('spb-images').style.display !== 'none') renderImgList();
+}
+
+function onImgDragEnd() {
+  if (!_imgDrag) return;
+  const { svgEl } = _imgDrag;
+  svgEl.style.cursor = '';
+  _imgDrag = null;
+}
+
+/* ═══ REDRAW ALL ═══ */
+function redrawAll(){
+  const svg=document.getElementById('svg-combined');
+  svg.innerHTML='';
+  const defs=mk('defs',{});
+  const lg=mk('linearGradient',{id:'bgGrad',x1:'0',y1:'0',x2:'0',y2:'1'});
+  lg.appendChild(mk('stop',{offset:'0%','stop-color':'#f4f6fa'}));
+  lg.appendChild(mk('stop',{offset:'100%','stop-color':'#eaecf2'}));
+  defs.appendChild(lg);
+  svg.appendChild(defs);
+  svg.appendChild(mk('rect',{x:0,y:0,width:SVG_W,height:SVG_H,fill:'url(#bgGrad)'}));
+  renderClockFace(svg,CLOCK_H.cx,CLOCK_H.cy,'h');
+  renderClockFace(svg,CLOCK_U.cx,CLOCK_U.cy,'u');
+  renderLabels(svg,HR,CLOCK_H.cx,CLOCK_H.cy,'h');
+  renderLabels(svg,UR,CLOCK_U.cx,CLOCK_U.cy,'u');
+  renderCustomTexts(svg);
+  renderOverlayImages(svg);
+}
+
+/* ═══ HOUR OPTIONS ═══ */
+const HOUR_OPTS=[
+  [12,'12 – Peak'],[10.5,'10:30 – Selling Window'],[11,'11 – Selling Window'],
+  [11.5,'11:30 – Selling Window'],[1,'1 – Selling Window'],[1.5,'1:30 – Selling Window'],
+  [2,'2 – Correction'],[2.5,'2:30 – Correction'],[3,'3 – Hold'],[3.5,'3:30 – Hold'],
+  [4,'4 – Buy Momentum'],[4.5,'4:30 – Buy Momentum'],[5,'5 – Buy Momentum'],
+  [5.5,'5:30 – Buy Momentum'],[6,'6 – Buy Value'],[6.5,'6:30 – Buy Value'],
+  [7,'7 – Buy Value'],[7.5,'7:30 – Buy Value'],[8,'8 – Momentum'],
+  [8.5,'8:30 – Momentum'],[9,'9 – Momentum'],[9.5,'9:30 – Momentum'],[10,'10 – Momentum'],
+];
+function mkHourSel(sel,cur){
+  sel.innerHTML='';
+  HOUR_OPTS.forEach(([v,lbl])=>{
+    const o=document.createElement('option');
+    o.value=v;o.textContent=lbl;
+    if(Math.abs((cur||6)-v)<0.14)o.selected=true;
+    sel.appendChild(o);
+  });
+}
+
+/* ═══ REGION SETTINGS PANEL (searchable, multi-select) ═══ */
+function setRSPFilter(clockId, filter, btn){
+  RSP_FILTER[clockId]=filter;
+  ['all','smooth','workforce'].forEach(f=>{
+    const el=document.getElementById(`rsp-f${f[0]}-${clockId}`)||document.getElementById(`rsp-fall-${clockId}`);
+  });
+  // update active buttons
+  ['all','smooth','workforce'].forEach(f=>{
+    const id=f==='all'?`rsp-fall-${clockId}`:`rsp-f${f[0]}-${clockId}`;
+    const el=document.getElementById(id);
+    if(el){el.classList.toggle('active',f===filter);el.classList.toggle('act-w',f==='workforce'&&f===filter);}
+  });
+  renderRSP(clockId);
+}
+
+function renderRSP(clockId){
+  const regions=clockId==='h'?HR:UR;
+  const search=(document.getElementById(`rsp-search-${clockId}`)||{value:''}).value.toLowerCase();
+  const filter=RSP_FILTER[clockId]||'all';
+  const list=document.getElementById(`rsp-list-${clockId}`);
+  list.innerHTML='';
+  regions.forEach((r,idx)=>{
+    if(filter!=='all'&&r.type!==filter)return;
+    if(search&&!r.name.toLowerCase().includes(search))return;
+    const item=document.createElement('div');
+    item.className='rsp-item'+(RSP_SEL[clockId].has(idx)?' selected':'');
+    const dot=document.createElement('div');
+    dot.className='rsp-item-dot';
+    dot.style.background=r.type==='smooth'?LCOL.smooth:LCOL.workforce;
+    const name=document.createElement('div');
+    name.className='rsp-item-name';name.textContent=r.name;
+    const hour=document.createElement('div');
+    hour.className='rsp-item-hour';hour.textContent=r.hour+'h';
+    const vis=document.createElement('div');
+    vis.className='rsp-item-vis';vis.textContent=r.vis?'👁':'🚫';
+    item.appendChild(dot);item.appendChild(name);item.appendChild(hour);item.appendChild(vis);
+    item.addEventListener('click',e=>{
+      if(e.shiftKey||e.ctrlKey||e.metaKey){
+        if(RSP_SEL[clockId].has(idx))RSP_SEL[clockId].delete(idx);
+        else RSP_SEL[clockId].add(idx);
+      }else{
+        RSP_SEL[clockId].clear();
+        RSP_SEL[clockId].add(idx);
+      }
+      renderRSP(clockId);
+      renderRSPDetail(clockId);
+    });
+    list.appendChild(item);
+  });
+  renderRSPDetail(clockId);
+}
+
+function renderRSPDetail(clockId){
+  const regions=clockId==='h'?HR:UR;
+  const det=document.getElementById(`rsp-detail-${clockId}`);
+  const sel=[...RSP_SEL[clockId]].map(i=>regions[i]).filter(Boolean);
+  if(!sel.length){det.innerHTML='<div class="rsp-detail-empty">Click a region above to edit it. Hold Ctrl/⌘ to select multiple.</div>';return;}
+
+  det.innerHTML='';
+  // tags row
+  const tags=document.createElement('div');tags.className='rsp-selected-tags';
+  sel.forEach(r=>{
+    const tag=document.createElement('div');
+    tag.className=`rsp-tag ${r.type==='smooth'?'ts':'tw'}`;
+    tag.innerHTML=`<span>${r.name}</span><span style="opacity:.6;margin-left:2px">×</span>`;
+    tag.title='Click to deselect';
+    tag.onclick=()=>{
+      const idx=regions.indexOf(r);
+      if(idx>=0)RSP_SEL[clockId].delete(idx);
+      renderRSP(clockId);renderRSPDetail(clockId);
+    };
+    tags.appendChild(tag);
+  });
+  det.appendChild(tags);
+
+  const ctrl=document.createElement('div');ctrl.className='rsp-controls';
+
+  // Market type
+  const tr1=document.createElement('div');tr1.className='rsp-ctrl-row';
+  const l1=document.createElement('div');l1.className='rsp-ctrl-lbl';l1.textContent='Market Type';
+  const ti=document.createElement('div');ti.className='rsp-ctrl-inner';
+  const tog=document.createElement('div');tog.className='rsp-type-tog';
+  const bs=document.createElement('button');bs.textContent='S';
+  const bw=document.createElement('button');bw.textContent='W';
+  const allSmooth=sel.every(r=>r.type==='smooth');
+  const allWork=sel.every(r=>r.type==='workforce');
+  if(allSmooth)bs.classList.add('a-s'); else if(allWork)bw.classList.add('a-w');
+  bs.onclick=()=>{sel.forEach(r=>r.type='smooth');renderRSP(clockId);redrawAll();toast('→ Smooth');};
+  bw.onclick=()=>{sel.forEach(r=>r.type='workforce');renderRSP(clockId);redrawAll();toast('→ Workforce');};
+  tog.appendChild(bs);tog.appendChild(bw);ti.appendChild(tog);tr1.appendChild(l1);tr1.appendChild(ti);ctrl.appendChild(tr1);
+
+  // Hour position (single select only)
+  if(sel.length===1){
+    const r=sel[0];
+    const tr2=document.createElement('div');tr2.className='rsp-ctrl-row';
+    const l2=document.createElement('div');l2.className='rsp-ctrl-lbl';l2.textContent='Clock Position';
+    const ti2=document.createElement('div');ti2.className='rsp-ctrl-inner';
+    const hsel=document.createElement('select');hsel.className='rsp-hsel';
+    mkHourSel(hsel,r.hour);
+    hsel.addEventListener('change',()=>{
+      r.hour=parseFloat(hsel.value);r.dx=0;r.dy=0;
+      const svg=document.getElementById('svg-combined');
+      const clk=clockId==='h'?CLOCK_H:CLOCK_U;
+      renderLabels(svg,regions,clk.cx,clk.cy,clockId);
+      renderRSP(clockId);
+      toast(`${r.name} → ${hsel.options[hsel.selectedIndex].textContent}`);
+    });
+    ti2.appendChild(hsel);tr2.appendChild(l2);tr2.appendChild(ti2);ctrl.appendChild(tr2);
+  }
+
+  // Font size
+  const tr3=document.createElement('div');tr3.className='rsp-ctrl-row';
+  const l3=document.createElement('div');l3.className='rsp-ctrl-lbl';l3.textContent='Label Size';
+  const ti3=document.createElement('div');ti3.className='rsp-ctrl-inner';
+  const fsz=document.createElement('div');fsz.className='rsp-fsz';
+  const avgFs=sel.length?Math.round(sel.reduce((s,r)=>s+(r.fs||FS_DEF),0)/sel.length):FS_DEF;
+  const fm=document.createElement('button');fm.textContent='−';
+  const fsp=document.createElement('span');fsp.textContent=Math.round(avgFs*GFS);
+  const fp=document.createElement('button');fp.textContent='+';
+  fm.onclick=()=>{
+    sel.forEach(r=>{r.fs=Math.max(7,(r.fs||FS_DEF)-1);});
+    fsp.textContent=Math.round((sel[0].fs||FS_DEF)*GFS);
+    const svg=document.getElementById('svg-combined');
+    const clk=clockId==='h'?CLOCK_H:CLOCK_U;
+    renderLabels(svg,regions,clk.cx,clk.cy,clockId);
+    updateFbarClockVal(clockId);
+  };
+  fp.onclick=()=>{
+    sel.forEach(r=>{r.fs=Math.min(32,(r.fs||FS_DEF)+1);});
+    fsp.textContent=Math.round((sel[0].fs||FS_DEF)*GFS);
+    const svg=document.getElementById('svg-combined');
+    const clk=clockId==='h'?CLOCK_H:CLOCK_U;
+    renderLabels(svg,regions,clk.cx,clk.cy,clockId);
+    updateFbarClockVal(clockId);
+  };
+  fsz.appendChild(fm);fsz.appendChild(fsp);fsz.appendChild(fp);ti3.appendChild(fsz);
+  tr3.appendChild(l3);tr3.appendChild(ti3);ctrl.appendChild(tr3);
+
+  // Vis + Delete
+  const tr4=document.createElement('div');tr4.className='rsp-ctrl-row';
+  const l4=document.createElement('div');l4.className='rsp-ctrl-lbl';l4.textContent='Visibility';
+  const ti4=document.createElement('div');ti4.className='rsp-ctrl-inner';
+  const vd=document.createElement('div');vd.className='rsp-vis-del';
+  const visBtn=document.createElement('button');
+  const allVis=sel.every(r=>r.vis);
+  visBtn.className='rsp-vis '+(allVis?'on':'off-v');
+  visBtn.textContent=allVis?'👁 Visible':'🚫 Hidden';
+  visBtn.onclick=()=>{
+    const makeVis=!allVis;
+    sel.forEach(r=>r.vis=makeVis);
+    renderRSP(clockId);
+    const svg=document.getElementById('svg-combined');
+    const clk=clockId==='h'?CLOCK_H:CLOCK_U;
+    renderLabels(svg,regions,clk.cx,clk.cy,clockId);
+  };
+  const delBtn=document.createElement('button');delBtn.className='rsp-del';delBtn.textContent='✕ Remove';
+  delBtn.onclick=()=>{
+    if(!confirm(`Remove ${sel.length} region(s)?`))return;
+    sel.forEach(r=>{const i=regions.indexOf(r);if(i>=0)regions.splice(i,1);});
+    RSP_SEL[clockId].clear();
+    renderRSP(clockId);
+    const svg=document.getElementById('svg-combined');
+    const clk=clockId==='h'?CLOCK_H:CLOCK_U;
+    renderLabels(svg,regions,clk.cx,clk.cy,clockId);
+    toast('Removed');
+  };
+  vd.appendChild(visBtn);vd.appendChild(delBtn);ti4.appendChild(vd);
+  tr4.appendChild(l4);tr4.appendChild(ti4);ctrl.appendChild(tr4);
+
+  det.appendChild(ctrl);
+}
+
+/* ═══ PARTITION EDITOR ═══ */
+function buildPartEditor(){
+  const ed=document.getElementById('part-editor');
+  if(!ed)return;
+  ed.innerHTML='';
+  PARTITIONS.forEach((p,i)=>{
+    const row=document.createElement('div');row.className='part-row';
+    const col=document.createElement('input');col.type='color';col.className='part-color';col.value=p.color;
+    col.oninput=()=>{p.color=col.value;redrawAll();};
+    const namInp=document.createElement('input');namInp.type='text';namInp.className='part-name-inp';namInp.value=p.label;namInp.placeholder='Label';
+    namInp.oninput=()=>{p.label=namInp.value;};
+    const l1=document.createElement('span');l1.className='part-lbl';l1.textContent='Start°';
+    const a1=document.createElement('input');a1.type='number';a1.className='part-angle';a1.value=p.a1;a1.min=0;a1.max=360;
+    a1.oninput=()=>{p.a1=parseFloat(a1.value)||0;redrawAll();};
+    const l2=document.createElement('span');l2.className='part-lbl';l2.textContent='End°';
+    const a2=document.createElement('input');a2.type='number';a2.className='part-angle';a2.value=p.a2;a2.min=0;a2.max=360;
+    a2.oninput=()=>{p.a2=parseFloat(a2.value)||0;redrawAll();};
+    const del=document.createElement('button');del.className='part-del';del.textContent='✕';
+    del.onclick=()=>{PARTITIONS.splice(i,1);buildPartEditor();redrawAll();};
+    row.appendChild(col);row.appendChild(namInp);row.appendChild(l1);row.appendChild(a1);row.appendChild(l2);row.appendChild(a2);row.appendChild(del);
+    ed.appendChild(row);
+  });
+}
+function addPartition(){
+  PARTITIONS.push({id:'p'+Date.now(),label:'New Zone',color:'#888888',a1:0,a2:60});
+  buildPartEditor();redrawAll();
+}
+
+/* ═══ SETTINGS PANEL ═══ */
+let curTab='regions';
+function openSettings(tab){
+  const p=document.getElementById('settings-panel');
+  if(p.classList.contains('open')&&curTab===tab){closeSettings();return;}
+  p.classList.add('open');
+  switchSPTab(tab,document.getElementById('spt-'+tab));
+  setTimeout(()=>p.scrollIntoView({behavior:'smooth',block:'nearest'}),50);
+}
+function closeSettings(){document.getElementById('settings-panel').classList.remove('open');}
+function switchSPTab(tab,btn){
+  curTab=tab;
+  document.querySelectorAll('.sp-tab').forEach(t=>t.classList.remove('active'));
+  if(btn)btn.classList.add('active');
+  ['regions','appearance','manage','export','custom-text','images'].forEach(t=>{
+    document.getElementById('spb-'+t).style.display=t===tab?'block':'none';
+  });
+  if(tab==='regions'){renderRSP('h');renderRSP('u');}
+  if(tab==='appearance')buildPartEditor();
+  if(tab==='custom-text')renderCTList();
+  if(tab==='images')renderImgList();
+}
+
+/* ═══ APPEARANCE ═══ */
+function applyGlobalFontScale(v){
+  GFS=v/100;
+  const pct=((v-60)/(160-60)*100).toFixed(1)+'%';
+  const fb=document.getElementById('fbar-global');
+  if(fb){fb.value=v;fb.style.setProperty('--pct',pct);}
+  const gfs=document.getElementById('gfs-range');if(gfs)gfs.value=v;
+  document.getElementById('gfs-val').textContent=v+'%';
+  const fbVal=document.getElementById('fbar-global-val');if(fbVal)fbVal.textContent=v+'%';
+  redrawAll();
+  if(curTab==='regions'){renderRSP('h');renderRSP('u');}
+}
+function onFbarGlobal(v){
+  const pct=((v-60)/(160-60)*100).toFixed(1)+'%';
+  document.getElementById('fbar-global').style.setProperty('--pct',pct);
+  applyGlobalFontScale(v);
+}
+function stepGlobalFont(delta){applyGlobalFontScale(Math.max(60,Math.min(160,Math.round(GFS*100)+delta)));}
+function stepClockFont(clockId,delta){
+  const regions=clockId==='h'?HR:UR;
+  regions.forEach(r=>{r.fs=Math.max(7,Math.min(32,(r.fs||FS_DEF)+delta));});
+  updateFbarClockVal(clockId);
+  const svg=document.getElementById('svg-combined');
+  const clk=clockId==='h'?CLOCK_H:CLOCK_U;
+  renderLabels(svg,regions,clk.cx,clk.cy,clockId);
+  if(curTab==='regions')renderRSP(clockId);
+}
+function updateFbarClockVal(clockId){
+  const regions=clockId==='h'?HR:UR;
+  const avg=regions.length?Math.round(regions.reduce((s,r)=>s+(r.fs||FS_DEF),0)/regions.length*GFS):Math.round(FS_DEF*GFS);
+  const el=document.getElementById(`fbar-${clockId}-val`);if(el)el.textContent=avg;
+}
+function resetFontSizes(){
+  [...HR,...UR].forEach(r=>{r.fs=null;});GFS=1.0;applyGlobalFontScale(100);
+  updateFbarClockVal('h');updateFbarClockVal('u');toast('Text sizes reset');
+}
+function applyLabelRadius(v){
+  LRAD=parseInt(v);document.getElementById('lrad-val').textContent=v;redrawAll();
+}
+function setMktFilter(m,btn){
+  MKT_FILTER=m;
+  document.querySelectorAll('.tog-grp button').forEach(b=>b.classList.remove('active'));
+  if(btn)btn.classList.add('active');redrawAll();
+}
+function applyColors(){
+  LCOL.smooth=document.getElementById('col-smooth').value;
+  LCOL.workforce=document.getElementById('col-workforce').value;
+  // Mirror picker → hex text input. Always uppercase so the displayed
+  // code matches the typed/expected #RRGGBB convention.
+  const hs=document.getElementById('col-smooth-hex');
+  const hw=document.getElementById('col-workforce-hex');
+  if(hs && document.activeElement!==hs) hs.value=LCOL.smooth.toUpperCase();
+  if(hw && document.activeElement!==hw) hw.value=LCOL.workforce.toUpperCase();
+  document.getElementById('leg-s').style.background=LCOL.smooth;
+  document.getElementById('leg-w').style.background=LCOL.workforce;
+  redrawAll();
+}
+
+/* Hex text input → colour picker. Validates #RRGGBB; ignores
+   intermediate states (e.g. while typing) so the picker only
+   updates once a complete code is present. */
+function applyHexInput(which){
+  const inp=document.getElementById('col-'+which+'-hex');
+  if(!inp) return;
+  const val=inp.value.trim();
+  if(!/^#[0-9A-Fa-f]{6}$/.test(val)) return;
+  document.getElementById('col-'+which).value=val;
+  applyColors();
+}
+
+/* ═══ ADD/BULK ═══ */
+function addRegion(){
+  const name=document.getElementById('arf-name').value.trim().toUpperCase();
+  if(!name){alert('Enter a city name.');return;}
+  const clock=document.getElementById('arf-clock').value;
+  const type=document.getElementById('arf-type').value;
+  const hour=parseFloat(document.getElementById('arf-hour').value);
+  const e={name,hour,type,vis:true,fs:null};
+  if(clock==='houses'||clock==='both')HR.push(deep(e));
+  if(clock==='units'||clock==='both')UR.push(deep(e));
+  document.getElementById('arf-name').value='';
+  if(curTab==='regions'){renderRSP('h');renderRSP('u');}
+  redrawAll();toast(`Added ${name}`);
+}
+function hideAllWorkforce(){
+  HR.filter(r=>r.type==='workforce').forEach(r=>r.vis=false);
+  UR.filter(r=>r.type==='workforce').forEach(r=>r.vis=false);
+  if(curTab==='regions'){renderRSP('h');renderRSP('u');}
+  redrawAll();toast('Workforce hidden');
+}
+function showAllRegions(){
+  HR.forEach(r=>r.vis=true);UR.forEach(r=>r.vis=true);
+  if(curTab==='regions'){renderRSP('h');renderRSP('u');}
+  redrawAll();toast('All visible');
+}
+function resetDragOffsets(){
+  [...HR,...UR].forEach(r=>{r.dx=0;r.dy=0;});redrawAll();toast('Positions reset');
+}
+
+/* ═══ VIEW TOGGLE ═══ */
+function setView(mode,btn){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  if(btn)btn.classList.add('active');
+  const svg=document.getElementById('svg-combined');
+  const fH=svg.querySelector('.clock-face-h'),fU=svg.querySelector('.clock-face-u');
+  const lH=svg.querySelector('.labels-group-h'),lU=svg.querySelector('.labels-group-u');
+  /* ── Also toggle the HOUSES/UNITS title pills at the top so they match
+     the selected view. These live inside #clock-capture, so the PDF and
+     JPEG exports pick up the same state automatically. ── */
+  const pageHeader=document.querySelector('#clock-capture .page-header');
+  const titleL=document.querySelector('#clock-capture .clock-title-block.left');
+  const titleR=document.querySelector('#clock-capture .clock-title-block.right');
+  if(mode==='both'){
+    [fH,fU,lH,lU].forEach(el=>el&&el.removeAttribute('display'));
+    if(titleL) titleL.style.display='';
+    if(titleR) titleR.style.display='';
+    if(pageHeader) pageHeader.classList.remove('single-clock-view');
+    svg.setAttribute('viewBox',`0 0 ${SVG_W} ${SVG_H}`);
+  }else if(mode==='houses'){
+    fH&&fH.removeAttribute('display');lH&&lH.removeAttribute('display');
+    fU&&fU.setAttribute('display','none');lU&&lU.setAttribute('display','none');
+    if(titleL) titleL.style.display='';
+    if(titleR) titleR.style.display='none';
+    if(pageHeader) pageHeader.classList.add('single-clock-view');
+    svg.setAttribute('viewBox',`0 0 ${SVG_W/2} ${SVG_H}`);
+  }else{
+    fU&&fU.removeAttribute('display');lU&&lU.removeAttribute('display');
+    fH&&fH.setAttribute('display','none');lH&&lH.setAttribute('display','none');
+    if(titleL) titleL.style.display='none';
+    if(titleR) titleR.style.display='';
+    if(pageHeader) pageHeader.classList.add('single-clock-view');
+    svg.setAttribute('viewBox',`${SVG_W/2} 0 ${SVG_W/2} ${SVG_H}`);
+  }
+}
+
+/* ═══ RESET ═══ */
+function resetAll(){
+  if(!confirm('Reset everything to defaults? This will also clear the cloud save.'))return;
+  HR=deep(DEF_H);UR=deep(DEF_U);
+  [...HR,...UR].forEach(r=>{r.dx=0;r.dy=0;});
+  PARTITIONS=JSON.parse(JSON.stringify(DEF_PARTITIONS));
+  CUSTOM_TEXTS=[];_ctNextId=1;
+  OVERLAY_IMAGES=[];_imgNextId=1;_selectedImgId=null;
+  HDR={title:'NATIONAL PROPERTY CLOCK',subtitleL:'EDITION 3 \u2013 2026',subtitleR:'EDITION 3 \u2013 2026'};
+  applyHdr();
+  GFS=1.0;LRAD=38;MKT_FILTER='both';
+  LCOL={smooth:'#64B5F6',workforce:'#E53935'};
+  document.getElementById('gfs-range').value=100;document.getElementById('gfs-val').textContent='100%';
+  const _fbg=document.getElementById('fbar-global');if(_fbg){_fbg.value=100;_fbg.style.setProperty('--pct','40%');}
+  const _fbgv=document.getElementById('fbar-global-val');if(_fbgv)_fbgv.textContent='100%';
+  document.getElementById('lrad-range').value=38;document.getElementById('lrad-val').textContent='38';
+  document.getElementById('col-smooth').value='#64B5F6';document.getElementById('col-workforce').value='#E53935';
+  const _csh=document.getElementById('col-smooth-hex');if(_csh)_csh.value='#64B5F6';
+  const _cwh=document.getElementById('col-workforce-hex');if(_cwh)_cwh.value='#E53935';
+  document.getElementById('leg-s').style.background='#64B5F6';document.getElementById('leg-w').style.background='#E53935';
+  document.querySelectorAll('.tog-grp button').forEach(b=>b.classList.remove('active'));
+  document.getElementById('mkt-both-btn').classList.add('active');
+  document.getElementById('save-indicator').textContent='';
+  if(curTab==='regions'){renderRSP('h');renderRSP('u');}
+  if(curTab==='appearance')buildPartEditor();
+  if(curTab==='custom-text')renderCTList();
+  if(curTab==='images')renderImgList();
+  redrawAll();toast('Reset to defaults');
+}
+
+/* ═══ EXPORT/IMPORT ═══
+   Export = portable snapshot of the entire visual state: regions
+   (houses + units), partition wedges, custom text labels, overlay
+   images, header titles, and global settings. Excludes auditLog
+   since that's a per-deployment history of who-saved-when, and
+   shouldn't overwrite the destination's audit history when the
+   config is imported elsewhere. */
+function _buildExportState(){
+  return {
+    houses: HR,
+    units: UR,
+    partitions: PARTITIONS,
+    customTexts: CUSTOM_TEXTS,
+    ctNextId: _ctNextId,
+    overlayImages: OVERLAY_IMAGES,
+    imgNextId: _imgNextId,
+    hdr: HDR,
+    settings: { GFS, LRAD, MKT_FILTER, LCOL }
+  };
+}
+function exportJSON(){
+  const blob=new Blob([JSON.stringify(_buildExportState(),null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='property-clock-config.json';a.click();toast('JSON downloaded');
+}
+function exportCSV(){
+  let csv='Clock,Name,Hour,Type,Visible,FontSize\n';
+  HR.forEach(r=>csv+=`Houses,"${r.name}",${r.hour},${r.type},${r.vis},${r.fs||FS_DEF}\n`);
+  UR.forEach(r=>csv+=`Units,"${r.name}",${r.hour},${r.type},${r.vis},${r.fs||FS_DEF}\n`);
+  const blob=new Blob([csv],{type:'text/csv'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='property-clock-data.csv';a.click();toast('CSV downloaded');
+}
+function copyConfig(){
+  const json=JSON.stringify(_buildExportState());
+  navigator.clipboard.writeText(json).then(()=>toast('Config copied!')).catch(()=>{document.getElementById('import-json').value=json;toast('Shown in Import field');});
+}
+function importJSON(){
+  try{
+    const d=JSON.parse(document.getElementById('import-json').value);
+    if(d.houses)HR=d.houses;
+    if(d.units)UR=d.units;
+    if(d.partitions)PARTITIONS=d.partitions;
+    if(d.customTexts){
+      CUSTOM_TEXTS = d.customTexts;
+      _ctNextId = d.ctNextId || (CUSTOM_TEXTS.length + 1);
+    }
+    if(d.overlayImages){
+      OVERLAY_IMAGES = d.overlayImages;
+      _imgNextId = d.imgNextId || (OVERLAY_IMAGES.length + 1);
+    }
+    if(d.hdr){
+      Object.assign(HDR, d.hdr);
+      applyHdr();
+    }
+    if(d.settings){const s=d.settings;if(s.GFS!=null){GFS=s.GFS;document.getElementById('gfs-range').value=Math.round(GFS*100);document.getElementById('gfs-val').textContent=Math.round(GFS*100)+'%';}if(s.LRAD!=null){LRAD=s.LRAD;document.getElementById('lrad-range').value=LRAD;document.getElementById('lrad-val').textContent=LRAD;}if(s.LCOL)Object.assign(LCOL,s.LCOL);}
+    if(curTab==='regions'){renderRSP('h');renderRSP('u');}
+    if(curTab==='appearance')buildPartEditor();
+    if(curTab==='custom-text')renderCTList();
+    if(curTab==='images')renderImgList();
+    redrawAll();toast('Imported!');
+  }catch(e){alert('Invalid JSON.');}
+}
+
+/* ═══ BAKE CLOCK LOGO — html2canvas doesn't render CSS filters,
+   so we pre-render the inverted (black+teal) logo into a real PNG once
+   and swap img.src. Works for both dashboard and PDF/JPEG export. */
+let _clockLogoBakePromise = null;
+function bakeClockLogo(){
+  if(_clockLogoBakePromise) return _clockLogoBakePromise;
+  _clockLogoBakePromise = new Promise(resolve => {
+    const imgs = document.querySelectorAll('#clockView .brand img');
+    if(imgs.length === 0){ resolve(); return; }
+    let pending = imgs.length;
+    const done = () => { if(--pending <= 0) resolve(); };
+    imgs.forEach(origImg => {
+      if(origImg.dataset.baked === 'true'){ done(); return; }
+      const tmp = new Image();
+      tmp.crossOrigin = 'anonymous';
+      tmp.onload = function(){
+        try {
+          const cv = document.createElement('canvas');
+          cv.width = tmp.naturalWidth || 800;
+          cv.height = tmp.naturalHeight || 160;
+          const ctx = cv.getContext('2d');
+          ctx.filter = 'invert(1) hue-rotate(180deg)';
+          ctx.drawImage(tmp, 0, 0);
+          origImg.style.filter = 'none';
+          origImg.src = cv.toDataURL('image/png');
+          origImg.dataset.baked = 'true';
+        } catch(e){ console.warn('Clock logo bake failed:', e); }
+        done();
+      };
+      tmp.onerror = done;
+      tmp.src = origImg.src;
+    });
+  });
+  return _clockLogoBakePromise;
+}
+if(!window.__clockLogoBakeScheduled){
+  window.__clockLogoBakeScheduled = true;
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', bakeClockLogo);
+  } else {
+    bakeClockLogo();
+  }
+}
+
+/* ═══ PDF EXPORT — captures only #clock-capture ═══
+   Tier 0/1 (dev/admin)   — HD render (scale:4, lossless PNG).
+   Tier 2 (company)       — standard render (scale:2, JPEG).
+   Tier 3 (client)        — blocked: view-only, no downloads.
+   Tier 4 (guest)         — blocked: hub blur wall keeps them out
+                            entirely; this guard is defence-in-depth. */
+async function exportPDF(){
+  if(isViewOnly()){toast('PDF download is not available for viewer accounts.');return;}
+  await bakeClockLogo();
+  const overlay=document.getElementById('pdf-overlay');
+  const msgEl=overlay.querySelector('.pdf-msg');
+  const hd=isAdmin();
+  if(msgEl) msgEl.textContent = hd ? 'Generating HD PDF...' : 'Generating PDF...';
+  overlay.classList.add('show');
+  await new Promise(r=>setTimeout(r,80));
+  try{
+    const el=document.getElementById('clock-capture');
+    // Hide interactive decorations (text-box borders, image handles) for clean PDF
+    el.classList.add('pdf-export-mode');
+    await new Promise(r=>setTimeout(r,40)); // let CSS apply
+    const scaleF = hd ? 4 : 2;
+    const canvas=await html2canvas(el,{scale:scaleF,useCORS:true,backgroundColor:'#e8ebef',logging:false});
+    el.classList.remove('pdf-export-mode');
+    const{jsPDF}=window.jspdf;
+    const pdf=new jsPDF({orientation:'landscape',unit:'mm',format:'a4',compress:!hd});
+    const PW=297,PH=210,margin=6;
+    const aW=PW-margin*2,aH=PH-margin*2;
+    const iW=canvas.width/scaleF*25.4/96,iH=canvas.height/scaleF*25.4/96;
+    const sc=Math.min(aW/iW,aH/iH,1);
+    const fmt = hd ? 'PNG' : 'JPEG';
+    const dataUrl = hd ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg',0.96);
+    pdf.addImage(dataUrl, fmt, margin+(aW-iW*sc)/2, margin+(aH-iH*sc)/2, iW*sc, iH*sc, undefined, hd ? 'SLOW' : 'FAST');
+    const suffix = hd ? '-HD' : '';
+    pdf.save('National-Property-Clock-Ed3-2026' + suffix + '.pdf');
+    toast(hd ? 'HD PDF downloaded!' : 'PDF downloaded!');
+  }catch(err){console.error(err);alert('PDF failed - try Ctrl+P instead.');}
+  finally{
+    document.getElementById('clock-capture').classList.remove('pdf-export-mode');
+    overlay.classList.remove('show');
+    if(msgEl) msgEl.textContent = 'Generating PDF...';
+  }
+}
+
+/* ═══ HD JPEG EXPORT — same capture as PDF, writes a JPEG file.
+   Available to admin + company (matches PDF); client + guest blocked. */
+async function exportClockJPEG(){
+  if(isViewOnly()){toast('JPEG download is not available for viewer accounts.');return;}
+  await bakeClockLogo();
+  const overlay=document.getElementById('pdf-overlay');
+  const msgEl=overlay.querySelector('.pdf-msg');
+  if(msgEl) msgEl.textContent = 'Generating HD JPEG...';
+  overlay.classList.add('show');
+  await new Promise(r=>setTimeout(r,80));
+  try{
+    const el=document.getElementById('clock-capture');
+    el.classList.add('pdf-export-mode');
+    await new Promise(r=>setTimeout(r,40));
+    const canvas=await html2canvas(el,{scale:3,useCORS:true,backgroundColor:'#e8ebef',logging:false});
+    el.classList.remove('pdf-export-mode');
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = 'National-Property-Clock-Ed3-2026-HD.jpg';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast('HD JPEG downloaded!');
+  }catch(err){console.error(err);alert('JPEG failed - try Ctrl+P instead.');}
+  finally{
+    document.getElementById('clock-capture').classList.remove('pdf-export-mode');
+    overlay.classList.remove('show');
+    if(msgEl) msgEl.textContent = 'Generating PDF...';
+  }
+}
+
+/* ═══ EDITABLE HEADER ═══ */
+let HDR = {
+  title:     'NATIONAL PROPERTY CLOCK',
+  subtitleL: 'EDITION 3 \u2013 2026',
+  subtitleR: 'EDITION 3 \u2013 2026'
+};
+
+function initHdrEditable(){
+  document.querySelectorAll('.hdr-editable').forEach(el=>{
+    el.addEventListener('click',()=>startHdrEdit(el));
+  });
+}
+
+function applyHdr(){
+  document.querySelectorAll('[data-field="title"]').forEach(el=>{
+    if(!el.querySelector('.hdr-inp')) el.textContent=HDR.title;
+  });
+  const subL=document.querySelector('[data-field="subtitle-l"]');
+  if(subL&&!subL.querySelector('.hdr-inp')) subL.textContent=HDR.subtitleL;
+  const subR=document.querySelector('[data-field="subtitle-r"]');
+  if(subR&&!subR.querySelector('.hdr-inp')) subR.textContent=HDR.subtitleR;
+}
+
+function startHdrEdit(el){
+  if(isLimitedUser()) return; // Limited users cannot edit header
+  if(!document.body.classList.contains('edit-mode')) return; // View mode: header is read-only
+  if(el.querySelector('.hdr-inp'))return;
+  const field=el.getAttribute('data-field');
+
+  // For "title" sync both sides; for subtitle-l/r only edit the one clicked
+  const targets = field==='title'
+    ? document.querySelectorAll('[data-field="title"]')
+    : [el];
+
+  const cur = field==='title' ? HDR.title
+            : field==='subtitle-l' ? HDR.subtitleL
+            : HDR.subtitleR;
+
+  targets.forEach(target=>{
+    target.innerHTML='';
+    const inp=document.createElement('input');
+    inp.className='hdr-inp';
+    inp.value=cur;
+    inp.style.width=Math.max(120,cur.length*8+20)+'px';
+    inp.addEventListener('input',()=>{
+      if(field==='title') HDR.title=inp.value;
+      else if(field==='subtitle-l') HDR.subtitleL=inp.value;
+      else HDR.subtitleR=inp.value;
+      // sync other title inputs if any
+      if(field==='title'){
+        document.querySelectorAll('[data-field="title"] .hdr-inp').forEach(o=>{if(o!==inp)o.value=inp.value;});
+      }
+    });
+    inp.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key==='Escape')finishHdrEdit(field);});
+    inp.addEventListener('blur',()=>finishHdrEdit(field));
+    target.appendChild(inp);
+    if(target===el) setTimeout(()=>{inp.focus();inp.select();},10);
+  });
+}
+
+function finishHdrEdit(field){
+  applyHdr();
+  document.querySelectorAll(`.hdr-editable`).forEach(el=>{
+    el.addEventListener('click',()=>startHdrEdit(el));
+  });
+}
+
+/* ═══ CLOCK STATE ═══
+   Reads + writes happen against public.clock_state in Supabase. Singleton
+   row keyed on id=1; payload is a jsonb column matching _buildClockState().
+   RLS lets any authenticated user read; only dev/admin can write. */
+
+/* ═══ SAVE / LOAD ═══ */
+/* ═══ AUDIT LOG ═══
+   Tracks every Save action (who + when) so admins can see edit
+   history. Stored as state.auditLog (array, capped at 100 rolling
+   entries) so it persists across all admins via JSONBin. Read-only
+   viewer modal accessible from the toolbar (Tier 0/1). */
+let _auditLog = []; // populated by loadState; appended by saveState
+function _appendAuditEntry(action, details){
+  const user = (typeof getCurrentUserDisplay === 'function')
+    ? getCurrentUserDisplay() : 'Unknown';
+  const email = (typeof getCurrentUserEmail === 'function')
+    ? getCurrentUserEmail() : '';
+  _auditLog.push({
+    user, email, action,
+    details: details || null,
+    ts: new Date().toISOString()
+  });
+  // Cap at 100 — older entries roll off so the JSON doesn't grow
+  // unbounded over years of use.
+  if (_auditLog.length > 100) _auditLog = _auditLog.slice(-100);
+}
+function openAuditLog(){
+  const modal=document.getElementById('audit-modal');
+  const list=document.getElementById('audit-list');
+  if(!modal||!list) return;
+  if(!_auditLog.length){
+    list.innerHTML='<div class="audit-empty">No edits recorded yet. Saves made by admins will appear here.</div>';
+  } else {
+    // Newest first
+    const items=_auditLog.slice().reverse();
+    list.innerHTML=items.map(e=>{
+      const d=new Date(e.ts);
+      const dateStr=d.toLocaleString([], {dateStyle:'medium', timeStyle:'short'});
+      const userLabel=e.user||'Unknown';
+      const emailSub=e.email && e.email!==userLabel ? '<span class="audit-email">'+escapeHTML(e.email)+'</span>' : '';
+      const detailsStr=e.details ? '<div class="audit-details">'+escapeHTML(String(e.details))+'</div>' : '';
+      return '<div class="audit-entry">'
+        + '<div class="audit-entry-top">'
+        +   '<span class="audit-action">'+escapeHTML(e.action||'')+'</span>'
+        +   '<span class="audit-time">'+escapeHTML(dateStr)+'</span>'
+        + '</div>'
+        + '<div class="audit-user">'+escapeHTML(userLabel)+emailSub+'</div>'
+        + detailsStr
+      + '</div>';
+    }).join('');
+  }
+  modal.classList.add('show');
+}
+function closeAuditLog(){
+  const modal=document.getElementById('audit-modal');
+  if(modal) modal.classList.remove('show');
+}
+function escapeHTML(s){
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+/* ═══ OFFLINE SAVE / LOAD ═══
+   Writes the same state object the cloud save produces into
+   localStorage, keyed under OFFLINE_KEY. Useful for two scenarios:
+   (1) running the app off a local live-server / dev-server where the
+   Netlify Function isn't reachable, and (2) keeping a per-browser
+   working copy when the cloud bin is read-only or down. loadState()
+   falls back to this entry if the cloud fetch fails or returns a
+   placeholder. Save is a no-op for limited users (matches cloud
+   save's permission gate). */
+const CLOCK_OFFLINE_KEY = 'ppt-clock-offline-state';
+function _buildClockState(){
+  return {
+    houses: HR, units: UR,
+    partitions: PARTITIONS,
+    customTexts: CUSTOM_TEXTS,
+    ctNextId: _ctNextId,
+    hdr: HDR,
+    overlayImages: OVERLAY_IMAGES,
+    imgNextId: _imgNextId,
+    settings: { GFS, LRAD, MKT_FILTER, LCOL },
+    auditLog: _auditLog
+  };
+}
+function saveStateOffline(){
+  if(isLimitedUser()){toast('View-only access — saving is not available.');return;}
+  _appendAuditEntry('Saved (offline)');
+  try {
+    localStorage.setItem(CLOCK_OFFLINE_KEY, JSON.stringify(_buildClockState()));
+    toast('Saved to this browser. Loads on next visit if cloud is unreachable.');
+  } catch(e){
+    toast('Offline save failed — localStorage may be full.');
+    console.error('Offline save error:', e);
+  }
+}
+function _applyClockState(state){
+  if(state.houses && state.houses.length) HR = state.houses;
+  if(state.units && state.units.length)  UR = state.units;
+  if(state.partitions && state.partitions.length) PARTITIONS = state.partitions;
+  if(state.customTexts){ CUSTOM_TEXTS = state.customTexts; _ctNextId = state.ctNextId || CUSTOM_TEXTS.length+1; }
+  if(state.overlayImages){ OVERLAY_IMAGES = state.overlayImages; _imgNextId = state.imgNextId || OVERLAY_IMAGES.length+1; }
+  if(state.hdr) Object.assign(HDR, state.hdr);
+  if(state.settings){
+    const s = state.settings;
+    if(s.GFS != null) GFS = s.GFS;
+    if(s.LRAD != null) LRAD = s.LRAD;
+    if(s.MKT_FILTER) MKT_FILTER = s.MKT_FILTER;
+    if(s.LCOL) Object.assign(LCOL, s.LCOL);
+  }
+  if(Array.isArray(state.auditLog)) _auditLog = state.auditLog;
+}
+
+async function saveState(){
+  if(isLimitedUser()){toast('View-only access — saving is not available.');return;}
+  // Append the audit entry BEFORE building the state object so the
+  // entry ships as part of this save.
+  _appendAuditEntry('Saved');
+  const state = _buildClockState();
+  const btn=document.getElementById('save-btn');
+  const ind=document.getElementById('save-indicator');
+  ind.textContent='Saving…';
+  try{
+    if(!window.sb) throw new Error('Supabase client not loaded');
+    const { error } = await window.sb
+      .from('clock_state')
+      .update({ payload: state })
+      .eq('id', 1);
+    if(error) throw error;
+    const now=new Date();
+    const ts=now.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    ind.textContent='Saved '+ts;
+    btn.classList.add('saved');
+    setTimeout(()=>btn.classList.remove('saved'),2000);
+    toast('Saved! Everyone will see your changes on next refresh.');
+  }catch(e){
+    ind.textContent='Save failed';
+    toast('Save failed — check your connection and try again.');
+    console.error('Clock save error:',e);
+  }
+}
+
+async function loadState(){
+  // 1. Try Supabase first — that's the shared source of truth.
+  try {
+    if(!window.sb) throw new Error('Supabase client not loaded');
+    const { data, error } = await window.sb
+      .from('clock_state')
+      .select('payload')
+      .eq('id', 1)
+      .single();
+    if(error) throw error;
+    const state = data && data.payload;
+    if(state && (state.houses || state.units)){
+      _applyClockState(state);
+      return true;
+    }
+  } catch(e){
+    console.warn('Clock cloud load failed, trying offline:', e);
+  }
+  // 2. Fall back to the per-browser offline save written by the
+  //    "Offline Save" button. Useful when running off a local live-
+  //    server with no network OR when the Supabase row is empty/
+  //    unreachable. Surfaces a toast so the user knows which source
+  //    is active.
+  try {
+    const raw = localStorage.getItem(CLOCK_OFFLINE_KEY);
+    if(raw){
+      const offline = JSON.parse(raw);
+      if(offline && (offline.houses || offline.units)){
+        _applyClockState(offline);
+        toast('Loaded offline save (cloud unavailable).');
+        return true;
+      }
+    }
+  } catch(e){
+    console.warn('Offline load failed:', e);
+  }
+  toast('Could not load cloud data — showing default layout.');
+  return false;
+}
+
+/* ═══ TOAST ═══ */
+let _tt=null;
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>t.classList.remove('show'),2400);}
+
+/* ═══ Live-data loading overlay control ═══
+   The overlay is visible by default in the HTML so it paints with
+   the page. We capture T0 at script-eval time so the elapsed
+   measurement starts close to when the user picked the tool, and
+   schedule the hide via scheduleOverlayHide() at the end of init —
+   minimum LIVE_OVERLAY_MIN_MS visible so cache hits don't flash. */
+const LIVE_OVERLAY_MIN_MS = 3000;
+const LIVE_OVERLAY_T0 = Date.now();
+function hideLiveLoadingOverlay(){
+  const ov = document.getElementById('live-loading-overlay');
+  if (ov) ov.classList.add('hidden');
+}
+function scheduleOverlayHide(){
+  const elapsed = Date.now() - LIVE_OVERLAY_T0;
+  const remaining = Math.max(0, LIVE_OVERLAY_MIN_MS - elapsed);
+  if (remaining === 0) hideLiveLoadingOverlay();
+  else setTimeout(hideLiveLoadingOverlay, remaining);
+}
+
+/* Re-shows the loading overlay with a "Returning to Hub" message
+   and navigates after the fade-in completes. Reuses the existing
+   .live-loading-overlay element so the visual matches the inbound
+   transition the user saw on entry — feels like the same UI rolling
+   the user out instead of an unrelated dismissal. */
+function navigateToHub(){
+  const ov = document.getElementById('live-loading-overlay');
+  if (ov){
+    const head = ov.querySelector('.live-loading-region');
+    const sub  = ov.querySelector('.live-loading-sub');
+    if (head) head.textContent = 'Returning to Hub';
+    if (sub)  sub.textContent  = 'Loading hub';
+    ov.classList.remove('hidden');
+  }
+  /* Fade-in is 0.45 s per CSS; navigate after that so the user
+     sees the overlay fully painted before the page tear-down. */
+  setTimeout(() => { location.href = '../index.html'; }, 450);
+}
+
+/* ═══ INIT ═══ */
+document.addEventListener('DOMContentLoaded',async()=>{
+  // Show loading state while fetching from JSONBin
+  document.getElementById('save-indicator').textContent='Loading…';
+
+  const didLoad=await loadState();
+
+  applyHdr();
+  initHdrEditable();
+
+  // Sync UI controls to loaded (or default) values
+  const gfsV=Math.round(GFS*100);
+  const pct=((gfsV-60)/(160-60)*100).toFixed(1)+'%';
+  const fbg=document.getElementById('fbar-global');
+  if(fbg){fbg.value=gfsV;fbg.style.setProperty('--pct',pct);}
+  const gfsR=document.getElementById('gfs-range');if(gfsR)gfsR.value=gfsV;
+  const gfsVal=document.getElementById('gfs-val');if(gfsVal)gfsVal.textContent=gfsV+'%';
+  const gfsGVal=document.getElementById('fbar-global-val');if(gfsGVal)gfsGVal.textContent=gfsV+'%';
+  const lradR=document.getElementById('lrad-range');if(lradR)lradR.value=LRAD;
+  const lradV=document.getElementById('lrad-val');if(lradV)lradV.textContent=LRAD;
+  const cs=document.getElementById('col-smooth');if(cs)cs.value=LCOL.smooth;
+  const cw=document.getElementById('col-workforce');if(cw)cw.value=LCOL.workforce;
+  const csh=document.getElementById('col-smooth-hex');if(csh)csh.value=LCOL.smooth.toUpperCase();
+  const cwh=document.getElementById('col-workforce-hex');if(cwh)cwh.value=LCOL.workforce.toUpperCase();
+  const ls=document.getElementById('leg-s');if(ls)ls.style.background=LCOL.smooth;
+  const lw=document.getElementById('leg-w');if(lw)lw.style.background=LCOL.workforce;
+  if(MKT_FILTER!=='both'){
+    document.querySelectorAll('.tog-grp button').forEach(b=>b.classList.remove('active'));
+    const mb=document.getElementById('mkt-'+MKT_FILTER+'-btn');if(mb)mb.classList.add('active');
+  }
+
+  redrawAll();
+  mkHourSel(document.getElementById('arf-hour'),6);
+  updateFbarClockVal('h');updateFbarClockVal('u');
+
+  if(didLoad){
+    document.getElementById('save-indicator').textContent='Loaded from cloud';
+    setTimeout(()=>{
+      const el=document.getElementById('save-indicator');
+      if(el&&el.textContent==='Loaded from cloud')el.textContent='';
+    },3000);
+  }else{
+    document.getElementById('save-indicator').textContent='';
+  }
+
+  window.addEventListener('mousemove',onDragMove,{passive:false});
+  window.addEventListener('mouseup',onDragEnd);
+  window.addEventListener('touchmove',onDragMove,{passive:false});
+  window.addEventListener('touchend',onDragEnd);
+  window.addEventListener('touchcancel',onDragEnd);
+
+  /* ═══ VIEW / EDIT MODE TOGGLE ═══
+     Tier 0/1 only (the pill is .tier1-only). Clicking Edit adds
+     body.edit-mode → CSS reveals every .edit-only button (Region
+     Settings, Appearance, Add/Remove, Custom Text, Images, Export,
+     Save, Reset). Always starts in View on every tool entry — the
+     mode is intentionally not persisted across reloads, so admins
+     who closed in Edit mode land back on a clean read-only canvas
+     and have to opt into Edit again deliberately. Mid-session
+     toggles still work normally. */
+  (function initClockModeToggle(){
+    const btnView = document.getElementById('clock-mode-view');
+    const btnEdit = document.getElementById('clock-mode-edit');
+    if (!btnView || !btnEdit) return;
+    function setMode(mode){
+      const isEdit = mode === 'edit';
+      document.body.classList.toggle('edit-mode', isEdit);
+      btnView.classList.toggle('on', !isEdit);
+      btnEdit.classList.toggle('on',  isEdit);
+      btnView.setAttribute('aria-selected', String(!isEdit));
+      btnEdit.setAttribute('aria-selected', String(isEdit));
+      // Leaving Edit → close any open settings panel below the clock
+      // so View mode shows the canvas only, with no editing tools.
+      if (!isEdit) { try { closeSettings(); } catch(_){} }
+    }
+    btnView.addEventListener('click', () => setMode('view'));
+    btnEdit.addEventListener('click', () => setMode('edit'));
+    setMode('view');
+  })();
+
+  /* Hide the loading overlay now that data is fetched + clock is
+     drawn. Respects the minimum-visible window so the animation
+     doesn't flash on cache hits. */
+  scheduleOverlayHide();
+});
+
+/* Defensive fallback — if the DOMContentLoaded handler ever throws
+   before reaching scheduleOverlayHide, this 30 s timer still hides
+   the overlay so the user isn't stuck behind it indefinitely. */
+setTimeout(hideLiveLoadingOverlay, 30000);
+</script>
+
+  </div>
+</div>
+
+<!-- ══════════ AUDIT LOG MODAL (Tier 0/1 only) ══════════
+     Lists every Save action with timestamp + who. Toggled by the
+     Audit Log button in the toolbar. Read-only viewer. -->
+<div id="audit-modal" class="audit-modal" aria-hidden="true" onclick="if(event.target===this) closeAuditLog()">
+  <div class="audit-inner" role="dialog" aria-labelledby="audit-title">
+    <button class="audit-close" type="button" onclick="closeAuditLog()" aria-label="Close">×</button>
+    <h2 class="audit-title" id="audit-title">Audit Log</h2>
+    <p class="audit-sub">Recent saves to the Property Clock. Newest first. Up to 100 entries.</p>
+    <div class="audit-list" id="audit-list"></div>
+  </div>
+</div>
+
+<!-- ══════════ TIER SWITCHER (Tier 0 only) ══════════ -->
+<!-- ══════════ TIER SWITCHER (Tier 0 / dev only) ══════════ -->
+<div id="tier-switcher">
+  <button class="ts-toggle" onclick="toggleTierSwitcher()" title="View as tier — dev tool">
+    <span class="ts-eye">👁</span>
+    <span>View as: </span>
+    <span id="ts-current-label">TIER 0</span>
+  </button>
+  <div id="ts-menu">
+    <div class="ts-menu-header">Switch Tier Perspective</div>
+    <button data-tier="dev" onclick="setViewAs('dev')">TIER 0 <span class="ts-sub">Dev / Full access</span></button>
+    <button data-tier="admin" onclick="setViewAs('admin')">TIER 1 <span class="ts-sub">Admin</span></button>
+    <button data-tier="company" onclick="setViewAs('company')">TIER 2 <span class="ts-sub">Company staff</span></button>
+    <button data-tier="guest" onclick="setViewAs('guest')">TIER 3 <span class="ts-sub">External viewer</span></button>
+  </div>
+</div>
+
+<!-- shared auth (constants + helpers) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../shared/supabase-client.js"></script>
+<script src="../shared/auth.js"></script>
+<!-- gate: redirect to /index.html if not signed in, and run applyAccessRestrictions -->
+<script src="../shared/auth-gate.js"></script>
+</body>
+</html>
