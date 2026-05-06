@@ -37,6 +37,13 @@ const ADMIN_EMAILS = [
   'vandolf@performanceproperty.com.au',
   'paul@performanceproperty.com.au'
 ];
+/* DEV_EMAILS auto-reveal the (otherwise hidden) password field on the
+   login screen. Tier 0 dev signs in with email + password to skip OTP.
+   Anyone whose email isn't in this list never sees the field — they go
+   straight to the email-only OTP flow. */
+const DEV_EMAILS = [
+  'vandolf@performanceproperty.com.au'
+];
 const ADMIN_NAMES = {
   'saskia@performanceproperty.com.au':  'Saskia',
   'shaene@performanceproperty.com.au':  'Shaene',
@@ -864,17 +871,71 @@ async function _initAuth() {
     const emailIn = document.getElementById('emailInput');
     const pwIn    = document.getElementById('pwInput');
     if (pwIn)    pwIn.addEventListener('keydown',    e => { if (e.key === 'Enter') tryLogin(); });
-    if (emailIn) emailIn.addEventListener('keydown', e => { if (e.key === 'Enter') (pwIn ? pwIn.focus() : tryLogin()); });
+    /* Enter on email: jump to password ONLY when the password field is
+       actually visible — otherwise just submit. The pw field exists in
+       the DOM even when hidden (we toggle display:none), so don't focus
+       it blindly. */
+    if (emailIn) emailIn.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      const pwField = document.getElementById('pwField');
+      const pwShown = pwField && pwField.style.display !== 'none';
+      if (pwShown && pwIn) pwIn.focus(); else tryLogin();
+    });
 
-    /* Update button label based on whether the password is filled — gives
-       the user a hint about which path they're on. */
-    if (pwIn) {
-      const refreshLabel = () => {
-        loginBtn.textContent = pwIn.value ? 'Sign In' : 'Send Verification Code';
-      };
-      pwIn.addEventListener('input', refreshLabel);
-      refreshLabel();
+    /* ── Password-field visibility ──
+       Hidden by default (display:none in HTML). Auto-reveal when the
+       email matches DEV_EMAILS. Manual reveal via Ctrl+Shift+D for
+       cases where dev wants to see the field before typing the email
+       (or when typing a stage-1 username variant). The field stays
+       revealed once it's been shown — clearing it keeps state simple. */
+    const pwField = document.getElementById('pwField');
+    let _pwManuallyRevealed = false;
+
+    function _isDevEmail(email) {
+      return DEV_EMAILS.indexOf(String(email || '').trim().toLowerCase()) >= 0;
     }
+    function _refreshPwVisibility() {
+      if (!pwField) return;
+      const emailVal = emailIn ? emailIn.value : '';
+      const shouldShow = _pwManuallyRevealed || _isDevEmail(emailVal);
+      pwField.style.display = shouldShow ? '' : 'none';
+      /* Clear the password whenever we hide the field so a stale value
+         doesn't survive an email change and trigger a password sign-in
+         attempt the user didn't intend. */
+      if (!shouldShow && pwIn) pwIn.value = '';
+    }
+
+    function _refreshLoginButtonLabel() {
+      const pwShown = pwField && pwField.style.display !== 'none';
+      const hasPw = pwShown && pwIn && pwIn.value;
+      loginBtn.textContent = hasPw ? 'Sign In' : 'Send Verification Code';
+    }
+
+    if (emailIn) {
+      emailIn.addEventListener('input', () => {
+        _refreshPwVisibility();
+        _refreshLoginButtonLabel();
+      });
+    }
+    if (pwIn) {
+      pwIn.addEventListener('input', _refreshLoginButtonLabel);
+    }
+    _refreshPwVisibility();
+    _refreshLoginButtonLabel();
+
+    /* Hidden trigger — Ctrl+Shift+D toggles the password field. Useful
+       if you want to sign in with a password before typing the email,
+       or if the email-based reveal hasn't fired (e.g. an old browser
+       autofills the email AFTER the input listener already settled). */
+    document.addEventListener('keydown', (e) => {
+      const isCombo = (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'D' || e.key === 'd');
+      if (!isCombo) return;
+      e.preventDefault();
+      _pwManuallyRevealed = !_pwManuallyRevealed;
+      _refreshPwVisibility();
+      _refreshLoginButtonLabel();
+      if (_pwManuallyRevealed && pwIn) pwIn.focus();
+    });
 
     const showRegisterBtn = document.getElementById('showRegisterBtn');
     if (showRegisterBtn) showRegisterBtn.addEventListener('click', () => showStep(3));
