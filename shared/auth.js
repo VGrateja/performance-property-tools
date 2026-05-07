@@ -1022,28 +1022,13 @@ async function _initAuth() {
     _wireOtpDigits();
   }
 
-  /* Restore session if one exists from a previous visit. */
+  /* Subscribe to auth state changes BEFORE we await anything async. The
+     PASSWORD_RECOVERY event fires during Supabase's URL-token parsing
+     (which happens automatically when the SDK loads with
+     detectSessionInUrl:true). If we register the listener after an
+     await we can miss the event entirely — the user clicks the
+     recovery email link and just sees the login page with no prompt. */
   if (window.sb) {
-    const profile = await _hydrateFromSession();
-    if (profile && profile.status === 'active') {
-      /* showMain() sets _pp_currentView='hub' and body.on-hub, which the
-         dev tier switcher uses to decide visibility. Only call it when
-         we're actually on the hub page — i.e. mainPage exists. On tool
-         pages we just apply access restrictions; auth-gate.js handles
-         the rest, and the tier switcher stays hidden because
-         _pp_currentView keeps its empty default. */
-      const onHubPage = !!document.getElementById('mainPage');
-      const loginScreen = document.getElementById('loginScreen');
-      if (loginScreen) loginScreen.style.display = 'none';
-      applyAccessRestrictions();
-      if (onHubPage) showMain();
-    } else if (profile && profile.status !== 'active') {
-      /* Stale session for a deactivated account — sign out silently. */
-      await window.sb.auth.signOut();
-      _setSessionMirror(null);
-    }
-
-    /* Subscribe to auth changes (e.g. token refresh, sign-out from another tab). */
     window.sb.auth.onAuthStateChange(async (event, _session) => {
       if (event === 'SIGNED_OUT') _setSessionMirror(null);
       if (event === 'PASSWORD_RECOVERY') {
@@ -1072,6 +1057,28 @@ async function _initAuth() {
         alert('Password updated. You are signed in.');
       }
     });
+
+    /* Restore session if one exists from a previous visit. Runs AFTER
+       the onAuthStateChange handler is wired so the recovery flow above
+       is guaranteed to fire. */
+    const profile = await _hydrateFromSession();
+    if (profile && profile.status === 'active') {
+      /* showMain() sets _pp_currentView='hub' and body.on-hub, which the
+         dev tier switcher uses to decide visibility. Only call it when
+         we're actually on the hub page — i.e. mainPage exists. On tool
+         pages we just apply access restrictions; auth-gate.js handles
+         the rest, and the tier switcher stays hidden because
+         _pp_currentView keeps its empty default. */
+      const onHubPage = !!document.getElementById('mainPage');
+      const loginScreen = document.getElementById('loginScreen');
+      if (loginScreen) loginScreen.style.display = 'none';
+      applyAccessRestrictions();
+      if (onHubPage) showMain();
+    } else if (profile && profile.status !== 'active') {
+      /* Stale session for a deactivated account — sign out silently. */
+      await window.sb.auth.signOut();
+      _setSessionMirror(null);
+    }
   }
 }
 
