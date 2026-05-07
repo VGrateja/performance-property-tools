@@ -869,9 +869,25 @@ const STRATEGY_TITLES = new Set([
   'Model Portfolios',
 ]);
 
+/* Research Links subsections — capital cities + three regional
+   clusters. kind:null so cards in here don't render the Status field
+   (Research Links has no approval workflow). */
+const RESEARCH_LINKS_SUBS = [
+  { id: 'rl-capital',  title: 'Capital Cities',      kind: null, items: [] },
+  { id: 'rl-qld',      title: 'QLD Regions',         kind: null, items: [] },
+  { id: 'rl-nsw',      title: 'NSW Regions',         kind: null, items: [] },
+  { id: 'rl-vicwatas', title: 'VIC/WA/TAS Regions',  kind: null, items: [] },
+];
+/* Selling/Buying Slides subsections — split into the two slide
+   decks. Same kind:null gate so neither shows a Status field. */
+const SBS_SUBS = [
+  { id: 'sbs-selling', title: 'Selling Slides', kind: null, items: [] },
+  { id: 'sbs-buying',  title: 'Buying Slides',  kind: null, items: [] },
+];
+
 const WS_DEFAULTS = {
   sections: [
-    { id: 'research-links',        icon: '🔗', title: 'Research Links',             items: [] },
+    { id: 'research-links',        icon: '🔗', title: 'Research Links',             subsections: JSON.parse(JSON.stringify(RESEARCH_LINKS_SUBS)) },
     {
       id: 'whitepapers-strategies',
       icon: '📚',
@@ -916,7 +932,7 @@ const WS_DEFAULTS = {
         },
       ],
     },
-    { id: 'selling-buying-slides', icon: '🎯', title: 'Selling/Buying Slides',      items: [] },
+    { id: 'selling-buying-slides', icon: '🎯', title: 'Selling/Buying Slides',      subsections: JSON.parse(JSON.stringify(SBS_SUBS)) },
   ],
 };
 
@@ -1120,6 +1136,33 @@ function saveWsData(data) {
   try { localStorage.setItem(WS_STORAGE_KEY, JSON.stringify(data)); } catch (_) {}
 }
 
+/* Idempotent normaliser — converts the legacy flat shape of the
+   Research Links and Selling/Buying Slides folders into the
+   subsection shape they now use. Any flat items get moved into
+   the first subsection so nothing is lost; if the section already
+   has subsections the function is a no-op. Called after every
+   load path (localStorage + cloud) so existing users with cloud
+   data automatically pick up the new structure on next visit. */
+function _ensureSubsections(data) {
+  if (!data || !Array.isArray(data.sections)) return data;
+  data.sections = data.sections.map(sec => {
+    if (sec.id === 'research-links' && (!sec.subsections || !sec.subsections.length)) {
+      const subs = JSON.parse(JSON.stringify(RESEARCH_LINKS_SUBS));
+      const flat = Array.isArray(sec.items) ? sec.items.map(_normalizeItem) : [];
+      if (flat.length) subs[0].items = flat;
+      return { id: 'research-links', icon: sec.icon || '🔗', title: sec.title || 'Research Links', subsections: subs };
+    }
+    if (sec.id === 'selling-buying-slides' && (!sec.subsections || !sec.subsections.length)) {
+      const subs = JSON.parse(JSON.stringify(SBS_SUBS));
+      const flat = Array.isArray(sec.items) ? sec.items.map(_normalizeItem) : [];
+      if (flat.length) subs[0].items = flat;
+      return { id: 'selling-buying-slides', icon: sec.icon || '🎯', title: sec.title || 'Selling/Buying Slides', subsections: subs };
+    }
+    return sec;
+  });
+  return data;
+}
+
 /* ═══ CLOUD SYNC ═══
    Backed by public.documents_state in Supabase (singleton row id=1,
    payload jsonb mirrors WS_DATA: { sections, lastEdited }).
@@ -1131,7 +1174,7 @@ function saveWsData(data) {
    update. */
 const WS_SAVE_DEBOUNCE_MS = 800;
 
-let WS_DATA          = loadWsData();
+let WS_DATA          = _ensureSubsections(loadWsData());
 let _editMode        = false;
 let _cloudLoaded     = false;   /* true once we've hydrated from cloud */
 let _canWriteCloud   = false;   /* true for Tier 0/1 — gates the PUT  */
@@ -1203,7 +1246,12 @@ async function _hydrateFromCloud() {
     if (error) return;
     const cloud = data && data.payload;
     if (cloud && cloud.lastEdited && Array.isArray(cloud.sections)) {
-      WS_DATA = cloud;
+      /* _ensureSubsections rewrites the legacy flat shape of the
+         Research Links and Selling/Buying Slides folders into the
+         new subsection shape (any flat items move into the first
+         subsection). Idempotent — no-op once cloud already has the
+         new structure. */
+      WS_DATA = _ensureSubsections(cloud);
       _cloudLoaded = true;
       try { localStorage.setItem(WS_STORAGE_KEY, JSON.stringify(WS_DATA)); } catch (_) {}
       renderAll();
