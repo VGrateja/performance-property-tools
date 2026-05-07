@@ -423,6 +423,40 @@
   [data-theme="light"] .ws-select{ color-scheme:light }
   [data-theme="light"] .ws-select option{ background:#fff; color:#1f283f }
 
+  /* Date input + Today button — flex row inside the .ws-field so
+     the date stretches and the Today button sits as a tight pill on
+     the right. color-scheme:dark on the date input keeps the picker
+     popup dark-themed in browsers that style it. */
+  .ws-date-row{
+    display:flex; gap:6px; align-items:stretch;
+  }
+  .ws-date-input{ flex:1 1 auto; color-scheme:dark; }
+  [data-theme="light"] .ws-date-input{ color-scheme:light; }
+  .ws-today-btn{
+    flex:0 0 auto;
+    padding:0 12px;
+    background:rgba(0,182,203,0.18);
+    border:1px solid rgba(0,182,203,0.55);
+    border-radius:6px;
+    color:inherit;
+    font-family:inherit; font-size:11px; font-weight:700;
+    letter-spacing:0.06em; text-transform:uppercase;
+    cursor:pointer;
+    transition:background .15s, border-color .15s;
+  }
+  .ws-today-btn:hover{
+    background:rgba(0,182,203,0.32);
+    border-color:rgba(0,182,203,0.85);
+  }
+  [data-theme="light"] .ws-today-btn{
+    background:rgba(0,182,203,0.10);
+    border-color:rgba(0,182,203,0.40);
+    color:#0a1520;
+  }
+  [data-theme="light"] .ws-today-btn:hover{
+    background:rgba(0,182,203,0.22);
+  }
+
   /* Title input is bigger / bolder so editing feels like editing
      the title, not just a generic field. */
   .ws-input-title{
@@ -1286,8 +1320,50 @@ function _renderStrategyView(item) {
   return card;
 }
 
-/* Generic / whitepaper edit card — title, status, date, single URL. */
-function _renderItemEdit(secIdx, subIdx, itemIdx, item) {
+/* Date helpers — storage uses Australian DD/MM/YYYY format; native
+   <input type="date"> works in YYYY-MM-DD. We convert at the
+   boundaries so the calendar picker is usable but the persisted
+   string stays the same shape it always has. */
+function _dateToInputValue(dmy) {
+  if (!dmy) return '';
+  const m = String(dmy).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return '';
+  return m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+}
+function _dateFromInputValue(ymd) {
+  if (!ymd) return '';
+  const m = String(ymd).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  return m[3] + '/' + m[2] + '/' + m[1];
+}
+function _todayDmy() {
+  const d = new Date();
+  return String(d.getDate()).padStart(2, '0') + '/' +
+         String(d.getMonth() + 1).padStart(2, '0') + '/' +
+         d.getFullYear();
+}
+
+/* Render a "Last updated" field with a native calendar picker plus
+   a small Today shortcut. Used by both the generic card editor and
+   the strategy editor — same markup so styling stays consistent.
+   Caller chooses the label so this works for "Last updated" /
+   "Last upload" / etc. */
+function _dateFieldHtml(item, label) {
+  return '<div class="ws-field">' +
+    '<label class="ws-field-label">' + _esc(label) + '</label>' +
+    '<div class="ws-date-row">' +
+      '<input type="date" class="ws-input ws-date-input" data-field="date" value="' + _esc(_dateToInputValue(item.date)) + '">' +
+      '<button type="button" class="ws-today-btn" data-action="today">Today</button>' +
+    '</div>' +
+  '</div>';
+}
+
+/* Generic / whitepaper edit card — title, [status], date, single URL.
+   Status is rendered only for sections that have a card kind set
+   (whitepapers). Flat sections (Research Links, Selling/Buying
+   Slides) skip the Status field per Paul's call — those cards
+   don't carry an approval workflow. */
+function _renderItemEdit(secIdx, subIdx, itemIdx, item, kind) {
   const card = document.createElement('div');
   card.className = 'ws-card';
 
@@ -1299,36 +1375,56 @@ function _renderItemEdit(secIdx, subIdx, itemIdx, item) {
   del.addEventListener('click', () => deleteItem(secIdx, subIdx, itemIdx));
   card.appendChild(del);
 
+  const showStatus = kind === 'whitepaper';
+  const statusFieldHtml = showStatus
+    ? '<div class="ws-field">' +
+        '<label class="ws-field-label">Status</label>' +
+        '<select class="ws-select" data-field="status">' + _statusOptionsHtml(item.status) + '</select>' +
+      '</div>'
+    : '';
+
   card.insertAdjacentHTML('beforeend',
-    '<div class="ws-field">' +
-      '<label class="ws-field-label">Status</label>' +
-      '<select class="ws-select" data-field="status">' + _statusOptionsHtml(item.status) + '</select>' +
-    '</div>' +
+    statusFieldHtml +
     '<div class="ws-field">' +
       '<label class="ws-field-label">Name</label>' +
       '<input type="text" class="ws-input ws-input-title" data-field="title" value="' + _esc(item.title) + '" placeholder="Card title">' +
     '</div>' +
-    '<div class="ws-field">' +
-      '<label class="ws-field-label">Last updated</label>' +
-      '<input type="text" class="ws-input" data-field="date" value="' + _esc(item.date) + '" placeholder="DD/MM/YYYY">' +
-    '</div>' +
+    _dateFieldHtml(item, 'Last updated') +
     '<div class="ws-field">' +
       '<label class="ws-field-label">URL</label>' +
       '<input type="url" class="ws-input" data-field="url" value="' + _esc(item.url) + '" placeholder="https://…">' +
     '</div>'
   );
 
-  /* Wire fields back to the item via _itemAt(), which handles flat
-     vs subsection containers. */
+  _wireEditCardFields(card, secIdx, subIdx, itemIdx);
+  return card;
+}
+
+/* Shared field wiring for the edit cards. Handles the date field's
+   YYYY-MM-DD ↔ DD/MM/YYYY conversion and the Today shortcut. */
+function _wireEditCardFields(card, secIdx, subIdx, itemIdx) {
   card.querySelectorAll('[data-field]').forEach(el => {
     const field = el.getAttribute('data-field');
-    const evt = (el.tagName === 'SELECT') ? 'change' : 'input';
+    const evt = (el.tagName === 'SELECT' || el.type === 'date') ? 'change' : 'input';
     el.addEventListener(evt, () => {
       const it = _itemAt(secIdx, subIdx, itemIdx);
-      if (it) { it[field] = el.value; persist(); }
+      if (!it) return;
+      let val = el.value;
+      if (el.type === 'date') val = _dateFromInputValue(val);
+      it[field] = val;
+      persist();
     });
   });
-  return card;
+  /* Today button — fills the sibling date input and dispatches a
+     change so the wiring above persists the new value. */
+  card.querySelectorAll('[data-action="today"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = btn.parentElement.querySelector('input[type="date"]');
+      if (!input) return;
+      input.value = _dateToInputValue(_todayDmy());
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  });
 }
 
 /* Strategy edit card — adds a Slides URL field on top of the
@@ -1354,10 +1450,7 @@ function _renderStrategyEdit(secIdx, subIdx, itemIdx, item) {
       '<label class="ws-field-label">Name</label>' +
       '<input type="text" class="ws-input ws-input-title" data-field="title" value="' + _esc(item.title) + '" placeholder="Strategy name">' +
     '</div>' +
-    '<div class="ws-field">' +
-      '<label class="ws-field-label">Last upload</label>' +
-      '<input type="text" class="ws-input" data-field="date" value="' + _esc(item.date) + '" placeholder="DD/MM/YYYY">' +
-    '</div>' +
+    _dateFieldHtml(item, 'Last upload') +
     '<div class="ws-field">' +
       '<label class="ws-field-label">Document URL</label>' +
       '<input type="url" class="ws-input" data-field="url" value="' + _esc(item.url) + '" placeholder="https://…">' +
@@ -1368,14 +1461,7 @@ function _renderStrategyEdit(secIdx, subIdx, itemIdx, item) {
     '</div>'
   );
 
-  card.querySelectorAll('[data-field]').forEach(el => {
-    const field = el.getAttribute('data-field');
-    const evt = (el.tagName === 'SELECT') ? 'change' : 'input';
-    el.addEventListener(evt, () => {
-      const it = _itemAt(secIdx, subIdx, itemIdx);
-      if (it) { it[field] = el.value; persist(); }
-    });
-  });
+  _wireEditCardFields(card, secIdx, subIdx, itemIdx);
   return card;
 }
 
@@ -1620,7 +1706,7 @@ function _renderItemsGrid(secIdx, subIdx, items, kind) {
     if (_editMode) {
       grid.appendChild(isStrategy
         ? _renderStrategyEdit(secIdx, subIdx, itemIdx, item)
-        : _renderItemEdit(secIdx, subIdx, itemIdx, item));
+        : _renderItemEdit(secIdx, subIdx, itemIdx, item, kind));
     } else {
       grid.appendChild(isStrategy
         ? _renderStrategyView(item)
