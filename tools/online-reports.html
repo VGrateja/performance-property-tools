@@ -3843,7 +3843,7 @@
   <div class="bands-modal copy-pages-modal pdf-pages-modal-wide" role="dialog" aria-labelledby="pdf-pages-modal-title">
     <button class="bands-close" id="pdf-pages-close" aria-label="Close">×</button>
     <h3 id="pdf-pages-modal-title">Download Report</h3>
-    <div class="bands-sub">Pick the pages and the region(s) you want exported. Multi-region downloads produce one PDF per region. <strong>JPEG export</strong> applies to the currently-loaded region only — one image file per selected page.</div>
+    <div class="bands-sub">Pick the pages and the region(s) you want exported. <strong>PDF</strong> produces one PDF per region. <strong>JPEG</strong> produces one image per page per region (so 3 pages × 5 regions = 15 files).</div>
 
     <div class="pdf-pages-cols">
       <!-- ─── Pages column ─── -->
@@ -11800,6 +11800,157 @@ async function exportReportJpeg(opts) {
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────
+   MULTI-REGION JPEG EXPORT
+   ─────────────────────────────────────────────────────────────────
+   Mirrors exportMultiRegionPdf's iframe loop but writes each
+   captured page out as a JPEG file instead of bundling them into a
+   PDF. Output volume = pages × regions, e.g. 3 pages × 5 regions
+   = 15 JPEG files. Filename pattern: <Region>_<page-label>.jpg.
+
+   Reuses loadRegionInIframe() which is defined further below and
+   handles the wait-for-liveBoot / fonts-ready handshake the PDF
+   path also relies on. Cancel + overlay UI use the same
+   #pdf-overlay machinery so behaviour matches the PDF flow.
+   ─────────────────────────────────────────────────────────────── */
+async function exportMultiRegionJpeg(opts) {
+  if (typeof isViewOnly === 'function' && isViewOnly()) {
+    alert('Image download is not available for viewer accounts.');
+    return;
+  }
+  if (window.__pdfExportInProgress) return;
+  if (!window.html2canvas) {
+    alert('Image capture library failed to load. Please refresh and try again.');
+    return;
+  }
+  const regionSlugs  = (opts && Array.isArray(opts.regionSlugs)) ? opts.regionSlugs.slice() : [];
+  const wantAllPages = !!(opts && opts.allPages);
+  const pageIds      = (opts && Array.isArray(opts.pageIds)) ? opts.pageIds.slice() : null;
+  if (!regionSlugs.length) {
+    alert('No regions selected.');
+    return;
+  }
+
+  /* Cluster-ordered processing to match the PDF flow's user-facing
+     progression (Capital → QLD → NSW → VIC/WA/TAS, alpha within). */
+  const CLUSTER_ORDER = { capital: 0, qld: 1, nsw: 2, vicwatas: 3 };
+  regionSlugs.sort((a, b) => {
+    const ca = CLUSTER_ORDER[REGION_MANIFEST[a]?.cluster] ?? 99;
+    const cb = CLUSTER_ORDER[REGION_MANIFEST[b]?.cluster] ?? 99;
+    if (ca !== cb) return ca - cb;
+    return a.localeCompare(b);
+  });
+
+  const overlay = document.getElementById('pdf-overlay');
+  const msgEl   = overlay && overlay.querySelector('.pdf-msg');
+  const setMsg  = (t) => { if (msgEl) msgEl.textContent = t; };
+
+  window.__pdfExportInProgress = true;
+  window.__pdfExportCancelled  = false;
+  document.getElementById('pdf-cancel-btn')?.removeAttribute('disabled');
+  document.getElementById('pdf-cancel-x')?.removeAttribute('disabled');
+
+  setMsg('Preparing multi-region image export…');
+  if (overlay) overlay.classList.add('show');
+  await new Promise(r => setTimeout(r, 100));
+
+  let savedCount = 0;
+  let failedRegions = [];
+
+  for (let r = 0; r < regionSlugs.length; r++) {
+    if (window.__pdfExportCancelled) break;
+
+    const slug       = regionSlugs[r];
+    const m          = REGION_MANIFEST[slug];
+    const niceRegion = m ? m.name : (slug.charAt(0).toUpperCase() + slug.slice(1));
+    setMsg('Region ' + (r + 1) + ' of ' + regionSlugs.length + ': ' + niceRegion + ' — loading…');
+
+    let iframe;
+    try {
+      iframe = await loadRegionInIframe(slug);
+      if (window.__pdfExportCancelled) break;
+
+      const idoc = iframe.contentDocument;
+      const allRegionPages = Array.from(idoc.querySelectorAll('section.page'));
+      let pages;
+      if (wantAllPages) {
+        pages = allRegionPages;
+      } else if (pageIds && pageIds.length) {
+        const wanted = new Set(pageIds);
+        pages = MASTER_PAGE_CATALOG
+          .filter(entry => wanted.has(entry.id))
+          .map(entry => idoc.getElementById(entry.id))
+          .filter(el => el && el.classList && el.classList.contains('page'));
+      } else {
+        pages = allRegionPages;
+      }
+      if (!pages.length) {
+        failedRegions.push(niceRegion + ' (no matching pages)');
+        continue;
+      }
+
+      for (let i = 0; i < pages.length; i++) {
+        if (window.__pdfExportCancelled) break;
+        setMsg('Region ' + (r + 1) + ' of ' + regionSlugs.length + ': ' + niceRegion +
+               ' — page ' + (i + 1) + ' of ' + pages.length + '…');
+        await new Promise(rr => setTimeout(rr, 30));
+
+        const canvas = await html2canvas(pages[i], {
+          scale: 2,
+          useCORS: true,
+          backgroundColor: '#0f1922',
+          logging: false,
+          width:  1200,
+          height: 900,
+          windowWidth:  1200,
+          windowHeight: 900,
+        });
+        if (window.__pdfExportCancelled) break;
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+
+        /* Filename: <Region>_<page-label>.jpg, slug-safe. data-label
+           is the user-visible name (e.g. "Cover" / "Median Price");
+           falls back to the page id when unlabelled. */
+        const rawLabel = (pages[i].getAttribute('data-label') || pages[i].id || ('page-' + (i + 1))).trim();
+        const safeLabel = rawLabel
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '');
+        const filename = niceRegion.replace(/\s+/g, '-') + '_' + safeLabel + '.jpg';
+
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        savedCount++;
+
+        /* Browser dedup-protection — clumping more than ~5 downloads
+           in a single tick triggers Chrome's "Allow this site to
+           download multiple files?" prompt. The 200ms gap keeps
+           individual saves separated enough that the prompt asks
+           once and then trusts the rest. */
+        await new Promise(rr => setTimeout(rr, 200));
+      }
+    } catch (err) {
+      console.error('Multi-region JPEG failed for', slug, err);
+      failedRegions.push(niceRegion + ' (' + (err && err.message || 'error') + ')');
+    } finally {
+      if (iframe && iframe.parentNode) iframe.parentNode.removeChild(iframe);
+    }
+  }
+
+  if (overlay) overlay.classList.remove('show');
+  if (msgEl) msgEl.textContent = 'Generating PDF…';
+  window.__pdfExportInProgress = false;
+  window.__pdfExportCancelled  = false;
+
+  if (failedRegions.length) {
+    alert('Saved ' + savedCount + ' image' + (savedCount === 1 ? '' : 's') + '.\n\nFailed:\n  • ' + failedRegions.join('\n  • '));
+  }
+}
+
 function setupExport() {
   const btn = document.getElementById('btn-export');
   if (!btn) return;
@@ -12259,11 +12410,10 @@ function setupPdfPagesModal() {
     exportMultiRegionPdf({ regionSlugs, pageIds, allPages: wantAllPages });
   });
 
-  /* JPEG button — same page picker, but always operates on the
-     currently-loaded region (multi-region JPEG would mean spinning
-     up iframe-per-region just to capture images, which is overkill
-     for the stated use-case of grabbing a single page as an image).
-     One JPEG file per selected page is downloaded sequentially. */
+  /* JPEG button — same page picker as PDF. Single-region uses the
+     in-page exporter; multi-region spawns the same iframe loop the
+     PDF path uses, but saves each captured page as a JPEG file
+     instead of assembling a PDF. */
   const jpegBtn = document.getElementById('pdf-pages-jpeg');
   jpegBtn?.addEventListener('click', () => {
     const pageRows = document.querySelectorAll('#pdf-pages-list input[type="checkbox"]');
@@ -12271,8 +12421,22 @@ function setupPdfPagesModal() {
     const wantAllPages = pageRows.length > 0 && pageChecked.length === pageRows.length;
     const pageIds = Array.from(pageChecked).map(cb => cb.dataset.pageId).filter(Boolean);
 
+    const regionSlugs = Array.from(
+      document.querySelectorAll('#pdf-regions-list input[type="checkbox"]:checked')
+    ).map(cb => cb.dataset.slug);
+
     closePdfPagesModal();
-    exportReportJpeg({ pageIds, allPages: wantAllPages });
+
+    const activeRegion = (typeof ACTIVE_REGION !== 'undefined' && ACTIVE_REGION) ? ACTIVE_REGION : 'sydney';
+    /* No region picked, or only the currently-loaded region picked
+       → fast in-page export, no iframes. */
+    if (regionSlugs.length === 0 ||
+        (regionSlugs.length === 1 && regionSlugs[0] === activeRegion)) {
+      exportReportJpeg({ pageIds, allPages: wantAllPages });
+      return;
+    }
+    /* Multi-region: iframe-per-region capture, JPEG-per-page save. */
+    exportMultiRegionJpeg({ regionSlugs, pageIds, allPages: wantAllPages });
   });
 }
 
