@@ -1875,6 +1875,31 @@
   .bands-row-action:hover { background: rgba(92,200,224,0.18); border-color: var(--cyan); }
   .bands-row-action.delete:hover { background: rgba(229,123,123,0.2); border-color: var(--red); color: #fff; }
 
+  /* Drag-and-drop reorder UI ──
+     The leading column shows a vertical-dot grip. Hover lifts it from
+     muted to cyan so it's obvious the row is draggable. While a drag
+     is active the source row dims; the drop target gets a thin cyan
+     line above or below depending on the cursor's vertical half. */
+  .bands-table .band-drag-cell {
+    width: 24px;
+    text-align: center;
+    cursor: move;
+    color: rgba(255,255,255,0.35);
+    user-select: none;
+  }
+  .bands-table tr.band-row:hover .band-drag-cell { color: rgba(92,200,224,0.85); }
+  .band-drag-handle {
+    display: inline-block;
+    font-size: 12px;
+    line-height: 1;
+    letter-spacing: -2px;
+    transform: rotate(90deg);
+  }
+  .bands-table tr.band-row { transition: opacity .12s; }
+  .bands-table tr.band-row.band-row-dragging { opacity: 0.35; }
+  .bands-table tr.band-row.drop-above td { box-shadow: inset 0 2px 0 0 var(--cyan); }
+  .bands-table tr.band-row.drop-below td { box-shadow: inset 0 -2px 0 0 var(--cyan); }
+
   .bands-edit-form {
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(92,200,224,0.18);
@@ -13087,19 +13112,27 @@ function bandsRefresh() {
     return;
   }
 
-  /* Sort by from-date so the table reads chronologically. */
-  const sorted = [...bands].sort((a, b) => String(a.from).localeCompare(String(b.from)));
+  /* Render in the order the bands are stored. Previously this auto-
+     sorted by from-date on every render, which made manual drag-
+     reorder impossible (the next refresh undid the user's choice).
+     Defaults still ship in chronological order; new bands append to
+     the end via bandsSaveForm; the user can drag to reorganise. */
+  const ordered = bands;
 
   let html = '<table class="bands-table">' +
-    '<thead><tr><th>Type</th><th>From</th><th>To</th><th style="text-align:right;">Actions</th></tr></thead>' +
+    '<thead><tr><th style="width:24px"></th><th>Type</th><th>From</th><th>To</th><th style="text-align:right;">Actions</th></tr></thead>' +
     '<tbody>';
-  for (const b of sorted) {
+  for (const b of ordered) {
     const typeLabel = b.type === 'growth' ? 'Growth' : 'Correction';
     const cls       = b.type === 'growth' ? 'growth' : 'correct';
-    /* Clickable pill — quick toggle between Growth ↔ Correction in
-       place, no Edit form needed. role="button" + tabindex/Enter
-       handler in the listener block below for keyboard parity. */
-    html += '<tr data-id="' + b.id + '">' +
+    /* Each row is draggable — the leading column is a visual drag
+       grip but the whole row also accepts dragstart, so users can
+       grab anywhere on the row. data-id ties dropped position back
+       to the in-memory band list. */
+    html += '<tr class="band-row" draggable="true" data-id="' + b.id + '">' +
+      '<td class="band-drag-cell" title="Drag to reorder">' +
+        '<span class="band-drag-handle" aria-hidden="true">⋮⋮</span>' +
+      '</td>' +
       '<td><span class="band-type-pill ' + cls + '" role="button" tabindex="0" data-action="toggle-type" data-id="' + b.id + '" title="Click to flip type (Growth ↔ Correction)" style="cursor:pointer">' + typeLabel + '</span></td>' +
       '<td>' + bandsFormatDate(b.from) + '</td>' +
       '<td>' + bandsFormatDate(b.to)   + '</td>' +
@@ -13126,6 +13159,74 @@ function bandsRefresh() {
       });
     }
   });
+
+  /* HTML5 drag-and-drop reorder. dataTransfer carries the dragged
+     row's id; on drop we splice it into the new index, persist via
+     bandsSave (which schedules an upsert to Supabase), and re-render.
+     Buttons inside the row block dragstart so clicks on Edit/Delete
+     don't accidentally start a drag. */
+  let _bandDragId = null;
+  const rows = list.querySelectorAll('tr.band-row');
+  rows.forEach(row => {
+    row.addEventListener('dragstart', (e) => {
+      _bandDragId = row.dataset.id;
+      row.classList.add('band-row-dragging');
+      try { e.dataTransfer.effectAllowed = 'move'; } catch (_) {}
+      try { e.dataTransfer.setData('text/plain', _bandDragId); } catch (_) {}
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('band-row-dragging');
+      list.querySelectorAll('tr.band-row.drop-above, tr.band-row.drop-below')
+        .forEach(r => r.classList.remove('drop-above', 'drop-below'));
+      _bandDragId = null;
+    });
+    row.addEventListener('dragover', (e) => {
+      if (!_bandDragId || _bandDragId === row.dataset.id) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'move'; } catch (_) {}
+      const rect = row.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < (rect.height / 2);
+      row.classList.toggle('drop-above', before);
+      row.classList.toggle('drop-below', !before);
+    });
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('drop-above', 'drop-below');
+    });
+    row.addEventListener('drop', (e) => {
+      if (!_bandDragId || _bandDragId === row.dataset.id) return;
+      e.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < (rect.height / 2);
+      bandsReorder(_bandDragId, row.dataset.id, before);
+    });
+    /* Don't let the action buttons start a drag — clicking Edit/
+       Delete should be a click, not the start of a row reorder. */
+    row.querySelectorAll('button, .band-type-pill').forEach(el => {
+      el.addEventListener('mousedown', (e) => e.stopPropagation());
+      el.setAttribute('draggable', 'false');
+    });
+  });
+}
+
+/* Reorder the persistent bands list: move `srcId` to before/after
+   `targetId`. Detaches from defaults on first call so the change
+   survives subsequent refreshes (mirrors bandsSaveForm's pattern).
+   Persists via bandsSave → rsScheduleSave → Supabase upsert. */
+function bandsReorder(srcId, targetId, placeBefore) {
+  const list = (bandsLoad() || bandsDefaults()).slice();
+  const srcIdx = list.findIndex(b => String(b.id) === String(srcId));
+  if (srcIdx < 0) return;
+  const [src] = list.splice(srcIdx, 1);
+  const tgtIdx = list.findIndex(b => String(b.id) === String(targetId));
+  if (tgtIdx < 0) {
+    /* Target somehow gone — append and bail. */
+    list.push(src);
+  } else {
+    list.splice(placeBefore ? tgtIdx : tgtIdx + 1, 0, src);
+  }
+  bandsSave(list);
+  bandsRefresh();
+  bandsRefreshCharts();
 }
 
 /* Quick type-flip — pill click without opening the edit form. Mutates
