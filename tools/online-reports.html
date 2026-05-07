@@ -3842,8 +3842,8 @@
 <div class="bands-modal-bg" id="pdf-pages-modal-bg" aria-hidden="true">
   <div class="bands-modal copy-pages-modal pdf-pages-modal-wide" role="dialog" aria-labelledby="pdf-pages-modal-title">
     <button class="bands-close" id="pdf-pages-close" aria-label="Close">×</button>
-    <h3 id="pdf-pages-modal-title">Download PDF</h3>
-    <div class="bands-sub">Pick the pages and the region(s) you want exported. Multi-region downloads produce one PDF per region.</div>
+    <h3 id="pdf-pages-modal-title">Download Report</h3>
+    <div class="bands-sub">Pick the pages and the region(s) you want exported. Multi-region downloads produce one PDF per region. <strong>JPEG export</strong> applies to the currently-loaded region only — one image file per selected page.</div>
 
     <div class="pdf-pages-cols">
       <!-- ─── Pages column ─── -->
@@ -3873,6 +3873,7 @@
 
     <div class="bands-actions right">
       <button class="bands-btn ghost" id="pdf-pages-cancel">Cancel</button>
+      <button class="bands-btn" id="pdf-pages-jpeg">Download JPEG</button>
       <button class="bands-btn primary" id="pdf-pages-confirm">Download PDF</button>
     </div>
   </div>
@@ -11638,6 +11639,167 @@ async function exportReportPdf(opts) {
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────
+   JPEG EXPORT — single-region, one image file per selected page.
+   Mirrors exportReportPdf's capture pipeline (chrome hidden, zoom
+   reset, html2canvas at 2x) but writes each page out as a JPEG
+   download instead of assembling a multi-page PDF. The common
+   use-case: an admin needs one page (e.g. the cover) as an image
+   to drop into a slide / email — the multi-page PDF is overkill.
+   ─────────────────────────────────────────────────────────────── */
+async function exportReportJpeg(opts) {
+  if (typeof isViewOnly === 'function' && isViewOnly()) {
+    alert('Image download is not available for viewer accounts.');
+    return;
+  }
+  if (window.__pdfExportInProgress) return;
+  if (!window.html2canvas) {
+    alert('Image capture library failed to load. Please refresh and try again.');
+    return;
+  }
+
+  const overlay = document.getElementById('pdf-overlay');
+  const msgEl   = overlay && overlay.querySelector('.pdf-msg');
+  const setMsg  = (t) => { if (msgEl) msgEl.textContent = t; };
+
+  /* Resolve page set — same logic as exportReportPdf so the modal's
+     "All pages" / page-id selection behaves identically. */
+  const allPages = Array.from(document.querySelectorAll('section.page'));
+  let pages;
+  if (opts && opts.allPages) {
+    pages = allPages;
+  } else if (opts && Array.isArray(opts.pageIds) && opts.pageIds.length) {
+    const wanted = new Set(opts.pageIds);
+    pages = MASTER_PAGE_CATALOG
+      .filter(entry => wanted.has(entry.id))
+      .map(entry => document.getElementById(entry.id))
+      .filter(el => el && el.classList.contains('page'));
+  } else {
+    pages = allPages;
+  }
+  if (!pages.length) {
+    alert('No report pages to export.');
+    return;
+  }
+
+  window.__pdfExportInProgress = true;
+  window.__pdfExportCancelled  = false;
+  const cancelBtnEl = document.getElementById('pdf-cancel-btn');
+  const cancelXEl   = document.getElementById('pdf-cancel-x');
+  if (cancelBtnEl) cancelBtnEl.disabled = false;
+  if (cancelXEl)   cancelXEl.disabled   = false;
+
+  /* Same chrome / zoom snapshot as the PDF path. */
+  const wasEdit  = document.body.classList.contains('edit-mode');
+  const wasGrid  = document.body.classList.contains('show-grid');
+  const prevZoom = document.body.style.zoom;
+  const pager   = document.querySelector('.pager');
+  const sideToc = document.getElementById('side-toc');
+  const ctPanel = document.getElementById('ct-panel');
+  const prevDisplays = {
+    pager:   pager   ? pager.style.display   : '',
+    sideToc: sideToc ? sideToc.style.display : '',
+    ctPanel: ctPanel ? ctPanel.style.display : '',
+  };
+
+  document.body.classList.remove('edit-mode', 'show-grid');
+  document.getElementById('btn-mode-edit')?.classList.remove('on');
+  document.getElementById('btn-mode-view')?.classList.add('on');
+  document.getElementById('btn-grid')?.classList.remove('on');
+  if (typeof ctDeselectAll === 'function') ctDeselectAll();
+  document.body.style.zoom = '1';
+  if (pager)   pager.style.display   = 'none';
+  if (sideToc) sideToc.style.display = 'none';
+  if (ctPanel) ctPanel.style.display = 'none';
+
+  setMsg('Preparing image…');
+  if (overlay) overlay.classList.add('show');
+  await new Promise(r => setTimeout(r, 150));
+
+  /* Region slug + niceRegion for filename composition. Falls back to
+     the URL search param so the filename still makes sense even if
+     ACTIVE_REGION isn't yet defined for some reason. */
+  const region = (typeof ACTIVE_REGION !== 'undefined' && ACTIVE_REGION)
+    ? ACTIVE_REGION
+    : (new URL(location.href).searchParams.get('region') || 'sydney');
+  const niceRegion = region.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
+
+  let savedCount = 0;
+  try {
+    for (let i = 0; i < pages.length; i++) {
+      if (window.__pdfExportCancelled) break;
+      const pageEl = pages[i];
+      setMsg('Capturing page ' + (i + 1) + ' of ' + pages.length + '…');
+      pageEl.scrollIntoView({ block: 'center', behavior: 'auto' });
+      await new Promise(r => setTimeout(r, 80));
+
+      const canvas = await html2canvas(pageEl, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+      });
+
+      /* JPEG @ 0.95 — high-fidelity, file size still reasonable
+         (typically 800KB–2MB per page at 2400×1800). */
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+
+      /* Build a friendly filename: <region>_<page-label-or-id>.jpg.
+         data-label is what the user sees in the page picker (e.g.
+         "Cover" / "Median Price"); fall back to the element id when
+         a page hasn't been labelled. */
+      const rawLabel = (pageEl.getAttribute('data-label') || pageEl.id || ('page-' + (i + 1))).trim();
+      const safeLabel = rawLabel
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      const filename = niceRegion.replace(/\s+/g, '-') + '_' + safeLabel + '.jpg';
+
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      savedCount++;
+
+      /* Tiny gap between downloads so browsers don't lump them into
+         one "do you want to allow multiple downloads?" prompt and
+         drop everything after the first. */
+      await new Promise(r => setTimeout(r, 250));
+    }
+
+    if (savedCount > 0 && !window.__pdfExportCancelled) {
+      setMsg('Saved ' + savedCount + ' image' + (savedCount === 1 ? '' : 's') + '.');
+      await new Promise(r => setTimeout(r, 600));
+    }
+  } catch (err) {
+    console.error('JPEG export error:', err);
+    if (!window.__pdfExportCancelled) {
+      alert('Image export failed: ' + (err && err.message ? err.message : 'unknown error'));
+    }
+  } finally {
+    if (pager)   pager.style.display   = prevDisplays.pager;
+    if (sideToc) sideToc.style.display = prevDisplays.sideToc;
+    if (ctPanel) ctPanel.style.display = prevDisplays.ctPanel;
+    document.body.style.zoom = prevZoom;
+    if (typeof applyAutoZoom === 'function') applyAutoZoom();
+    if (wasEdit) {
+      document.body.classList.add('edit-mode');
+      document.getElementById('btn-mode-edit')?.classList.add('on');
+      document.getElementById('btn-mode-view')?.classList.remove('on');
+    }
+    if (wasGrid) {
+      document.body.classList.add('show-grid');
+      document.getElementById('btn-grid')?.classList.add('on');
+    }
+    if (overlay) overlay.classList.remove('show');
+    window.__pdfExportInProgress = false;
+    window.__pdfExportCancelled  = false;
+    if (msgEl) msgEl.textContent = 'Generating PDF…';
+  }
+}
+
 function setupExport() {
   const btn = document.getElementById('btn-export');
   if (!btn) return;
@@ -12095,6 +12257,22 @@ function setupPdfPagesModal() {
        every page it has (Sydney 31 / Hobart 25 / Perth 33). Otherwise
        pageIds drives a per-id lookup against each region's iframe. */
     exportMultiRegionPdf({ regionSlugs, pageIds, allPages: wantAllPages });
+  });
+
+  /* JPEG button — same page picker, but always operates on the
+     currently-loaded region (multi-region JPEG would mean spinning
+     up iframe-per-region just to capture images, which is overkill
+     for the stated use-case of grabbing a single page as an image).
+     One JPEG file per selected page is downloaded sequentially. */
+  const jpegBtn = document.getElementById('pdf-pages-jpeg');
+  jpegBtn?.addEventListener('click', () => {
+    const pageRows = document.querySelectorAll('#pdf-pages-list input[type="checkbox"]');
+    const pageChecked = document.querySelectorAll('#pdf-pages-list input[type="checkbox"]:checked');
+    const wantAllPages = pageRows.length > 0 && pageChecked.length === pageRows.length;
+    const pageIds = Array.from(pageChecked).map(cb => cb.dataset.pageId).filter(Boolean);
+
+    closePdfPagesModal();
+    exportReportJpeg({ pageIds, allPages: wantAllPages });
   });
 }
 
