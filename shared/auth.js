@@ -44,6 +44,20 @@ const ADMIN_EMAILS = [
 const DEV_EMAILS = [
   'vandolf@performanceproperty.com.au'
 ];
+
+/* Registration master switch. Off per Paul (CEO): this tool is
+   internal-only; clients use the separate client-facing product.
+   When false:
+     • The "New here? Register for viewer access" button on step 1
+       is hidden (inline display:none in index.html).
+     • The "Account not found → Register here" inline link in
+       tryLogin's error path swaps for a plain "contact admin"
+       message.
+     • Step 3 (the registration form) is still in the DOM but
+       unreachable through normal UI.
+   To re-enable: flip this to true AND remove the inline display:none
+   on the showRegisterBtn wrapper in index.html. */
+const REGISTRATION_ENABLED = false;
 const ADMIN_NAMES = {
   'saskia@performanceproperty.com.au':  'Saskia',
   'shaene@performanceproperty.com.au':  'Shaene',
@@ -528,7 +542,14 @@ async function tryLogin() {
        "register here" prompt. */
     const msg = String(error.message || '').toLowerCase();
     if (msg.includes('signups not allowed') || msg.includes('user not found')) {
-      errEl.innerHTML = 'Account not found. <button onclick="showStep(3)" style="background:none;border:none;color:var(--accent);cursor:pointer;font-weight:700;text-decoration:underline;font-size:inherit;padding:0">Register here</button> for viewer access.';
+      if (REGISTRATION_ENABLED) {
+        errEl.innerHTML = 'Account not found. <button onclick="showStep(3)" style="background:none;border:none;color:var(--accent);cursor:pointer;font-weight:700;text-decoration:underline;font-size:inherit;padding:0">Register here</button> for viewer access.';
+      } else {
+        /* Internal-only tool — no self-registration path. Users have
+           to be onboarded by an admin. Pointing at the existing
+           researchsupport@ alias keeps the message actionable. */
+        errEl.textContent = 'Account not found. Please contact researchsupport@performanceproperty.com.au to request access.';
+      }
     } else {
       errEl.textContent = error.message || 'Failed to send code. Please try again.';
     }
