@@ -507,12 +507,19 @@ async function tryLogin() {
     return;
   }
 
-  /* OTP path — everyone else. shouldCreateUser:false so unknown emails
-     fail loudly instead of silently creating ghost accounts. */
+  /* OTP path — everyone else. For @performanceproperty.com.au staff
+     we set shouldCreateUser:true so first-time admins/company users
+     can self-onboard with no manual provisioning — the SQL trigger
+     in migration 002 automatically assigns tier='admin' (for the
+     hardcoded admin emails) or tier='company' (for other PP staff)
+     on first sign-in. For everyone else we keep shouldCreateUser
+     false so unknown emails get a "register here" prompt rather
+     than silently creating ghost accounts. */
+  const isStaffEmail = email.endsWith('@' + ALLOWED_DOMAIN);
   btn.textContent = 'Sending verification code…';
   const { error } = await window.sb.auth.signInWithOtp({
     email,
-    options: { shouldCreateUser: false }
+    options: { shouldCreateUser: isStaffEmail }
   });
   if (error) {
     leavePending('Send Verification Code');
