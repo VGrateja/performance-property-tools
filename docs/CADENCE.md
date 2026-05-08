@@ -1,8 +1,26 @@
-# Cadence — handover note
+# Cadence — build journal & handover note
 
 **Purpose**: a custom internal tool for the **Property Management department**, currently a placeholder on the hub while requirements are being scoped with the PM department head.
 
 This note brings a fresh Claude session up to speed so you can pick up where the previous one left off without re-asking Vandolf what was already decided.
+
+## How to use this document
+
+This is **both** a handover note (read top-to-bottom for the full context of what Cadence is, why, and where it is now) **and** a running journal (the "Journal" section at the bottom captures every meaningful decision, change, or blocker with dates, so the evolution of the tool is preserved).
+
+**Rules for any Claude or human working on Cadence:**
+
+1. **Read this whole doc before doing anything.** Skip nothing. Most of the surprises are in the "Things NOT to do" section.
+2. **After every working session, append an entry to the Journal section at the bottom.** Even tiny changes — a CSS tweak, a copy-edit, a renamed function — are worth a one-line entry. The entry should record:
+   - What was decided / changed
+   - Why (the reasoning, not just the action)
+   - Which files were touched
+   - What's blocking us from going further (if anything)
+3. **If a decision contradicts something earlier in this doc**, update the relevant section *and* note the change in the Journal so the diff is traceable. Don't let stale advice live alongside fresh advice.
+4. **Use chronological order in the Journal** (oldest entry at the top, newest at the bottom). New entries append; never edit historical entries except to fix typos.
+5. **Date every entry as `YYYY-MM-DD`.** The system clock is the source of truth — check it via the harness's date context if unsure.
+
+The intent: any Claude session can pick up Cadence cold, read this doc, and know exactly where things stand without Vandolf having to re-explain context.
 
 ---
 
@@ -171,3 +189,33 @@ Three changes hand-in-hand:
 3. On the card markup, swap the `is-wip` badge from "🚧 In Scoping" to whatever makes sense (e.g. "Beta" or just remove the badge entirely once stable). Drop the "Being scoped" line from the description.
 
 That's it. The visibility gate keeps working unchanged.
+
+---
+
+## Journal
+
+Append a new entry under this section after every meaningful working session. Oldest at the top, newest at the bottom. Date as `YYYY-MM-DD`.
+
+### 2026-05-07 — Tool conceived; placeholder card on hub
+
+**Context:** Vandolf asked whether building a Monday.com-style board inside the existing tools site was feasible. After back-and-forth, the decision was to build a custom tool inspired by Monday.com + Airtable concepts but scoped to whatever the Property Management team actually needs — same approach Online Reports took with Looker Studio. Lindsay (PM department head) is the customer; she's not yet replied to the scoping questionnaire.
+
+**Decisions:**
+- **Name:** `Cadence`. Selected for the recurring-rhythm metaphor of PM work (inspections, lease renewals, monthly statements). Full rationale in the "Naming rationale" section above.
+- **Visibility model:** email allowlist (`CADENCE_EMAILS`), not tier-based. Lindsay isn't a Tier 1 admin and the standard tier system would either over-share or hide her out. Card hidden from everyone whose email isn't in the list — including Saskia / Shaene / Paul (the other Tier 1 admins).
+- **Build phase:** **blocked on Lindsay's questionnaire answers.** No code written yet beyond the hub placeholder. Designing the column / view set without her input is a known trap.
+
+**Changes:**
+- `index.html` — added `<button class="hub-tool-card nav-pill cadence-card">` markup just before the Lite Online Reports pill. Icon 🎼, badge `is-wip` "🚧 In Scoping".
+- `index.html` (script) — added `CADENCE_EMAILS` allowlist + `applyCadenceVisibility()` + `navigateToCadence()` (currently pops a "Coming soon — being scoped" alert).
+- `index.html` (CSS) — `.cadence-card` hidden by default; `body.cadence-allowed .cadence-card` reveals it.
+- `applyCadenceVisibility()` is invoked from `watchHubReveal()`'s `tryUpdate()` so it re-runs on login, bfcache restore, and every body-class mutation.
+- `docs/CADENCE.md` — created (this file). Initial commit: `53381e8`.
+
+**Files touched:** `index.html`, `docs/CADENCE.md`.
+
+**Blockers / Next:**
+- Waiting on Lindsay's reply to the 10-question scoping email Vandolf sent. The questions are listed in the "What's pending" section above. Until those answers arrive, do NOT start building the actual tool.
+- When Lindsay responds, design the data model + first board's columns from her answers, *not* from any pre-built generic schema.
+
+**Out of scope for this entry:** the full M+A-inspired MVP scope (boards / typed columns / kanban + table views / real-time sync). That's the suggested-MVP plan further up; it kicks in only after requirements arrive.
