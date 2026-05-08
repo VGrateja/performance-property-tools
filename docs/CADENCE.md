@@ -219,3 +219,27 @@ Append a new entry under this section after every meaningful working session. Ol
 - When Lindsay responds, design the data model + first board's columns from her answers, *not* from any pre-built generic schema.
 
 **Out of scope for this entry:** the full M+A-inspired MVP scope (boards / typed columns / kanban + table views / real-time sync). That's the suggested-MVP plan further up; it kicks in only after requirements arrive.
+
+### 2026-05-07 — Hub becomes a 2-page slider; Cadence moves to a "Property Management Tools" page
+
+**Context:** Vandolf wanted the Cadence card to live on a separate hub page (not next to the main analytics tools), reachable via an Instagram-carousel-style horizontal slide. A pull-tab on the left edge of the hub — visible only to allowed users — switches to the PM page.
+
+**Decisions:**
+- **Slider model:** two `.hub-tools` sections inside a flex `.hub-pages-track` (200% wide). `body.hub-pm-active` toggles `transform: translateX(-50%)` to slide page 2 in. Easing matches the rest of the app (`cubic-bezier(0.22, 1, 0.36, 1)`, 0.55s).
+- **Visibility:** the two pull-tab nav buttons (`.hub-page-nav-left` "Property Management Tools", `.hub-page-nav-right` "Performance Tools") are gated on `body.cadence-allowed` AND the opposite page state. So an allowed user sees exactly one tab — the one taking them to the OTHER page. Non-allowed users never see either; the PM page is unreachable.
+- **Folder rename:** the working folder was also renamed `performance-property (migration)` → `Performance Internal Tool` and moved to the desktop root. Git remote unchanged.
+
+**Changes:**
+- `index.html` — wrapped `<section class="hub-tools" id="hubToolsGrid">` in `<div class="hub-pages-slider"><div class="hub-pages-track">…</div></div>`. Moved the Cadence card OUT of `#hubToolsGrid` into a new sibling `<section class="hub-tools hub-tools-pm" id="hubToolsGridPm">` with its own header (`Department Tools · Property Management`).
+- `index.html` (CSS) — added `.hub-pages-slider`, `.hub-pages-track`, page-2 header styles, `.hub-page-nav-left/right` pull-tab styles + visibility rules. `prefers-reduced-motion` zeroes the transitions.
+- `index.html` (JS) — added `setHubPage('pm' | 'main')` that toggles `body.hub-pm-active`. `applyCadenceVisibility()` updated to also clear `hub-pm-active` when access is revoked, so an unallowed user is never stranded on the PM page.
+
+**Files touched:** `index.html`, `docs/CADENCE.md` (this entry).
+
+**Blockers / Next:**
+- Still waiting on Lindsay's questionnaire reply. The slider is live but the PM page only contains the Cadence placeholder.
+- When Lindsay's answers arrive and we build the actual Cadence tool, the PM page is already there as a home for it.
+
+**Notes for future-Claude:**
+- The PM page (`#hubToolsGridPm`) is the right place to drop any new PM-only tools that surface later. Just add another card to that section — same `.hub-tool-card` markup as the rest of the hub. The card will inherit the same email-allowlist visibility because the whole page is unreachable to anyone outside `CADENCE_EMAILS`.
+- If you want a per-tool email allowlist *within* the PM page (e.g. some tools visible to Lindsay only, others to Lindsay + a deputy), add another body class + per-card CSS gate. Don't reuse `body.cadence-allowed` for that.
