@@ -1341,40 +1341,100 @@ function _normalizeItem(it) {
 }
 
 /* Auto-pick an icon emoji for a square card based on its title.
-   Keywords run top-down (most specific first); the first match wins.
-   Falls back to a neutral chart icon when nothing matches so cards
-   never render iconless. Pure function — icons are computed at
-   render time, not persisted, so there's nothing to migrate when
-   the keyword list changes. */
+   Two-stage match:
+     1. Australian region names (capital cities + the major regional
+        markets) — mirrors the icon table in REGION_CLUSTERS over in
+        index.html so a "Sydney" card here gets the same 🌉 it does
+        in the Online Reports cluster picker. Region names are
+        checked with word boundaries so "Orange" the city matches
+        but "orange juice" wouldn't.
+     2. General keywords — strategy/finance/property terms.
+   Falls back to 📊 when neither matches. Pure function: icons are
+   computed at render time, not persisted, so changing the tables
+   below has no migration cost. */
+const REGION_ICONS = {
+  /* Capital Cities */
+  'adelaide':       '🍷',
+  'brisbane':       '🌞',
+  'canberra':       '🏛️',
+  'darwin':         '🌴',
+  'hobart':         '🏞️',
+  'melbourne':      '🚋',
+  'perth':          '🌅',
+  'sydney':         '🌉',
+  /* QLD Regions */
+  'bundaberg':      '🥃',
+  'cairns':         '🐠',
+  'gladstone':      '🛢️',
+  'gold coast':     '🏄',
+  'ipswich':        '🏭',
+  'mackay':         '🍬',
+  'rockhampton':    '🐂',
+  'sunshine coast': '🌊',
+  'toowoomba':      '🌹',
+  'townsville':     '🌺',
+  /* NSW Regions */
+  'albury':         '🌳',
+  'central coast':  '🐚',
+  'coffs harbour':  '🍌',
+  'newcastle':      '⚓',
+  'orange':         '🍊',
+  'port macquarie': '🐨',
+  'tamworth':       '🎵',
+  'wagga wagga':    '🌾',
+  'wollongong':     '🏖️',
+  /* VIC/WA/TAS Regions */
+  'ballarat':       '⛏️',
+  'bendigo':        '🪙',
+  'geelong':        '🏉',
+  'mildura':        '🍇',
+  'wodonga':        '🌄',
+  'bunbury':        '🐋',
+  'rockingham':     '🐬',
+  'launceston':     '🏔️',
+};
+/* Pre-sort region keys longest-first so multi-word names ("Gold
+   Coast", "Port Macquarie") match before any shorter name they
+   contain. Computed once at module load. */
+const REGION_KEYS_BY_LENGTH = Object.keys(REGION_ICONS).sort((a, b) => b.length - a.length);
+
 const TITLE_ICON_RULES = [
-  [/rentvest|rental/i,                          '🏘️'],
-  [/new\s*build|construction/i,                 '🏗️'],
-  [/debt\s*reducer|debt/i,                      '💳'],
-  [/upgrad/i,                                   '⬆️'],
-  [/high.?growth|\bgrowth/i,                    '🌱'],
-  [/model\s*portfolio|portfolio/i,              '💼'],
-  [/strategic|allocation|strateg/i,             '🎯'],
-  [/foundation/i,                               '🏛️'],
-  [/trading|trade/i,                            '📊'],
-  [/lifestyle/i,                                '✨'],
-  [/wealth|money|finance/i,                     '💰'],
-  [/selling|seller|\bsell/i,                    '🏷️'],
-  [/buying|buyer|\bbuy/i,                       '🛒'],
-  [/investment|investing|invest/i,              '📈'],
-  [/property|housing|house|home/i,              '🏠'],
-  [/research|analys|fundamentals/i,             '🔍'],
-  [/policy|cycle/i,                             '📜'],
-  [/refinanc/i,                                 '🔄'],
-  [/\btax/i,                                    '🧾'],
-  [/cash.?flow|\bcash/i,                        '💵'],
-  [/multiple|multi/i,                           '📚'],
-  [/interest|rate/i,                            '📉'],
-  [/asset/i,                                    '💼'],
-  [/uncertain|risk/i,                           '⚠️'],
-  [/melbourne|sydney|brisbane|perth|adelaide/i, '🌆'],
+  [/rentvest|rental/i,              '🏘️'],
+  [/new\s*build|construction/i,     '🏗️'],
+  [/debt\s*reducer|debt/i,          '💳'],
+  [/upgrad/i,                       '⬆️'],
+  [/high.?growth|\bgrowth/i,        '🌱'],
+  [/model\s*portfolio|portfolio/i,  '💼'],
+  [/strategic|allocation|strateg/i, '🎯'],
+  [/foundation/i,                   '🏛️'],
+  [/trading|trade/i,                '📊'],
+  [/lifestyle/i,                    '✨'],
+  [/wealth|money|finance/i,         '💰'],
+  [/selling|seller|\bsell/i,        '🏷️'],
+  [/buying|buyer|\bbuy/i,           '🛒'],
+  [/investment|investing|invest/i,  '📈'],
+  [/property|housing|house|home/i,  '🏠'],
+  [/research|analys|fundamentals/i, '🔍'],
+  [/policy|cycle/i,                 '📜'],
+  [/refinanc/i,                     '🔄'],
+  [/\btax/i,                        '🧾'],
+  [/cash.?flow|\bcash/i,            '💵'],
+  [/multiple|multi/i,               '📚'],
+  [/interest|rate/i,                '📉'],
+  [/asset/i,                        '💼'],
+  [/uncertain|risk/i,               '⚠️'],
 ];
 function _iconForTitle(title) {
   const t = String(title || '');
+  if (!t) return '📊';
+  /* Region match (word-bounded, case-insensitive) — earliest match
+     among the longest-first key list wins. */
+  for (let i = 0; i < REGION_KEYS_BY_LENGTH.length; i++) {
+    const key = REGION_KEYS_BY_LENGTH[i];
+    const re = new RegExp('(?:^|[^a-z])' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:$|[^a-z])', 'i');
+    if (re.test(t)) return REGION_ICONS[key];
+  }
+  /* Keyword fallback. */
   for (let i = 0; i < TITLE_ICON_RULES.length; i++) {
     if (TITLE_ICON_RULES[i][0].test(t)) return TITLE_ICON_RULES[i][1];
   }
