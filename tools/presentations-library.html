@@ -623,6 +623,42 @@
   }
   .ws-grid-section--split .ws-square-card-date{ font-size:13px; padding-top:10px }
 
+  /* Status pill — top-right corner of square cards in workflow
+     kinds (whitepaper / strategy). Color-coded by status; falls
+     back to the cyan accent for the default in-progress state. */
+  .ws-square-status{
+    position:absolute; top:10px; right:10px; z-index:2;
+    font-family:'DM Sans',system-ui,-apple-system,sans-serif;
+    font-size:9px; font-weight:800; letter-spacing:0.10em;
+    text-transform:uppercase;
+    padding:3px 7px;
+    border-radius:4px;
+    background:rgba(0,182,203,0.10);
+    border:1px solid rgba(0,182,203,0.25);
+    color:var(--accent);
+    white-space:nowrap;
+  }
+  .ws-square-status--approved{
+    background:rgba(62,207,142,0.14);
+    border-color:rgba(62,207,142,0.40);
+    color:#3ecf8e;
+  }
+  .ws-square-status--awaiting{
+    background:rgba(224,168,92,0.14);
+    border-color:rgba(224,168,92,0.40);
+    color:#e0a85c;
+  }
+  .ws-square-status--in-progress{
+    background:rgba(92,200,224,0.14);
+    border-color:rgba(92,200,224,0.40);
+    color:#5cc8e0;
+  }
+  .ws-square-status--not-completed{
+    background:rgba(154,163,177,0.14);
+    border-color:rgba(154,163,177,0.35);
+    color:#9aa3b1;
+  }
+
   /* Square edit form — same outer shape, fields stacked inside. */
   .ws-square-edit{
     aspect-ratio:1 / 1;
@@ -1293,7 +1329,11 @@ const WS_DEFAULTS = {
        fall back to 3-up / 2-up via media queries. */
     { id: 'pl-buying-selling', icon: '🎯', title: 'Buying/Selling Slides', layout: 'grid', gridCols: 3, subsections: JSON.parse(JSON.stringify(PL_BUYING_SELLING_SUBS)) },
     { id: 'pl-strategy', icon: '📊', title: 'Strategy Presentations', layout: 'grid', gridCols: 5, subsections: [
-      { id: 'pls-strategy-all', title: 'Strategy Decks', kind: null, items: [] },
+      /* kind:'whitepaper' switches the renderer on. Strategy decks
+         go through an approval workflow (Approved / Awaiting /
+         In Progress / Not Yet Completed), so cards render a status
+         pill and the edit form gets a Status select. */
+      { id: 'pls-strategy-all', title: 'Strategy Decks', kind: 'whitepaper', items: [] },
     ] },
     { id: 'pl-client',   icon: '👥', title: 'Client Presentations',   subsections: [
       { id: 'pls-client-all',   title: 'Client Decks',   kind: null, items: [] },
@@ -1319,11 +1359,19 @@ const WS_STORAGE_KEY = 'ppa-presentations-data-v1';
 /* Per-section layout overrides — keyed by section.id so they're
    applied to existing localStorage / cloud data on every load, not
    just to fresh WS_DEFAULTS. Without this, users who opened the
-   tool before the grid-layout change keep seeing the old column
-   list because their saved sections have no `layout` field. */
+   tool before a structural change keep seeing the old shape because
+   their saved sections don't have the new field. */
 const PL_LAYOUT_OVERRIDES = {
   'pl-buying-selling': { layout: 'grid', gridCols: 3 },
   'pl-strategy':       { layout: 'grid', gridCols: 5 },
+};
+
+/* Per-subsection kind overrides — same idea, but for the kind hint
+   that drives whether cards render a status pill / an edit-form
+   Status select. Keyed by sub.id (subsection ids are unique across
+   the whole library). */
+const PL_SUBSECTION_KIND = {
+  'pls-strategy-all': 'whitepaper',
 };
 
 function _applyLayoutOverrides(data) {
@@ -1331,6 +1379,12 @@ function _applyLayoutOverrides(data) {
   data.sections.forEach(sec => {
     const o = sec && sec.id && PL_LAYOUT_OVERRIDES[sec.id];
     if (o) Object.assign(sec, o);
+    if (sec && Array.isArray(sec.subsections)) {
+      sec.subsections.forEach(sub => {
+        const k = sub && sub.id && PL_SUBSECTION_KIND[sub.id];
+        if (k) sub.kind = k;
+      });
+    }
   });
   return data;
 }
@@ -2086,10 +2140,11 @@ function _renderGridSectionView(section) {
     const grid = document.createElement('div');
     grid.className = 'ws-square-grid';
     grid.style.setProperty('--cols', String(cols));
+    const subKind = sub.kind;
     (sub.items || []).forEach((item, itemIdx) => {
       grid.appendChild(_editMode
-        ? _renderSquareItemEdit(_currentSecIdx, subIdx, itemIdx, item, isSplit)
-        : _renderSquareItemView(item, isSplit));
+        ? _renderSquareItemEdit(_currentSecIdx, subIdx, itemIdx, item, isSplit, subKind)
+        : _renderSquareItemView(item, isSplit, subKind));
     });
     if (_editMode) {
       const addBtn = document.createElement('button');
@@ -2111,11 +2166,18 @@ function _renderGridSectionView(section) {
    below, optional one-line description (skipped on split-grid cards
    where space is tight), then date pinned to the bottom via
    margin-top:auto. */
-function _renderSquareItemView(item, isSplit) {
+function _renderSquareItemView(item, isSplit, kind) {
   /* Stacked layout for both card variants: icon at the top, title
      below, then description (Strategy only) and date at the bottom.
      Split-grid (Buying/Selling) bumps icon/title sizes via CSS but
-     uses the same DOM order. */
+     uses the same DOM order. Cards in a kind with a status workflow
+     (whitepaper / strategy) get a small status pill in the top-right
+     corner. */
+  const showStatus = kind === 'whitepaper' || kind === 'strategy';
+  const statusKey = item.status || 'in-progress';
+  const statusHtml = showStatus
+    ? '<div class="ws-square-status ws-square-status--' + _esc(statusKey) + '" title="' + _esc(_statusLabel(statusKey)) + '">' + _esc(_statusLabel(statusKey)) + '</div>'
+    : '';
   const iconHtml = '<div class="ws-square-icon" aria-hidden="true">' + _esc(_iconForTitle(item.title)) + '</div>';
   const titleHtml = '<h3 class="ws-square-card-title">' + _esc(item.title || 'Untitled') + '</h3>';
   const descHtml = (!isSplit && item.description)
@@ -2124,7 +2186,7 @@ function _renderSquareItemView(item, isSplit) {
   const dateHtml = item.date
     ? '<div class="ws-square-card-date">' + _esc(item.date) + '</div>'
     : '';
-  const inner = iconHtml + titleHtml + descHtml + dateHtml;
+  const inner = statusHtml + iconHtml + titleHtml + descHtml + dateHtml;
   if (item.url) {
     const a = document.createElement('a');
     a.className = 'ws-square-card';
@@ -2140,9 +2202,10 @@ function _renderSquareItemView(item, isSplit) {
 }
 
 /* Square card edit — title/url/date (and description on the wider
-   single-grid layout only) stacked inside the square. Reuses the
-   existing _wireEditCardFields data-field hooks. */
-function _renderSquareItemEdit(secIdx, subIdx, itemIdx, item, isSplit) {
+   single-grid layout only) stacked inside the square. Cards in a
+   workflow kind (whitepaper/strategy) also get a Status select.
+   Reuses the existing _wireEditCardFields data-field hooks. */
+function _renderSquareItemEdit(secIdx, subIdx, itemIdx, item, isSplit, kind) {
   const card = document.createElement('div');
   card.className = 'ws-square-edit';
 
@@ -2154,6 +2217,14 @@ function _renderSquareItemEdit(secIdx, subIdx, itemIdx, item, isSplit) {
   del.addEventListener('click', () => deleteItem(secIdx, subIdx, itemIdx));
   card.appendChild(del);
 
+  const showStatus = kind === 'whitepaper' || kind === 'strategy';
+  const statusFieldHtml = showStatus
+    ? '<div class="ws-field">' +
+        '<label class="ws-field-label">Status</label>' +
+        '<select class="ws-select" data-field="status">' + _statusOptionsHtml(item.status) + '</select>' +
+      '</div>'
+    : '';
+
   const descFieldHtml = isSplit ? '' :
     '<div class="ws-field">' +
       '<label class="ws-field-label">Description</label>' +
@@ -2161,6 +2232,7 @@ function _renderSquareItemEdit(secIdx, subIdx, itemIdx, item, isSplit) {
     '</div>';
 
   card.insertAdjacentHTML('beforeend',
+    statusFieldHtml +
     '<div class="ws-field">' +
       '<label class="ws-field-label">Name</label>' +
       '<input type="text" class="ws-input" data-field="title" value="' + _esc(item.title) + '" placeholder="Title">' +
