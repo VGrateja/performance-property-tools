@@ -243,3 +243,26 @@ Append a new entry under this section after every meaningful working session. Ol
 **Notes for future-Claude:**
 - The PM page (`#hubToolsGridPm`) is the right place to drop any new PM-only tools that surface later. Just add another card to that section — same `.hub-tool-card` markup as the rest of the hub. The card will inherit the same email-allowlist visibility because the whole page is unreachable to anyone outside `CADENCE_EMAILS`.
 - If you want a per-tool email allowlist *within* the PM page (e.g. some tools visible to Lindsay only, others to Lindsay + a deputy), add another body class + per-card CSS gate. Don't reuse `body.cadence-allowed` for that.
+
+### 2026-05-08 — Pull-tab visual tuning
+
+**Context:** Iterated on the look of the slider's pull-tab nav buttons after the initial 2-page slider landed. User wanted the affordance to "whisper" — soft curve, no filled box, blends into the gradient — and over a few rounds dialed in size, vertical anchor, and edge offset.
+
+**Decisions:**
+- **No box.** Background, border, and box-shadow all dropped. Just colored text + curved SVG sweep, with opacity doing the "blend into gradient" work (0.42 idle → 0.92 hover).
+- **Curve, not chevron.** Replaced the polyline `<` with a quadratic-bezier `<path d="M 11 4 Q 1 22 11 40">` (mirrored on the right tab). Reads as a soft sweep rather than a sharp angle.
+- **Vertical anchor:** `top: 48%`. The slider takes the height of the taller page (page 2 has a header above its cards), so straight 50% lands a touch below page 1's actual mid-line. 48% nudges the tab up so it reads as sitting in the row gap between row 1 (Clock / Runway / etc.) and row 2 (Documents / Online Reports / etc.).
+- **Horizontal anchor:** asymmetric per user's eye — `left: 8px` on the PM tab, `right: 5px` on the return tab. Both pushed deep into the empty gradient space outside the centered cards.
+- **Sized up from the first pass:** SVG 14×44 → 22×64, font 10.5px → 12.5px, stroke 1.6 → 2, letter-spacing 2.2 → 2px, padding/gap bumped a touch. Reads cleanly without competing with the cards.
+
+**Changes:**
+- `index.html` (CSS) — `.hub-page-nav` size + position + curve styling iterated. Final values committed in this entry.
+- `index.html` (CSS) — split the old `.hub-pages-slider` into `.hub-pages-slider` (full-width frame, just a position-relative anchor) + `.hub-pages-clip` (the 1240px-max-width centered container with `overflow-x:hidden`). Tabs anchor to the frame so they can extend out into the gradient space; the cards still center inside the clip.
+- `index.html` (markup) — wrapped `.hub-pages-track` in a new `.hub-pages-clip` div to support the split above.
+- SVG path swapped from polyline chevron to quadratic-bezier curve (`M 11 4 Q 1 22 11 40`, mirrored as `M 3 4 Q 13 22 3 40` for the right tab).
+
+**Files touched:** `index.html`, `docs/CADENCE.md` (this entry).
+
+**Notes for future-Claude:**
+- If the slider gains more rows on either page, `top: 48%` will need re-tuning. The ad-hoc fix is to bump the percentage so the visible tab still lands in the row gap on page 1.
+- The asymmetric left/right offset (8px / 5px) was deliberate — user explicitly tuned by eye. Don't "fix" it back to symmetric without checking with Vandolf.
