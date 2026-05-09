@@ -59,10 +59,11 @@ const DEV_EMAILS = [
    on the showRegisterBtn wrapper in index.html. */
 const REGISTRATION_ENABLED = false;
 const ADMIN_NAMES = {
-  'saskia@performanceproperty.com.au':  'Saskia',
-  'shaene@performanceproperty.com.au':  'Shaene',
-  'vandolf@performanceproperty.com.au': 'Vandolf',
-  'paul@performanceproperty.com.au':    'Paul'
+  'saskia@performanceproperty.com.au':    'Saskia',
+  'shaene@performanceproperty.com.au':    'Shaene',
+  'vandolf@performanceproperty.com.au':   'Vandolf',
+  'paul@performanceproperty.com.au':      'Paul',
+  'd.robbins@performanceproperty.com.au': 'David'
 };
 const ALLOWED_DOMAIN = 'performanceproperty.com.au';
 
@@ -289,6 +290,16 @@ function applyAccessRestrictions() {
   try {
     document.body.classList.remove('tier-dev','tier-admin','tier-company','tier-client','tier-guest');
     document.body.classList.add('tier-' + level);
+  } catch (e) {}
+
+  /* Per-user accessibility hook — David Robbins struggles to read
+     the cyan accent in a few specific spots, so we tag the body
+     with .user-d-robbins and let each tool override those colors
+     to navy (#000080) via scoped CSS. Invisible to every other
+     user. */
+  try {
+    const email = (typeof getCurrentUserEmail === 'function' ? (getCurrentUserEmail() || '') : '').toLowerCase();
+    document.body.classList.toggle('user-d-robbins', email === 'd.robbins@performanceproperty.com.au');
   } catch (e) {}
 
   if (level === 'admin' || level === 'dev') {
