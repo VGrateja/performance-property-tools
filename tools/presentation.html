@@ -2144,6 +2144,34 @@
   .pres-guide-x{ top:0; bottom:0; width:1px }
   .pres-guide-y{ left:0; right:0; height:1px }
 
+  /* ─── Copy / Cut / Paste toast ─── brief confirmation in the
+     top-right corner of the slide stage so the user sees that a
+     keyboard shortcut or context-menu action fired. Auto-fades. */
+  .pres-toast{
+    position:fixed;
+    top:20px; right:20px;
+    padding:8px 14px;
+    background:rgba(15,23,42,0.92);
+    color:#e9eef7;
+    border:1px solid rgba(0,182,203,0.55);
+    border-radius:6px;
+    font:600 13px/1 'Roboto', sans-serif;
+    letter-spacing:0.02em;
+    box-shadow:0 4px 14px rgba(0,0,0,0.30);
+    opacity:0;
+    pointer-events:none;
+    transform:translateY(-6px);
+    transition:opacity .14s, transform .14s;
+    z-index:10001;
+  }
+  .pres-toast.on{ opacity:1; transform:translateY(0) }
+  [data-theme="light"] .pres-toast{
+    background:rgba(255,255,255,0.96);
+    color:#0a1520;
+    border-color:rgba(0,182,203,0.55);
+    box-shadow:0 4px 14px rgba(31,40,63,0.18);
+  }
+
   body.pres-deck-open .pres-picker{ display:none }
 </style>
 </head>
@@ -3737,13 +3765,46 @@ window.addEventListener('message', (ev) => {
    contenteditable undo would jump too far.) */
 document.addEventListener('keydown', (ev) => {
   if (!_activeDeck) return;
-  const ae = document.activeElement;
-  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
   const cmd = ev.ctrlKey || ev.metaKey;
   if (!cmd) return;
   const key = ev.key.toLowerCase();
-  if (key === 'z' && !ev.shiftKey) { ev.preventDefault(); undo(); return; }
-  if (key === 'y' || (key === 'z' && ev.shiftKey)) { ev.preventDefault(); redo(); return; }
+  const ae = document.activeElement;
+  /* Two focus-skip levels:
+       - Hard skip (always defer to native): the ACTIVE overlay is
+         being text-edited (text overlay's contenteditable=true, OR
+         a focused table cell). The user is typing — Ctrl+C/V should
+         copy/paste TEXT inside their cell, not the overlay.
+       - Soft skip (defer for typing keys only): an INPUT/TEXTAREA
+         in a side panel has focus. For undo/redo we want to skip,
+         but for clipboard ops the user clearly means "copy the
+         overlay I selected" — they're not typing into the panel
+         field. Override the skip in that case so the shortcut still
+         works after the user clicked, say, the colour hex input. */
+  const inSlideEdit = !!(ae && ae.isContentEditable && ae.closest && ae.closest('.pres-slide'));
+  const inPanelInput = !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') && !inSlideEdit);
+  if (inSlideEdit) return;
+  if (key === 'z' && !ev.shiftKey) {
+    if (inPanelInput) return;
+    ev.preventDefault(); undo(); return;
+  }
+  if (key === 'y' || (key === 'z' && ev.shiftKey)) {
+    if (inPanelInput) return;
+    ev.preventDefault(); redo(); return;
+  }
+  /* Copy / Cut / Paste / Duplicate — edit mode only. Cut/copy/dup
+     need a selection; paste only needs clipboard contents. */
+  if (!_editMode) return;
+  if (key === 'c' && _selectedId) { ev.preventDefault(); copyOverlay(_selectedId); return; }
+  if (key === 'x' && _selectedId) { ev.preventDefault(); cutOverlay(_selectedId); return; }
+  if (key === 'v')                { ev.preventDefault(); pasteOverlay(); return; }
+  if (key === 'd' && _selectedId) { ev.preventDefault(); duplicateOverlay(_selectedId); return; }
+  /* Helpful no-op feedback: user pressed a clipboard shortcut while
+     nothing was selected. Without this, silent-fail looks like the
+     feature is broken. Only fires for our four shortcut keys so
+     other Ctrl combos (e.g. Ctrl+S, Ctrl+R) pass through normally. */
+  if ((key === 'c' || key === 'x' || key === 'd') && !_selectedId) {
+    showPresToast('Select an overlay first');
+  }
 });
 
 undoBtn.addEventListener('click', undo);
@@ -4756,6 +4817,11 @@ function openTableCellMenu(o, r, c, x, y) {
      opens — without that tick, the same click bubbles to the
      document close-handler and immediately dismisses the popover. */
   showCtxMenu(x, y, [
+    { label: 'Copy table',      action: () => copyOverlay(o.id) },
+    { label: 'Cut table',       action: () => cutOverlay(o.id) },
+    { label: 'Duplicate table', action: () => duplicateOverlay(o.id) },
+    { label: 'Paste',           disabled: !_overlayClipboard, action: () => pasteOverlay() },
+    { separator: true },
     { label: 'Cell colours…',     action: () => setTimeout(() => openCellColorPopover(o, r, c, x, y), 0) },
     { label: 'Table border…',     action: () => setTimeout(() => openTableBorderPopover(o, x, y), 0) },
     { separator: true },
@@ -5628,21 +5694,38 @@ function buildOverlayEl(o) {
     });
   }
 
-  /* Right-click menu — image only. Shapes get the right-rail
-     Shape Settings panel instead (mirrors Online Reports). Text
-     uses the text-panel Copy button; embeds copy implicitly via
-     slide templates. */
-  if (o.type === 'image') {
+  /* Right-click menu — every overlay type gets Copy / Cut / Paste /
+     Duplicate plus the existing "Copy to slides…" entries. Skipped
+     when the overlay is in active text-edit mode (text overlay's
+     contenteditable=true, or a focused table cell) so the browser's
+     native clipboard menu still works for inline text editing.
+     Embeds get a reduced menu — they're tied to slide templates so
+     cut/duplicate/paste-into-here aren't meaningful. */
+  if (o.type === 'image' || o.type === 'shape' || o.type === 'text' || o.type === 'table' || o.type === 'embed') {
     el.addEventListener('contextmenu', (ev) => {
       if (!_editMode) return;
+      /* Text overlay actively being edited — fall through to native */
+      if (o.type === 'text' && el.contentEditable === 'true') return;
+      /* Table cell right-click is handled by td.contextmenu (which
+         calls stopPropagation), so this only fires when the user
+         right-clicks the table border / padding, not inside a cell. */
       ev.preventDefault();
       ev.stopPropagation();
       _selectedId = o.id;
       slot.querySelectorAll('.pres-overlay').forEach(n => n.classList.toggle('selected', n.dataset.id === o.id));
-      showCtxMenu(ev.clientX, ev.clientY, [
-        { label: 'Copy to all slides', action: () => copyOverlayToAllSlides(o.id) },
-        { label: 'Copy to slides…',     action: () => openCopyPicker(o.id, o.type) },
-      ]);
+      const items = [];
+      if (!o.protected) {
+        items.push({ label: 'Copy',      action: () => copyOverlay(o.id) });
+        items.push({ label: 'Cut',       action: () => cutOverlay(o.id) });
+        items.push({ label: 'Duplicate', action: () => duplicateOverlay(o.id) });
+      } else {
+        items.push({ label: 'Copy', action: () => copyOverlay(o.id) });
+      }
+      items.push({ label: 'Paste', disabled: !_overlayClipboard, action: () => pasteOverlay() });
+      items.push({ separator: true });
+      items.push({ label: 'Copy to all slides', action: () => copyOverlayToAllSlides(o.id) });
+      items.push({ label: 'Copy to slides…',     action: () => openCopyPicker(o.id, o.type) });
+      showCtxMenu(ev.clientX, ev.clientY, items);
     });
   }
 
@@ -5954,6 +6037,122 @@ function copyOverlayToAllSlides(overlayId) {
   copyOverlayToSlides(overlayId, all);
 }
 
+/* ─── Internal clipboard ─── one slot, shared across all overlay
+   types. Holds a deep-copied overlay record (id stripped, protected
+   flag stripped) so paste produces a fresh independent overlay.
+   Survives slide navigation but resets on page reload — matches
+   user expectations for in-app copy/paste without polluting the
+   system clipboard with custom JSON. */
+let _overlayClipboard = null;
+
+/* Brief top-right toast — user-visible feedback when a clipboard
+   op fires. Doubles as an "is the handler running?" diagnostic:
+   if the toast doesn't appear, the keystroke or menu action never
+   reached the handler (cache, focus, or wiring issue). */
+let _toastEl = null;
+let _toastTimer = null;
+function showPresToast(msg) {
+  if (!_toastEl) {
+    _toastEl = document.createElement('div');
+    _toastEl.className = 'pres-toast';
+    document.body.appendChild(_toastEl);
+  }
+  _toastEl.textContent = msg;
+  _toastEl.classList.add('on');
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { _toastEl.classList.remove('on'); }, 900);
+}
+
+function _clipPrefix(type, kind) {
+  if (type === 'text')  return 't';
+  if (type === 'shape') return 's';
+  if (type === 'image') return 'i';
+  if (type === 'table') return 'tbl-';
+  if (type === 'embed') return 'embed-' + (kind || '') + '-';
+  return 'o';
+}
+function _newOverlayId(src) {
+  return _clipPrefix(src.type, src.kind) + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+}
+
+function copyOverlay(id) {
+  const o = currentOverlays().find(x => x.id === id);
+  if (!o) return false;
+  const snap = JSON.parse(JSON.stringify(o));
+  delete snap.id;
+  delete snap.protected;
+  _overlayClipboard = snap;
+  showPresToast('Copied ' + (o.type || 'overlay'));
+  return true;
+}
+
+function cutOverlay(id) {
+  const o = currentOverlays().find(x => x.id === id);
+  if (!o) return false;
+  /* Protected embeds belong to the slide template — don't let cut
+     remove them. Copy is still useful (user can paste a duplicate
+     elsewhere) so we fall back to plain copy. */
+  if (o.protected) { copyOverlay(id); return true; }
+  const snap = JSON.parse(JSON.stringify(o));
+  delete snap.id;
+  delete snap.protected;
+  _overlayClipboard = snap;
+  ovDelete(id);
+  showPresToast('Cut ' + (o.type || 'overlay'));
+  return true;
+}
+
+function pasteOverlay() {
+  if (!_overlayClipboard || !_activeDeck) {
+    if (!_overlayClipboard) showPresToast('Clipboard empty');
+    return false;
+  }
+  const clone = JSON.parse(JSON.stringify(_overlayClipboard));
+  clone.id = _newOverlayId(clone);
+  /* Offset so a same-slide paste is visually distinct from the
+     source. 40px in slide space ≈ 28px on a typical scaled slide,
+     enough that the user immediately spots the new copy instead of
+     thinking nothing happened. Clamped so the paste lands on-slide
+     even when the source was near an edge. */
+  const OFF = 40;
+  const w = clone.w || 20;
+  const h = clone.h || 20;
+  clone.x = Math.max(0, Math.min(1280 - w, (clone.x || 0) + OFF));
+  clone.y = Math.max(0, Math.min(720  - h, (clone.y || 0) + OFF));
+  currentOverlays().push(clone);
+  saveOverlays();
+  _selectedId = clone.id;
+  renderOverlays();
+  pushHistory();
+  showPresToast('Pasted ' + (clone.type || 'overlay'));
+  return true;
+}
+
+function duplicateOverlay(id) {
+  const o = currentOverlays().find(x => x.id === id);
+  if (!o) return false;
+  /* Build the clone in-line so we don't trigger the copy/paste
+     toasts twice — duplicate emits its own single toast. */
+  const snap = JSON.parse(JSON.stringify(o));
+  delete snap.id;
+  delete snap.protected;
+  _overlayClipboard = snap;
+  const clone = JSON.parse(JSON.stringify(snap));
+  clone.id = _newOverlayId(clone);
+  const OFF = 40;
+  const w = clone.w || 20;
+  const h = clone.h || 20;
+  clone.x = Math.max(0, Math.min(1280 - w, (clone.x || 0) + OFF));
+  clone.y = Math.max(0, Math.min(720  - h, (clone.y || 0) + OFF));
+  currentOverlays().push(clone);
+  saveOverlays();
+  _selectedId = clone.id;
+  renderOverlays();
+  pushHistory();
+  showPresToast('Duplicated ' + (clone.type || 'overlay'));
+  return true;
+}
+
 /* ─── Right-click menu (image / shape) ─── single shared element
    re-populated per trigger. Document-level click handler hides it
    on outside left-click; a contextmenu outside an image / shape
@@ -5994,7 +6193,7 @@ function showCtxMenu(x, y, items) {
 function hideCtxMenu() { ctxMenu.classList.remove('open'); }
 document.addEventListener('click', hideCtxMenu);
 document.addEventListener('contextmenu', (ev) => {
-  if (!ev.target.closest('.pres-overlay-image, .pres-overlay-shape')) {
+  if (!ev.target.closest('.pres-overlay')) {
     hideCtxMenu();
   }
 });
