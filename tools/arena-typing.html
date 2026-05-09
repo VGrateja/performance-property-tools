@@ -91,7 +91,7 @@
 
   .typing-inner{
     flex:1; display:flex; flex-direction:column; align-items:center;
-    padding:80px 20px 40px; max-width:1100px; margin:0 auto; width:100%;
+    padding:80px 20px 40px; max-width:1400px; margin:0 auto; width:100%;
   }
 
   /* ─── Mode bar ─── pill-shaped row of segmented buttons for time
@@ -170,15 +170,22 @@
 
   /* ─── Word feed ─── three-line viewport of words. The whole
      paragraph is rendered, but we shift it up by `--feed-shift` lines
-     so the active row stays in the middle. Out-of-focus state blurs
-     the text and shows a "click here" prompt. */
+     so the active row stays at the top of the viewport. Out-of-focus
+     state blurs the text and shows a "click here" prompt.
+     The viewport height is locked to exactly 3 lines (3 × 1.6em at
+     the feed's font-size) so the layout is stable regardless of how
+     many words have been typed. */
   .typing-feed-wrap{
     position:relative;
     width:100%;
-    max-width:1000px;
+    max-width:1300px;
     overflow:hidden;
     margin-bottom:14px;
     cursor:text;
+    /* font-size matches .typing-feed so em-units below resolve to the
+       same 26px the feed lines use. Locks viewport to 3 rows. */
+    font-size:26px;
+    height:4.8em;          /* 3 × 1.6em line-height */
   }
   .typing-feed-wrap.is-blurred .typing-feed{ filter:blur(5px); opacity:.5; }
   .typing-feed-wrap.is-blurred .typing-feed-prompt{ opacity:1; pointer-events:auto; }
@@ -201,24 +208,50 @@
 
   .typing-feed{
     --feed-shift: 0;
+    /* position:relative is the offset reference for the floating
+       .typing-caret (see further down). Without it the caret would
+       anchor to whichever ancestor IS positioned, which on this
+       page means the whole tool wrapper — caret would land miles
+       from the actual letters. */
+    position:relative;
     font-family:'Roboto Mono',monospace;
     font-size:26px;
     line-height:1.6;
     transform:translateY(calc(var(--feed-shift) * -1.6em));
-    transition:transform .14s ease;
+    /* .35s ease-out-cubic gives a calm, single-motion line-shift —
+       the previous .25s with cubic-bezier(0.22, 1, 0.36, 1) felt
+       slightly hurried at the start. Same easing as the caret +
+       char-color transitions so the whole composition reads as one
+       coordinated glide when a line wraps. */
+    transition:transform .35s cubic-bezier(0.33, 1, 0.68, 1);
     color:rgba(255,255,255,0.40);
   }
   [data-theme="light"] .typing-feed{ color:rgba(10,21,32,0.45); }
 
   .typing-word{
-    display:inline-block; margin-right:0.55em;
+    display:inline-block;
+    /* Wider inter-word gap matches the Monkeytype reference layout
+       — a more generous breathing room between tokens makes the
+       feed easier to read at speed. */
+    margin-right:0.95em;
     border-bottom:2px solid transparent;
   }
   .typing-word.has-error{
     border-bottom-color:rgba(248,113,113,0.55);
   }
-  /* Each char is its own span so we can colour by correctness. */
-  .typing-char{ position:relative; }
+  /* Each char is its own span so we can colour by correctness.
+     Adding a colour transition makes the gray→white flip when a
+     char is typed correctly feel like a soft fade rather than a
+     hard snap — the visual equivalent of "ink absorbing into the
+     letter" instead of a binary toggle. Same for the wrong/extra
+     red and amber ramps. The longer duration + ease-out-cubic
+     curve makes the fade feel like ink soaking in rather than a
+     hard flip — most of the colour change happens early in the
+     transition, then settles into the final tone. */
+  .typing-char{
+    position:relative;
+    transition:color .22s cubic-bezier(0.33, 1, 0.68, 1);
+  }
   .typing-char.is-correct{ color:rgba(255,255,255,0.95); }
   [data-theme="light"] .typing-char.is-correct{ color:rgba(10,21,32,0.92); }
   .typing-char.is-wrong{
@@ -233,25 +266,49 @@
     text-decoration-color:rgba(251,191,36,0.6);
   }
 
-  /* Blinking caret on the next character to type. We add it as a
-     pseudo-element so it doesn't shift layout. */
-  .typing-char.is-cursor::before{
-    content:''; position:absolute;
-    left:-1px; top:0.05em;
+  /* ─── Floating caret ───
+     Single absolute-positioned element inside .typing-feed (which
+     is position:relative). On every keystroke paintCursor() reads
+     the active char's position and updates the floater's
+     `transform: translate(x, y)`. The CSS transition on transform
+     gives us a smooth slide between letters instead of the old
+     teleport. cubic-bezier matches the rest of the app's motion
+     language. The pulse animation replaces the previous binary
+     `steps(1)` blink with a soft fade so the caret feels alive
+     rather than chopped on/off. */
+  .typing-caret{
+    position:absolute;
+    left:0; top:0;
     width:2px; height:1em;
     background:#00b6cb;
-    animation:typing-caret 1s steps(1) infinite;
+    border-radius:1px;            /* softens the sharp top/bottom edge */
+    transform:translate(0, 0);
+    /* Slightly longer slide (.13s) and a softer "ease-out-cubic"
+       curve. The previous .10s cubic-bezier(0.22, 1, 0.36, 1)
+       starts fast and ends slow, which on rapid typing made the
+       caret feel like it was "flicking" between letters. The
+       (0.33, 1, 0.68, 1) curve glides more uniformly — the
+       majority of the move is at a steady speed, with a soft
+       deceleration at the end. */
+    transition:transform .13s cubic-bezier(0.33, 1, 0.68, 1);
+    pointer-events:none;
+    /* Slower pulse (1.25s) feels more relaxed than the previous
+       1.05s. Combined with the eased curve below, the blink reads
+       as breathing instead of strobing. */
+    animation:typing-caret-pulse 1.25s ease-in-out infinite;
+    /* Hidden until paintCursor positions it for the first time. */
+    opacity:0;
+    will-change:transform;
   }
-  /* Cursor sitting at the end of a word (or end of feed). */
-  .typing-word.is-cursor-end::after{
-    content:''; display:inline-block;
-    width:2px; height:1em;
-    background:#00b6cb;
-    margin-left:1px;
-    vertical-align:-0.16em;
-    animation:typing-caret 1s steps(1) infinite;
+  .typing-caret.is-on{ opacity:1; }
+  @keyframes typing-caret-pulse{
+    0%, 100%{ opacity:1; }
+    50%{ opacity:0.20; }   /* slightly higher floor — never fully hides */
   }
-  @keyframes typing-caret{ 50%{ opacity:0; } }
+  /* Don't pulse while the caret is mid-slide — looks twitchy. The
+     `is-moving` class is set on the caret in JS for one beat after
+     each move; transitionend clears it. */
+  .typing-caret.is-moving{ animation-play-state:paused; opacity:1; }
 
   /* Hidden input that catches keystrokes. We could rely on a
      keydown listener on the document, but a real <input> works
@@ -321,6 +378,82 @@
     border-color:rgba(0,182,203,0.35);
     box-shadow:0 8px 28px rgba(31,40,63,0.10);
   }
+  /* Headline row: oversized WPM + Accuracy on the left, the chart
+     occupying the rest of the width. Mirrors Monkeytype's results
+     screen — the headline numbers are the user's "score" and the
+     chart is the rest of the story. */
+  .typing-results-headline{
+    display:grid;
+    grid-template-columns:auto auto 1fr;
+    gap:32px;
+    align-items:center;
+    margin-bottom:22px;
+  }
+  @media (max-width:780px){
+    .typing-results-headline{
+      grid-template-columns:1fr 1fr;
+    }
+    .typing-results-chart{ grid-column:1 / -1; }
+  }
+  .typing-results-headline-cell{
+    display:flex; flex-direction:column; gap:2px;
+  }
+  .typing-results-headline-label{
+    font-family:'Roboto Mono',monospace;
+    font-size:14px; opacity:.55;
+    letter-spacing:.04em;
+  }
+  .typing-results-headline-value{
+    font-family:'Roboto Mono',monospace;
+    font-size:64px; line-height:1; font-weight:300;
+    color:#00b6cb;
+  }
+  .typing-results-chart{
+    width:100%;
+    height:220px;
+    min-width:0; /* let it shrink in the grid */
+  }
+  .typing-chart{ width:100%; height:100%; }
+  .typing-chart-line{ fill:none; }
+  .typing-chart-line.typing-chart-wpm{
+    stroke:#00b6cb;
+    stroke-width:2.4;
+    stroke-linejoin:round;
+    stroke-linecap:round;
+  }
+  .typing-chart-line.typing-chart-raw{
+    stroke:rgba(255,255,255,0.30);
+    stroke-width:1.6;
+    stroke-dasharray:4,3;
+    stroke-linejoin:round;
+    stroke-linecap:round;
+  }
+  [data-theme="light"] .typing-chart-line.typing-chart-raw{
+    stroke:rgba(31,40,63,0.30);
+  }
+  .typing-chart-grid{
+    stroke:rgba(255,255,255,0.06);
+    stroke-width:1;
+  }
+  [data-theme="light"] .typing-chart-grid{ stroke:rgba(31,40,63,0.10); }
+  .typing-chart-label{
+    font-family:'Roboto Mono',monospace;
+    font-size:10px;
+    fill:rgba(255,255,255,0.40);
+  }
+  [data-theme="light"] .typing-chart-label{ fill:rgba(31,40,63,0.50); }
+  .typing-chart-error{
+    font-family:'Roboto Mono',monospace;
+    font-size:13px; font-weight:700;
+    fill:#f87171;
+  }
+  /* Mini chart used in the history list — pure stroke, no axis,
+     no labels, transparent bg. */
+  .typing-chart.is-mini .typing-chart-line.typing-chart-raw{ display:none; }
+  .typing-chart.is-mini .typing-chart-line.typing-chart-wpm{
+    stroke-width:1.5;
+  }
+
   .typing-results-grid{
     display:grid;
     grid-template-columns:repeat(4, 1fr);
@@ -343,6 +476,12 @@
     font-family:'Roboto Mono',monospace;
     font-size:34px; line-height:1; font-weight:500;
     color:#00b6cb;
+  }
+  /* 4-tuple "characters" cell uses a smaller value font so the four
+     digits fit comfortably without truncating. */
+  .typing-result-value.typing-result-value-sm{ font-size:22px; }
+  .typing-result-time-unit{
+    font-size:18px; opacity:.55; margin-left:1px;
   }
   .typing-result-sub{
     font-family:'Montserrat',sans-serif;
@@ -376,27 +515,234 @@
   .typing-save-state.is-error{ color:#f87171; border-color:rgba(248,113,113,0.50); }
   [data-theme="light"] .typing-save-state{ background:rgba(255,255,255,0.85); border-color:rgba(31,40,63,0.18); }
 
-  /* ─── Leaderboard ─── compact table next to / below the feed.
-     Filtered to currently-selected mode + word list. */
-  .typing-board-wrap{
-    width:100%; max-width:920px;
-    margin-top:32px;
+  /* ─── Top-right toggle cluster ─── History + Leaderboard pills.
+     Both share the .typing-top-right-btn class; only the cluster
+     wrapper is fixed to the corner. */
+  .typing-top-right{
+    position:fixed; top:16px; right:16px; z-index:10000;
+    display:flex; align-items:center; gap:10px;
   }
+  .typing-top-right-btn{
+    display:inline-flex; align-items:center; gap:8px;
+    padding:9px 14px;
+    background:rgba(15,23,42,.85);
+    border:1px solid rgba(0,182,203,.35);
+    border-radius:10px;
+    color:#00b6cb;
+    font-family:'Montserrat',sans-serif;
+    font-size:12px; font-weight:700; letter-spacing:1.4px;
+    text-transform:uppercase;
+    cursor:pointer;
+    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    transition:all .15s ease;
+  }
+  .typing-top-right-btn:hover{
+    background:rgba(0,182,203,.18);
+    border-color:rgba(0,182,203,.65);
+    color:#fff;
+  }
+  .typing-top-right-btn svg{ width:14px; height:14px; }
+  [data-theme="light"] .typing-top-right-btn{
+    background:rgba(255,255,255,.85);
+    border-color:rgba(0,182,203,.45);
+    color:#0a7889;
+  }
+  [data-theme="light"] .typing-top-right-btn:hover{
+    background:rgba(0,182,203,.14);
+    border-color:rgba(0,182,203,.75);
+    color:#0a1520;
+  }
+
+  /* ─── Word-list segmented selector ─── two pills under the stats
+     row that flip the active word pool. The selection is the cloud
+     bucket key too — runs in 'english' (English-only) and
+     'real-estate' (English + Real Estate) keep separate leaderboards
+     and history. */
+  .typing-wordlist-row{
+    display:flex; justify-content:center;
+    margin: 0 auto 14px;
+  }
+  .typing-wordlist{
+    display:inline-flex; align-items:center;
+    padding:3px;
+    border-radius:999px;
+    background: rgba(15,23,42,.55);
+    border: 1px solid rgba(255,255,255,.10);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  .typing-wordlist-btn{
+    appearance:none; border:none; background:transparent;
+    color: rgba(226,232,240,.55);
+    padding:7px 16px; border-radius:999px;
+    font-family:'Montserrat',sans-serif;
+    font-size:11px; font-weight:700; letter-spacing:1.2px;
+    text-transform:uppercase;
+    cursor:pointer;
+    transition: color .15s ease, background-color .15s ease;
+  }
+  .typing-wordlist-btn:hover{ color: rgba(226,232,240,.95); }
+  .typing-wordlist-btn.is-active{
+    background: rgba(0,182,203,.20);
+    color: #6fe6f0;
+  }
+  [data-theme="light"] .typing-wordlist{
+    background: rgba(255,255,255,.85);
+    border-color: rgba(31,40,63,.14);
+  }
+  [data-theme="light"] .typing-wordlist-btn{ color: rgba(31,40,63,.55); }
+  [data-theme="light"] .typing-wordlist-btn:hover{ color: rgba(10,21,32,.95); }
+  [data-theme="light"] .typing-wordlist-btn.is-active{
+    background: rgba(0,182,203,.16);
+    color: #0a7889;
+  }
+
+  /* ─── Leaderboard popup ─── right-side slide-in panel containing
+     the top-10 table. Hidden off-screen by default; .is-open slides
+     it in. Click outside or press Esc to close. */
+  .typing-board-backdrop{
+    position:fixed; inset:0; z-index:10005;
+    background:rgba(0,0,0,0.0);
+    pointer-events:none;
+    transition:background .25s ease;
+  }
+  .typing-board-backdrop.is-open{
+    background:rgba(0,0,0,0.35);
+    pointer-events:auto;
+  }
+  .typing-board-popover{
+    position:fixed; top:0; right:0; bottom:0; z-index:10010;
+    width:380px; max-width:92vw;
+    padding:60px 22px 24px;
+    background:rgba(15,23,42,0.94);
+    border-left:1px solid rgba(0,182,203,0.30);
+    backdrop-filter:blur(16px) saturate(140%);
+    -webkit-backdrop-filter:blur(16px) saturate(140%);
+    box-shadow:-12px 0 40px rgba(0,0,0,0.45);
+    color:#e9eef7;
+    transform:translateX(105%);
+    transition:transform .35s cubic-bezier(0.22, 1, 0.36, 1);
+    overflow-y:auto;
+  }
+  [data-theme="light"] .typing-board-popover{
+    background:rgba(255,255,255,0.96);
+    border-left-color:rgba(0,182,203,0.45);
+    color:#0a1520;
+    box-shadow:-12px 0 40px rgba(31,40,63,0.18);
+  }
+  .typing-board-popover.is-open{ transform:translateX(0); }
+
+  /* History popover — same shell as the leaderboard but a touch wider
+     so the mini charts have room to breathe. Backdrop + close share
+     the same classes. */
+  .typing-history-backdrop{
+    position:fixed; inset:0; z-index:10005;
+    background:rgba(0,0,0,0.0);
+    pointer-events:none;
+    transition:background .25s ease;
+  }
+  .typing-history-backdrop.is-open{
+    background:rgba(0,0,0,0.35);
+    pointer-events:auto;
+  }
+  .typing-history-popover{
+    position:fixed; top:0; right:0; bottom:0; z-index:10010;
+    width:440px; max-width:96vw;
+    padding:60px 22px 24px;
+    background:rgba(15,23,42,0.94);
+    border-left:1px solid rgba(0,182,203,0.30);
+    backdrop-filter:blur(16px) saturate(140%);
+    -webkit-backdrop-filter:blur(16px) saturate(140%);
+    box-shadow:-12px 0 40px rgba(0,0,0,0.45);
+    color:#e9eef7;
+    transform:translateX(105%);
+    transition:transform .35s cubic-bezier(0.22, 1, 0.36, 1);
+    overflow-y:auto;
+  }
+  [data-theme="light"] .typing-history-popover{
+    background:rgba(255,255,255,0.96);
+    border-left-color:rgba(0,182,203,0.45);
+    color:#0a1520;
+    box-shadow:-12px 0 40px rgba(31,40,63,0.18);
+  }
+  .typing-history-popover.is-open{ transform:translateX(0); }
+
+  .typing-history-list{ display:flex; flex-direction:column; gap:10px; }
+  .typing-history-row{
+    display:grid;
+    grid-template-columns:auto 92px 1fr;
+    gap:12px;
+    align-items:center;
+    padding:10px 12px;
+    background:rgba(15,23,42,0.40);
+    border:1px solid rgba(255,255,255,0.06);
+    border-radius:8px;
+  }
+  [data-theme="light"] .typing-history-row{
+    background:rgba(255,255,255,0.78);
+    border-color:rgba(31,40,63,0.10);
+  }
+  .typing-history-row-stats{
+    display:flex; flex-direction:column; gap:2px;
+    min-width:60px;
+  }
+  .typing-history-row-wpm{
+    font-family:'Roboto Mono',monospace;
+    font-size:22px; line-height:1; font-weight:500;
+    color:#00b6cb;
+  }
+  .typing-history-row-acc{
+    font-family:'Roboto Mono',monospace;
+    font-size:11px; opacity:.65;
+    letter-spacing:.04em;
+  }
+  .typing-history-row-meta{
+    display:flex; flex-direction:column; gap:2px;
+    font-family:'Montserrat',sans-serif;
+    font-size:10px;
+    letter-spacing:1px;
+    text-transform:uppercase;
+    opacity:.55;
+  }
+  .typing-history-row-meta strong{
+    font-weight:700;
+    opacity:.80;
+  }
+  .typing-history-row-chart{
+    width:100%; height:42px;
+    min-width:0;
+  }
+  .typing-history-row-chart .typing-chart{ width:100%; height:100%; }
+  .typing-board-close{
+    position:absolute; top:14px; right:14px;
+    width:30px; height:30px; padding:0;
+    background:transparent;
+    border:1px solid rgba(255,255,255,0.18);
+    border-radius:6px;
+    color:inherit; cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center;
+    transition:background .15s, border-color .15s;
+  }
+  .typing-board-close:hover{
+    background:rgba(0,182,203,0.18);
+    border-color:rgba(0,182,203,0.55);
+  }
+  .typing-board-close svg{ width:14px; height:14px; }
+  [data-theme="light"] .typing-board-close{ border-color:rgba(31,40,63,0.18); }
   .typing-board-head{
     display:flex; align-items:center; justify-content:space-between;
     flex-wrap:wrap; gap:8px;
-    margin-bottom:10px;
+    margin-bottom:14px;
   }
   .typing-board-title{
     font-family:'Montserrat',sans-serif;
-    font-weight:800; font-size:11.5px;
+    font-weight:800; font-size:13px;
     letter-spacing:2px; text-transform:uppercase;
     opacity:.85;
     margin:0;
   }
   .typing-board-sub{
     font-family:'Montserrat',sans-serif;
-    font-size:10.5px; letter-spacing:1.2px; text-transform:uppercase;
+    font-size:10px; letter-spacing:1.2px; text-transform:uppercase;
     opacity:.50;
   }
   .typing-board{
@@ -461,28 +807,43 @@
     </svg>
     <span>Back to Hub</span>
   </a>
-  <a id="pp-back-to-arena" href="arena.html" title="Back to Arena">
+  <a id="pp-back-to-arena" href="../index.html#arena" title="Back to Arena"
+     onclick="event.preventDefault(); backToArena();">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;">
       <polyline points="15 18 9 12 15 6"/>
     </svg>
     <span>Arena</span>
   </a>
 
+  <!-- Top-right toggles: History (your past runs, scoped to your
+       account) + Leaderboard (top 10 across all users). Both open
+       a right-side slide-in popup. -->
+  <div class="typing-top-right">
+    <button id="typing-history-toggle" class="typing-top-right-btn" type="button" onclick="openHistory()" aria-label="Open my history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 12a9 9 0 1 0 3-6.7"/>
+        <polyline points="3 4 3 10 9 10"/>
+        <polyline points="12 7 12 12 16 14"/>
+      </svg>
+      <span>History</span>
+    </button>
+    <button id="typing-board-toggle" class="typing-top-right-btn" type="button" onclick="openLeaderboard()" aria-label="Open leaderboard">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4z"/>
+        <path d="M17 5h3v3a3 3 0 0 1-3 3M7 5H4v3a3 3 0 0 0 3 3"/>
+      </svg>
+      <span>Leaderboard</span>
+    </button>
+  </div>
+
   <div class="typing-inner">
 
-    <!-- Mode selectors: time first, word list second. Click toggles
-         the active button and resets the test. -->
-    <div class="typing-modebar" id="typing-modebar">
-      <div class="typing-modebar-group" data-group="seconds">
-        <button class="typing-mode-btn"            type="button" data-seconds="15">15s</button>
-        <button class="typing-mode-btn is-active"  type="button" data-seconds="30">30s</button>
-        <button class="typing-mode-btn"            type="button" data-seconds="60">60s</button>
-      </div>
-      <div class="typing-modebar-divider"></div>
-      <div class="typing-modebar-group" data-group="wordlist">
-        <button class="typing-mode-btn is-active" type="button" data-wordlist="english">English</button>
-        <button class="typing-mode-btn"           type="button" data-wordlist="real-estate">Real Estate</button>
-        <button class="typing-mode-btn"           type="button" data-wordlist="code">Code</button>
+    <!-- Word-list selector — flips the active pool. Each option has
+         its own cloud bucket so leaderboard + history stay separate. -->
+    <div class="typing-wordlist-row">
+      <div class="typing-wordlist" role="group" aria-label="Word list">
+        <button class="typing-wordlist-btn" data-list="english"     type="button">English</button>
+        <button class="typing-wordlist-btn" data-list="real-estate" type="button">English + Real Estate</button>
       </div>
     </div>
 
@@ -491,7 +852,7 @@
     <div class="typing-stats" id="typing-stats">
       <div class="typing-stat">
         <span class="typing-stat-label">Time</span>
-        <span class="typing-stat-value" id="typing-time">30</span>
+        <span class="typing-stat-value" id="typing-time">60</span>
       </div>
       <div class="typing-stat">
         <span class="typing-stat-label">WPM</span>
@@ -507,35 +868,50 @@
       <input class="typing-input" id="typing-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
     </div>
 
-    <!-- Restart + Tab hint sit under the feed. -->
+    <!-- Restart + hint sit under the feed. Backspace works freely
+         (within the current word and back into prior words) — the
+         hint pill calls it out so the affordance is discoverable. -->
     <div class="typing-actions">
       <button class="typing-restart" id="typing-restart" type="button">Restart</button>
-      <span class="typing-hint"><kbd>Tab</kbd> + <kbd>Enter</kbd> to restart</span>
+      <span class="typing-hint"><kbd>Backspace</kbd> to fix · <kbd>Tab</kbd> + <kbd>Enter</kbd> to restart</span>
     </div>
 
     <!-- Results panel — shown after a run completes. Repopulated
-         each run; "Try again" is just a Restart shortcut. -->
+         each run; "Try again" is just a Restart shortcut. The chart
+         strip mirrors Monkeytype's results layout: NET WPM line in
+         cyan, raw WPM in muted gray, error markers as red ×. -->
     <div class="typing-results" id="typing-results">
+      <div class="typing-results-headline">
+        <div class="typing-results-headline-cell">
+          <span class="typing-results-headline-label">WPM</span>
+          <span class="typing-results-headline-value" id="result-wpm">0</span>
+        </div>
+        <div class="typing-results-headline-cell">
+          <span class="typing-results-headline-label">Acc</span>
+          <span class="typing-results-headline-value" id="result-acc">0%</span>
+        </div>
+        <div class="typing-results-chart" id="result-chart" aria-hidden="true"></div>
+      </div>
       <div class="typing-results-grid">
         <div class="typing-result-cell">
-          <span class="typing-result-label">WPM</span>
-          <span class="typing-result-value" id="result-wpm">0</span>
-          <span class="typing-result-sub" id="result-wpm-sub">net</span>
-        </div>
-        <div class="typing-result-cell">
-          <span class="typing-result-label">Accuracy</span>
-          <span class="typing-result-value" id="result-acc">0%</span>
-          <span class="typing-result-sub" id="result-acc-sub">— / —</span>
-        </div>
-        <div class="typing-result-cell">
-          <span class="typing-result-label">Raw WPM</span>
+          <span class="typing-result-label">Raw</span>
           <span class="typing-result-value" id="result-raw">0</span>
-          <span class="typing-result-sub">no accuracy penalty</span>
+          <span class="typing-result-sub" id="result-wpm-sub">no accuracy penalty</span>
+        </div>
+        <div class="typing-result-cell">
+          <span class="typing-result-label">Characters</span>
+          <span class="typing-result-value typing-result-value-sm" id="result-chars">0/0/0/0</span>
+          <span class="typing-result-sub">correct / wrong / extra / missed</span>
         </div>
         <div class="typing-result-cell">
           <span class="typing-result-label">Consistency</span>
           <span class="typing-result-value" id="result-cons">0%</span>
           <span class="typing-result-sub">stddev of per-second WPM</span>
+        </div>
+        <div class="typing-result-cell">
+          <span class="typing-result-label">Time</span>
+          <span class="typing-result-value">60<span class="typing-result-time-unit">s</span></span>
+          <span class="typing-result-sub">01:00 session</span>
         </div>
       </div>
       <div class="typing-results-meta">
@@ -544,19 +920,49 @@
       </div>
     </div>
 
-    <!-- Leaderboard for the active mode + word list. Re-fetched on
-         mode switch and after every save. -->
-    <div class="typing-board-wrap">
-      <div class="typing-board-head">
-        <h2 class="typing-board-title">Leaderboard</h2>
-        <span class="typing-board-sub" id="board-sub">Top 10 · 30s · English</span>
-      </div>
-      <div id="board-host">
-        <div class="typing-board-empty">Loading…</div>
-      </div>
-    </div>
-
   </div>
+
+  <!-- Leaderboard slide-in popup. Hidden off-screen by default; the
+       top-right toggle button + Esc + backdrop click all toggle it.
+       Re-fetches on every open AND after each save. -->
+  <div class="typing-board-backdrop" id="typing-board-backdrop" onclick="closeLeaderboard()"></div>
+  <aside class="typing-board-popover" id="typing-board-popover" aria-label="Leaderboard" aria-hidden="true">
+    <button class="typing-board-close" type="button" onclick="closeLeaderboard()" aria-label="Close leaderboard">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+        <line x1="6" y1="6" x2="18" y2="18"/>
+        <line x1="6" y1="18" x2="18" y2="6"/>
+      </svg>
+    </button>
+    <div class="typing-board-head">
+      <h2 class="typing-board-title">Leaderboard</h2>
+      <span class="typing-board-sub" id="board-sub">Top 10 · 60s</span>
+    </div>
+    <div id="board-host">
+      <div class="typing-board-empty">Loading…</div>
+    </div>
+  </aside>
+
+  <!-- History slide-in popup. Same pattern as the leaderboard but
+       scoped to the signed-in user's runs (filtered by user_id at
+       query time). Each row shows the date, WPM, accuracy, and a
+       mini sparkline of that run's WPM-over-time so the user can
+       eyeball their improvement. -->
+  <div class="typing-history-backdrop" id="typing-history-backdrop" onclick="closeHistory()"></div>
+  <aside class="typing-history-popover" id="typing-history-popover" aria-label="My history" aria-hidden="true">
+    <button class="typing-board-close" type="button" onclick="closeHistory()" aria-label="Close history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+        <line x1="6" y1="6" x2="18" y2="18"/>
+        <line x1="6" y1="18" x2="18" y2="6"/>
+      </svg>
+    </button>
+    <div class="typing-board-head">
+      <h2 class="typing-board-title">My History</h2>
+      <span class="typing-board-sub" id="history-sub">Your most recent 60s runs</span>
+    </div>
+    <div id="history-host">
+      <div class="typing-board-empty">Loading…</div>
+    </div>
+  </aside>
 </div>
 
 <script>
@@ -579,6 +985,20 @@ const ARENA_EMAILS = [
     const t = setInterval(() => { tries++; if (check() || tries > 20) clearInterval(t); }, 100);
   }
 })();
+
+/* ─── Back to Arena transition ───
+   Fade the typing-test page out before navigating to the hub at
+   #arena. Mirrors property-clock's navigateToHub pattern: a brief
+   visual blank between page tear-down and the hub's own staggered
+   reveal animation, so returning to the Arena page feels like
+   returning to the hub from any other tool — not a hard cut. */
+function backToArena() {
+  document.body.style.transition = 'opacity .3s ease';
+  document.body.style.opacity = '0';
+  setTimeout(function () {
+    location.href = '../index.html#arena';
+  }, 300);
+}
 </script>
 
 <script>
@@ -603,8 +1023,14 @@ const ARENA_EMAILS = [
  *     (clamped to [0, 1]; gives ~100% for a perfectly even pace)
  * ========================================================================== */
 
-/* ─── Word lists ─── */
-const WORDS_ENGLISH = (
+/* ─── Word list ─── single combined English + Real Estate pool.
+   Per UX direction (2026-05-10): we no longer expose separate word
+   lists in the UI; the typing test always pulls from this merged
+   set. The Code list was removed at the same time. The cloud
+   `word_list` value is still 'english' so this run joins the
+   existing 60s English leaderboard rather than spawning a separate
+   bucket — the SQL CHECK constraint already permits 'english'. */
+const WORDS_ENGLISH_BASE = (
   'the of and to a in is you that it he was for on are as with his they at be ' +
   'this have from or one had by word but not what all were we when your can said ' +
   'there use an each which she do how their if will up other about out many then ' +
@@ -617,7 +1043,7 @@ const WORDS_ENGLISH = (
   'three small set put end why again turn here off went old number great tell men'
 ).split(/\s+/).filter(Boolean);
 
-const WORDS_REAL_ESTATE = (
+const WORDS_REAL_ESTATE_BASE = (
   'property listing agent vendor buyer settlement auction valuation suburb ' +
   'median market broker mortgage tenant lessor freehold leasehold strata title ' +
   'inspection appraisal comparable sales rental yield growth capital negative ' +
@@ -632,25 +1058,14 @@ const WORDS_REAL_ESTATE = (
   'completion handover keys final walk through clearance certificate'
 ).split(/\s+/).filter(Boolean);
 
-const WORDS_CODE = (
-  'function const let var return if else for while break continue switch case ' +
-  'default class extends super new this typeof instanceof async await yield ' +
-  'throw try catch finally import export from default null undefined true false ' +
-  'public private protected static void int string boolean number array object ' +
-  'map filter reduce forEach push pop shift unshift slice splice concat join ' +
-  'split length includes indexOf find some every promise resolve reject then ' +
-  'catch fetch json parse stringify document window event listener add remove ' +
-  'query selector get set value innerHTML className classList toggle style'
-).split(/\s+/).filter(Boolean);
-
-const WORD_LISTS = {
-  'english':     WORDS_ENGLISH,
-  'real-estate': WORDS_REAL_ESTATE,
-  'code':        WORDS_CODE,
-};
+/* Merged + de-duped pool. The English list dominates so plain-english
+   phrasing still feels natural; real-estate vocabulary salts the run
+   for branded character. */
+const WORDS_COMBINED = Array.from(new Set(
+  WORDS_ENGLISH_BASE.concat(WORDS_REAL_ESTATE_BASE)
+));
 
 /* ─── DOM refs ─── */
-const $modebar    = document.getElementById('typing-modebar');
 const $stats      = document.getElementById('typing-stats');
 const $time       = document.getElementById('typing-time');
 const $wpm        = document.getElementById('typing-wpm');
@@ -662,17 +1077,35 @@ const $results    = document.getElementById('typing-results');
 const $resultWpm  = document.getElementById('result-wpm');
 const $resultWpmSub = document.getElementById('result-wpm-sub');
 const $resultAcc  = document.getElementById('result-acc');
-const $resultAccSub = document.getElementById('result-acc-sub');
 const $resultRaw  = document.getElementById('result-raw');
 const $resultCons = document.getElementById('result-cons');
-const $resultMeta = document.getElementById('result-meta');
-const $resultSave = document.getElementById('result-save');
+const $resultMeta  = document.getElementById('result-meta');
+const $resultSave  = document.getElementById('result-save');
+const $resultChart = document.getElementById('result-chart');
+const $resultChars = document.getElementById('result-chars');
 const $boardSub   = document.getElementById('board-sub');
 const $boardHost  = document.getElementById('board-host');
 
-/* ─── State ─── */
-let modeSeconds = 30;
-let wordList    = 'english';
+/* ─── State ─── mode is fixed at 60s; word list is user-selectable
+   between two buckets, each with its own cloud row tag (and so its
+   own leaderboard + history):
+     - 'english'     → English-only pool   (WORDS_ENGLISH_BASE)
+     - 'real-estate' → English + Real Estate combined (WORDS_COMBINED)
+   The choice is persisted in localStorage so the user keeps their
+   preferred bucket across reloads. */
+const modeSeconds = 60;
+const WORDLIST_STORAGE_KEY = 'ppa-typing-wordlist';
+function loadWordList() {
+  try {
+    const v = localStorage.getItem(WORDLIST_STORAGE_KEY);
+    if (v === 'english' || v === 'real-estate') return v;
+  } catch (_) {}
+  return 'english';
+}
+let wordList = loadWordList();
+function activeWordPool() {
+  return wordList === 'real-estate' ? WORDS_COMBINED : WORDS_ENGLISH_BASE;
+}
 
 let words      = [];      /* string[] — target words */
 let typedWords = [];      /* string[] — what user actually typed (incl. extras) */
@@ -681,6 +1114,7 @@ let curChar    = 0;       /* char position within curWord's typedWords entry */
 let charsCorrect   = 0;
 let charsIncorrect = 0;
 let extrasTyped    = 0;   /* chars typed past the target word's length */
+let charsSkipped   = 0;   /* chars in target words skipped via early-space */
 
 let phase     = 'idle';   /* 'idle' | 'running' | 'finished' */
 let startTs   = 0;
@@ -695,7 +1129,7 @@ let secondSamples = [];
    the longest mode (60s @ ~120wpm worst case). 250 is overkill for
    most users but means we never run out mid-test. */
 function generateWords() {
-  const list = WORD_LISTS[wordList] || WORDS_ENGLISH;
+  const list = activeWordPool();
   const out = [];
   let last = '';
   for (let i = 0; i < 250; i++) {
@@ -710,7 +1144,9 @@ function generateWords() {
 }
 
 /* ─── Initial render ─── one <span class="typing-word"> per word,
-   each containing one <span class="typing-char"> per char. */
+   each containing one <span class="typing-char"> per char. Plus
+   the single floating caret element (see paintCursor). */
+let $caret = null;
 function renderFeed() {
   const frag = document.createDocumentFragment();
   for (let i = 0; i < words.length; i++) {
@@ -729,25 +1165,62 @@ function renderFeed() {
   }
   $feed.innerHTML = '';
   $feed.appendChild(frag);
+  /* Spawn the single floating caret AFTER the words so it sits in
+     the same offset coordinate space. paintCursor() positions it
+     via transform on every keystroke. */
+  $caret = document.createElement('span');
+  $caret.className = 'typing-caret';
+  /* Hide pulse during the slide so the caret doesn't twitch
+     mid-transition; clear the marker class once the slide ends. */
+  $caret.addEventListener('transitionend', () => {
+    $caret.classList.remove('is-moving');
+  });
+  $feed.appendChild($caret);
   paintCursor();
 }
 
-/* Place the blinking caret. Visually it's an ::before on the active
-   char, OR an ::after on the active word if the user is typing
-   characters past the word's natural end. */
+/* Position the floating caret at the active char (or just past the
+   end of the active word for "cursor at end" state). The is-cursor
+   / is-cursor-end classes are still applied to the underlying chars
+   for state-tracking purposes elsewhere in the codebase, but the
+   visible caret is now a single element that slides smoothly
+   between positions instead of teleporting via pseudo-element. */
 function paintCursor() {
   $feed.querySelectorAll('.is-cursor').forEach(n => n.classList.remove('is-cursor'));
   $feed.querySelectorAll('.is-cursor-end').forEach(n => n.classList.remove('is-cursor-end'));
   const wEl = $feed.children[curWord];
-  if (!wEl) return;
+  if (!wEl || !$caret) { shiftFeedToActive(); return; }
   const w = words[curWord];
+  let targetEl = null;
+  let atEnd = false;
   if (curChar < w.length) {
-    const cEl = wEl.children[curChar];
-    if (cEl) cEl.classList.add('is-cursor');
+    targetEl = wEl.children[curChar];
+    if (targetEl) targetEl.classList.add('is-cursor');
   } else {
-    /* End of word — caret hangs off the right side. */
     wEl.classList.add('is-cursor-end');
+    atEnd = true;
   }
+  /* Compute caret position relative to the feed using
+     getBoundingClientRect — works reliably for inline spans where
+     offsetLeft/offsetTop can be 0 in some browsers. We account for
+     the feed's own translateY so the caret's translate stays in
+     the feed's local coordinate space (same space the chars
+     render in). */
+  const feedRect = $feed.getBoundingClientRect();
+  let x, y;
+  if (targetEl) {
+    const r = targetEl.getBoundingClientRect();
+    x = r.left - feedRect.left - 1; /* -1 nudges the caret a hair left of the glyph */
+    y = r.top  - feedRect.top  + r.height * 0.08;
+  } else if (atEnd) {
+    const r = wEl.getBoundingClientRect();
+    x = r.right - feedRect.left + 1;
+    y = r.top   - feedRect.top  + r.height * 0.08;
+  } else {
+    return;
+  }
+  $caret.classList.add('is-on', 'is-moving');
+  $caret.style.transform = 'translate(' + x + 'px, ' + y + 'px)';
   shiftFeedToActive();
 }
 
@@ -775,7 +1248,7 @@ function resetTest() {
   phase = 'idle';
   startTs = 0; endTs = 0;
   curWord = 0; curChar = 0;
-  charsCorrect = 0; charsIncorrect = 0; extrasTyped = 0;
+  charsCorrect = 0; charsIncorrect = 0; extrasTyped = 0; charsSkipped = 0;
   secondSamples = [];
   words = generateWords();
   typedWords = words.map(() => '');
@@ -799,8 +1272,11 @@ function focusInput() {
    correct-char count. Stops + finishes when seconds <= 0. */
 function startTimer() {
   startTs = performance.now();
-  /* Initial sample at t=0 so per-second deltas align cleanly. */
-  secondSamples = [{ t: 0, correct: 0 }];
+  /* Initial sample at t=0 so per-second deltas align cleanly.
+     Each sample tracks both correct + incorrect counts so the chart
+     can derive both per-second NET WPM and the error markers shown
+     as red ×s on the WPM-over-time graph. */
+  secondSamples = [{ t: 0, correct: 0, incorrect: 0 }];
   $time.textContent = String(modeSeconds);
   tickTimer = setInterval(() => {
     const elapsed = (performance.now() - startTs) / 1000;
@@ -817,9 +1293,112 @@ function startTimer() {
     /* Per-second sample — keep one row per integer-second crossed. */
     const s = Math.floor(elapsed);
     if (s > secondSamples[secondSamples.length - 1].t) {
-      secondSamples.push({ t: s, correct: charsCorrect });
+      secondSamples.push({ t: s, correct: charsCorrect, incorrect: charsIncorrect });
     }
   }, 200);   /* 5 Hz updates feel smoother than 1 Hz, but we still snap to integer-seconds for sampling */
+}
+
+/* Build the chart payload from the per-second samples — one entry
+   per second of the test. Each per-second WPM is computed as
+   (delta-chars / 5) × 60, the standard "NET WPM in this second" math.
+   Errors per second become the red × markers on the chart. */
+function buildChartData() {
+  const wpm = [];
+  const raw = [];
+  const errors = [];
+  for (let i = 1; i < secondSamples.length; i++) {
+    const a = secondSamples[i - 1];
+    const b = secondSamples[i];
+    const dCorrect   = Math.max(0, b.correct   - a.correct);
+    const dIncorrect = Math.max(0, b.incorrect - a.incorrect);
+    wpm.push(Math.round((dCorrect / 5) * 60));
+    raw.push(Math.round(((dCorrect + dIncorrect) / 5) * 60));
+    errors.push(dIncorrect);
+  }
+  /* Make sure we always have at least one sample so the chart renders
+     even on a sub-second bail-out. */
+  if (!wpm.length) { wpm.push(0); raw.push(0); errors.push(0); }
+  return { wpm: wpm, raw: raw, errors: errors };
+}
+
+/* Render a Monkeytype-style line chart of per-second WPM as inline
+   SVG. Two lines (NET WPM in cyan, raw WPM in muted gray) plus red
+   × markers wherever a second registered an error. Pure SVG so we
+   keep the page dependency-free; the same function powers both the
+   results-panel chart and the mini sparklines in the history panel. */
+function renderWpmChart(data, width, height, opts) {
+  if (!data || !data.wpm || !data.wpm.length) return '';
+  opts = opts || {};
+  const mini = !!opts.mini;
+  const wpm = data.wpm;
+  const raw = data.raw || [];
+  const errs = data.errors || [];
+  const pads = mini
+    ? { l: 4,  r: 4,  t: 4,  b: 4 }
+    : { l: 40, r: 18, t: 14, b: 28 };
+  const innerW = Math.max(1, width  - pads.l - pads.r);
+  const innerH = Math.max(1, height - pads.t - pads.b);
+  /* Cap the y-axis at the higher of WPM or raw, rounded up to a nice
+     20-step so gridlines land on round numbers. Small floor of 40 so
+     a sub-40 WPM run still has a sensible y-range. */
+  let peak = 1;
+  for (const v of wpm) if (v > peak) peak = v;
+  for (const v of raw) if (v > peak) peak = v;
+  const yMax = Math.max(40, Math.ceil(peak / 20) * 20);
+  const xStep = wpm.length > 1 ? (innerW / (wpm.length - 1)) : innerW;
+
+  function pathD(arr) {
+    let d = '';
+    for (let i = 0; i < arr.length; i++) {
+      const x = pads.l + i * xStep;
+      const y = pads.t + (1 - (arr[i] / yMax)) * innerH;
+      d += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+    }
+    return d.trim();
+  }
+
+  let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none" class="typing-chart' + (mini ? ' is-mini' : '') + '" aria-hidden="true">';
+
+  if (!mini) {
+    /* Y-axis grid + labels (every 25% of yMax). */
+    for (let i = 0; i <= 4; i++) {
+      const v = yMax - (yMax * i / 4);
+      const y = pads.t + (i / 4) * innerH;
+      svg += '<line x1="' + pads.l + '" y1="' + y.toFixed(1) + '" x2="' + (width - pads.r) + '" y2="' + y.toFixed(1) + '" class="typing-chart-grid"/>';
+      svg += '<text x="' + (pads.l - 6) + '" y="' + (y + 4).toFixed(1) + '" class="typing-chart-label" text-anchor="end">' + Math.round(v) + '</text>';
+    }
+    /* X-axis labels: every 5 seconds + the final second. */
+    for (let i = 0; i < wpm.length; i++) {
+      const sec = i + 1;
+      if (sec % 5 === 0 || sec === wpm.length) {
+        const x = pads.l + i * xStep;
+        svg += '<text x="' + x.toFixed(1) + '" y="' + (height - pads.b + 16) + '" class="typing-chart-label" text-anchor="middle">' + sec + '</text>';
+      }
+    }
+  }
+
+  /* Raw WPM line — drawn first so the NET line sits on top. */
+  if (raw.length) {
+    svg += '<path d="' + pathD(raw) + '" class="typing-chart-line typing-chart-raw"/>';
+  }
+  /* NET WPM line — primary cyan stroke. */
+  svg += '<path d="' + pathD(wpm) + '" class="typing-chart-line typing-chart-wpm"/>';
+
+  /* Error markers — red × at the bottom of the chart for any second
+     that contained at least one mistyped char. Skipped on mini so a
+     sparkline stays clean. */
+  if (!mini && errs.length) {
+    for (let i = 0; i < errs.length; i++) {
+      if (errs[i] > 0) {
+        const x = pads.l + i * xStep;
+        const y = height - pads.b - 6;
+        svg += '<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" class="typing-chart-error" text-anchor="middle">×</text>';
+      }
+    }
+  }
+
+  svg += '</svg>';
+  return svg;
 }
 
 function currentNetWpm(seconds) {
@@ -845,9 +1424,12 @@ $input.addEventListener('input', (ev) => {
     startTimer();
   }
 
-  if (inputType === 'deleteContentBackward') {
-    handleBackspace();
-  } else if (data) {
+  /* Backspace is handled exclusively by the document-level keydown
+     listener (preventDefault there means no `input` event fires for
+     deleteContentBackward anyway — but the explicit `else if` keeps
+     this handler defensive against any browser that bypasses
+     preventDefault). */
+  if (inputType !== 'deleteContentBackward' && data) {
     for (const ch of data) handleChar(ch);
   }
 
@@ -873,6 +1455,39 @@ document.addEventListener('keydown', (ev) => {
         resetTest();
       }
     }, { once: true });
+    return;
+  }
+  /* Backspace — handled here at the document level rather than via
+     the hidden input's `input` event. Reasons:
+       - We clear $input.value after every keystroke, so subsequent
+         backspaces are operating on an empty input, and some browsers
+         (Safari especially) skip firing the input event in that case.
+       - Focus slips off the input whenever the user clicks a button,
+         a stat tile, or the leaderboard pill — a backspace press
+         after that fires only `keydown`, not an input event.
+     preventDefault stops the browser's default (and stops the input
+     event from firing duplicate work). After fixing the mistake we
+     pull focus back so the next character routes through the normal
+     path. */
+  if (ev.key === 'Backspace' && phase === 'running') {
+    ev.preventDefault();
+    handleBackspace();
+    if (document.activeElement !== $input) focusInput();
+    return;
+  }
+  /* Esc closes whichever popup is open (history takes priority if
+     somehow both are visible — they're mutually exclusive in normal
+     flow but the explicit precedence makes the handler safe). */
+  if (ev.key === 'Escape') {
+    var hist = document.getElementById('typing-history-popover');
+    var brd  = document.getElementById('typing-board-popover');
+    if (hist && hist.classList.contains('is-open')) {
+      ev.preventDefault();
+      closeHistory();
+    } else if (brd && brd.classList.contains('is-open')) {
+      ev.preventDefault();
+      closeLeaderboard();
+    }
   }
 });
 
@@ -887,6 +1502,11 @@ function handleChar(ch) {
     if (curChar === 0) return;       /* leading space = ignore */
     const skipped = Math.max(0, target.length - curChar);
     charsIncorrect += skipped;
+    /* Track separately for the 4-tuple "characters" display. The
+       accuracy formula stays the same — skipped chars still count
+       against acc via charsIncorrect — but the results panel shows
+       correct/wrong/extra/missed with skipped split out. */
+    charsSkipped += skipped;
     /* Move to the next word. */
     if (wEl) {
       /* Mark word with red underline if it has any errors (visual
@@ -958,21 +1578,30 @@ function handleBackspace() {
   if (phase !== 'running' && phase !== 'idle') return;
   const wEl = $feed.children[curWord];
   if (curChar === 0) {
-    /* Already at the start of a word. Allow stepping back into the
-       previous word to fix earlier mistakes (matches monkeytype). */
+    /* Already at the start of a word. The first backspace here
+       only undoes the space-commit — it does NOT delete the last
+       letter of the previous word. The cursor lands at the end of
+       whatever was typed in that word, and a second backspace is
+       what chips away at letters. This matches what users expect
+       after pressing space too early: one tap cancels the wrong
+       space without also eating a correct character. */
     if (curWord === 0) return;
     curWord--;
     const prev = words[curWord];
-    /* Step to the position right after the last typed char of the
-       previous word (could be > prev.length if there were extras). */
-    curChar = (typedWords[curWord] || '').length;
-    /* Drop the last char from typedWords to "undo" it. */
-    if (curChar > 0) {
-      typedWords[curWord] = typedWords[curWord].slice(0, -1);
-      curChar--;
-      removeCharAt(curWord, curChar);
+    const typedLen = (typedWords[curWord] || '').length;
+    /* The space charged any unfilled chars to charsIncorrect (and
+       to charsSkipped for the 4-tuple display). Refund both since
+       we're rolling back the commit. */
+    const skipped = Math.max(0, prev.length - typedLen);
+    if (skipped > 0) {
+      charsIncorrect = Math.max(0, charsIncorrect - skipped);
+      charsSkipped   = Math.max(0, charsSkipped - skipped);
     }
-    /* Re-evaluate has-error class on the now-current word. */
+    /* Cursor sits right after the last typed char (may be past
+       prev.length if there were extras). */
+    curChar = typedLen;
+    /* Re-evaluate has-error: the skipped-chars contribution is
+       gone, but any actual is-wrong/is-extra spans still count. */
     const wEl2 = $feed.children[curWord];
     if (wEl2) {
       const stillWrong = wEl2.querySelectorAll('.is-wrong, .is-extra').length;
@@ -1026,19 +1655,36 @@ function finishTest() {
   const acc = totalTyped > 0 ? (charsCorrect / totalTyped) * 100 : 0;
   const cons = computeConsistency();
 
+  /* Build the per-second chart payload — used for both the inline
+     chart on the results panel AND the persisted history record. */
+  const chartData = buildChartData();
+
+  /* The "characters" 4-tuple matches Monkeytype's result row:
+     correct / wrong / extra / missed. We track skipped + extras
+     separately on top of the rolled-up charsIncorrect. */
+  const wrongOnly = Math.max(0, charsIncorrect - extrasTyped - charsSkipped);
+
   $resultWpm.textContent = String(wpm);
   $resultRaw.textContent = String(raw);
   $resultAcc.textContent = acc.toFixed(1) + '%';
-  $resultAccSub.textContent = charsCorrect + ' / ' + totalTyped;
   $resultCons.textContent = cons.toFixed(0) + '%';
   $resultMeta.textContent = seconds + 's · ' + wordListLabel(wordList);
+  if ($resultChars) {
+    $resultChars.textContent = charsCorrect + ' / ' + wrongOnly + ' / ' + extrasTyped + ' / ' + charsSkipped;
+  }
+  if ($resultChart) {
+    $resultChart.innerHTML = renderWpmChart(chartData, 760, 220);
+  }
   $resultSave.classList.remove('is-saving','is-saved','is-error');
   $resultSave.textContent = 'Idle';
 
   $results.classList.add('is-on');
 
-  /* Persist the run, then refresh the leaderboard so the new entry
-     shows up if it qualifies. */
+  /* Persist the run + chart payload. The history view (and any
+     future per-user dashboards) reads chart_data to redraw past
+     runs. RLS lets every authenticated user SELECT all rows for
+     the leaderboard, but the history query scopes itself to
+     user_id = auth.uid() so a user only browses their own runs. */
   saveScore({
     wpm, raw_wpm: raw,
     accuracy: Number(acc.toFixed(2)),
@@ -1048,6 +1694,7 @@ function finishTest() {
     chars_correct: charsCorrect,
     chars_incorrect: charsIncorrect,
     duration_ms: Math.round(endTs - startTs),
+    chart_data: chartData,
   });
 }
 
@@ -1206,29 +1853,136 @@ function formatRelative(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString();
 }
+/* Display label for a cloud word_list key. */
 function wordListLabel(key) {
-  return key === 'real-estate' ? 'Real Estate'
-       : key === 'code'        ? 'Code'
-       : 'English';
+  return key === 'real-estate' ? 'English + Real Estate' : 'English';
 }
 
-/* ─── Mode bar wiring ─── click toggles the active button in its
-   group and resets the test. */
-$modebar.addEventListener('click', (ev) => {
-  const btn = ev.target.closest('.typing-mode-btn');
-  if (!btn) return;
-  const group = btn.closest('.typing-modebar-group');
-  if (!group) return;
-  group.querySelectorAll('.typing-mode-btn').forEach(b => b.classList.remove('is-active'));
-  btn.classList.add('is-active');
-  if (group.dataset.group === 'seconds') {
-    modeSeconds = parseInt(btn.dataset.seconds, 10) || 30;
-  } else if (group.dataset.group === 'wordlist') {
-    wordList = btn.dataset.wordlist || 'english';
-  }
-  resetTest();
+/* Mode bar removed in the 2026-05-10 redesign — the test is locked
+   to 60s and the merged English + Real Estate word pool, and the
+   leaderboard moved into a right-side popup. The toggle handlers
+   live below. */
+
+/* ─── Leaderboard popup ─── opens / closes the right-side panel.
+   Re-fetches on every open so a freshly-saved score appears
+   without needing a page refresh. */
+const $boardBackdrop = document.getElementById('typing-board-backdrop');
+const $boardPopover  = document.getElementById('typing-board-popover');
+function openLeaderboard() {
+  if (!$boardPopover) return;
+  $boardPopover.classList.add('is-open');
+  $boardPopover.setAttribute('aria-hidden', 'false');
+  if ($boardBackdrop) $boardBackdrop.classList.add('is-open');
   fetchLeaderboard();
-});
+}
+function closeLeaderboard() {
+  if (!$boardPopover) return;
+  $boardPopover.classList.remove('is-open');
+  $boardPopover.setAttribute('aria-hidden', 'true');
+  if ($boardBackdrop) $boardBackdrop.classList.remove('is-open');
+  /* Hand focus back to the typing input so the user can resume
+     immediately without an extra click. */
+  focusInput();
+}
+window.openLeaderboard  = openLeaderboard;
+window.closeLeaderboard = closeLeaderboard;
+
+/* ─── History popup ─── private list of the user's own runs, with
+   a per-row mini WPM sparkline drawn from the saved chart_data.
+   Persisted via Supabase + RLS so the same history follows the
+   user across devices, scoped to user_id = auth.uid() so they only
+   ever see their own runs. */
+const $historyBackdrop = document.getElementById('typing-history-backdrop');
+const $historyPopover  = document.getElementById('typing-history-popover');
+const $historyHost     = document.getElementById('history-host');
+function openHistory() {
+  if (!$historyPopover) return;
+  $historyPopover.classList.add('is-open');
+  $historyPopover.setAttribute('aria-hidden', 'false');
+  if ($historyBackdrop) $historyBackdrop.classList.add('is-open');
+  fetchHistory();
+}
+function closeHistory() {
+  if (!$historyPopover) return;
+  $historyPopover.classList.remove('is-open');
+  $historyPopover.setAttribute('aria-hidden', 'true');
+  if ($historyBackdrop) $historyBackdrop.classList.remove('is-open');
+  focusInput();
+}
+window.openHistory  = openHistory;
+window.closeHistory = closeHistory;
+
+async function fetchHistory() {
+  if (!$historyHost) return;
+  $historyHost.innerHTML = '<div class="typing-board-empty">Loading…</div>';
+  if (!window.sb) {
+    $historyHost.innerHTML = '<div class="typing-board-empty">Database unavailable</div>';
+    return;
+  }
+  try {
+    const { data: sess } = await window.sb.auth.getSession();
+    if (!sess || !sess.session) {
+      $historyHost.innerHTML = '<div class="typing-board-empty">Not signed in</div>';
+      return;
+    }
+    /* Pull the user's own rows ordered by recency. RLS already lets
+       authenticated users SELECT every row; the user_id filter here
+       is a UI scope, not a security boundary. We pull chart_data for
+       the per-row sparkline; mode_seconds + word_list let future
+       filters work without another round-trip. */
+    const { data, error } = await window.sb
+      .from('arena_typing_scores')
+      .select('id, wpm, accuracy, mode_seconds, word_list, completed_at, chart_data')
+      .eq('user_id', sess.session.user.id)
+      .eq('mode_seconds', modeSeconds)
+      .eq('word_list', wordList)
+      .order('completed_at', { ascending: false })
+      .limit(50);
+    if (error) throw error;
+    renderHistory(data || []);
+  } catch (e) {
+    console.warn('fetchHistory failed:', e);
+    $historyHost.innerHTML = '<div class="typing-board-empty">Could not load history</div>';
+  }
+}
+
+function renderHistory(rows) {
+  if (!rows.length) {
+    $historyHost.innerHTML = '<div class="typing-board-empty">No runs in <strong>' + escapeHtml(wordListLabel(wordList)) + '</strong> yet — finish a 60s test and it\'ll show up here.</div>';
+    return;
+  }
+  /* Find this user's PB across the loaded set so we can flag it
+     in the row meta — gives the history a tiny celebratory beat. */
+  let pb = 0;
+  for (const r of rows) if (r.wpm > pb) pb = r.wpm;
+
+  const list = document.createElement('div');
+  list.className = 'typing-history-list';
+  rows.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'typing-history-row';
+    const date = new Date(r.completed_at);
+    const dateLabel = date.toLocaleDateString(undefined, { day:'numeric', month:'short' });
+    const timeLabel = date.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' });
+    const isPb = r.wpm === pb;
+    row.innerHTML =
+      '<div class="typing-history-row-stats">' +
+        '<div class="typing-history-row-wpm">' + r.wpm + '</div>' +
+        '<div class="typing-history-row-acc">' + Number(r.accuracy).toFixed(0) + '%</div>' +
+      '</div>' +
+      '<div class="typing-history-row-meta">' +
+        '<strong>' + escapeHtml(dateLabel) + '</strong>' +
+        '<span>' + escapeHtml(timeLabel) + '</span>' +
+        (isPb ? '<span style="color:#00b6cb;font-weight:700;">★ Best</span>' : '') +
+      '</div>' +
+      '<div class="typing-history-row-chart">' +
+        (r.chart_data ? renderWpmChart(r.chart_data, 240, 42, { mini: true }) : '<span class="typing-board-empty" style="padding:0;">no chart</span>') +
+      '</div>';
+    list.appendChild(row);
+  });
+  $historyHost.innerHTML = '';
+  $historyHost.appendChild(list);
+}
 
 /* ─── Restart button + click-to-focus ─── */
 $restart.addEventListener('click', () => { resetTest(); });
@@ -1244,8 +1998,32 @@ $input.addEventListener('blur', () => {
   $feedWrap.classList.add('is-blurred');
 });
 
+/* ─── Word-list selector ─── reflects the persisted choice on
+   render and resets the test (and any open popups) when the user
+   flips between English and English + Real Estate. */
+function setupWordListSelector() {
+  const btns = document.querySelectorAll('.typing-wordlist-btn');
+  btns.forEach(b => {
+    b.classList.toggle('is-active', b.dataset.list === wordList);
+    b.addEventListener('click', () => {
+      const next = b.dataset.list;
+      if (next === wordList || (next !== 'english' && next !== 'real-estate')) return;
+      wordList = next;
+      try { localStorage.setItem(WORDLIST_STORAGE_KEY, next); } catch (_) {}
+      btns.forEach(x => x.classList.toggle('is-active', x.dataset.list === next));
+      /* Fresh words from the new pool, fresh stats. */
+      resetTest();
+      /* If a popup is currently open, refetch against the new
+         bucket so the user sees the right list immediately. */
+      if ($boardPopover && $boardPopover.classList.contains('is-open')) fetchLeaderboard();
+      if ($historyPopover && $historyPopover.classList.contains('is-open')) fetchHistory();
+    });
+  });
+}
+
 /* ─── Boot ─── */
 function boot() {
+  setupWordListSelector();
   resetTest();
   /* Defer the leaderboard fetch until the Supabase client + auth
      session are ready. Poll briefly for both. */

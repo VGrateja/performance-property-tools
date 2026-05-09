@@ -1,0 +1,41 @@
+-- =============================================================================
+-- 004_arena_typing_chart.sql — per-session chart payload
+--
+-- Adds a `chart_data` column to public.arena_typing_scores so each row keeps
+-- the per-second sample arrays needed to redraw the WPM-over-time graph in
+-- the results panel and the user's personal history view. Shape stored in
+-- the column:
+--
+--   {
+--     "wpm":    [number, ...],   -- net WPM per second (correct chars × 12)
+--     "raw":    [number, ...],   -- raw WPM per second (all typed chars × 12)
+--     "errors": [int, ...]       -- incorrect chars per second
+--   }
+--
+-- Why a single jsonb column rather than three separate arrays / a child
+-- table:
+--   - Reads are always one-shot (history query pulls one whole row, then
+--     renders the chart). No need to query individual samples.
+--   - Schema stays additive — future fields (e.g. consistency-per-second,
+--     keypress timings) can land inside chart_data without another
+--     migration.
+--   - Column is nullable so historical rows from before this migration
+--     don't break — the UI falls back to "no chart available" when null.
+--
+-- Privacy: RLS on arena_typing_scores already lets every authenticated
+-- user SELECT every row (so the public leaderboard works). chart_data
+-- inherits that policy. The HISTORY view in the UI scopes its query to
+-- user_id = auth.uid() so a user only ever browses their own runs; the
+-- leaderboard query simply doesn't ask for chart_data, so other users'
+-- per-second samples never reach the UI in normal flow.
+--
+-- Run order: after 003_arena.sql.
+-- =============================================================================
+
+alter table public.arena_typing_scores
+  add column if not exists chart_data jsonb;
+
+-- Verify with:
+--   select id, wpm, accuracy, chart_data is not null as has_chart
+--   from public.arena_typing_scores
+--   order by completed_at desc limit 5;
