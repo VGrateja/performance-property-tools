@@ -469,9 +469,25 @@ async function _hydrateFromSession() {
         Authorization: 'Bearer ' + sess.session.access_token,
         Accept: 'application/json',
       },
+      cache: 'no-store',  /* avoid potential SW/disk-cache mediation */
     });
-    if (window._ppMark) window._ppMark('hydrate:rawFetch-status=' + res.status);
-    const rows = await res.json();
+    if (window._ppMark) window._ppMark('hydrate:rawFetch-status=' + res.status +
+      ',ct=' + (res.headers.get('content-type') || '?') +
+      ',cl=' + (res.headers.get('content-length') || '?') +
+      ',xpf=' + (res.headers.get('x-powered-by') || '?'));
+    /* Read body as text first — separates body-stream issues from
+       JSON parse issues. If text() hangs, the response body stream
+       is stuck (service worker, transfer-encoding glitch, etc.). */
+    const tStart = Date.now();
+    const text = await res.text();
+    if (window._ppMark) window._ppMark('hydrate:rawFetch-text=' + text.length + 'chars/' + (Date.now() - tStart) + 'ms');
+    let rows;
+    try {
+      rows = JSON.parse(text);
+    } catch (e) {
+      if (window._ppMark) window._ppMark('hydrate:rawFetch-parseErr=' + (e.message || 'parse failed'));
+      throw e;
+    }
     if (window._ppMark) window._ppMark('hydrate:rawFetch-parsed=' + (Array.isArray(rows) ? rows.length + 'rows' : 'notArray'));
     if (Array.isArray(rows) && rows.length === 1) {
       profile = rows[0];
