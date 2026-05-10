@@ -25,7 +25,15 @@
   'use strict';
 
   const SUPABASE_URL = 'https://cannojsxduvlewimwoxa.supabase.co';
-  const SUPABASE_KEY = 'sb_publishable_jh6BXfpWTkijbI_L31nslg_eoWhNcLf';
+  /* Switched from the new "publishable" key (sb_publishable_…) back to
+     the legacy anon JWT. The publishable-key format appears to break
+     specific supabase-js v2 codepaths — fresh sign-ins hung
+     indefinitely on getSession(), signInWithPassword response handling,
+     and PostgREST body reads. The legacy anon key is a standard JWT
+     and is the path the library was originally built around. Same
+     project, same RLS — just a key format the client handles
+     correctly. */
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbm5vanN4ZHV2bGV3aW13b3hhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwMzQ4MzQsImV4cCI6MjA5MzYxMDgzNH0.BQNkOTZHgmTEP1jONfRxD1-Db2rLgdIt82zbAsPxb0s';
   /* Expose for raw-fetch fallbacks elsewhere (e.g., shared/auth.js
      bypasses the supabase-js profile fetch when its thenable hangs). */
   window.PP_SUPABASE_URL = SUPABASE_URL;
