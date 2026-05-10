@@ -420,53 +420,59 @@ let _otpPendingEmail = '';
 
 /* Fetch the current user's profile, populate sessionStorage, and route to
    the right post-login UI. Returns the profile or null if no session.
-   DEBUG: each await is wrapped in a 10-second timeout race so the page
-   can't freeze permanently if Supabase is hanging. Markers around each
-   step let us see in localStorage which call (getSession or profile-
-   fetch) is the actual hang point. */
+
+   Every supabase-js call we tried in this codepath hangs for non-cached
+   sessions — getSession(), the profiles SELECT through PostgrestBuilder,
+   raw fetch(), and even XMLHttpRequest. The cause appears to be a
+   Chrome/Cloudflare/Supabase chunked-response issue that we can't fix
+   from app code. So we bypass supabase-js entirely:
+
+   1. Read the session token straight from localStorage (where supabase-
+      js wrote it during signInWithPassword).
+   2. Use the embedded `user` object on the session to identify the
+      account, then derive tier + status from the email allowlists.
+
+   Server-side RLS is unchanged — every other query the app makes still
+   sends the JWT and gets gated normally. We just stop using supabase-js
+   for the one bootstrap roundtrip that hangs. */
 async function _hydrateFromSession() {
   if (window._ppMark) window._ppMark('hydrate:start');
-  if (!window.sb) return null;
 
-  /* getSession is supposed to be local-ish (reads stored session), but
-     supabase-js will trigger a refresh if the token is expired — that
-     refresh hits the network. Race it. */
-  if (window._ppMark) window._ppMark('hydrate:getSession-await');
-  const sessRaced = await Promise.race([
-    window.sb.auth.getSession(),
-    new Promise(r => setTimeout(() => r({ __timeout: true }), 10000)),
-  ]);
-  if (sessRaced && sessRaced.__timeout) {
-    if (window._ppMark) window._ppMark('hydrate:getSession-TIMEOUT');
-    console.warn('hydrate: getSession timed out after 10s');
-    _setSessionMirror(null);
-    return null;
-  }
-  const sess = sessRaced.data;
-  if (window._ppMark) window._ppMark('hydrate:getSession-ok=' + (sess && sess.session ? 'yes' : 'no'));
-  if (!sess || !sess.session) {
+  let sessionData = null;
+  try {
+    const raw = localStorage.getItem('pp-sb-auth');
+    if (raw) sessionData = JSON.parse(raw);
+  } catch (_) {}
+  if (window._ppMark) window._ppMark('hydrate:lsRead=' + (sessionData ? 'present' : 'empty'));
+  if (!sessionData) {
     _setSessionMirror(null);
     return null;
   }
 
-  /* WORKAROUND: skip the public.profiles HTTP roundtrip and derive
-     the profile from the JWT instead.
-     History: every variant of this fetch — supabase-js's PostgrestBuilder,
-     a raw fetch() with res.text(), and a plain XMLHttpRequest — all
-     hung indefinitely after PostgREST returned 200 with the row. The
-     SQL editor confirms the row exists and RLS allows it, the
-     network panel shows 200 + 1KB returned in ~200ms, but no JS
-     code path was able to resume after the response. Chrome's
-     fetch/XHR body reader and Cloudflare's chunked-transfer
-     response are interacting in a way we can't fix from app code.
-     Instead, every staff member's tier is derivable from email
-     alone: hardcoded admins from ADMIN_EMAILS, everyone else on
-     @performanceproperty.com.au is tier='company'. Status is 'active'
-     (the on_auth_user_created trigger guarantees this for staff).
-     Server-side RLS still enforces the real profile data on every
-     other query — only this one client-side bootstrap step changes. */
+  /* supabase-js v2 stores the session shape as
+       { access_token, refresh_token, expires_at, user, ... }
+     directly under the storageKey. Older builds wrap it in
+     { currentSession: {...} }, so handle both. */
+  const sess = sessionData.currentSession || sessionData;
+  const accessToken = sess && sess.access_token;
+  const sessionUser = sess && sess.user;
+  const expiresAt   = sess && sess.expires_at;
+  if (!accessToken || !sessionUser || !sessionUser.id || !sessionUser.email) {
+    if (window._ppMark) window._ppMark('hydrate:lsParse=incomplete');
+    _setSessionMirror(null);
+    return null;
+  }
+  if (expiresAt && expiresAt * 1000 < Date.now()) {
+    if (window._ppMark) window._ppMark('hydrate:lsParse=expired');
+    _setSessionMirror(null);
+    return null;
+  }
+  if (window._ppMark) window._ppMark('hydrate:lsParse=ok');
+
+  /* Derive profile from the locally-cached session user instead of
+     querying public.profiles. Server-side RLS still enforces the real
+     profile rules on every other query. */
   if (window._ppMark) window._ppMark('hydrate:fetchProfile-await');
-  const sessionUser = sess.session.user;
   const sessionEmail = (sessionUser.email || '').toLowerCase();
   let profile = null;
   let error = null;
