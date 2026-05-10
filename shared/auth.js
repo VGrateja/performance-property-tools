@@ -42,7 +42,8 @@ const ADMIN_EMAILS = [
    Anyone whose email isn't in this list never sees the field — they go
    straight to the email-only OTP flow. */
 const DEV_EMAILS = [
-  'vandolf@performanceproperty.com.au'
+  'vandolf@performanceproperty.com.au',
+  'test@performanceproperty.com.au'
 ];
 
 /* Registration master switch. Off per Paul (CEO): this tool is
@@ -452,7 +453,9 @@ async function _hydrateFromSession() {
 /* After a successful sign-in or OTP verify: gate by status, then either
    show welcome (admin/dev) or jump straight to the hub. */
 async function _completeLogin() {
+  if (window._ppMark) window._ppMark('completeLogin:start');
   const profile = await _hydrateFromSession();
+  if (window._ppMark) window._ppMark('completeLogin:profile=' + (profile ? profile.status + '/' + (profile.tier || '?') : 'null'));
   if (!profile) {
     const errEl = document.getElementById('loginError');
     if (errEl) errEl.textContent = 'Profile lookup failed. Please try again.';
@@ -473,17 +476,21 @@ async function _completeLogin() {
     return;
   }
   /* Active — log them in. */
+  if (window._ppMark) window._ppMark('completeLogin:active');
   const loginScreen = document.getElementById('loginScreen');
   if (loginScreen) loginScreen.style.display = 'none';
   applyAccessRestrictions();
-  /* Welcome overlay for every tier — admins get the named greeting via
-     ADMIN_NAMES, non-admins get their full_name (set during registration)
-     or the email's local-part as a fallback. */
-  const name = ADMIN_NAMES[profile.email]
-            || profile.full_name
-            || (profile.email || '').split('@')[0]
-            || 'there';
-  showWelcomeAndProceed(name);
+  if (window._ppMark) window._ppMark('completeLogin:appliedAccess');
+  /* DEBUG: welcome overlay disabled while we hunt the universal new-user
+     freeze. The trace stopped at welcome:fadeOut for non-admin users
+     (the inner 900ms setTimeout never fired). Removing the welcome
+     fade entirely either resolves the bug (welcome was the cause) or
+     pushes the failure into showMain/tryUpdate where the markers will
+     pinpoint the next freezing step. Welcome is purely cosmetic — no
+     downstream code depends on it running. */
+  if (window._ppMark) window._ppMark('completeLogin:skipWelcome->showMain');
+  showMain();
+  if (window._ppMark) window._ppMark('completeLogin:showMainReturned');
 }
 
 /* ── Step 1: email + (optional) password ── */
@@ -828,14 +835,19 @@ window.getCurrentUserEmail   = getCurrentUserEmail;
 
 /* ═══ SHOW MAIN (hub) ═══ */
 function showMain() {
+  if (window._ppMark) window._ppMark('showMain:start');
   const loginScreen = document.getElementById('loginScreen');
   if (loginScreen) loginScreen.style.display = 'none';
   const mainPage = document.getElementById('mainPage');
   if (mainPage) mainPage.style.display = 'flex';
+  if (window._ppMark) window._ppMark('showMain:displayed');
   window._pp_currentView = 'hub';
   document.body.classList.add('on-hub');
+  if (window._ppMark) window._ppMark('showMain:onHubAdded');
   try { initTierSwitcher(); } catch (e) {}
+  if (window._ppMark) window._ppMark('showMain:tierSwitcherDone');
   try { if (typeof populateHubWidgets === 'function') populateHubWidgets(); } catch (e) {}
+  if (window._ppMark) window._ppMark('showMain:end');
 }
 window.showMain = showMain;
 
