@@ -35,6 +35,26 @@
      cleanly. The body element doesn't exist yet at head-script
      time, so we wait via MutationObserver until it's available. -->
 <script>
+  /* DEBUG: progress marker. Writes a rolling log of bootstrap steps
+     to localStorage under 'pp-debug-marks'. Read it from DevTools →
+     Application → Local Storage when the page freezes — the last
+     entry is where the thread locked. Cheap (a JSON parse + push
+     per call), bounded to 200 entries. Cleared each fresh page load
+     so we only see the current session's trace. */
+  (function () {
+    try { localStorage.removeItem('pp-debug-marks'); } catch (_) {}
+    var t0 = Date.now();
+    window._ppMark = function (label) {
+      try {
+        var arr = JSON.parse(localStorage.getItem('pp-debug-marks') || '[]');
+        arr.push({ s: label, t: Date.now() - t0 });
+        if (arr.length > 200) arr.splice(0, arr.length - 200);
+        localStorage.setItem('pp-debug-marks', JSON.stringify(arr));
+      } catch (_) {}
+    };
+    window._ppMark('script-head');
+  })();
+
   (function () {
     var hash = location.hash;
     var pageClass = (hash === '#arena') ? 'hub-arena-active'
@@ -3237,9 +3257,14 @@ function navigateToResults() {
      radius — a misbehaving step warns to console but the rest of
      the bootstrap continues. */
   function safe(label, fn) {
+    if (window._ppMark) window._ppMark('tryUpdate:' + label + ':start');
     try { fn(); } catch (e) { console.warn('[hub bootstrap] ' + label + ' threw', e); }
+    if (window._ppMark) window._ppMark('tryUpdate:' + label + ':end');
   }
+  let _tryUpdateCalls = 0;
   function tryUpdate() {
+    _tryUpdateCalls++;
+    if (window._ppMark) window._ppMark('tryUpdate:#' + _tryUpdateCalls);
     if (document.body.classList.contains('on-hub')) {
       safe('updatePendingApprovalsPill', () => updatePendingApprovalsPill());
       /* Re-fetch the clock edition badge every time the hub becomes

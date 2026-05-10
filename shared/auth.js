@@ -260,6 +260,7 @@ window.clearLoginNotice = clearLoginNotice;
 
 /* ═══ WELCOME OVERLAY (admin only) ═══ */
 function showWelcomeAndProceed(name) {
+  if (window._ppMark) window._ppMark('welcome:start');
   const overlay = document.getElementById('welcomeOverlay');
   const msg = document.getElementById('welcomeMsg');
   const bar = document.getElementById('welcomeBar');
@@ -271,14 +272,17 @@ function showWelcomeAndProceed(name) {
     msg.style.opacity = '1'; bar.style.opacity = '1'; sub.style.opacity = '1';
   }));
   setTimeout(() => {
+    if (window._ppMark) window._ppMark('welcome:fadeOut');
     overlay.style.transition = 'opacity 0.9s ease';
     overlay.style.opacity = '0';
     setTimeout(() => {
+      if (window._ppMark) window._ppMark('welcome:hidden->showMain');
       overlay.style.display = 'none';
       overlay.style.opacity = '1';
       overlay.style.transition = '';
       msg.style.opacity = '0'; bar.style.opacity = '0'; sub.style.opacity = '0';
       showMain();
+      if (window._ppMark) window._ppMark('welcome:showMainReturned');
     }, 900);
   }, 2800);
 }
@@ -453,7 +457,9 @@ async function _hydrateFromSession() {
 /* After a successful sign-in or OTP verify: gate by status, then either
    show welcome (admin/dev) or jump straight to the hub. */
 async function _completeLogin() {
+  if (window._ppMark) window._ppMark('completeLogin:start');
   const profile = await _hydrateFromSession();
+  if (window._ppMark) window._ppMark('completeLogin:profile=' + (profile ? profile.status + '/' + (profile.tier || '?') : 'null'));
   if (!profile) {
     const errEl = document.getElementById('loginError');
     if (errEl) errEl.textContent = 'Profile lookup failed. Please try again.';
@@ -474,9 +480,11 @@ async function _completeLogin() {
     return;
   }
   /* Active — log them in. */
+  if (window._ppMark) window._ppMark('completeLogin:active');
   const loginScreen = document.getElementById('loginScreen');
   if (loginScreen) loginScreen.style.display = 'none';
   applyAccessRestrictions();
+  if (window._ppMark) window._ppMark('completeLogin:appliedAccess');
   /* Welcome overlay for every tier — admins get the named greeting via
      ADMIN_NAMES, non-admins get their full_name (set during registration)
      or the email's local-part as a fallback. */
@@ -829,14 +837,19 @@ window.getCurrentUserEmail   = getCurrentUserEmail;
 
 /* ═══ SHOW MAIN (hub) ═══ */
 function showMain() {
+  if (window._ppMark) window._ppMark('showMain:start');
   const loginScreen = document.getElementById('loginScreen');
   if (loginScreen) loginScreen.style.display = 'none';
   const mainPage = document.getElementById('mainPage');
   if (mainPage) mainPage.style.display = 'flex';
+  if (window._ppMark) window._ppMark('showMain:displayed');
   window._pp_currentView = 'hub';
   document.body.classList.add('on-hub');
+  if (window._ppMark) window._ppMark('showMain:onHubAdded');
   try { initTierSwitcher(); } catch (e) {}
+  if (window._ppMark) window._ppMark('showMain:tierSwitcherDone');
   try { if (typeof populateHubWidgets === 'function') populateHubWidgets(); } catch (e) {}
+  if (window._ppMark) window._ppMark('showMain:end');
 }
 window.showMain = showMain;
 
