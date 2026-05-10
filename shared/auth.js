@@ -35,11 +35,7 @@ const ADMIN_EMAILS = [
   'saskia@performanceproperty.com.au',
   'shaene@performanceproperty.com.au',
   'vandolf@performanceproperty.com.au',
-  'paul@performanceproperty.com.au',
-  /* test@ is a developer fixture for Phase 2 (online chess) testing —
-     promoted to admin so it dodges a known crash on non-admin tiers
-     during hub bootstrap. Remove once that bug is fixed. */
-  'test@performanceproperty.com.au'
+  'paul@performanceproperty.com.au'
 ];
 /* DEV_EMAILS auto-reveal the (otherwise hidden) password field on the
    login screen. Tier 0 dev signs in with email + password to skip OTP.
@@ -47,7 +43,7 @@ const ADMIN_EMAILS = [
    straight to the email-only OTP flow. */
 const DEV_EMAILS = [
   'vandolf@performanceproperty.com.au',
-  'test@performanceproperty.com.au'
+  'researchsupport@performanceproperty.com.au'
 ];
 
 /* Registration master switch. Off per Paul (CEO): this tool is
@@ -68,8 +64,7 @@ const ADMIN_NAMES = {
   'shaene@performanceproperty.com.au':    'Shaene',
   'vandolf@performanceproperty.com.au':   'Vandolf',
   'paul@performanceproperty.com.au':      'Paul',
-  'd.robbins@performanceproperty.com.au': 'David',
-  'test@performanceproperty.com.au':      'Test'
+  'd.robbins@performanceproperty.com.au': 'David'
 };
 const ALLOWED_DOMAIN = 'performanceproperty.com.au';
 
