@@ -449,26 +449,40 @@ async function _hydrateFromSession() {
     return null;
   }
 
-  /* DEBUG: previously wrapped in Promise.race for a timeout. Network
-     evidence shows the request returns 200 in ~200ms but the await
-     never resumed — Promise.race appears to break PostgrestBuilder's
-     thenable in this codepath. Stripping the race and going back to
-     a plain await. If this still hangs after the request returns,
-     the issue is inside supabase-js's response handling itself. */
+  /* DEBUG: bypass supabase-js for the profile fetch. Network tab
+     evidence shows the request returns 200 + 1KB in ~190ms, but the
+     await on the PostgrestBuilder never resumes — supabase-js's
+     thenable is dropping the resolution somewhere in the response
+     handler. Plain fetch with the same headers reproduces the
+     equivalent PostgREST call without going through that codepath. */
   if (window._ppMark) window._ppMark('hydrate:fetchProfile-await');
-  const builder = window.sb.from('profiles')
-    .select('id, email, full_name, tier, status')
-    .eq('id', sess.session.user.id)
-    .single();
-  if (window._ppMark) window._ppMark('hydrate:fetchProfile-builderReady');
   let profile = null;
   let error = null;
   try {
-    const result = await builder;
-    profile = result.data;
-    error = result.error;
+    const url = (window.PP_SUPABASE_URL || '') + '/rest/v1/profiles' +
+      '?select=id,email,full_name,tier,status' +
+      '&id=eq.' + encodeURIComponent(sess.session.user.id);
+    if (window._ppMark) window._ppMark('hydrate:rawFetch-start');
+    const res = await fetch(url, {
+      headers: {
+        apikey: window.PP_SUPABASE_KEY || '',
+        Authorization: 'Bearer ' + sess.session.access_token,
+        Accept: 'application/json',
+      },
+    });
+    if (window._ppMark) window._ppMark('hydrate:rawFetch-status=' + res.status);
+    const rows = await res.json();
+    if (window._ppMark) window._ppMark('hydrate:rawFetch-parsed=' + (Array.isArray(rows) ? rows.length + 'rows' : 'notArray'));
+    if (Array.isArray(rows) && rows.length === 1) {
+      profile = rows[0];
+    } else if (Array.isArray(rows) && rows.length === 0) {
+      error = { code: 'NOROW', message: 'no profile row for user ' + sess.session.user.id };
+    } else {
+      error = { code: 'BADRESP', message: 'unexpected response shape', body: rows };
+    }
   } catch (e) {
     error = e;
+    if (window._ppMark) window._ppMark('hydrate:rawFetch-throw=' + (e.message || 'thrown'));
   }
   if (window._ppMark) window._ppMark('hydrate:fetchProfile-resolved=' + (profile ? 'row' : (error ? 'err:' + (error.code || error.message || 'thrown') : 'null')));
 

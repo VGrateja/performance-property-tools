@@ -26,6 +26,10 @@
 
   const SUPABASE_URL = 'https://cannojsxduvlewimwoxa.supabase.co';
   const SUPABASE_KEY = 'sb_publishable_jh6BXfpWTkijbI_L31nslg_eoWhNcLf';
+  /* Expose for raw-fetch fallbacks elsewhere (e.g., shared/auth.js
+     bypasses the supabase-js profile fetch when its thenable hangs). */
+  window.PP_SUPABASE_URL = SUPABASE_URL;
+  window.PP_SUPABASE_KEY = SUPABASE_KEY;
 
   if (!window.supabase || typeof window.supabase.createClient !== 'function') {
     console.error(
