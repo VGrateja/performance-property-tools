@@ -449,26 +449,28 @@ async function _hydrateFromSession() {
     return null;
   }
 
-  /* The profiles SELECT is RLS-gated. If RLS is misbehaving for newer
-     users (e.g., a recursive policy or self-referencing check), this
-     query can hang indefinitely. Race it too so we surface a timeout
-     instead of a frozen page. */
+  /* DEBUG: previously wrapped in Promise.race for a timeout. Network
+     evidence shows the request returns 200 in ~200ms but the await
+     never resumed — Promise.race appears to break PostgrestBuilder's
+     thenable in this codepath. Stripping the race and going back to
+     a plain await. If this still hangs after the request returns,
+     the issue is inside supabase-js's response handling itself. */
   if (window._ppMark) window._ppMark('hydrate:fetchProfile-await');
-  const profRaced = await Promise.race([
-    window.sb.from('profiles')
-      .select('id, email, full_name, tier, status')
-      .eq('id', sess.session.user.id)
-      .single(),
-    new Promise(r => setTimeout(() => r({ __timeout: true }), 10000)),
-  ]);
-  if (profRaced && profRaced.__timeout) {
-    if (window._ppMark) window._ppMark('hydrate:fetchProfile-TIMEOUT');
-    console.warn('hydrate: profile fetch timed out after 10s');
-    _setSessionMirror(null);
-    return null;
+  const builder = window.sb.from('profiles')
+    .select('id, email, full_name, tier, status')
+    .eq('id', sess.session.user.id)
+    .single();
+  if (window._ppMark) window._ppMark('hydrate:fetchProfile-builderReady');
+  let profile = null;
+  let error = null;
+  try {
+    const result = await builder;
+    profile = result.data;
+    error = result.error;
+  } catch (e) {
+    error = e;
   }
-  const { data: profile, error } = profRaced;
-  if (window._ppMark) window._ppMark('hydrate:fetchProfile-ok=' + (profile ? 'row' : (error ? 'err:' + (error.code || error.message || 'unknown') : 'null')));
+  if (window._ppMark) window._ppMark('hydrate:fetchProfile-resolved=' + (profile ? 'row' : (error ? 'err:' + (error.code || error.message || 'thrown') : 'null')));
 
   if (error || !profile) {
     console.warn('Profile lookup failed', error);
