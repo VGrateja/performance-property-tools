@@ -35,6 +35,8 @@ After ~8 hours of debugging across multiple sessions:
 - **Chrome's `fetch()` body reader.** Replaced with raw `fetch()` → still hung at `res.text()`. Replaced with `XMLHttpRequest` → no `onload` / `onerror` / `ontimeout` ever fired.
 - **`localStorage` hydration bypass.** Replaced the supabase-js call with a direct `localStorage.getItem('pp-sb-auth')` read. `signInWithPassword` itself started hanging at that point — even the auth handshake won't return.
 - **Publishable key (`sb_publishable_…`) vs legacy anon JWT.** Swapped to the legacy `eyJ…` anon JWT. Same hang.
+- **Tier value of the affected user.** Set Shaene's `profiles.tier` from `'admin'` to `'dev'` (matching Vandolf's tier) in the SQL editor and had her retest from a cleared browser. Same hang. Tier is not the differentiator.
+- **Resend / SMTP hooks.** No auth hooks point at Resend; no custom SMTP is configured. Resend is not in the auth flow at all for password sign-in. Ruled out.
 
 ---
 
@@ -52,6 +54,14 @@ The combined signal is that something in the browser's response-handling layer i
 3. **supabase-js v2 from CDN** having a regression that interacts with one of the above.
 
 The data point that most strongly biases toward "Supabase project" over "Chrome bug": **the project's same key + same Chrome works fine for Vandolf** because his localStorage already has a session token. The hang only manifests on the bootstrap that has to fetch fresh state.
+
+**Reinforcing data (2026-05-11):** Vandolf reproducibly signs in on completely-fresh browsers as well — Edge InPrivate, a second-computer Chrome Incognito — both work. Other accounts on the same fresh-browser conditions all freeze. So the differentiator is **identity-bound**, not browser-bound or session-cache-bound. The bug fires on a per-user basis. What structurally distinguishes Vandolf from every other affected account, after eliminating tier:
+
+- He is the **oldest user** in the system (created 2026-05-06; Shaene 2026-05-07; test@ 2026-05-10).
+- He is presumably the **project owner / first owner** of the Supabase project (whoever clicked "Create Project").
+- He's the only account whose row was ever manually `UPDATE`d in the SQL editor (`tier='dev'` upgrade per the comment in migration 001).
+
+The remaining hypothesis is that something at the Supabase-project level — auth pool registration, owner-flag handling, or per-user JWT-validation cache — is in a state where only the project's original creator's tokens parse cleanly through the response chain. Every other user's response hangs at the body-read step despite returning 200.
 
 ---
 
