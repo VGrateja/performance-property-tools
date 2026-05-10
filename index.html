@@ -3229,9 +3229,20 @@ function navigateToResults() {
 }
 
 (function watchHubReveal() {
+  /* Each step in here runs unconditionally on every body-class
+     mutation. A throw in any one used to halt the rest of tryUpdate
+     AND was visible to the user as a frozen / blank hub for any
+     non-admin tier (since the admin path returns early in
+     applyAccessRestrictions and never trips the later branches).
+     Wrapping each call in its own try/catch contains the blast
+     radius — a misbehaving step warns to console but the rest of
+     the bootstrap continues. */
+  function safe(label, fn) {
+    try { fn(); } catch (e) { console.warn('[hub bootstrap] ' + label + ' threw', e); }
+  }
   function tryUpdate() {
     if (document.body.classList.contains('on-hub')) {
-      updatePendingApprovalsPill();
+      safe('updatePendingApprovalsPill', () => updatePendingApprovalsPill());
       /* Re-fetch the clock edition badge every time the hub becomes
          visible — covers the user-reported case where the clock tool
          saved "Edition 4" but the hub kept showing "Edition 3" because
@@ -3239,9 +3250,11 @@ function navigateToResults() {
          page-load. The in-flight guard inside the fn dedupes the
          multi-trigger pattern (initial + observer + pageshow + 1.5/4 s
          settles). */
-      if (typeof syncClockEditionBadge === 'function') syncClockEditionBadge();
-      applyCadenceVisibility();
-      applyArenaVisibility();
+      safe('syncClockEditionBadge', () => {
+        if (typeof syncClockEditionBadge === 'function') syncClockEditionBadge();
+      });
+      safe('applyCadenceVisibility', () => applyCadenceVisibility());
+      safe('applyArenaVisibility', () => applyArenaVisibility());
     }
     /* Idempotent — strips onclick + sets disabled on every fire.
        Subsequent calls are no-ops (attributes already gone). Catches
@@ -3255,7 +3268,9 @@ function navigateToResults() {
        which also breaks the cluster-modal auto-open IIFE further
        below. The MutationObserver-driven fires that come later will
        see the function defined and run it normally. */
-    if (typeof neuterTier4LockedPills === 'function') neuterTier4LockedPills();
+    safe('neuterTier4LockedPills', () => {
+      if (typeof neuterTier4LockedPills === 'function') neuterTier4LockedPills();
+    });
   }
   tryUpdate();
   const obs = new MutationObserver(tryUpdate);
