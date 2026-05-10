@@ -419,19 +419,57 @@ function startOtpLockout() {
 let _otpPendingEmail = '';
 
 /* Fetch the current user's profile, populate sessionStorage, and route to
-   the right post-login UI. Returns the profile or null if no session. */
+   the right post-login UI. Returns the profile or null if no session.
+   DEBUG: each await is wrapped in a 10-second timeout race so the page
+   can't freeze permanently if Supabase is hanging. Markers around each
+   step let us see in localStorage which call (getSession or profile-
+   fetch) is the actual hang point. */
 async function _hydrateFromSession() {
+  if (window._ppMark) window._ppMark('hydrate:start');
   if (!window.sb) return null;
-  const { data: sess } = await window.sb.auth.getSession();
+
+  /* getSession is supposed to be local-ish (reads stored session), but
+     supabase-js will trigger a refresh if the token is expired — that
+     refresh hits the network. Race it. */
+  if (window._ppMark) window._ppMark('hydrate:getSession-await');
+  const sessRaced = await Promise.race([
+    window.sb.auth.getSession(),
+    new Promise(r => setTimeout(() => r({ __timeout: true }), 10000)),
+  ]);
+  if (sessRaced && sessRaced.__timeout) {
+    if (window._ppMark) window._ppMark('hydrate:getSession-TIMEOUT');
+    console.warn('hydrate: getSession timed out after 10s');
+    _setSessionMirror(null);
+    return null;
+  }
+  const sess = sessRaced.data;
+  if (window._ppMark) window._ppMark('hydrate:getSession-ok=' + (sess && sess.session ? 'yes' : 'no'));
   if (!sess || !sess.session) {
     _setSessionMirror(null);
     return null;
   }
-  const { data: profile, error } = await window.sb
-    .from('profiles')
-    .select('id, email, full_name, tier, status')
-    .eq('id', sess.session.user.id)
-    .single();
+
+  /* The profiles SELECT is RLS-gated. If RLS is misbehaving for newer
+     users (e.g., a recursive policy or self-referencing check), this
+     query can hang indefinitely. Race it too so we surface a timeout
+     instead of a frozen page. */
+  if (window._ppMark) window._ppMark('hydrate:fetchProfile-await');
+  const profRaced = await Promise.race([
+    window.sb.from('profiles')
+      .select('id, email, full_name, tier, status')
+      .eq('id', sess.session.user.id)
+      .single(),
+    new Promise(r => setTimeout(() => r({ __timeout: true }), 10000)),
+  ]);
+  if (profRaced && profRaced.__timeout) {
+    if (window._ppMark) window._ppMark('hydrate:fetchProfile-TIMEOUT');
+    console.warn('hydrate: profile fetch timed out after 10s');
+    _setSessionMirror(null);
+    return null;
+  }
+  const { data: profile, error } = profRaced;
+  if (window._ppMark) window._ppMark('hydrate:fetchProfile-ok=' + (profile ? 'row' : (error ? 'err:' + (error.code || error.message || 'unknown') : 'null')));
+
   if (error || !profile) {
     console.warn('Profile lookup failed', error);
     _setSessionMirror(null);
