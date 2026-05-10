@@ -449,12 +449,13 @@ async function _hydrateFromSession() {
     return null;
   }
 
-  /* DEBUG: bypass supabase-js for the profile fetch. Network tab
-     evidence shows the request returns 200 + 1KB in ~190ms, but the
-     await on the PostgrestBuilder never resumes — supabase-js's
-     thenable is dropping the resolution somewhere in the response
-     handler. Plain fetch with the same headers reproduces the
-     equivalent PostgREST call without going through that codepath. */
+  /* DEBUG: profile fetch via XMLHttpRequest, not fetch().
+     Previous trace showed fetch() returned 200 with content-type
+     application/json but content-length missing (chunked transfer)
+     and res.text() never resumed. Both supabase-js (PostgrestBuilder)
+     and our raw fetch went through the same browser body-stream
+     code path; XHR uses a separate engine and is more reliable for
+     chunked responses on flaky stacks. */
   if (window._ppMark) window._ppMark('hydrate:fetchProfile-await');
   let profile = null;
   let error = null;
@@ -462,43 +463,48 @@ async function _hydrateFromSession() {
     const url = (window.PP_SUPABASE_URL || '') + '/rest/v1/profiles' +
       '?select=id,email,full_name,tier,status' +
       '&id=eq.' + encodeURIComponent(sess.session.user.id);
-    if (window._ppMark) window._ppMark('hydrate:rawFetch-start');
-    const res = await fetch(url, {
-      headers: {
-        apikey: window.PP_SUPABASE_KEY || '',
-        Authorization: 'Bearer ' + sess.session.access_token,
-        Accept: 'application/json',
-      },
-      cache: 'no-store',  /* avoid potential SW/disk-cache mediation */
+    if (window._ppMark) window._ppMark('hydrate:xhr-start');
+    const xhrResult = await new Promise((resolve) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', url, true);
+        xhr.setRequestHeader('apikey', window.PP_SUPABASE_KEY || '');
+        xhr.setRequestHeader('Authorization', 'Bearer ' + sess.session.access_token);
+        xhr.setRequestHeader('Accept', 'application/json');
+        xhr.timeout = 10000;
+        xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+        xhr.onerror = () => resolve({ error: 'network' });
+        xhr.ontimeout = () => resolve({ error: 'timeout' });
+        xhr.send();
+      } catch (e) {
+        resolve({ error: 'throw:' + (e.message || 'thrown') });
+      }
     });
-    if (window._ppMark) window._ppMark('hydrate:rawFetch-status=' + res.status +
-      ',ct=' + (res.headers.get('content-type') || '?') +
-      ',cl=' + (res.headers.get('content-length') || '?') +
-      ',xpf=' + (res.headers.get('x-powered-by') || '?'));
-    /* Read body as text first — separates body-stream issues from
-       JSON parse issues. If text() hangs, the response body stream
-       is stuck (service worker, transfer-encoding glitch, etc.). */
-    const tStart = Date.now();
-    const text = await res.text();
-    if (window._ppMark) window._ppMark('hydrate:rawFetch-text=' + text.length + 'chars/' + (Date.now() - tStart) + 'ms');
-    let rows;
-    try {
-      rows = JSON.parse(text);
-    } catch (e) {
-      if (window._ppMark) window._ppMark('hydrate:rawFetch-parseErr=' + (e.message || 'parse failed'));
-      throw e;
-    }
-    if (window._ppMark) window._ppMark('hydrate:rawFetch-parsed=' + (Array.isArray(rows) ? rows.length + 'rows' : 'notArray'));
-    if (Array.isArray(rows) && rows.length === 1) {
-      profile = rows[0];
-    } else if (Array.isArray(rows) && rows.length === 0) {
-      error = { code: 'NOROW', message: 'no profile row for user ' + sess.session.user.id };
+    if (xhrResult.error) {
+      if (window._ppMark) window._ppMark('hydrate:xhr-error=' + xhrResult.error);
+      error = { code: 'XHR', message: xhrResult.error };
     } else {
-      error = { code: 'BADRESP', message: 'unexpected response shape', body: rows };
+      if (window._ppMark) window._ppMark('hydrate:xhr-status=' + xhrResult.status + ',body=' + (xhrResult.body || '').length + 'chars');
+      let rows;
+      try {
+        rows = JSON.parse(xhrResult.body);
+      } catch (e) {
+        if (window._ppMark) window._ppMark('hydrate:xhr-parseErr=' + (e.message || 'parse failed'));
+        error = { code: 'PARSE', message: e.message || 'parse failed' };
+        rows = null;
+      }
+      if (window._ppMark) window._ppMark('hydrate:xhr-parsed=' + (Array.isArray(rows) ? rows.length + 'rows' : 'notArray'));
+      if (Array.isArray(rows) && rows.length === 1) {
+        profile = rows[0];
+      } else if (Array.isArray(rows) && rows.length === 0) {
+        error = { code: 'NOROW', message: 'no profile row for user ' + sess.session.user.id };
+      } else if (!error) {
+        error = { code: 'BADRESP', message: 'unexpected response shape', body: rows };
+      }
     }
   } catch (e) {
     error = e;
-    if (window._ppMark) window._ppMark('hydrate:rawFetch-throw=' + (e.message || 'thrown'));
+    if (window._ppMark) window._ppMark('hydrate:xhr-throw=' + (e.message || 'thrown'));
   }
   if (window._ppMark) window._ppMark('hydrate:fetchProfile-resolved=' + (profile ? 'row' : (error ? 'err:' + (error.code || error.message || 'thrown') : 'null')));
 
