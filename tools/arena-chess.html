@@ -1,0 +1,1539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Performance Property Arena — Chess</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700;800;900&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/common.css"/>
+<script src="../shared/theme.js"></script>
+<!-- chess.js: legal-move generation, check/checkmate/stalemate/draw
+     detection, PGN export. Pinned to the 0.x line because that's the
+     last version exposing a UMD `Chess` global; 1.x is ESM-only. The
+     library is ~30KB gzipped and has no runtime deps. -->
+<script src="https://cdn.jsdelivr.net/npm/chess.js@0.13.4/chess.min.js"></script>
+<style>
+  /* ─── Chess landing — Phase 1 (hot-seat board) ───
+     Two players share one browser, take turns clicking the board.
+     The chess.js engine validates moves and detects game end; once
+     a result is locked in, the app inserts the match row itself
+     (no manual logging). Online play (Phase 2) reuses the same board
+     wrapped in a Supabase Realtime channel.
+     Layout:
+       - Hero with title + subtitle.
+       - "Start a hot-seat game" CTA opens a setup form (player names
+         + ranked toggle + time control), then swaps the page over to
+         the game view.
+       - Game view: 8×8 board, side panel with turn indicator, move
+         list, captured pieces, resign / offer-draw buttons.
+       - Result modal on game-end → auto-saves and returns to lobby.
+       - Leaderboard + recent matches always visible at the bottom. */
+  body{ margin:0; min-height:100vh; }
+  #chessView{
+    display:flex; flex-direction:column; min-height:100vh;
+    background: linear-gradient(160deg, #0f172a 0%, #1e1b4b 50%, #082f49 100%);
+    color:#e9eef7;
+    padding-bottom: 60px;
+  }
+  [data-theme="light"] #chessView{
+    background: linear-gradient(160deg, #f0f9ff 0%, #e0e7ff 50%, #cffafe 100%);
+    color:#0a1520;
+  }
+
+  /* Top-left back-to-hub pill — same pattern every other tool uses. */
+  #pp-back-to-hub{
+    position:fixed; top:16px; left:16px; z-index:10000;
+    display:inline-flex; align-items:center; gap:8px;
+    padding:9px 14px 9px 10px;
+    background:rgba(15,23,42,.85);
+    border:1px solid rgba(71,85,105,.5);
+    border-radius:10px;
+    color:#e2e8f0;
+    font-family:'DM Sans',system-ui,-apple-system,sans-serif;
+    font-size:13px; font-weight:600; letter-spacing:.01em;
+    text-decoration:none; cursor:pointer;
+    white-space:nowrap;
+    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    transition:all .15s ease;
+  }
+  #pp-back-to-hub:hover{
+    background:rgba(30,41,59,.95);
+    border-color:rgba(148,163,184,.5);
+    color:#f8fafc;
+    transform:translateX(-1px);
+  }
+  #pp-back-to-hub svg{ width:14px; height:14px; }
+  [data-theme="light"] #pp-back-to-hub{
+    background:rgba(255,255,255,.85);
+    border-color:rgba(31,40,63,.18);
+    color:#1a2236;
+  }
+  [data-theme="light"] #pp-back-to-hub:hover{
+    background:rgba(255,255,255,.97);
+    border-color:rgba(0,182,203,.55);
+    color:#0a1520;
+  }
+
+  /* Back-to-Arena pill — sits next to back-to-hub so both navs are
+     reachable in one glance. Mirrors the pair on arena-typing.html. */
+  #pp-back-to-arena{
+    position:fixed; top:16px; left:160px; z-index:10000;
+    display:inline-flex; align-items:center; gap:8px;
+    padding:9px 14px;
+    background:rgba(15,23,42,.85);
+    border:1px solid rgba(71,85,105,.5);
+    border-radius:10px;
+    color:#e2e8f0;
+    font-family:'DM Sans',system-ui,-apple-system,sans-serif;
+    font-size:12.5px; font-weight:600; letter-spacing:.01em;
+    text-decoration:none; cursor:pointer;
+    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    transition:all .15s ease;
+  }
+  #pp-back-to-arena:hover{
+    background:rgba(30,41,59,.95);
+    border-color:rgba(148,163,184,.5);
+    color:#f8fafc;
+  }
+  [data-theme="light"] #pp-back-to-arena{
+    background:rgba(255,255,255,.85);
+    border-color:rgba(31,40,63,.18);
+    color:#1a2236;
+  }
+  [data-theme="light"] #pp-back-to-arena:hover{
+    background:rgba(255,255,255,.97);
+    border-color:rgba(0,182,203,.55);
+  }
+
+  .chess-inner{
+    max-width: 1100px; margin: 0 auto; padding: 70px 28px 0;
+    width: 100%; box-sizing: border-box;
+  }
+  .chess-eyebrow{
+    font-family:'Montserrat',sans-serif; font-weight:800;
+    font-size:11px; letter-spacing:3px; text-transform:uppercase;
+    color: rgba(0, 182, 203, 0.85);
+    margin-bottom: 6px;
+  }
+  .chess-title{
+    font-family:'Montserrat',sans-serif; font-weight:900;
+    font-size: 56px; line-height: 1; letter-spacing: -1.5px;
+    margin: 0 0 12px; color: #fff;
+  }
+  [data-theme="light"] .chess-title { color: #0a1520; }
+  .chess-sub{
+    font-size: 15px; line-height: 1.55;
+    color: rgba(255,255,255,0.75);
+    max-width: 720px; margin: 0 0 32px;
+  }
+  [data-theme="light"] .chess-sub { color: rgba(31,40,63,0.75); }
+
+  /* Hero CTA card — "Start a hot-seat game" → opens setup form → opens
+     the board. Active state (gradient border) when no game in progress. */
+  .chess-play-card{
+    display:flex; align-items:center; justify-content:space-between;
+    gap: 24px; padding: 24px 28px;
+    background: rgba(15, 23, 42, 0.55);
+    border: 1.5px solid rgba(0, 182, 203, 0.50);
+    border-radius: 16px;
+    margin-bottom: 32px;
+    backdrop-filter: blur(8px) saturate(140%);
+    -webkit-backdrop-filter: blur(8px) saturate(140%);
+    box-shadow: 0 6px 24px rgba(0, 182, 203, 0.10);
+  }
+  [data-theme="light"] .chess-play-card{
+    background: rgba(255,255,255,0.85);
+    border-color: rgba(0, 182, 203, 0.55);
+  }
+  .chess-play-card-text{
+    display:flex; flex-direction:column; gap: 4px;
+  }
+  .chess-play-card-title{
+    font-family:'Montserrat',sans-serif; font-weight:800;
+    font-size: 18px; letter-spacing: 0.4px;
+  }
+  .chess-play-card-desc{
+    font-size: 13px; color: rgba(255,255,255,0.65);
+  }
+  [data-theme="light"] .chess-play-card-desc { color: rgba(31,40,63,0.65); }
+  .chess-play-card-btn{
+    padding: 12px 22px; border-radius: 10px;
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase;
+    background: rgba(0, 182, 203, 0.85);
+    color: #fff;
+    border: 1.5px solid rgba(0, 182, 203, 0.85);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+  .chess-play-card-btn:hover{
+    background: #00b6cb;
+    transform: translateY(-1px);
+  }
+
+  /* ─── Pre-game setup form (inline, toggled by the New Game CTA). ─── */
+  .chess-setup-form{
+    background: rgba(15, 23, 42, 0.55);
+    border: 1.5px solid rgba(0, 182, 203, 0.30);
+    border-radius: 16px;
+    padding: 20px 24px;
+    margin-bottom: 32px;
+    display: none;
+    backdrop-filter: blur(8px) saturate(140%);
+    -webkit-backdrop-filter: blur(8px) saturate(140%);
+  }
+  [data-theme="light"] .chess-setup-form{
+    background: rgba(255,255,255,0.92);
+    border-color: rgba(0, 182, 203, 0.40);
+  }
+  .chess-setup-form.is-open { display: block; }
+  .chess-setup-grid{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px 18px;
+  }
+  .chess-setup-field{
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .chess-setup-field label{
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    font-size: 10px; letter-spacing: 1.4px; text-transform: uppercase;
+    color: rgba(255,255,255,0.65);
+  }
+  [data-theme="light"] .chess-setup-field label { color: rgba(31,40,63,0.65); }
+  .chess-setup-field input,
+  .chess-setup-field select{
+    font: inherit; font-size: 13px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.40);
+    border: 1.5px solid rgba(0, 182, 203, 0.20);
+    color: #fff;
+  }
+  [data-theme="light"] .chess-setup-field input,
+  [data-theme="light"] .chess-setup-field select{
+    background: rgba(255,255,255,0.95);
+    border-color: rgba(0, 182, 203, 0.30);
+    color: #0a1520;
+  }
+  .chess-setup-field input:focus,
+  .chess-setup-field select:focus{
+    outline: none;
+    border-color: rgba(0, 182, 203, 0.65);
+  }
+  .chess-setup-checkbox{
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px;
+    color: rgba(255,255,255,0.85);
+  }
+  [data-theme="light"] .chess-setup-checkbox { color: rgba(31,40,63,0.85); }
+  .chess-setup-buttons{
+    grid-column: 1 / -1;
+    display: flex; gap: 10px; justify-content: flex-end;
+    margin-top: 6px;
+  }
+  .chess-setup-cancel,
+  .chess-setup-submit{
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    font-size: 12px; letter-spacing: 1.2px; text-transform: uppercase;
+    cursor: pointer;
+    border: 1.5px solid transparent;
+  }
+  .chess-setup-cancel{
+    background: transparent;
+    border-color: rgba(71, 85, 105, 0.45);
+    color: rgba(255,255,255,0.65);
+  }
+  [data-theme="light"] .chess-setup-cancel{
+    border-color: rgba(31,40,63,0.20);
+    color: rgba(31,40,63,0.65);
+  }
+  .chess-setup-submit{
+    background: rgba(0, 182, 203, 0.85);
+    color: #fff;
+  }
+  .chess-setup-submit:hover{ background: #00b6cb; }
+  .chess-setup-error{
+    grid-column: 1 / -1;
+    color: #ef4444; font-size: 12px;
+    padding: 6px 0 0;
+  }
+  .chess-setup-points-preview{
+    grid-column: 1 / -1;
+    padding: 10px 14px;
+    background: rgba(0, 182, 203, 0.08);
+    border-radius: 8px;
+    font-size: 12px;
+    color: rgba(255,255,255,0.75);
+  }
+  [data-theme="light"] .chess-setup-points-preview{
+    color: rgba(31,40,63,0.75);
+  }
+
+  /* ─── Game view: board + side panel.
+     Hidden by default; revealed when state machine flips to 'playing'.
+     Layout is two-column on desktop, stacked on narrow screens. */
+  .chess-game-view{
+    display: none;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: 28px;
+    margin-bottom: 36px;
+  }
+  .chess-game-view.is-open{ display: grid; }
+  @media (max-width: 820px){
+    .chess-game-view{ grid-template-columns: 1fr; }
+  }
+
+  /* The board wrapper centres an 8×8 grid that scales with viewport. */
+  .chess-board-wrap{ display:flex; flex-direction:column; align-items:center; }
+  .chess-turn-indicator{
+    margin-bottom: 14px;
+    padding: 8px 18px;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.55);
+    border: 1.5px solid rgba(0, 182, 203, 0.40);
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase;
+    color: rgba(255,255,255,0.85);
+  }
+  [data-theme="light"] .chess-turn-indicator{
+    background: rgba(255,255,255,0.85);
+    color: rgba(31,40,63,0.85);
+    border-color: rgba(0, 182, 203, 0.45);
+  }
+  .chess-turn-indicator strong{ color: #00b6cb; font-weight: 800; }
+  .chess-turn-indicator.is-check{
+    border-color: rgba(239, 68, 68, 0.65);
+    background: rgba(239, 68, 68, 0.12);
+  }
+
+  .chess-board{
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    aspect-ratio: 1;
+    width: 100%;
+    max-width: 560px;
+    border: 2px solid rgba(0, 182, 203, 0.40);
+    border-radius: 6px;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.40);
+  }
+  .chess-square{
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    font-size: clamp(28px, 6vw, 52px);
+    line-height: 1;
+    transition: background-color .12s ease;
+  }
+  .chess-square.is-light{ background: #e9eef5; }
+  .chess-square.is-dark{  background: #6b8aa3; }
+  [data-theme="light"] .chess-square.is-light{ background: #f4f0e8; }
+  [data-theme="light"] .chess-square.is-dark{  background: #b58863; }
+  .chess-square.is-selected{
+    background: rgba(0, 182, 203, 0.55) !important;
+    box-shadow: inset 0 0 0 3px rgba(0, 182, 203, 0.85);
+  }
+  .chess-square.is-last-move{
+    box-shadow: inset 0 0 0 3px rgba(245, 158, 11, 0.55);
+  }
+  .chess-square.is-check{
+    background: rgba(239, 68, 68, 0.55) !important;
+  }
+  /* A small dot to indicate a legal destination on an empty square; a
+     ring inside the square if the legal destination contains an
+     enemy piece (capture). */
+  .chess-square.is-legal::after{
+    content:''; position:absolute;
+    width: 28%; height: 28%;
+    border-radius: 50%;
+    background: rgba(0, 182, 203, 0.65);
+    pointer-events: none;
+  }
+  .chess-square.is-legal.is-capture::after{
+    width: 80%; height: 80%;
+    background: transparent;
+    border: 4px solid rgba(0, 182, 203, 0.65);
+  }
+  .chess-piece{
+    pointer-events: none;
+    line-height: 1;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.25);
+  }
+  .chess-piece.is-white{ color: #fafafa; text-shadow: 0 1px 2px rgba(0,0,0,0.55), 0 0 0 1px rgba(0,0,0,0.45); }
+  .chess-piece.is-black{ color: #1a1a1a; text-shadow: 0 1px 2px rgba(255,255,255,0.20); }
+  /* File / rank labels on the edge squares — a/h for files, 1/8 for ranks. */
+  .chess-square .chess-coord{
+    position: absolute;
+    font-family:'Montserrat',sans-serif; font-size: 9px; font-weight: 700;
+    color: rgba(0,0,0,0.40);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+  .chess-square.is-dark .chess-coord{ color: rgba(255,255,255,0.55); }
+  .chess-square .chess-coord.file-label{ bottom: 2px; right: 4px; }
+  .chess-square .chess-coord.rank-label{ top: 2px; left: 4px; }
+
+  /* Sidebar — turn info already lives above the board; this stack
+     carries move list + captured pieces + action buttons. */
+  .chess-sidebar{
+    display: flex; flex-direction: column; gap: 14px;
+    background: rgba(15, 23, 42, 0.55);
+    border: 1.5px solid rgba(0, 182, 203, 0.20);
+    border-radius: 14px;
+    padding: 18px 18px;
+    backdrop-filter: blur(8px) saturate(140%);
+    -webkit-backdrop-filter: blur(8px) saturate(140%);
+  }
+  [data-theme="light"] .chess-sidebar{
+    background: rgba(255,255,255,0.85);
+    border-color: rgba(0, 182, 203, 0.30);
+  }
+  .chess-sidebar-section-title{
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    font-size: 10px; letter-spacing: 1.4px; text-transform: uppercase;
+    color: rgba(255,255,255,0.55);
+    margin-bottom: 6px;
+  }
+  [data-theme="light"] .chess-sidebar-section-title { color: rgba(31,40,63,0.55); }
+  .chess-players{
+    display: flex; flex-direction: column; gap: 6px;
+    font-size: 13px;
+  }
+  .chess-player-row{
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 10px;
+    background: rgba(15, 23, 42, 0.30);
+    border-radius: 8px;
+  }
+  [data-theme="light"] .chess-player-row{ background: rgba(31, 40, 63, 0.06); }
+  .chess-player-row.is-active{
+    background: rgba(0, 182, 203, 0.18);
+    box-shadow: inset 0 0 0 1.5px rgba(0, 182, 203, 0.45);
+  }
+  .chess-player-color{
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 1.5px solid rgba(0, 182, 203, 0.50);
+    flex-shrink: 0; margin-right: 8px;
+  }
+  .chess-player-color.is-white{ background: #fafafa; }
+  .chess-player-color.is-black{ background: #1a1a1a; }
+  .chess-player-name{ flex: 1; font-weight: 600; }
+  .chess-player-pts{
+    font-family:'Montserrat',sans-serif; font-weight:800;
+    font-size: 12px; color: rgba(0, 182, 203, 0.95);
+  }
+
+  .chess-move-list{
+    max-height: 220px; overflow-y: auto;
+    background: rgba(15, 23, 42, 0.30);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-family: 'Roboto Mono', ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 182, 203, 0.35) transparent;
+  }
+  [data-theme="light"] .chess-move-list{ background: rgba(31, 40, 63, 0.06); }
+  .chess-move-list-empty{
+    color: rgba(255,255,255,0.45);
+    font-style: italic;
+    font-family: inherit;
+  }
+  [data-theme="light"] .chess-move-list-empty{ color: rgba(31,40,63,0.55); }
+  .chess-move-pair{ display: inline-block; margin-right: 14px; }
+  .chess-move-num{ color: rgba(255,255,255,0.45); margin-right: 4px; }
+  [data-theme="light"] .chess-move-num{ color: rgba(31,40,63,0.55); }
+
+  .chess-actions{
+    display: flex; gap: 8px;
+  }
+  .chess-action-btn{
+    flex: 1;
+    padding: 9px 12px;
+    border-radius: 8px;
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    font-size: 11px; letter-spacing: 1.2px; text-transform: uppercase;
+    cursor: pointer;
+    background: rgba(15, 23, 42, 0.50);
+    color: rgba(255,255,255,0.85);
+    border: 1.5px solid rgba(255, 255, 255, 0.18);
+  }
+  .chess-action-btn:hover{ border-color: rgba(0, 182, 203, 0.55); color: #fff; }
+  .chess-action-btn.is-danger:hover{ border-color: rgba(239, 68, 68, 0.65); color: #ef4444; }
+  [data-theme="light"] .chess-action-btn{
+    background: rgba(255,255,255,0.85);
+    color: rgba(31,40,63,0.85);
+    border-color: rgba(31,40,63,0.18);
+  }
+
+  /* Game-end result modal. Sits over the board when a result is
+     reached — pulls focus, shows points delta, and saves the match. */
+  .chess-result-modal{
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    z-index: 5000;
+    padding: 24px;
+  }
+  .chess-result-modal.is-open{ display: flex; }
+  .chess-result-card{
+    background: rgba(15, 23, 42, 0.92);
+    border: 1.5px solid rgba(0, 182, 203, 0.45);
+    border-radius: 16px;
+    padding: 28px 32px;
+    max-width: 420px;
+    width: 100%;
+    color: #fff;
+    text-align: center;
+  }
+  [data-theme="light"] .chess-result-card{
+    background: rgba(255,255,255,0.97);
+    color: #0a1520;
+    border-color: rgba(0, 182, 203, 0.55);
+  }
+  .chess-result-eyebrow{
+    font-family:'Montserrat',sans-serif; font-weight:800;
+    font-size: 11px; letter-spacing: 2.5px; text-transform: uppercase;
+    color: rgba(0, 182, 203, 0.85);
+    margin-bottom: 6px;
+  }
+  .chess-result-title{
+    font-family:'Montserrat',sans-serif; font-weight:900;
+    font-size: 28px; line-height: 1.15;
+    margin: 0 0 10px;
+  }
+  .chess-result-sub{
+    font-size: 13px;
+    color: rgba(255,255,255,0.70);
+    margin-bottom: 18px;
+  }
+  [data-theme="light"] .chess-result-sub { color: rgba(31,40,63,0.70); }
+  .chess-result-deltas{
+    display: flex; flex-direction: column; gap: 8px;
+    margin-bottom: 22px;
+  }
+  .chess-result-delta-row{
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    background: rgba(0, 182, 203, 0.08);
+    border-radius: 8px;
+    font-size: 13.5px;
+  }
+  .chess-result-delta-label{ font-weight: 600; }
+  .chess-result-delta-val{
+    font-family:'Montserrat',sans-serif; font-weight:800;
+    color: #00b6cb;
+  }
+  .chess-result-delta-val.is-down{ color: #ef4444; }
+  .chess-result-delta-val.is-flat{ color: rgba(255,255,255,0.55); }
+  [data-theme="light"] .chess-result-delta-val.is-flat{ color: rgba(31,40,63,0.55); }
+  .chess-result-buttons{
+    display: flex; gap: 10px; justify-content: center;
+  }
+  .chess-result-btn{
+    padding: 11px 22px;
+    border-radius: 8px;
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    font-size: 12px; letter-spacing: 1.2px; text-transform: uppercase;
+    cursor: pointer;
+    border: 1.5px solid transparent;
+  }
+  .chess-result-btn.is-primary{
+    background: rgba(0, 182, 203, 0.85); color: #fff;
+  }
+  .chess-result-btn.is-primary:hover{ background: #00b6cb; }
+  .chess-result-btn.is-secondary{
+    background: transparent;
+    color: rgba(255,255,255,0.70);
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+  [data-theme="light"] .chess-result-btn.is-secondary{
+    color: rgba(31,40,63,0.70);
+    border-color: rgba(31,40,63,0.18);
+  }
+
+  /* Section heading shared by leaderboard + recent. */
+  .chess-section-head{
+    display:flex; align-items:center; justify-content:space-between;
+    margin: 0 0 16px;
+  }
+  .chess-section-title{
+    font-family:'Montserrat',sans-serif; font-weight:800;
+    font-size: 13px; letter-spacing: 2.5px; text-transform: uppercase;
+    color: rgba(255,255,255,0.85);
+  }
+  [data-theme="light"] .chess-section-title { color: rgba(31,40,63,0.85); }
+
+  /* ─── Leaderboard table ─── */
+  .chess-leaderboard{
+    background: rgba(15, 23, 42, 0.55);
+    border: 1.5px solid rgba(0, 182, 203, 0.20);
+    border-radius: 16px;
+    margin-bottom: 36px;
+    overflow: hidden;
+    backdrop-filter: blur(8px) saturate(140%);
+    -webkit-backdrop-filter: blur(8px) saturate(140%);
+  }
+  [data-theme="light"] .chess-leaderboard{
+    background: rgba(255,255,255,0.85);
+    border-color: rgba(0, 182, 203, 0.30);
+  }
+  .chess-leaderboard table{
+    width: 100%; border-collapse: collapse;
+  }
+  .chess-leaderboard th, .chess-leaderboard td{
+    padding: 14px 20px;
+    text-align: left;
+    font-size: 13px;
+  }
+  .chess-leaderboard th{
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: rgba(255,255,255,0.55);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  [data-theme="light"] .chess-leaderboard th{
+    color: rgba(31,40,63,0.55);
+    border-bottom-color: rgba(31,40,63,0.10);
+  }
+  .chess-leaderboard td{
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    color: rgba(255,255,255,0.88);
+  }
+  [data-theme="light"] .chess-leaderboard td{
+    color: rgba(31,40,63,0.88);
+    border-bottom-color: rgba(31,40,63,0.05);
+  }
+  .chess-leaderboard tr:last-child td { border-bottom: none; }
+  .chess-leaderboard .chess-rank{
+    font-family:'Montserrat',sans-serif; font-weight:800;
+    color: rgba(0, 182, 203, 0.85);
+    font-size: 14px;
+    width: 60px;
+  }
+  .chess-leaderboard .chess-points{
+    font-family:'Montserrat',sans-serif; font-weight:800;
+    font-size: 18px; color: #fff;
+    text-align: right;
+  }
+  [data-theme="light"] .chess-leaderboard .chess-points { color: #0a1520; }
+  .chess-leaderboard .chess-prov-badge{
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(245, 158, 11, 0.20);
+    color: #f59e0b;
+    font-size: 9px;
+    letter-spacing: 1px;
+    font-weight: 800;
+    text-transform: uppercase;
+    vertical-align: middle;
+  }
+  .chess-leaderboard .chess-empty{
+    padding: 40px 20px;
+    text-align: center;
+    color: rgba(255,255,255,0.5);
+    font-size: 13px;
+  }
+  [data-theme="light"] .chess-leaderboard .chess-empty { color: rgba(31,40,63,0.5); }
+
+  /* ─── Recent matches list ─── */
+  .chess-matches-list{
+    list-style: none;
+    margin: 0; padding: 0;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .chess-match-row{
+    background: rgba(15, 23, 42, 0.45);
+    border: 1.5px solid rgba(0, 182, 203, 0.18);
+    border-radius: 12px;
+    padding: 12px 18px;
+    display: flex; align-items: center; gap: 14px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  [data-theme="light"] .chess-match-row{
+    background: rgba(255,255,255,0.80);
+    border-color: rgba(0, 182, 203, 0.25);
+  }
+  .chess-match-result{
+    font-family:'Montserrat',sans-serif; font-weight:800;
+    font-size: 11px; letter-spacing: 1.5px;
+    padding: 4px 10px; border-radius: 6px;
+    background: rgba(0, 182, 203, 0.20);
+    color: #00b6cb;
+    flex-shrink: 0;
+    min-width: 56px; text-align: center;
+  }
+  .chess-match-result.is-draw{
+    background: rgba(245, 158, 11, 0.18);
+    color: #f59e0b;
+  }
+  .chess-match-result.is-casual{
+    background: rgba(71, 85, 105, 0.20);
+    color: rgba(255,255,255,0.55);
+  }
+  [data-theme="light"] .chess-match-result.is-casual { color: rgba(31,40,63,0.55); }
+  .chess-match-text{
+    flex: 1 1 auto; min-width: 0;
+    font-size: 13.5px; line-height: 1.5;
+  }
+  .chess-match-meta{
+    font-size: 9.5px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: rgba(255,255,255,0.45);
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  [data-theme="light"] .chess-match-meta { color: rgba(31,40,63,0.55); }
+  .chess-match-delta{
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    color: #00b6cb;
+  }
+  .chess-match-delta.is-down{ color: #ef4444; }
+  .chess-match-delta.is-flat{ color: rgba(255,255,255,0.45); }
+  [data-theme="light"] .chess-match-delta.is-flat { color: rgba(31,40,63,0.45); }
+  .chess-matches-empty{
+    padding: 32px 20px;
+    text-align: center;
+    color: rgba(255,255,255,0.45);
+    font-size: 13px;
+    border: 1.5px dashed rgba(255,255,255,0.12);
+    border-radius: 12px;
+  }
+  [data-theme="light"] .chess-matches-empty{
+    color: rgba(31,40,63,0.45);
+    border-color: rgba(31,40,63,0.15);
+  }
+
+  @media (max-width: 600px){
+    .chess-title { font-size: 38px; }
+    .chess-setup-grid { grid-template-columns: 1fr; }
+    .chess-play-card{ flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+<!-- Auth scripts in the same order every tool page uses. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../shared/supabase-client.js"></script>
+<script src="../shared/auth.js"></script>
+<script src="../shared/auth-gate.js"></script>
+
+<div id="chessView">
+  <a id="pp-back-to-hub" href="../index.html" title="Back to hub"
+     onclick="event.preventDefault(); if (typeof navigateToHub === 'function') { navigateToHub(); } else { location.href = '../index.html'; }">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="15 18 9 12 15 6"/>
+    </svg>
+    <span>Back to Hub</span>
+  </a>
+  <a id="pp-back-to-arena" href="../index.html#arena" title="Back to Arena"
+     onclick="event.preventDefault(); backToArena();">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;">
+      <polyline points="15 18 9 12 15 6"/>
+    </svg>
+    <span>Arena</span>
+  </a>
+
+  <div class="chess-inner">
+    <div class="chess-eyebrow">Performance Property Arena</div>
+    <h1 class="chess-title">Chess</h1>
+    <p class="chess-sub">Office ladder. Everyone starts at 1000 points. Two players share the keyboard, take turns clicking the board — when checkmate / resignation / draw lands, the match auto-records and the points table updates. Online play (separate browsers) is the next phase.</p>
+
+    <!-- ─── LOBBY ───
+         The hero CTA card + setup form sit in the same slot. The CTA
+         is visible by default; clicking it slides the form open. -->
+    <div class="chess-play-card" id="chessPlayCard">
+      <div class="chess-play-card-text">
+        <div class="chess-play-card-title">♟️ Start a hot-seat game</div>
+        <div class="chess-play-card-desc">Two players, one browser. The board records the result automatically when the game ends — no manual logging.</div>
+      </div>
+      <button class="chess-play-card-btn" type="button" id="chessNewGameBtn">New game</button>
+    </div>
+
+    <form class="chess-setup-form" id="chessSetupForm" autocomplete="off">
+      <div class="chess-setup-grid">
+        <div class="chess-setup-field">
+          <label for="sf-white-email">White email</label>
+          <input id="sf-white-email" name="whiteEmail" type="email" required placeholder="vandolf@performanceproperty.com.au">
+        </div>
+        <div class="chess-setup-field">
+          <label for="sf-white-name">White display name</label>
+          <input id="sf-white-name" name="whiteName" type="text" placeholder="vandolf">
+        </div>
+        <div class="chess-setup-field">
+          <label for="sf-black-email">Black email</label>
+          <input id="sf-black-email" name="blackEmail" type="email" required placeholder="opponent@performanceproperty.com.au">
+        </div>
+        <div class="chess-setup-field">
+          <label for="sf-black-name">Black display name</label>
+          <input id="sf-black-name" name="blackName" type="text" placeholder="opponent">
+        </div>
+        <div class="chess-setup-field">
+          <label for="sf-time-control">Time control</label>
+          <input id="sf-time-control" name="timeControl" type="text" value="untimed" placeholder="untimed, 5+3, 10+0…">
+        </div>
+        <label class="chess-setup-checkbox">
+          <input type="checkbox" id="sf-ranked" name="ranked" checked>
+          Ranked match (counts toward points; uncheck for casual)
+        </label>
+        <div class="chess-setup-points-preview" id="sf-preview" style="display:none;"></div>
+        <div class="chess-setup-error" id="sf-error" style="display:none;"></div>
+        <div class="chess-setup-buttons">
+          <button type="button" class="chess-setup-cancel" id="sf-cancel">Cancel</button>
+          <button type="submit" class="chess-setup-submit" id="sf-submit">Start game</button>
+        </div>
+      </div>
+    </form>
+
+    <!-- ─── GAME VIEW ───
+         Hidden until a setup is submitted. The board is on the left,
+         turn indicator + sidebar on the right. -->
+    <div class="chess-game-view" id="chessGameView">
+      <div class="chess-board-wrap">
+        <div class="chess-turn-indicator" id="chessTurnIndicator">
+          <strong>White</strong> to move
+        </div>
+        <div class="chess-board" id="chessBoard"></div>
+      </div>
+      <aside class="chess-sidebar">
+        <div>
+          <div class="chess-sidebar-section-title">Players</div>
+          <div class="chess-players" id="chessPlayers"></div>
+        </div>
+        <div>
+          <div class="chess-sidebar-section-title">Moves</div>
+          <div class="chess-move-list" id="chessMoveList">
+            <span class="chess-move-list-empty">No moves yet.</span>
+          </div>
+        </div>
+        <div>
+          <div class="chess-sidebar-section-title">Actions</div>
+          <div class="chess-actions">
+            <button type="button" class="chess-action-btn" id="chessOfferDrawBtn" title="Both players agree to a draw">Draw</button>
+            <button type="button" class="chess-action-btn is-danger" id="chessResignBtn" title="The side to move resigns">Resign</button>
+            <button type="button" class="chess-action-btn is-danger" id="chessAbortBtn" title="Abort the game without recording a result">Abort</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Leaderboard. -->
+    <div class="chess-section-head">
+      <div class="chess-section-title">Standings</div>
+    </div>
+
+    <div class="chess-leaderboard" id="chessLeaderboard">
+      <table>
+        <thead>
+          <tr>
+            <th class="chess-rank">#</th>
+            <th>Player</th>
+            <th>Games</th>
+            <th style="text-align:right;">Points</th>
+          </tr>
+        </thead>
+        <tbody id="chessLeaderboardBody">
+          <tr><td colspan="4" class="chess-empty">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="chess-section-head">
+      <div class="chess-section-title">Recent matches</div>
+    </div>
+    <ul class="chess-matches-list" id="chessMatchesList">
+      <li class="chess-matches-empty">Loading…</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ─── Result modal ───
+     Sits over the board once chess.js detects checkmate / draw, or
+     when a player clicks Resign / Draw. Saving inserts the match row
+     and refreshes the leaderboard before returning to the lobby. -->
+<div class="chess-result-modal" id="chessResultModal">
+  <div class="chess-result-card">
+    <div class="chess-result-eyebrow" id="chessResultEyebrow">Game over</div>
+    <h3 class="chess-result-title" id="chessResultTitle">Result</h3>
+    <div class="chess-result-sub" id="chessResultSub"></div>
+    <div class="chess-result-deltas" id="chessResultDeltas"></div>
+    <div class="chess-result-buttons">
+      <button type="button" class="chess-result-btn is-secondary" id="chessResultDiscard">Discard</button>
+      <button type="button" class="chess-result-btn is-primary" id="chessResultSave">Save match</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* Fade-out wrapper for the Arena pill — same pattern as
+   arena-typing.html so transitions feel consistent across Arena
+   tools. The hash drives index.html's bootstrap to slide the
+   carousel directly to page 3 (Arena). */
+function backToArena() {
+  document.body.style.transition = 'opacity .3s ease';
+  document.body.style.opacity = '0';
+  setTimeout(function () {
+    location.href = '../index.html#arena';
+  }, 300);
+}
+
+/* ─── Allowlist gate ───
+   Mirrors arena.html / index.html — direct URL hits from off-allowlist
+   users redirect back to the hub. */
+const ARENA_EMAILS = [
+  'vandolf@performanceproperty.com.au'
+];
+(function arenaGate() {
+  function check() {
+    let email = '';
+    try { if (typeof getCurrentUserEmail === 'function') email = (getCurrentUserEmail() || '').toLowerCase(); } catch (_) {}
+    if (!email) return false;
+    if (ARENA_EMAILS.indexOf(email) < 0) {
+      location.replace('../index.html');
+    }
+    return true;
+  }
+  if (!check()) {
+    let tries = 0;
+    const t = setInterval(() => {
+      tries++;
+      if (check() || tries > 20) clearInterval(t);
+    }, 100);
+  }
+})();
+
+/* ─── Points + ELO formula ───
+   Standard ELO with K=32. scoreA is 1 (white wins), 0.5 (draw), 0 (black
+   wins). Deltas are rounded to integers so the leaderboard reads cleanly.
+   Provisional players still use K=32 for now — Phase 1 may bump it to 40
+   for the first 10 games to settle ratings faster. */
+const STARTING_POINTS = 1000;
+const K_FACTOR = 32;
+function calcPoints(rWhite, rBlack, scoreWhite) {
+  const expectedWhite = 1 / (1 + Math.pow(10, (rBlack - rWhite) / 400));
+  const deltaWhite = Math.round(K_FACTOR * (scoreWhite - expectedWhite));
+  return {
+    newWhite: rWhite + deltaWhite,
+    newBlack: rBlack - deltaWhite,
+    delta: deltaWhite,
+  };
+}
+function scoreFromResult(result) {
+  if (result === '1-0') return 1;
+  if (result === '0-1') return 0;
+  return 0.5;
+}
+
+/* ─── Supabase helpers ───
+   getCurrentPoints returns 1000 for unseen players (their first match
+   establishes their record). */
+async function getCurrentPoints(email) {
+  if (!window.sb || !email) return { points: STARTING_POINTS, games: 0 };
+  const { data } = await window.sb
+    .from('arena_chess_points')
+    .select('points, games')
+    .eq('email', email.toLowerCase())
+    .maybeSingle();
+  return {
+    points: (data && typeof data.points === 'number') ? data.points : STARTING_POINTS,
+    games: (data && data.games) || 0,
+  };
+}
+
+/* ─── Leaderboard render ─── */
+async function loadLeaderboard() {
+  if (!window.sb) return;
+  const $body = document.getElementById('chessLeaderboardBody');
+  if (!$body) return;
+  const { data, error } = await window.sb
+    .from('arena_chess_points')
+    .select('email, name, points, games, provisional')
+    .order('points', { ascending: false })
+    .limit(50);
+  if (error) {
+    $body.innerHTML = '<tr><td colspan="4" class="chess-empty">Couldn\'t load standings — has the migration been applied?</td></tr>';
+    console.warn('arena_chess_points error', error);
+    return;
+  }
+  if (!data || !data.length) {
+    $body.innerHTML = '<tr><td colspan="4" class="chess-empty">No matches logged yet — be the first to log a result.</td></tr>';
+    return;
+  }
+  $body.innerHTML = data.map((row, i) => {
+    const display = (row.name && row.name.trim()) ? row.name : (row.email || '').split('@')[0];
+    const prov = row.provisional ? '<span class="chess-prov-badge">Prov</span>' : '';
+    return '<tr>' +
+      '<td class="chess-rank">' + (i + 1) + '</td>' +
+      '<td>' + escapeHtml(display) + prov + '</td>' +
+      '<td>' + row.games + '</td>' +
+      '<td class="chess-points">' + row.points + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+/* ─── Recent matches render ─── */
+async function loadRecentMatches() {
+  if (!window.sb) return;
+  const $list = document.getElementById('chessMatchesList');
+  if (!$list) return;
+  const { data, error } = await window.sb
+    .from('arena_chess_matches')
+    .select('id, white_email, black_email, white_name, black_name, result, ranked, time_control, white_pts_before, black_pts_before, white_pts_after, black_pts_after, ended_at, termination')
+    .order('ended_at', { ascending: false })
+    .limit(20);
+  if (error) {
+    $list.innerHTML = '<li class="chess-matches-empty">Couldn\'t load matches.</li>';
+    return;
+  }
+  if (!data || !data.length) {
+    $list.innerHTML = '<li class="chess-matches-empty">No matches yet.</li>';
+    return;
+  }
+  $list.innerHTML = data.map(m => renderMatchRow(m)).join('');
+}
+
+function renderMatchRow(m) {
+  const whiteName = (m.white_name && m.white_name.trim()) ? m.white_name : (m.white_email || '').split('@')[0];
+  const blackName = (m.black_name && m.black_name.trim()) ? m.black_name : (m.black_email || '').split('@')[0];
+  const isDraw = m.result === '1/2-1/2';
+  const resultClass = 'chess-match-result' + (isDraw ? ' is-draw' : '') + (!m.ranked ? ' is-casual' : '');
+  const resultLabel = m.result === '1-0' ? '1–0' : m.result === '0-1' ? '0–1' : '½–½';
+  let storyText;
+  if (isDraw) {
+    storyText = '<strong>' + escapeHtml(whiteName) + '</strong> drew with <strong>' + escapeHtml(blackName) + '</strong>';
+  } else if (m.result === '1-0') {
+    storyText = '<strong>' + escapeHtml(whiteName) + '</strong> beat <strong>' + escapeHtml(blackName) + '</strong>';
+  } else {
+    storyText = '<strong>' + escapeHtml(blackName) + '</strong> beat <strong>' + escapeHtml(whiteName) + '</strong>';
+  }
+  let deltaText = '';
+  if (m.ranked) {
+    const wDelta = m.white_pts_after - m.white_pts_before;
+    const bDelta = m.black_pts_after - m.black_pts_before;
+    const wCls = wDelta > 0 ? '' : (wDelta < 0 ? ' is-down' : ' is-flat');
+    const bCls = bDelta > 0 ? '' : (bDelta < 0 ? ' is-down' : ' is-flat');
+    const wSign = wDelta > 0 ? '+' : '';
+    const bSign = bDelta > 0 ? '+' : '';
+    deltaText = ' · <span class="chess-match-delta' + wCls + '">' + escapeHtml(whiteName) + ' ' + wSign + wDelta + '</span>' +
+                ' / <span class="chess-match-delta' + bCls + '">' + escapeHtml(blackName) + ' ' + bSign + bDelta + '</span>';
+  } else {
+    deltaText = ' · <span class="chess-match-delta is-flat">casual</span>';
+  }
+  return '<li class="chess-match-row">' +
+    '<span class="' + resultClass + '">' + resultLabel + '</span>' +
+    '<div class="chess-match-text">' + storyText + deltaText + '</div>' +
+    '<span class="chess-match-meta">' + formatRelativeTime(m.ended_at) + '</span>' +
+  '</li>';
+}
+
+/* ──────────────────────────────────────────────────────────────────
+   Hot-seat board — Phase 1
+   ──────────────────────────────────────────────────────────────────
+   State machine: 'lobby' → setup form → 'playing' → result modal →
+   save (or discard) → 'lobby'. The chess.js engine is the source of
+   truth for legality and game-end detection; this script only drives
+   the UI and writes the match row when a result is reached. */
+
+const PIECE_GLYPH = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' };
+const FILES = ['a','b','c','d','e','f','g','h'];
+
+let _state = 'lobby';
+let _game = null;        /* chess.js instance — null when not playing */
+let _setup = null;       /* { whiteEmail, whiteName, blackEmail, blackName,
+                              ranked, timeControl, whitePoints, blackPoints,
+                              startedAt } */
+let _selected = null;    /* algebraic square 'e2' currently selected, or null */
+let _legalDests = [];    /* [{from, to, captured?, ...}] from chess.js for the selected square */
+let _lastMove = null;    /* { from, to } of the most recent move, for highlight */
+let _resultPending = null; /* { result, termination, pgn, ... } captured at game end */
+
+const $playCard      = document.getElementById('chessPlayCard');
+const $newGameBtn    = document.getElementById('chessNewGameBtn');
+const $setupForm     = document.getElementById('chessSetupForm');
+const $setupCancel   = document.getElementById('sf-cancel');
+const $setupSubmit   = document.getElementById('sf-submit');
+const $setupError    = document.getElementById('sf-error');
+const $setupPreview  = document.getElementById('sf-preview');
+const $gameView      = document.getElementById('chessGameView');
+const $boardEl       = document.getElementById('chessBoard');
+const $turnIndicator = document.getElementById('chessTurnIndicator');
+const $playersEl     = document.getElementById('chessPlayers');
+const $moveListEl    = document.getElementById('chessMoveList');
+const $resignBtn     = document.getElementById('chessResignBtn');
+const $drawBtn       = document.getElementById('chessOfferDrawBtn');
+const $abortBtn      = document.getElementById('chessAbortBtn');
+const $resultModal   = document.getElementById('chessResultModal');
+const $resultEyebrow = document.getElementById('chessResultEyebrow');
+const $resultTitle   = document.getElementById('chessResultTitle');
+const $resultSub     = document.getElementById('chessResultSub');
+const $resultDeltas  = document.getElementById('chessResultDeltas');
+const $resultSave    = document.getElementById('chessResultSave');
+const $resultDiscard = document.getElementById('chessResultDiscard');
+
+/* ─── Lobby → setup form ─── */
+$newGameBtn.addEventListener('click', () => {
+  $setupForm.classList.add('is-open');
+  $playCard.style.display = 'none';
+  document.getElementById('sf-white-email').focus();
+});
+$setupCancel.addEventListener('click', () => {
+  $setupForm.classList.remove('is-open');
+  $setupForm.reset();
+  hideSetupError();
+  $setupPreview.style.display = 'none';
+  $playCard.style.display = '';
+});
+
+/* Live points preview as the player emails are entered. */
+['sf-white-email', 'sf-black-email'].forEach(id => {
+  document.getElementById(id).addEventListener('change', updateSetupPreview);
+});
+document.getElementById('sf-ranked').addEventListener('change', updateSetupPreview);
+
+async function updateSetupPreview() {
+  const white = (document.getElementById('sf-white-email').value || '').trim().toLowerCase();
+  const black = (document.getElementById('sf-black-email').value || '').trim().toLowerCase();
+  const ranked = document.getElementById('sf-ranked').checked;
+  if (!white || !black || white === black) {
+    $setupPreview.style.display = 'none';
+    return;
+  }
+  const [pw, pb] = await Promise.all([getCurrentPoints(white), getCurrentPoints(black)]);
+  const note = ranked
+    ? '<strong>Current points:</strong> white ' + pw.points + ' · black ' + pb.points
+    : '<strong>Casual game</strong> — points won\'t change.';
+  $setupPreview.innerHTML = note;
+  $setupPreview.style.display = 'block';
+}
+
+function hideSetupError() { $setupError.style.display = 'none'; $setupError.textContent = ''; }
+function showSetupError(msg) { $setupError.textContent = msg; $setupError.style.display = 'block'; }
+
+/* ─── Setup submit → start game ─── */
+$setupForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  hideSetupError();
+  $setupSubmit.disabled = true;
+  try {
+    const whiteEmail = (document.getElementById('sf-white-email').value || '').trim().toLowerCase();
+    const blackEmail = (document.getElementById('sf-black-email').value || '').trim().toLowerCase();
+    const whiteName  = (document.getElementById('sf-white-name').value || '').trim() || whiteEmail.split('@')[0];
+    const blackName  = (document.getElementById('sf-black-name').value || '').trim() || blackEmail.split('@')[0];
+    const timeControl = (document.getElementById('sf-time-control').value || 'untimed').trim();
+    const ranked = document.getElementById('sf-ranked').checked;
+
+    if (!whiteEmail || !blackEmail) { showSetupError('Both player emails are required.'); return; }
+    if (whiteEmail === blackEmail) { showSetupError('White and Black must be different players.'); return; }
+
+    const [pw, pb] = await Promise.all([getCurrentPoints(whiteEmail), getCurrentPoints(blackEmail)]);
+    _setup = {
+      whiteEmail, blackEmail, whiteName, blackName,
+      ranked, timeControl,
+      whitePoints: pw.points, blackPoints: pb.points,
+      startedAt: new Date().toISOString(),
+    };
+    startGame();
+  } catch (err) {
+    console.warn('setup submit failed', err);
+    showSetupError('Unexpected error — see console.');
+  } finally {
+    $setupSubmit.disabled = false;
+  }
+});
+
+/* ─── Start a new game ─── */
+function startGame() {
+  if (typeof Chess !== 'function') {
+    showSetupError('chess.js failed to load — check your network and refresh.');
+    return;
+  }
+  _game = new Chess();
+  _selected = null;
+  _legalDests = [];
+  _lastMove = null;
+  _resultPending = null;
+  _state = 'playing';
+  $setupForm.classList.remove('is-open');
+  $setupForm.reset();
+  hideSetupError();
+  $setupPreview.style.display = 'none';
+  $playCard.style.display = 'none';
+  $gameView.classList.add('is-open');
+  renderPlayersBlock();
+  renderBoard();
+  updateTurnIndicator();
+  renderMoveList();
+}
+
+/* ─── Render helpers ─── */
+function renderBoard() {
+  if (!_game || !$boardEl) return;
+  $boardEl.innerHTML = '';
+  const board = _game.board(); /* 8 rows top-down: rank 8 first, rank 1 last */
+  const turnInCheck = _game.in_check();
+  const turn = _game.turn();
+  /* Find king square for the side to move so we can highlight it red
+     when in check. */
+  let kingSqInCheck = null;
+  if (turnInCheck) {
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const p = board[r][c];
+      if (p && p.type === 'k' && p.color === turn) {
+        kingSqInCheck = FILES[c] + (8 - r);
+      }
+    }
+  }
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const sq = FILES[c] + (8 - r);
+      const isLight = (r + c) % 2 === 0;
+      const piece = board[r][c];
+      const cls = ['chess-square', isLight ? 'is-light' : 'is-dark'];
+      if (sq === _selected) cls.push('is-selected');
+      if (_lastMove && (sq === _lastMove.from || sq === _lastMove.to)) cls.push('is-last-move');
+      if (sq === kingSqInCheck) cls.push('is-check');
+      const legalEntry = _legalDests.find(m => m.to === sq);
+      if (legalEntry) {
+        cls.push('is-legal');
+        if (legalEntry.captured || legalEntry.flags.indexOf('e') >= 0) cls.push('is-capture');
+      }
+      const cell = document.createElement('div');
+      cell.className = cls.join(' ');
+      cell.dataset.square = sq;
+      if (piece) {
+        const span = document.createElement('span');
+        span.className = 'chess-piece ' + (piece.color === 'w' ? 'is-white' : 'is-black');
+        span.textContent = PIECE_GLYPH[piece.type];
+        cell.appendChild(span);
+      }
+      /* File / rank labels on the bottom row + leftmost column. */
+      if (r === 7) {
+        const fl = document.createElement('span');
+        fl.className = 'chess-coord file-label';
+        fl.textContent = FILES[c];
+        cell.appendChild(fl);
+      }
+      if (c === 0) {
+        const rl = document.createElement('span');
+        rl.className = 'chess-coord rank-label';
+        rl.textContent = String(8 - r);
+        cell.appendChild(rl);
+      }
+      cell.addEventListener('click', () => onSquareClick(sq));
+      $boardEl.appendChild(cell);
+    }
+  }
+}
+
+function renderPlayersBlock() {
+  if (!_setup) return;
+  const turn = _game ? _game.turn() : 'w';
+  $playersEl.innerHTML = '' +
+    '<div class="chess-player-row ' + (turn === 'w' ? 'is-active' : '') + '">' +
+      '<span class="chess-player-color is-white"></span>' +
+      '<span class="chess-player-name">' + escapeHtml(_setup.whiteName) + '</span>' +
+      '<span class="chess-player-pts">' + _setup.whitePoints + '</span>' +
+    '</div>' +
+    '<div class="chess-player-row ' + (turn === 'b' ? 'is-active' : '') + '">' +
+      '<span class="chess-player-color is-black"></span>' +
+      '<span class="chess-player-name">' + escapeHtml(_setup.blackName) + '</span>' +
+      '<span class="chess-player-pts">' + _setup.blackPoints + '</span>' +
+    '</div>';
+}
+
+function updateTurnIndicator() {
+  if (!_game) return;
+  const turn = _game.turn() === 'w' ? 'White' : 'Black';
+  const inCheck = _game.in_check();
+  $turnIndicator.classList.toggle('is-check', inCheck);
+  $turnIndicator.innerHTML = '<strong>' + turn + '</strong> to move' + (inCheck ? ' · check' : '');
+}
+
+function renderMoveList() {
+  if (!_game) return;
+  const history = _game.history();
+  if (!history.length) {
+    $moveListEl.innerHTML = '<span class="chess-move-list-empty">No moves yet.</span>';
+    return;
+  }
+  let html = '';
+  for (let i = 0; i < history.length; i += 2) {
+    const num = (i / 2) + 1;
+    html += '<span class="chess-move-pair"><span class="chess-move-num">' + num + '.</span>' +
+      escapeHtml(history[i]) + (history[i + 1] ? ' ' + escapeHtml(history[i + 1]) : '') + '</span>';
+  }
+  $moveListEl.innerHTML = html;
+  /* Auto-scroll to bottom so the latest move is always visible. */
+  $moveListEl.scrollTop = $moveListEl.scrollHeight;
+}
+
+/* ─── Click → move ─── */
+function onSquareClick(sq) {
+  if (!_game || _state !== 'playing') return;
+  /* If we already have a selection and this square is a legal target,
+     execute the move. */
+  if (_selected) {
+    const target = _legalDests.find(m => m.to === sq);
+    if (target) {
+      /* Auto-promote to queen for v1 — UI for choosing the piece can
+         come in a follow-up. The move object's `flags` includes 'p'
+         when this move is a promotion. */
+      const moveCfg = { from: _selected, to: sq };
+      if (target.flags.indexOf('p') >= 0) moveCfg.promotion = 'q';
+      const made = _game.move(moveCfg);
+      if (made) {
+        _lastMove = { from: _selected, to: sq };
+        _selected = null;
+        _legalDests = [];
+        renderBoard();
+        updateTurnIndicator();
+        renderMoveList();
+        renderPlayersBlock();
+        checkGameEnd();
+        return;
+      }
+    }
+    /* Clicking the same square deselects; clicking another own piece
+       reselects; everything else just clears. */
+    if (sq === _selected) {
+      _selected = null; _legalDests = [];
+      renderBoard();
+      return;
+    }
+  }
+  /* Try to select a piece on this square belonging to the side to move. */
+  const piece = _game.get(sq);
+  if (piece && piece.color === _game.turn()) {
+    _selected = sq;
+    _legalDests = _game.moves({ square: sq, verbose: true });
+    renderBoard();
+  } else {
+    _selected = null;
+    _legalDests = [];
+    renderBoard();
+  }
+}
+
+/* ─── Game-end detection ───
+   chess.js exposes the relevant predicates. We translate to our
+   schema's (result, termination) pair and queue a result for the
+   modal. The modal handles the actual save. */
+function checkGameEnd() {
+  if (!_game) return;
+  if (!_game.game_over()) return;
+  let result, termination;
+  if (_game.in_checkmate()) {
+    /* The side to move has been mated — the OTHER side won. */
+    result = _game.turn() === 'w' ? '0-1' : '1-0';
+    termination = 'mate';
+  } else if (_game.in_stalemate()) {
+    result = '1/2-1/2'; termination = 'draw';
+  } else if (_game.insufficient_material()) {
+    result = '1/2-1/2'; termination = 'draw';
+  } else if (_game.in_threefold_repetition()) {
+    result = '1/2-1/2'; termination = 'draw';
+  } else if (_game.in_draw()) {
+    /* Catches the 50-move rule + any other draw type. */
+    result = '1/2-1/2'; termination = 'draw';
+  } else {
+    return;
+  }
+  queueResult(result, termination);
+}
+
+/* Manual end-game buttons. */
+$resignBtn.addEventListener('click', () => {
+  if (!_game || _state !== 'playing') return;
+  if (!confirm('Resign? The side to move (' + (_game.turn() === 'w' ? 'White' : 'Black') + ') gives the game to the opponent.')) return;
+  /* Side to move resigns → opposite side wins. */
+  const result = _game.turn() === 'w' ? '0-1' : '1-0';
+  queueResult(result, 'resign');
+});
+$drawBtn.addEventListener('click', () => {
+  if (!_game || _state !== 'playing') return;
+  if (!confirm('Both players agree to a draw?')) return;
+  queueResult('1/2-1/2', 'agreement');
+});
+$abortBtn.addEventListener('click', () => {
+  if (!_game || _state !== 'playing') return;
+  if (!confirm('Abort the game without recording a result? (No points change.)')) return;
+  /* Abort returns to the lobby with no save. */
+  closeGameView();
+});
+
+/* ─── Result modal ───
+   Computes the points delta one more time off the live points view
+   (so a refresh while playing doesn't stale the numbers) and shows
+   the user what will be written before saving. */
+function queueResult(result, termination) {
+  if (!_setup || !_game) return;
+  _state = 'result';
+  let newWhite = _setup.whitePoints, newBlack = _setup.blackPoints;
+  if (_setup.ranked) {
+    const calc = calcPoints(_setup.whitePoints, _setup.blackPoints, scoreFromResult(result));
+    newWhite = calc.newWhite; newBlack = calc.newBlack;
+  }
+  _resultPending = {
+    result,
+    termination,
+    pgn: _game.pgn(),
+    newWhite, newBlack,
+  };
+  /* Headline. */
+  $resultEyebrow.textContent = _setup.ranked ? 'Game over · Ranked' : 'Game over · Casual';
+  if (result === '1-0') {
+    $resultTitle.textContent = _setup.whiteName + ' wins';
+  } else if (result === '0-1') {
+    $resultTitle.textContent = _setup.blackName + ' wins';
+  } else {
+    $resultTitle.textContent = 'Draw';
+  }
+  const termLabel = ({
+    mate: 'by checkmate', resign: 'by resignation',
+    draw: 'by rules', agreement: 'by agreement',
+    timeout: 'on time', abort: 'aborted',
+  })[termination] || termination;
+  $resultSub.textContent = termLabel;
+  /* Delta rows. */
+  const wDelta = newWhite - _setup.whitePoints;
+  const bDelta = newBlack - _setup.blackPoints;
+  const sign = (n) => (n > 0 ? '+' : '') + n;
+  const cls = (n) => n > 0 ? '' : (n < 0 ? ' is-down' : ' is-flat');
+  $resultDeltas.innerHTML = '' +
+    '<div class="chess-result-delta-row">' +
+      '<span class="chess-result-delta-label">' + escapeHtml(_setup.whiteName) + '</span>' +
+      '<span class="chess-result-delta-val' + cls(wDelta) + '">' + _setup.whitePoints + ' → ' + newWhite + ' (' + sign(wDelta) + ')</span>' +
+    '</div>' +
+    '<div class="chess-result-delta-row">' +
+      '<span class="chess-result-delta-label">' + escapeHtml(_setup.blackName) + '</span>' +
+      '<span class="chess-result-delta-val' + cls(bDelta) + '">' + _setup.blackPoints + ' → ' + newBlack + ' (' + sign(bDelta) + ')</span>' +
+    '</div>';
+  $resultModal.classList.add('is-open');
+}
+
+$resultDiscard.addEventListener('click', () => {
+  if (!confirm('Discard this game without saving? Points will not change.')) return;
+  $resultModal.classList.remove('is-open');
+  closeGameView();
+});
+
+$resultSave.addEventListener('click', async () => {
+  if (!_resultPending || !_setup) return;
+  $resultSave.disabled = true;
+  try {
+    const { data: sess } = await window.sb.auth.getSession();
+    const userId    = sess && sess.session && sess.session.user && sess.session.user.id;
+    const userEmail = (sess && sess.session && sess.session.user && sess.session.user.email || '').toLowerCase();
+    if (!userId || !userEmail) {
+      alert('Sign-in session has expired — refresh the page and try again.');
+      return;
+    }
+    const { error } = await window.sb.from('arena_chess_matches').insert({
+      white_email: _setup.whiteEmail,
+      black_email: _setup.blackEmail,
+      white_name:  _setup.whiteName,
+      black_name:  _setup.blackName,
+      result:      _resultPending.result,
+      termination: _resultPending.termination,
+      ranked:      _setup.ranked,
+      time_control: _setup.timeControl,
+      white_pts_before: _setup.whitePoints,
+      black_pts_before: _setup.blackPoints,
+      white_pts_after:  _resultPending.newWhite,
+      black_pts_after:  _resultPending.newBlack,
+      pgn: _resultPending.pgn,
+      created_by_user_id: userId,
+      created_by_email:   userEmail,
+      started_at: _setup.startedAt,
+    });
+    if (error) {
+      alert('Save failed: ' + (error.message || 'unknown error'));
+      console.warn('chess save error', error);
+      return;
+    }
+    $resultModal.classList.remove('is-open');
+    closeGameView();
+    await Promise.all([loadLeaderboard(), loadRecentMatches()]);
+  } catch (err) {
+    console.warn('chess save threw', err);
+    alert('Unexpected error while saving — see console.');
+  } finally {
+    $resultSave.disabled = false;
+  }
+});
+
+/* Reset everything back to the lobby state. */
+function closeGameView() {
+  _game = null;
+  _setup = null;
+  _selected = null;
+  _legalDests = [];
+  _lastMove = null;
+  _resultPending = null;
+  _state = 'lobby';
+  $boardEl.innerHTML = '';
+  $playersEl.innerHTML = '';
+  $moveListEl.innerHTML = '<span class="chess-move-list-empty">No moves yet.</span>';
+  $turnIndicator.classList.remove('is-check');
+  $turnIndicator.innerHTML = '<strong>White</strong> to move';
+  $gameView.classList.remove('is-open');
+  $resultModal.classList.remove('is-open');
+  $playCard.style.display = '';
+}
+
+/* ─── Util ─── */
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+function formatRelativeTime(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  const diff = Math.max(0, Date.now() - t);
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return days + 'd ago';
+  return new Date(iso).toLocaleDateString();
+}
+
+/* Boot — wait for Supabase client + auth.js to hydrate, then load. */
+(function boot() {
+  let tries = 0;
+  const t = setInterval(() => {
+    tries++;
+    if (window.sb && typeof getCurrentUserEmail === 'function') {
+      clearInterval(t);
+      loadLeaderboard();
+      loadRecentMatches();
+    }
+    if (tries > 30) clearInterval(t);
+  }, 100);
+})();
+</script>
+</body>
+</html>
