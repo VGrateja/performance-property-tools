@@ -485,6 +485,20 @@ async function _completeLogin() {
   if (loginScreen) loginScreen.style.display = 'none';
   applyAccessRestrictions();
   if (window._ppMark) window._ppMark('completeLogin:appliedAccess');
+  /* DEBUG: welcome-overlay bypass for non-admin users. The localStorage
+     trace pinpointed the freeze to the overlay's 0.9s opacity fade-out
+     (welcome:fadeOut last mark, welcome:hidden->showMain never recorded).
+     Theory: backdrop-filter blur on a fullscreen layer + simultaneous
+     style recalc from the new tier-company body class is locking the
+     renderer hard enough to starve the setTimeout queue. Bypassing the
+     overlay for accounts not in ADMIN_NAMES (everyone except Vandolf,
+     Saskia, Shaene, Paul, David) confirms the theory and unblocks the
+     non-admin path. Admins still get the named welcome. */
+  if (!ADMIN_NAMES[profile.email]) {
+    if (window._ppMark) window._ppMark('completeLogin:skipWelcome');
+    showMain();
+    return;
+  }
   /* Welcome overlay for every tier — admins get the named greeting via
      ADMIN_NAMES, non-admins get their full_name (set during registration)
      or the email's local-part as a fallback. */
