@@ -42,8 +42,7 @@ const ADMIN_EMAILS = [
    Anyone whose email isn't in this list never sees the field — they go
    straight to the email-only OTP flow. */
 const DEV_EMAILS = [
-  'vandolf@performanceproperty.com.au',
-  'test@performanceproperty.com.au'
+  'vandolf@performanceproperty.com.au'
 ];
 
 /* Registration master switch. Off per Paul (CEO): this tool is
@@ -419,78 +418,19 @@ function startOtpLockout() {
 let _otpPendingEmail = '';
 
 /* Fetch the current user's profile, populate sessionStorage, and route to
-   the right post-login UI. Returns the profile or null if no session.
-
-   Every supabase-js call we tried in this codepath hangs for non-cached
-   sessions — getSession(), the profiles SELECT through PostgrestBuilder,
-   raw fetch(), and even XMLHttpRequest. The cause appears to be a
-   Chrome/Cloudflare/Supabase chunked-response issue that we can't fix
-   from app code. So we bypass supabase-js entirely:
-
-   1. Read the session token straight from localStorage (where supabase-
-      js wrote it during signInWithPassword).
-   2. Use the embedded `user` object on the session to identify the
-      account, then derive tier + status from the email allowlists.
-
-   Server-side RLS is unchanged — every other query the app makes still
-   sends the JWT and gets gated normally. We just stop using supabase-js
-   for the one bootstrap roundtrip that hangs. */
+   the right post-login UI. Returns the profile or null if no session. */
 async function _hydrateFromSession() {
-  if (window._ppMark) window._ppMark('hydrate:start');
-
-  let sessionData = null;
-  try {
-    const raw = localStorage.getItem('pp-sb-auth');
-    if (raw) sessionData = JSON.parse(raw);
-  } catch (_) {}
-  if (window._ppMark) window._ppMark('hydrate:lsRead=' + (sessionData ? 'present' : 'empty'));
-  if (!sessionData) {
+  if (!window.sb) return null;
+  const { data: sess } = await window.sb.auth.getSession();
+  if (!sess || !sess.session) {
     _setSessionMirror(null);
     return null;
   }
-
-  /* supabase-js v2 stores the session shape as
-       { access_token, refresh_token, expires_at, user, ... }
-     directly under the storageKey. Older builds wrap it in
-     { currentSession: {...} }, so handle both. */
-  const sess = sessionData.currentSession || sessionData;
-  const accessToken = sess && sess.access_token;
-  const sessionUser = sess && sess.user;
-  const expiresAt   = sess && sess.expires_at;
-  if (!accessToken || !sessionUser || !sessionUser.id || !sessionUser.email) {
-    if (window._ppMark) window._ppMark('hydrate:lsParse=incomplete');
-    _setSessionMirror(null);
-    return null;
-  }
-  if (expiresAt && expiresAt * 1000 < Date.now()) {
-    if (window._ppMark) window._ppMark('hydrate:lsParse=expired');
-    _setSessionMirror(null);
-    return null;
-  }
-  if (window._ppMark) window._ppMark('hydrate:lsParse=ok');
-
-  /* Derive profile from the locally-cached session user instead of
-     querying public.profiles. Server-side RLS still enforces the real
-     profile rules on every other query. */
-  if (window._ppMark) window._ppMark('hydrate:fetchProfile-await');
-  const sessionEmail = (sessionUser.email || '').toLowerCase();
-  let profile = null;
-  let error = null;
-  if (sessionEmail.endsWith('@' + ALLOWED_DOMAIN)) {
-    const tier = ADMIN_EMAILS.indexOf(sessionEmail) >= 0 ? 'admin' : 'company';
-    profile = {
-      id: sessionUser.id,
-      email: sessionEmail,
-      full_name: ADMIN_NAMES[sessionEmail] || (sessionUser.user_metadata && sessionUser.user_metadata.first_name) || null,
-      tier: tier,
-      status: 'active',
-    };
-    if (window._ppMark) window._ppMark('hydrate:profileFromJwt=' + tier);
-  } else {
-    error = { code: 'NONSTAFF', message: 'non-staff email cannot log in via this path' };
-    if (window._ppMark) window._ppMark('hydrate:profileFromJwt=blocked');
-  }
-
+  const { data: profile, error } = await window.sb
+    .from('profiles')
+    .select('id, email, full_name, tier, status')
+    .eq('id', sess.session.user.id)
+    .single();
   if (error || !profile) {
     console.warn('Profile lookup failed', error);
     _setSessionMirror(null);
@@ -512,9 +452,7 @@ async function _hydrateFromSession() {
 /* After a successful sign-in or OTP verify: gate by status, then either
    show welcome (admin/dev) or jump straight to the hub. */
 async function _completeLogin() {
-  if (window._ppMark) window._ppMark('completeLogin:start');
   const profile = await _hydrateFromSession();
-  if (window._ppMark) window._ppMark('completeLogin:profile=' + (profile ? profile.status + '/' + (profile.tier || '?') : 'null'));
   if (!profile) {
     const errEl = document.getElementById('loginError');
     if (errEl) errEl.textContent = 'Profile lookup failed. Please try again.';
@@ -535,21 +473,17 @@ async function _completeLogin() {
     return;
   }
   /* Active — log them in. */
-  if (window._ppMark) window._ppMark('completeLogin:active');
   const loginScreen = document.getElementById('loginScreen');
   if (loginScreen) loginScreen.style.display = 'none';
   applyAccessRestrictions();
-  if (window._ppMark) window._ppMark('completeLogin:appliedAccess');
-  /* DEBUG: welcome overlay disabled while we hunt the universal new-user
-     freeze. The trace stopped at welcome:fadeOut for non-admin users
-     (the inner 900ms setTimeout never fired). Removing the welcome
-     fade entirely either resolves the bug (welcome was the cause) or
-     pushes the failure into showMain/tryUpdate where the markers will
-     pinpoint the next freezing step. Welcome is purely cosmetic — no
-     downstream code depends on it running. */
-  if (window._ppMark) window._ppMark('completeLogin:skipWelcome->showMain');
-  showMain();
-  if (window._ppMark) window._ppMark('completeLogin:showMainReturned');
+  /* Welcome overlay for every tier — admins get the named greeting via
+     ADMIN_NAMES, non-admins get their full_name (set during registration)
+     or the email's local-part as a fallback. */
+  const name = ADMIN_NAMES[profile.email]
+            || profile.full_name
+            || (profile.email || '').split('@')[0]
+            || 'there';
+  showWelcomeAndProceed(name);
 }
 
 /* ── Step 1: email + (optional) password ── */
@@ -894,19 +828,14 @@ window.getCurrentUserEmail   = getCurrentUserEmail;
 
 /* ═══ SHOW MAIN (hub) ═══ */
 function showMain() {
-  if (window._ppMark) window._ppMark('showMain:start');
   const loginScreen = document.getElementById('loginScreen');
   if (loginScreen) loginScreen.style.display = 'none';
   const mainPage = document.getElementById('mainPage');
   if (mainPage) mainPage.style.display = 'flex';
-  if (window._ppMark) window._ppMark('showMain:displayed');
   window._pp_currentView = 'hub';
   document.body.classList.add('on-hub');
-  if (window._ppMark) window._ppMark('showMain:onHubAdded');
   try { initTierSwitcher(); } catch (e) {}
-  if (window._ppMark) window._ppMark('showMain:tierSwitcherDone');
   try { if (typeof populateHubWidgets === 'function') populateHubWidgets(); } catch (e) {}
-  if (window._ppMark) window._ppMark('showMain:end');
 }
 window.showMain = showMain;
 

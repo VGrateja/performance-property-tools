@@ -34,10 +34,6 @@
      project, same RLS — just a key format the client handles
      correctly. */
   const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbm5vanN4ZHV2bGV3aW13b3hhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwMzQ4MzQsImV4cCI6MjA5MzYxMDgzNH0.BQNkOTZHgmTEP1jONfRxD1-Db2rLgdIt82zbAsPxb0s';
-  /* Expose for raw-fetch fallbacks elsewhere (e.g., shared/auth.js
-     bypasses the supabase-js profile fetch when its thenable hangs). */
-  window.PP_SUPABASE_URL = SUPABASE_URL;
-  window.PP_SUPABASE_KEY = SUPABASE_KEY;
 
   if (!window.supabase || typeof window.supabase.createClient !== 'function') {
     console.error(
