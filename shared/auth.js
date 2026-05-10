@@ -42,7 +42,8 @@ const ADMIN_EMAILS = [
    Anyone whose email isn't in this list never sees the field — they go
    straight to the email-only OTP flow. */
 const DEV_EMAILS = [
-  'vandolf@performanceproperty.com.au'
+  'vandolf@performanceproperty.com.au',
+  'test@performanceproperty.com.au'
 ];
 
 /* Registration master switch. Off per Paul (CEO): this tool is

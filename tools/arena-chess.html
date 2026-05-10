@@ -339,9 +339,14 @@
     line-height: 1;
     transition: background-color .12s ease;
   }
-  .chess-square.is-light{ background: #e9eef5; }
-  .chess-square.is-dark{  background: #6b8aa3; }
-  [data-theme="light"] .chess-square.is-light{ background: #f4f0e8; }
+  /* Classic lichess wood-board palette in both themes — the cream
+     light squares are dark enough for white pieces to stand out, and
+     the warm brown dark squares give black pieces solid contrast.
+     Earlier blue-grays put #fafafa pieces against #e9eef5 squares
+     which was nearly invisible. */
+  .chess-square.is-light{ background: #f0d9b5; }
+  .chess-square.is-dark{  background: #b58863; }
+  [data-theme="light"] .chess-square.is-light{ background: #f0d9b5; }
   [data-theme="light"] .chess-square.is-dark{  background: #b58863; }
   .chess-square.is-selected{
     background: rgba(0, 182, 203, 0.55) !important;
@@ -371,10 +376,23 @@
   .chess-piece{
     pointer-events: none;
     line-height: 1;
-    text-shadow: 0 2px 4px rgba(0,0,0,0.25);
   }
-  .chess-piece.is-white{ color: #fafafa; text-shadow: 0 1px 2px rgba(0,0,0,0.55), 0 0 0 1px rgba(0,0,0,0.45); }
-  .chess-piece.is-black{ color: #1a1a1a; text-shadow: 0 1px 2px rgba(255,255,255,0.20); }
+  /* Hard outlines via stacked text-shadow — single offsets aren't
+     enough to keep white kings legible on the cream squares. */
+  .chess-piece.is-white{
+    color: #ffffff;
+    text-shadow:
+      -1.5px -1.5px 0 #1a1a1a,
+       1.5px -1.5px 0 #1a1a1a,
+      -1.5px  1.5px 0 #1a1a1a,
+       1.5px  1.5px 0 #1a1a1a,
+       0 2px 3px rgba(0,0,0,0.30);
+  }
+  .chess-piece.is-black{
+    color: #1a1a1a;
+    text-shadow:
+       0 1px 2px rgba(255,255,255,0.25);
+  }
   /* File / rank labels on the edge squares — a/h for files, 1/8 for ranks. */
   .chess-square .chess-coord{
     position: absolute;
@@ -436,6 +454,35 @@
   .chess-player-pts{
     font-family:'Montserrat',sans-serif; font-weight:800;
     font-size: 12px; color: rgba(0, 182, 203, 0.95);
+  }
+  .chess-player-clock{
+    font-family: 'Roboto Mono', ui-monospace, monospace;
+    font-weight: 700;
+    font-size: 14px;
+    margin-left: 10px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.40);
+    color: #e9eef7;
+    min-width: 56px;
+    text-align: center;
+    flex-shrink: 0;
+    transition: background-color .2s ease, color .2s ease;
+  }
+  [data-theme="light"] .chess-player-clock{
+    background: rgba(31,40,63,0.08);
+    color: #1a2236;
+  }
+  .chess-player-row.is-active .chess-player-clock{
+    background: rgba(0, 182, 203, 0.22);
+    color: #fff;
+  }
+  [data-theme="light"] .chess-player-row.is-active .chess-player-clock{
+    color: #0a1520;
+  }
+  .chess-player-clock.is-low{
+    background: rgba(239, 68, 68, 0.30);
+    color: #fff;
   }
 
   .chess-move-list{
@@ -790,13 +837,13 @@
           <label for="sf-black-name">Black display name</label>
           <input id="sf-black-name" name="blackName" type="text" placeholder="opponent">
         </div>
-        <div class="chess-setup-field">
+        <div class="chess-setup-field" id="sf-time-control-wrap" style="display:none;">
           <label for="sf-time-control">Time control</label>
           <input id="sf-time-control" name="timeControl" type="text" value="untimed" placeholder="untimed, 5+3, 10+0…">
         </div>
         <label class="chess-setup-checkbox">
           <input type="checkbox" id="sf-ranked" name="ranked" checked>
-          Ranked match (counts toward points; uncheck for casual)
+          Ranked match (counts toward points · 20 minutes per side; uncheck for casual)
         </label>
         <div class="chess-setup-points-preview" id="sf-preview" style="display:none;"></div>
         <div class="chess-setup-error" id="sf-error" style="display:none;"></div>
@@ -903,7 +950,8 @@ function backToArena() {
    Mirrors arena.html / index.html — direct URL hits from off-allowlist
    users redirect back to the hub. */
 const ARENA_EMAILS = [
-  'vandolf@performanceproperty.com.au'
+  'vandolf@performanceproperty.com.au',
+  'test@performanceproperty.com.au'
 ];
 (function arenaGate() {
   function check() {
@@ -1069,6 +1117,20 @@ let _legalDests = [];    /* [{from, to, captured?, ...}] from chess.js for the s
 let _lastMove = null;    /* { from, to } of the most recent move, for highlight */
 let _resultPending = null; /* { result, termination, pgn, ... } captured at game end */
 
+/* Clock state. _clockCfg is null for untimed games (no UI rendered);
+   otherwise { startMs, incrementMs }. _clocks holds remaining ms per
+   side. _clockTickAt is the wall-clock time of the last tick — we
+   subtract elapsed real time, not interval count, so a stalled tab
+   doesn't free time. Increment is added when a move completes (Fischer
+   style). */
+const RANKED_CLOCK = { startMs: 20 * 60 * 1000, incrementMs: 0 };
+const CLOCK_LOW_THRESHOLD_MS = 30 * 1000;
+let _clockCfg = null;
+let _clocks = { w: 0, b: 0 };
+let _clockSide = 'w';
+let _clockTickAt = 0;
+let _clockTimer = null;
+
 const $playCard      = document.getElementById('chessPlayCard');
 const $newGameBtn    = document.getElementById('chessNewGameBtn');
 const $setupForm     = document.getElementById('chessSetupForm');
@@ -1110,7 +1172,19 @@ $setupCancel.addEventListener('click', () => {
 ['sf-white-email', 'sf-black-email'].forEach(id => {
   document.getElementById(id).addEventListener('change', updateSetupPreview);
 });
-document.getElementById('sf-ranked').addEventListener('change', updateSetupPreview);
+/* Toggle the casual time-control input visibility off the ranked
+   checkbox — ranked games are locked to 20+0 and don't need the input;
+   casual games show it so the players can pick (or stay untimed). */
+const $rankedToggle = document.getElementById('sf-ranked');
+const $tcWrap = document.getElementById('sf-time-control-wrap');
+function syncTcVisibility() {
+  $tcWrap.style.display = $rankedToggle.checked ? 'none' : '';
+}
+$rankedToggle.addEventListener('change', () => {
+  syncTcVisibility();
+  updateSetupPreview();
+});
+syncTcVisibility();
 
 async function updateSetupPreview() {
   const white = (document.getElementById('sf-white-email').value || '').trim().toLowerCase();
@@ -1141,8 +1215,13 @@ $setupForm.addEventListener('submit', async (e) => {
     const blackEmail = (document.getElementById('sf-black-email').value || '').trim().toLowerCase();
     const whiteName  = (document.getElementById('sf-white-name').value || '').trim() || whiteEmail.split('@')[0];
     const blackName  = (document.getElementById('sf-black-name').value || '').trim() || blackEmail.split('@')[0];
-    const timeControl = (document.getElementById('sf-time-control').value || 'untimed').trim();
     const ranked = document.getElementById('sf-ranked').checked;
+    /* Ranked games are always 20 minutes per side, no increment — the
+       casual input is hidden for ranked. Casual games take whatever the
+       user typed (default 'untimed'). */
+    const timeControl = ranked
+      ? '20+0'
+      : (document.getElementById('sf-time-control').value || 'untimed').trim();
 
     if (!whiteEmail || !blackEmail) { showSetupError('Both player emails are required.'); return; }
     if (whiteEmail === blackEmail) { showSetupError('White and Black must be different players.'); return; }
@@ -1174,9 +1253,24 @@ function startGame() {
   _legalDests = [];
   _lastMove = null;
   _resultPending = null;
+  /* Init clocks per the time-control string. Ranked games came in
+     as '20+0' from the form handler; casual can be 'untimed', 'M',
+     or 'M+S'. parseTimeControl returns null for untimed → no clocks
+     rendered, no ticker started. */
+  _clockCfg = parseTimeControl(_setup.timeControl);
+  if (_clockCfg) {
+    _clocks = { w: _clockCfg.startMs, b: _clockCfg.startMs };
+    _clockSide = 'w';
+    _clockTickAt = Date.now();
+    startClockTicker();
+  } else {
+    _clocks = { w: 0, b: 0 };
+    stopClockTicker();
+  }
   _state = 'playing';
   $setupForm.classList.remove('is-open');
   $setupForm.reset();
+  syncTcVisibility();
   hideSetupError();
   $setupPreview.style.display = 'none';
   $playCard.style.display = 'none';
@@ -1185,6 +1279,70 @@ function startGame() {
   renderBoard();
   updateTurnIndicator();
   renderMoveList();
+}
+
+/* ─── Time control parsing ───
+   '20+0' → 20 minutes per side, no increment.
+   '5+3'  → 5 minutes per side + 3 seconds per move (Fischer).
+   '10'   → 10 minutes per side, no increment.
+   'untimed' / blank / unparseable → null (no clocks). */
+function parseTimeControl(tc) {
+  const s = String(tc || '').trim().toLowerCase();
+  if (!s || s === 'untimed') return null;
+  const m = s.match(/^(\d+)(?:\s*\+\s*(\d+))?$/);
+  if (!m) return null;
+  const minutes = parseInt(m[1], 10);
+  const inc = m[2] ? parseInt(m[2], 10) : 0;
+  if (!minutes || minutes > 180) return null;
+  return { startMs: minutes * 60 * 1000, incrementMs: inc * 1000 };
+}
+
+function formatClock(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+/* Tick interval — 250ms is smooth enough for a clock display and
+   light enough to keep the page responsive. We compute elapsed ms
+   off Date.now() rather than counting ticks so a paused tab doesn't
+   bleed time off the wrong side. */
+function startClockTicker() {
+  stopClockTicker();
+  _clockTickAt = Date.now();
+  _clockTimer = setInterval(tickClock, 250);
+}
+function stopClockTicker() {
+  if (_clockTimer) { clearInterval(_clockTimer); _clockTimer = null; }
+}
+function tickClock() {
+  if (_state !== 'playing' || !_clockCfg) { stopClockTicker(); return; }
+  const now = Date.now();
+  const elapsed = now - _clockTickAt;
+  _clockTickAt = now;
+  _clocks[_clockSide] = Math.max(0, _clocks[_clockSide] - elapsed);
+  paintClocks();
+  if (_clocks[_clockSide] === 0) {
+    /* Side to move ran out → the other side wins on time. */
+    const winner = _clockSide === 'w' ? '0-1' : '1-0';
+    stopClockTicker();
+    queueResult(winner, 'timeout');
+  }
+}
+
+/* Repaint the clock readouts in place without re-rendering the
+   whole players block — re-rendering would also reset the
+   is-active highlight transitions. */
+function paintClocks() {
+  if (!_clockCfg) return;
+  const els = $playersEl.querySelectorAll('.chess-player-clock');
+  els.forEach(el => {
+    const side = el.getAttribute('data-side');
+    const ms = _clocks[side] || 0;
+    el.textContent = formatClock(ms);
+    el.classList.toggle('is-low', ms <= CLOCK_LOW_THRESHOLD_MS);
+  });
 }
 
 /* ─── Render helpers ─── */
@@ -1250,16 +1408,21 @@ function renderBoard() {
 function renderPlayersBlock() {
   if (!_setup) return;
   const turn = _game ? _game.turn() : 'w';
+  const showClock = !!_clockCfg;
+  const wClockHtml = showClock ? '<span class="chess-player-clock" data-side="w">' + formatClock(_clocks.w) + '</span>' : '';
+  const bClockHtml = showClock ? '<span class="chess-player-clock" data-side="b">' + formatClock(_clocks.b) + '</span>' : '';
   $playersEl.innerHTML = '' +
     '<div class="chess-player-row ' + (turn === 'w' ? 'is-active' : '') + '">' +
       '<span class="chess-player-color is-white"></span>' +
       '<span class="chess-player-name">' + escapeHtml(_setup.whiteName) + '</span>' +
       '<span class="chess-player-pts">' + _setup.whitePoints + '</span>' +
+      wClockHtml +
     '</div>' +
     '<div class="chess-player-row ' + (turn === 'b' ? 'is-active' : '') + '">' +
       '<span class="chess-player-color is-black"></span>' +
       '<span class="chess-player-name">' + escapeHtml(_setup.blackName) + '</span>' +
       '<span class="chess-player-pts">' + _setup.blackPoints + '</span>' +
+      bClockHtml +
     '</div>';
 }
 
@@ -1307,10 +1470,22 @@ function onSquareClick(sq) {
         _lastMove = { from: _selected, to: sq };
         _selected = null;
         _legalDests = [];
+        /* Clock bookkeeping: settle the side-that-just-moved's
+           remaining time against real elapsed ms, add the Fischer
+           increment, then hand the active clock to the other side
+           for the next move. */
+        if (_clockCfg) {
+          const now = Date.now();
+          const elapsed = now - _clockTickAt;
+          _clocks[_clockSide] = Math.max(0, _clocks[_clockSide] - elapsed) + _clockCfg.incrementMs;
+          _clockSide = _game.turn();
+          _clockTickAt = now;
+        }
         renderBoard();
         updateTurnIndicator();
         renderMoveList();
         renderPlayersBlock();
+        paintClocks();
         checkGameEnd();
         return;
       }
@@ -1390,6 +1565,7 @@ $abortBtn.addEventListener('click', () => {
 function queueResult(result, termination) {
   if (!_setup || !_game) return;
   _state = 'result';
+  stopClockTicker();
   let newWhite = _setup.whitePoints, newBlack = _setup.blackPoints;
   if (_setup.ranked) {
     const calc = calcPoints(_setup.whitePoints, _setup.blackPoints, scoreFromResult(result));
@@ -1486,12 +1662,15 @@ $resultSave.addEventListener('click', async () => {
 
 /* Reset everything back to the lobby state. */
 function closeGameView() {
+  stopClockTicker();
   _game = null;
   _setup = null;
   _selected = null;
   _legalDests = [];
   _lastMove = null;
   _resultPending = null;
+  _clockCfg = null;
+  _clocks = { w: 0, b: 0 };
   _state = 'lobby';
   $boardEl.innerHTML = '';
   $playersEl.innerHTML = '';
