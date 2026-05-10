@@ -449,64 +449,41 @@ async function _hydrateFromSession() {
     return null;
   }
 
-  /* DEBUG: profile fetch via XMLHttpRequest, not fetch().
-     Previous trace showed fetch() returned 200 with content-type
-     application/json but content-length missing (chunked transfer)
-     and res.text() never resumed. Both supabase-js (PostgrestBuilder)
-     and our raw fetch went through the same browser body-stream
-     code path; XHR uses a separate engine and is more reliable for
-     chunked responses on flaky stacks. */
+  /* WORKAROUND: skip the public.profiles HTTP roundtrip and derive
+     the profile from the JWT instead.
+     History: every variant of this fetch — supabase-js's PostgrestBuilder,
+     a raw fetch() with res.text(), and a plain XMLHttpRequest — all
+     hung indefinitely after PostgREST returned 200 with the row. The
+     SQL editor confirms the row exists and RLS allows it, the
+     network panel shows 200 + 1KB returned in ~200ms, but no JS
+     code path was able to resume after the response. Chrome's
+     fetch/XHR body reader and Cloudflare's chunked-transfer
+     response are interacting in a way we can't fix from app code.
+     Instead, every staff member's tier is derivable from email
+     alone: hardcoded admins from ADMIN_EMAILS, everyone else on
+     @performanceproperty.com.au is tier='company'. Status is 'active'
+     (the on_auth_user_created trigger guarantees this for staff).
+     Server-side RLS still enforces the real profile data on every
+     other query — only this one client-side bootstrap step changes. */
   if (window._ppMark) window._ppMark('hydrate:fetchProfile-await');
+  const sessionUser = sess.session.user;
+  const sessionEmail = (sessionUser.email || '').toLowerCase();
   let profile = null;
   let error = null;
-  try {
-    const url = (window.PP_SUPABASE_URL || '') + '/rest/v1/profiles' +
-      '?select=id,email,full_name,tier,status' +
-      '&id=eq.' + encodeURIComponent(sess.session.user.id);
-    if (window._ppMark) window._ppMark('hydrate:xhr-start');
-    const xhrResult = await new Promise((resolve) => {
-      try {
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', url, true);
-        xhr.setRequestHeader('apikey', window.PP_SUPABASE_KEY || '');
-        xhr.setRequestHeader('Authorization', 'Bearer ' + sess.session.access_token);
-        xhr.setRequestHeader('Accept', 'application/json');
-        xhr.timeout = 10000;
-        xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
-        xhr.onerror = () => resolve({ error: 'network' });
-        xhr.ontimeout = () => resolve({ error: 'timeout' });
-        xhr.send();
-      } catch (e) {
-        resolve({ error: 'throw:' + (e.message || 'thrown') });
-      }
-    });
-    if (xhrResult.error) {
-      if (window._ppMark) window._ppMark('hydrate:xhr-error=' + xhrResult.error);
-      error = { code: 'XHR', message: xhrResult.error };
-    } else {
-      if (window._ppMark) window._ppMark('hydrate:xhr-status=' + xhrResult.status + ',body=' + (xhrResult.body || '').length + 'chars');
-      let rows;
-      try {
-        rows = JSON.parse(xhrResult.body);
-      } catch (e) {
-        if (window._ppMark) window._ppMark('hydrate:xhr-parseErr=' + (e.message || 'parse failed'));
-        error = { code: 'PARSE', message: e.message || 'parse failed' };
-        rows = null;
-      }
-      if (window._ppMark) window._ppMark('hydrate:xhr-parsed=' + (Array.isArray(rows) ? rows.length + 'rows' : 'notArray'));
-      if (Array.isArray(rows) && rows.length === 1) {
-        profile = rows[0];
-      } else if (Array.isArray(rows) && rows.length === 0) {
-        error = { code: 'NOROW', message: 'no profile row for user ' + sess.session.user.id };
-      } else if (!error) {
-        error = { code: 'BADRESP', message: 'unexpected response shape', body: rows };
-      }
-    }
-  } catch (e) {
-    error = e;
-    if (window._ppMark) window._ppMark('hydrate:xhr-throw=' + (e.message || 'thrown'));
+  if (sessionEmail.endsWith('@' + ALLOWED_DOMAIN)) {
+    const tier = ADMIN_EMAILS.indexOf(sessionEmail) >= 0 ? 'admin' : 'company';
+    profile = {
+      id: sessionUser.id,
+      email: sessionEmail,
+      full_name: ADMIN_NAMES[sessionEmail] || (sessionUser.user_metadata && sessionUser.user_metadata.first_name) || null,
+      tier: tier,
+      status: 'active',
+    };
+    if (window._ppMark) window._ppMark('hydrate:profileFromJwt=' + tier);
+  } else {
+    error = { code: 'NONSTAFF', message: 'non-staff email cannot log in via this path' };
+    if (window._ppMark) window._ppMark('hydrate:profileFromJwt=blocked');
   }
-  if (window._ppMark) window._ppMark('hydrate:fetchProfile-resolved=' + (profile ? 'row' : (error ? 'err:' + (error.code || error.message || 'thrown') : 'null')));
 
   if (error || !profile) {
     console.warn('Profile lookup failed', error);
