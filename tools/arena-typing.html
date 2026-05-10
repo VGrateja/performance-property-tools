@@ -370,6 +370,10 @@
     border-radius:14px;
     backdrop-filter:blur(14px) saturate(140%);
     -webkit-backdrop-filter:blur(14px) saturate(140%);
+    /* margin-top opens up breathing room between the typing feed /
+       restart row and the results panel — without it the panel sat
+       right on top of the action row and felt cramped. */
+    margin-top:40px;
     margin-bottom:40px;
   }
   .typing-results.is-on{ display:block; }
@@ -1030,7 +1034,12 @@ function backToArena() {
    `word_list` value is still 'english' so this run joins the
    existing 60s English leaderboard rather than spawning a separate
    bucket — the SQL CHECK constraint already permits 'english'. */
-const WORDS_ENGLISH_BASE = (
+/* Wrapped in `new Set` to drop the handful of duplicates in the
+   source string ("number", "great", "old", "tell" each appeared
+   twice) — duplicates inflate a word's odds of being picked and
+   add no value to the test. The set→array conversion preserves
+   the first-occurrence order. */
+const WORDS_ENGLISH_BASE = Array.from(new Set((
   'the of and to a in is you that it he was for on are as with his they at be ' +
   'this have from or one had by word but not what all were we when your can said ' +
   'there use an each which she do how their if will up other about out many then ' +
@@ -1041,7 +1050,7 @@ const WORDS_ENGLISH_BASE = (
   'name good sentence man think say great where help through much before line ' +
   'right too means old any same tell boy follow came want show also around farm ' +
   'three small set put end why again turn here off went old number great tell men'
-).split(/\s+/).filter(Boolean);
+).split(/\s+/).filter(Boolean)));
 
 const WORDS_REAL_ESTATE_BASE = (
   'property listing agent vendor buyer settlement auction valuation suburb ' +
@@ -1127,16 +1136,49 @@ let secondSamples = [];
 
 /* ─── Word generation ─── pick enough words to comfortably outlast
    the longest mode (60s @ ~120wpm worst case). 250 is overkill for
-   most users but means we never run out mid-test. */
+   most users but means we never run out mid-test.
+
+   Shuffle-and-cycle approach (Fisher-Yates per "lap" through the
+   pool):
+     • Each word in the pool appears AT MOST once per lap.
+     • For a 60-word minute and a ~159-word pool, every word in the
+       session is unique — no "oil three times" by accident.
+     • For longer sessions (or if the user types fast enough to
+       cross a lap boundary), each word appears 1-2 times max,
+       never piled up by random sampling.
+     • Lap-boundary guard prevents the new lap's first word from
+       equalling the previous lap's last word (would otherwise
+       produce a back-to-back duplicate at the seam).
+   The previous random-with-no-immediate-repeat algorithm only
+   blocked consecutive duplicates and let any word show up many
+   times across a single test by pure chance — see the user
+   feedback on 2026-05-10 noting "oil" three times in one minute. */
 function generateWords() {
-  const list = activeWordPool();
+  const pool = activeWordPool();
   const out = [];
   let last = '';
+  let bag = [];
+  function refill() {
+    bag = pool.slice();
+    /* Fisher-Yates shuffle in place. */
+    for (let i = bag.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = bag[i]; bag[i] = bag[j]; bag[j] = t;
+    }
+    /* Lap-boundary guard: if the new lap's first word equals the
+       previous lap's last word, swap it with a random later
+       position so we don't end up with back-to-back duplicates at
+       the seam. Single-word pool exits early since there's nothing
+       to swap with. */
+    if (bag.length > 1 && bag[0] === last) {
+      const swapIdx = 1 + Math.floor(Math.random() * (bag.length - 1));
+      const t = bag[0]; bag[0] = bag[swapIdx]; bag[swapIdx] = t;
+    }
+  }
+  refill();
   for (let i = 0; i < 250; i++) {
-    let w;
-    /* Avoid same-word repeats so the test feels less "random sample" */
-    do { w = list[Math.floor(Math.random() * list.length)]; }
-    while (w === last && list.length > 1);
+    if (!bag.length) refill();
+    const w = bag.shift();
     out.push(w);
     last = w;
   }
@@ -1507,6 +1549,15 @@ function handleChar(ch) {
        against acc via charsIncorrect — but the results panel shows
        correct/wrong/extra/missed with skipped split out. */
     charsSkipped += skipped;
+    /* Count the space itself as a correct char. Standard typing-test
+       convention (Monkeytype, 10ff, typing.com) treats one "word" as
+       5 chars INCLUDING the trailing space, so the inter-word space
+       contributes to WPM. Without this, an English test under-counts
+       ~10-15% (a 60-word minute reads as ~70 WPM instead of ~84).
+       Counted regardless of whether the word itself had errors —
+       the space keystroke is independently correct, and the word's
+       errors already contribute to charsIncorrect. */
+    charsCorrect++;
     /* Move to the next word. */
     if (wEl) {
       /* Mark word with red underline if it has any errors (visual
@@ -1597,6 +1648,10 @@ function handleBackspace() {
       charsIncorrect = Math.max(0, charsIncorrect - skipped);
       charsSkipped   = Math.max(0, charsSkipped - skipped);
     }
+    /* Also refund the +1 we credited for the space itself when the
+       word was committed. See the matching `charsCorrect++` in
+       handleChar's space branch. */
+    charsCorrect = Math.max(0, charsCorrect - 1);
     /* Cursor sits right after the last typed char (may be past
        prev.length if there were extras). */
     curChar = typedLen;
@@ -1836,7 +1891,17 @@ function renderLeaderboard(rows) {
     const tr = document.createElement('tr');
     const email = (r.player_email || '').toLowerCase();
     if (myEmail && email === myEmail) tr.classList.add('is-self');
-    const name = r.player_name || (email ? email.split('@')[0] : 'Anonymous');
+    /* Use the email's local-part (the bit before @) as the display
+       label rather than profiles.full_name. Reason: most internal
+       PP staff have first-name-only mailboxes (vandolf@, lindsay@)
+       but when there are duplicates the convention switches to
+       initial-dot-surname (d.robbins@) — using full_name would
+       collapse all the Davids into "David" and create ambiguity in
+       the rankings. The email handle is always unique by definition,
+       so leaning on it removes the guesswork. r.player_name stays
+       as a fallback for legacy / Anonymous rows where
+       r.player_email is missing. */
+    const name = email ? email.split('@')[0] : (r.player_name || 'Anonymous');
     tr.innerHTML =
       '<td class="col-rank">' + (i + 1) + '</td>' +
       '<td>' + escapeHtml(name) + '</td>' +
