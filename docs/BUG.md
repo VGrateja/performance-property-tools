@@ -1,8 +1,8 @@
 # Bug — New-user sign-in freeze
 
-**Status:** parked, 2026-05-11. Not fixed.
+**Status (2026-05-11):** root cause likely identified — the freeze fires for every auth.users email **except the email registered as the Supabase organization owner**. Workaround (adding affected users as org members) being tested. Not yet fully fixed.
 **Severity:** medium — existing staff with cached sessions sign in fine; only fresh-browser / new-staff onboarding is blocked.
-**Affects:** every user signing in on a browser that has no existing Supabase session in `localStorage`, regardless of tier (admin / company / client) or how the auth user was created (Supabase dashboard "Add user" or OTP-register flow).
+**Affects:** every user signing in on a browser that has no existing Supabase session in `localStorage`, **except** the Supabase org owner's email, regardless of tier (admin / company / client) or how the auth user was created (Supabase dashboard "Add user" or OTP-register flow). The org-owner email signs in cleanly from any browser, any project, any network.
 
 ---
 
@@ -37,6 +37,7 @@ After ~8 hours of debugging across multiple sessions:
 - **Publishable key (`sb_publishable_…`) vs legacy anon JWT.** Swapped to the legacy `eyJ…` anon JWT. Same hang.
 - **Tier value of the affected user.** Set Shaene's `profiles.tier` from `'admin'` to `'dev'` (matching Vandolf's tier) in the SQL editor and had her retest from a cleared browser. Same hang. Tier is not the differentiator.
 - **Resend / SMTP hooks.** No auth hooks point at Resend; no custom SMTP is configured. Resend is not in the auth flow at all for password sign-in. Ruled out.
+- **Project state corruption.** Created a brand-new Supabase project (`sjopptjqciyjtqqfnsun`, Tokyo region same as production), ran migrations 001–007, pointed a sandbox folder copy at it, and signed in there. Result: **same identity-bound behaviour on the fresh project** — `vandolf@performanceproperty.com.au` signs in cleanly, every other auth.users email hangs. Confirms the bug is not specific to our production project's state.
 
 ---
 
@@ -55,13 +56,20 @@ The combined signal is that something in the browser's response-handling layer i
 
 The data point that most strongly biases toward "Supabase project" over "Chrome bug": **the project's same key + same Chrome works fine for Vandolf** because his localStorage already has a session token. The hang only manifests on the bootstrap that has to fetch fresh state.
 
-**Reinforcing data (2026-05-11):** Vandolf reproducibly signs in on completely-fresh browsers as well — Edge InPrivate, a second-computer Chrome Incognito — both work. Other accounts on the same fresh-browser conditions all freeze. So the differentiator is **identity-bound**, not browser-bound or session-cache-bound. The bug fires on a per-user basis. What structurally distinguishes Vandolf from every other affected account, after eliminating tier:
+**Reinforcing data (2026-05-11):** Vandolf reproducibly signs in on completely-fresh browsers as well — Edge InPrivate, a second-computer Chrome Incognito — both work. Other accounts on the same fresh-browser conditions all freeze. So the differentiator is **identity-bound**, not browser-bound or session-cache-bound. The bug fires on a per-user basis.
 
-- He is the **oldest user** in the system (created 2026-05-06; Shaene 2026-05-07; test@ 2026-05-10).
-- He is presumably the **project owner / first owner** of the Supabase project (whoever clicked "Create Project").
-- He's the only account whose row was ever manually `UPDATE`d in the SQL editor (`tier='dev'` upgrade per the comment in migration 001).
+**Sandbox-project confirmation (2026-05-11):** Created a brand-new Supabase project (`sjopptjqciyjtqqfnsun`) and reproduced the bug there:
+- Brand-new auth.users row for `vandolf@performanceproperty.com.au` on the sandbox → **signs in cleanly**.
+- Brand-new `vandolf+test@performanceproperty.com.au` (alias of the same address — local-part still contains "vandolf") on the sandbox → **freezes**.
+- Brand-new `zzzfakemail@example.com` on the sandbox → **freezes**.
 
-The remaining hypothesis is that something at the Supabase-project level — auth pool registration, owner-flag handling, or per-user JWT-validation cache — is in a state where only the project's original creator's tokens parse cleanly through the response chain. Every other user's response hangs at the body-read step despite returning 200.
+The literal email `vandolf@performanceproperty.com.au` works on a project where that auth.users row was just created seconds earlier. No tier upgrade, no profile manual edit, no creation history — just the email string itself.
+
+**The thing that's special about that specific email:** it is the email registered as the **Supabase organization owner** for `VGrateja's Org`. Vandolf uses that same email to sign into the Supabase Dashboard itself. So the only structural difference between the email that works and every email that fails is "is this email a Supabase org member for the org that owns the project?".
+
+This points strongly at Supabase/Cloudflare treating org-member emails as **trusted at the auth edge**: their requests pass cleanly, while every non-member email's response is gated by some bot-detection or rate-limit layer whose response stream never terminates from the JS engine's perspective.
+
+**Workaround being tested:** invite affected users (e.g. Shaene) as members of `VGrateja's Org` via Dashboard → Org settings → Team → Invite. If org membership confers the trust, their sign-ins should now succeed.
 
 ---
 
@@ -100,21 +108,24 @@ Everything else (welcome overlay, progress markers, raw-fetch bypass, XHR fallba
 
 ---
 
-## Next steps when picking this up
+## Next steps
 
-1. **Open a Supabase support ticket** with this document. They can see project-side data we can't — edge routing, auth pool state, publication health, log of 200-responses-with-stuck-bodies.
-2. **Spin up a fresh Supabase project** as a control. Re-run migrations 001–007 there, create a test user, sign in on a fresh browser. If that works, the issue is project-specific and Supabase support can repair or migrate.
-3. **Performance recording** in DevTools (Performance tab → record → click sign in → stop after the freeze). Shows main-thread activity during the hang; might surface a long task we can't see in trace markers.
-4. **Last-resort workarounds** if support can't fix it:
-   - Server-side proxy in front of PostgREST that re-emits responses with explicit `content-length` (eliminates chunked transfer encoding).
-   - Self-hosted Supabase / migration to a different stack for the auth layer.
-   - Cookie-based session instead of localStorage so the bootstrap doesn't need to fetch the profile.
+1. **Validate the org-member workaround.** Invite Shaene as a member of `VGrateja's Org` (Supabase Dashboard → Org → Team → Invite, role Read-only). Have her accept the invite using her `@performanceproperty.com.au` email exactly. Have her retest sign-in to the tool from a fresh browser. Expected outcome: she signs in cleanly.
+2. If the workaround validates → invite the rest of the staff (Saskia, Paul, d.robbins, etc.) as org members. Free plan allows multiple members at no cost. Document this in onboarding: "before a new staff member can use the tool, they must be a member of VGrateja's Org on Supabase."
+3. **Reply to the Supabase support ticket** with the new diagnostic information — bug reproduces on a fresh project, only the org owner's email works. This is much more actionable for them than the original ticket.
+4. **Performance recording** in DevTools (record → click sign in → stop after freeze) — useful for the support ticket if Supabase asks for it.
+5. **Long-term:** if external (non-org-member) users ever need to use the tool, the workaround won't scale. Options at that point:
+   - Server-side proxy in front of PostgREST that re-emits responses with explicit `content-length` (eliminates chunked transfer encoding and hopefully the gate).
+   - Migrate auth to a different provider (Clerk, Auth0, custom JWT).
+   - Self-host Supabase so the edge layer is under our control.
 
 ---
 
 ## Workarounds for new staff in the meantime
 
-If someone needs to onboard before this is fixed:
+**Best option (if the org-member theory holds):** invite the new staff member as a Supabase org member first, using the same email they'll use to sign into the tool. Wait for them to accept. *Then* they sign in to the tool — should work cleanly.
+
+If the org-member workaround isn't yet validated or doesn't apply:
 
 1. Have them sign up via OTP on a colleague's already-working browser (cached session masks the bug).
 2. Or share Vandolf's session by exporting `pp-sb-auth` from localStorage and pasting it into the new user's browser (not a real solution, just unblocks urgent access).
