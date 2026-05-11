@@ -10,7 +10,7 @@
  * boundary is supabase/migrations/001_init.sql.
  *
  * Loading order on a tool page (before this file):
- *   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+ *   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.6"></script>
  *   <script src="../shared/supabase-client.js"></script>
  *   <script src="../shared/auth.js"></script>      ← hydrates sessionStorage
  *   <script src="../shared/auth-gate.js"></script> ← checks + applies restrictions

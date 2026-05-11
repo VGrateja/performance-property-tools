@@ -17,7 +17,7 @@
  * trigger — see supabase/migrations/002_trigger_metadata.sql).
  *
  * Loading order on every page that uses this:
- *   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+ *   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.6"></script>
  *   <script src="../shared/supabase-client.js"></script>   (or shared/ on hub)
  *   <script src="../shared/auth.js"></script>              (or shared/)
  *

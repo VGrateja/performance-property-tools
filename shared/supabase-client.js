@@ -12,7 +12,7 @@
  * but harmless because the DB enforces the real boundary.
  *
  * Loading order on every page that uses this:
- *   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+ *   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.6"></script>
  *   <script src="../shared/supabase-client.js"></script>
  *   ... your code that uses window.sb ...
  *
@@ -38,7 +38,7 @@
   if (!window.supabase || typeof window.supabase.createClient !== 'function') {
     console.error(
       'Supabase JS library not loaded. Add this BEFORE supabase-client.js:\n' +
-      '  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>'
+      '  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.6"></script>'
     );
     return;
   }
