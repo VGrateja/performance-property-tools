@@ -64,7 +64,18 @@
       /* Persist the auth session across reloads + tabs. localStorage is
          shared per-origin so opening a new tab keeps the user signed in. */
       persistSession: true,
-      autoRefreshToken: true,
+      /* autoRefreshToken DISABLED — see docs/BUG.md.
+         Sandbox-project investigation showed the new-user sign-in freeze
+         is in supabase-js's auto-refresh / auto-rehydrate code path,
+         not (only) the profile fetch. The freeze fires even when no
+         sign-in flow runs at all — supabase-js auto-rehydrates a
+         stored session on init and the resulting refresh-token call
+         hangs in the same chunked-response way the profile fetch did.
+         Disabling autoRefreshToken eliminates that path. Tradeoff:
+         tokens are valid 1 hour from issue; after that users sign in
+         again. Acceptable for an internal tool, and far better than
+         the freeze. */
+      autoRefreshToken: false,
       storage: window.localStorage,
       /* Custom key so we don't collide with anything else on localStorage. */
       storageKey: 'pp-sb-auth',
