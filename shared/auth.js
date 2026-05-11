@@ -17,7 +17,7 @@
  * trigger — see supabase/migrations/002_trigger_metadata.sql).
  *
  * Loading order on every page that uses this:
- *   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.6"></script>
+ *   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
  *   <script src="../shared/supabase-client.js"></script>   (or shared/ on hub)
  *   <script src="../shared/auth.js"></script>              (or shared/)
  *
@@ -42,8 +42,7 @@ const ADMIN_EMAILS = [
    Anyone whose email isn't in this list never sees the field — they go
    straight to the email-only OTP flow. */
 const DEV_EMAILS = [
-  'vandolf@performanceproperty.com.au',
-  'test@performanceproperty.com.au'
+  'vandolf@performanceproperty.com.au'
 ];
 
 /* Registration master switch. Off per Paul (CEO): this tool is
@@ -260,7 +259,6 @@ window.clearLoginNotice = clearLoginNotice;
 
 /* ═══ WELCOME OVERLAY (admin only) ═══ */
 function showWelcomeAndProceed(name) {
-  if (window._ppMark) window._ppMark('welcome:start');
   const overlay = document.getElementById('welcomeOverlay');
   const msg = document.getElementById('welcomeMsg');
   const bar = document.getElementById('welcomeBar');
@@ -272,17 +270,14 @@ function showWelcomeAndProceed(name) {
     msg.style.opacity = '1'; bar.style.opacity = '1'; sub.style.opacity = '1';
   }));
   setTimeout(() => {
-    if (window._ppMark) window._ppMark('welcome:fadeOut');
     overlay.style.transition = 'opacity 0.9s ease';
     overlay.style.opacity = '0';
     setTimeout(() => {
-      if (window._ppMark) window._ppMark('welcome:hidden->showMain');
       overlay.style.display = 'none';
       overlay.style.opacity = '1';
       overlay.style.transition = '';
       msg.style.opacity = '0'; bar.style.opacity = '0'; sub.style.opacity = '0';
       showMain();
-      if (window._ppMark) window._ppMark('welcome:showMainReturned');
     }, 900);
   }, 2800);
 }
@@ -422,53 +417,28 @@ function startOtpLockout() {
 /* The email currently mid-OTP. Set in step 1, consumed in step 2. */
 let _otpPendingEmail = '';
 
-/* Hydrate the signed-in user's profile into sessionStorage. Returns the
-   profile or null if no session.
-
-   Originally this awaited a SELECT on public.profiles to read tier +
-   status + full_name. That fetch hangs intermittently for non-cached
-   sessions even after fixing the documented supabase-js anti-patterns
-   (Web Locks deadlock, async onAuthStateChange) — same trace, same
-   code, sometimes resolves in 500ms, sometimes never. See docs/BUG.md.
-
-   Since the session object already contains everything we need to
-   identify the user (id, email), and tier is fully derivable from the
-   email allowlists (ADMIN_EMAILS / ALLOWED_DOMAIN), we skip the
-   unreliable HTTP round-trip and synthesise the profile client-side.
-   Server-side RLS still enforces the real profile on every subsequent
-   query; only this one bootstrap step changes. */
+/* Fetch the current user's profile, populate sessionStorage, and route to
+   the right post-login UI. Returns the profile or null if no session. */
 async function _hydrateFromSession() {
-  if (window._ppMark) window._ppMark('hydrate:start');
   if (!window.sb) return null;
-  if (window._ppMark) window._ppMark('hydrate:getSession-await');
   const { data: sess } = await window.sb.auth.getSession();
-  if (window._ppMark) window._ppMark('hydrate:getSession-ok=' + (sess && sess.session ? 'yes' : 'no'));
   if (!sess || !sess.session) {
     _setSessionMirror(null);
     return null;
   }
-  const sessionUser = sess.session.user;
-  const email = (sessionUser.email || '').toLowerCase();
-  let tier = 'guest';
-  if (ADMIN_EMAILS.indexOf(email) >= 0) {
-    tier = 'admin';
-  } else if (email.endsWith('@' + ALLOWED_DOMAIN)) {
-    tier = 'company';
+  const { data: profile, error } = await window.sb
+    .from('profiles')
+    .select('id, email, full_name, tier, status')
+    .eq('id', sess.session.user.id)
+    .single();
+  if (error || !profile) {
+    console.warn('Profile lookup failed', error);
+    _setSessionMirror(null);
+    return null;
   }
-  const profile = {
-    id: sessionUser.id,
-    email: email,
-    full_name: ADMIN_NAMES[email]
-            || (sessionUser.user_metadata && sessionUser.user_metadata.first_name)
-            || null,
-    tier: tier,
-    status: 'active',
-  };
-  if (window._ppMark) window._ppMark('hydrate:profileFromJwt=' + tier);
   _setSessionMirror(profile);
   /* Pre-warm the pending-approvals cache for admin/dev so the hub pill
-     reflects pending-count on first paint without an extra event.
-     Fire-and-forget; failure is silent. */
+     reflects pending-count on first paint without an extra event. */
   if (profile.tier === 'admin' || profile.tier === 'dev') {
     if (typeof window.fetchUsersFromServer === 'function') {
       window.fetchUsersFromServer().then(() => {
@@ -476,16 +446,13 @@ async function _hydrateFromSession() {
       }).catch(() => {});
     }
   }
-  if (window._ppMark) window._ppMark('hydrate:end');
   return profile;
 }
 
 /* After a successful sign-in or OTP verify: gate by status, then either
    show welcome (admin/dev) or jump straight to the hub. */
 async function _completeLogin() {
-  if (window._ppMark) window._ppMark('completeLogin:start');
   const profile = await _hydrateFromSession();
-  if (window._ppMark) window._ppMark('completeLogin:hydrateReturned=' + (profile ? profile.status + '/' + (profile.tier || '?') : 'null'));
   if (!profile) {
     const errEl = document.getElementById('loginError');
     if (errEl) errEl.textContent = 'Profile lookup failed. Please try again.';
@@ -509,16 +476,14 @@ async function _completeLogin() {
   const loginScreen = document.getElementById('loginScreen');
   if (loginScreen) loginScreen.style.display = 'none';
   applyAccessRestrictions();
-  /* Welcome overlay DISABLED — the 0.9s fade-out's inner setTimeout
-     consistently never fires on fresh sign-ins, leaving the page
-     black after the overlay fades to opacity 0. Auth itself works
-     (we've confirmed signInWithPassword + profile fetch return),
-     so we just skip the cosmetic welcome and go straight to the
-     hub. Re-enable showWelcomeAndProceed(name) below if/when the
-     fade-out timer issue is resolved. */
-  if (window._ppMark) window._ppMark('completeLogin:skipWelcome->showMain');
-  showMain();
-  if (window._ppMark) window._ppMark('completeLogin:showMainReturned');
+  /* Welcome overlay for every tier — admins get the named greeting via
+     ADMIN_NAMES, non-admins get their full_name (set during registration)
+     or the email's local-part as a fallback. */
+  const name = ADMIN_NAMES[profile.email]
+            || profile.full_name
+            || (profile.email || '').split('@')[0]
+            || 'there';
+  showWelcomeAndProceed(name);
 }
 
 /* ── Step 1: email + (optional) password ── */
@@ -555,9 +520,7 @@ async function tryLogin() {
   /* Password path — Tier 0 (Vandolf) only. Anyone else with a password is
      also fine; signInWithPassword fails for users who never set one. */
   if (pass) {
-    if (window._ppMark) window._ppMark('tryLogin:signInWithPassword-await');
     const { error } = await window.sb.auth.signInWithPassword({ email, password: pass });
-    if (window._ppMark) window._ppMark('tryLogin:signInWithPassword-returned=' + (error ? 'err:' + (error.message || 'unknown') : 'ok'));
     if (error) {
       leavePending();
       errEl.textContent = 'Incorrect email or password.';
@@ -566,7 +529,6 @@ async function tryLogin() {
     }
     /* Don't restore label — _completeLogin navigates away. */
     await _completeLogin();
-    if (window._ppMark) window._ppMark('tryLogin:completeLogin-returned');
     return;
   }
 
@@ -866,19 +828,14 @@ window.getCurrentUserEmail   = getCurrentUserEmail;
 
 /* ═══ SHOW MAIN (hub) ═══ */
 function showMain() {
-  if (window._ppMark) window._ppMark('showMain:start');
   const loginScreen = document.getElementById('loginScreen');
   if (loginScreen) loginScreen.style.display = 'none';
   const mainPage = document.getElementById('mainPage');
   if (mainPage) mainPage.style.display = 'flex';
-  if (window._ppMark) window._ppMark('showMain:mainPageShown');
   window._pp_currentView = 'hub';
   document.body.classList.add('on-hub');
-  if (window._ppMark) window._ppMark('showMain:onHubAdded');
   try { initTierSwitcher(); } catch (e) {}
-  if (window._ppMark) window._ppMark('showMain:tierSwitcherDone');
   try { if (typeof populateHubWidgets === 'function') populateHubWidgets(); } catch (e) {}
-  if (window._ppMark) window._ppMark('showMain:end');
 }
 window.showMain = showMain;
 
@@ -1159,39 +1116,32 @@ async function _initAuth() {
      await we can miss the event entirely — the user clicks the
      recovery email link and just sees the login page with no prompt. */
   if (window.sb) {
-    /* Synchronous handler — per Supabase docs, async callbacks and
-       awaited Supabase calls inside onAuthStateChange cause a global
-       auth deadlock that hangs ALL subsequent Supabase calls (see
-       https://github.com/supabase/auth-js/issues/762). The workaround
-       is to dispatch any Supabase work via setTimeout(..., 0) so it
-       runs AFTER the callback has returned and released the auth
-       lock. */
-    window.sb.auth.onAuthStateChange((event, _session) => {
+    window.sb.auth.onAuthStateChange(async (event, _session) => {
       if (event === 'SIGNED_OUT') _setSessionMirror(null);
       if (event === 'PASSWORD_RECOVERY') {
-        /* Defer the password-recovery prompt + updateUser call to a
-           microtask outside the auth callback so the auth lock is
-           released first. */
-        setTimeout(async () => {
-          const next = window.prompt(
-            'Enter your new password (min 6 characters):',
-            ''
-          );
-          if (!next) {
-            alert('Password unchanged. You are still signed in.');
-            return;
-          }
-          if (next.length < 6) {
-            alert('Password must be at least 6 characters. Try again from the recovery email.');
-            return;
-          }
-          const { error } = await window.sb.auth.updateUser({ password: next });
-          if (error) {
-            alert('Could not update password: ' + (error.message || 'unknown error'));
-            return;
-          }
-          alert('Password updated. You are signed in.');
-        }, 0);
+        /* Supabase has parsed the recovery link's tokens out of the URL
+           and authenticated the user. Now we need to capture a new
+           password and call updateUser. Simple browser prompt is fine
+           — only one user has a password (Vandolf) and recovery is
+           rare. */
+        const next = window.prompt(
+          'Enter your new password (min 6 characters):',
+          ''
+        );
+        if (!next) {
+          alert('Password unchanged. You are still signed in.');
+          return;
+        }
+        if (next.length < 6) {
+          alert('Password must be at least 6 characters. Try again from the recovery email.');
+          return;
+        }
+        const { error } = await window.sb.auth.updateUser({ password: next });
+        if (error) {
+          alert('Could not update password: ' + (error.message || 'unknown error'));
+          return;
+        }
+        alert('Password updated. You are signed in.');
       }
     });
 

@@ -1,6 +1,6 @@
 # Bug — New-user sign-in freeze
 
-**Status (2026-05-11):** root cause partially identified — the freeze fires for every auth.users email **except the email registered as the Supabase organization owner**. Adding affected users as **org members** (Shaene as Read-only) does **not** confer the same trust — she still freezes after accepting the invite from a fresh browser. So the differentiator is narrower than "is the email an org member" — likely "is the email the org *owner* specifically" or some other per-account flag we can't see. Not yet fixed; awaiting Supabase support reply with project-side insight.
+**Status (2026-05-11, second session):** root cause is identity-bound to the org-owner email. **All known client-side fixes have been tried and failed.** Codebase reverted to clean baseline. Waiting on Supabase support, or moving to a server-side auth proxy / different auth provider.
 **Severity:** medium — existing staff with cached sessions sign in fine; only fresh-browser / new-staff onboarding is blocked.
 **Affects:** every user signing in on a browser that has no existing Supabase session in `localStorage`, **except** the Supabase org owner's email, regardless of tier (admin / company / client) or how the auth user was created (Supabase dashboard "Add user" or OTP-register flow). The org-owner email signs in cleanly from any browser, any project, any network.
 
@@ -39,6 +39,12 @@ After ~8 hours of debugging across multiple sessions:
 - **Resend / SMTP hooks.** No auth hooks point at Resend; no custom SMTP is configured. Resend is not in the auth flow at all for password sign-in. Ruled out.
 - **Project state corruption.** Created a brand-new Supabase project (`sjopptjqciyjtqqfnsun`, Tokyo region same as production), ran migrations 001–007, pointed a sandbox folder copy at it, and signed in there. Result: **same identity-bound behaviour on the fresh project** — `vandolf@performanceproperty.com.au` signs in cleanly, every other auth.users email hangs. Confirms the bug is not specific to our production project's state.
 - **Org membership.** Invited Shaene as a member of `VGrateja's Org` (Read-only role). She accepted, signed into Supabase, and is visible on the Team page. From a fresh browser, she still freezes. So the trust granted to the org owner's email is **not extended to ordinary org members** — the differentiator is narrower (project ownership or some other per-account flag).
+- **supabase-js Web Locks deadlock fix** (GitHub issue #2111 / PR #2106). Passed a `noOpLock` to `createClient({ auth: { lock: ... } })` to disable the `navigator.locks` coordination entirely. Same hang.
+- **async `onAuthStateChange` callback anti-pattern** (GitHub auth-js issue #762 / Supabase docs warning). Refactored the callback to be synchronous and dispatched the `PASSWORD_RECOVERY` Supabase work via `setTimeout(..., 0)`. Same hang.
+- **`autoRefreshToken: false`.** The sandbox investigation found that clearing `pp-sb-auth` from `localStorage` *before* supabase-js init was what fixed the cold-load freeze — implying the auto-refresh / auto-rehydrate path is one of the hang surfaces. Disabling auto-refresh in `createClient` did not help fresh sign-ins: `signInWithPassword` itself still hangs.
+- **JWT-derived profile (skip the profile fetch entirely).** Replaced `_hydrateFromSession`'s SELECT on `public.profiles` with a client-side synthesis from the JWT's `user.email`. Same hang — the hang shifted from the profile fetch to either `signInWithPassword` or the welcome-overlay `setTimeout`.
+- **Welcome-overlay bypass.** Called `showMain()` directly from `_completeLogin` instead of `showWelcomeAndProceed(name)`. Same hang (`signInWithPassword` hangs upstream).
+- **Pin `supabase-js` to an older version.** Replaced `@supabase/supabase-js@2` (latest from CDN) with `@2.45.6` across all 14 files. Same hang.
 
 ---
 
@@ -71,6 +77,8 @@ The literal email `vandolf@performanceproperty.com.au` works on a project where 
 This points strongly at Supabase/Cloudflare treating org-member emails as **trusted at the auth edge**: their requests pass cleanly, while every non-member email's response is gated by some bot-detection or rate-limit layer whose response stream never terminates from the JS engine's perspective.
 
 **Workaround tested and rejected (2026-05-11):** Shaene was invited as a Read-only org member, accepted, became visible on the Team page, and retested from a fresh browser. **Same hang.** So the auth trust isn't granted to ordinary org members — likely only the org *owner*, or only the original project creator, or some Supabase-internal flag distinct from membership.
+
+**Second debug session, same day, after researching GitHub issues:** found and applied every documented anti-pattern fix Supabase warns about — no-op lock to bypass the Web Locks deadlock, sync `onAuthStateChange` to avoid the deadlock-by-async-callback issue, disabled `autoRefreshToken`, JWT-derived profile to bypass the profile fetch, welcome bypass, supabase-js pinned to `@2.45.6`. **None of them changed the outcome.** The hang point shifts between runs (`signInWithPassword` itself, the profile fetch, the welcome overlay's inner setTimeout) but the bug is unfixable from app code on this stack for non-org-owner accounts.
 
 ---
 
@@ -111,14 +119,14 @@ Everything else (welcome overlay, progress markers, raw-fetch bypass, XHR fallba
 
 ## Next steps
 
-1. **~~Validate the org-member workaround~~** — done, failed. Inviting Shaene as a Read-only org member did not let her sign in. (Recorded above under "What we ruled out".)
-2. **Try escalating org-member role.** Promote Shaene to **Administrator** or **Owner** of the org (Supabase Dashboard → Org → Team → role dropdown). If trust is granted to owners specifically, this might work. Note: making someone Owner grants them control over the org including billing — only do this for staff you'd trust with that.
-3. **Reply to the Supabase support ticket** with the failed-workaround update and the sharper diagnostic — bug reproduces on a fresh project, only the org owner's email works, ordinary org members do not. This is much more actionable for support than the original ticket.
-4. **Performance recording** in DevTools (record → click sign in → stop after freeze) — useful for the support ticket if Supabase asks for it.
-5. **Long-term:** the workaround won't scale even if it works (we can't make everyone an org owner). Options if Supabase support can't fix it:
-   - Server-side proxy in front of PostgREST that re-emits responses with explicit `content-length` (eliminates chunked transfer encoding and hopefully the gate).
-   - Migrate auth to a different provider (Clerk, Auth0, custom JWT).
-   - Self-host Supabase so the edge layer is under our control.
+The investigation is exhausted from the app-code side. Real options remaining:
+
+1. **Wait for Supabase support to respond** to the ticket already filed.
+2. **Server-side auth proxy** — stand up a serverless function (Cloudflare Workers / Netlify Functions / Vercel Edge) that proxies `/auth/v1/token` and `/rest/v1/profiles` calls. The proxy buffers the full Supabase response server-side before forwarding to the browser, eliminating the chunked-transfer / stream-hang path entirely. Likely 1–2 days of work; durable fix.
+3. **Migrate auth provider** — move to Clerk / Auth0 / WorkOS. Keeps Supabase for the database, replaces just the auth surface. ~1–2 weeks of work.
+4. **Accept the bug and use session-sharing for onboarding** — for new staff, share Vandolf's session (export `pp-sb-auth` from his localStorage, paste into the new user's browser). Not a real solution; only buys time.
+
+All client-side avenues attempted in two debug sessions (~12 hours combined) have failed.
 
 ---
 
