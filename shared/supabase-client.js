@@ -43,9 +43,14 @@
      auth integration (configured in Supabase Dashboard → Auth → Third
      Party Auth) verifies Clerk-signed JWTs against Clerk's JWKS, so
      RLS sees the user identified by the JWT claims. Falls back to the
-     anon key when no Clerk session exists. */
+     anon key when no Clerk session exists.
+     We await window.ppClerkReady so that supabase-js queries fired
+     immediately on page load wait for Clerk to finish initialising —
+     otherwise they'd race past the Clerk CDN load and fire as
+     anonymous, returning empty results from RLS-gated tables. */
   async function getClerkAccessToken() {
     try {
+      if (window.ppClerkReady) await window.ppClerkReady;
       if (!window.Clerk || !window.Clerk.session) return null;
       return await window.Clerk.session.getToken();
     } catch (e) {

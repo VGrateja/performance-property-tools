@@ -805,8 +805,20 @@ window.rejectUserOnServer = async function (email) {
 
 /* ═══ LOGOUT ═══ */
 async function logout() {
-  try { await window.sb.auth.signOut(); } catch (e) {}
+  /* Sign out via Clerk (primary auth source). Falls back to clearing
+     sessionStorage + reload in case Clerk isn't loaded yet. After
+     Clerk.signOut() resolves, Clerk removes its own localStorage keys
+     and the next reload lands on the Clerk sign-in screen instead of
+     auto-rehydrating. */
+  try {
+    if (window.Clerk && typeof window.Clerk.signOut === 'function') {
+      await window.Clerk.signOut();
+    }
+  } catch (e) { console.warn('Clerk signOut failed', e); }
+  /* Defensive Supabase signOut for any stale supabase-js session. */
+  try { if (window.sb && window.sb.auth && typeof window.sb.auth.signOut === 'function') await window.sb.auth.signOut(); } catch (e) {}
   _setSessionMirror(null);
+  /* Hard reload to wipe in-memory state + Clerk's mounted component. */
   location.reload();
 }
 window.logout = logout;
