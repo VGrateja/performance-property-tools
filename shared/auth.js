@@ -419,19 +419,26 @@ function startOtpLockout() {
 let _otpPendingEmail = '';
 
 /* Fetch the current user's profile, populate sessionStorage, and route to
-   the right post-login UI. Returns the profile or null if no session. */
+   the right post-login UI. Returns the profile or null if no session.
+   DEBUG: instrumented with _ppMark across each await so the new hang
+   point can be pinpointed via localStorage 'pp-debug-marks'. */
 async function _hydrateFromSession() {
+  if (window._ppMark) window._ppMark('hydrate:start');
   if (!window.sb) return null;
+  if (window._ppMark) window._ppMark('hydrate:getSession-await');
   const { data: sess } = await window.sb.auth.getSession();
+  if (window._ppMark) window._ppMark('hydrate:getSession-ok=' + (sess && sess.session ? 'yes' : 'no'));
   if (!sess || !sess.session) {
     _setSessionMirror(null);
     return null;
   }
+  if (window._ppMark) window._ppMark('hydrate:fetchProfile-await');
   const { data: profile, error } = await window.sb
     .from('profiles')
     .select('id, email, full_name, tier, status')
     .eq('id', sess.session.user.id)
     .single();
+  if (window._ppMark) window._ppMark('hydrate:fetchProfile-ok=' + (profile ? 'row' : (error ? 'err:' + (error.code || error.message || 'unknown') : 'null')));
   if (error || !profile) {
     console.warn('Profile lookup failed', error);
     _setSessionMirror(null);
@@ -447,13 +454,16 @@ async function _hydrateFromSession() {
       }).catch(() => {});
     }
   }
+  if (window._ppMark) window._ppMark('hydrate:end');
   return profile;
 }
 
 /* After a successful sign-in or OTP verify: gate by status, then either
    show welcome (admin/dev) or jump straight to the hub. */
 async function _completeLogin() {
+  if (window._ppMark) window._ppMark('completeLogin:start');
   const profile = await _hydrateFromSession();
+  if (window._ppMark) window._ppMark('completeLogin:hydrateReturned=' + (profile ? profile.status + '/' + (profile.tier || '?') : 'null'));
   if (!profile) {
     const errEl = document.getElementById('loginError');
     if (errEl) errEl.textContent = 'Profile lookup failed. Please try again.';
@@ -521,7 +531,9 @@ async function tryLogin() {
   /* Password path — Tier 0 (Vandolf) only. Anyone else with a password is
      also fine; signInWithPassword fails for users who never set one. */
   if (pass) {
+    if (window._ppMark) window._ppMark('tryLogin:signInWithPassword-await');
     const { error } = await window.sb.auth.signInWithPassword({ email, password: pass });
+    if (window._ppMark) window._ppMark('tryLogin:signInWithPassword-returned=' + (error ? 'err:' + (error.message || 'unknown') : 'ok'));
     if (error) {
       leavePending();
       errEl.textContent = 'Incorrect email or password.';
@@ -530,6 +542,7 @@ async function tryLogin() {
     }
     /* Don't restore label — _completeLogin navigates away. */
     await _completeLogin();
+    if (window._ppMark) window._ppMark('tryLogin:completeLogin-returned');
     return;
   }
 
