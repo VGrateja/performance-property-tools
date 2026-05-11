@@ -491,14 +491,16 @@ async function _completeLogin() {
   const loginScreen = document.getElementById('loginScreen');
   if (loginScreen) loginScreen.style.display = 'none';
   applyAccessRestrictions();
-  /* Welcome overlay for every tier — admins get the named greeting via
-     ADMIN_NAMES, non-admins get their full_name (set during registration)
-     or the email's local-part as a fallback. */
-  const name = ADMIN_NAMES[profile.email]
-            || profile.full_name
-            || (profile.email || '').split('@')[0]
-            || 'there';
-  showWelcomeAndProceed(name);
+  /* Welcome overlay DISABLED — the 0.9s fade-out's inner setTimeout
+     consistently never fires on fresh sign-ins, leaving the page
+     black after the overlay fades to opacity 0. Auth itself works
+     (we've confirmed signInWithPassword + profile fetch return),
+     so we just skip the cosmetic welcome and go straight to the
+     hub. Re-enable showWelcomeAndProceed(name) below if/when the
+     fade-out timer issue is resolved. */
+  if (window._ppMark) window._ppMark('completeLogin:skipWelcome->showMain');
+  showMain();
+  if (window._ppMark) window._ppMark('completeLogin:showMainReturned');
 }
 
 /* ── Step 1: email + (optional) password ── */
