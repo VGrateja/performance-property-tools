@@ -93,12 +93,7 @@
     return _profilePromise;
   };
 
-  /* Invalidate the profile cache after sign-in / sign-out events so
-     tier gating reflects the current session immediately. */
-  window.sb.auth.onAuthStateChange((event, _session) => {
-    if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
-      _profileCache = null;
-      _profilePromise = null;
-    }
-  });
+  /* No onAuthStateChange — supabase-js disables auth.* methods when
+     accessToken is configured. Cache invalidation now happens when
+     Clerk's listener fires (see index.html's bootClerkAuth IIFE). */
 })();

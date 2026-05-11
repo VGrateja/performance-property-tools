@@ -20,24 +20,20 @@
 (function ppAuthGate() {
   'use strict';
 
-  /* The supabase-client.js wrapper persists sessions in localStorage under
-     the custom key 'pp-sb-auth'. We peek at it synchronously so we can
-     redirect before paint, without waiting on the JS SDK to initialise. */
+  /* Auth migration to Clerk: we no longer check localStorage['pp-sb-auth']
+     because supabase-js doesn't manage the session anymore — Clerk does.
+     Instead we trust the sessionStorage flag that the hub's Clerk handler
+     sets after a successful Clerk sign-in. sessionStorage carries between
+     pages in the same tab, so navigating from the hub to a tool keeps the
+     signed-in state. If a user opens a tool URL directly without going
+     through the hub first (e.g. a bookmark), sessionStorage is empty and
+     they get redirected to the hub to sign in. */
   let signedIn = false;
   try {
-    const raw = localStorage.getItem('pp-sb-auth');
-    if (raw) {
-      const data = JSON.parse(raw);
-      /* supabase-js v2 stores a session object with an access_token. If
-         the token is expired the SDK will refresh it on first call —
-         here we only need to know "did the user sign in at some point".
-         An expired+un-refreshable token will fail the next DB call and
-         trigger a sign-out via auth.js's onAuthStateChange handler. */
-      if (data && (data.access_token || (data.currentSession && data.currentSession.access_token))) {
-        signedIn = true;
-      }
+    if (sessionStorage.getItem('pp_auth') === '1') {
+      signedIn = true;
     }
-  } catch (e) { /* malformed storage → treat as signed-out */ }
+  } catch (e) { /* sessionStorage blocked → treat as signed-out */ }
 
   if (!signedIn) {
     const path = window.location.pathname.replace(/[^/]+$/, '');
