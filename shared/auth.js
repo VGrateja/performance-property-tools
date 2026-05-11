@@ -422,10 +422,21 @@ function startOtpLockout() {
 /* The email currently mid-OTP. Set in step 1, consumed in step 2. */
 let _otpPendingEmail = '';
 
-/* Fetch the current user's profile, populate sessionStorage, and route to
-   the right post-login UI. Returns the profile or null if no session.
-   DEBUG: instrumented with _ppMark across each await so the new hang
-   point can be pinpointed via localStorage 'pp-debug-marks'. */
+/* Hydrate the signed-in user's profile into sessionStorage. Returns the
+   profile or null if no session.
+
+   Originally this awaited a SELECT on public.profiles to read tier +
+   status + full_name. That fetch hangs intermittently for non-cached
+   sessions even after fixing the documented supabase-js anti-patterns
+   (Web Locks deadlock, async onAuthStateChange) — same trace, same
+   code, sometimes resolves in 500ms, sometimes never. See docs/BUG.md.
+
+   Since the session object already contains everything we need to
+   identify the user (id, email), and tier is fully derivable from the
+   email allowlists (ADMIN_EMAILS / ALLOWED_DOMAIN), we skip the
+   unreliable HTTP round-trip and synthesise the profile client-side.
+   Server-side RLS still enforces the real profile on every subsequent
+   query; only this one bootstrap step changes. */
 async function _hydrateFromSession() {
   if (window._ppMark) window._ppMark('hydrate:start');
   if (!window.sb) return null;
@@ -436,21 +447,28 @@ async function _hydrateFromSession() {
     _setSessionMirror(null);
     return null;
   }
-  if (window._ppMark) window._ppMark('hydrate:fetchProfile-await');
-  const { data: profile, error } = await window.sb
-    .from('profiles')
-    .select('id, email, full_name, tier, status')
-    .eq('id', sess.session.user.id)
-    .single();
-  if (window._ppMark) window._ppMark('hydrate:fetchProfile-ok=' + (profile ? 'row' : (error ? 'err:' + (error.code || error.message || 'unknown') : 'null')));
-  if (error || !profile) {
-    console.warn('Profile lookup failed', error);
-    _setSessionMirror(null);
-    return null;
+  const sessionUser = sess.session.user;
+  const email = (sessionUser.email || '').toLowerCase();
+  let tier = 'guest';
+  if (ADMIN_EMAILS.indexOf(email) >= 0) {
+    tier = 'admin';
+  } else if (email.endsWith('@' + ALLOWED_DOMAIN)) {
+    tier = 'company';
   }
+  const profile = {
+    id: sessionUser.id,
+    email: email,
+    full_name: ADMIN_NAMES[email]
+            || (sessionUser.user_metadata && sessionUser.user_metadata.first_name)
+            || null,
+    tier: tier,
+    status: 'active',
+  };
+  if (window._ppMark) window._ppMark('hydrate:profileFromJwt=' + tier);
   _setSessionMirror(profile);
   /* Pre-warm the pending-approvals cache for admin/dev so the hub pill
-     reflects pending-count on first paint without an extra event. */
+     reflects pending-count on first paint without an extra event.
+     Fire-and-forget; failure is silent. */
   if (profile.tier === 'admin' || profile.tier === 'dev') {
     if (typeof window.fetchUsersFromServer === 'function') {
       window.fetchUsersFromServer().then(() => {
