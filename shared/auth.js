@@ -1117,32 +1117,39 @@ async function _initAuth() {
      await we can miss the event entirely — the user clicks the
      recovery email link and just sees the login page with no prompt. */
   if (window.sb) {
-    window.sb.auth.onAuthStateChange(async (event, _session) => {
+    /* Synchronous handler — per Supabase docs, async callbacks and
+       awaited Supabase calls inside onAuthStateChange cause a global
+       auth deadlock that hangs ALL subsequent Supabase calls (see
+       https://github.com/supabase/auth-js/issues/762). The workaround
+       is to dispatch any Supabase work via setTimeout(..., 0) so it
+       runs AFTER the callback has returned and released the auth
+       lock. */
+    window.sb.auth.onAuthStateChange((event, _session) => {
       if (event === 'SIGNED_OUT') _setSessionMirror(null);
       if (event === 'PASSWORD_RECOVERY') {
-        /* Supabase has parsed the recovery link's tokens out of the URL
-           and authenticated the user. Now we need to capture a new
-           password and call updateUser. Simple browser prompt is fine
-           — only one user has a password (Vandolf) and recovery is
-           rare. */
-        const next = window.prompt(
-          'Enter your new password (min 6 characters):',
-          ''
-        );
-        if (!next) {
-          alert('Password unchanged. You are still signed in.');
-          return;
-        }
-        if (next.length < 6) {
-          alert('Password must be at least 6 characters. Try again from the recovery email.');
-          return;
-        }
-        const { error } = await window.sb.auth.updateUser({ password: next });
-        if (error) {
-          alert('Could not update password: ' + (error.message || 'unknown error'));
-          return;
-        }
-        alert('Password updated. You are signed in.');
+        /* Defer the password-recovery prompt + updateUser call to a
+           microtask outside the auth callback so the auth lock is
+           released first. */
+        setTimeout(async () => {
+          const next = window.prompt(
+            'Enter your new password (min 6 characters):',
+            ''
+          );
+          if (!next) {
+            alert('Password unchanged. You are still signed in.');
+            return;
+          }
+          if (next.length < 6) {
+            alert('Password must be at least 6 characters. Try again from the recovery email.');
+            return;
+          }
+          const { error } = await window.sb.auth.updateUser({ password: next });
+          if (error) {
+            alert('Could not update password: ' + (error.message || 'unknown error'));
+            return;
+          }
+          alert('Password updated. You are signed in.');
+        }, 0);
       }
     });
 
