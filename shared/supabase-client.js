@@ -43,6 +43,22 @@
     return;
   }
 
+  /* No-op replacement for supabase-js's internal navigator.locks
+     wrapper. The default lock implementation (`navigatorLock` in
+     gotrue-js) has a well-documented deadlock when a previous auth
+     operation orphans a Web Lock: every subsequent auth call queues
+     behind the dead lock and hangs forever, even though the network
+     request succeeds with 200. Symptoms match
+     https://github.com/supabase/supabase-js/issues/2013,
+     https://github.com/orgs/supabase/discussions/36044, and
+     https://github.com/supabase/supabase-js/issues/2111 — and our
+     full investigation in docs/BUG.md.
+     Passing this no-op via auth.lock disables the Web Locks
+     coordination entirely. We lose protection against concurrent
+     auth operations across tabs, but for a single-user tool that's
+     a fine tradeoff to avoid the deadlock. */
+  const noOpLock = async (_name, _acquireTimeout, fn) => fn();
+
   window.sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
     auth: {
       /* Persist the auth session across reloads + tabs. localStorage is
@@ -55,6 +71,9 @@
       /* On magic-link / OTP redirects, Supabase parses the URL hash for
          tokens. Detect on every page so deep links can land logged-in. */
       detectSessionInUrl: true,
+      /* Replace the Web Locks-based lock with a no-op — see the
+         block comment above. */
+      lock: noOpLock,
     },
   });
 
