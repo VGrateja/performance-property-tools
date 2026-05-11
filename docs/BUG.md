@@ -1,6 +1,6 @@
 # Bug — New-user sign-in freeze
 
-**Status (2026-05-11):** root cause likely identified — the freeze fires for every auth.users email **except the email registered as the Supabase organization owner**. Workaround (adding affected users as org members) being tested. Not yet fully fixed.
+**Status (2026-05-11):** root cause partially identified — the freeze fires for every auth.users email **except the email registered as the Supabase organization owner**. Adding affected users as **org members** (Shaene as Read-only) does **not** confer the same trust — she still freezes after accepting the invite from a fresh browser. So the differentiator is narrower than "is the email an org member" — likely "is the email the org *owner* specifically" or some other per-account flag we can't see. Not yet fixed; awaiting Supabase support reply with project-side insight.
 **Severity:** medium — existing staff with cached sessions sign in fine; only fresh-browser / new-staff onboarding is blocked.
 **Affects:** every user signing in on a browser that has no existing Supabase session in `localStorage`, **except** the Supabase org owner's email, regardless of tier (admin / company / client) or how the auth user was created (Supabase dashboard "Add user" or OTP-register flow). The org-owner email signs in cleanly from any browser, any project, any network.
 
@@ -38,6 +38,7 @@ After ~8 hours of debugging across multiple sessions:
 - **Tier value of the affected user.** Set Shaene's `profiles.tier` from `'admin'` to `'dev'` (matching Vandolf's tier) in the SQL editor and had her retest from a cleared browser. Same hang. Tier is not the differentiator.
 - **Resend / SMTP hooks.** No auth hooks point at Resend; no custom SMTP is configured. Resend is not in the auth flow at all for password sign-in. Ruled out.
 - **Project state corruption.** Created a brand-new Supabase project (`sjopptjqciyjtqqfnsun`, Tokyo region same as production), ran migrations 001–007, pointed a sandbox folder copy at it, and signed in there. Result: **same identity-bound behaviour on the fresh project** — `vandolf@performanceproperty.com.au` signs in cleanly, every other auth.users email hangs. Confirms the bug is not specific to our production project's state.
+- **Org membership.** Invited Shaene as a member of `VGrateja's Org` (Read-only role). She accepted, signed into Supabase, and is visible on the Team page. From a fresh browser, she still freezes. So the trust granted to the org owner's email is **not extended to ordinary org members** — the differentiator is narrower (project ownership or some other per-account flag).
 
 ---
 
@@ -69,7 +70,7 @@ The literal email `vandolf@performanceproperty.com.au` works on a project where 
 
 This points strongly at Supabase/Cloudflare treating org-member emails as **trusted at the auth edge**: their requests pass cleanly, while every non-member email's response is gated by some bot-detection or rate-limit layer whose response stream never terminates from the JS engine's perspective.
 
-**Workaround being tested:** invite affected users (e.g. Shaene) as members of `VGrateja's Org` via Dashboard → Org settings → Team → Invite. If org membership confers the trust, their sign-ins should now succeed.
+**Workaround tested and rejected (2026-05-11):** Shaene was invited as a Read-only org member, accepted, became visible on the Team page, and retested from a fresh browser. **Same hang.** So the auth trust isn't granted to ordinary org members — likely only the org *owner*, or only the original project creator, or some Supabase-internal flag distinct from membership.
 
 ---
 
@@ -110,11 +111,11 @@ Everything else (welcome overlay, progress markers, raw-fetch bypass, XHR fallba
 
 ## Next steps
 
-1. **Validate the org-member workaround.** Invite Shaene as a member of `VGrateja's Org` (Supabase Dashboard → Org → Team → Invite, role Read-only). Have her accept the invite using her `@performanceproperty.com.au` email exactly. Have her retest sign-in to the tool from a fresh browser. Expected outcome: she signs in cleanly.
-2. If the workaround validates → invite the rest of the staff (Saskia, Paul, d.robbins, etc.) as org members. Free plan allows multiple members at no cost. Document this in onboarding: "before a new staff member can use the tool, they must be a member of VGrateja's Org on Supabase."
-3. **Reply to the Supabase support ticket** with the new diagnostic information — bug reproduces on a fresh project, only the org owner's email works. This is much more actionable for them than the original ticket.
+1. **~~Validate the org-member workaround~~** — done, failed. Inviting Shaene as a Read-only org member did not let her sign in. (Recorded above under "What we ruled out".)
+2. **Try escalating org-member role.** Promote Shaene to **Administrator** or **Owner** of the org (Supabase Dashboard → Org → Team → role dropdown). If trust is granted to owners specifically, this might work. Note: making someone Owner grants them control over the org including billing — only do this for staff you'd trust with that.
+3. **Reply to the Supabase support ticket** with the failed-workaround update and the sharper diagnostic — bug reproduces on a fresh project, only the org owner's email works, ordinary org members do not. This is much more actionable for support than the original ticket.
 4. **Performance recording** in DevTools (record → click sign in → stop after freeze) — useful for the support ticket if Supabase asks for it.
-5. **Long-term:** if external (non-org-member) users ever need to use the tool, the workaround won't scale. Options at that point:
+5. **Long-term:** the workaround won't scale even if it works (we can't make everyone an org owner). Options if Supabase support can't fix it:
    - Server-side proxy in front of PostgREST that re-emits responses with explicit `content-length` (eliminates chunked transfer encoding and hopefully the gate).
    - Migrate auth to a different provider (Clerk, Auth0, custom JWT).
    - Self-host Supabase so the edge layer is under our control.
@@ -123,10 +124,9 @@ Everything else (welcome overlay, progress markers, raw-fetch bypass, XHR fallba
 
 ## Workarounds for new staff in the meantime
 
-**Best option (if the org-member theory holds):** invite the new staff member as a Supabase org member first, using the same email they'll use to sign into the tool. Wait for them to accept. *Then* they sign in to the tool — should work cleanly.
-
-If the org-member workaround isn't yet validated or doesn't apply:
+Read-only org membership has been ruled out. Pending support reply, the working unblocks are still:
 
 1. Have them sign up via OTP on a colleague's already-working browser (cached session masks the bug).
 2. Or share Vandolf's session by exporting `pp-sb-auth` from localStorage and pasting it into the new user's browser (not a real solution, just unblocks urgent access).
 3. Or do all their work in a tab that's already been signed in — never log out.
+4. **Untested:** if promoting the user to org **Administrator** or **Owner** lets them sign in, that's a stop-gap for staff we'd trust with that role.
