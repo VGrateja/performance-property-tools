@@ -3618,6 +3618,20 @@ function neuterTier4LockedPills() {
 
 /* Hub-page bootstrap: if a session is already active, skip straight to the hub.
    Otherwise auth.js has wired up the login form and we stay on step 1. */
+/* DEBUG event log for the Clerk migration. Writes to localStorage
+   so we can inspect what fired even if the main thread freezes. */
+function _ppClerkMark(label) {
+  try {
+    const k = 'pp-clerk-events';
+    const arr = JSON.parse(localStorage.getItem(k) || '[]');
+    arr.push({ s: label, t: Date.now() });
+    if (arr.length > 100) arr.splice(0, arr.length - 100);
+    localStorage.setItem(k, JSON.stringify(arr));
+  } catch (_) {}
+}
+try { localStorage.removeItem('pp-clerk-events'); } catch (_) {}
+_ppClerkMark('script-bottom');
+
 /* ─── Clerk-based sign-in (replaces the old Supabase auth UI) ───
    Clerk handles the entire sign-in / sign-up flow via its mounted
    component. After Clerk completes sign-in, we set the same
@@ -3645,20 +3659,28 @@ function neuterTier4LockedPills() {
     sessionStorage.setItem('pp_user_name',  fullName);
   }
   function handleSignedIn(clerk) {
-    if (!clerk || !clerk.user) return;
-    mirrorClerkUser(clerk.user);
-    if (typeof applyAccessRestrictions === 'function') applyAccessRestrictions();
-    if (typeof neuterTier4LockedPills === 'function') neuterTier4LockedPills();
-    if (typeof showMain === 'function') showMain();
+    _ppClerkMark('handleSignedIn:start');
+    if (!clerk || !clerk.user) { _ppClerkMark('handleSignedIn:noUser'); return; }
+    try { mirrorClerkUser(clerk.user); _ppClerkMark('handleSignedIn:mirrored'); }
+    catch (e) { _ppClerkMark('handleSignedIn:mirrorThrew=' + (e.message || 'err')); }
+    try { if (typeof applyAccessRestrictions === 'function') applyAccessRestrictions(); _ppClerkMark('handleSignedIn:restrictionsDone'); }
+    catch (e) { _ppClerkMark('handleSignedIn:restrictionsThrew=' + (e.message || 'err')); }
+    try { if (typeof neuterTier4LockedPills === 'function') neuterTier4LockedPills(); }
+    catch (e) {}
+    try { if (typeof showMain === 'function') showMain(); _ppClerkMark('handleSignedIn:showMainCalled'); }
+    catch (e) { _ppClerkMark('handleSignedIn:showMainThrew=' + (e.message || 'err')); }
   }
 
+  _ppClerkMark('bootClerkAuth:awaitingReady');
   window.ppClerkReady.then((clerk) => {
+    _ppClerkMark('bootClerkAuth:ready=' + (clerk ? 'yes' : 'no'));
     if (!clerk) {
       const mount = document.getElementById('clerk-sign-in');
       if (mount) mount.innerHTML = '<div style="color:#ef4444;padding:20px;text-align:center">Clerk failed to load. Check your network and refresh.</div>';
       return;
     }
 
+    _ppClerkMark('bootClerkAuth:initial:user=' + (clerk.user ? 'yes' : 'no'));
     /* If a Clerk session already exists (returning user with active
        browser session), go straight to the hub. */
     if (clerk.user) {
@@ -3668,6 +3690,7 @@ function neuterTier4LockedPills() {
          sign-in Clerk fires its listener, where we transition to the hub. */
       const mount = document.getElementById('clerk-sign-in');
       if (mount && typeof clerk.mountSignIn === 'function') {
+        _ppClerkMark('bootClerkAuth:mountingSignIn');
         clerk.mountSignIn(mount, {
           appearance: {
             baseTheme: undefined,  /* defaults to Clerk's auto light/dark */
@@ -3678,12 +3701,31 @@ function neuterTier4LockedPills() {
 
     /* Clerk listener — fires on sign-in, sign-out, and any other state
        change. Treats every state-becomes-signed-in as a transition to
-       the hub. */
-    clerk.addListener(({ user, session }) => {
+       the hub. Also runs a 500ms poll as a safety net since some Clerk
+       state transitions don't always fire the listener in vanilla JS. */
+    clerk.addListener((state) => {
+      const user = state && state.user;
+      const session = state && state.session;
+      _ppClerkMark('clerk:listener=' + (user ? 'user' : 'noUser') + '/' + (session ? 'sess' : 'noSess'));
       if (user && session && sessionStorage.getItem('pp_auth') !== '1') {
         handleSignedIn(clerk);
       }
     });
+
+    /* Polling safety net: every 500ms, check if Clerk thinks we're
+       signed in but our sessionStorage isn't yet. If so, kick the
+       transition manually. Bails after 60 attempts (~30 s). */
+    let pollTries = 0;
+    const pollTimer = setInterval(() => {
+      pollTries++;
+      if (sessionStorage.getItem('pp_auth') === '1') { clearInterval(pollTimer); return; }
+      if (pollTries > 60) { clearInterval(pollTimer); _ppClerkMark('poll:gaveUp'); return; }
+      if (clerk.user && clerk.session) {
+        _ppClerkMark('poll:caughtSignedIn');
+        clearInterval(pollTimer);
+        handleSignedIn(clerk);
+      }
+    }, 500);
   });
 })();
 
