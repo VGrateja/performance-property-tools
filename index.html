@@ -7,6 +7,16 @@
 <link rel="icon" href="assets/logo.png" type="image/png"/>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,600;1,700;1,800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- Clerk JS SDK — issues the JWTs that Supabase third-party auth verifies.
+     See docs/BUG.md for why Clerk replaced supabase-js auth. The script is
+     served from our Clerk dev instance's domain (humble-kingfish-89) and the
+     publishable key is embedded in shared/clerk-client.js. async + defer so
+     it doesn't block first paint. -->
+<script async crossorigin="anonymous"
+        data-clerk-publishable-key="pk_test_aHVtYmxlLWtpbmdmaXNoLTg5LmNsZXJrLmFjY291bnRzLmRldiQ"
+        src="https://humble-kingfish-89.clerk.accounts.dev/npm/@clerk/clerk-js@latest/dist/clerk.browser.js"
+        type="text/javascript"></script>
+<script src="shared/clerk-client.js"></script>
 <script src="shared/supabase-client.js"></script>
 <link rel="stylesheet" href="shared/common.css"/>
 
@@ -738,10 +748,18 @@
       <img class="pp-logo-light" src="assets/Reports/logo-color-black.png" alt="Performance Property" style="height:56px;width:280px"/>
     </div>
     <div class="login-divider"></div>
-    
+
+    <!-- Clerk sign-in component mount. Replaces the old email/OTP/password
+         step UI below — Clerk handles the entire sign-in flow. The wrapper
+         around the Clerk mount keeps the login-box's existing styling for
+         the logo + divider + the surrounding gradient background; the
+         step1/step2/step3 divs below are kept in the DOM but hidden so
+         the existing auth.js wiring doesn't error-out on missing elements
+         during the migration. -->
+    <div id="clerk-sign-in" style="min-height:380px;display:flex;align-items:center;justify-content:center"></div>
 
     <!-- STEP 1: Email + Password -->
-    <div class="login-step" id="step1">
+    <div class="login-step" id="step1" style="display:none">
       <!-- Status banner — surfaces post-registration messages (e.g. "Your
            account is being verified") and any other transient cross-step
            notice. JS toggles .show + the inner text via showLoginNotice(). -->
@@ -3600,6 +3618,77 @@ function neuterTier4LockedPills() {
 
 /* Hub-page bootstrap: if a session is already active, skip straight to the hub.
    Otherwise auth.js has wired up the login form and we stay on step 1. */
+/* ─── Clerk-based sign-in (replaces the old Supabase auth UI) ───
+   Clerk handles the entire sign-in / sign-up flow via its mounted
+   component. After Clerk completes sign-in, we set the same
+   sessionStorage keys the rest of the app expects (`pp_auth`,
+   `pp_auth_level`, `pp_user_email`, etc.) and call showMain().
+   The tier is derived from the email — matching the original
+   on_auth_user_created trigger logic in migration 002. */
+(function bootClerkAuth() {
+  function tierForEmail(email) {
+    const e = (email || '').toLowerCase();
+    if (typeof ADMIN_EMAILS !== 'undefined' && ADMIN_EMAILS.indexOf(e) >= 0) return 'admin';
+    if (typeof ALLOWED_DOMAIN !== 'undefined' && e.endsWith('@' + ALLOWED_DOMAIN)) return 'company';
+    return 'guest';
+  }
+  function mirrorClerkUser(user) {
+    const email = (user.primaryEmailAddress && user.primaryEmailAddress.emailAddress || '').toLowerCase();
+    const tier = tierForEmail(email);
+    const fullName = user.firstName
+                  || (typeof ADMIN_NAMES !== 'undefined' && ADMIN_NAMES[email])
+                  || (email ? email.split('@')[0] : '');
+    sessionStorage.setItem('pp_auth', '1');
+    sessionStorage.setItem('pp_auth_level', tier);
+    if (!sessionStorage.getItem('pp_view_as')) sessionStorage.setItem('pp_view_as', tier);
+    sessionStorage.setItem('pp_user_email', email);
+    sessionStorage.setItem('pp_user_name',  fullName);
+  }
+  function handleSignedIn(clerk) {
+    if (!clerk || !clerk.user) return;
+    mirrorClerkUser(clerk.user);
+    if (typeof applyAccessRestrictions === 'function') applyAccessRestrictions();
+    if (typeof neuterTier4LockedPills === 'function') neuterTier4LockedPills();
+    if (typeof showMain === 'function') showMain();
+  }
+
+  window.ppClerkReady.then((clerk) => {
+    if (!clerk) {
+      const mount = document.getElementById('clerk-sign-in');
+      if (mount) mount.innerHTML = '<div style="color:#ef4444;padding:20px;text-align:center">Clerk failed to load. Check your network and refresh.</div>';
+      return;
+    }
+
+    /* If a Clerk session already exists (returning user with active
+       browser session), go straight to the hub. */
+    if (clerk.user) {
+      handleSignedIn(clerk);
+    } else {
+      /* No session — mount Clerk's sign-in component. After successful
+         sign-in Clerk fires its listener, where we transition to the hub. */
+      const mount = document.getElementById('clerk-sign-in');
+      if (mount && typeof clerk.mountSignIn === 'function') {
+        clerk.mountSignIn(mount, {
+          appearance: {
+            baseTheme: undefined,  /* defaults to Clerk's auto light/dark */
+          },
+        });
+      }
+    }
+
+    /* Clerk listener — fires on sign-in, sign-out, and any other state
+       change. Treats every state-becomes-signed-in as a transition to
+       the hub. */
+    clerk.addListener(({ user, session }) => {
+      if (user && session && sessionStorage.getItem('pp_auth') !== '1') {
+        handleSignedIn(clerk);
+      }
+    });
+  });
+})();
+
+/* Legacy short-circuit kept for users whose sessionStorage is already
+   set from a successful sign-in on the same tab. */
 if (sessionStorage.getItem('pp_auth') === '1') {
   const login = document.getElementById('loginScreen');
   if (login) login.style.display = 'none';

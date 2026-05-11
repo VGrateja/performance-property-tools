@@ -38,19 +38,31 @@
     return;
   }
 
+  /* Pull Clerk's session JWT for every Supabase request via the
+     accessToken callback (supabase-js v2.45+). Supabase's third-party
+     auth integration (configured in Supabase Dashboard → Auth → Third
+     Party Auth) verifies Clerk-signed JWTs against Clerk's JWKS, so
+     RLS sees the user identified by the JWT claims. Falls back to the
+     anon key when no Clerk session exists. */
+  async function getClerkAccessToken() {
+    try {
+      if (!window.Clerk || !window.Clerk.session) return null;
+      return await window.Clerk.session.getToken();
+    } catch (e) {
+      return null;
+    }
+  }
+
   window.sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+    /* Supabase auth.* methods are unused now (Clerk handles auth). Disable
+       persistSession + detectSessionInUrl so supabase-js doesn't try to
+       parse / write its own session — Clerk owns the session entirely. */
     auth: {
-      /* Persist the auth session across reloads + tabs. localStorage is
-         shared per-origin so opening a new tab keeps the user signed in. */
-      persistSession: true,
-      autoRefreshToken: true,
-      storage: window.localStorage,
-      /* Custom key so we don't collide with anything else on localStorage. */
-      storageKey: 'pp-sb-auth',
-      /* On magic-link / OTP redirects, Supabase parses the URL hash for
-         tokens. Detect on every page so deep links can land logged-in. */
-      detectSessionInUrl: true,
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
     },
+    accessToken: getClerkAccessToken,
   });
 
   /* Convenience: who's logged in + what tier? Cached per page-load.

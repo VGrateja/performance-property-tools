@@ -1109,13 +1109,11 @@ async function _initAuth() {
     _wireOtpDigits();
   }
 
-  /* Subscribe to auth state changes BEFORE we await anything async. The
-     PASSWORD_RECOVERY event fires during Supabase's URL-token parsing
-     (which happens automatically when the SDK loads with
-     detectSessionInUrl:true). If we register the listener after an
-     await we can miss the event entirely — the user clicks the
-     recovery email link and just sees the login page with no prompt. */
-  if (window.sb) {
+  /* Clerk migration: skip the Supabase auth state subscription + hydration
+     entirely. Clerk handles auth now (see docs/BUG.md). The Clerk handler
+     in index.html mirrors the Clerk user to sessionStorage which is what
+     the tier helpers read from. */
+  if (false && window.sb) {
     window.sb.auth.onAuthStateChange(async (event, _session) => {
       if (event === 'SIGNED_OUT') _setSessionMirror(null);
       if (event === 'PASSWORD_RECOVERY') {
