@@ -1,6 +1,6 @@
 # Bug — New-user sign-in freeze
 
-**Status (2026-05-11, second session):** root cause is identity-bound to the org-owner email. **All known client-side fixes have been tried and failed.** Codebase reverted to clean baseline. Waiting on Supabase support, or moving to a server-side auth proxy / different auth provider.
+**Status (2026-05-11, third session):** root cause is below the auth-library layer — **reproduces identically through Clerk** after a full migration attempt. Both Supabase Auth and Clerk Auth sit behind Cloudflare; the freeze hits any auth provider behind CF for non-org-owner emails. **No app-code or auth-provider fix can resolve it.** Codebase fully reverted to `main`; the Clerk migration is preserved on the `auth-migration` branch for future reference but is not in production. Real next steps require an auth path that doesn't traverse Cloudflare (server-side proxy on Render/Fly/DigitalOcean, or self-hosted auth).
 **Severity:** medium — existing staff with cached sessions sign in fine; only fresh-browser / new-staff onboarding is blocked.
 **Affects:** every user signing in on a browser that has no existing Supabase session in `localStorage`, **except** the Supabase org owner's email, regardless of tier (admin / company / client) or how the auth user was created (Supabase dashboard "Add user" or OTP-register flow). The org-owner email signs in cleanly from any browser, any project, any network.
 
@@ -45,6 +45,7 @@ After ~8 hours of debugging across multiple sessions:
 - **JWT-derived profile (skip the profile fetch entirely).** Replaced `_hydrateFromSession`'s SELECT on `public.profiles` with a client-side synthesis from the JWT's `user.email`. Same hang — the hang shifted from the profile fetch to either `signInWithPassword` or the welcome-overlay `setTimeout`.
 - **Welcome-overlay bypass.** Called `showMain()` directly from `_completeLogin` instead of `showWelcomeAndProceed(name)`. Same hang (`signInWithPassword` hangs upstream).
 - **Pin `supabase-js` to an older version.** Replaced `@supabase/supabase-js@2` (latest from CDN) with `@2.45.6` across all 14 files. Same hang.
+- **Full migration to Clerk Auth** (third session, 2026-05-11). Stood up Clerk (`humble-kingfish-89.clerk.accounts.dev`), configured email + password auth, enabled Supabase third-party auth pointing at Clerk's JWKS, and wired the entire codebase to use Clerk for sign-in and Clerk-issued JWTs for Supabase queries. Vandolf signed in cleanly, reached the hub, tools loaded data, logout worked end-to-end. **For `test@`, Clerk's sign-in component completed, then the page froze identically to the Supabase Auth version** — Clerk's listener never fired, my polling safety-net never caught the signed-in state, the moon CSS animation stuck mid-frame, DevTools could no longer render. That confirms the bug is at a layer *underneath* the auth library — most likely Cloudflare's edge handling of chunked auth responses for accounts that aren't in some unknown "trusted" set. Reverted everything by switching back to `main`; Clerk work preserved on `auth-migration` branch.
 
 ---
 
@@ -80,6 +81,8 @@ This points strongly at Supabase/Cloudflare treating org-member emails as **trus
 
 **Second debug session, same day, after researching GitHub issues:** found and applied every documented anti-pattern fix Supabase warns about — no-op lock to bypass the Web Locks deadlock, sync `onAuthStateChange` to avoid the deadlock-by-async-callback issue, disabled `autoRefreshToken`, JWT-derived profile to bypass the profile fetch, welcome bypass, supabase-js pinned to `@2.45.6`. **None of them changed the outcome.** The hang point shifts between runs (`signInWithPassword` itself, the profile fetch, the welcome overlay's inner setTimeout) but the bug is unfixable from app code on this stack for non-org-owner accounts.
 
+**Third debug session — Clerk migration (2026-05-11).** Built a full alternative auth on the `auth-migration` branch: Clerk handles sign-in via its mounted component, Clerk issues JWTs, Supabase third-party auth verifies them through Clerk's JWKS, supabase-js queries pull Clerk's token via the `accessToken` callback. **Vandolf's sign-in worked end-to-end through Clerk** — same hub, same tool data, same logout flow. **`test@` reproduced the freeze on Clerk's auth endpoint** — Clerk's sign-in component disappeared (sign-in completed), but the page froze before the listener could fire, with `sessionStorage.pp_auth` never set, CSS animations locked, DevTools rendering broken. Clerk's domain (`humble-kingfish-89.clerk.accounts.dev`) and Supabase's domain (`cannojsxduvlewimwoxa.supabase.co`) are both fronted by Cloudflare, so the same Cloudflare-layer bot-detection / response-stream issue applies to both. That makes this **not a problem any client-side auth provider can solve** — it has to be addressed at the network layer (proxy through non-Cloudflare infra, or self-host the auth endpoint).
+
 ---
 
 ## Chronological log of what we tried
@@ -103,6 +106,8 @@ This points strongly at Supabase/Cloudflare treating org-member emails as **trus
 | `5ae2adb` | **Reverted every debug change** — auth.js, supabase-client.js, index.html all back to the pre-bug-hunt state. Kept the legacy anon JWT in supabase-client.js (no harm). |
 | `8b13baf` | Kept `test@` in `DEV_EMAILS` so password sign-in is available for the next investigation. |
 | `33bf2e3` | Added `supabase/migrations/008_diagnostic_drop_arena.sql` — dropping every arena table didn't change the freeze either. Restored via 003–007 re-run. |
+| `2a440f2` | Final clean-baseline revert at the end of session 2. Live `main` returned to known-working state for Vandolf + cached sessions. |
+| (branch `auth-migration`, commits `45d3e63` → `58243ef`) | Full Clerk migration attempt: Clerk SDK + `shared/clerk-client.js`, Clerk JWT routed to Supabase via `accessToken` callback, Clerk sign-in mounted in place of the old login form, `auth-gate.js` switched to `sessionStorage.pp_auth`, `logout()` calls `Clerk.signOut()`, Clerk SDK added to all 13 tool pages, polling safety net for Clerk's listener. Vandolf signed in cleanly through Clerk; `test@` reproduced the freeze on Clerk's domain. Branch preserved; never merged to main. |
 
 ---
 
@@ -119,14 +124,14 @@ Everything else (welcome overlay, progress markers, raw-fetch bypass, XHR fallba
 
 ## Next steps
 
-The investigation is exhausted from the app-code side. Real options remaining:
+The investigation is exhausted from the app-code side. **Migrating the auth provider does not help** — Clerk reproduces the bug for the same set of accounts. Real options remaining:
 
-1. **Wait for Supabase support to respond** to the ticket already filed.
-2. **Server-side auth proxy** — stand up a serverless function (Cloudflare Workers / Netlify Functions / Vercel Edge) that proxies `/auth/v1/token` and `/rest/v1/profiles` calls. The proxy buffers the full Supabase response server-side before forwarding to the browser, eliminating the chunked-transfer / stream-hang path entirely. Likely 1–2 days of work; durable fix.
-3. **Migrate auth provider** — move to Clerk / Auth0 / WorkOS. Keeps Supabase for the database, replaces just the auth surface. ~1–2 weeks of work.
+1. **Server-side auth proxy on non-Cloudflare infrastructure.** Stand up a small server on **Render**, **Fly.io**, or a **DigitalOcean droplet** (NOT Cloudflare Workers — that has the same edge layer). The server receives sign-in POSTs from the browser, calls Supabase Auth (or Clerk, or anything else) server-to-server, buffers the full response, and forwards it back. The browser never talks to Supabase's edge directly during auth. ~4–8 hours of work; durable fix. Cost $0–5/month on free tiers.
+2. **Self-host an auth server entirely** — PocketBase, FastAPI + JWT, or a minimal Node JWT server, on the same non-Cloudflare infrastructure. Replaces both Supabase Auth and Clerk Auth. ~2 days of work; full control over the stack.
+3. **Wait for Supabase support** — the ticket already filed may eventually surface a project-side fix or whitelist. Slow; outcome uncertain. Free-tier projects typically don't get prioritised responses.
 4. **Accept the bug and use session-sharing for onboarding** — for new staff, share Vandolf's session (export `pp-sb-auth` from his localStorage, paste into the new user's browser). Not a real solution; only buys time.
 
-All client-side avenues attempted in two debug sessions (~12 hours combined) have failed.
+All client-side avenues — across three debug sessions (~16+ hours combined) covering supabase-js, raw fetch, XMLHttpRequest, alternative library versions, sandbox project, Clerk migration, and every documented anti-pattern fix — have failed. The fix is unequivocally network-layer.
 
 ---
 
@@ -138,3 +143,28 @@ Read-only org membership has been ruled out. Pending support reply, the working 
 2. Or share Vandolf's session by exporting `pp-sb-auth` from localStorage and pasting it into the new user's browser (not a real solution, just unblocks urgent access).
 3. Or do all their work in a tab that's already been signed in — never log out.
 4. **Untested:** if promoting the user to org **Administrator** or **Owner** lets them sign in, that's a stop-gap for staff we'd trust with that role.
+
+---
+
+## Reference IDs (in case of future cleanup)
+
+External resources spun up during the investigation. Each is on a free tier — none accrue cost, but they're worth cleaning up when you're sure you don't need them.
+
+**Supabase**
+- Production project: `cannojsxduvlewimwoxa` (region: Tokyo / Northeast Asia). The live tool runs against this. Keep.
+- Sandbox project: `sjopptjqciyjtqqfnsun` (Tokyo). Created 2026-05-11 to confirm the bug is not project-state. **Safe to delete** via Supabase Dashboard → that project → Settings → General → Delete Project.
+- Third-Party Auth connection to Clerk (registered with `https://humble-kingfish-89.clerk.accounts.dev`) — created during the Clerk migration attempt. **Safe to delete** via Supabase Dashboard → production project → Authentication → Third-Party Auth → remove the Clerk row.
+
+**Clerk**
+- Application: `Performance Property Tools`
+- Frontend API URL: `https://humble-kingfish-89.clerk.accounts.dev`
+- Publishable key: `pk_test_aHVtYmxlLWtpbmdmaXNoLTg5LmNsZXJrLmFjY291bnRzLmRldiQ` (development tier, safe in client code)
+- Users created: `vandolf@performanceproperty.com.au` (worked), `test@performanceproperty.com.au` (reproduced freeze)
+- **Safe to delete the entire Clerk app** via Clerk Dashboard → Application → Settings → Danger Zone → Delete Application. That removes the users, the Supabase JWT setup, and the integration in one shot.
+
+**Git branches**
+- `main` — production. Currently on commit `2a440f2` (clean-baseline revert at end of session 2). GitHub Pages deploys from this.
+- `auth-migration` — Clerk migration attempt. Never merged to main. Preserved on the remote in case anyone wants to revisit the work. Last commit `58243ef`.
+
+**Supabase support ticket**
+- Filed during session 2. Status: free-tier; uncertain response time. If a reply comes through, it may surface internal whitelisting or Bot Management rules that would resolve the bug at the project layer.
