@@ -38,11 +38,17 @@ const ADMIN_EMAILS = [
   'paul@performanceproperty.com.au'
 ];
 /* DEV_EMAILS auto-reveal the (otherwise hidden) password field on the
-   login screen. Tier 0 dev signs in with email + password to skip OTP.
-   Anyone whose email isn't in this list never sees the field — they go
-   straight to the email-only OTP flow. */
+   login screen. Email + password sign-in skips OTP entirely.
+   Tier is derived from the SQL trigger (admin emails → admin, other
+   @performanceproperty.com.au → company), so adding a non-dev address
+   here gives that account password-only sign-in at whatever tier the
+   trigger assigns. Anyone whose email isn't in this list never sees
+   the password field — they go straight to the email-only OTP flow. */
 const DEV_EMAILS = [
-  'vandolf@performanceproperty.com.au'
+  'vandolf@performanceproperty.com.au',
+  /* Shared internal test account — Tier 2 (company) via the trigger.
+     Password is set in Supabase Auth; auth.users.password_hash. */
+  'test@performanceproperty.com.au'
 ];
 
 /* Registration master switch. Off per Paul (CEO): this tool is

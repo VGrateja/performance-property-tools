@@ -3955,7 +3955,7 @@
   <div class="bands-modal" role="dialog" aria-labelledby="backup-modal-title" style="width:560px">
     <button class="bands-close" id="backup-close" aria-label="Close">×</button>
     <h3 id="backup-modal-title">Backup &amp; Restore</h3>
-    <div class="bands-sub">Save or restore this region's customisations (text, shapes, images, page backgrounds, page layout).</div>
+    <div class="bands-sub">Save or restore Online Reports state — pick which buckets (text, shapes, images, bands, etc.) and which regions to include. Files round-trip cleanly: a backup containing just bands restores only bands, leaving every other bucket untouched.</div>
 
     <div class="backup-section">
       <div class="backup-section-title">Current storage</div>
@@ -3964,8 +3964,29 @@
 
     <div class="backup-section">
       <div class="backup-section-title">Download a backup</div>
-      <p class="backup-help">Saves all customisations for the active region as a JSON file you can keep safe or import later.</p>
-      <button class="bands-btn primary" id="backup-download-btn">Download backup</button>
+      <p class="backup-help">Pick what to save below. Multi-region backups fetch each region's latest state from the server before bundling.</p>
+
+      <div style="font-size:9.5px; text-transform:uppercase; letter-spacing:.1em; color:rgba(255,255,255,.6); margin:12px 0 6px;">What to include</div>
+      <div class="sync-buckets" id="backup-buckets">
+        <label class="sync-check"><input type="checkbox" data-bucket="texts"       checked> <span>Custom text</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="shapes"      checked> <span>Shapes</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="images"      checked> <span>Images</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="pageBgs"     checked> <span>Page backgrounds</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="pageLabels"  checked> <span>Page labels (renamed pages)</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="pageOrder"   checked> <span>Page order</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="customPages" checked> <span>Custom pages (user-added)</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="bands"       checked> <span>Reference Bands</span></label>
+      </div>
+
+      <div style="font-size:9.5px; text-transform:uppercase; letter-spacing:.1em; color:rgba(255,255,255,.6); margin:14px 0 6px;">Which regions</div>
+      <div class="sync-targets" id="backup-region-mode">
+        <label class="sync-radio"><input type="radio" name="backup-region-mode" value="current" checked> <span>Current region only <em id="backup-current-region-name"></em></span></label>
+        <label class="sync-radio"><input type="radio" name="backup-region-mode" value="all"> <span>All regions <span class="sync-count" id="backup-all-count"></span></span></label>
+        <label class="sync-radio"><input type="radio" name="backup-region-mode" value="pick"> <span>Pick specific regions…</span></label>
+        <div class="sync-pick-list" id="backup-pick-list" hidden></div>
+      </div>
+
+      <button class="bands-btn primary" id="backup-download-btn" style="margin-top:12px;">Download backup</button>
     </div>
 
     <div class="backup-section">
@@ -6915,11 +6936,29 @@ async function rsBoot() {
   let cacheNeedsUpdate  = false; /* server bucket differs from cache → reload */
   let serverNeedsUpdate = false; /* cache bucket has content server lacks → push */
 
+  /* One-shot "I just restored from backup" signal set by
+     backupApplyImport. When present, force local-wins for every
+     bucket so the just-imported state survives this boot — even for
+     buckets where the server already has content (the previous merge
+     would have let those server values win and clobber the import,
+     particularly visible with bands which always seed defaults). */
+  const importFlag = 'ppa-online-reports-import-pending-' + slug;
+  let isPostImport = false;
+  try { isPostImport = localStorage.getItem(importFlag) === '1'; } catch (_) {}
+  if (isPostImport) {
+    try { localStorage.removeItem(importFlag); } catch (_) {}
+  }
+
   for (const b of buckets) {
     const c = cached[b] ?? RS_BUCKET_DEFAULTS[b];
     const r = remote[b] ?? RS_BUCKET_DEFAULTS[b];
 
-    if (!isEmpty(c) && isEmpty(r)) {
+    if (isPostImport) {
+      /* Post-restore boot — local always wins, including when local
+         is empty (the backup intentionally omitted that bucket). */
+      merged[b] = c;
+      if (JSON.stringify(c) !== JSON.stringify(r)) serverNeedsUpdate = true;
+    } else if (!isEmpty(c) && isEmpty(r)) {
       merged[b] = c;
       serverNeedsUpdate = true;
     } else {
@@ -13657,26 +13696,91 @@ function backupRenderStats() {
   host.appendChild(totalRow);
 }
 
-function backupDownload() {
+/* Picker readers — pull the user's current selections from the modal. */
+function backupGetSelectedBuckets() {
+  return Array.from(document.querySelectorAll('#backup-buckets input[type="checkbox"]:checked'))
+    .map(cb => cb.dataset.bucket);
+}
+function backupGetSelectedRegions() {
   const slug = ACTIVE_REGION;
-  const data = {};
-  for (const k of backupCollectKeys()) data[k] = localStorage.getItem(k);
+  const mode = (document.querySelector('input[name="backup-region-mode"]:checked') || {}).value || 'current';
+  if (mode === 'current') return [slug];
+  if (mode === 'all')     return Object.keys(REGION_MANIFEST);
+  /* pick mode */
+  return Array.from(document.querySelectorAll('#backup-pick-list input[type="checkbox"]:checked'))
+    .map(cb => cb.dataset.slug);
+}
+
+/* For non-active regions we go to the server. The active region's
+   localStorage cache is the freshest source — server may be a few
+   hundred ms behind a recent edit because of the debounced save. */
+async function backupFetchRegionState(slug) {
+  if (slug === ACTIVE_REGION) return rsBundleFromCache(slug);
+  const remote = await rsLoadFromServer(slug);
+  return remote && typeof remote === 'object' ? remote : {};
+}
+
+/* Slice a region's state down to the chosen buckets so the backup
+   file contains only what the user asked for. Missing buckets fall
+   back to the bucket's default value so the file is self-describing
+   (a restore round-trip never sees an undefined). */
+function backupFilterByBuckets(state, buckets) {
+  const out = {};
+  for (const b of buckets) {
+    out[b] = (state[b] !== undefined)
+      ? state[b]
+      : (RS_BUCKET_DEFAULTS[b] !== undefined ? RS_BUCKET_DEFAULTS[b] : null);
+  }
+  return out;
+}
+
+async function backupDownload() {
+  const buckets = backupGetSelectedBuckets();
+  const regions = backupGetSelectedRegions();
+  if (!buckets.length) { alert('Pick at least one bucket to back up.'); return; }
+  if (!regions.length) { alert('Pick at least one region to back up.'); return; }
+
+  const btn = document.getElementById('backup-download-btn');
+  const origLabel = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Preparing…'; }
+
+  const regionStates = {};
+  try {
+    /* Fetch all regions in parallel. Active region is synchronous
+       (localStorage cache); others hit the reports-state function. */
+    await Promise.all(regions.map(async (slug) => {
+      const state = await backupFetchRegionState(slug);
+      regionStates[slug] = backupFilterByBuckets(state, buckets);
+    }));
+  } catch (e) {
+    alert('Backup failed while fetching one or more regions: ' + (e && e.message || e));
+    if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+    return;
+  }
+
   const payload = {
-    version: BACKUP_VERSION,
+    version: '3',
     tool: 'ppa-online-reports',
-    region: slug,
     exportedAt: new Date().toISOString(),
-    data: data,
+    scope: { buckets, regions },
+    regions: regionStates,
   };
+
+  const allRegionsCount = Object.keys(REGION_MANIFEST).length;
+  const filenameRegion = (regions.length === 1)
+    ? regions[0]
+    : (regions.length === allRegionsCount ? 'all-regions' : (regions.length + 'regions'));
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'ppa-online-reports-backup-' + slug + '-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.download = 'ppa-online-reports-backup-' + filenameRegion + '-' + new Date().toISOString().slice(0, 10) + '.json';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+  if (btn) { btn.disabled = false; btn.textContent = origLabel; }
 }
 
 function backupParseFile(file, onValid, onError) {
@@ -13684,8 +13788,16 @@ function backupParseFile(file, onValid, onError) {
   reader.onload = (e) => {
     try {
       const json = JSON.parse(e.target.result);
-      if (!json || json.tool !== 'ppa-online-reports' || !json.data || typeof json.data !== 'object') {
+      if (!json || json.tool !== 'ppa-online-reports') {
         return onError('That file does not look like a valid Online Reports backup.');
+      }
+      /* Accept both v3 (multi-region/multi-bucket) and v1 legacy
+         (single-region flat localStorage dump). Reject anything
+         else outright so we never half-restore an unknown format. */
+      const isV3 = json.regions && typeof json.regions === 'object';
+      const isV1 = json.data && typeof json.data === 'object';
+      if (!isV3 && !isV1) {
+        return onError('Backup file is in an unrecognised format.');
       }
       onValid(json);
     } catch (err) {
@@ -13700,20 +13812,37 @@ function backupRenderPreview(json) {
   const host = document.getElementById('backup-preview');
   if (!host) return;
   const slug = ACTIVE_REGION;
-  const exportedSlug = json.region || '?';
   const exportedAt = json.exportedAt ? new Date(json.exportedAt).toLocaleString() : 'unknown';
-  const sameRegion = exportedSlug === slug;
-  const keyCount = Object.keys(json.data || {}).length;
-  let html = '';
-  html += '<div><strong>Backup contents</strong></div>';
-  html += '<div style="margin-top:6px">From region: <strong>' + exportedSlug + '</strong>';
-  if (!sameRegion) html += ' <span class="warn">(active region is ' + slug + ' — keys will be remapped)</span>';
-  html += '</div>';
-  html += '<div>Exported: ' + exportedAt + '</div>';
-  html += '<div>' + keyCount + ' storage entr' + (keyCount === 1 ? 'y' : 'ies') + '.</div>';
-  html += '<div style="margin-top:8px;color:rgba(255,255,255,0.6);font-size:10.5px">';
-  html += 'Importing will overwrite the current ' + slug + ' customisations. The page will reload after import.';
-  html += '</div>';
+  const isV3 = json.regions && typeof json.regions === 'object';
+
+  let html = '<div><strong>Backup contents</strong></div>';
+  html += '<div style="margin-top:6px">Exported: ' + exportedAt + '</div>';
+
+  if (isV3) {
+    const regionSlugs = Object.keys(json.regions);
+    const buckets = (json.scope && Array.isArray(json.scope.buckets)) ? json.scope.buckets : [];
+    html += '<div><strong>' + regionSlugs.length + '</strong> region'
+      + (regionSlugs.length === 1 ? '' : 's')
+      + ': ' + regionSlugs.join(', ') + '</div>';
+    html += '<div><strong>' + buckets.length + '</strong> bucket type'
+      + (buckets.length === 1 ? '' : 's')
+      + ': ' + buckets.join(', ') + '</div>';
+    html += '<div style="margin-top:8px;color:rgba(255,255,255,0.6);font-size:10.5px">';
+    html += 'Restoring overwrites the selected buckets on each region above on the server. Other buckets on those regions stay untouched. Page reloads after restore.';
+    html += '</div>';
+  } else {
+    const exportedSlug = json.region || '?';
+    const sameRegion = exportedSlug === slug;
+    const keyCount = Object.keys(json.data || {}).length;
+    html += '<div>From region: <strong>' + exportedSlug + '</strong>';
+    if (!sameRegion) html += ' <span class="warn">(active region is ' + slug + ' — keys will be remapped)</span>';
+    html += '</div>';
+    html += '<div>' + keyCount + ' storage entr' + (keyCount === 1 ? 'y' : 'ies') + '.</div>';
+    html += '<div style="margin-top:8px;color:rgba(255,255,255,0.6);font-size:10.5px">';
+    html += 'Importing will overwrite the current ' + slug + ' customisations. The page will reload after import.';
+    html += '</div>';
+  }
+
   html += '<div class="preview-actions">';
   html += '<button class="bands-btn primary" id="backup-confirm-import">Restore this backup</button>';
   html += '<button class="bands-btn ghost"   id="backup-cancel-import">Cancel</button>';
@@ -13727,8 +13856,73 @@ function backupRenderPreview(json) {
     document.getElementById('backup-file-input').value = '';
   });
   document.getElementById('backup-confirm-import').addEventListener('click', () => {
-    backupApplyImport(json, sameRegion);
+    if (isV3) {
+      backupApplyImportV3(json);
+    } else {
+      backupApplyImport(json, (json.region || slug) === slug);
+    }
   });
+}
+
+/* v3 multi-region restore. For each region in the file:
+     1. Fetch the target's current full server state.
+     2. Overwrite only the buckets present in the backup.
+     3. Push the merged state to the server.
+   The active region also gets its localStorage cache + the
+   import-pending flag so the upcoming reload paints from the
+   imported state instead of being clobbered by rsBoot's per-bucket
+   merge. Non-active regions don't update their local cache — the
+   next time the user navigates there, rsBoot fetches fresh from
+   the now-updated server. */
+async function backupApplyImportV3(json) {
+  const slug = ACTIVE_REGION;
+  const regionSlugs = Object.keys(json.regions);
+  if (!regionSlugs.length) { alert('Backup contained no regions.'); return; }
+
+  const host = document.getElementById('backup-preview');
+  const setStatus = (msg) => { if (host) host.innerHTML = '<div>' + msg + '</div>'; };
+
+  setStatus('Fetching current state for ' + regionSlugs.length + ' region' + (regionSlugs.length === 1 ? '' : 's') + '…');
+
+  /* Step 1 — fetch every target's current state in parallel so we
+     can merge bucket-by-bucket without clobbering unrelated buckets. */
+  const currentStates = {};
+  await Promise.all(regionSlugs.map(async (target) => {
+    currentStates[target] = (await rsLoadFromServer(target)) || {};
+  }));
+
+  /* Step 2 — build the merged state per region. */
+  const mergedStates = {};
+  for (const target of regionSlugs) {
+    const merged = Object.assign({}, currentStates[target]);
+    for (const [bucket, value] of Object.entries(json.regions[target] || {})) {
+      merged[bucket] = value;
+      /* Update the active region's localStorage cache so rsBoot on
+         reload sees the imported buckets. Other regions get cached
+         lazily on their next visit. */
+      if (target === slug && RS_BUCKET_KEYS[bucket]) {
+        try { localStorage.setItem(RS_BUCKET_KEYS[bucket](target), JSON.stringify(value)); }
+        catch (_) {}
+      }
+    }
+    mergedStates[target] = merged;
+  }
+
+  /* Step 3 — push all regions to the server via the existing helper. */
+  setStatus('Saving ' + regionSlugs.length + ' region' + (regionSlugs.length === 1 ? '' : 's') + ' to the server…');
+  const { ok, failed } = await rsSyncWriteMany(regionSlugs, (s) => mergedStates[s]);
+
+  /* Step 4 — set the import-pending flag for the active region so
+     rsBoot's per-bucket merge on reload uses local-wins. */
+  if (regionSlugs.indexOf(slug) >= 0) {
+    try { localStorage.setItem('ppa-online-reports-import-pending-' + slug, '1'); } catch (_) {}
+  }
+
+  if (failed) {
+    alert('Restored ' + ok + ' of ' + regionSlugs.length + ' regions on the server. ' + failed + ' failed — check the console for details.');
+  }
+  /* Reload so the active region re-paints from the imported state. */
+  setTimeout(() => location.reload(), 60);
 }
 
 function backupApplyImport(json, sameRegion) {
@@ -13752,6 +13946,12 @@ function backupApplyImport(json, sameRegion) {
       break;
     }
   }
+  /* Signal rsBoot that this load is a post-restore. Without this,
+     the per-bucket merge would let the server's stale buckets
+     (especially bands, which always seed defaults server-side)
+     overwrite the just-imported values. The flag is consumed by
+     rsBoot on the next boot and forces local-wins for every bucket. */
+  try { localStorage.setItem('ppa-online-reports-import-pending-' + slug, '1'); } catch (_) {}
   /* Reload so all in-memory state re-reads from localStorage. */
   location.reload();
 }
@@ -13761,6 +13961,10 @@ function setupBackupModal() {
   if (!bg) return;
   document.getElementById('btn-backup')?.addEventListener('click', () => {
     backupRenderStats();
+    /* Refresh the region picker every time the modal opens so the
+       current-region label + region list reflect the latest state
+       (the user may have switched regions since last open). */
+    backupRefreshRegionPicker();
     const preview = document.getElementById('backup-preview');
     preview.style.display = 'none';
     preview.innerHTML = '';
@@ -13778,9 +13982,52 @@ function setupBackupModal() {
     if (!f) return;
     backupParseFile(f, backupRenderPreview, (msg) => alert(msg));
   });
+  /* Show / hide the per-region pick list based on the region-mode radio. */
+  document.querySelectorAll('input[name="backup-region-mode"]').forEach(r => {
+    r.addEventListener('change', () => {
+      const pickList = document.getElementById('backup-pick-list');
+      if (pickList) pickList.hidden =
+        (document.querySelector('input[name="backup-region-mode"]:checked').value !== 'pick');
+    });
+  });
   document.addEventListener('keydown', ev => {
     if (ev.key === 'Escape' && bg.classList.contains('open')) bg.classList.remove('open');
   });
+}
+
+/* Populate the region picker's "current region" label, "all regions"
+   count, and per-region checkbox list. Called from the modal-open
+   handler so it always reflects the latest manifest + active region. */
+function backupRefreshRegionPicker() {
+  const slug = ACTIVE_REGION;
+  const allSlugs = Object.keys(REGION_MANIFEST);
+
+  const currentNameEl = document.getElementById('backup-current-region-name');
+  if (currentNameEl) {
+    const m = REGION_MANIFEST[slug];
+    currentNameEl.textContent = m ? '(' + m.name + ')' : '';
+  }
+  const allCountEl = document.getElementById('backup-all-count');
+  if (allCountEl) allCountEl.textContent = '(' + allSlugs.length + ')';
+
+  const pickList = document.getElementById('backup-pick-list');
+  if (pickList) {
+    pickList.innerHTML = '';
+    for (const s of allSlugs) {
+      const m = REGION_MANIFEST[s];
+      const lbl = document.createElement('label');
+      lbl.innerHTML = '<input type="checkbox" data-slug="' + s + '"'
+        + (s === slug ? ' checked' : '') + '> '
+        + m.name + ' <span class="sync-count">' + m.state + '</span>';
+      pickList.appendChild(lbl);
+    }
+  }
+  /* Default the radio back to "current" every time the modal opens —
+     keeps single-region backups one-click without surprising the user
+     with a stale multi-region choice from earlier. */
+  const currentRadio = document.querySelector('input[name="backup-region-mode"][value="current"]');
+  if (currentRadio) currentRadio.checked = true;
+  if (pickList) pickList.hidden = true;
 }
 
 /* ═════════════════════════════════════════════════════════════════════
