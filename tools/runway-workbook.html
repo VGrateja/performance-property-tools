@@ -245,6 +245,68 @@
 
   .rw-table-empty{padding:40px 20px; text-align:center; opacity:.55; font-style:italic}
 
+  /* ── Filters row (above each table) ── */
+  .rw-filters{
+    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+    margin-bottom:14px; padding:8px 12px;
+    background:rgba(255,255,255,0.04);
+    border:1px solid rgba(255,255,255,0.10);
+    border-radius:8px;
+  }
+  [data-theme="light"] .rw-filters{background:rgba(31,40,63,0.04); border-color:rgba(31,40,63,0.10)}
+  .rw-filter-search{
+    flex:1; min-width:180px; max-width:280px;
+    padding:6px 10px 6px 28px; border-radius:6px;
+    background:rgba(255,255,255,0.06);
+    border:1px solid rgba(255,255,255,0.14);
+    color:inherit; font-family:'Roboto',sans-serif; font-size:12.5px;
+    outline:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300b6cb' stroke-width='2'><circle cx='11' cy='11' r='7'/><path d='M21 21l-4-4'/></svg>");
+    background-repeat:no-repeat;
+    background-position:7px center;
+    background-size:14px 14px;
+  }
+  [data-theme="light"] .rw-filter-search{background-color:rgba(31,40,63,0.05); border-color:rgba(31,40,63,0.18)}
+  .rw-filter-search:focus{border-color:var(--rw-accent); background-color:rgba(0,182,203,0.06)}
+  .rw-filter-state{
+    padding:6px 10px; border-radius:6px;
+    background:rgba(255,255,255,0.06);
+    border:1px solid rgba(255,255,255,0.14);
+    color:inherit; font-family:'Roboto',sans-serif; font-size:12.5px;
+    outline:none; cursor:pointer;
+  }
+  [data-theme="light"] .rw-filter-state{background:rgba(31,40,63,0.05); border-color:rgba(31,40,63,0.18)}
+  .rw-filter-empty{
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:11px; opacity:.85; cursor:pointer;
+    user-select:none;
+  }
+  .rw-filter-empty input{accent-color:var(--rw-accent)}
+  .rw-filter-count{
+    margin-left:auto;
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    font-size:10px; letter-spacing:1.2px; text-transform:uppercase;
+    opacity:.55;
+    font-variant-numeric:tabular-nums;
+  }
+  .rw-filter-count strong{
+    color:var(--rw-accent); opacity:1;
+    font-variant-numeric:tabular-nums;
+  }
+
+  /* ── Sortable column headers ── */
+  .rw-table th[data-key]{
+    cursor:pointer; user-select:none;
+    transition:color .12s ease;
+  }
+  .rw-table th[data-key]:hover{color:var(--rw-accent-strong)}
+  .rw-sort-arrow{
+    display:inline-block; margin-left:3px;
+    font-size:8px; opacity:.25; transition:opacity .12s ease;
+  }
+  .rw-table th[data-key]:hover .rw-sort-arrow{opacity:.6}
+  .rw-table th.rw-sorted .rw-sort-arrow{opacity:1; color:var(--rw-accent-strong)}
+
   /* ── Status bar (live feed + snapshots controls) ── */
   .rw-statusbar{
     display:flex; gap:12px; align-items:center; flex-wrap:wrap;
@@ -426,7 +488,7 @@
   <div class="rw-eyebrow">Performance Property · Research</div>
   <h1 class="rw-title">Runway Workbook</h1>
   <p class="rw-sub">Affordability ceiling analysis across capital cities + regional LGAs. Median price vs intrinsic ceiling under current and forecast rate scenarios; wage-growth adjusted views compare the same regions under predicted income uplift.</p>
-  <div class="rw-phase-badge">✓ Phase C — Live Feed + Snapshots</div>
+  <div class="rw-phase-badge">✓ Phase D1 — Filters + Sort</div>
 </header>
 
 <div class="rw-statusbar" id="statusBar">
@@ -1061,139 +1123,173 @@ function fmtStatus(s){
   return '<span class="'+cls+'">'+escapeHtml(s)+'</span>';
 }
 
-/* ─── Renderers — Phase B live recomputation ───
-   Each renderer takes the scenario params (p) and recomputes every
-   row's Current + Forecast AI, Ceiling Price, AUD/% move, Upside,
-   Downside. Seed pre-computed columns are now ignored — they were a
-   point-in-time snapshot; live params reflect the current state of
-   the world. */
-function renderHouses(p){
-  const body = document.getElementById('tbody-houses');
-  body.innerHTML = HOUSES_DATA.map(d => {
-    const state     = d[0], region = d[1], aiCeiling = d[5], status = d[19];
-    const pop       = d[2] ?? lookupPop(region);
-    const price     = d[3] ?? lookupHousePrice(region);
-    const income    = d[4] ?? lookupIncome(region);
-    return renderRunwayRow(p, state, region, pop, price, income, aiCeiling, status);
-  }).join('');
-}
+/* ─── Renderers ───
+   Phase D1 pipeline: build row OBJECTS (not HTML) → filter → sort →
+   emit HTML. Row objects expose every computed field as a property
+   keyed identically to PANEL_HEADER_KEYS so sort-by-column-key is
+   trivial. */
 
-function renderUnits(p){
-  const body = document.getElementById('tbody-units');
-  body.innerHTML = UNITS_DATA.map(d => {
-    const state     = d[0], region = d[1], aiCeiling = d[4], status = d[19];
-    const pop       = lookupPop(region);
-    const price     = d[2] ?? lookupUnitPrice(region);
-    const income    = lookupIncome(region);
-    return renderRunwayRow(p, state, region, pop, price, income, aiCeiling, status);
-  }).join('');
-}
-
-/* Shared row renderer for the two Runway IC panels (Houses + Units) —
-   identical column shape, so the differences live in the seed pluck
-   above and the parent header. Returns a <tr> string. */
-function renderRunwayRow(p, state, region, pop, price, income, aiCeiling, status){
-  /* Current scenario — bank rate paid right now on a new loan. */
+/* Compute a row object for a Runway IC table (Houses + Units share the
+   same shape — different inputs picked outside). */
+function buildRunwayRow(p, state, region, pop, price, income, aiCeiling, status){
   const curAI  = calcAI(p.bankRate, price, income);
   const curCP  = calcCeilingPrice(p.bankRate, income, aiCeiling);
   const curMov = (curCP != null && price != null && !isNaN(price)) ? curCP - price : null;
   const curPct = (curMov != null && price) ? curMov / price : null;
   const curUp  = calcUpsideCurr(curPct);
   const curDn  = curUp ? 1 - upsidePct(curUp) : null;
-  /* Forecast scenario — PP's modelled forward rate. */
   const fcAI   = calcAI(p.ppVar, price, income);
   const fcCP   = calcCeilingPrice(p.ppVar, income, aiCeiling);
   const fcMov  = (fcCP != null && price != null && !isNaN(price)) ? fcCP - price : null;
   const fcPct  = (fcMov != null && price) ? fcMov / price : null;
   const fcUp   = calcUpside(fcPct);
   const fcDn   = fcUp ? 1 - upsidePct(fcUp) : null;
+  return { state, region, pop, price, income, aiCeiling, status,
+           curAI, curCP, curMov, curPct, curUp, curDn,
+           fcAI, fcCP, fcMov, fcPct, fcUp, fcDn };
+}
+function renderRunwayRowHtml(r){
+  /* TD column order MUST match the visual column order of the table —
+     state, region, pop, price, income, aiCeiling, [current scenario 6
+     cols], [forecast scenario 6 cols], status. Rowspan/colspan in the
+     THEAD means DOM order of TH cells differs from visual order; the
+     TD row order here is the authoritative visual layout. */
   return '<tr>'
-    + '<td><span class="rw-state">'+escapeHtml(state.trim())+'</span></td>'
-    + '<td><span class="rw-region">'+escapeHtml(region)+'</span></td>'
-    + '<td>'+fmtPop(pop)+'</td>'
-    + '<td>'+fmtMoney(price)+'</td>'
-    + '<td>'+fmtIncome(income)+'</td>'
-    + '<td>'+fmtPct(aiCeiling)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtPct(curAI)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtMoney(curCP)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtMove(curMov)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtPctMove(curPct)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtUpside(curUp)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtDownside(curDn)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtPct(fcAI)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtMoney(fcCP)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtMove(fcMov)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtPctMove(fcPct)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtUpside(fcUp)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtDownside(fcDn)+'</td>'
-    + '<td>'+fmtStatus(status)+'</td>'
+    + '<td><span class="rw-state">'+escapeHtml((r.state||'').trim())+'</span></td>'
+    + '<td><span class="rw-region">'+escapeHtml(r.region)+'</span></td>'
+    + '<td>'+fmtPop(r.pop)+'</td>'
+    + '<td>'+fmtMoney(r.price)+'</td>'
+    + '<td>'+fmtIncome(r.income)+'</td>'
+    + '<td>'+fmtPct(r.aiCeiling)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtPct(r.curAI)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtMoney(r.curCP)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtMove(r.curMov)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtPctMove(r.curPct)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtUpside(r.curUp)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtDownside(r.curDn)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtPct(r.fcAI)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtMoney(r.fcCP)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtMove(r.fcMov)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtPctMove(r.fcPct)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtUpside(r.fcUp)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtDownside(r.fcDn)+'</td>'
+    + '<td>'+fmtStatus(r.status)+'</td>'
     + '</tr>';
 }
 
-function renderWageHouses(p){
-  const body = document.getElementById('tbody-wage-houses');
-  body.innerHTML = WAGE_HOUSES_DATA.map(d => {
-    const state = d[0], region = d[1], pop = d[2], price = d[3],
-          income = d[4], aiCeiling = d[6], status = d[20];
-    return renderWageRow(p, state, region, pop, price, income, aiCeiling, status, /*hasPop*/true);
-  }).join('');
-}
-
-function renderWageUnits(p){
-  const body = document.getElementById('tbody-wage-units');
-  body.innerHTML = WAGE_UNITS_DATA.map(d => {
-    const state = d[0], region = d[1], price = d[2],
-          income = d[3], aiCeiling = d[5], status = d[19];
-    return renderWageRow(p, state, region, null, price, income, aiCeiling, status, /*hasPop*/false);
-  }).join('');
-}
-
-/* Shared row renderer for the two Wage Growth panels.
-   Forecast scenario uses wage-projected income (compounded annual
-   growth) instead of the current income — capturing "what happens to
-   the runway when wages catch up over the next N years?". */
-function renderWageRow(p, state, region, pop, price, income, aiCeiling, status, hasPop){
-  const wgRate    = isCapCity(region) ? p.capWage / 100 : p.regWage / 100;
-  const wgIncome  = (income != null) ? income * Math.pow(1 + wgRate, p.wgYears) : null;
-  /* Current scenario — current income, current bank rate. */
+/* Compute a row object for a Wage Growth table. wgIncome is the
+   compounded predicted income; the forecast scenario uses wgIncome,
+   the current scenario uses income. */
+function buildWageRow(p, state, region, pop, price, income, aiCeiling, status){
+  const wgRate   = isCapCity(region) ? p.capWage / 100 : p.regWage / 100;
+  const wgIncome = (income != null) ? income * Math.pow(1 + wgRate, p.wgYears) : null;
   const curAI  = calcAI(p.bankRate, price, income);
   const curCP  = calcCeilingPrice(p.bankRate, income, aiCeiling);
   const curMov = (curCP != null && price != null) ? curCP - price : null;
   const curPct = (curMov != null && price) ? curMov / price : null;
   const curUp  = calcUpsideCurr(curPct);
   const curDn  = curUp ? 1 - upsidePct(curUp) : null;
-  /* Forecast scenario — wage-projected income, PP forecast rate. */
   const fcAI   = calcAI(p.ppVar, price, wgIncome);
   const fcCP   = calcCeilingPrice(p.ppVar, wgIncome, aiCeiling);
   const fcMov  = (fcCP != null && price != null) ? fcCP - price : null;
   const fcPct  = (fcMov != null && price) ? fcMov / price : null;
   const fcUp   = calcUpside(fcPct);
   const fcDn   = fcUp ? 1 - upsidePct(fcUp) : null;
-
-  /* Wage Units table omits the population column; the rest is shared. */
-  const popCell = hasPop ? ('<td>'+fmtPop(pop)+'</td>') : '';
+  return { state, region, pop, price, income, wgIncome, aiCeiling, status,
+           curAI, curCP, curMov, curPct, curUp, curDn,
+           fcAI, fcCP, fcMov, fcPct, fcUp, fcDn };
+}
+function renderWageRowHtml(r, hasPop){
+  /* TD column order matches the visual layout of the Wage panels'
+     thead. Wage Units omits the population column (hasPop=false). */
+  const popCell = hasPop ? ('<td>'+fmtPop(r.pop)+'</td>') : '';
   return '<tr>'
-    + '<td><span class="rw-state">'+escapeHtml(state.trim())+'</span></td>'
-    + '<td><span class="rw-region">'+escapeHtml(region)+'</span></td>'
+    + '<td><span class="rw-state">'+escapeHtml((r.state||'').trim())+'</span></td>'
+    + '<td><span class="rw-region">'+escapeHtml(r.region)+'</span></td>'
     + popCell
-    + '<td>'+fmtMoney(price)+'</td>'
-    + '<td>'+fmtIncome(income)+'</td>'
-    + '<td>'+fmtIncome(wgIncome)+'</td>'
-    + '<td>'+fmtPct(aiCeiling)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtPct(curAI)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtMoney(curCP)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtMove(curMov)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtPctMove(curPct)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtUpside(curUp)+'</td>'
-    + '<td class="rw-cell-cur">'+fmtDownside(curDn)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtPct(fcAI)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtMoney(fcCP)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtMove(fcMov)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtPctMove(fcPct)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtUpside(fcUp)+'</td>'
-    + '<td class="rw-cell-fcst">'+fmtDownside(fcDn)+'</td>'
-    + '<td>'+fmtStatus(status)+'</td>'
+    + '<td>'+fmtMoney(r.price)+'</td>'
+    + '<td>'+fmtIncome(r.income)+'</td>'
+    + '<td>'+fmtIncome(r.wgIncome)+'</td>'
+    + '<td>'+fmtPct(r.aiCeiling)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtPct(r.curAI)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtMoney(r.curCP)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtMove(r.curMov)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtPctMove(r.curPct)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtUpside(r.curUp)+'</td>'
+    + '<td class="rw-cell-cur">'+fmtDownside(r.curDn)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtPct(r.fcAI)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtMoney(r.fcCP)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtMove(r.fcMov)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtPctMove(r.fcPct)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtUpside(r.fcUp)+'</td>'
+    + '<td class="rw-cell-fcst">'+fmtDownside(r.fcDn)+'</td>'
+    + '<td>'+fmtStatus(r.status)+'</td>'
     + '</tr>';
+}
+
+function renderHouses(p){
+  const rows = HOUSES_DATA.map(d => {
+    const state = d[0], region = d[1], aiCeiling = d[5], status = d[19];
+    const pop    = d[2] ?? lookupPop(region);
+    const price  = d[3] ?? lookupHousePrice(region);
+    const income = d[4] ?? lookupIncome(region);
+    return buildRunwayRow(p, state, region, pop, price, income, aiCeiling, status);
+  });
+  const filtered = applyFilters(rows, _filters.houses);
+  const sorted   = applySorting(filtered, _filters.houses);
+  updateFilterCount('houses', sorted.length, rows.length);
+  const body = document.getElementById('tbody-houses');
+  body.innerHTML = sorted.length
+    ? sorted.map(renderRunwayRowHtml).join('')
+    : '<tr><td colspan="19" class="rw-table-empty">No regions match the current filters.</td></tr>';
+}
+
+function renderUnits(p){
+  const rows = UNITS_DATA.map(d => {
+    const state = d[0], region = d[1], aiCeiling = d[4], status = d[19];
+    const pop    = lookupPop(region);
+    const price  = d[2] ?? lookupUnitPrice(region);
+    const income = lookupIncome(region);
+    return buildRunwayRow(p, state, region, pop, price, income, aiCeiling, status);
+  });
+  const filtered = applyFilters(rows, _filters.units);
+  const sorted   = applySorting(filtered, _filters.units);
+  updateFilterCount('units', sorted.length, rows.length);
+  const body = document.getElementById('tbody-units');
+  body.innerHTML = sorted.length
+    ? sorted.map(renderRunwayRowHtml).join('')
+    : '<tr><td colspan="19" class="rw-table-empty">No regions match the current filters.</td></tr>';
+}
+
+function renderWageHouses(p){
+  const rows = WAGE_HOUSES_DATA.map(d => {
+    const state = d[0], region = d[1], pop = d[2], price = d[3],
+          income = d[4], aiCeiling = d[6], status = d[20];
+    return buildWageRow(p, state, region, pop, price, income, aiCeiling, status);
+  });
+  const filtered = applyFilters(rows, _filters['wage-houses']);
+  const sorted   = applySorting(filtered, _filters['wage-houses']);
+  updateFilterCount('wage-houses', sorted.length, rows.length);
+  const body = document.getElementById('tbody-wage-houses');
+  body.innerHTML = sorted.length
+    ? sorted.map(r => renderWageRowHtml(r, /*hasPop*/true)).join('')
+    : '<tr><td colspan="20" class="rw-table-empty">No regions match the current filters.</td></tr>';
+}
+
+function renderWageUnits(p){
+  const rows = WAGE_UNITS_DATA.map(d => {
+    const state = d[0], region = d[1], price = d[2],
+          income = d[3], aiCeiling = d[5], status = d[19];
+    const pop = lookupPop(region);
+    return buildWageRow(p, state, region, pop, price, income, aiCeiling, status);
+  });
+  const filtered = applyFilters(rows, _filters['wage-units']);
+  const sorted   = applySorting(filtered, _filters['wage-units']);
+  updateFilterCount('wage-units', sorted.length, rows.length);
+  const body = document.getElementById('tbody-wage-units');
+  body.innerHTML = sorted.length
+    ? sorted.map(r => renderWageRowHtml(r, /*hasPop*/false)).join('')
+    : '<tr><td colspan="19" class="rw-table-empty">No regions match the current filters.</td></tr>';
 }
 
 /* ─── Recalc orchestration ───
@@ -1207,6 +1303,7 @@ function recalcAll(){
   renderUnits(p);
   renderWageHouses(p);
   renderWageUnits(p);
+  refreshSortArrows();
 }
 
 /* ─── Tab switching ─── */
@@ -1221,6 +1318,203 @@ function switchTab(name){
 document.querySelectorAll('.rw-tab').forEach(t => {
   t.addEventListener('click', () => switchTab(t.dataset.tab));
 });
+
+/* ═════════════════════════════════════════════════════════════════════
+   FILTERS + SORT — Phase D1
+   ─────────────────────────────────────────────────────────────────────
+   Each panel keeps its own filter+sort state in _filters[panel]. The
+   render functions build row objects, apply filter/sort, then emit
+   HTML. State filter dropdown supports "main" (curated 36 regions only,
+   default), "all" (everything), "cap" (capital cities), and per-state
+   codes (NSW/VIC/...). "Hide empty prices" drops rows where the median
+   price hasn't loaded yet.
+   ═════════════════════════════════════════════════════════════════════ */
+const _filters = {
+  houses:        { search:'', state:'main', hideEmpty:false, sortCol:null, sortDir:'asc' },
+  units:         { search:'', state:'main', hideEmpty:false, sortCol:null, sortDir:'asc' },
+  'wage-houses': { search:'', state:'main', hideEmpty:false, sortCol:null, sortDir:'asc' },
+  'wage-units':  { search:'', state:'main', hideEmpty:false, sortCol:null, sortDir:'asc' },
+};
+
+/* Column key order matches DOM order of TH cells in each table.
+   This lets us attach data-key attributes to existing TH elements on
+   boot rather than rewriting the markup. */
+const PANEL_HEADER_KEYS = {
+  houses: [
+    'state','region','pop','price','income','aiCeiling','status',  // row 1 leaves (skipping group spans)
+    'curAI','curCP','curMov','curPct','curUp','curDn',              // row 2 current
+    'fcAI','fcCP','fcMov','fcPct','fcUp','fcDn',                    // row 2 forecast
+  ],
+  units: [
+    'state','region','pop','price','income','aiCeiling','status',
+    'curAI','curCP','curMov','curPct','curUp','curDn',
+    'fcAI','fcCP','fcMov','fcPct','fcUp','fcDn',
+  ],
+  'wage-houses': [
+    'state','region','pop','price','income','wgIncome','aiCeiling','status',
+    'curAI','curCP','curMov','curPct','curUp','curDn',
+    'fcAI','fcCP','fcMov','fcPct','fcUp','fcDn',
+  ],
+  'wage-units': [
+    'state','region','price','income','wgIncome','aiCeiling','status',
+    'curAI','curCP','curMov','curPct','curUp','curDn',
+    'fcAI','fcCP','fcMov','fcPct','fcUp','fcDn',
+  ],
+};
+
+const STATE_OPTIONS = `
+  <option value="main">Main Regions</option>
+  <option value="all">All States</option>
+  <option value="cap">Capital Cities</option>
+  <option value="NSW">NSW</option>
+  <option value="VIC">VIC</option>
+  <option value="QLD">QLD</option>
+  <option value="WA">WA</option>
+  <option value="SA">SA</option>
+  <option value="TAS">TAS</option>
+  <option value="ACT">ACT</option>
+  <option value="NT">NT</option>`;
+
+/* Build a filter row + inject it above each panel's table. Called once
+   on boot. */
+function setupFilters(){
+  const panels = ['houses','units','wage-houses','wage-units'];
+  for(const panel of panels){
+    const section = document.getElementById('panel-'+panel);
+    if(!section) continue;
+    const wrap = section.querySelector('.rw-table-wrap');
+    if(!wrap) continue;
+    const row = document.createElement('div');
+    row.className = 'rw-filters';
+    row.innerHTML = ''
+      + '<input type="search" class="rw-filter-search" data-panel="'+panel+'" placeholder="Search regions…">'
+      + '<select class="rw-filter-state" data-panel="'+panel+'">'+STATE_OPTIONS+'</select>'
+      + '<label class="rw-filter-empty">'
+      +   '<input type="checkbox" data-panel="'+panel+'" data-filter="empty"> Hide empty prices'
+      + '</label>'
+      + '<span class="rw-filter-count" id="filter-count-'+panel+'"><strong>—</strong> regions</span>';
+    section.insertBefore(row, wrap);
+  }
+  document.querySelectorAll('.rw-filter-search').forEach(el => {
+    el.addEventListener('input', e => {
+      _filters[e.target.dataset.panel].search = e.target.value.trim().toLowerCase();
+      recalcAll();
+    });
+  });
+  document.querySelectorAll('.rw-filter-state').forEach(el => {
+    el.addEventListener('change', e => {
+      _filters[e.target.dataset.panel].state = e.target.value;
+      recalcAll();
+    });
+  });
+  document.querySelectorAll('[data-filter="empty"]').forEach(el => {
+    el.addEventListener('change', e => {
+      _filters[e.target.dataset.panel].hideEmpty = e.target.checked;
+      recalcAll();
+    });
+  });
+}
+
+/* Decorate every leaf TH cell with data-key + data-panel attrs + an
+   empty <span class="rw-sort-arrow"> placeholder. Sort arrows are
+   updated on every re-render. */
+function setupSortableHeaders(){
+  for(const [panel, keys] of Object.entries(PANEL_HEADER_KEYS)){
+    const table = document.getElementById('table-'+panel);
+    if(!table) continue;
+    const ths = table.querySelectorAll('thead th:not(.rw-th-group)');
+    if(ths.length !== keys.length){
+      console.warn('[runway] header count mismatch', panel, ths.length, 'vs', keys.length);
+      continue;
+    }
+    ths.forEach((th, i) => {
+      th.dataset.key = keys[i];
+      th.dataset.panel = panel;
+      const arrow = document.createElement('span');
+      arrow.className = 'rw-sort-arrow';
+      th.appendChild(arrow);
+      th.addEventListener('click', () => {
+        const f = _filters[panel];
+        if(f.sortCol === keys[i]) f.sortDir = (f.sortDir === 'asc' ? 'desc' : 'asc');
+        else { f.sortCol = keys[i]; f.sortDir = 'asc'; }
+        recalcAll();
+      });
+    });
+  }
+}
+
+/* Refresh the sort indicator chevrons after each render. */
+function refreshSortArrows(){
+  for(const [panel, _keys] of Object.entries(PANEL_HEADER_KEYS)){
+    const table = document.getElementById('table-'+panel);
+    if(!table) continue;
+    const f = _filters[panel];
+    table.querySelectorAll('thead th[data-key]').forEach(th => {
+      const isSorted = th.dataset.key === f.sortCol;
+      th.classList.toggle('rw-sorted', isSorted);
+      const arrow = th.querySelector('.rw-sort-arrow');
+      if(arrow) arrow.textContent = isSorted ? (f.sortDir === 'desc' ? '▼' : '▲') : '';
+    });
+  }
+}
+
+/* Apply the panel's filter set to a row array. Returns a NEW array. */
+function applyFilters(rows, f){
+  const q = (f.search || '').toLowerCase();
+  return rows.filter(r => {
+    if(q && !String(r.region||'').toLowerCase().includes(q)) return false;
+    if(f.hideEmpty && (r.price == null || isNaN(r.price))) return false;
+    const state = (r.state || '').trim().toUpperCase();
+    /* "main" + "all" are the same at this stage (we only have 36
+       curated regions seeded). When the live feed in Phase D3 starts
+       appending fresh LGAs, "main" will narrow back to the curated
+       set via a row-level flag. */
+    if(f.state === 'main' || f.state === 'all') return true;
+    if(f.state === 'cap') return isCapCity(r.region);
+    /* Per-state code (NSW, VIC, etc.) */
+    return state === f.state;
+  });
+}
+
+/* Sort rows in place using a stable comparator. Numeric vs string is
+   inferred from the value type. Sort-string values like "50%" are
+   converted to their numeric form so the order is intuitive. */
+function applySorting(rows, f){
+  if(!f.sortCol) return rows;
+  const dir = f.sortDir === 'desc' ? -1 : 1;
+  const sortable = rows.slice();
+  const numericish = (v) => {
+    if(v == null) return null;
+    if(typeof v === 'number') return isNaN(v) ? null : v;
+    if(typeof v === 'string'){
+      const m = v.match(/^-?\d+(?:\.\d+)?%?$/);
+      if(m) return parseFloat(v);
+    }
+    return null;
+  };
+  sortable.sort((a, b) => {
+    const va = a[f.sortCol];
+    const vb = b[f.sortCol];
+    /* Nulls always sort to the bottom regardless of direction. */
+    const aNull = (va == null || (typeof va === 'number' && isNaN(va)));
+    const bNull = (vb == null || (typeof vb === 'number' && isNaN(vb)));
+    if(aNull && bNull) return 0;
+    if(aNull) return 1;
+    if(bNull) return -1;
+    const na = numericish(va), nb = numericish(vb);
+    if(na != null && nb != null) return (na - nb) * dir;
+    return String(va).localeCompare(String(vb)) * dir;
+  });
+  return sortable;
+}
+
+/* Update the row-count badge above each panel. */
+function updateFilterCount(panel, shown, total){
+  const el = document.getElementById('filter-count-'+panel);
+  if(!el) return;
+  if(shown === total) el.innerHTML = '<strong>'+total+'</strong> regions';
+  else                el.innerHTML = '<strong>'+shown+'</strong> of '+total+' regions';
+}
 
 /* ═════════════════════════════════════════════════════════════════════
    LIVE PRICE FEED (Google Apps Script → CoreLogic)
@@ -1543,6 +1837,11 @@ function boot(){
     const el = document.getElementById(id);
     if(el) el.addEventListener('input', recalcAll);
   });
+
+  /* Filters + sortable headers (must come before recalcAll so the
+     filter dropdowns exist when the first render fires). */
+  setupFilters();
+  setupSortableHeaders();
 
   /* Status bar buttons */
   document.getElementById('refreshBtn').addEventListener('click', loadLatestPrices);
