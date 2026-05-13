@@ -532,6 +532,17 @@
   .cad-table tbody tr.cad-row-selected{background:rgba(0,182,203,0.10)}
   .cad-table tbody tr.cad-row-selected:hover{background:rgba(0,182,203,0.15)}
 
+  /* Age-based row tint — 5-6d yellow, 7+d red. Subtle background tint
+     so scannable but not garish. Selected state wins over age tint. */
+  .cad-table tbody tr.cad-row-age-yellow{background:rgba(245,158,11,0.10)}
+  .cad-table tbody tr.cad-row-age-yellow:hover{background:rgba(245,158,11,0.18)}
+  .cad-table tbody tr.cad-row-age-red{background:rgba(248,113,113,0.10)}
+  .cad-table tbody tr.cad-row-age-red:hover{background:rgba(248,113,113,0.18)}
+  .cad-table tbody tr.cad-row-selected.cad-row-age-yellow,
+  .cad-table tbody tr.cad-row-selected.cad-row-age-red{background:rgba(0,182,203,0.15)}
+  [data-theme="light"] .cad-table tbody tr.cad-row-age-yellow{background:rgba(245,158,11,0.16)}
+  [data-theme="light"] .cad-table tbody tr.cad-row-age-red{background:rgba(248,113,113,0.14)}
+
   /* Bulk-action bar — appears when 1+ rows selected. */
   .cad-bulk-bar{
     display:none; align-items:center; gap:10px;
@@ -1032,13 +1043,15 @@ function renderTable(){
   empty.style.display='none'; table.style.display='';
 
   /* Header — checkbox column first, then data columns, then assignee /
-     progress / status / filed. Assignee sits right after the data fields
-     so "who owns this card" is visible at a glance without opening it. */
+     progress / status / age columns. Days Open + Last Active surface
+     stale work without opening cards; row-level color tinting (no
+     color 0-4d, yellow 5-6d, red 7+d) makes it scannable. */
   const allSelected = filtered.every(c=>_selected.has(c.id));
   head.innerHTML =
       '<th class="cad-check-col"><input type="checkbox" class="cad-row-check" id="selectAll"'+(allSelected?' checked':'')+'></th>'
     + dataFields.map(f=>'<th>'+escapeHtml(f.label)+'</th>').join('')
-    + '<th>Agent</th><th>Progress</th><th>Status</th><th>Filed</th>';
+    + '<th>Agent</th><th>Progress</th><th>Status</th>'
+    + '<th>Days Open</th><th>Last Active</th><th>Filed</th><th>Completed</th>';
 
   body.innerHTML = filtered.map(c=>{
     const d = c.data || {};
@@ -1055,18 +1068,28 @@ function renderTable(){
     const status = c.completed_at
       ? '<span class="cad-status done">Completed</span>'
       : '<span class="cad-status open">Open</span>';
-    const filed = c.created_at ? new Date(c.created_at).toLocaleDateString('en-AU',{day:'numeric',month:'short'}) : '—';
+    const filedDT     = fmtDateTime(c.created_at);
+    const completedDT = c.completed_at ? fmtDateTime(c.completed_at) : '—';
+    const daysOpen    = c.completed_at
+      ? '—'  /* Don't show "days open" for closed cards — Completed timestamp tells the story */
+      : (function(){ const d = daysSince(c.created_at); return d == null ? '—' : (d + 'd'); })();
+    const lastActive  = (function(){ const d = daysSince(c.updated_at || c.created_at); return d == null ? '—' : (d === 0 ? 'today' : d + 'd ago'); })();
     /* Prefer the friendly name from cadence_assignees; fall back to the
        email if the assignee was archived/renamed/removed from the list. */
     const agent = _assigneeDisplay(c.assigned_to_email);
     const checked = _selected.has(c.id);
-    return '<tr data-id="'+c.id+'"'+(checked?' class="cad-row-selected"':'')+'>'
+    const ageCls  = rowAgeClass(c);
+    const rowCls  = (checked ? 'cad-row-selected' : '') + (ageCls ? (checked ? ' ' : '') + ageCls : '');
+    return '<tr data-id="'+c.id+'"'+(rowCls ? ' class="'+rowCls+'"' : '')+'>'
       + '<td class="cad-check-col"><input type="checkbox" class="cad-row-check" data-check="'+c.id+'"'+(checked?' checked':'')+'></td>'
       + cols
       + '<td>'+escapeHtml(agent)+'</td>'
       + '<td><div class="cad-stage-dots">'+stageDots+'</div></td>'
       + '<td>'+status+'</td>'
-      + '<td>'+escapeHtml(filed)+'</td>'
+      + '<td>'+escapeHtml(daysOpen)+'</td>'
+      + '<td>'+escapeHtml(lastActive)+'</td>'
+      + '<td>'+escapeHtml(filedDT)+'</td>'
+      + '<td>'+escapeHtml(completedDT)+'</td>'
       + '</tr>';
   }).join('');
 
@@ -1170,11 +1193,11 @@ function openCardModal(cardId){
   if(card){
     const meta = [];
     if(card.created_by_email) meta.push('Filed by '+escapeHtml(card.created_by_email));
-    if(card.created_at) meta.push('on '+new Date(card.created_at).toLocaleString('en-AU'));
+    if(card.created_at) meta.push('on '+fmtDateTime(card.created_at));
     if(card.assigned_to_email){
       meta.push('· Assigned to '+escapeHtml(_assigneeDisplay(card.assigned_to_email)));
     }
-    if(card.completed_at) meta.push('· Completed '+new Date(card.completed_at).toLocaleString('en-AU'));
+    if(card.completed_at) meta.push('· Completed '+fmtDateTime(card.completed_at));
     document.getElementById('cardMetaLine').innerHTML = meta.join(' ');
     /* Kick off the history fetch — runs async, the modal stays usable. */
     loadCardHistory(cardId);
@@ -1438,6 +1461,38 @@ function escapeHtml(s){
   return String(s==null?'':s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+/* Format an ISO timestamp as "13 May 2:14 pm" (en-AU, no year for
+   compactness since most cards are within the current year). */
+function fmtDateTime(iso){
+  if(!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString('en-AU', {
+      day:'numeric', month:'short',
+      hour:'numeric', minute:'2-digit',
+    });
+  } catch(_){ return '—'; }
+}
+
+/* Days between an ISO timestamp and now. Returns null if invalid. */
+function daysSince(iso){
+  if(!iso) return null;
+  const t = new Date(iso).getTime();
+  if(isNaN(t)) return null;
+  return Math.floor((Date.now() - t) / 86400000);
+}
+
+/* Age-based row tint — 5-6 days yellow, 7+ red. Only fires for cards
+   that are still open; completed cards stay neutral regardless of
+   how long the cycle took. */
+function rowAgeClass(c){
+  if(c.completed_at) return '';
+  const d = daysSince(c.created_at);
+  if(d == null) return '';
+  if(d >= 7) return 'cad-row-age-red';
+  if(d >= 5) return 'cad-row-age-yellow';
+  return '';
 }
 
 /* ═════════════════════════════════════════════════════════════════════
