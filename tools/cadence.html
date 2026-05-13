@@ -525,6 +525,23 @@
     opacity:.5; pointer-events:none; font-size:13px;
   }
   .cad-toolbar-actions{display:flex; gap:6px; margin-left:auto}
+
+  /* Agent filter — same vocabulary as the search box. Lives only on
+     team-lead / writer accounts via JS show/hide. */
+  .cad-agent-filter{
+    padding:7px 10px; border-radius:6px;
+    background:rgba(255,255,255,0.06);
+    border:1px solid rgba(255,255,255,0.14);
+    color:inherit; font-family:'Roboto',sans-serif; font-size:12.5px;
+    outline:none; cursor:pointer;
+    color-scheme:dark;
+  }
+  .cad-agent-filter option{background:#1a2236; color:#e3eaf5}
+  .cad-agent-filter:focus{border-color:var(--cad-accent); background:rgba(0,182,203,0.06)}
+  [data-theme="light"] .cad-agent-filter{
+    background:rgba(31,40,63,0.05); border-color:rgba(31,40,63,0.18); color-scheme:light;
+  }
+  [data-theme="light"] .cad-agent-filter option{background:#fff; color:#1a2236}
   .cad-toolbar-actions .cad-btn{padding:6px 12px; font-size:10.5px}
 
   /* Table checkbox column. */
@@ -670,6 +687,12 @@
         <span class="cad-search-icon">🔍</span>
         <input id="searchBox" class="cad-search-input" type="text" placeholder="Search cards…">
       </div>
+      <!-- Agent filter — only rendered for users who can see every card
+           (writers + team leads). Hidden for regular PMs whose row set
+           is already scoped to "their own" by RLS. -->
+      <select id="cardAgentFilter" class="cad-agent-filter" style="display:none" title="Filter by assigned agent">
+        <option value="">All agents</option>
+      </select>
       <div class="cad-toolbar-actions">
         <button type="button" class="cad-btn ghost" id="exportCsvBtn" title="Download visible cards as CSV">Export CSV</button>
       </div>
@@ -834,6 +857,25 @@ let _draftBoard       = null;   // { name, slug, icon, description, display_orde
 let _search    = '';            // current search query (lowercased)
 let _selected  = new Set();     // card IDs currently checked for bulk ops
 let _historyOpen = false;       // remembered across opens of the same card
+let _agentFilter = '';          // assigned_to_email filter (team-lead-only)
+
+/* Emails that can see every Cadence card across the team. Mirrored on
+   the DB side by public.is_team_lead() in migration 016 — the policy
+   does the real enforcement; this client-side list just controls
+   whether the "filter by agent" dropdown is rendered. */
+const TEAM_LEAD_EMAILS = ['lindsay@performanceproperty.com.au'];
+
+function _canViewAllCards(){
+  try{
+    if(typeof isDev === 'function' && isDev())     return true;
+    if(typeof isAdmin === 'function' && isAdmin()) return true;
+    const email = (typeof getCurrentUserEmail === 'function')
+      ? (getCurrentUserEmail() || '').toLowerCase()
+      : '';
+    return TEAM_LEAD_EMAILS.includes(email);
+  } catch(_){}
+  return false;
+}
 
 /* Phase 3.1 — assignee dropdown options. Loaded once on boot from
    cadence_assignees; admins can add/archive rows server-side. */
@@ -970,12 +1012,14 @@ function renderBoardList(){
 async function pickBoard(slug){
   _activeBoard = _boards.find(b=>b.slug===slug);
   if(!_activeBoard) return;
-  /* Reset per-board UI state — search query and any selected rows from
-     the previous board shouldn't bleed across. */
+  /* Reset per-board UI state — search query, agent filter, and any
+     selected rows from the previous board shouldn't bleed across. */
   _search = '';
+  _agentFilter = '';
   _selected.clear();
   const searchEl = document.getElementById('searchBox');
   if(searchEl) searchEl.value = '';
+  refreshAgentFilter();
   updateBulkBar();
 
   renderBoardList();   // update active highlight
@@ -997,16 +1041,21 @@ async function loadCards(){
     .order('created_at', { ascending: false });
   if(error){ toast('Failed to load cards: '+error.message, true); return; }
   _cards = data || [];
+  /* Rebuild the agent filter so it picks up any in-the-wild emails
+     present on the loaded cards that aren't in cadence_assignees. */
+  refreshAgentFilter();
   renderTable();
 }
 
-/* Single filter pipeline — open/completed/all pill + search box. Used by
-   renderTable() AND exportCSV() so the CSV always matches what's visible. */
+/* Single filter pipeline — open/completed/all pill + search box +
+   agent dropdown (team leads only). Used by renderTable() AND
+   exportCSV() so the CSV always matches what's visible. */
 function getFilteredCards(){
   const q = (_search || '').toLowerCase();
   return _cards.filter(c=>{
     if(_filter === 'open'      && c.completed_at)  return false;
     if(_filter === 'completed' && !c.completed_at) return false;
+    if(_agentFilter && (c.assigned_to_email || '').toLowerCase() !== _agentFilter.toLowerCase()) return false;
     if(q){
       /* Match against any string-coercible value in the card's data jsonb
          PLUS the filer's email. Stage booleans get coerced to "true"/"false"
@@ -1018,6 +1067,42 @@ function getFilteredCards(){
     }
     return true;
   });
+}
+
+/* Build the agent filter dropdown. Hides itself for non-team-lead users
+   so PMs don't see a filter they can't usefully use (their RLS scope
+   already shows only their own cards). For team leads, options derive
+   from cadence_assignees so the names look human ("Robby" instead of
+   r.pineda@…) plus a fallback for any assignee that's not in the
+   lookup table. */
+function refreshAgentFilter(){
+  const sel = document.getElementById('cardAgentFilter');
+  if(!sel) return;
+  if(!_canViewAllCards()){
+    sel.style.display = 'none';
+    return;
+  }
+  sel.style.display = '';
+  /* Build the option set: every assignee in _assignees, plus any
+     assigned_to_email actually present on the current board's cards
+     that doesn't appear in _assignees (defensive). */
+  const seen = new Set();
+  const opts = ['<option value="">All agents</option>'];
+  _assignees.forEach(a => {
+    if(!a || !a.email) return;
+    seen.add(a.email.toLowerCase());
+    const label = a.name ? a.name : a.email;
+    const selAttr = (a.email === _agentFilter) ? ' selected' : '';
+    opts.push('<option value="'+escapeHtml(a.email)+'"'+selAttr+'>'+escapeHtml(label)+'</option>');
+  });
+  _cards.forEach(c => {
+    const e = (c.assigned_to_email || '').toLowerCase();
+    if(!e || seen.has(e)) return;
+    seen.add(e);
+    const selAttr = (c.assigned_to_email === _agentFilter) ? ' selected' : '';
+    opts.push('<option value="'+escapeHtml(c.assigned_to_email)+'"'+selAttr+'>'+escapeHtml(c.assigned_to_email)+'</option>');
+  });
+  sel.innerHTML = opts.join('');
 }
 
 function renderTable(){
@@ -1162,6 +1247,13 @@ document.getElementById('searchBox').addEventListener('input', (e)=>{
 
 /* CSV export — exports whatever's currently visible (filter + search). */
 document.getElementById('exportCsvBtn').addEventListener('click', exportCSV);
+
+/* Agent filter dropdown — re-render the table when team lead changes the
+   filter. State held in _agentFilter; getFilteredCards() applies. */
+document.getElementById('cardAgentFilter').addEventListener('change', (e)=>{
+  _agentFilter = e.target.value || '';
+  renderTable();
+});
 
 /* Bulk-action toolbar */
 document.getElementById('bulkCompleteBtn').addEventListener('click', ()=>bulkSetCompletion(true));
