@@ -717,6 +717,12 @@
       </div>
       <div class="cad-field wide">
         <label class="cad-toggle-row" style="text-transform:none; opacity:1">
+          <input type="checkbox" id="bm_notify" checked>
+          <span>Send email notifications on card create + completion</span>
+        </label>
+      </div>
+      <div class="cad-field wide">
+        <label class="cad-toggle-row" style="text-transform:none; opacity:1">
           <input type="checkbox" id="bm_archived">
           <span>Archived (hidden from main list; cards preserved)</span>
         </label>
@@ -1247,7 +1253,8 @@ async function saveCard(){
         .eq('id', _editingCardId);
       if(error) throw error;
       toast('Card saved');
-      if(isCompleted && !wasCompleted) _notifyCompleted(data);
+      /* Notify only on the open→completed transition, not on every save. */
+      if(isCompleted && !wasCompleted) _notifyCompleted(_editingCardId);
     } else {
       const email = (typeof getCurrentUserEmail==='function') ? getCurrentUserEmail() : '';
       const insert = {
@@ -1256,16 +1263,19 @@ async function saveCard(){
         created_by_email: email || null,
         completed_at: isCompleted ? new Date().toISOString() : null,
       };
-      /* created_by gets set by RLS-aware DEFAULT if we ever add one;
-         leaving it null here is fine — created_by_email is the
-         user-facing attribution. */
-      const { error } = await window.sb
+      /* .select('id').single() so we can fire the notify with the new
+         card's id. Without it, the insert returns no row and the email
+         flow has nothing to look up. */
+      const { data: inserted, error } = await window.sb
         .from('cadence_cards')
-        .insert(insert);
+        .insert(insert)
+        .select('id')
+        .single();
       if(error) throw error;
       toast('Card created');
-      _notifyCreated(data);
-      if(isCompleted) _notifyCompleted(data);
+      const newId = inserted && inserted.id;
+      _notifyCreated(newId);
+      if(isCompleted) _notifyCompleted(newId);
     }
     closeCardModal();
     await loadCards();
@@ -1291,16 +1301,24 @@ async function deleteCard(){
 }
 
 /* ─── Notifications ───
-   Stubbed for Phase 1. Phase 3 will wire these to a Supabase Edge
-   Function that sends via Resend (using the same RESEND_API_KEY
-   already configured for Supabase Auth SMTP). For now they no-op so
-   the rest of the flow is testable. */
-function _notifyCreated(data){
-  // TODO Phase 3: POST to edge function with { event:'created', board, data, recipient:'vandolf@performanceproperty.com.au' }
+   Phase 3 — fires the Cadence Edge Function which sends an email via
+   Resend. Fire-and-forget: we don't await or surface failures so the
+   email flow can't block (or worse, error out) the save. If notification
+   delivery is broken, the card itself is still safe in the DB and the
+   audit log captures the event. */
+function _notify(event, cardId){
+  if(!cardId) return;                  // creation race: nothing to send for
+  try{
+    /* invoke() returns a promise — we attach .catch to swallow rejections
+       so they don't bubble into uncaught-rejection errors. */
+    window.sb.functions.invoke('notify-cadence', { body: { event, cardId } })
+      .catch(err => console.warn('[cadence] notify failed', event, cardId, err));
+  } catch(e){
+    console.warn('[cadence] notify threw synchronously', e);
+  }
 }
-function _notifyCompleted(data){
-  // TODO Phase 3: POST to edge function with { event:'completed', board, data, recipient:'vandolf@performanceproperty.com.au' }
-}
+function _notifyCreated(cardId){   _notify('created',   cardId); }
+function _notifyCompleted(cardId){ _notify('completed', cardId); }
 
 /* Auth helper — Tier 0/1 can delete cards (the danger button only shows
    for them). Card insert/update is open to Tier 0/1/2. */
@@ -1334,17 +1352,36 @@ function updateBulkBar(){
 
 /* Flip completed_at on all selected cards. Single round-trip via .in() —
    all rows in a batch share the same timestamp, which matches the user's
-   mental model of "I marked these complete now". */
+   mental model of "I marked these complete now".
+
+   For completions, we then fan out notify calls — one per card — so each
+   PM gets pinged about their own task. Only cards that were previously
+   open get notified (reopening + re-completing the same card spams). */
 async function bulkSetCompletion(completed){
   if(!_selected.size) return;
   const ids = [..._selected];
   if(!confirm('Mark '+ids.length+' card'+(ids.length===1?'':'s')+' as '+(completed?'completed':'open')+'?')) return;
+
+  /* Snapshot which selected cards were open BEFORE the update — only
+     these are the open→completed transitions worth emailing. */
+  const wasOpen = new Set(
+    ids.filter(id => {
+      const c = _cards.find(x => x.id === id);
+      return c && !c.completed_at;
+    })
+  );
+
   const { error } = await window.sb
     .from('cadence_cards')
     .update({ completed_at: completed ? new Date().toISOString() : null })
     .in('id', ids);
   if(error){ toast('Bulk update failed: '+error.message, true); return; }
   toast(ids.length+' card'+(ids.length===1?'':'s')+' '+(completed?'completed':'reopened'));
+
+  if(completed){
+    for(const id of ids) if(wasOpen.has(id)) _notifyCompleted(id);
+  }
+
   _selected.clear();
   await loadCards();
   await loadAllCardCounts();
@@ -1505,11 +1542,15 @@ function openBoardModal(boardSlug){
     description:   existing.description || '',
     display_order: existing.display_order || 0,
     archived:      !!existing.archived,
+    /* notify defaults to true if the column hasn't been added yet
+       (i.e. migration 011 not run) — matches the column default. */
+    notify:        (existing.notify == null) ? true : !!existing.notify,
     schema:        JSON.parse(JSON.stringify(existing.schema || {fields:[]})),
   } : {
     name:'', slug:'', icon:'📋', description:'',
     display_order: (Math.max(0, ..._boards.map(b=>b.display_order||0)) + 10),
     archived:false,
+    notify:true,
     schema:{fields:[]},
   };
   if(!_draftBoard.schema.fields) _draftBoard.schema.fields = [];
@@ -1521,6 +1562,7 @@ function openBoardModal(boardSlug){
   document.getElementById('bm_slug').readOnly  = !!existing;
   document.getElementById('bm_order').value    = _draftBoard.display_order;
   document.getElementById('bm_desc').value     = _draftBoard.description;
+  document.getElementById('bm_notify').checked  = _draftBoard.notify;
   document.getElementById('bm_archived').checked = _draftBoard.archived;
   document.getElementById('deleteBoardBtn').style.display = existing ? '' : 'none';
 
@@ -1719,12 +1761,13 @@ function moveField(i, dir){
    is sent as a jsonb object; meta fields go alongside. */
 async function saveBoard(){
   if(!_draftBoard) return;
-  const name  = document.getElementById('bm_name').value.trim();
-  const slug  = document.getElementById('bm_slug').value.trim();
-  const icon  = document.getElementById('bm_icon').value.trim() || null;
-  const desc  = document.getElementById('bm_desc').value.trim() || null;
-  const ord   = Number(document.getElementById('bm_order').value) || 0;
-  const arch  = document.getElementById('bm_archived').checked;
+  const name   = document.getElementById('bm_name').value.trim();
+  const slug   = document.getElementById('bm_slug').value.trim();
+  const icon   = document.getElementById('bm_icon').value.trim() || null;
+  const desc   = document.getElementById('bm_desc').value.trim() || null;
+  const ord    = Number(document.getElementById('bm_order').value) || 0;
+  const arch   = document.getElementById('bm_archived').checked;
+  const notify = document.getElementById('bm_notify').checked;
 
   if(!name){ toast('Board name is required', true); return; }
   if(!slug){ toast('Slug is required', true); return; }
@@ -1751,7 +1794,7 @@ async function saveBoard(){
   try{
     const payload = {
       name, slug, icon, description: desc,
-      display_order: ord, archived: arch,
+      display_order: ord, archived: arch, notify,
       schema: { fields },
     };
     let error;
