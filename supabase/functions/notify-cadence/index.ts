@@ -72,7 +72,7 @@ function fmtTimestamp(ts: string | null | undefined): string {
 }
 
 interface Board { slug: string; name: string; icon: string | null; schema: any; notify: boolean }
-interface Card  { id: string; board_slug: string; data: any; created_at: string; created_by_email: string | null; completed_at: string | null }
+interface Card  { id: string; board_slug: string; data: any; created_at: string; created_by_email: string | null; assigned_to_email: string | null; completed_at: string | null }
 
 function buildEmail(event: 'created'|'completed', board: Board, card: Card) {
   const icon       = board.icon || '📋';
@@ -187,7 +187,7 @@ Deno.serve(async (req) => {
 
   const { data: card, error: cardErr } = await supabase
     .from('cadence_cards')
-    .select('id, board_slug, data, created_at, created_by_email, completed_at')
+    .select('id, board_slug, data, created_at, created_by_email, assigned_to_email, completed_at')
     .eq('id', cardId)
     .single();
   if (cardErr || !card) return jsonResp({ error: 'card_not_found', detail: cardErr?.message }, 404);
@@ -202,10 +202,14 @@ Deno.serve(async (req) => {
   /* Per-board mute. */
   if (board.notify === false) return jsonResp({ ok: true, skipped: 'notify_disabled' });
 
-  /* Recipient resolution. */
+  /* Recipient resolution.
+     - created   → the assignee the PM picked. Falls back to the alias
+                   (CADENCE_ALIAS_EMAIL) for legacy cards filed before
+                   migration 012 added the column.
+     - completed → the original filer (created_by_email). */
   let to = '';
-  if (event === 'created')        to = CADENCE_ALIAS;
-  else if (event === 'completed') to = card.created_by_email || '';
+  if (event === 'created')        to = card.assigned_to_email || CADENCE_ALIAS;
+  else if (event === 'completed') to = card.created_by_email   || '';
   if (!to) return jsonResp({ ok: true, skipped: 'no_recipient' });
 
   const { subject, html } = buildEmail(event, board as Board, card as Card);

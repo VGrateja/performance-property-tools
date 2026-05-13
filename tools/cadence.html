@@ -286,6 +286,21 @@
   .cad-field input:focus, .cad-field textarea:focus, .cad-field select:focus{
     border-color:var(--cad-accent); background:rgba(0,182,203,0.06);
   }
+  /* Browser-rendered <option> elements ignore the parent's transparent
+     bg and fall back to the OS default (usually white). That clashes
+     with the light text inherited from the select. Force explicit
+     colors per theme. color-scheme nudges Chromium to use a native
+     dark-mode scrollbar/highlight in the dropdown panel. */
+  .cad-field select{ color-scheme: dark; }
+  .cad-field select option{
+    background:#1a2236;
+    color:#e3eaf5;
+  }
+  [data-theme="light"] .cad-field select{ color-scheme: light; }
+  [data-theme="light"] .cad-field select option{
+    background:#ffffff;
+    color:#1a2236;
+  }
   .cad-field textarea{min-height:64px; resize:vertical; font-family:inherit}
   /* date inputs render the calendar icon white on dark; force visible */
   .cad-field input[type="date"]::-webkit-calendar-picker-indicator{
@@ -667,6 +682,18 @@
       <button class="cad-modal-close" onclick="closeCardModal()">×</button>
     </div>
     <form id="cardForm" onsubmit="event.preventDefault(); saveCard();">
+      <!-- Assignee dropdown — required. Rendered outside cardFormFields
+           because it's card metadata (not a per-board schema field) and
+           the value lives in its own column. -->
+      <div id="cardAssigneeWrap">
+        <div class="cad-section-label" style="margin-top:6px">Assignee</div>
+        <div class="cad-field-grid">
+          <div class="cad-field wide">
+            <label for="cardAssignee">PH Team member<span class="req">*</span></label>
+            <select id="cardAssignee"></select>
+          </div>
+        </div>
+      </div>
       <div id="cardFormFields"></div>
       <div class="cad-modal-meta" id="cardMetaLine"></div>
 
@@ -784,6 +811,10 @@ let _search    = '';            // current search query (lowercased)
 let _selected  = new Set();     // card IDs currently checked for bulk ops
 let _historyOpen = false;       // remembered across opens of the same card
 
+/* Phase 3.1 — assignee dropdown options. Loaded once on boot from
+   cadence_assignees; admins can add/archive rows server-side. */
+let _assignees = [];            // [{ email, name }]
+
 function toast(msg, isError){
   const el = document.getElementById('cadToast');
   el.textContent = msg;
@@ -798,7 +829,8 @@ async function boot(){
     toast('Auth client missing — refresh the page', true);
     return;
   }
-  await loadBoards();
+  /* Load boards + assignees in parallel — they're independent reads. */
+  await Promise.all([loadBoards(), loadAssignees()]);
   if(_boards.length){
     /* Auto-select the first non-archived board on initial load. */
     pickBoard(_boards[0].slug);
@@ -806,6 +838,25 @@ async function boot(){
     document.getElementById('boardList').innerHTML =
       '<div class="cad-loading" style="padding:20px 6px">No boards yet. Ask an admin to add one.</div>';
   }
+}
+
+async function loadAssignees(){
+  /* Soft-fail: if migration 012 hasn't been run, _assignees stays empty
+     and the dropdown renders a placeholder. Cards from before 012 will
+     have null assigned_to_email and the saveCard validation hint will
+     guide PMs to pick one going forward. */
+  const { data, error } = await window.sb
+    .from('cadence_assignees')
+    .select('email, name, display_order')
+    .eq('archived', false)
+    .order('display_order', { ascending: true })
+    .order('name',          { ascending: true });
+  if(error){
+    console.warn('[cadence] loadAssignees failed', error.message);
+    _assignees = [];
+    return;
+  }
+  _assignees = data || [];
 }
 
 async function loadBoards(){
@@ -1105,12 +1156,20 @@ function openCardModal(cardId){
   document.getElementById('deleteCardBtn').style.display = (cardId && _isWriter()) ? '' : 'none';
   document.getElementById('saveCardBtn').textContent = cardId ? 'Save Changes' : 'Create Card';
 
+  /* Render the assignee dropdown with the current selection (if any). */
+  renderAssigneeDropdown(card ? card.assigned_to_email : '');
+
   renderForm(data);
 
   if(card){
     const meta = [];
     if(card.created_by_email) meta.push('Filed by '+escapeHtml(card.created_by_email));
     if(card.created_at) meta.push('on '+new Date(card.created_at).toLocaleString('en-AU'));
+    if(card.assigned_to_email){
+      const a = _assignees.find(x=>x.email===card.assigned_to_email);
+      const display = a ? (a.name || a.email) : card.assigned_to_email;
+      meta.push('· Assigned to '+escapeHtml(display));
+    }
     if(card.completed_at) meta.push('· Completed '+new Date(card.completed_at).toLocaleString('en-AU'));
     document.getElementById('cardMetaLine').innerHTML = meta.join(' ');
     /* Kick off the history fetch — runs async, the modal stays usable. */
@@ -1122,6 +1181,23 @@ function openCardModal(cardId){
   }
 
   document.getElementById('cardModal').classList.add('open');
+}
+
+/* Populate the <select> from _assignees. If migration 012 hasn't been
+   run yet, _assignees is empty and we render a disabled placeholder
+   so the modal still opens — the validation in saveCard will surface
+   the missing-list problem to the user. */
+function renderAssigneeDropdown(selectedEmail){
+  const sel = document.getElementById('cardAssignee');
+  if(!sel) return;
+  const placeholder = '<option value="">— Choose assignee —</option>';
+  const opts = _assignees.map(a => {
+    const sel2 = (a.email === selectedEmail) ? ' selected' : '';
+    const label = a.name ? (a.name + ' <' + a.email + '>') : a.email;
+    return '<option value="'+escapeHtml(a.email)+'"'+sel2+'>'+escapeHtml(label)+'</option>';
+  }).join('');
+  sel.innerHTML = placeholder + opts;
+  sel.style.borderColor = '';   // reset any prior validation-error highlight
 }
 function closeCardModal(){
   document.getElementById('cardModal').classList.remove('open');
@@ -1227,6 +1303,18 @@ async function saveCard(){
     }
     data[f.key] = v;
   }
+
+  /* Assignee is required for every card on every board. Validate alongside
+     the schema-required fields so the user sees all errors at once. */
+  const assigneeEl = document.getElementById('cardAssignee');
+  const assignedTo = assigneeEl ? assigneeEl.value : '';
+  if(!assignedTo){
+    if(assigneeEl) assigneeEl.style.borderColor = 'var(--cad-danger)';
+    validationFailed = true;
+  } else if(assigneeEl){
+    assigneeEl.style.borderColor = '';
+  }
+
   if(validationFailed){ toast('Fill the required fields', true); return; }
 
   /* Detect the is_completion field. Toggling it on stamps completed_at. */
@@ -1242,7 +1330,7 @@ async function saveCard(){
     if(_editingCardId){
       const existing = _cards.find(c=>c.id===_editingCardId);
       const wasCompleted = !!(existing && existing.completed_at);
-      const patch = { data };
+      const patch = { data, assigned_to_email: assignedTo };
       /* Only stamp/unstamp completed_at when the toggle state actually changes
          — avoids overwriting the original timestamp on every edit. */
       if(isCompleted && !wasCompleted) patch.completed_at = new Date().toISOString();
@@ -1253,7 +1341,8 @@ async function saveCard(){
         .eq('id', _editingCardId);
       if(error) throw error;
       toast('Card saved');
-      /* Notify only on the open→completed transition, not on every save. */
+      /* Notify only on the open→completed transition, not on every save.
+         Reassignments don't fire emails (would be spammy). */
       if(isCompleted && !wasCompleted) _notifyCompleted(_editingCardId);
     } else {
       const email = (typeof getCurrentUserEmail==='function') ? getCurrentUserEmail() : '';
@@ -1261,6 +1350,7 @@ async function saveCard(){
         board_slug: _activeBoard.slug,
         data,
         created_by_email: email || null,
+        assigned_to_email: assignedTo,
         completed_at: isCompleted ? new Date().toISOString() : null,
       };
       /* .select('id').single() so we can fire the notify with the new
