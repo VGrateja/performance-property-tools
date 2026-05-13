@@ -32,6 +32,13 @@ const RESEND_API_KEY    = Deno.env.get('RESEND_API_KEY')      ?? '';
 const CADENCE_ALIAS     = Deno.env.get('CADENCE_ALIAS_EMAIL') ?? 'vandolf@performanceproperty.com.au';
 const CADENCE_FROM      = Deno.env.get('CADENCE_FROM_EMAIL')  ?? 'Cadence <cadence@performanceproperty.com.au>';
 const CADENCE_APP_URL   = Deno.env.get('CADENCE_APP_URL')     ?? '';
+/* CADENCE_CC_EMAILS: comma-separated list of addresses that get CC'd on
+   every notification regardless of board. Lindsay (head of PM team)
+   sits in here as the default so she sees both new requests and
+   completions across all boards. To override, set the secret to a
+   different list (or "" to disable). */
+const CADENCE_CC        = (Deno.env.get('CADENCE_CC_EMAILS') ?? 'lindsay@performanceproperty.com.au')
+                            .split(',').map(s => s.trim()).filter(Boolean);
 const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')        ?? '';
 const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')   ?? '';
 
@@ -139,17 +146,22 @@ function buildEmail(event: 'created'|'completed', board: Board, card: Card) {
   return { subject, html };
 }
 
-async function sendResend(to: string, subject: string, html: string) {
+async function sendResend(to: string, subject: string, html: string, cc: string[]) {
   if (!RESEND_API_KEY) {
     return { ok: false, status: 0, error: 'RESEND_API_KEY not set on the function' };
   }
+  /* De-dupe — don't CC anyone who's already the primary recipient. */
+  const toLower = to.toLowerCase();
+  const ccClean = cc.filter(addr => addr && addr.toLowerCase() !== toLower);
+  const payload: Record<string, unknown> = { from: CADENCE_FROM, to, subject, html };
+  if (ccClean.length) payload.cc = ccClean;
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${RESEND_API_KEY}`,
       'Content-Type':  'application/json',
     },
-    body: JSON.stringify({ from: CADENCE_FROM, to, subject, html }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -213,6 +225,6 @@ Deno.serve(async (req) => {
   if (!to) return jsonResp({ ok: true, skipped: 'no_recipient' });
 
   const { subject, html } = buildEmail(event, board as Board, card as Card);
-  const result = await sendResend(to, subject, html);
+  const result = await sendResend(to, subject, html, CADENCE_CC);
   return jsonResp(result, result.ok ? 200 : 502);
 });

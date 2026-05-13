@@ -754,6 +754,11 @@
         <textarea id="bm_desc" rows="2" placeholder="Short summary of what this board tracks"></textarea>
       </div>
       <div class="cad-field wide">
+        <label for="bm_assignees">Restricted assignees (comma-separated emails)</label>
+        <input id="bm_assignees" type="text" placeholder="Leave blank for all assignees; or e.g. r.pineda@performanceproperty.com.au">
+        <div class="cad-key-hint">When set, the card-modal Assignee dropdown only shows these emails. Use for boards owned by a specific PH Team member.</div>
+      </div>
+      <div class="cad-field wide">
         <label class="cad-toggle-row" style="text-transform:none; opacity:1">
           <input type="checkbox" id="bm_notify" checked>
           <span>Send email notifications on card create + completion</span>
@@ -1220,20 +1225,34 @@ function _assigneeDisplay(email){
   return (a && a.name) ? a.name : email;
 }
 
-/* Populate the <select> from _assignees. If migration 012 hasn't been
-   run yet, _assignees is empty and we render a disabled placeholder
-   so the modal still opens — the validation in saveCard will surface
-   the missing-list problem to the user. */
+/* Populate the <select> from _assignees. If the active board has
+   schema.assignee_emails set, narrow the list to those emails — used
+   for boards owned by a specific person (e.g. Lease Renewal → Robby).
+   Otherwise the full _assignees list is shown. */
 function renderAssigneeDropdown(selectedEmail){
   const sel = document.getElementById('cardAssignee');
   if(!sel) return;
+  const restrict = _activeBoard && _activeBoard.schema && _activeBoard.schema.assignee_emails;
+  const list = (Array.isArray(restrict) && restrict.length)
+    ? _assignees.filter(a => restrict.includes(a.email))
+    : _assignees;
+  /* If the restrict list points to emails not present in cadence_assignees
+     (e.g. the user added an email to the board config that hasn't been
+     inserted into the lookup table yet), fall back to a synthetic option
+     so the card can still save against that email. */
+  if(Array.isArray(restrict) && restrict.length && !list.length){
+    restrict.forEach(email => list.push({ email, name: null }));
+  }
   const placeholder = '<option value="">— Choose assignee —</option>';
-  const opts = _assignees.map(a => {
+  const opts = list.map(a => {
     const sel2 = (a.email === selectedEmail) ? ' selected' : '';
     const label = a.name ? (a.name + ' <' + a.email + '>') : a.email;
     return '<option value="'+escapeHtml(a.email)+'"'+sel2+'>'+escapeHtml(label)+'</option>';
   }).join('');
   sel.innerHTML = placeholder + opts;
+  /* If the board only has one valid assignee, pre-select it so the PM
+     doesn't have to click. */
+  if(list.length === 1 && !selectedEmail) sel.value = list[0].email;
   sel.style.borderColor = '';   // reset any prior validation-error highlight
 }
 function closeCardModal(){
@@ -1725,6 +1744,10 @@ function openBoardModal(boardSlug){
   document.getElementById('bm_desc').value     = _draftBoard.description;
   document.getElementById('bm_notify').checked  = _draftBoard.notify;
   document.getElementById('bm_archived').checked = _draftBoard.archived;
+  /* Restricted-assignees lives inside schema.assignee_emails; flatten
+     to a comma-separated string for the input. */
+  const ae = _draftBoard.schema && _draftBoard.schema.assignee_emails;
+  document.getElementById('bm_assignees').value = (Array.isArray(ae) ? ae : []).join(', ');
   document.getElementById('deleteBoardBtn').style.display = existing ? '' : 'none';
 
   renderFieldEditor();
@@ -1929,6 +1952,12 @@ async function saveBoard(){
   const ord    = Number(document.getElementById('bm_order').value) || 0;
   const arch   = document.getElementById('bm_archived').checked;
   const notify = document.getElementById('bm_notify').checked;
+  /* Parse the comma-separated restricted assignees input back into an
+     array. Empty input → no restriction. */
+  const assigneesRaw = document.getElementById('bm_assignees').value.trim();
+  const assigneeEmails = assigneesRaw
+    ? assigneesRaw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    : null;
 
   if(!name){ toast('Board name is required', true); return; }
   if(!slug){ toast('Slug is required', true); return; }
@@ -1956,7 +1985,7 @@ async function saveBoard(){
     const payload = {
       name, slug, icon, description: desc,
       display_order: ord, archived: arch, notify,
-      schema: { fields },
+      schema: assigneeEmails ? { fields, assignee_emails: assigneeEmails } : { fields },
     };
     let error;
     if(_editingBoardId){
