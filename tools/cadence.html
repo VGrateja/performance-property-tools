@@ -1031,12 +1031,14 @@ function renderTable(){
   }
   empty.style.display='none'; table.style.display='';
 
-  /* Header — checkbox column first, then data columns, then progress/status/filed. */
+  /* Header — checkbox column first, then data columns, then assignee /
+     progress / status / filed. Assignee sits right after the data fields
+     so "who owns this card" is visible at a glance without opening it. */
   const allSelected = filtered.every(c=>_selected.has(c.id));
   head.innerHTML =
       '<th class="cad-check-col"><input type="checkbox" class="cad-row-check" id="selectAll"'+(allSelected?' checked':'')+'></th>'
     + dataFields.map(f=>'<th>'+escapeHtml(f.label)+'</th>').join('')
-    + '<th>Progress</th><th>Status</th><th>Filed</th>';
+    + '<th>Agent</th><th>Progress</th><th>Status</th><th>Filed</th>';
 
   body.innerHTML = filtered.map(c=>{
     const d = c.data || {};
@@ -1054,10 +1056,14 @@ function renderTable(){
       ? '<span class="cad-status done">Completed</span>'
       : '<span class="cad-status open">Open</span>';
     const filed = c.created_at ? new Date(c.created_at).toLocaleDateString('en-AU',{day:'numeric',month:'short'}) : '—';
+    /* Prefer the friendly name from cadence_assignees; fall back to the
+       email if the assignee was archived/renamed/removed from the list. */
+    const agent = _assigneeDisplay(c.assigned_to_email);
     const checked = _selected.has(c.id);
     return '<tr data-id="'+c.id+'"'+(checked?' class="cad-row-selected"':'')+'>'
       + '<td class="cad-check-col"><input type="checkbox" class="cad-row-check" data-check="'+c.id+'"'+(checked?' checked':'')+'></td>'
       + cols
+      + '<td>'+escapeHtml(agent)+'</td>'
       + '<td><div class="cad-stage-dots">'+stageDots+'</div></td>'
       + '<td>'+status+'</td>'
       + '<td>'+escapeHtml(filed)+'</td>'
@@ -1166,9 +1172,7 @@ function openCardModal(cardId){
     if(card.created_by_email) meta.push('Filed by '+escapeHtml(card.created_by_email));
     if(card.created_at) meta.push('on '+new Date(card.created_at).toLocaleString('en-AU'));
     if(card.assigned_to_email){
-      const a = _assignees.find(x=>x.email===card.assigned_to_email);
-      const display = a ? (a.name || a.email) : card.assigned_to_email;
-      meta.push('· Assigned to '+escapeHtml(display));
+      meta.push('· Assigned to '+escapeHtml(_assigneeDisplay(card.assigned_to_email)));
     }
     if(card.completed_at) meta.push('· Completed '+new Date(card.completed_at).toLocaleString('en-AU'));
     document.getElementById('cardMetaLine').innerHTML = meta.join(' ');
@@ -1181,6 +1185,16 @@ function openCardModal(cardId){
   }
 
   document.getElementById('cardModal').classList.add('open');
+}
+
+/* Lookup helper — returns the display name for an assignee email, or
+   the email itself if the row was archived / renamed / never seeded.
+   Used in the card table + modal meta line so card ownership reads
+   as "Vandolf" rather than "vandolf@…". */
+function _assigneeDisplay(email){
+  if(!email) return '—';
+  const a = _assignees.find(x => x.email === email);
+  return (a && a.name) ? a.name : email;
 }
 
 /* Populate the <select> from _assignees. If migration 012 hasn't been
@@ -1516,7 +1530,7 @@ function exportCSV(){
 
   const headers = ['Card ID']
     .concat(fields.map(f=>f.label))
-    .concat(['Filed by','Filed at','Completed at']);
+    .concat(['Agent','Agent Email','Filed by','Filed at','Completed at']);
 
   const lines = [headers.map(csvEscape).join(',')];
   for(const c of rows){
@@ -1531,6 +1545,8 @@ function exportCSV(){
       }
       return String(v);
     })).concat([
+      _assigneeDisplay(c.assigned_to_email),
+      c.assigned_to_email || '',
       c.created_by_email || '',
       c.created_at  || '',
       c.completed_at || '',
