@@ -598,7 +598,7 @@
   <div class="rw-eyebrow">Performance Property · Research</div>
   <h1 class="rw-title">Runway Workbook</h1>
   <p class="rw-sub">Affordability ceiling analysis across capital cities + regional LGAs. Median price vs intrinsic ceiling under current and forecast rate scenarios; wage-growth adjusted views compare the same regions under predicted income uplift.</p>
-  <div class="rw-phase-badge">✓ Phase D2 — Banner + Print + Reference</div>
+  <div class="rw-phase-badge">✓ Phase D3 — Full Live Sub-feeds</div>
 </header>
 
 <div class="rw-statusbar" id="statusBar">
@@ -1699,18 +1699,82 @@ function setStatus(state, message){
   txt.innerHTML = message;
 }
 
+/* Ingest helper for the primary prices feed — returns a populated
+   priceMap keyed by STATE::PROPTYPE::region (or PROPTYPE::region
+   when no state suffix is present in the source). */
+function _buildPriceMap(data){
+  const priceMap = {};
+  const ingest = (rows) => {
+    if(!Array.isArray(rows) || rows.length < 2) return;
+    for(let i=1; i<rows.length; i++){
+      const r = rows[i];
+      const region   = r[REGION_COL];
+      const propType = String(r[PROPTYPE_COL]||'').trim().toUpperCase();
+      const price    = Number(r[PRICE_COL]);
+      if(!region || !propType || !price || isNaN(price)) continue;
+      const state = extractStateSuffix(region);
+      const base  = normalizeRegion(region);
+      if(state){
+        priceMap[state+'::'+propType+'::'+base] = price;
+      } else {
+        const unstated = propType+'::'+base;
+        if(priceMap[unstated] == null) priceMap[unstated] = price;
+      }
+    }
+  };
+  ingest(data.capitalCities);
+  ingest(data.lga);
+  return priceMap;
+}
+
+/* Drain a fetch response into the matching key on a target object,
+   silently swallowing failures so one broken sub-feed doesn't tank
+   the whole refresh. Each sub-feed has its own response shape so we
+   pluck the inner field name (`populations`, `incomes`, …). */
+async function _absorbSubfeed(res, target, key, inner){
+  if(!res || res._err || !res.ok) return;
+  try {
+    const body = await res.json();
+    if(body && !body.error && body[inner]) target[key] = body[inner];
+    else if(body && body.error) console.warn('[runway] sub-feed error', key, body.error);
+  } catch(parseErr){
+    console.warn('[runway] sub-feed parse failed', key, parseErr.message);
+  }
+}
+
 async function loadLatestPrices(force){
   if(!PRICES_API){ setStatus('error', 'Live feed not configured'); return; }
   if(_loadedSnapshot){ /* Don't override a viewed snapshot. */ return; }
-  setStatus('', 'Fetching latest CoreLogic prices…');
+  setStatus('', 'Fetching CoreLogic + ABS series…');
   try{
-    const res = await fetch(PRICES_API);
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const data = await res.json();
+    /* Fire all six requests in parallel — main prices is required,
+       the five sub-feeds (pops/incomes/aic/rates/cpi) are best-effort. */
+    const [priceRes, popRes, incRes, aicRes, ratesRes, cpiRes] = await Promise.all([
+      fetch(PRICES_API),
+      fetch(PRICES_API+'?source=pops').catch(e=>({_err:e})),
+      fetch(PRICES_API+'?source=incomes').catch(e=>({_err:e})),
+      fetch(PRICES_API+'?source=aic').catch(e=>({_err:e})),
+      fetch(PRICES_API+'?source=rates').catch(e=>({_err:e})),
+      fetch(PRICES_API+'?source=cpi').catch(e=>({_err:e})),
+    ]);
+    if(!priceRes.ok) throw new Error('HTTP '+priceRes.status);
+    const data = await priceRes.json();
     if(!data) throw new Error('Empty response');
-    /* If a NEW source file appeared and the user didn't explicitly
-       request a refresh, prompt before applying. Stops auto-clobbering
-       any in-progress analysis. */
+    if(data.error) throw new Error(data.error);
+
+    /* Bolt the sub-feed responses onto data for uniform downstream
+       access. _absorbSubfeed is silent on failure — the workbook
+       degrades gracefully when an upstream feed (ABS, RBA, etc.) is
+       offline. */
+    await Promise.all([
+      _absorbSubfeed(popRes,   data, 'populations', 'populations'),
+      _absorbSubfeed(incRes,   data, 'incomes',     'incomes'),
+      _absorbSubfeed(aicRes,   data, 'aic',         'aic'),
+      _absorbSubfeed(ratesRes, data, 'rates',       'rates'),
+      _absorbSubfeed(cpiRes,   data, 'cpi',         'cpi'),
+    ]);
+
+    /* New-source-file gate — unchanged from the previous Phase. */
     if(!force && _sourceFile && data.sourceFile && data.sourceFile !== _sourceFile){
       showUpdateBanner(data.sourceFile);
       setStatus('stale',
@@ -1720,58 +1784,146 @@ async function loadLatestPrices(force){
     }
     _sourceFile = data.sourceFile || _sourceFile || null;
 
-    /* Build region+propType → price map. Capital cities + LGA arrays
-       both ship rows in the same shape. Keyed by state when present
-       so "Central Coast (NSW)" doesn't collide with "Central Coast (Tas.)". */
-    const priceMap = {};
-    const ingest = (rows) => {
-      if(!Array.isArray(rows) || rows.length < 2) return;
-      for(let i=1; i<rows.length; i++){
-        const r = rows[i];
-        const region   = r[REGION_COL];
-        const propType = String(r[PROPTYPE_COL]||'').trim().toUpperCase();
-        const price    = Number(r[PRICE_COL]);
-        if(!region || !propType || !price || isNaN(price)) continue;
-        const state = extractStateSuffix(region);
-        const base  = normalizeRegion(region);
-        if(state){
-          priceMap[state+'::'+propType+'::'+base] = price;
-        } else {
-          const unstated = propType+'::'+base;
-          if(priceMap[unstated] == null) priceMap[unstated] = price;
-        }
-      }
-    };
-    ingest(data.capitalCities);
-    ingest(data.lga);
-
-    /* Apply to HOUSES_DATA (price at d[3]) — match on state + region. */
-    let housesUpdated = 0;
+    /* ── PRICES ─────────────────────────────────────────────────────── */
+    const priceMap = _buildPriceMap(data);
+    let housesUpdated = 0, unitsUpdated = 0;
     HOUSES_DATA.forEach(row => {
       const state = String(row[0]||'').trim().toUpperCase();
       const key   = normalizeRegion(row[1]);
       const p = priceMap[state+'::H::'+key] ?? priceMap['H::'+key];
       if(p && !isNaN(p)){ row[3] = p; housesUpdated++; }
     });
-    /* Apply to UNITS_DATA (price at d[2]). */
-    let unitsUpdated = 0;
     UNITS_DATA.forEach(row => {
       const state = String(row[0]||'').trim().toUpperCase();
       const key   = normalizeRegion(row[1]);
       const p = priceMap[state+'::U::'+key] ?? priceMap['U::'+key];
       if(p && !isNaN(p)){ row[2] = p; unitsUpdated++; }
     });
+    /* Also push live house/unit prices into the WAGE_* seeds so the
+       Wage panels reflect the same data — keeps the four panels in sync. */
+    WAGE_HOUSES_DATA.forEach(row => {
+      const state = String(row[0]||'').trim().toUpperCase();
+      const key   = normalizeRegion(row[1]);
+      const p = priceMap[state+'::H::'+key] ?? priceMap['H::'+key];
+      if(p && !isNaN(p)) row[3] = p;
+    });
+    WAGE_UNITS_DATA.forEach(row => {
+      const state = String(row[0]||'').trim().toUpperCase();
+      const key   = normalizeRegion(row[1]);
+      const p = priceMap[state+'::U::'+key] ?? priceMap['U::'+key];
+      if(p && !isNaN(p)) row[2] = p;
+    });
+
+    /* ── POPULATIONS (ABS ERP) ──────────────────────────────────────── */
+    const pops = data.populations;
+    if(pops && !pops.error){
+      const popMap = {};
+      [pops.lga || {}, pops.capitalCities || {}].forEach(dict => {
+        Object.keys(dict).forEach(name => {
+          popMap[normalizeRegion(name)] = Number(dict[name]);
+        });
+      });
+      HOUSES_DATA.forEach(row => {
+        const v = popMap[normalizeRegion(row[1])];
+        if(v != null && !isNaN(v)) row[2] = v;
+      });
+      WAGE_HOUSES_DATA.forEach(row => {
+        const v = popMap[normalizeRegion(row[1])];
+        if(v != null && !isNaN(v)) row[2] = v;
+      });
+    }
+
+    /* ── INCOMES (ABS AWE, keyed by state code) ─────────────────────── */
+    const incs = data.incomes;
+    if(incs && !incs.error && incs.states){
+      HOUSES_DATA.forEach(row => {
+        const state = String(row[0]||'').trim().toUpperCase();
+        const v = incs.states[state];
+        if(v != null && !isNaN(Number(v))) row[4] = Number(v);
+      });
+      WAGE_HOUSES_DATA.forEach(row => {
+        const state = String(row[0]||'').trim().toUpperCase();
+        const v = incs.states[state];
+        if(v != null && !isNaN(Number(v))) row[4] = Number(v);
+      });
+      WAGE_UNITS_DATA.forEach(row => {
+        const state = String(row[0]||'').trim().toUpperCase();
+        const v = incs.states[state];
+        if(v != null && !isNaN(Number(v))) row[3] = Number(v);
+      });
+    }
+
+    /* ── AI CEILINGS (per region, H + U) ────────────────────────────── */
+    const aic = data.aic;
+    if(aic && !aic.error){
+      const aicMap = {};
+      [aic.lga || {}, aic.capitalCities || {}].forEach(dict => {
+        Object.keys(dict).forEach(name => {
+          aicMap[normalizeRegion(name)] = dict[name];
+        });
+      });
+      HOUSES_DATA.forEach(row => {
+        const hit = aicMap[normalizeRegion(row[1])];
+        if(hit && hit.H != null && !isNaN(Number(hit.H))) row[5] = Number(hit.H);
+      });
+      UNITS_DATA.forEach(row => {
+        const hit = aicMap[normalizeRegion(row[1])];
+        if(hit && hit.U != null && !isNaN(Number(hit.U))) row[4] = Number(hit.U);
+      });
+      WAGE_HOUSES_DATA.forEach(row => {
+        const hit = aicMap[normalizeRegion(row[1])];
+        if(hit && hit.H != null && !isNaN(Number(hit.H))) row[6] = Number(hit.H);
+      });
+      WAGE_UNITS_DATA.forEach(row => {
+        const hit = aicMap[normalizeRegion(row[1])];
+        if(hit && hit.U != null && !isNaN(Number(hit.U))) row[5] = Number(hit.U);
+      });
+    }
+
+    /* ── RATES (RBA cash + bank variable, populate inputs) ──────────── */
+    const rates = data.rates;
+    if(rates && !rates.error){
+      const cashEl = document.getElementById('h-cashRate');
+      const bankEl = document.getElementById('h-bankVarDisplay');
+      if(cashEl && rates.cashRate != null && !isNaN(Number(rates.cashRate))){
+        cashEl.value = Number(rates.cashRate).toFixed(2);
+      }
+      if(bankEl && rates.bankRate != null && !isNaN(Number(rates.bankRate))){
+        bankEl.value = Number(rates.bankRate).toFixed(2);
+      }
+    }
+
+    /* ── CPI (inflation rate; field exists in original but isn't part
+         of my port's calc chain — kept for future use) ────────────── */
+    // Phase D5 will add h-inflation field + date badge if needed.
+
+    /* Rebuild the lookup so renderHouses/renderUnits pick up the
+       updated values on the next pass. */
+    Object.keys(WAGE_HOUSES_BY_REGION).forEach(k => delete WAGE_HOUSES_BY_REGION[k]);
+    WAGE_HOUSES_DATA.forEach(d => {
+      WAGE_HOUSES_BY_REGION[d[1].trim().toLowerCase()] = { pop: d[2], price: d[3], income: d[4] };
+    });
+    Object.keys(WAGE_UNITS_PRICE_BY_REGION).forEach(k => delete WAGE_UNITS_PRICE_BY_REGION[k]);
+    WAGE_UNITS_DATA.forEach(d => {
+      WAGE_UNITS_PRICE_BY_REGION[d[1].trim().toLowerCase()] = d[2];
+    });
 
     _liveLoadedAt = new Date();
+    const bits = [];
+    if(housesUpdated + unitsUpdated > 0) bits.push('<strong>'+(housesUpdated+unitsUpdated)+'</strong> prices');
+    if(pops   && !pops.error)            bits.push('populations');
+    if(incs   && !incs.error)            bits.push('incomes');
+    if(aic    && !aic.error)             bits.push('AI ceilings');
+    if(rates  && !rates.error)           bits.push('RBA rates');
     setStatus('live',
-      'Live · <strong>'+(housesUpdated+unitsUpdated)+' prices</strong> from '
+      'Live · '+bits.join(' · ')+' from '
       + (_sourceFile ? escapeHtml(_sourceFile) : 'CoreLogic')
       + ' · ' + fmtTimestamp(_liveLoadedAt)
     );
     recalcAll();
   } catch(err){
     console.warn('[runway] live feed failed:', err);
-    setStatus('error', 'Live feed unavailable · using seeded prices ('+escapeHtml(err.message||err)+')');
+    setStatus('error', 'Live feed unavailable · using seeded data ('+escapeHtml(err.message||err)+')');
   }
 }
 
