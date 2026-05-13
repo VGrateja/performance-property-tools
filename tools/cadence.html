@@ -724,6 +724,13 @@
         <input type="checkbox" id="staleFirstToggle">
         <span>🔥 Stale first</span>
       </label>
+      <!-- Completed-month filter — month/year drop-down auto-populated
+           from cards that have a completed_at. Only visible when the
+           current view includes completed cards (Completed or All
+           pill). Hidden on Open since it has nothing to narrow. -->
+      <select id="completedMonthFilter" class="cad-agent-filter" style="display:none" title="Filter by completion month">
+        <option value="">All time</option>
+      </select>
       <div class="cad-toolbar-actions">
         <button type="button" class="cad-btn ghost" id="exportCsvBtn" title="Download visible cards as CSV">Export CSV</button>
       </div>
@@ -890,6 +897,7 @@ let _selected  = new Set();     // card IDs currently checked for bulk ops
 let _historyOpen = false;       // remembered across opens of the same card
 let _agentFilter = '';          // assigned_to_email filter (team-lead-only)
 let _staleFirst  = false;       // when true, red+yellow age bands float to top
+let _completedMonth = '';       // 'YYYY-MM' filter for completed cards (or '' for all)
 
 /* Emails that can see every Cadence card across the team. Mirrored on
    the DB side by public.is_team_lead() in migration 016 — the policy
@@ -1044,14 +1052,17 @@ function renderBoardList(){
 async function pickBoard(slug){
   _activeBoard = _boards.find(b=>b.slug===slug);
   if(!_activeBoard) return;
-  /* Reset per-board UI state — search query, agent filter, and any
-     selected rows from the previous board shouldn't bleed across. */
+  /* Reset per-board UI state — search query, agent filter, completed-
+     month filter, and any selected rows from the previous board
+     shouldn't bleed across. */
   _search = '';
   _agentFilter = '';
+  _completedMonth = '';
   _selected.clear();
   const searchEl = document.getElementById('searchBox');
   if(searchEl) searchEl.value = '';
   refreshAgentFilter();
+  refreshCompletedMonthFilter();
   updateBulkBar();
 
   renderBoardList();   // update active highlight
@@ -1074,20 +1085,39 @@ async function loadCards(){
   if(error){ toast('Failed to load cards: '+error.message, true); return; }
   _cards = data || [];
   /* Rebuild the agent filter so it picks up any in-the-wild emails
-     present on the loaded cards that aren't in cadence_assignees. */
+     present on the loaded cards that aren't in cadence_assignees,
+     and the completed-month dropdown so its options reflect actual
+     completion dates on this board. */
   refreshAgentFilter();
+  refreshCompletedMonthFilter();
   renderTable();
 }
 
+/* "YYYY-MM" key from an ISO timestamp — used to bucket completed cards
+   for the month filter. Returns null on invalid input. */
+function _completedMonthKey(iso){
+  if(!iso) return null;
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return null;
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+}
+
 /* Single filter pipeline — open/completed/all pill + search box +
-   agent dropdown (team leads only). Used by renderTable() AND
-   exportCSV() so the CSV always matches what's visible. */
+   agent dropdown (team leads only) + completed-month dropdown. Used
+   by renderTable() AND exportCSV() so the CSV always matches what's
+   visible. */
 function getFilteredCards(){
   const q = (_search || '').toLowerCase();
   return _cards.filter(c=>{
     if(_filter === 'open'      && c.completed_at)  return false;
     if(_filter === 'completed' && !c.completed_at) return false;
     if(_agentFilter && (c.assigned_to_email || '').toLowerCase() !== _agentFilter.toLowerCase()) return false;
+    /* Month filter implies "must be completed in this month" — open
+       cards have no completed_at and so fail the match. */
+    if(_completedMonth){
+      if(!c.completed_at) return false;
+      if(_completedMonthKey(c.completed_at) !== _completedMonth) return false;
+    }
     if(q){
       /* Match against any string-coercible value in the card's data jsonb
          PLUS the filer's email. Stage booleans get coerced to "true"/"false"
@@ -1107,6 +1137,44 @@ function getFilteredCards(){
    from cadence_assignees so the names look human ("Robby" instead of
    r.pineda@…) plus a fallback for any assignee that's not in the
    lookup table. */
+/* Refresh the completed-month dropdown. Hidden when the active pill
+   is Open (nothing to narrow). Visible on Completed + All. Option set
+   built from the months present in _cards.completed_at, newest first. */
+function refreshCompletedMonthFilter(){
+  const sel = document.getElementById('completedMonthFilter');
+  if(!sel) return;
+  if(_filter === 'open'){
+    sel.style.display = 'none';
+    /* Don't reset the stored filter just because we switched away —
+       the user might toggle back to Completed and expect their choice
+       to stick. */
+    return;
+  }
+  sel.style.display = '';
+  const months = new Set();
+  _cards.forEach(c => {
+    if(!c.completed_at) return;
+    const k = _completedMonthKey(c.completed_at);
+    if(k) months.add(k);
+  });
+  const sorted = [...months].sort().reverse();     // newest first
+  const opts = ['<option value="">All time</option>']
+    .concat(sorted.map(k => {
+      const [y, m] = k.split('-').map(Number);
+      const label = new Date(y, m-1, 1).toLocaleDateString('en-AU', { month:'long', year:'numeric' });
+      const selAttr = (k === _completedMonth) ? ' selected' : '';
+      return '<option value="'+k+'"'+selAttr+'>'+escapeHtml(label)+'</option>';
+    }));
+  sel.innerHTML = opts.join('');
+  /* If the stored month is no longer in the option set (e.g. board
+     switch wiped the completed cards from that month), clear it so
+     the table doesn't render empty for no obvious reason. */
+  if(_completedMonth && !months.has(_completedMonth)){
+    _completedMonth = '';
+    sel.value = '';
+  }
+}
+
 function refreshAgentFilter(){
   const sel = document.getElementById('cardAgentFilter');
   if(!sel) return;
@@ -1267,6 +1335,7 @@ document.querySelectorAll('#cardFilters .cad-filter-pill').forEach(p=>{
   p.addEventListener('click', ()=>{
     _filter = p.dataset.filter;
     document.querySelectorAll('#cardFilters .cad-filter-pill').forEach(x=>x.classList.toggle('active', x===p));
+    refreshCompletedMonthFilter();   /* show/hide month filter as needed */
     renderTable();
   });
 });
@@ -1291,6 +1360,12 @@ document.getElementById('cardAgentFilter').addEventListener('change', (e)=>{
 /* "Stale first" toggle — re-orders the visible rows (no filter change). */
 document.getElementById('staleFirstToggle').addEventListener('change', (e)=>{
   _staleFirst = e.target.checked;
+  renderTable();
+});
+
+/* Completed-month dropdown — narrows to a single month/year. */
+document.getElementById('completedMonthFilter').addEventListener('change', (e)=>{
+  _completedMonth = e.target.value || '';
   renderTable();
 });
 
