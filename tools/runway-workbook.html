@@ -485,6 +485,15 @@
   .rw-status-dot.stale{background:var(--rw-warn)}
   .rw-status-dot.error{background:var(--rw-danger)}
   .rw-status-dot.snapshot{background:var(--rw-accent); box-shadow:0 0 8px rgba(0,182,203,0.5)}
+  .rw-status-dot.loading{
+    background:transparent;
+    box-shadow:none;
+    border:2px solid var(--rw-accent);
+    border-top-color:transparent;
+    width:12px; height:12px;
+    animation:rw-spin 0.8s linear infinite;
+  }
+  @keyframes rw-spin { to { transform:rotate(360deg); } }
   .rw-status-text{
     flex:1; min-width:200px; opacity:.8;
     font-family:'Roboto',sans-serif;
@@ -644,7 +653,7 @@
   <div class="rw-eyebrow">Performance Property · Research</div>
   <h1 class="rw-title">Runway Workbook</h1>
   <p class="rw-sub">Affordability ceiling analysis across capital cities + regional LGAs. Median price vs intrinsic ceiling under current and forecast rate scenarios; wage-growth adjusted views compare the same regions under predicted income uplift.</p>
-  <div class="rw-phase-badge">✓ Phase D4 — Full Parity</div>
+  <div class="rw-phase-badge">✓ Phase D5 — Polished</div>
 </header>
 
 <div class="rw-statusbar" id="statusBar">
@@ -707,12 +716,12 @@
         <div class="rw-var">
           <span class="rw-var-label">RBA Cash Rate</span>
           <span class="rw-var-value"><input class="rw-var-input" id="h-cashRate" type="number" step="0.01" value="4.35"><span class="rw-suffix">%</span></span>
-          <span class="rw-var-note">Phase C: live RBA feed</span>
+          <span class="rw-var-note" id="h-cashRate-date">live RBA feed</span>
         </div>
         <div class="rw-var">
           <span class="rw-var-label">Interest Rate · New Loans (OO)</span>
           <span class="rw-var-value"><input class="rw-var-input" id="h-bankVarDisplay" type="number" step="0.01" value="6.16"><span class="rw-suffix">%</span></span>
-          <span class="rw-var-note">Phase C: live RBA feed</span>
+          <span class="rw-var-note" id="h-bankVar-date">live RBA feed</span>
         </div>
         <div class="rw-var">
           <span class="rw-var-label">APRA Buffer</span>
@@ -1042,6 +1051,10 @@
     <div class="rw-modal-field">
       <label for="snapName">Name<span style="color:var(--rw-danger);margin-left:3px">*</span></label>
       <input id="snapName" type="text" placeholder="e.g. Q1 2026 baseline — pre RBA cut">
+    </div>
+    <div class="rw-modal-field">
+      <label for="snapAuthor">Author (display name)</label>
+      <input id="snapAuthor" type="text" placeholder="Defaults to your signed-in email">
     </div>
     <div class="rw-modal-field">
       <label for="snapNotes">Notes (optional)</label>
@@ -2053,7 +2066,7 @@ async function _absorbSubfeed(res, target, key, inner){
 async function loadLatestPrices(force){
   if(!PRICES_API){ setStatus('error', 'Live feed not configured'); return; }
   if(_loadedSnapshot){ /* Don't override a viewed snapshot. */ return; }
-  setStatus('', 'Fetching CoreLogic + ABS series…');
+  setStatus('loading', 'Fetching CoreLogic + ABS series…');
   try{
     /* Fire all six requests in parallel — main prices is required,
        the five sub-feeds (pops/incomes/aic/rates/cpi) are best-effort. */
@@ -2199,6 +2212,11 @@ async function loadLatestPrices(force){
       if(bankEl && rates.bankRate != null && !isNaN(Number(rates.bankRate))){
         bankEl.value = Number(rates.bankRate).toFixed(2);
       }
+      /* Freshness badges below each rate input. */
+      const cashDateEl = document.getElementById('h-cashRate-date');
+      const bankDateEl = document.getElementById('h-bankVar-date');
+      if(cashDateEl) cashDateEl.textContent = rates.cashRateDate   ? 'as of '+rates.cashRateDate   : 'live RBA feed';
+      if(bankDateEl) bankDateEl.textContent = rates.bankRateMonth  ? 'as of '+rates.bankRateMonth  : 'live RBA feed';
     }
 
     /* ── CPI (inflation rate; field exists in original but isn't part
@@ -2268,8 +2286,9 @@ function toast(msg, isError){
 }
 
 function openSnapshotModal(){
-  document.getElementById('snapName').value = '';
-  document.getElementById('snapNotes').value = '';
+  document.getElementById('snapName').value   = '';
+  document.getElementById('snapAuthor').value = '';
+  document.getElementById('snapNotes').value  = '';
   document.getElementById('snapshotModal').classList.add('open');
   refreshSnapshotList();
 }
@@ -2286,7 +2305,7 @@ async function refreshSnapshotList(){
   }
   const { data, error } = await window.sb
     .from('runway_snapshots')
-    .select('id, name, notes, created_at, created_by_email, source_file')
+    .select('id, name, notes, params, created_at, created_by_email, source_file')
     .order('created_at', { ascending: false })
     .limit(50);
   if(error){
@@ -2306,7 +2325,11 @@ async function refreshSnapshotList(){
   const writer = _isWriter();
   host.innerHTML = rows.map(s => {
     const when = s.created_at ? fmtTimestamp(new Date(s.created_at)) : '—';
-    const who  = s.created_by_email || 'unknown';
+    /* Prefer the user-typed author for display; fall back to the
+       authenticated email so older snapshots without an author still
+       show attribution. */
+    const author = (s.params && s.params.author) ? s.params.author : null;
+    const who  = author || s.created_by_email || 'unknown';
     const src  = s.source_file ? ' · '+escapeHtml(s.source_file) : '';
     const notes = s.notes ? '<div class="rw-snap-notes">'+escapeHtml(s.notes)+'</div>' : '';
     return '<div class="rw-snap-row" data-id="'+s.id+'">'
@@ -2330,12 +2353,17 @@ async function refreshSnapshotList(){
 }
 
 async function saveSnapshot(){
-  const name = document.getElementById('snapName').value.trim();
-  const notes= document.getElementById('snapNotes').value.trim() || null;
+  const name   = document.getElementById('snapName').value.trim();
+  const author = document.getElementById('snapAuthor').value.trim() || null;
+  const notes  = document.getElementById('snapNotes').value.trim() || null;
   if(!name){ toast('Name required', true); return; }
   if(!window.sb){ toast('Sign-in required', true); return; }
 
-  const params = getParams();
+  const baseParams = getParams();
+  /* Stash author inside params jsonb so we don't need a separate
+     migration. Display-only — created_by_email remains the source of
+     truth for auth/RLS. */
+  const params = { ...baseParams, author: author || null };
   /* Deep-clone the data arrays so the snapshot is independent of any
      subsequent in-place price updates by the live feed. */
   const tables = {
@@ -2356,8 +2384,9 @@ async function saveSnapshot(){
     });
     if(error) throw error;
     toast('Snapshot saved');
-    document.getElementById('snapName').value = '';
-    document.getElementById('snapNotes').value = '';
+    document.getElementById('snapName').value   = '';
+    document.getElementById('snapAuthor').value = '';
+    document.getElementById('snapNotes').value  = '';
     refreshSnapshotList();
   } catch(e){
     toast('Save failed: '+(e.message||e), true);
