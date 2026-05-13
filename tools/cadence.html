@@ -542,6 +542,29 @@
     background:rgba(31,40,63,0.05); border-color:rgba(31,40,63,0.18); color-scheme:light;
   }
   [data-theme="light"] .cad-agent-filter option{background:#fff; color:#1a2236}
+
+  /* Stale-first checkbox toggle. */
+  .cad-stale-toggle{
+    display:inline-flex; align-items:center; gap:6px;
+    padding:6px 10px; border-radius:6px;
+    background:rgba(255,255,255,0.04);
+    border:1px solid rgba(255,255,255,0.10);
+    cursor:pointer; user-select:none;
+    font-size:11.5px; opacity:.85;
+    transition:all .12s ease;
+  }
+  .cad-stale-toggle:hover{
+    background:rgba(248,113,113,0.10);
+    border-color:rgba(248,113,113,0.30);
+    opacity:1;
+  }
+  .cad-stale-toggle input{accent-color:var(--cad-danger); cursor:pointer}
+  .cad-stale-toggle:has(input:checked){
+    background:rgba(248,113,113,0.15);
+    border-color:var(--cad-danger);
+    opacity:1;
+  }
+  [data-theme="light"] .cad-stale-toggle{background:rgba(31,40,63,0.04); border-color:rgba(31,40,63,0.10)}
   .cad-toolbar-actions .cad-btn{padding:6px 12px; font-size:10.5px}
 
   /* Table checkbox column. */
@@ -693,6 +716,14 @@
       <select id="cardAgentFilter" class="cad-agent-filter" style="display:none" title="Filter by assigned agent">
         <option value="">All agents</option>
       </select>
+      <!-- Stale-first toggle — floats red (7+d) and yellow (5-6d) cards
+           to the top so the most urgent work is the first thing seen.
+           Sort is stable; untick to restore the default created_at desc
+           order. Always-visible since everyone benefits from it. -->
+      <label class="cad-stale-toggle" title="Show most stale cards first">
+        <input type="checkbox" id="staleFirstToggle">
+        <span>🔥 Stale first</span>
+      </label>
       <div class="cad-toolbar-actions">
         <button type="button" class="cad-btn ghost" id="exportCsvBtn" title="Download visible cards as CSV">Export CSV</button>
       </div>
@@ -858,6 +889,7 @@ let _search    = '';            // current search query (lowercased)
 let _selected  = new Set();     // card IDs currently checked for bulk ops
 let _historyOpen = false;       // remembered across opens of the same card
 let _agentFilter = '';          // assigned_to_email filter (team-lead-only)
+let _staleFirst  = false;       // when true, red+yellow age bands float to top
 
 /* Emails that can see every Cadence card across the team. Mirrored on
    the DB side by public.is_team_lead() in migration 016 — the policy
@@ -1116,7 +1148,8 @@ function renderTable(){
      on smaller screens. Always include a "Stages" column + "Status". */
   const dataFields = (_activeBoard.schema.fields||[]).filter(f=>f.kind==='data').slice(0,4);
 
-  const filtered = getFilteredCards();
+  let filtered = getFilteredCards();
+  if(_staleFirst) filtered = sortStaleFirst(filtered);
 
   /* Prune selection of cards that aren't in the current filtered set
      anymore (e.g. user typed a search query that excludes them). */
@@ -1252,6 +1285,12 @@ document.getElementById('exportCsvBtn').addEventListener('click', exportCSV);
    filter. State held in _agentFilter; getFilteredCards() applies. */
 document.getElementById('cardAgentFilter').addEventListener('change', (e)=>{
   _agentFilter = e.target.value || '';
+  renderTable();
+});
+
+/* "Stale first" toggle — re-orders the visible rows (no filter change). */
+document.getElementById('staleFirstToggle').addEventListener('change', (e)=>{
+  _staleFirst = e.target.checked;
   renderTable();
 });
 
@@ -1605,16 +1644,35 @@ function daysSince(iso){
   return Math.floor((Date.now() - t) / 86400000);
 }
 
-/* Age-based row tint — 5-6 days yellow, 7+ red. Only fires for cards
-   that are still open; completed cards stay neutral regardless of
-   how long the cycle took. */
-function rowAgeClass(c){
-  if(c.completed_at) return '';
+/* Age band rank — lower = more urgent. Used both for the row tint
+   class and for the stale-first sort order so the visual signal and
+   the ordering agree. */
+function ageBandRank(c){
+  if(c.completed_at) return 3;   /* completed cards never float to top */
   const d = daysSince(c.created_at);
-  if(d == null) return '';
-  if(d >= 7) return 'cad-row-age-red';
-  if(d >= 5) return 'cad-row-age-yellow';
+  if(d == null) return 3;
+  if(d >= 7) return 0;           /* red */
+  if(d >= 5) return 1;           /* yellow */
+  return 2;                      /* neutral */
+}
+function rowAgeClass(c){
+  const r = ageBandRank(c);
+  if(r === 0) return 'cad-row-age-red';
+  if(r === 1) return 'cad-row-age-yellow';
   return '';
+}
+
+/* Stable-sort the row list so red cards come first, then yellow, then
+   neutral. Within each band: oldest first (most stale). Returns a new
+   array; original order in `_cards` is preserved. */
+function sortStaleFirst(rows){
+  return rows.slice().sort((a, b) => {
+    const ra = ageBandRank(a), rb = ageBandRank(b);
+    if(ra !== rb) return ra - rb;
+    const ta = new Date(a.created_at).getTime();
+    const tb = new Date(b.created_at).getTime();
+    return ta - tb;   /* oldest first within the band */
+  });
 }
 
 /* ═════════════════════════════════════════════════════════════════════
