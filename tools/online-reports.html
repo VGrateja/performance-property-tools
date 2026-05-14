@@ -11521,6 +11521,82 @@ async function ppDownloadPrebuiltOrFallback(regionSlug, lite, filename, fallback
   }
 }
 
+/* Multi-region cache-first download. Same idea as the single-region
+   wrapper but iterates a list. For each region: check storage; if a
+   current-month prebuilt exists, fetch + save. Otherwise queue for
+   the live iframe-based exporter. Any cache-miss regions get
+   rendered live in one batch at the end, so a partial cache (e.g.
+   a region added mid-month) still produces a complete download.
+   Browser may prompt "Allow multiple downloads?" the first time. */
+async function ppDownloadMultiRegionPrebuiltOrFallback(regionSlugs, pageIds, wantAllPages) {
+  /* Partial-page selections aren't cached — go straight to live. */
+  if (!wantAllPages) {
+    return exportMultiRegionPdf({ regionSlugs, pageIds, allPages: false });
+  }
+
+  const isLite  = (typeof PP_LITE_MODE !== 'undefined' && PP_LITE_MODE);
+  const overlay = document.getElementById('pdf-overlay');
+  const msgEl   = overlay && overlay.querySelector('.pdf-msg');
+  const setMsg  = (t) => { if (msgEl) msgEl.textContent = t; };
+
+  if (overlay) overlay.classList.add('show');
+  setMsg('Checking cache for ' + regionSlugs.length + ' regions…');
+
+  /* Sort regions into hits vs misses with a single pass of cache
+     lookups — much faster than fetch-then-fallback per region. */
+  const hits   = [];
+  const misses = [];
+  for (let i = 0; i < regionSlugs.length; i++) {
+    const slug = regionSlugs[i];
+    const hit  = await ppPrebuiltCheck(slug, isLite);
+    if (hit && hit.publicUrl) hits.push({ slug, url: hit.publicUrl });
+    else                      misses.push(slug);
+  }
+
+  /* Stream cache hits to the browser as Blob downloads. Small pause
+     between each so the browser's "Allow multiple downloads" prompt
+     fires once at the start rather than spamming per file. */
+  let savedFromCache = 0;
+  for (let i = 0; i < hits.length; i++) {
+    const { slug, url } = hits[i];
+    setMsg('Downloading ' + (i + 1) + ' of ' + hits.length + ' cached: ' + slug + '…');
+    try {
+      const resp = await fetch(url, { cache: 'no-store' });
+      if (!resp.ok) throw new Error('cache fetch ' + resp.status);
+      const blob       = await resp.blob();
+      const niceRegion = slug.charAt(0).toUpperCase() + slug.slice(1);
+      const filename   = buildEditionFilename(niceRegion, slug, { lite: isLite }) + '.pdf';
+      const blobUrl    = URL.createObjectURL(blob);
+      const a          = document.createElement('a');
+      a.href = blobUrl; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+      savedFromCache++;
+      /* 350ms — empirically enough to keep Chrome/Edge happy without
+         feeling slow. Without this the browser sometimes batches all
+         downloads into one prompt or drops some silently. */
+      await new Promise(r => setTimeout(r, 350));
+    } catch (err) {
+      console.warn('Cache fetch failed for ' + slug + ', falling back to live render:', err);
+      misses.push(slug);
+    }
+  }
+
+  if (overlay) overlay.classList.remove('show');
+  if (msgEl)   msgEl.textContent = 'Generating PDF…';
+
+  /* Anything the cache didn't serve goes through the existing live
+     iframe loop. If nothing's left, we're done. */
+  if (misses.length) {
+    /* Tiny gap before kicking off the live render so the user sees
+       the cache-batch finish in the toast/spinner before the next
+       overlay opens. */
+    await new Promise(r => setTimeout(r, 300));
+    return exportMultiRegionPdf({ regionSlugs: misses, pageIds, allPages: true });
+  }
+}
+
+
 /* Toolbar pill — "Cached <date>" or "Live render". Cheap (one
    storage.list call) and silent on failure. */
 async function ppRefreshPrebuiltIndicator() {
@@ -12678,11 +12754,12 @@ function setupPdfPagesModal() {
       return;
     }
 
-    /* Multi-region: spawn the iframe loop. Each region gets its own
-       PDF saved sequentially. allPages=true means each region exports
-       every page it has (Sydney 31 / Hobart 25 / Perth 33). Otherwise
-       pageIds drives a per-id lookup against each region's iframe. */
-    exportMultiRegionPdf({ regionSlugs, pageIds, allPages: wantAllPages });
+    /* Multi-region: try the cloud cache first for each region (the
+       canonical "all pages" shape we pre-render monthly). Anything
+       the cache doesn't serve falls back to the live iframe loop in
+       one batch. Partial-page selections skip the cache entirely
+       (we only pre-cache the all-pages shape). */
+    ppDownloadMultiRegionPrebuiltOrFallback(regionSlugs, pageIds, wantAllPages);
   });
 
   /* JPEG button — same page picker as PDF. Single-region uses the
