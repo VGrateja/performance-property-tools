@@ -126,10 +126,13 @@ async function injectSession(page, session) {
 async function renderRegion(browser, slug, lite, session) {
   const page = await browser.newPage();
   try {
-    /* deviceScaleFactor:2 makes Chrome render at 2× DPI internally,
-       which produces crisper raster output for canvas-based charts
-       embedded in the otherwise vector PDF. Text stays vector either way. */
-    await page.setViewport({ width: 1200, height: 900, deviceScaleFactor: 2 });
+    /* deviceScaleFactor controls the DPI at which Chrome rasterizes
+       canvas-based charts and embedded images. Text stays vector
+       regardless. 1.5 lands full PDFs around 7-8 MB (matching Looker
+       Studio's output) with charts still crisp at 1× display zoom —
+       softness only visible if the reader zooms 2×+. 2.0 produces
+       retina-sharp charts but ~10-11 MB files. */
+    await page.setViewport({ width: 1200, height: 900, deviceScaleFactor: 1.5 });
     await injectSession(page, session);
 
     const url = APP_URL.replace(/\/$/, '') +
