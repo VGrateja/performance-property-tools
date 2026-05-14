@@ -14,8 +14,10 @@
 //   5. Upload to Supabase Storage (bucket `online-reports`) using the
 //      service-role key (bypasses RLS for write).
 //
-// Retention: at the tail of every successful run, prune folders older than
-// the previous calendar month so the bucket never exceeds two months.
+// Retention: at the tail of every successful run, prune anything outside
+// the current calendar month so the bucket never exceeds one month's
+// worth of files (~750 MB at current sizes — keeps us under Supabase's
+// 1 GB free-tier ceiling). The admin keeps off-site backups elsewhere.
 //
 // Required env vars (set as GitHub Secrets):
 //   SUPABASE_URL                  https://<project-ref>.supabase.co
@@ -162,6 +164,22 @@ async function renderRegion(browser, slug, lite, session) {
       });
     });
 
+    /* Lite-mode size guard. The page's CSS uses `filter: blur(6px)`
+       on locked-page subtrees to obscure non-preview content. Chrome's
+       PDF renderer can't represent CSS blur as vector, so it
+       rasterizes the entire blurred subtree at high DPI — which
+       turned a ~10 MB full PDF into a ~30 MB lite one. We drop the
+       blur here only during render; the live in-browser view still
+       sees it. The existing dark gradient overlay (.lite-locked::after)
+       plus the "Get Full Access" CTA already obscure the content
+       visually, so the locked pages still read as "locked" without
+       the blur effect. */
+    if (lite) {
+      await page.addStyleTag({
+        content: '.lite-mode section.page.lite-locked > *:not(.lite-locked-overlay) { filter: none !important; }',
+      });
+    }
+
     /* Settle pause — chart resize observers + any deferred layout. */
     await new Promise(r => setTimeout(r, 1500));
 
@@ -192,9 +210,12 @@ async function uploadPdf(sb, slug, lite, buffer) {
   return path;
 }
 
-/* Two-month retention: keep current + previous month folders, prune
-   everything older. Same logic the in-browser cleanup helper used,
-   but server-side using the service-role client. */
+/* One-month retention: keep only the current month folder, prune
+   everything older. Tighter than the original two-month plan because
+   the rendered lite PDFs run ~10 MB each and even a single month of
+   the cache pushes against Supabase's 1 GB free-tier ceiling. The
+   admin keeps off-site backups (Drive / Slack channel) if a prior
+   month is ever needed. */
 async function cleanupOldMonths(sb) {
   const { data: top, error } = await sb.storage.from(BUCKET).list('', { limit: 100 });
   if (error || !Array.isArray(top)) return { deleted: 0 };
@@ -203,7 +224,7 @@ async function cleanupOldMonths(sb) {
     .map(it => it.name)
     .sort()
     .reverse();
-  const keep     = new Set(months.slice(0, 2));
+  const keep     = new Set(months.slice(0, 1));
   const toDelete = months.filter(m => !keep.has(m));
 
   let deleted = 0;

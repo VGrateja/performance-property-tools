@@ -85,9 +85,17 @@ A run takes ~10–15 minutes for all 72 PDFs (36 regions × full + lite). When i
 
 ## Storage retention
 
-The renderer keeps two months: the one it just wrote plus the previous one. Anything older is pruned at the end of every successful run.
+The renderer keeps **only the current month**. Anything older is pruned at the end of every successful run.
+
+Why one month and not more: each month of cached files comes in around **~750 MB** (~10 MB/file × 72 files). Supabase's free tier ceiling is 1 GB, so two months would push us over. Keep an off-site backup (Drive / Slack) of past months if you might need to send a prior edition to a client later.
 
 If you ever need to force a clean slate, you can delete the whole `online-reports` bucket from the Supabase dashboard and the next workflow run will recreate it.
+
+## Lite-mode size note
+
+The page's CSS uses `filter: blur(6px)` on locked-page subtrees in lite mode. Chrome's native PDF renderer can't express CSS blur as vector PDF operations, so it rasterizes the blurred subtree at high DPI — which inflates lite PDFs by ~3×. The renderer strips that one blur rule via `page.addStyleTag()` **only during render**; live in-browser viewers still see the blur. The existing dark gradient overlay + "Get Full Access" CTA keep the locked pages visually distinct from the previews even without the blur.
+
+If a future change introduces another CSS blur or backdrop-filter on critical page content, expect file-size growth and either strip it the same way in the renderer or switch to screenshot-mode (Option C in the original design discussion).
 
 ## Local testing
 
