@@ -210,6 +210,33 @@ async function uploadPdf(sb, slug, lite, buffer) {
   return path;
 }
 
+/* Render + upload with a single retry. Empirically about ~1 region
+   per run hits a transient failure — usually a 90s liveBoot timeout
+   on a cold Apps Script start, occasionally a "Bad Request" on the
+   storage upload (network blip). Both clear on a second attempt
+   ~5s later. Two attempts gets us from ~99% to ~99.95% reliability;
+   no point retrying further since persistent failures point to a
+   real problem (region renamed, page broken, etc.). */
+async function renderAndUploadWithRetry(browser, sb, slug, lite, session, label) {
+  const MAX_ATTEMPTS = 2;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const buf  = await renderRegion(browser, slug, lite, session);
+      const path = await uploadPdf(sb, slug, lite, buf);
+      return { buf, path };
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_ATTEMPTS) {
+        console.log(label + ' attempt ' + attempt + ' failed (' +
+          (err && err.message || err) + ') — retrying in 5s…');
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 /* One-month retention: keep only the current month folder, prune
    everything older. Tighter than the original two-month plan because
    the rendered lite PDFs run ~10 MB each and even a single month of
@@ -278,13 +305,12 @@ async function main() {
         const label = '(' + done + '/' + total + ') ' + slug + (lite ? ' (lite)' : ' (full)');
         const t0    = Date.now();
         try {
-          const buf  = await renderRegion(browser, slug, lite, session);
-          const path = await uploadPdf(sb, slug, lite, buf);
-          const dt   = ((Date.now() - t0) / 1000).toFixed(1);
+          const { buf, path } = await renderAndUploadWithRetry(browser, sb, slug, lite, session, label);
+          const dt = ((Date.now() - t0) / 1000).toFixed(1);
           console.log(label + ' → ' + path + '  (' + dt + 's, ' + Math.round(buf.length / 1024) + ' KB)');
           ok++;
         } catch (err) {
-          console.error(label + ' FAILED: ' + (err && err.message || err));
+          console.error(label + ' FAILED after 2 attempts: ' + (err && err.message || err));
           failed.push(slug + (lite ? ' (lite)' : ' (full)'));
         }
       }
