@@ -2898,6 +2898,36 @@
   }
   .or-ctx-item:hover { background: rgba(0,182,203,0.18); }
 
+  /* ─────── Pre-built PDF cache status pill ───────
+     Sits next to the PDF/JPG button. "Cached <date>" when there's a
+     current-month prebuilt PDF in Supabase Storage for this region
+     (Download → instant fetch). "Live render" when there isn't
+     (Download → in-browser html2canvas + jsPDF). */
+  .prebuilt-status {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 3px 8px;
+    font-size: 11px;
+    line-height: 1.2;
+    border-radius: 999px;
+    color: #94a3b8;
+    background: rgba(148,163,184,0.10);
+    border: 1px solid rgba(148,163,184,0.18);
+    white-space: nowrap;
+    user-select: none;
+  }
+  .prebuilt-status:empty { display: none; }
+  .prebuilt-status.cached {
+    color: #67e8f9;
+    background: rgba(0,182,203,0.10);
+    border-color: rgba(0,182,203,0.30);
+  }
+  .prebuilt-status.live {
+    color: #cbd5e1;
+    background: rgba(148,163,184,0.10);
+    border-color: rgba(148,163,184,0.25);
+  }
+
   /* ─────── PDF download overlay ───────
      Full-screen darkening backdrop with a spinner + status message
      while html2canvas + jsPDF iterate the report's pages. Matches the
@@ -3736,6 +3766,7 @@
     <button id="btn-bands"    class="edit-only" title="Manage Reference Bands (Growth / Correction periods)">Bands</button>
     <span class="sep">│</span>
     <button id="btn-export" title="Download report — choose PDF or JPG inside the page picker">PDF/JPG</button>
+    <span id="prebuilt-status" class="prebuilt-status" aria-live="polite"></span>
     <button id="btn-backup" class="tier1-only" title="Download or restore a JSON backup of this region's customisations">Backup</button>
     <button id="btn-sync"   class="edit-only" title="Apply this region's customisations (text, shapes, images, page backgrounds) to other regions">Sync</button>
     <button id="btn-audit"  class="tier1-only" onclick="openAuditLog()" title="View edit history for this region (Tier 0/1 only)">Audit Log</button>
@@ -11404,6 +11435,121 @@ function setupPagerToolsToggle() {
 }
 
 /* ─────────────────────────────────────────────────────────────────────
+   PRE-BUILT PDF CACHE (Supabase Storage, read-only consumer side)
+   ---------------------------------------------------------------------
+   The monthly GitHub Actions job (scripts/render-reports.mjs in this
+   repo) renders every region with native Chrome page.pdf() and
+   uploads to the `online-reports` bucket. The page just fetches a
+   static PDF instead of running the live html2canvas exporter.
+   Falls back to the live renderer transparently when the cache is
+   empty (e.g. between the data refresh and the next CI run).
+
+   Bucket layout:
+     online-reports/{YYYY-MM}/{slug}.pdf       full
+     online-reports/{YYYY-MM}/lite/{slug}.pdf  lite
+
+   See migration 017_online_reports_storage.sql for the RLS gates.
+   ───────────────────────────────────────────────────────────────────── */
+const PREBUILT_BUCKET = 'online-reports';
+
+function ppPrebuiltMonthKey(date) {
+  const d = date || new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+}
+
+function ppPrebuiltStoragePath(regionSlug, lite, monthKey) {
+  const month = monthKey || ppPrebuiltMonthKey();
+  return month + '/' + (lite ? 'lite/' : '') + regionSlug + '.pdf';
+}
+
+/* Synchronous — bucket is public so the URL is deterministic. */
+function ppPrebuiltPublicUrl(regionSlug, lite, monthKey) {
+  if (!window.sb || !window.sb.storage) return null;
+  const path = ppPrebuiltStoragePath(regionSlug, lite, monthKey);
+  const { data } = window.sb.storage.from(PREBUILT_BUCKET).getPublicUrl(path);
+  return (data && data.publicUrl) || null;
+}
+
+/* { exists, lastModified, size, publicUrl } or null. Uses
+   storage.list() so we get the upload date for the toolbar pill. */
+async function ppPrebuiltCheck(regionSlug, lite, monthKey) {
+  if (!window.sb || !window.sb.storage) return null;
+  const month = monthKey || ppPrebuiltMonthKey();
+  const folder = month + (lite ? '/lite' : '');
+  const filename = regionSlug + '.pdf';
+  try {
+    const { data, error } = await window.sb.storage
+      .from(PREBUILT_BUCKET)
+      .list(folder, { limit: 100, search: filename });
+    if (error || !Array.isArray(data)) return null;
+    const hit = data.find(f => f.name === filename);
+    if (!hit) return null;
+    return {
+      exists: true,
+      lastModified: hit.updated_at || hit.created_at || null,
+      size: (hit.metadata && hit.metadata.size) || null,
+      publicUrl: ppPrebuiltPublicUrl(regionSlug, lite, month),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+/* Cache-first download. If the prebuilt is there, fetch it as a Blob
+   (so a[download] forces a save instead of an inline view — Storage
+   doesn't send Content-Disposition: attachment). Otherwise call the
+   fallback (live in-browser exporter). */
+async function ppDownloadPrebuiltOrFallback(regionSlug, lite, filename, fallback) {
+  const hit = await ppPrebuiltCheck(regionSlug, lite);
+  if (!hit || !hit.publicUrl) return fallback();
+  try {
+    const resp = await fetch(hit.publicUrl, { cache: 'no-store' });
+    if (!resp.ok) throw new Error('cache fetch failed: ' + resp.status);
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+    return { fromCache: true, lastModified: hit.lastModified };
+  } catch (err) {
+    console.warn('Prebuilt cache fetch failed; falling back to live render:', err);
+    return fallback();
+  }
+}
+
+/* Toolbar pill — "Cached <date>" or "Live render". Cheap (one
+   storage.list call) and silent on failure. */
+async function ppRefreshPrebuiltIndicator() {
+  const el = document.getElementById('prebuilt-status');
+  if (!el) return;
+  const slug = (typeof ACTIVE_REGION !== 'undefined' && ACTIVE_REGION) ? ACTIVE_REGION : 'sydney';
+  const isLite = (typeof PP_LITE_MODE !== 'undefined' && PP_LITE_MODE);
+  el.textContent = '';
+  el.classList.remove('cached', 'live');
+  try {
+    const hit = await ppPrebuiltCheck(slug, isLite);
+    if (hit && hit.lastModified) {
+      const d = new Date(hit.lastModified);
+      const label = d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+      el.textContent = 'Cached ' + label;
+      el.title = 'Pre-built PDF cached on ' + label + ' — Download will fetch this version instantly.';
+      el.classList.add('cached');
+    } else {
+      el.textContent = 'Live render';
+      el.title = 'No cached PDF for this region this month — Download will render live (~30s).';
+      el.classList.add('live');
+    }
+  } catch (_) {
+    el.textContent = '';
+  }
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────
    PDF DOWNLOAD via html2canvas + jsPDF
    ---------------------------------------------------------------------
    Same approach Property Clock and Runway v Demand use, scaled up to
@@ -12513,10 +12659,22 @@ function setupPdfPagesModal() {
     closePdfPagesModal();
 
     /* Single-region case (only the currently-loaded region picked):
-       use the in-page exporter — fast, no iframe. */
+       use the in-page exporter — fast, no iframe. If the user wanted
+       every page (the canonical shape we pre-cache), try the cloud
+       cache first for an instant download. Partial-page selections
+       skip the cache and go straight to live render. */
     const activeRegion = (typeof ACTIVE_REGION !== 'undefined' && ACTIVE_REGION) ? ACTIVE_REGION : 'sydney';
     if (regionSlugs.length === 1 && regionSlugs[0] === activeRegion) {
-      exportReportPdf({ pageIds, allPages: wantAllPages });
+      if (wantAllPages) {
+        const niceRegion = activeRegion.charAt(0).toUpperCase() + activeRegion.slice(1);
+        const isLite = (typeof PP_LITE_MODE !== 'undefined' && PP_LITE_MODE);
+        const filename = buildEditionFilename(niceRegion, activeRegion, { lite: isLite }) + '.pdf';
+        ppDownloadPrebuiltOrFallback(activeRegion, isLite, filename, () => {
+          exportReportPdf({ pageIds, allPages: true });
+        });
+      } else {
+        exportReportPdf({ pageIds, allPages: wantAllPages });
+      }
       return;
     }
 
@@ -14982,6 +15140,10 @@ document.addEventListener('DOMContentLoaded', () => {
   setupModeToggle();
   setupAddPageButton();
   setupExport();
+  /* Fire-and-forget: the toolbar pill updates in the background once
+     Supabase Storage responds. Failures degrade silently — the
+     download button works either way. */
+  ppRefreshPrebuiltIndicator();
   setupGridToggle();
   setupKeyboardNudge();
   setupArrowKeyNav();
