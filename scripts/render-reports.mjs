@@ -46,11 +46,18 @@ const APP_URL                    = process.env.APP_URL;
 
 const BUCKET = 'online-reports';
 
-/* PDF page size — matches the design's 4:3 ratio so each captured
-   1200×900 page slots into one PDF page edge-to-edge. 297mm wide is
-   A4 landscape's long side, so most viewers display at familiar size. */
-const PDF_WIDTH_MM  = 297;
-const PDF_HEIGHT_MM = 222.75;
+/* PDF page size — matches the design's native pixel dimensions so
+   each section.page fits in exactly one PDF page with no overflow.
+   The .page CSS hardcodes 1200×900 CSS pixels (Looker parity), and
+   Chromium's CSS→PDF conversion uses 96 DPI. So:
+     1200 px / 96 dpi × 25.4 mm/inch = 317.5 mm  wide
+      900 px / 96 dpi × 25.4 mm/inch = 238.125 mm tall
+   Previous run used 297 × 222.75 mm (A4 landscape's long side at
+   4:3), which was 78px narrower + 58px shorter than the design —
+   so each section.page overflowed onto the next PDF page, producing
+   alternating "full content" + "empty tail" pages in the output. */
+const PDF_WIDTH_MM  = 317.5;
+const PDF_HEIGHT_MM = 238.125;
 
 /* Region slugs — copied from REGION_MANIFEST in tools/online-reports.html.
    If a region is added/renamed in the manifest, mirror the change here. */
