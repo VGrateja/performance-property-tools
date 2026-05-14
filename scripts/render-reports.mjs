@@ -153,18 +153,57 @@ async function renderRegion(browser, slug, lite, session) {
        render with the fallback face on first paint. */
     await page.evaluate(() => document.fonts && document.fonts.ready);
 
-    /* Reset zoom + hide chrome — the in-page exporter does the same.
-       The @media print CSS already hides .pager / .ct-panel /
-       .side-toc but we belt-and-brace here in case the print rule
-       doesn't apply (Puppeteer's page.pdf uses print emulation by
-       default, but be explicit). */
+    /* Force screen media emulation. Puppeteer's page.pdf() defaults
+       to print emulation, which calculates a print viewport from the
+       @page size (~1123 CSS px at 297mm/96dpi). That's below the
+       page's mobile breakpoint at @media (max-width: 1199px), which
+       triggers two layout disasters:
+         1. .mobile-control-bar appears (the "ONLINE REPORTS" header
+            band shows up in every PDF page).
+         2. .page gets `transform: scale(--page-scale)` applied so it
+            shrinks to fit a phone — leaves most of the PDF page
+            blank with content crammed in the top-left.
+       Screen emulation keeps the page at its 1200×900 design width
+       so the desktop layout stays put. We then inject the bits of
+       @media print behaviour we actually need (page breaks, dark
+       background, chrome hidden, colour preservation) below. */
+    await page.emulateMediaType('screen');
+
     await page.evaluate(() => {
       document.body.style.zoom = '1';
       document.body.classList.remove('edit-mode', 'show-grid');
-      ['.pager', '#side-toc', '#ct-panel', '#pdf-overlay'].forEach(sel => {
-        const el = document.querySelector(sel);
-        if (el) el.style.display = 'none';
-      });
+    });
+
+    /* Inject the print-only behaviours we want, decoupled from the
+       page's @media print block (which we're no longer triggering).
+       The wide selector list hides every chrome surface — pager,
+       mobile bar, side TOC, edit panels, floating nav pills, modals,
+       overlays — so none of them leak into the captured PDF. */
+    await page.addStyleTag({
+      content: `
+        /* Chrome surfaces — none of this belongs in a print PDF. */
+        .pager, .ct-panel, .side-toc, .mobile-control-bar,
+        #or-back-to-hub, #or-cluster-btn, #or-theme-toggle,
+        #pdf-overlay, .bands-modal-bg { display: none !important; }
+
+        /* Each report page becomes one PDF page. */
+        section.page {
+          page-break-after: always !important;
+          margin: 0 !important;
+          box-shadow: none !important;
+          transform: none !important;
+        }
+        section.page:last-of-type { page-break-after: auto !important; }
+        .page-outer-wrap { padding: 0 !important; }
+
+        /* Preserve the dark navy background. Without this, Chrome
+           strips backgrounds for "ink saving" in print mode. */
+        html, body, .page, .page-outer-wrap, * {
+          -webkit-print-color-adjust: exact !important;
+          print-color-adjust: exact !important;
+        }
+        body { background: #0a1520 !important; }
+      `,
     });
 
     /* Lite-mode size guard. The page's CSS uses `filter: blur(6px)`
