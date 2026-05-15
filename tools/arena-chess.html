@@ -317,6 +317,14 @@
     background: rgba(239, 68, 68, 0.12);
   }
 
+  /* Wrapper around the board so the absolute-positioned promotion
+     picker shares its coordinate space (no negative margins or
+     window-relative maths). */
+  .chess-board-stack{
+    position: relative;
+    width: 100%;
+    max-width: 560px;
+  }
   .chess-board{
     display: grid;
     grid-template-columns: repeat(8, 1fr);
@@ -330,6 +338,40 @@
     user-select: none;
     -webkit-user-select: none;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.40);
+  }
+  /* Promotion picker — four-piece vertical column anchored to the
+     destination square. Position is set by showPromotionPicker() in
+     JS based on the target square's bounding rect. */
+  .chess-promotion-picker{
+    position: absolute;
+    z-index: 200;
+    background: rgba(15,23,42,0.96);
+    border: 2px solid rgba(0,182,203,0.6);
+    border-radius: 8px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.55);
+    backdrop-filter: blur(6px);
+  }
+  .chess-promotion-picker button{
+    width: 52px; height: 52px;
+    border: none;
+    background: rgba(255,255,255,0.04);
+    border-radius: 6px;
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .12s ease;
+  }
+  .chess-promotion-picker button:hover{
+    background: rgba(0,182,203,0.20);
+  }
+  .chess-promotion-picker button .chess-piece{
+    width: 100%; height: 100%;
   }
   .chess-square{
     position: relative;
@@ -373,25 +415,38 @@
     background: transparent;
     border: 4px solid rgba(0, 182, 203, 0.65);
   }
+  /* Pieces are inline SVG (PIECE_SVG map below). Coloured with two
+     CSS variables — fill and stroke — so .is-white and .is-black
+     get the same SVG geometry rendered in the right palette. */
   .chess-piece{
     pointer-events: none;
-    line-height: 1;
+    width: 88%;
+    height: 88%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    filter: drop-shadow(0 2px 2px rgba(0,0,0,0.30));
   }
-  /* Hard outlines via stacked text-shadow — single offsets aren't
-     enough to keep white kings legible on the cream squares. */
+  .chess-piece-svg{
+    width: 100%;
+    height: 100%;
+    display: block;
+    overflow: visible;
+  }
+  .chess-piece-svg g{
+    fill:   var(--piece-fill);
+    stroke: var(--piece-stroke);
+    stroke-width: 1.4;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
   .chess-piece.is-white{
-    color: #ffffff;
-    text-shadow:
-      -1.5px -1.5px 0 #1a1a1a,
-       1.5px -1.5px 0 #1a1a1a,
-      -1.5px  1.5px 0 #1a1a1a,
-       1.5px  1.5px 0 #1a1a1a,
-       0 2px 3px rgba(0,0,0,0.30);
+    --piece-fill:   #f8f3e5;
+    --piece-stroke: #1a1a1a;
   }
   .chess-piece.is-black{
-    color: #1a1a1a;
-    text-shadow:
-       0 1px 2px rgba(255,255,255,0.25);
+    --piece-fill:   #2a2a2a;
+    --piece-stroke: #f0e9d6;
   }
   /* File / rank labels on the edge squares — a/h for files, 1/8 for ranks. */
   .chess-square .chess-coord{
@@ -1045,6 +1100,65 @@
     border-radius: 999px;
     vertical-align: 2px;
   }
+
+  /* Captured pieces tray — one row of mini SVGs above each player's
+     name showing the opponent's pieces they've taken. The material
+     advantage ("+3" / "+1" / etc.) sits to the right of the row.
+     Empty trays collapse so the player row doesn't grow. */
+  .chess-captured-tray {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1px;
+    min-height: 18px;
+    padding: 2px 0 4px 0;
+  }
+  .chess-captured-tray:empty { display: none; }
+  .chess-captured-icon {
+    width: 16px; height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    filter: none;
+  }
+  .chess-captured-icon .chess-piece-svg g {
+    stroke-width: 2;
+  }
+  .chess-captured-material {
+    margin-left: 6px;
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    font-size: 10.5px;
+    color: rgba(0,182,203,0.85);
+    letter-spacing: 0.5px;
+  }
+
+  /* Floating mute / unmute toggle in the sidebar top-right. Single
+     button cycles between the two SVG icons (one is hidden via JS). */
+  .chess-sound-toggle {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 32px;
+    height: 32px;
+    background: rgba(15,23,42,0.55);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 8px;
+    color: rgba(255,255,255,0.72);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .12s ease, color .12s ease;
+    z-index: 5;
+  }
+  .chess-sound-toggle:hover {
+    background: rgba(0,182,203,0.16);
+    color: #00b6cb;
+  }
+  .chess-sound-toggle.is-muted {
+    color: rgba(239,68,68,0.85);
+  }
+  .chess-sidebar { position: relative; }
 </style>
 </head>
 <body>
@@ -1134,9 +1248,26 @@
         <div class="chess-turn-indicator" id="chessTurnIndicator">
           <strong>White</strong> to move
         </div>
-        <div class="chess-board" id="chessBoard"></div>
+        <div class="chess-board-stack">
+          <div class="chess-board" id="chessBoard"></div>
+          <!-- Promotion picker overlay — shown over the destination
+               square when a pawn reaches the last rank. Hidden by
+               default; positioned absolutely off the target square. -->
+          <div class="chess-promotion-picker" id="chessPromotionPicker" style="display:none;">
+            <button type="button" data-piece="q" title="Queen"></button>
+            <button type="button" data-piece="r" title="Rook"></button>
+            <button type="button" data-piece="b" title="Bishop"></button>
+            <button type="button" data-piece="n" title="Knight"></button>
+          </div>
+        </div>
       </div>
       <aside class="chess-sidebar">
+        <button type="button" class="chess-sound-toggle" id="chessSoundToggle" title="Mute / unmute sounds" aria-label="Toggle sounds">
+          <!-- Unmuted speaker -->
+          <svg class="chess-sound-on"  viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
+          <!-- Muted speaker (hidden by default) -->
+          <svg class="chess-sound-off" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
+        </button>
         <div>
           <div class="chess-sidebar-section-title">Players</div>
           <div class="chess-players" id="chessPlayers"></div>
@@ -1435,7 +1566,63 @@ function renderMatchRow(m) {
    truth for legality and game-end detection; this script only drives
    the UI and writes the match row when a result is reached. */
 
-const PIECE_GLYPH = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' };
+/* Inline SVG silhouettes for the six piece types. Coloured by CSS
+   (--piece-fill / --piece-stroke variables, set on .chess-piece.
+   is-white / is-black). One SVG per piece type — same shape for
+   white and black, recoloured by the parent class. */
+const PIECE_SVG = {
+  /* Pawn: round head, flared body, base + pedestal. */
+  p: '<svg viewBox="0 0 45 45" class="chess-piece-svg"><g>'
+   + '<circle cx="22.5" cy="11" r="5.5"/>'
+   + '<path d="M18 16 C 18 21 14 22 14 28 L 31 28 C 31 22 27 21 27 16 Z"/>'
+   + '<path d="M11 28 H 34 V 32 H 11 Z"/>'
+   + '<ellipse cx="22.5" cy="36" rx="13" ry="2.5"/>'
+   + '</g></svg>',
+  /* Rook: castellated top, body, base. */
+  r: '<svg viewBox="0 0 45 45" class="chess-piece-svg"><g>'
+   + '<path d="M9 10 V 16 H 13 V 13 H 17 V 16 H 21 V 13 H 24 V 16 H 28 V 13 H 32 V 16 H 36 V 10 Z"/>'
+   + '<path d="M13 16 V 28 H 32 V 16 Z"/>'
+   + '<path d="M11 28 V 32 H 34 V 28 Z"/>'
+   + '<ellipse cx="22.5" cy="36" rx="13" ry="2.5"/>'
+   + '</g></svg>',
+  /* Knight: horse-head silhouette, eye, base. */
+  n: '<svg viewBox="0 0 45 45" class="chess-piece-svg"><g>'
+   + '<path d="M22 8 C 30 8 32 14 32 17 L 33 28 C 33 30 32 32 30 32 L 14 32 L 14 28 C 14 24 12 23 12 20 C 12 16 15 13 19 12 L 22 8 Z"/>'
+   + '<circle cx="27" cy="15" r="1.3"/>'
+   + '<path d="M11 32 H 34 V 36 H 11 Z"/>'
+   + '</g></svg>',
+  /* Bishop: mitre top, body, base. */
+  b: '<svg viewBox="0 0 45 45" class="chess-piece-svg"><g>'
+   + '<ellipse cx="22.5" cy="9" rx="2.5" ry="3"/>'
+   + '<path d="M19 14 C 17 18 17 22 19 24 H 26 C 28 22 28 18 26 14 Z"/>'
+   + '<path d="M22.5 16 V 21" stroke-width="1.2"/>'
+   + '<path d="M16 24 V 28 H 29 V 24 Z"/>'
+   + '<path d="M11 28 V 32 H 34 V 28 Z"/>'
+   + '<ellipse cx="22.5" cy="36" rx="13" ry="2.5"/>'
+   + '</g></svg>',
+  /* Queen: five-point crown, body, base. */
+  q: '<svg viewBox="0 0 45 45" class="chess-piece-svg"><g>'
+   + '<circle cx="9"   cy="11" r="2"/>'
+   + '<circle cx="16"  cy="9"  r="2"/>'
+   + '<circle cx="22.5" cy="7.5" r="2"/>'
+   + '<circle cx="29"  cy="9"  r="2"/>'
+   + '<circle cx="36"  cy="11" r="2"/>'
+   + '<path d="M9 13 L 12 22 L 33 22 L 36 13 L 29 16 L 22.5 11 L 16 16 Z"/>'
+   + '<path d="M12 22 V 28 H 33 V 22 Z"/>'
+   + '<path d="M11 28 V 32 H 34 V 28 Z"/>'
+   + '<ellipse cx="22.5" cy="36" rx="13" ry="2.5"/>'
+   + '</g></svg>',
+  /* King: cross-topped crown, body, base. */
+  k: '<svg viewBox="0 0 45 45" class="chess-piece-svg"><g>'
+   + '<rect x="21" y="5"   width="3" height="3"/>'
+   + '<rect x="19" y="6.5" width="7" height="2"/>'
+   + '<path d="M22.5 11 L 17 18 L 28 18 Z"/>'
+   + '<path d="M12 18 L 11 28 L 34 28 L 33 18 Z"/>'
+   + '<path d="M11 28 V 32 H 34 V 28 Z"/>'
+   + '<ellipse cx="22.5" cy="36" rx="13" ry="2.5"/>'
+   + '</g></svg>',
+};
+
 const FILES = ['a','b','c','d','e','f','g','h'];
 
 let _state = 'lobby';
@@ -1609,7 +1796,7 @@ function renderBoard() {
       if (piece) {
         const span = document.createElement('span');
         span.className = 'chess-piece ' + (piece.color === 'w' ? 'is-white' : 'is-black');
-        span.textContent = PIECE_GLYPH[piece.type];
+        span.innerHTML = PIECE_SVG[piece.type] || '';
         cell.appendChild(span);
       }
       /* File / rank labels: bottom row + leftmost column of the
@@ -1630,6 +1817,43 @@ function renderBoard() {
       $boardEl.appendChild(cell);
     }
   }
+}
+
+/* ─── Phase 109 — Piece-slide animation ───
+   Run this *after* renderBoard() has repainted with the piece in
+   its new home. We compute the geometric delta between source and
+   destination squares, snap the destination piece visually back to
+   the source coords with transform, then transition it to (0,0)
+   for a smooth slide. Because we transform the piece SPAN (not the
+   square), the underlying square states (highlights, legal dots)
+   are unaffected. Works for flipped orientation since we use
+   getBoundingClientRect on the actual rendered cells. */
+function animateMove(fromSq, toSq) {
+  if (!$boardEl || !fromSq || !toSq || fromSq === toSq) return;
+  const $from = $boardEl.querySelector('[data-square="' + fromSq + '"]');
+  const $to   = $boardEl.querySelector('[data-square="' + toSq   + '"]');
+  if (!$from || !$to) return;
+  const $piece = $to.querySelector('.chess-piece');
+  if (!$piece) return;
+  const a = $from.getBoundingClientRect();
+  const b = $to.getBoundingClientRect();
+  const dx = a.left - b.left;
+  const dy = a.top  - b.top;
+  if (!dx && !dy) return;
+  $piece.style.transition = 'none';
+  $piece.style.transform  = 'translate(' + dx + 'px,' + dy + 'px)';
+  $piece.style.zIndex     = '5';
+  /* Force reflow so the next style write becomes a transition
+     end-state rather than collapsing into the initial paint. */
+  void $piece.offsetWidth;
+  $piece.style.transition = 'transform 180ms cubic-bezier(.22,.61,.36,1)';
+  $piece.style.transform  = 'translate(0,0)';
+  setTimeout(() => {
+    if (!$piece.isConnected) return;
+    $piece.style.transition = '';
+    $piece.style.transform  = '';
+    $piece.style.zIndex     = '';
+  }, 220);
 }
 
 /* renderPlayersBlock — the original hot-seat variant — is replaced
@@ -1672,44 +1896,26 @@ function renderMoveList() {
 function onSquareClick(sq) {
   if (!_game || _state !== 'playing') return;
   if (_isSpectating) return;
-  /* Not my turn → no-op. Don't even let me preview my piece's
-     legal moves; keeps the board click-area clearly inert. */
   if (_myColor && _myColor !== _game.turn()) return;
 
   if (_selected) {
     const target = _legalDests.find(m => m.to === sq);
     if (target) {
-      /* Auto-promote to queen for v1 — UI for choosing the piece
-         can come in a follow-up. */
-      const moveCfg = { from: _selected, to: sq };
-      if (target.flags.indexOf('p') >= 0) moveCfg.promotion = 'q';
-      const made = _game.move(moveCfg);
-      if (made) {
-        _lastMove = { from: _selected, to: sq };
-        _selected = null;
-        _legalDests = [];
-        /* Clock bookkeeping. */
-        let clockRemaining = null;
-        if (_clockCfg) {
-          const now = Date.now();
-          const elapsed = now - _clockTickAt;
-          _clocks[_clockSide] = Math.max(0, _clocks[_clockSide] - elapsed) + _clockCfg.incrementMs;
-          clockRemaining = _clocks[_clockSide];
-          _clockSide = _game.turn();
-          _clockTickAt = now;
-        }
-        const ply     = _game.history().length;
-        const fenAfter = _game.fen();
-        renderBoard();
-        updateTurnIndicator();
-        renderMoveList();
-        renderPlayersBlockOnline();
-        paintClocks();
-        /* Persist asynchronously — UI is already updated locally. */
-        persistMove(made.san, fenAfter, ply, clockRemaining);
-        checkGameEnd();
+      const fromSq = _selected;
+      /* Promotion: pause and show the picker. The actual chess.js
+         move call is deferred until the user picks Q/R/B/N. */
+      if (target.flags.indexOf('p') >= 0) {
+        const promotingColor = _game.turn();
+        showPromotionPicker(sq, promotingColor, (chosenPiece) => {
+          finalizeLocalMove(fromSq, sq, chosenPiece);
+        });
+        /* Don't clear _selected yet — we want the highlight to
+           remain visible while the picker is up. The picker close
+           handler clears everything. */
         return;
       }
+      finalizeLocalMove(fromSq, sq, null);
+      return;
     }
     if (sq === _selected) {
       _selected = null; _legalDests = [];
@@ -1717,7 +1923,7 @@ function onSquareClick(sq) {
       return;
     }
   }
-  /* Try to select a piece on this square belonging to the side to move. */
+  /* Select a piece belonging to the side to move. */
   const piece = _game.get(sq);
   if (piece && piece.color === _game.turn()) {
     _selected = sq;
@@ -1728,6 +1934,74 @@ function onSquareClick(sq) {
     _legalDests = [];
     renderBoard();
   }
+}
+
+/* Apply the actual chess.js move, run the post-move bookkeeping
+   (clocks, render, persist, game-end check). Single funnel called
+   by both the normal move path and the promotion-picker callback. */
+function finalizeLocalMove(fromSq, toSq, promotionPiece) {
+  const moveCfg = { from: fromSq, to: toSq };
+  if (promotionPiece) moveCfg.promotion = promotionPiece;
+  const made = _game.move(moveCfg);
+  if (!made) return;
+  _lastMove = { from: fromSq, to: toSq };
+  _selected = null;
+  _legalDests = [];
+  let clockRemaining = null;
+  if (_clockCfg) {
+    const now = Date.now();
+    const elapsed = now - _clockTickAt;
+    _clocks[_clockSide] = Math.max(0, _clocks[_clockSide] - elapsed) + _clockCfg.incrementMs;
+    clockRemaining = _clocks[_clockSide];
+    _clockSide = _game.turn();
+    _clockTickAt = now;
+  }
+  const ply      = _game.history().length;
+  const fenAfter = _game.fen();
+  renderBoard();
+  animateMove(fromSq, toSq);
+  updateTurnIndicator();
+  renderMoveList();
+  renderPlayersBlockOnline();
+  paintClocks();
+  soundForMove(made);
+  persistMove(made.san, fenAfter, ply, clockRemaining);
+  checkGameEnd();
+}
+
+/* Show the promotion picker positioned just below the target
+   square. Caller passes the destination square (e.g. "e8") and
+   the side promoting; clicking a piece button invokes onPick with
+   the piece letter. */
+function showPromotionPicker(toSq, color, onPick) {
+  const $picker = document.getElementById('chessPromotionPicker');
+  if (!$picker) return;
+  const $sq = $boardEl.querySelector('[data-square="' + toSq + '"]');
+  if (!$sq) return;
+  const boardRect = $boardEl.getBoundingClientRect();
+  const sqRect    = $sq.getBoundingClientRect();
+  /* Anchor: directly below the target square, left-aligned. If
+     that overflows the bottom of the board, flip upward. */
+  const left = sqRect.left - boardRect.left;
+  let   top  = sqRect.bottom - boardRect.top + 4;
+  if (top + 232 > boardRect.height) {
+    /* Picker would overflow — anchor above the square instead. */
+    top = sqRect.top - boardRect.top - 232;
+  }
+  $picker.style.left = left + 'px';
+  $picker.style.top  = top  + 'px';
+  /* Re-paint piece buttons every time so colour matches the side
+     that's promoting (especially relevant for spectators / when
+     the same browser flips orientation). */
+  $picker.querySelectorAll('button').forEach(btn => {
+    const pt = btn.dataset.piece;
+    btn.innerHTML = '<span class="chess-piece ' + (color === 'w' ? 'is-white' : 'is-black') + '">' + (PIECE_SVG[pt] || '') + '</span>';
+    btn.onclick = () => {
+      $picker.style.display = 'none';
+      onPick(pt);
+    };
+  });
+  $picker.style.display = '';
 }
 
 /* ─── Game-end detection ───
@@ -1973,6 +2247,8 @@ function closeGameView() {
   if ($banner) $banner.style.display = 'none';
   const $drawBanner = document.getElementById('chessDrawOfferBanner');
   if ($drawBanner) $drawBanner.style.display = 'none';
+  const $picker = document.getElementById('chessPromotionPicker');
+  if ($picker) $picker.style.display = 'none';
   $gameView.classList.remove('is-open');
   $resultModal.classList.remove('is-open');
   document.body.classList.remove('chess-in-game', 'chess-spectating');
@@ -2527,9 +2803,49 @@ async function openGameInternal(gameId) {
   }
 }
 
+/* Compute captured pieces for each side. White's tray holds BLACK
+   pieces (white captured them); black's tray holds WHITE pieces.
+   Material delta = white_capture_value - black_capture_value;
+   shown as "+N" on the leading side, hidden when even. */
+const _PIECE_VALUES   = { p:1, n:3, b:3, r:5, q:9, k:0 };
+const _STARTING_COUNTS = { p:8, n:2, b:2, r:2, q:1, k:1 };
+
+function computeCaptured() {
+  const result = { byWhite: [], byBlack: [], whiteVal: 0, blackVal: 0 };
+  if (!_game) return result;
+  const cur = { w: { p:0,n:0,b:0,r:0,q:0,k:0 }, b: { p:0,n:0,b:0,r:0,q:0,k:0 } };
+  const board = _game.board();
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const p = board[r][c];
+    if (p) cur[p.color][p.type]++;
+  }
+  /* Tray order: most-valuable first so "Q R B N P" reads naturally. */
+  const ORDER = ['q','r','b','n','p'];
+  for (const t of ORDER) {
+    const wTook = Math.max(0, _STARTING_COUNTS[t] - cur.b[t]);
+    const bTook = Math.max(0, _STARTING_COUNTS[t] - cur.w[t]);
+    for (let i = 0; i < wTook; i++) result.byWhite.push(t);
+    for (let i = 0; i < bTook; i++) result.byBlack.push(t);
+    result.whiteVal += wTook * _PIECE_VALUES[t];
+    result.blackVal += bTook * _PIECE_VALUES[t];
+  }
+  return result;
+}
+
+function renderCapturedTray(pieces, capturedColor) {
+  /* capturedColor is the colour of the captured pieces (i.e. the
+     opposite of the capturer's colour) — they're rendered in the
+     opponent's piece colour so the tray visually shows "what I
+     took from them". */
+  const colorClass = capturedColor === 'w' ? 'is-white' : 'is-black';
+  return pieces.map(t =>
+    '<span class="chess-captured-icon"><span class="chess-piece ' + colorClass + '">' + (PIECE_SVG[t] || '') + '</span></span>'
+  ).join('');
+}
+
 /* Online variant of renderPlayersBlock. Pulls names + snapshotted
    points from the game row instead of _setup; tags my own row
-   with a "you" badge so the player can tell which side they are. */
+   with a "you" badge; surfaces captured pieces + material delta. */
 function renderPlayersBlockOnline() {
   if (!_gameRow || !$playersEl) return;
   const turn = _game ? _game.turn() : 'w';
@@ -2540,6 +2856,14 @@ function renderPlayersBlockOnline() {
   const bName = (_gameRow.black_name && _gameRow.black_name.trim()) || (_gameRow.black_email || '').split('@')[0];
   const wYou = _myColor === 'w' ? ' <span class="chess-you-badge">you</span>' : '';
   const bYou = _myColor === 'b' ? ' <span class="chess-you-badge">you</span>' : '';
+
+  const cap = computeCaptured();
+  const delta = cap.whiteVal - cap.blackVal;
+  const wMaterial = delta > 0 ? '<span class="chess-captured-material">+' + delta + '</span>' : '';
+  const bMaterial = delta < 0 ? '<span class="chess-captured-material">+' + (-delta) + '</span>' : '';
+  const wTray = renderCapturedTray(cap.byWhite, 'b') + wMaterial;   /* white captured black pieces */
+  const bTray = renderCapturedTray(cap.byBlack, 'w') + bMaterial;   /* black captured white pieces */
+
   $playersEl.innerHTML = '' +
     '<div class="chess-player-row ' + (turn === 'w' ? 'is-active' : '') + '">' +
       '<span class="chess-player-color is-white"></span>' +
@@ -2547,12 +2871,14 @@ function renderPlayersBlockOnline() {
       '<span class="chess-player-pts">' + (_gameRow.white_pts_before != null ? _gameRow.white_pts_before : '') + '</span>' +
       wClockHtml +
     '</div>' +
+    '<div class="chess-captured-tray">' + wTray + '</div>' +
     '<div class="chess-player-row ' + (turn === 'b' ? 'is-active' : '') + '">' +
       '<span class="chess-player-color is-black"></span>' +
       '<span class="chess-player-name">' + escapeHtml(bName) + bYou + '</span>' +
       '<span class="chess-player-pts">' + (_gameRow.black_pts_before != null ? _gameRow.black_pts_before : '') + '</span>' +
       bClockHtml +
-    '</div>';
+    '</div>' +
+    '<div class="chess-captured-tray">' + bTray + '</div>';
 }
 
 /* Subscribe to per-game channels — moves INSERTs (opponent moves)
@@ -2609,10 +2935,12 @@ function handleIncomingMove(moveRow) {
   }
 
   renderBoard();
+  animateMove(made.from, made.to);
   updateTurnIndicator();
   renderMoveList();
   renderPlayersBlockOnline();
   paintClocks();
+  soundForMove(made);
   /* Don't call checkGameEnd here — when the opponent's move ends
      the game, their client writes the result (via their own
      onSquareClick → checkGameEnd → declareResult). We pick the
@@ -2699,6 +3027,84 @@ async function persistMove(san, fenAfter, ply, clockRemainingMs) {
     console.warn('persistMove threw', err);
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   SOUND EFFECTS — Phase 108
+   ══════════════════════════════════════════════════════════════════
+   Web Audio API synthesised tones — no external audio assets. Lazy-
+   inits AudioContext on first call to dodge autoplay-policy blocks.
+   Move / capture / check / mate each get a distinct envelope.
+   Mute preference persists in localStorage. */
+
+let _audioCtx = null;
+let _audioMuted = false;
+try { _audioMuted = localStorage.getItem('arena-chess-muted') === '1'; } catch (_) {}
+
+function getAudioCtx() {
+  if (_audioCtx) return _audioCtx;
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) _audioCtx = new AC();
+  } catch (_) {}
+  return _audioCtx;
+}
+
+function playTone(freq, durMs, type, gain) {
+  if (_audioMuted) return;
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  if (ctx.state === 'suspended') { try { ctx.resume(); } catch (_) {} }
+  const t0  = ctx.currentTime;
+  const dur = durMs / 1000;
+  const osc = ctx.createOscillator();
+  const g   = ctx.createGain();
+  osc.type = type || 'sine';
+  osc.frequency.setValueAtTime(freq, t0);
+  g.gain.setValueAtTime(0, t0);
+  g.gain.linearRampToValueAtTime(gain || 0.20, t0 + 0.008);   /* fast attack */
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);        /* gentle decay */
+  osc.connect(g).connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur);
+}
+function soundMove()    { playTone(420, 80,  'sine',   0.18); }
+function soundCapture() { playTone(180, 140, 'square', 0.16); }
+function soundCheck()   { playTone(880, 90,  'sine',   0.22); setTimeout(() => playTone(660, 110, 'sine', 0.20), 90); }
+function soundMate()    { [880, 660, 440, 330].forEach((f, i) => setTimeout(() => playTone(f, 220, 'sine', 0.22), i * 90)); }
+
+/* Pick the right sound for a freshly-applied chess.js move object.
+   chess.js returns { captured, flags, ... }; in_check / in_checkmate
+   reflect the position *after* the move. */
+function soundForMove(moveObj) {
+  if (_audioMuted || !moveObj) return;
+  if (_game && _game.in_checkmate()) { soundMate();    return; }
+  if (_game && _game.in_check())     { soundCheck();   return; }
+  if (moveObj.captured || (moveObj.flags && moveObj.flags.indexOf('e') >= 0)) {
+    soundCapture(); return;
+  }
+  soundMove();
+}
+
+function setMuted(muted) {
+  _audioMuted = !!muted;
+  try { localStorage.setItem('arena-chess-muted', _audioMuted ? '1' : '0'); } catch (_) {}
+  const $btn = document.getElementById('chessSoundToggle');
+  if ($btn) {
+    $btn.classList.toggle('is-muted', _audioMuted);
+    const on  = $btn.querySelector('.chess-sound-on');
+    const off = $btn.querySelector('.chess-sound-off');
+    if (on)  on.style.display  = _audioMuted ? 'none' : '';
+    if (off) off.style.display = _audioMuted ? ''     : 'none';
+  }
+}
+
+(function wireSoundToggle() {
+  const $btn = document.getElementById('chessSoundToggle');
+  if (!$btn) return;
+  setMuted(_audioMuted);   /* paint initial icon state */
+  $btn.addEventListener('click', () => setMuted(!_audioMuted));
+})();
+
 
 /* ─── Util ─── */
 function escapeHtml(s) {
