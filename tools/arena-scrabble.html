@@ -725,6 +725,25 @@
     border-color: rgba(139,92,246,0.35);
   }
   .scrabble-turn-indicator strong { color: #a78bfa; }
+  .scrabble-turn-clock {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 2px 9px;
+    background: rgba(139,92,246,0.18);
+    border-radius: 5px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.5px;
+    font-weight: 700;
+  }
+  .scrabble-turn-clock.is-urgent {
+    background: rgba(239,68,68,0.22);
+    color: #f87171;
+    animation: scrabbleClockPulse 1s ease-in-out infinite;
+  }
+  @keyframes scrabbleClockPulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.55; }
+  }
 
   /* ── Spectate banner (shown in read-only mode) ── */
   .scrabble-spectate-banner {
@@ -1505,7 +1524,7 @@
       <div class="scrabble-game-block" id="scrabbleActionsBlock">
         <div class="scrabble-game-block-title">Actions</div>
         <div class="scrabble-actions">
-          <button class="scrabble-action-btn is-primary" type="button" id="scrabblePlayBtn" disabled>Play</button>
+          <button class="scrabble-action-btn is-primary" type="button" id="scrabblePlayBtn" disabled title="Commit your tiles. If any word isn't in the dictionary you forfeit the turn.">End Turn</button>
           <button class="scrabble-action-btn" type="button" id="scrabbleExchangeBtn" disabled>Exchange</button>
           <button class="scrabble-action-btn" type="button" id="scrabblePassBtn" disabled>Pass</button>
           <button class="scrabble-action-btn" type="button" id="scrabbleDrawBtn" disabled>Offer draw</button>
@@ -1556,13 +1575,25 @@
       </div>
     </div>
 
-    <div class="scrabble-modal-field" id="scr-ch-tc-wrap">
-      <label for="scr-ch-tc">Time control</label>
-      <select id="scr-ch-tc">
-        <option value="25+0">25 minutes (tournament)</option>
-        <option value="15+0">15 minutes (blitz)</option>
-        <option value="10+0">10 minutes (bullet)</option>
-      </select>
+    <div class="scrabble-modal-field">
+      <label>Turn timer</label>
+      <div class="scrabble-modal-checkrow">
+        <input type="checkbox" id="scr-ch-timer-on">
+        <label for="scr-ch-timer-on" style="margin:0;text-transform:none;letter-spacing:0;font-size:13px;color:inherit;">Open timer per turn — each player has a fresh clock when it's their move</label>
+      </div>
+    </div>
+
+    <div class="scrabble-modal-field" id="scr-ch-tc-wrap" style="display:none;">
+      <label>Time per turn</label>
+      <div class="scrabble-modal-radios" id="scr-ch-tc-presets">
+        <label><input type="radio" name="scr-tt" value="30">30 sec</label>
+        <label><input type="radio" name="scr-tt" value="60">1 min</label>
+        <label><input type="radio" name="scr-tt" value="120">2 min</label>
+        <label><input type="radio" name="scr-tt" value="300" checked>5 min</label>
+        <label><input type="radio" name="scr-tt" value="600">10 min</label>
+        <label><input type="radio" name="scr-tt" value="custom">Custom</label>
+      </div>
+      <input type="number" id="scr-ch-tc-custom" min="30" max="3600" step="10" placeholder="seconds (30-3600)" style="display:none;margin-top:8px;">
     </div>
 
     <p style="font-size:12px;color:rgba(255,255,255,0.55);line-height:1.5;margin:4px 0 0;">You'll be auto-joined as host. Other staff can browse open lobbies and request to join; you accept or invite directly from the lobby room. Start the game any time you have 2 or more players.</p>
@@ -1619,7 +1650,7 @@
   <div class="scrabble-modal-card">
     <div class="scrabble-modal-eyebrow">Exchange tiles</div>
     <h3 class="scrabble-modal-title">Pick tiles to swap</h3>
-    <p class="scrabble-exchange-hint">Click any tiles you want to return to the bag. You'll get the same number of fresh letters back. Costs your turn. Only legal while 7+ tiles remain in the bag.</p>
+    <p class="scrabble-exchange-hint">Click any tiles you want to return to the bag. You'll get the same number of fresh letters back. Costs your turn. Only legal while 7+ tiles remain in the bag AND your rack holds 3 of the same letter.</p>
     <div class="scrabble-exchange-rack" id="scrabbleExchangeRack"></div>
     <div class="scrabble-modal-error" id="scrabbleExchangeError"></div>
     <div class="scrabble-modal-actions">
@@ -1667,8 +1698,9 @@ const $challengeModal  = document.getElementById('scrabbleChallengeModal');
 const $challengeSend   = document.getElementById('scrabbleChallengeSend');
 const $challengeCancel = document.getElementById('scrabbleChallengeCancel');
 const $chRanked        = document.getElementById('scr-ch-ranked');
+const $chTimerOn       = document.getElementById('scr-ch-timer-on');
 const $chTcWrap        = document.getElementById('scr-ch-tc-wrap');
-const $chTc            = document.getElementById('scr-ch-tc');
+const $chTcCustom      = document.getElementById('scr-ch-tc-custom');
 const $chError         = document.getElementById('scrabbleChallengeError');
 const $gameView        = document.getElementById('scrabbleGameView');
 const $gameBackBtn     = document.getElementById('scrabbleGameBackBtn');
@@ -1760,7 +1792,7 @@ async function loadActiveGames() {
   if (!window.sb) return;
   const { data, error } = await window.sb
     .from('arena_scrabble_games')
-    .select('id, ranked, time_control, started_at, player_count, players:arena_scrabble_game_players(seat, user_id, email, name)')
+    .select('id, ranked, turn_time_seconds, started_at, player_count, players:arena_scrabble_game_players(seat, user_id, email, name)')
     .eq('status', 'active')
     .order('started_at', { ascending: false })
     .limit(20);
@@ -1810,7 +1842,7 @@ async function loadRecentMatches() {
   if (!$list) return;
   const { data, error } = await window.sb
     .from('arena_scrabble_matches')
-    .select('id, ranked, time_control, ended_at, termination, player_count, players:arena_scrabble_match_players(seat, email, name, score, finish_rank, pts_before, pts_after)')
+    .select('id, ranked, turn_time_seconds, ended_at, termination, player_count, players:arena_scrabble_match_players(seat, email, name, score, finish_rank, pts_before, pts_after)')
     .order('ended_at', { ascending: false })
     .limit(20);
   if (error) {
@@ -1853,8 +1885,18 @@ function renderMatchRow(m) {
   return '<li class="scrabble-match-row">' +
     '<span class="' + resultClass + '">' + escapeHtml(resultLabel) + '</span>' +
     '<span class="scrabble-match-text">' + story + '</span>' +
-    '<span class="scrabble-match-meta">' + escapeHtml((m.time_control || 'untimed') + ' · ' + when) + '</span>' +
+    '<span class="scrabble-match-meta">' + escapeHtml(formatTurnTime(m.turn_time_seconds) + ' · ' + when) + '</span>' +
   '</li>';
+}
+
+/* "5 min/turn" / "30s/turn" / "Untimed" — used everywhere we display
+   a game's timer setting (lobby cards, match rows, game-view meta). */
+function formatTurnTime(seconds) {
+  const n = parseInt(seconds, 10);
+  if (!n || n <= 0) return 'Untimed';
+  if (n < 60) return n + 's/turn';
+  if (n % 60 === 0) return (n / 60) + ' min/turn';
+  return Math.floor(n / 60) + 'm' + (n % 60) + 's/turn';
 }
 
 function friendlyTime(iso) {
@@ -1892,7 +1934,7 @@ function renderMyLobby() {
   $title.textContent  = isHost ? 'Your lobby (host)' : 'Lobby — waiting for host';
   $meta.textContent   = joinedCount + '/' + _myLobby.max_players + ' joined · '
                       + (_myLobby.ranked ? 'Ranked' : 'Casual')
-                      + ' · ' + (_myLobby.time_control || 'untimed');
+                      + ' · ' + formatTurnTime(_myLobby.turn_time_seconds);
 
   $players.innerHTML = (_myLobby.players || []).map(p => {
     const name = p.name || (p.email || '').split('@')[0];
@@ -1975,7 +2017,7 @@ function renderOpenLobbies() {
     const isFull = joinedCount >= l.max_players;
     const meta = joinedCount + '/' + l.max_players + ' · '
                + (l.ranked ? 'Ranked' : 'Casual')
-               + ' · ' + (l.time_control || 'untimed');
+               + ' · ' + formatTurnTime(l.turn_time_seconds);
     const btnLabel = isFull ? 'Full' : 'Request to join';
     return '<li class="scrabble-lobby-row">' +
       '<div class="scrabble-lobby-row-name">' +
@@ -2036,7 +2078,7 @@ function renderMyActiveGame() {
     .filter(p => p.user_id !== (_me && _me.userId))
     .map(p => p.name || (p.email || '').split('@')[0]);
   const opponentsLabel = others.length ? others.join(', ') : '—';
-  const meta = (g.ranked ? 'Ranked' : 'Casual') + ' · ' + (g.time_control || 'untimed')
+  const meta = (g.ranked ? 'Ranked' : 'Casual') + ' · ' + formatTurnTime(g.turn_time_seconds)
              + ' · ' + (players.length || g.player_count || 2) + ' players';
   $row.innerHTML =
     '<div class="scrabble-resume-info">' +
@@ -2061,7 +2103,7 @@ function renderSpectateList() {
     const players = (g.players || []).slice().sort((a, b) => a.seat - b.seat);
     const names = players.map(p => p.name || (p.email || '').split('@')[0]);
     const headline = names.join(' vs ');
-    const meta = (g.ranked ? 'Ranked' : 'Casual') + ' · ' + (g.time_control || 'untimed')
+    const meta = (g.ranked ? 'Ranked' : 'Casual') + ' · ' + formatTurnTime(g.turn_time_seconds)
                + ' · ' + (players.length || g.player_count || 2) + ' players';
     return '<li class="scrabble-lobby-row">' +
       '<div class="scrabble-lobby-row-name">' +
@@ -2180,9 +2222,12 @@ function setupGamesChannel() {
 
 /* ─── Create-lobby modal ─── */
 function syncChallengeClockUi() {
-  /* Ranked → always timed (25/15/10). Casual → untimed (hide TC). */
-  const isRanked = $chRanked.checked;
-  $chTcWrap.style.display = isRanked ? '' : 'none';
+  /* Timer is independent of ranked now — host opts in via the
+     "Open timer per turn" checkbox. Custom seconds field shows
+     only when the "custom" preset radio is selected. */
+  $chTcWrap.style.display = $chTimerOn.checked ? '' : 'none';
+  const sel = document.querySelector('input[name="scr-tt"]:checked');
+  $chTcCustom.style.display = (sel && sel.value === 'custom') ? '' : 'none';
 }
 
 function openCreateLobbyModal() {
@@ -2197,6 +2242,8 @@ function openCreateLobbyModal() {
 }
 
 if ($chRanked)        $chRanked.addEventListener('change', syncChallengeClockUi);
+if ($chTimerOn)       $chTimerOn.addEventListener('change', syncChallengeClockUi);
+document.querySelectorAll('input[name="scr-tt"]').forEach(r => r.addEventListener('change', syncChallengeClockUi));
 if ($challengeBtn)    $challengeBtn.addEventListener('click', () => openCreateLobbyModal());
 if ($challengeCancel) $challengeCancel.addEventListener('click', () => $challengeModal.classList.remove('is-open'));
 if ($challengeSend)   $challengeSend.addEventListener('click', sendCreateLobby);
@@ -2212,14 +2259,28 @@ async function sendCreateLobby() {
   const maxRadio = document.querySelector('input[name="scr-max"]:checked');
   const maxPlayers = maxRadio ? parseInt(maxRadio.value, 10) : 4;
   const ranked     = $chRanked.checked;
-  const timeControl = ranked ? ($chTc.value || '25+0') : 'untimed';
+
+  let turnTimeSeconds = null;
+  if ($chTimerOn.checked) {
+    const tt = document.querySelector('input[name="scr-tt"]:checked');
+    const val = tt ? tt.value : '300';
+    if (val === 'custom') {
+      const custom = parseInt(($chTcCustom.value || '').trim(), 10);
+      if (!custom || custom < 30 || custom > 3600) {
+        return showChallengeError('Custom timer must be between 30 and 3600 seconds.');
+      }
+      turnTimeSeconds = custom;
+    } else {
+      turnTimeSeconds = parseInt(val, 10);
+    }
+  }
 
   $challengeSend.disabled = true;
   try {
     const { error } = await window.sb.rpc('create_scrabble_lobby', {
-      p_max_players:  maxPlayers,
-      p_ranked:       ranked,
-      p_time_control: timeControl,
+      p_max_players:        maxPlayers,
+      p_ranked:             ranked,
+      p_turn_time_seconds:  turnTimeSeconds,
     });
     if (error) return showChallengeError('Create failed: ' + (error.message || 'unknown error'));
     $challengeModal.classList.remove('is-open');
@@ -2348,6 +2409,13 @@ let _gameWatchChannel = null;
 let _movesChannel     = null;
 let _rackChannel      = null;
 let _playersChannel   = null;  // arena_scrabble_game_players updates (score changes)
+
+/* Turn timer state — tracked client-side; the server is authoritative.
+   _currentTurnStart caches the last turn_started_at value we saw so
+   we can reset _turnExpireFired exactly once per new turn. */
+let _turnTicker       = null;
+let _currentTurnStart = null;
+let _turnExpireFired  = false;
 
 const $board        = document.getElementById('scrabbleBoard');
 const $rack         = document.getElementById('scrabbleRack');
@@ -2532,17 +2600,84 @@ function paintBoard() {
 
 function paintTurn() {
   if (!$turn || !_gameRow) return;
+  /* For untimed games we just write the static "X to move" string; for
+     timed games the live tick handles it via updateTurnCountdown(). */
+  if (_gameRow.turn_time_seconds && _gameRow.turn_started_at) {
+    if (!_turnTicker) startTurnTicker();
+    updateTurnCountdown();
+  } else {
+    stopTurnTicker();
+    const mover = _gamePlayers.find(p => p.seat === _gameRow.to_move);
+    const moverName = mover ? (mover.name || (mover.email || '').split('@')[0]) : '—';
+    const yourTurn  = (_mySeat === _gameRow.to_move);
+    $turn.innerHTML = '<strong>' + escapeHtml(moverName) + '</strong> to move' + (yourTurn ? ' · your move' : '');
+  }
+}
+
+/* ── Per-turn timer ──
+   Updates the turn indicator every 500ms with a live mm:ss countdown.
+   When the clock hits zero, the client whose tab is open fires the
+   expire_scrabble_turn RPC. Multiple tabs may race; the RPC's row-lock
+   + server-side deadline check ensures only one call sticks.
+   _turnExpireFired is cleared whenever turn_started_at changes, so
+   each new turn gets one expire attempt per client. */
+function startTurnTicker() {
+  stopTurnTicker();
+  _turnTicker = setInterval(updateTurnCountdown, 500);
+}
+function stopTurnTicker() {
+  if (_turnTicker) { clearInterval(_turnTicker); _turnTicker = null; }
+}
+function updateTurnCountdown() {
+  if (!$turn || !_gameRow) return;
+  if (_gameRow.status !== 'active') { stopTurnTicker(); return; }
+  if (!_gameRow.turn_time_seconds || !_gameRow.turn_started_at) {
+    stopTurnTicker(); return;
+  }
+
+  /* Reset the "expire already fired" guard when we detect a fresh turn. */
+  if (_currentTurnStart !== _gameRow.turn_started_at) {
+    _currentTurnStart = _gameRow.turn_started_at;
+    _turnExpireFired  = false;
+  }
+
+  const startMs    = new Date(_gameRow.turn_started_at).getTime();
+  const deadlineMs = startMs + _gameRow.turn_time_seconds * 1000;
+  const remainingMs = Math.max(0, deadlineMs - Date.now());
+
   const mover = _gamePlayers.find(p => p.seat === _gameRow.to_move);
   const moverName = mover ? (mover.name || (mover.email || '').split('@')[0]) : '—';
   const yourTurn  = (_mySeat === _gameRow.to_move);
-  $turn.innerHTML = '<strong>' + escapeHtml(moverName) + '</strong> to move' + (yourTurn ? ' · your move' : '');
+  const secs = Math.ceil(remainingMs / 1000);
+  const mm = Math.floor(secs / 60);
+  const ss = secs % 60;
+  const clockText = mm + ':' + (ss < 10 ? '0' + ss : ss);
+  const urgent = remainingMs < 10000;
+  $turn.innerHTML = '<strong>' + escapeHtml(moverName) + '</strong> to move' +
+    (yourTurn ? ' · your move' : '') +
+    ' · <span class="scrabble-turn-clock' + (urgent ? ' is-urgent' : '') + '">' + clockText + '</span>';
+
+  if (remainingMs <= 0 && !_turnExpireFired) {
+    _turnExpireFired = true;
+    /* Small jitter — when several clients hit zero at the same time,
+       only one's RPC succeeds; the others get a "not expired" error
+       and silently retry next turn. */
+    const jitter = 200 + Math.random() * 800;
+    setTimeout(fireExpireTurn, jitter);
+  }
+}
+async function fireExpireTurn() {
+  if (!_gameRow) return;
+  try {
+    await window.sb.rpc('expire_scrabble_turn', { p_game_id: _gameRow.id });
+  } catch (_) { /* lost the race or server-side deadline not hit yet — ignore */ }
 }
 
 function paintPlayers() {
   if (!$players || !_gameRow) return;
   if (!_gamePlayers.length) { $players.innerHTML = ''; return; }
   const ranked  = _gameRow.ranked ? 'Ranked' : 'Casual';
-  const tc      = _gameRow.time_control || 'untimed';
+  const tc      = formatTurnTime(_gameRow.turn_time_seconds);
   const meTag   = '<span style="color:#a78bfa;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;font-weight:700;margin-left:6px;">You</span>';
   $players.innerHTML = _gamePlayers.map(p => {
     const name  = (p.name && p.name.trim()) ? p.name : ((p.email || '').split('@')[0] || '—');
@@ -2603,6 +2738,9 @@ function paintAll() {
 
 function closeGameView() {
   teardownGameChannels();
+  stopTurnTicker();
+  _currentTurnStart = null;
+  _turnExpireFired  = false;
   _gameRow = null;
   _gamePlayers = [];
   _myRack = '';
@@ -2945,6 +3083,9 @@ if ($playBtn) {
         p_tiles:   tiles,
       });
       if (error) {
+        /* Mechanical placement errors (gap, not connected, etc.) still
+           raise so the player can adjust. Dictionary failures don't —
+           they fall through to the forfeit branch below. */
         showGameError(error.message || 'Move rejected by server.');
         soundError();
         return;
@@ -2952,12 +3093,18 @@ if ($playBtn) {
       _pendingTiles = [];
       _selectedSlot = null;
       document.body.classList.remove('scrabble-placing');
-      if (data && data.score != null) {
+      if (data && data.forfeit) {
+        /* Server accepted the placement but rejected a word in the
+           dictionary. Turn is forfeited — tiles stay on the rack
+           (the server never changed it). Loud error banner + sad
+           tone so the player knows what happened. */
+        showGameError('Turn forfeited — "' + (data.invalid_word || '?') + '" isn\'t in the dictionary.');
+        soundError();
+      } else if (data && data.score != null) {
         showGameError('+' + data.score + ' (' + (data.main_word || '') + ')', true);
+        /* 7-tile bingo gets the special chime; otherwise normal submit. */
+        if (tiles.length === 7) soundBingo(); else soundSubmit();
       }
-      /* 7-tile bingo gets the special chime; otherwise the normal
-         submit triad. */
-      if (tiles.length === 7) soundBingo(); else soundSubmit();
       await refetchMyRack();
     } catch (err) {
       showGameError('Unexpected error: ' + (err && err.message || err));
@@ -2988,7 +3135,15 @@ if ($passBtn) {
 if ($exchangeBtn) {
   $exchangeBtn.addEventListener('click', () => {
     if (!canExchange()) {
-      showGameError('Exchange needs at least 7 tiles remaining in the bag.');
+      /* Surface the specific blocker. The most common one will be the
+         3-identical-letters house rule. */
+      if (!_gameRow || (_gameRow.tiles_in_bag || 0) < 7) {
+        showGameError('Exchange needs at least 7 tiles remaining in the bag.');
+      } else if (!hasThreeIdenticalLetters()) {
+        showGameError('Exchange needs 3 of the same letter on your rack.');
+      } else {
+        showGameError('Can\'t exchange right now.');
+      }
       return;
     }
     _exchangePicked = new Set();
@@ -3074,7 +3229,21 @@ function canPlaceTiles() {
       && _mySeat && _gameRow.to_move === _mySeat;
 }
 function canExchange() {
-  return canPlaceTiles() && (_gameRow.tiles_in_bag || 0) >= 7 && !_pendingTiles.length;
+  return canPlaceTiles() && (_gameRow.tiles_in_bag || 0) >= 7
+      && !_pendingTiles.length && hasThreeIdenticalLetters();
+}
+/* House rule: exchange is only legal when the rack holds at least
+   three of the same A-Z letter. Blanks ('?') don't satisfy the rule. */
+function hasThreeIdenticalLetters() {
+  if (!_myRack) return false;
+  const counts = {};
+  for (let i = 0; i < _myRack.length; i++) {
+    const ch = _myRack.charAt(i);
+    if (ch === '?' || ch < 'A' || ch > 'Z') continue;
+    counts[ch] = (counts[ch] || 0) + 1;
+    if (counts[ch] >= 3) return true;
+  }
+  return false;
 }
 function updateActionButtons() {
   const myTurn = canPlaceTiles();
