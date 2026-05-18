@@ -370,6 +370,17 @@
     border-top: 1px solid rgba(139,92,246,0.20);
   }
   .scrabble-lobby-actions:empty { display: none; }
+  .scrabble-lobby-action-hint {
+    flex-basis: 100%;
+    font-size: 12px; line-height: 1.4;
+    color: rgba(255,255,255,0.70);
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: rgba(139,92,246,0.10);
+    border: 1px dashed rgba(139,92,246,0.30);
+  }
+  [data-theme="light"] .scrabble-lobby-action-hint { color: rgba(31,40,63,0.78); }
+  .scrabble-lobby-action-hint strong { color: #a78bfa; }
   .scrabble-lobby-action-btn {
     padding: 8px 14px;
     background: rgba(139,92,246,0.16);
@@ -1762,10 +1773,16 @@ async function getCurrentScrabblePoints(email) {
 /* ─── Initial loads ─── */
 async function loadLobbies() {
   if (!_me) return;
+  /* Best-effort cleanup: any open lobby past its expires_at is flipped
+     to status='cancelled' before we load. Failure is harmless — the
+     client-side filter below also excludes overdue rows. */
+  try { await window.sb.rpc('expire_stale_scrabble_lobbies'); } catch (_) {}
+
   const { data, error } = await window.sb
     .from('arena_scrabble_lobbies')
     .select('*, players:arena_scrabble_lobby_players(user_id, email, name, status, joined_at, created_at)')
     .eq('status', 'open')
+    .gt('expires_at', new Date().toISOString())
     .order('created_at', { ascending: false });
   if (error) { console.warn('loadLobbies error', error); return; }
   _lobbies = (data || []).map(lobby => ({
@@ -1899,6 +1916,18 @@ function formatTurnTime(seconds) {
   return Math.floor(n / 60) + 'm' + (n % 60) + 's/turn';
 }
 
+/* Lobby expiry helper — renders a compact "expires in N min" / "expires in
+   <1 min" / "expired" label for an ISO timestamp. */
+function formatExpiry(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (!t) return '';
+  const diffMs = t - Date.now();
+  if (diffMs <= 0)        return 'expired';
+  if (diffMs < 60_000)    return 'expires in <1 min';
+  return 'expires in ' + Math.ceil(diffMs / 60_000) + ' min';
+}
+
 function friendlyTime(iso) {
   const t = new Date(iso).getTime();
   if (!t) return '';
@@ -1931,10 +1960,12 @@ function renderMyLobby() {
 
   const joinedCount = (_myLobby.players || []).filter(p => p.status === 'joined').length;
 
+  const expiryLabel = _myLobby.expires_at ? formatExpiry(_myLobby.expires_at) : '';
   $title.textContent  = isHost ? 'Your lobby (host)' : 'Lobby — waiting for host';
   $meta.textContent   = joinedCount + '/' + _myLobby.max_players + ' joined · '
                       + (_myLobby.ranked ? 'Ranked' : 'Casual')
-                      + ' · ' + formatTurnTime(_myLobby.turn_time_seconds);
+                      + ' · ' + formatTurnTime(_myLobby.turn_time_seconds)
+                      + (expiryLabel ? ' · ' + expiryLabel : '');
 
   $players.innerHTML = (_myLobby.players || []).map(p => {
     const name = p.name || (p.email || '').split('@')[0];
@@ -1969,12 +2000,16 @@ function renderMyLobby() {
     '</li>';
   }).join('');
 
-  /* Host action row: Start (≥2 joined) + Cancel lobby.
-     Non-host: invited→Accept/Decline, requested→Cancel, joined→Leave. */
+  /* Host action row: Start (≥2 joined) + Cancel lobby. When the host
+     is the only joined player we add a hint pointing at the Online
+     Now block (which carries the per-user Invite buttons). */
   let actionsHtml = '';
   if (isHost) {
     const canStart = joinedCount >= 2;
-    actionsHtml +=
+    const aloneHint = joinedCount < 2
+      ? '<div class="scrabble-lobby-action-hint">Invite players from <strong>Online now</strong> below ↓ or wait for join requests.</div>'
+      : '';
+    actionsHtml += aloneHint +
       '<button class="scrabble-lobby-action-btn is-primary" type="button" data-action="scr-start"' +
         (canStart ? '' : ' disabled title="Need 2+ joined players to start"') +
         '>Start game (' + joinedCount + ')</button>' +
@@ -2015,9 +2050,11 @@ function renderOpenLobbies() {
     const hostName = l.host_name || (l.host_email || '').split('@')[0];
     const joinedCount = (l.players || []).filter(p => p.status === 'joined').length;
     const isFull = joinedCount >= l.max_players;
+    const expiryLabel = l.expires_at ? formatExpiry(l.expires_at) : '';
     const meta = joinedCount + '/' + l.max_players + ' · '
                + (l.ranked ? 'Ranked' : 'Casual')
-               + ' · ' + formatTurnTime(l.turn_time_seconds);
+               + ' · ' + formatTurnTime(l.turn_time_seconds)
+               + (expiryLabel ? ' · ' + expiryLabel : '');
     const btnLabel = isFull ? 'Full' : 'Request to join';
     return '<li class="scrabble-lobby-row">' +
       '<div class="scrabble-lobby-row-name">' +
