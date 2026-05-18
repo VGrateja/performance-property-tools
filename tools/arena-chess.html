@@ -292,16 +292,24 @@
 
   /* ─── Game view: board + side panel.
      Hidden by default; revealed when state machine flips to 'playing'.
-     Layout is two-column on desktop, stacked on narrow screens. */
+     Two-column on desktop with a wider sidebar so the captured-piece
+     tray + move list breathe; stacked on narrow screens. */
   .chess-game-view{
     display: none;
-    grid-template-columns: minmax(0, 1fr) 280px;
-    gap: 28px;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 32px;
     margin-bottom: 36px;
   }
   .chess-game-view.is-open{ display: grid; }
   @media (max-width: 820px){
     .chess-game-view{ grid-template-columns: 1fr; }
+  }
+  /* The chess-inner wrapper around the game view widens out so the
+     board has more room than the 1100px lobby/landing constraint.
+     Bumped to 1500px so the board can reach ~860px on a 1080p+
+     monitor without pushing the sidebar off the edge. */
+  .chess-inner--game{
+    max-width: 1500px;
   }
 
   /* The board wrapper centres an 8×8 grid that scales with viewport. */
@@ -329,11 +337,14 @@
 
   /* Wrapper around the board so the absolute-positioned promotion
      picker shares its coordinate space (no negative margins or
-     window-relative maths). */
+     window-relative maths). Sizing clamps the board to at most
+     ~860px wide AND ~(viewport height − 240px) tall, so on shorter
+     windows the board shrinks to keep both rails + the result panel
+     comfortably visible. */
   .chess-board-stack{
     position: relative;
     width: 100%;
-    max-width: 560px;
+    max-width: min(860px, calc(100vh - 240px));
   }
   .chess-board{
     display: grid;
@@ -341,7 +352,7 @@
     grid-template-rows: repeat(8, 1fr);
     aspect-ratio: 1;
     width: 100%;
-    max-width: 560px;
+    max-width: min(860px, calc(100vh - 240px));
     border: 2px solid rgba(0, 182, 203, 0.40);
     border-radius: 6px;
     overflow: hidden;
@@ -1212,6 +1223,48 @@
   .chess-lobby-center .chess-matches-list { gap: 8px; }
   .chess-lobby-center .chess-match-row { padding: 10px 14px; }
 
+  /* "Resume your game" callout — high-priority visual treatment so
+     it's hard to miss after the player accidentally exits an active
+     game. Cyan-tinted gradient + soft glow matching the chess theme. */
+  .chess-resume-block {
+    background: linear-gradient(135deg, rgba(0,182,203,0.32) 0%, rgba(0,182,203,0.10) 100%);
+    border-color: rgba(0,182,203,0.55);
+    box-shadow: 0 6px 22px rgba(0,182,203,0.18);
+  }
+  [data-theme="light"] .chess-resume-block {
+    background: linear-gradient(135deg, rgba(0,182,203,0.18) 0%, rgba(255,255,255,0.94) 100%);
+    border-color: rgba(0,182,203,0.50);
+  }
+  .chess-resume-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 6px 4px 4px;
+  }
+  .chess-resume-info {
+    flex: 1 1 auto; min-width: 0;
+    font-size: 13.5px; line-height: 1.45;
+  }
+  .chess-resume-info strong {
+    font-family:'Montserrat',sans-serif; font-weight:700;
+    display: block; margin-bottom: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .chess-resume-info-meta {
+    font-size: 11px; color: rgba(255,255,255,0.62);
+  }
+  [data-theme="light"] .chess-resume-info-meta { color: rgba(31,40,63,0.62); }
+  .chess-resume-btn {
+    flex: 0 0 auto;
+    padding: 11px 18px;
+    background: #00b6cb; color: #0a1520;
+    border: none; border-radius: 10px;
+    font-family:'Montserrat',sans-serif; font-weight:800;
+    font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0,182,203,0.35);
+    transition: background .12s ease, transform .12s ease;
+  }
+  .chess-resume-btn:hover { background: #00c8da; transform: translateY(-1px); }
+
   .chess-lobby-list {
     list-style: none;
     margin: 0; padding: 0;
@@ -1502,6 +1555,16 @@
 
     <!-- ── CENTRE — online / challenges / spectate / recent ── -->
     <main class="chess-lobby-center">
+
+      <!-- "Resume your game" callout — shown only when I'm a player in
+           an active game. Lets me re-enter as a player after accidentally
+           clicking "Back to lobby". Same pattern as Scrabble. -->
+      <div class="chess-lobby-block chess-resume-block" id="chessResumeBlock" style="display:none;">
+        <div class="chess-lobby-block-head">
+          <h3 class="chess-lobby-block-title">Your active game</h3>
+        </div>
+        <div class="chess-resume-row" id="chessResumeRow"></div>
+      </div>
 
       <div class="chess-lobby-block">
         <div class="chess-lobby-block-head">
@@ -2602,6 +2665,7 @@ let _onlineUsers = new Map();   // email → { userId, email, name }
 let _incomingChallenges = [];   // pending challenges where I'm challengee
 let _outgoingChallenges = [];   // pending challenges I sent
 let _spectateGames = [];        // active games (status = 'active')
+let _myActiveGame  = null;      // active game I'm a player in (or null) — drives the Resume callout
 
 let _presenceChannel  = null;
 let _challengesChannel = null;
@@ -2647,12 +2711,20 @@ async function loadActiveGames() {
   if (!window.sb) return;
   const { data, error } = await window.sb
     .from('arena_chess_games')
-    .select('id, white_email, black_email, white_name, black_name, ranked, time_control, started_at')
+    .select('id, white_user_id, black_user_id, white_email, black_email, white_name, black_name, ranked, time_control, started_at')
     .eq('status', 'active')
     .order('started_at', { ascending: false })
     .limit(20);
   if (error) { console.warn('loadActiveGames error', error); return; }
   _spectateGames = data || [];
+  /* Identify my own active game (if any) — drives the "Resume your
+     game" callout at the top of the lobby and excludes the same game
+     from the Spectate list to avoid the accidental "spectate myself"
+     trap. */
+  _myActiveGame = _me
+    ? (data || []).find(g => g.white_user_id === _me.userId || g.black_user_id === _me.userId) || null
+    : null;
+  renderMyActiveGame();
   renderSpectateList();
 }
 
@@ -2732,14 +2804,42 @@ function renderOnlineList() {
   populateChallengeOpponentSelect();
 }
 
+/* Render the "Resume your game" callout. Only visible when I'm a
+   player in an active game (set by loadActiveGames). Clicking the
+   Resume button re-enters in PLAYER mode (not spectator). */
+function renderMyActiveGame() {
+  const $block = document.getElementById('chessResumeBlock');
+  const $row   = document.getElementById('chessResumeRow');
+  if (!$block || !$row) return;
+  if (!_myActiveGame || !_me) { $block.style.display = 'none'; return; }
+  $block.style.display = '';
+  const g = _myActiveGame;
+  const isWhite = (g.white_user_id === _me.userId);
+  const oppName = isWhite
+    ? ((g.black_name && g.black_name.trim()) || (g.black_email || '').split('@')[0])
+    : ((g.white_name && g.white_name.trim()) || (g.white_email || '').split('@')[0]);
+  const myColour = isWhite ? 'White' : 'Black';
+  const meta = myColour + ' · ' + (g.ranked ? 'Ranked' : 'Casual') + ' · ' + (g.time_control || 'untimed');
+  $row.innerHTML =
+    '<div class="chess-resume-info">' +
+      '<strong>vs ' + escapeHtml(oppName) + '</strong>' +
+      '<span class="chess-resume-info-meta">' + escapeHtml(meta) + '</span>' +
+    '</div>' +
+    '<button class="chess-resume-btn" type="button" data-action="resume-game" data-game="' + escapeHtml(g.id) + '">Resume →</button>';
+}
+
 function renderSpectateList() {
   const $list = document.getElementById('chessSpectateList');
   if (!$list) return;
-  if (!_spectateGames.length) {
+  /* Hide my own game — it's already surfaced via the prominent
+     "Resume your game" block at the top of the lobby. */
+  const myId = _myActiveGame ? _myActiveGame.id : null;
+  const visible = _spectateGames.filter(g => g.id !== myId);
+  if (!visible.length) {
     $list.innerHTML = '<li class="chess-lobby-empty">No games in progress.</li>';
     return;
   }
-  $list.innerHTML = _spectateGames.map(g => {
+  $list.innerHTML = visible.map(g => {
     const wName = (g.white_name && g.white_name.trim()) || (g.white_email || '').split('@')[0];
     const bName = (g.black_name && g.black_name.trim()) || (g.black_email || '').split('@')[0];
     const meta  = (g.ranked ? 'Ranked' : 'Casual') + ' · ' + (g.time_control || 'untimed');
@@ -2766,6 +2866,7 @@ document.addEventListener('click', (ev) => {
   else if (action === 'cancel-challenge')  cancelChallenge(parseInt(btn.dataset.id, 10));
   else if (action === 'challenge-user')    openChallengeModal(btn.dataset.email);
   else if (action === 'spectate-game')     openGameAsSpectator(btn.dataset.game);
+  else if (action === 'resume-game')       openGameAsPlayer(btn.dataset.game);
 });
 
 /* ─── Presence channel ─── */
