@@ -81,6 +81,53 @@ const MONTH_KEY = (() => {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
 })();
 
+/* Region slug → Research Links subsection id. Mirrors RESEARCH_LINKS_SUBS
+   in tools/whitepapers-strategies.html. The "rl-others" subsection is
+   intentionally NOT covered here — it stays user-maintained for ad-hoc
+   links that don't follow the per-month rendered-PDF pattern. */
+const RESEARCH_LINKS_BY_SUB = {
+  'rl-capital': [
+    'sydney', 'melbourne', 'brisbane', 'adelaide',
+    'perth',  'hobart',    'canberra', 'darwin',
+  ],
+  'rl-qld': [
+    'mackay',     'bundaberg',   'ipswich',  'rockhampton', 'gladstone',
+    'cairns',     'townsville',  'sunshine-coast', 'toowoomba', 'gold-coast',
+  ],
+  'rl-nsw': [
+    'albury',         'central-coast', 'coffs-harbour', 'dubbo',     'orange',
+    'port-macquarie', 'newcastle',     'tamworth',      'wagga-wagga', 'wollongong',
+  ],
+  'rl-vicwatas': [
+    'ballarat',  'bendigo', 'geelong',  'wodonga', 'mildura',
+    'rockingham','bunbury', 'launceston',
+  ],
+};
+
+const MONTH_NAMES = [
+  'January', 'February', 'March',     'April',   'May',      'June',
+  'July',    'August',   'September', 'October', 'November', 'December',
+];
+
+function slugToTitle(slug) {
+  return slug.split('-')
+    .map(p => p.charAt(0).toUpperCase() + p.slice(1))
+    .join(' ');
+}
+function publicPdfUrl(slug) {
+  return SUPABASE_URL + '/storage/v1/object/public/' + BUCKET + '/' + MONTH_KEY + '/' + slug + '.pdf';
+}
+function formatTodayDMY() {
+  const d = new Date();
+  return String(d.getDate()).padStart(2, '0') + '/' +
+         String(d.getMonth() + 1).padStart(2, '0') + '/' +
+         d.getFullYear();
+}
+function formatMonthLabel() {
+  const [y, m] = MONTH_KEY.split('-');
+  return MONTH_NAMES[parseInt(m, 10) - 1] + ' ' + y;
+}
+
 function requireEnv() {
   const missing = [
     ['SUPABASE_URL',              SUPABASE_URL],
@@ -322,6 +369,66 @@ async function cleanupOldMonths(sb) {
   return { deleted, kept: Array.from(keep) };
 }
 
+/* Auto-populate the Research Links folder in documents_state with one
+   item per region that rendered successfully this run. Only the four
+   region subsections (rl-capital / rl-qld / rl-nsw / rl-vicwatas) get
+   touched — "rl-others" stays user-managed.
+   The whole items list per subsection is REPLACED each month so the
+   page always shows the latest edition's links + nothing stale. */
+async function updateResearchLinks(sb, successfulFullSlugs) {
+  const successSet  = new Set(successfulFullSlugs);
+  const editionLbl  = formatMonthLabel();
+  const today       = formatTodayDMY();
+
+  const { data: row, error: fetchErr } = await sb
+    .from('documents_state')
+    .select('id, payload')
+    .eq('id', 1)
+    .maybeSingle();
+  if (fetchErr || !row) {
+    console.warn('Research Links update skipped — could not read documents_state' +
+                 (fetchErr ? ' (' + fetchErr.message + ')' : ''));
+    return;
+  }
+
+  const payload  = row.payload || {};
+  const sections = Array.isArray(payload.sections) ? payload.sections : [];
+  const rlSec    = sections.find(s => s && s.id === 'research-links');
+  if (!rlSec) {
+    console.warn('Research Links update skipped — no "research-links" section in documents_state');
+    return;
+  }
+
+  /* Banner above the folder shows whatever the renderer last set. */
+  rlSec.currentEdition = editionLbl;
+
+  rlSec.subsections = (rlSec.subsections || []).map(sub => {
+    const slugList = RESEARCH_LINKS_BY_SUB[sub && sub.id];
+    if (!slugList) return sub;   // leave rl-others (or anything custom) alone
+    const items = slugList
+      .filter(s => successSet.has(s))
+      .map(s => ({
+        title:  slugToTitle(s),
+        url:    publicPdfUrl(s),
+        status: 'approved',
+        date:   today,
+      }));
+    return { ...sub, items };
+  });
+
+  const { error: writeErr } = await sb
+    .from('documents_state')
+    .update({ payload, updated_at: new Date().toISOString() })
+    .eq('id', 1);
+  if (writeErr) {
+    console.warn('Research Links update failed: ' + writeErr.message);
+    return;
+  }
+  const totalItems = rlSec.subsections.reduce((n, s) => n + (s.items ? s.items.length : 0), 0);
+  console.log('Research Links updated → ' + editionLbl + ' (' + totalItems + ' links across 4 subsections)');
+}
+
+
 async function main() {
   requireEnv();
 
@@ -344,6 +451,10 @@ async function main() {
   let   done    = 0;
   let   ok      = 0;
   const failed  = [];
+  /* Track which slugs' FULL PDFs uploaded successfully — those are the
+     ones that get linked from Research Links. (Lite PDFs are rendered
+     and stored but not surfaced in the Documents page.) */
+  const successfulFullSlugs = [];
 
   console.log('Rendering ' + total + ' PDFs into ' + BUCKET + '/' + MONTH_KEY + '/…\n');
 
@@ -358,6 +469,7 @@ async function main() {
           const dt = ((Date.now() - t0) / 1000).toFixed(1);
           console.log(label + ' → ' + path + '  (' + dt + 's, ' + Math.round(buf.length / 1024) + ' KB)');
           ok++;
+          if (!lite) successfulFullSlugs.push(slug);
         } catch (err) {
           console.error(label + ' FAILED after 2 attempts: ' + (err && err.message || err));
           failed.push(slug + (lite ? ' (lite)' : ' (full)'));
@@ -372,6 +484,9 @@ async function main() {
       const r = await cleanupOldMonths(sb);
       if (r.deleted) console.log('  pruned ' + r.deleted + ' file(s)');
       if (r.kept)    console.log('  kept months: ' + r.kept.join(', '));
+
+      console.log('Updating Research Links in documents_state…');
+      await updateResearchLinks(sb, successfulFullSlugs);
     }
 
     if (failed.length) {
