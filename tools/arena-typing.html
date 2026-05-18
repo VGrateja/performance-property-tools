@@ -1860,19 +1860,32 @@ async function fetchLeaderboard() {
     return;
   }
   try {
-    /* Top 10 rows for this mode + word list. Reads the denormalised
-       player_email / player_name columns directly — no join into
-       public.profiles, which would be blocked by that table's RLS for
-       non-writer users (they can only read their own profile row). */
+    /* Pull a wider window of top-WPM rows for this mode + word list,
+       then dedupe by player_email so each player appears at most once
+       (their best run). 200 rows is plenty of headroom — even if one
+       player completely dominates the top, we'll still have 10 distinct
+       names after the dedup pass. Reads denormalised player_email /
+       player_name columns directly so profiles RLS doesn't bite. */
     const { data, error } = await window.sb
       .from('arena_typing_scores')
       .select('id, wpm, accuracy, completed_at, user_id, player_email, player_name')
       .eq('mode_seconds', modeSeconds)
       .eq('word_list', wordList)
       .order('wpm', { ascending: false })
-      .limit(10);
+      .limit(200);
     if (error) throw error;
-    renderLeaderboard(data || []);
+    /* Dedup by email — rows are already in WPM-desc order so the
+       FIRST occurrence per player is their personal best. */
+    const seen = new Set();
+    const top = [];
+    for (const r of (data || [])) {
+      const key = (r.player_email || '').toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      top.push(r);
+      if (top.length >= 10) break;
+    }
+    renderLeaderboard(top);
   } catch (e) {
     console.warn('fetchLeaderboard failed:', e);
     $boardHost.innerHTML = '<div class="typing-board-empty">Could not load leaderboard</div>';
