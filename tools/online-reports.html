@@ -11609,16 +11609,27 @@ function ppPrebuiltStoragePath(regionSlug, lite, monthKey) {
   return month + '/' + (lite ? 'lite/' : '') + regionSlug + '.pdf';
 }
 
-/* Synchronous — bucket is public so the URL is deterministic. */
-function ppPrebuiltPublicUrl(regionSlug, lite, monthKey) {
+/* Async — bucket is private (migration 028), so we request a 1-hour
+   signed URL that the user's session token can fetch. Returns null if
+   signing fails (e.g. user signed out mid-session, or RLS denies). */
+async function ppPrebuiltSignedUrl(regionSlug, lite, monthKey) {
   if (!window.sb || !window.sb.storage) return null;
   const path = ppPrebuiltStoragePath(regionSlug, lite, monthKey);
-  const { data } = window.sb.storage.from(PREBUILT_BUCKET).getPublicUrl(path);
-  return (data && data.publicUrl) || null;
+  try {
+    const { data, error } = await window.sb.storage
+      .from(PREBUILT_BUCKET)
+      .createSignedUrl(path, 3600);
+    if (error) return null;
+    return (data && data.signedUrl) || null;
+  } catch (_) {
+    return null;
+  }
 }
 
 /* { exists, lastModified, size, publicUrl } or null. Uses
-   storage.list() so we get the upload date for the toolbar pill. */
+   storage.list() so we get the upload date for the toolbar pill.
+   `publicUrl` key preserved for downstream callers but now holds a
+   short-lived signed URL (bucket is private as of migration 028). */
 async function ppPrebuiltCheck(regionSlug, lite, monthKey) {
   if (!window.sb || !window.sb.storage) return null;
   const month = monthKey || ppPrebuiltMonthKey();
@@ -11631,11 +11642,13 @@ async function ppPrebuiltCheck(regionSlug, lite, monthKey) {
     if (error || !Array.isArray(data)) return null;
     const hit = data.find(f => f.name === filename);
     if (!hit) return null;
+    const signedUrl = await ppPrebuiltSignedUrl(regionSlug, lite, month);
+    if (!signedUrl) return null;
     return {
       exists: true,
       lastModified: hit.updated_at || hit.created_at || null,
       size: (hit.metadata && hit.metadata.size) || null,
-      publicUrl: ppPrebuiltPublicUrl(regionSlug, lite, month),
+      publicUrl: signedUrl,
     };
   } catch (_) {
     return null;
