@@ -2729,6 +2729,45 @@ renderAll();
    sees something immediately. The cloud version, if present, will
    override and re-render. */
 _hydrateFromCloud();
+
+/* ─── Signed-URL interceptor for online-reports storage links ───
+   Migration 028 flipped the online-reports bucket from public to
+   private. The GitHub Actions renderer (scripts/render-reports.mjs)
+   still writes deterministic public URLs into documents_state for
+   each region's rendered PDF, and we don't want to force a re-render
+   to migrate every entry. Instead, intercept clicks on any anchor
+   whose href points at the now-locked-down public storage URL,
+   extract the path inside the bucket, and request a 1-hour signed
+   URL using the user's session. Open that in a new tab. Falls back
+   to letting the click through unchanged if signing fails (so the
+   user sees the 403 with the original URL in the address bar, which
+   is at least debuggable). */
+document.addEventListener('click', async function (e) {
+  const a = e.target && e.target.closest && e.target.closest('a[href*="/storage/v1/object/public/online-reports/"]');
+  if (!a) return;
+  const m = a.href.match(/\/storage\/v1\/object\/public\/online-reports\/(.+)$/);
+  if (!m) return;
+  e.preventDefault();
+  const path = decodeURIComponent(m[1]);
+  if (!window.sb || !window.sb.storage) {
+    window.open(a.href, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  try {
+    const { data, error } = await window.sb.storage
+      .from('online-reports')
+      .createSignedUrl(path, 3600);
+    if (error || !data || !data.signedUrl) {
+      console.warn('Could not sign report URL', error);
+      window.open(a.href, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+  } catch (err) {
+    console.warn('Signed URL fetch failed', err);
+    window.open(a.href, '_blank', 'noopener,noreferrer');
+  }
+}, true);
 </script>
 </body>
 </html>
