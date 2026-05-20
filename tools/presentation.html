@@ -436,6 +436,44 @@
   .pres-deck-meta-item{ display:inline-flex; align-items:center; gap:5px }
   .pres-deck-meta-dot{ width:6px; height:6px; border-radius:50%; background:var(--accent) }
 
+  /* ─── Inline edit affordances on the picker cards ─────────────────
+     Only active when body.pres-edit-mode is set AND the deck is
+     custom (built-in DECKS isn't editable). Title and "Updated …"
+     date get a dashed cyan outline on hover to signal click-to-edit,
+     and switch to a focused outline + caret while editing. Clicks on
+     these elements stop propagation so they don't also fire the
+     card's open-deck handler. */
+  body.pres-edit-mode .pres-deck-card .pres-deck-title.is-editable,
+  body.pres-edit-mode .pres-deck-card .pres-deck-date.is-editable{
+    cursor:text;
+    outline:1px dashed rgba(0,182,203,0.45);
+    outline-offset:4px;
+    border-radius:4px;
+    transition:outline-color 120ms ease, outline-style 120ms ease;
+  }
+  body.pres-edit-mode .pres-deck-card .pres-deck-title.is-editable:hover,
+  body.pres-edit-mode .pres-deck-card .pres-deck-date.is-editable:hover{
+    outline-style:solid;
+    outline-color:rgba(0,182,203,0.75);
+  }
+  body.pres-edit-mode .pres-deck-card .pres-deck-title[contenteditable="true"]:focus,
+  body.pres-edit-mode .pres-deck-card .pres-deck-date[contenteditable="true"]:focus{
+    outline:2px solid var(--accent);
+    outline-offset:3px;
+  }
+  .pres-deck-date-input{
+    background:transparent;
+    border:1px solid rgba(0,182,203,0.6);
+    color:inherit;
+    font:inherit;
+    border-radius:4px;
+    padding:1px 6px;
+    letter-spacing:inherit;
+    text-transform:none;
+    color-scheme:dark;
+  }
+  [data-theme="light"] .pres-deck-date-input{ color-scheme:light }
+
   /* ─── Slide stage ─── */
   /* Top inset bumped to 64px so the floating chrome buttons (top:16
      + ~36 height) clear the slide; the previous 54px chrome bar is
@@ -2801,6 +2839,34 @@ try {
   _customDecks = JSON.parse(localStorage.getItem(CUSTOM_DECKS_KEY) || '[]') || [];
   if (!Array.isArray(_customDecks)) _customDecks = [];
 } catch (_) { _customDecks = []; }
+
+/* Migration: older user decks were created with hardcoded placeholder
+   strings ("Custom" badge, "User-created presentation." description,
+   "Empty deck" / "Add slides via the rail" cardMeta). They clutter
+   the picker. Strip them so old decks render clean without forcing
+   the user to re-create them. Idempotent — only mutates fields that
+   still match the placeholder. Runs on initial load AND again after
+   cloud hydration (the cloud copy may still have the placeholders). */
+function scrubLegacyDeckPlaceholders() {
+  let changed = false;
+  _customDecks.forEach(d => {
+    if (d.badge === 'Custom') { delete d.badge; changed = true; }
+    if (d.description === 'User-created presentation.') { delete d.description; changed = true; }
+    if (Array.isArray(d.cardMeta)) {
+      const filtered = d.cardMeta.filter(m => m !== 'Empty deck' && m !== 'Add slides via the rail');
+      if (filtered.length !== d.cardMeta.length) {
+        if (filtered.length === 0) delete d.cardMeta;
+        else d.cardMeta = filtered;
+        changed = true;
+      }
+    }
+  });
+  if (changed) {
+    try { localStorage.setItem(CUSTOM_DECKS_KEY, JSON.stringify(_customDecks)); } catch (_) {}
+  }
+  return changed;
+}
+scrubLegacyDeckPlaceholders();
 function saveCustomDecks() {
   try { localStorage.setItem(CUSTOM_DECKS_KEY, JSON.stringify(_customDecks)); } catch (_) {}
   /* Push to shared cloud bin (debounced; admin-only). Defined later
@@ -2886,7 +2952,9 @@ const tpDelete      = document.getElementById('pres-tp-delete');
 
 /* ─── Picker ─── render the deck cards. Built-in decks first,
    then user-created decks, then a "+ New Presentation" tile that
-   spawns a fresh empty deck. */
+   spawns a fresh empty deck. In edit mode, title + last-updated
+   date become inline-editable on custom decks (built-in DECKS is
+   currently empty, so in practice every card is editable). */
 function buildPicker() {
   pickerGrid.innerHTML = '';
   const all = getAllDecks();
@@ -2897,20 +2965,46 @@ function buildPicker() {
     /* Slide count chip — always reflects current state, since
        built-in decks now ship empty and user decks grow. */
     const slideCount = (deck.slides || []).length;
-    const meta = (deck.cardMeta && deck.cardMeta.length)
+    const baseMeta = (deck.cardMeta && deck.cardMeta.length)
       ? deck.cardMeta
       : [slideCount + ' slide' + (slideCount === 1 ? '' : 's')];
+    const dateDisplay = _formatDeckUpdated(deck.lastUpdated);
+    const titleEditableClass = deck.custom ? ' is-editable' : '';
+    const dateEditableClass  = deck.custom ? ' is-editable' : '';
     card.innerHTML = `
       <div class="pres-deck-badge">${deck.badge || 'Deck ' + (i + 1)}</div>
       <div class="pres-deck-icon">${deck.icon || '🎤'}</div>
-      <h3 class="pres-deck-title">${deck.title}</h3>
+      <h3 class="pres-deck-title${titleEditableClass}" data-field="title">${deck.title}</h3>
       <p class="pres-deck-sub">${deck.description || ''}</p>
       <div class="pres-deck-meta">
-        ${meta.map(m => `
+        ${baseMeta.map(m => `
           <span class="pres-deck-meta-item"><span class="pres-deck-meta-dot"></span>${m}</span>
         `).join('')}
+        <span class="pres-deck-meta-item"><span class="pres-deck-meta-dot"></span><span class="pres-deck-date${dateEditableClass}" data-field="date">${dateDisplay}</span></span>
       </div>`;
-    card.addEventListener('click', () => openDeck(deck.id));
+    /* Inline-edit wiring — only fires when in edit mode and the deck
+       is custom. Click on the title or date enters an edit state that
+       stops propagation so the card's open-deck click doesn't fire. */
+    if (deck.custom) {
+      const titleEl = card.querySelector('.pres-deck-title');
+      const dateEl  = card.querySelector('.pres-deck-date');
+      titleEl.addEventListener('click', (ev) => {
+        if (!_editMode) return;
+        ev.stopPropagation();
+        _pickerEditTitle(titleEl, deck);
+      });
+      dateEl.addEventListener('click', (ev) => {
+        if (!_editMode) return;
+        ev.stopPropagation();
+        _pickerEditDate(dateEl, deck);
+      });
+    }
+    card.addEventListener('click', (ev) => {
+      /* Ignore clicks that bubbled up from an active edit field. */
+      if (ev.target.isContentEditable) return;
+      if (ev.target.closest('.pres-deck-date-input')) return;
+      openDeck(deck.id);
+    });
     /* User-created decks get a delete button — built-in ones can't
        be removed (they're metadata-only and harmless to leave). */
     if (deck.custom) {
@@ -2955,12 +3049,15 @@ function buildPicker() {
 }
 
 /* Spawn a new empty user-created deck. Title comes from a prompt
-   (the user can rename later if we add a title editor). The deck
-   is persisted immediately so a refresh doesn't lose it. */
+   (the user can rename later via inline edit on the picker card).
+   `lastUpdated` is stamped on create and re-stamped on every later
+   title / date / slide edit so the picker can show recency. The
+   deck is persisted immediately so a refresh doesn't lose it. */
 function createNewDeck() {
   const titleInput = prompt('Name this presentation:', 'Untitled Presentation');
   if (titleInput === null) return; /* Cancel */
   const title = (titleInput.trim() || 'Untitled Presentation');
+  const now = new Date().toISOString();
   const deck = {
     id: 'user-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
     custom: true,
@@ -2969,14 +3066,102 @@ function createNewDeck() {
     sub: '',
     meta: new Date().toLocaleDateString('en-AU', { month: 'long', year: 'numeric' }),
     icon: '✨',
-    badge: 'Custom',
-    description: 'User-created presentation.',
-    cardMeta: ['Empty deck', 'Add slides via the rail'],
     slides: [],
+    lastUpdated: now,
   };
   _customDecks.push(deck);
   saveCustomDecks();
   openDeck(deck.id);
+}
+
+/* ─── Picker inline-edit helpers ─────────────────────────────────────
+   Used by buildPicker() to wire up title + date editing on each
+   custom deck card. Both functions mutate the deck in place, call
+   saveCustomDecks() (which also schedules a debounced cloud push),
+   and re-render the picker so the new value and updated date sync.
+*/
+
+/* Convert a stored lastUpdated ISO string into the short label shown
+   on the picker card. Falls back to "Not updated yet" when the deck
+   pre-dates this field (legacy custom decks). */
+function _formatDeckUpdated(iso) {
+  if (!iso) return 'Not updated yet';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return 'Not updated yet';
+  return 'Updated ' + d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/* Swap the title <h3> into contenteditable mode, focus it, and
+   commit on blur / Enter. Escape cancels. */
+function _pickerEditTitle(el, deck) {
+  if (!deck.custom) return;
+  el.setAttribute('contenteditable', 'true');
+  el.focus();
+  /* Select all the existing text so a keystroke replaces it. */
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  const original = deck.title;
+  let cancelled = false;
+  const commit = () => {
+    el.removeAttribute('contenteditable');
+    el.removeEventListener('blur', commit);
+    el.removeEventListener('keydown', onKey);
+    if (cancelled) { el.textContent = original; return; }
+    const next = (el.textContent || '').trim() || original;
+    if (next === original) { el.textContent = original; return; }
+    deck.title = next;
+    deck.titleHtml = next;
+    deck.lastUpdated = new Date().toISOString();
+    saveCustomDecks();
+    buildPicker();
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); el.blur(); }
+    else if (ev.key === 'Escape') { cancelled = true; el.blur(); }
+  };
+  el.addEventListener('blur', commit);
+  el.addEventListener('keydown', onKey);
+}
+
+/* Swap the "Updated X" span into a date input prefilled with the
+   current lastUpdated. On blur / Enter, persist the new date (as ISO
+   at midnight UTC so the formatter shows a stable day-month-year). */
+function _pickerEditDate(el, deck) {
+  if (!deck.custom) return;
+  const current = deck.lastUpdated ? new Date(deck.lastUpdated) : new Date();
+  const yyyy = current.getFullYear();
+  const mm   = String(current.getMonth() + 1).padStart(2, '0');
+  const dd   = String(current.getDate()).padStart(2, '0');
+  const input = document.createElement('input');
+  input.type = 'date';
+  input.value = yyyy + '-' + mm + '-' + dd;
+  input.className = 'pres-deck-date-input';
+  /* Stop card-open clicks while the picker is open. */
+  input.addEventListener('click', (ev) => ev.stopPropagation());
+  el.replaceWith(input);
+  input.focus();
+  let cancelled = false;
+  const commit = () => {
+    input.removeEventListener('blur', commit);
+    input.removeEventListener('keydown', onKey);
+    if (cancelled || !input.value) { buildPicker(); return; }
+    /* Use noon local time so timezone shifts don't flip the day. */
+    const parts = input.value.split('-').map(Number);
+    const next = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0);
+    if (isNaN(next.getTime())) { buildPicker(); return; }
+    deck.lastUpdated = next.toISOString();
+    saveCustomDecks();
+    buildPicker();
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    else if (ev.key === 'Escape') { cancelled = true; input.blur(); }
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', onKey);
 }
 
 /* ─── Deck open / close ─── */
@@ -7256,6 +7441,10 @@ async function _hydratePresFromCloud() {
     if (Array.isArray(cloud.customDecks)) {
       _customDecks.length = 0;
       cloud.customDecks.forEach(d => _customDecks.push(d));
+      /* Re-run the placeholder scrub on cloud-loaded decks. If
+         anything changed, schedule a cloud save so the next pull
+         from a different machine sees the clean version. */
+      if (scrubLegacyDeckPlaceholders() && _canWritePresCloud) _schedulePresCloudSave();
     }
     if (cloud.overlays && typeof cloud.overlays === 'object') _overlays = cloud.overlays;
     if (cloud.slideBgs && typeof cloud.slideBgs === 'object') _slideBgs = cloud.slideBgs;
