@@ -556,6 +556,13 @@
      the panel. Without this, the panel covers content the user is
      actively editing — exactly the wrong UX. */
   body.pres-text-selected .pres-stage{ right:270px }
+  /* Same idea for the shape settings panel — it sits at right:14
+     with width:260 (20px wider than the text panel), so the inset
+     is 20px deeper to keep the same ~16px breathing room between
+     panel and slide edge. Without this rule the shape panel covered
+     the right side of the slide while the user was editing fills /
+     strokes / gradients. */
+  body.pres-shape-selected .pres-stage{ right:290px }
   /* Fullscreen stage clips the overflow that "cover" scaling
      creates on non-16:9 viewports — without it the scaled-up slide
      bleeds past the screen edges into adjacent UI / scrollbars.
@@ -2648,6 +2655,18 @@
       <input type="text"  id="pres-tp-color-hex" maxlength="7" placeholder="#hex" spellcheck="false" autocomplete="off">
     </div>
   </div>
+  <!-- Background fill behind the text overlay box (or behind a table
+       cell when one is focused). Empty bgColor leaves the box
+       transparent so the slide background shows through; the × button
+       clears it back to that default. -->
+  <div class="pres-tp-row">
+    <label>Background</label>
+    <div class="pres-tp-color-row">
+      <input type="color" id="pres-tp-bg-color"     value="#ffffff">
+      <input type="text"  id="pres-tp-bg-color-hex" maxlength="7" placeholder="#hex" spellcheck="false" autocomplete="off">
+      <button type="button" id="pres-tp-bg-color-clear" class="pres-cell-popover-clear" title="Clear background">↺</button>
+    </div>
+  </div>
   <div class="pres-tp-row">
     <label>Link selected text</label>
     <div class="pres-tp-link-row">
@@ -3087,6 +3106,9 @@ const tpVAlignMiddle = document.getElementById('pres-tp-valign-middle');
 const tpVAlignBottom = document.getElementById('pres-tp-valign-bottom');
 const tpColor       = document.getElementById('pres-tp-color');
 const tpColorHex    = document.getElementById('pres-tp-color-hex');
+const tpBgColor     = document.getElementById('pres-tp-bg-color');
+const tpBgColorHex  = document.getElementById('pres-tp-bg-color-hex');
+const tpBgColorClear= document.getElementById('pres-tp-bg-color-clear');
 const tpLinkAdd     = document.getElementById('pres-tp-link-add');
 const tpLinkRemove  = document.getElementById('pres-tp-link-remove');
 const tpDelete      = document.getElementById('pres-tp-delete');
@@ -3112,7 +3134,8 @@ function _buildThumbOverlay(o) {
     el.style.fontWeight = o.bold   ? '800' : '400';
     el.style.fontStyle  = o.italic ? 'italic' : 'normal';
     el.style.textAlign  = o.align  || 'left';
-    if (o.color) el.style.color = o.color;
+    if (o.color)   el.style.color      = o.color;
+    if (o.bgColor) el.style.background = o.bgColor;
     if (o.underline === 'underline' || o.underline === 'none') {
       el.dataset.deco = o.underline;
     }
@@ -6023,7 +6046,8 @@ function buildOverlayEl(o) {
     el.style.fontWeight = o.bold   ? '800' : '400';
     el.style.fontStyle  = o.italic ? 'italic' : 'normal';
     el.style.textAlign  = o.align || 'left';
-    if (o.color) el.style.color = o.color;
+    if (o.color)   el.style.color      = o.color;
+    if (o.bgColor) el.style.background = o.bgColor;
     /* Underline override — drives the data-deco CSS rule which also
        cascades to descendant <a> so toggling off actually removes
        the link's auto-underline. */
@@ -6489,6 +6513,13 @@ function syncTextPanel() {
       _setColorSwatch(tpColor, '#0a1520');
       tpColorHex.value = '#0a1520';
     }
+    if (cell.bgColor) {
+      _setColorSwatch(tpBgColor, cell.bgColor);
+      tpBgColorHex.value = cell.bgColor;
+    } else {
+      _setColorSwatch(tpBgColor, '#ffffff');
+      tpBgColorHex.value = '';
+    }
     return;
   }
   tpFont.value     = o.fontFamily || 'Montserrat';
@@ -6505,6 +6536,13 @@ function syncTextPanel() {
   } else {
     _setColorSwatch(tpColor, '#0a1520');
     tpColorHex.value = '#0a1520';
+  }
+  if (o.bgColor) {
+    _setColorSwatch(tpBgColor, o.bgColor);
+    tpBgColorHex.value = o.bgColor;
+  } else {
+    _setColorSwatch(tpBgColor, '#ffffff');
+    tpBgColorHex.value = '';
   }
 }
 
@@ -7031,7 +7069,16 @@ function _shApplyPaintToPanel(role, value) {
 function syncShapePanel() {
   const o = getSelectedOverlay();
   const showPanel = !!(o && o.type === 'shape' && _editMode);
+  const wasShowingPanel = document.body.classList.contains('pres-shape-selected');
   document.body.classList.toggle('pres-shape-selected', showPanel);
+  /* Stage right inset shifts when the shape panel comes/goes — same
+     pattern as syncTextPanel. Let the CSS transition (.35s) start,
+     then re-fit the slide so the user keeps seeing the whole slide;
+     track the rulers per-frame so they don't lag the transition. */
+  if (wasShowingPanel !== showPanel) {
+    _trackRulersThroughTransition();
+    if (typeof fitSlide === 'function') setTimeout(fitSlide, 360);
+  }
   if (!showPanel) return;
   shTypeLabel.textContent = o.kind || 'shape';
   _shApplyPaintToPanel('fill',   o.fill);
@@ -7959,6 +8006,30 @@ tpColorHex.addEventListener('change', () => {
   }
   applyTextChange(o => o.color = v);
   _setColorSwatch(tpColor, v);
+});
+/* Background colour — fills the text overlay box (or the focused
+   table cell). Routes to cell.bgColor when a cell is focused, same
+   pattern as the foreground Color row above. The clear button resets
+   to empty so the slide background shows through again. */
+tpBgColor.addEventListener('input', () => {
+  const fc = _getFocusedCell();
+  if (fc) { applyCellChange(cell => cell.bgColor = tpBgColor.value); return; }
+  applyTextChange(o => o.bgColor = tpBgColor.value);
+});
+tpBgColorHex.addEventListener('change', () => {
+  const v = tpBgColorHex.value.trim();
+  if (!/^#[0-9a-fA-F]{6}$/.test(v)) return;
+  const fc = _getFocusedCell();
+  if (fc) applyCellChange(cell => cell.bgColor = v);
+  else    applyTextChange(o => o.bgColor = v);
+  _setColorSwatch(tpBgColor, v);
+});
+tpBgColorClear.addEventListener('click', () => {
+  const fc = _getFocusedCell();
+  if (fc) applyCellChange(cell => cell.bgColor = '');
+  else    applyTextChange(o => o.bgColor = '');
+  _setColorSwatch(tpBgColor, '#ffffff');
+  tpBgColorHex.value = '';
 });
 /* Link / Unlink — both require the user to be inside the editable
    with a non-collapsed selection so the link wraps just the chosen
