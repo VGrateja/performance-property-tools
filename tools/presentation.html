@@ -3158,13 +3158,21 @@ function _buildThumbOverlay(o) {
       el.dataset.deco = o.underline;
     }
     el.innerHTML = o.html != null ? o.html : '';
-  } else if (o.type === 'image' && o.src) {
+  } else if (o.type === 'image' && (o.src || o.storage)) {
     const img = document.createElement('img');
-    img.src = o.src;
     img.draggable = false;
     img.style.width = '100%';
     img.style.height = '100%';
     img.style.objectFit = 'cover';
+    /* Storage-backed thumbnails fetch a signed URL the same way the
+       interactive renderer does; cached after the first call so
+       picker-card refreshes don't re-sign. Legacy inlined data URLs
+       remain supported until the one-shot migration runs. */
+    if (o.storage) {
+      _getSignedImageUrl(o.storage).then(url => { if (url) img.src = url; });
+    } else if (o.src) {
+      img.src = o.src;
+    }
     el.appendChild(img);
   } else if (o.type === 'shape') {
     if (typeof shapeSVG === 'function') el.innerHTML = shapeSVG(o);
@@ -3537,10 +3545,16 @@ function buildThumbOverlayEl(o) {
     el.innerHTML = shapeSVG(o);
   } else if (o.type === 'image') {
     const img = document.createElement('img');
-    img.src = o.src;
     img.draggable = false;
     img.style.width = '100%';
     img.style.height = '100%';
+    /* Same dual-mode handling as the interactive renderer: storage
+       path → signed URL; legacy data URL → use directly. */
+    if (o.storage) {
+      _getSignedImageUrl(o.storage).then(url => { if (url) img.src = url; });
+    } else if (o.src) {
+      img.src = o.src;
+    }
     el.appendChild(img);
   } else if (o.type === 'embed') {
     /* Placeholder badge — the thumbnail rail can't run iframes. */
@@ -4869,22 +4883,48 @@ function ovAddShape(kind) {
   pushHistory();
 }
 function ovAddImage(file) {
+  if (!_activeDeck) return;
+  const deckId = _activeDeck.id;
+  const overlayId = 'i' + Date.now();
   const reader = new FileReader();
-  reader.onload = (ev) => {
+  reader.onload = async (ev) => {
     /* Probe natural size so we can drop the image at a nice scale. */
     const probe = new Image();
-    probe.onload = () => {
+    probe.onload = async () => {
       const maxW = 480, maxH = 320;
       let w = probe.naturalWidth, h = probe.naturalHeight;
       const scale = Math.min(maxW / w, maxH / h, 1);
       w = Math.round(w * scale); h = Math.round(h * scale);
-      currentOverlays().push({
-        id: 'i' + Date.now(), type: 'image',
+      const base = {
+        id: overlayId, type: 'image',
         x: (1280 - w) / 2, y: (720 - h) / 2,
-        w, h, src: ev.target.result,
-      });
+        w, h,
+      };
+      /* Try the Storage upload first. On success the overlay carries
+         o.storage (~80 bytes in the cloud payload) and the rendered
+         <img> resolves to a signed URL. On failure (network, RLS,
+         bucket missing) fall back to inlining the data URL so the
+         user doesn't lose their image — they'll see a warn toast
+         and the payload grows by the file size, but nothing breaks. */
+      let entry;
+      try {
+        const path = await _uploadImageToStorage(file, deckId, overlayId);
+        /* Pre-seed the signed URL cache with a URL we can mint now,
+           so the first render after this finishes shows the image
+           immediately without an extra round trip. */
+        try { await _getSignedImageUrl(path); } catch (_) {}
+        entry = Object.assign({}, base, { storage: path });
+      } catch (e) {
+        console.warn('Image upload failed; inlining as data URL', e);
+        showPresToast(
+          'Image upload failed (' + ((e && e.message) || 'check connection') + ') — storing inline; payload will be larger.',
+          { duration: 6000, warn: true }
+        );
+        entry = Object.assign({}, base, { src: ev.target.result });
+      }
+      currentOverlays().push(entry);
       saveOverlays();
-      _selectedId = currentOverlays()[currentOverlays().length - 1].id;
+      _selectedId = overlayId;
       renderOverlays();
       pushHistory();
     };
@@ -6166,8 +6206,15 @@ function buildOverlayEl(o) {
     el.innerHTML = shapeSVG(o);
   } else if (o.type === 'image') {
     const img = document.createElement('img');
-    img.src = o.src;
     img.draggable = false;
+    /* New (storage-backed) image overlays carry o.storage = bucket
+       path; render fetches a signed URL. Legacy overlays still using
+       inlined o.src (base64 data URL) keep working until migrated. */
+    if (o.storage) {
+      _getSignedImageUrl(o.storage).then(url => { if (url) img.src = url; });
+    } else if (o.src) {
+      img.src = o.src;
+    }
     el.appendChild(img);
   } else if (o.type === 'embed') {
     /* Live-tool iframe rendered with edge cropping + corner resize.
@@ -6973,6 +7020,65 @@ function _pruneOrphanOverlays() {
     if (isOrphan(k)) { delete _slideBgs[k]; pruned++; }
   });
   return pruned;
+}
+
+/* ═══ IMAGE STORAGE ═══════════════════════════════════════════════
+   Image overlays used to inline the file as a base64 data URL inside
+   _overlays, which bloated the shared presentation_state.payload past
+   Supabase's REST body cap once a deck had a few images. Files now
+   live in the `presentation-images` Storage bucket (migration 029);
+   the overlay record just carries o.storage = '<deckId>/<id>.<ext>'.
+
+   Backward-compatible: legacy overlays with o.src as a data URL keep
+   working until the one-shot migration script runs (or until they're
+   re-edited). Render code checks o.storage first, then o.src.       */
+const IMAGE_BUCKET = 'presentation-images';
+const IMAGE_SIGNED_URL_TTL_SECONDS = 3600;            /* server-side expiry */
+const IMAGE_SIGNED_URL_REFRESH_MS  = 55 * 60 * 1000;  /* refresh 5 min early */
+
+/* path → { url, expiresAt }. Re-signs only when within REFRESH_MS of
+   expiry so successive renders don't hammer createSignedUrl. */
+const _signedImageUrlCache = new Map();
+
+async function _getSignedImageUrl(path) {
+  if (!path) return null;
+  if (!window.sb || !window.sb.storage) return null;
+  const now = Date.now();
+  const cached = _signedImageUrlCache.get(path);
+  if (cached && cached.expiresAt > now) return cached.url;
+  try {
+    const { data, error } = await window.sb.storage
+      .from(IMAGE_BUCKET)
+      .createSignedUrl(path, IMAGE_SIGNED_URL_TTL_SECONDS);
+    if (error || !data || !data.signedUrl) return null;
+    _signedImageUrlCache.set(path, {
+      url: data.signedUrl,
+      expiresAt: now + IMAGE_SIGNED_URL_REFRESH_MS,
+    });
+    return data.signedUrl;
+  } catch (_) {
+    return null;
+  }
+}
+
+/* Upload a File / Blob to the bucket under deckId/overlayId.<ext>.
+   contentType defaults from the blob; extension is best-effort from
+   the MIME (image/png → png, image/jpeg → jpg, etc.). Resolves with
+   the bucket path on success, throws on failure so the caller can
+   fall back to inlining as a data URL. upsert:true so the same
+   overlayId can be replaced without a stale 409. */
+async function _uploadImageToStorage(file, deckId, overlayId) {
+  if (!window.sb || !window.sb.storage) throw new Error('Storage client not loaded');
+  if (!deckId || !overlayId) throw new Error('Missing deck/overlay id for upload');
+  const mime = file.type || 'image/png';
+  let ext = (mime.split('/')[1] || 'png').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (ext === 'jpeg') ext = 'jpg';
+  const path = deckId + '/' + overlayId + '.' + ext;
+  const { error } = await window.sb.storage
+    .from(IMAGE_BUCKET)
+    .upload(path, file, { upsert: true, contentType: mime });
+  if (error) throw error;
+  return path;
 }
 
 function _clipPrefix(type, kind) {
