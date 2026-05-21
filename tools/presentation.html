@@ -2351,6 +2351,24 @@
     z-index:10001;
   }
   .pres-toast.on{ opacity:1; transform:translateY(0) }
+  /* Warning variant — surfaces silent failures (cloud save reject,
+     localStorage QuotaExceededError) that used to disappear into a
+     swallowed try/catch. Wider/longer-lived than the routine "Copied!"
+     style; amber border + icon so it reads as "needs attention". */
+  .pres-toast.warn{
+    background:rgba(40,18,8,0.96);
+    color:#ffe2b3;
+    border-color:rgba(251,146,60,0.85);
+    max-width:380px;
+    line-height:1.35;
+    white-space:normal;
+    padding:10px 14px;
+  }
+  [data-theme="light"] .pres-toast.warn{
+    background:rgba(255,250,243,0.98);
+    color:#7a3409;
+    border-color:rgba(234,88,12,0.7);
+  }
   [data-theme="light"] .pres-toast{
     background:rgba(255,255,255,0.96);
     color:#0a1520;
@@ -3022,13 +3040,13 @@ function scrubLegacyDeckPlaceholders() {
     }
   });
   if (changed) {
-    try { localStorage.setItem(CUSTOM_DECKS_KEY, JSON.stringify(_customDecks)); } catch (_) {}
+    _safeLsSet(CUSTOM_DECKS_KEY, JSON.stringify(_customDecks));
   }
   return changed;
 }
 scrubLegacyDeckPlaceholders();
 function saveCustomDecks() {
-  try { localStorage.setItem(CUSTOM_DECKS_KEY, JSON.stringify(_customDecks)); } catch (_) {}
+  _safeLsSet(CUSTOM_DECKS_KEY, JSON.stringify(_customDecks));
   /* Push to shared cloud bin (debounced; admin-only). Defined later
      in the script — guarded with typeof so this stays safe to call
      before the cloud-sync block has executed. */
@@ -3969,6 +3987,16 @@ function deleteSlide(idx) {
   saveActiveDeckIfCustom();
   /* Shift overlay storage keys for slides AFTER the deleted one. */
   shiftSlideStorageDown(_activeDeck.id, idx);
+  /* Belt-and-braces: drop any overlay/bg entries left dangling on a
+     slide index outside the current deck range. The explicit delete +
+     shift above already targets the right keys in the happy path, but
+     this catches stragglers from past sessions where a shift was
+     interrupted by a failed cloud save and orphans piled up in the
+     JSONB payload. Idempotent. */
+  if (_pruneOrphanOverlays() > 0) {
+    saveOverlays();
+    saveSlideBgs();
+  }
   buildThumbnails();
   /* If the deleted slide was the active one, fall back to the slide
      that took its position (or the last slide if we removed the
@@ -4764,15 +4792,15 @@ function loadOverlays() {
 }
 
 function saveThemes() {
-  try { localStorage.setItem(THEMES_KEY, JSON.stringify(_themes)); } catch (_) {}
+  _safeLsSet(THEMES_KEY, JSON.stringify(_themes));
   if (typeof _schedulePresCloudSave === 'function') _schedulePresCloudSave();
 }
 function saveDeckActiveTheme() {
-  try { localStorage.setItem(DECK_ACTIVE_THEME_KEY, JSON.stringify(_deckActiveTheme)); } catch (_) {}
+  _safeLsSet(DECK_ACTIVE_THEME_KEY, JSON.stringify(_deckActiveTheme));
   if (typeof _schedulePresCloudSave === 'function') _schedulePresCloudSave();
 }
 function saveOverlays() {
-  try { localStorage.setItem(OVERLAYS_KEY, JSON.stringify(_overlays)); } catch (_) {}
+  _safeLsSet(OVERLAYS_KEY, JSON.stringify(_overlays));
   /* Refresh the active slide's thumbnail so the side rail reflects
      the edit. Debounced so a continuous drag doesn't rebuild the
      mini-canvas on every pointermove. */
@@ -4780,7 +4808,7 @@ function saveOverlays() {
   if (typeof _schedulePresCloudSave === 'function') _schedulePresCloudSave();
 }
 function saveSlideBgs() {
-  try { localStorage.setItem(SLIDE_BG_KEY, JSON.stringify(_slideBgs)); } catch (_) {}
+  _safeLsSet(SLIDE_BG_KEY, JSON.stringify(_slideBgs));
   if (typeof _scheduleThumbRefresh === 'function') _scheduleThumbRefresh();
   if (typeof _schedulePresCloudSave === 'function') _schedulePresCloudSave();
 }
@@ -6872,16 +6900,79 @@ let _overlayClipboard = null;
    reached the handler (cache, focus, or wiring issue). */
 let _toastEl = null;
 let _toastTimer = null;
-function showPresToast(msg) {
+/* msg: text to show.
+   opts.duration: ms before auto-fade (default 900 — the historic
+     "Copied!" timing). Pass a longer value (e.g. 6000) for warnings
+     the user actually needs time to read.
+   opts.warn:     true → use the amber/warning variant. Used for
+     surfacing save failures that previously got swallowed by a
+     try/catch and left the user wondering why their changes
+     vanished on reload. */
+function showPresToast(msg, opts) {
+  opts = opts || {};
   if (!_toastEl) {
     _toastEl = document.createElement('div');
     _toastEl.className = 'pres-toast';
     document.body.appendChild(_toastEl);
   }
   _toastEl.textContent = msg;
+  _toastEl.classList.toggle('warn', !!opts.warn);
   _toastEl.classList.add('on');
   if (_toastTimer) clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => { _toastEl.classList.remove('on'); }, 900);
+  _toastTimer = setTimeout(() => { _toastEl.classList.remove('on'); }, opts.duration || 900);
+}
+
+/* Wraps localStorage.setItem so QuotaExceededError (and any other
+   write failure) surfaces as a warning toast instead of disappearing
+   into a try/catch. Returns true on success. The old swallow-and-
+   ignore behaviour silently left the in-memory state ahead of disk;
+   a reload then pulled the stale cloud copy and the user lost work
+   without ever seeing an error. */
+function _safeLsSet(key, value) {
+  try { localStorage.setItem(key, value); return true; }
+  catch (e) {
+    const quota = e && (e.name === 'QuotaExceededError' || e.code === 22);
+    const msg = quota
+      ? 'Local cache is full — your changes may not survive a reload. Try removing old slides / decks, or clearing browser data for this site.'
+      : 'Local cache write failed — changes may not persist.';
+    try { showPresToast(msg, { duration: 7000, warn: true }); } catch (_) {}
+    console.warn('Presentation localStorage set failed for', key, e);
+    return false;
+  }
+}
+
+/* Drop any _overlays / _slideBgs entries whose key points to a deck
+   that no longer exists in _customDecks, or to a slide index outside
+   that deck's current slides.length. Past releases of this tool left
+   overlay records behind whenever a slide was deleted (the explicit
+   delete in deleteSlide handled the dropped index, but the shift-down
+   could be interrupted by a failed cloud save and orphans piled up).
+   Called after every operation that could leave stragglers — delete,
+   hydrate from cloud — so the payload stays in sync with the visible
+   deck and the JSONB row doesn't silently bloat past Supabase's REST
+   body cap. Returns the number of orphans pruned. */
+function _pruneOrphanOverlays() {
+  const validCounts = {};
+  (_customDecks || []).forEach(d => {
+    if (d && d.id) validCounts[d.id] = (d.slides || []).length;
+  });
+  const isOrphan = (key) => {
+    const slash = key.lastIndexOf('/');
+    if (slash < 0) return true;
+    const deckId = key.substring(0, slash);
+    const idx = parseInt(key.substring(slash + 1), 10);
+    if (!(deckId in validCounts)) return true;
+    if (!Number.isFinite(idx) || idx < 0 || idx >= validCounts[deckId]) return true;
+    return false;
+  };
+  let pruned = 0;
+  Object.keys(_overlays || {}).forEach(k => {
+    if (isOrphan(k)) { delete _overlays[k]; pruned++; }
+  });
+  Object.keys(_slideBgs || {}).forEach(k => {
+    if (isOrphan(k)) { delete _slideBgs[k]; pruned++; }
+  });
+  return pruned;
 }
 
 function _clipPrefix(type, kind) {
@@ -8252,9 +8343,20 @@ function _schedulePresCloudSave() {
         .from('presentation_state')
         .update({ payload })
         .eq('id', 1);
-      if (error) console.warn('Presentation cloud save:', error);
+      if (error) {
+        console.warn('Presentation cloud save:', error);
+        const detail = (error && (error.message || error.code)) || 'see console';
+        showPresToast(
+          'Cloud save failed (' + detail + '). Your changes may not survive a reload — try removing some content or contact admin.',
+          { duration: 8000, warn: true }
+        );
+      }
     } catch (e) {
       console.warn('Presentation cloud save failed:', e);
+      showPresToast(
+        'Cloud save failed — your changes may not survive a reload. Check the network connection.',
+        { duration: 7000, warn: true }
+      );
     }
   }, PRES_SAVE_DEBOUNCE_MS);
 }
@@ -8310,13 +8412,23 @@ async function _hydratePresFromCloud() {
       _deckActiveTheme = cloud.deckActiveTheme;
     }
 
+    /* Drop any overlay/bg entries hydrated from cloud that don't
+       correspond to a current deck slide. Past versions of this tool
+       left dangling entries when a slide was deleted but the shift /
+       save flow was interrupted — those orphans piled up in the
+       JSONB payload until cloud saves started silently failing
+       against Supabase's REST body cap. Re-saves the cleaned state
+       up to cloud (writer tier only) so the next pull is clean too. */
+    if (_pruneOrphanOverlays() > 0 && _canWritePresCloud) _schedulePresCloudSave();
+
     /* Mirror cloud to localStorage so a refresh without network
-       shows the same content. */
-    try { localStorage.setItem(CUSTOM_DECKS_KEY, JSON.stringify(_customDecks)); } catch (_) {}
-    try { localStorage.setItem(OVERLAYS_KEY,     JSON.stringify(_overlays));    } catch (_) {}
-    try { localStorage.setItem(SLIDE_BG_KEY,     JSON.stringify(_slideBgs));    } catch (_) {}
-    try { localStorage.setItem(THEMES_KEY,            JSON.stringify(_themes));           } catch (_) {}
-    try { localStorage.setItem(DECK_ACTIVE_THEME_KEY, JSON.stringify(_deckActiveTheme)); } catch (_) {}
+       shows the same content. _safeLsSet surfaces QuotaExceededError
+       as a visible toast rather than swallowing it. */
+    _safeLsSet(CUSTOM_DECKS_KEY,       JSON.stringify(_customDecks));
+    _safeLsSet(OVERLAYS_KEY,           JSON.stringify(_overlays));
+    _safeLsSet(SLIDE_BG_KEY,           JSON.stringify(_slideBgs));
+    _safeLsSet(THEMES_KEY,             JSON.stringify(_themes));
+    _safeLsSet(DECK_ACTIVE_THEME_KEY,  JSON.stringify(_deckActiveTheme));
 
     /* Re-render whatever's visible. The picker rebuilds always; the
        active slide's overlays re-render only if a deck is open;
