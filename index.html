@@ -3012,15 +3012,16 @@ function applyHubMultiPage() {
 }
 
 /* ─── Cadence visibility allowlist ───
-   Tier-based gate — open to Tier 0/1/2 (dev/admin/company), which
-   includes the PM page (page 2 of the hub) AND the Cadence tile on
-   it. Both are controlled by body.cadence-allowed. Was previously
-   an email allowlist (Vandolf + Lindsay) while the tool was in
-   pre-scoping; widened once it became general internal use. */
+   Open to every signed-in tier — internal-only tool now, so Tier 3
+   (client) and Tier 4 (guest) see the PM page (and the Cadence
+   tile) the same as Tier 0/1/2. Both are controlled by
+   body.cadence-allowed. The Cadence tool itself still gates write
+   actions via its own isLimitedUser() / RLS checks, so viewers
+   can't mutate boards — only see them. Symmetric tier path also
+   avoids the boot-freeze pattern from the May-2026 incident
+   (asymmetric apply*Visibility wedged the auth chain). */
 function applyCadenceVisibility() {
-  let level = '';
-  try { if (typeof getAccessLevel === 'function') level = getAccessLevel(); } catch (_) {}
-  const allowed = (level === 'dev' || level === 'admin' || level === 'company');
+  const allowed = !!sessionStorage.getItem('pp_auth');
   document.body.classList.toggle('cadence-allowed', !!allowed);
   /* Don't strand someone on the PM page if they've just lost
      access (or never had it). Clears the slider state so the hub
@@ -3030,12 +3031,13 @@ function applyCadenceVisibility() {
 }
 
 /* ─── Vault visibility ───
-   Open to Tier 0/1/2 (dev/admin/company) — symmetric with Cadence
-   and Arena. Was briefly Tier 0 only, but asymmetric gates have a
+   Open to every signed-in tier — internal tool, symmetric path for
+   all of dev/admin/company/client/guest. Asymmetric gates have a
    history of causing the sign-in freeze regression on this hub
    (see feedback_check_user_identity_gates_first.md): when only one
    user/tier triggers a code path during boot, async timing
-   diverges and the auth flow wedges.
+   diverges and the auth flow wedges. Keeping the path identical
+   for every signed-in user closes that footgun for good.
 
    Vault tile contents stay dev-only via per-tile CSS gates so other
    staff see the page exists but find no tools there yet. Add tools
@@ -3043,9 +3045,7 @@ function applyCadenceVisibility() {
    their visibility per-tile (e.g. body:not(.tier-dev) .vault-tool { display:none })
    if you want them hidden from admin/company. */
 function applyVaultVisibility() {
-  let level = '';
-  try { if (typeof getAccessLevel === 'function') level = getAccessLevel(); } catch (_) {}
-  const allowed = (level === 'dev' || level === 'admin' || level === 'company');
+  const allowed = !!sessionStorage.getItem('pp_auth');
   document.body.classList.toggle('vault-allowed', !!allowed);
   if (!allowed) document.body.classList.remove('hub-vault-active');
   applyHubMultiPage();
@@ -3059,24 +3059,24 @@ function navigateToCadence() {
 }
 
 /* ─── Arena visibility ───
-   Open to Tier 0 (dev), Tier 1 (admin), and Tier 2 (company). Used
-   to be an ARENA_EMAILS allowlist while typing test was in early-
-   access; widened to all internal staff tiers now that it's general
-   availability. Tier 3 (client) and Tier 4 (guest) never see Arena. */
+   Open to every signed-in tier — internal tool, so Tier 3/4 see
+   Arena the same as Tier 0/1/2. Symmetric gate avoids the
+   May-2026 freeze pattern where any tier-only branch in boot
+   wedges the auth flow for the excluded tiers. The Arena games
+   themselves are RLS-gated on the server side, so view access
+   here doesn't open up any unintended writes. */
 function applyArenaVisibility() {
-  let level = '';
-  try { if (typeof getAccessLevel === 'function') level = getAccessLevel(); } catch (_) {}
-  const allowed = (level === 'dev' || level === 'admin' || level === 'company');
+  const allowed = !!sessionStorage.getItem('pp_auth');
   document.body.classList.toggle('arena-allowed', !!allowed);
-  /* If the user lost arena access mid-session (or never had it),
-     don't strand them on the Arena page — slide back to main. */
+  /* If the user is signed out mid-session, don't strand them on
+     the Arena page — slide back to main. */
   if (!allowed) document.body.classList.remove('hub-arena-active');
   /* Fire-and-forget the at-a-glance numbers + news feed. Both run
-     every time the hub re-paints, gated by allowed-user check.
-     loadArenaNews() must complete first because it populates
-     _arenaNewsItems, which loadArenaLiveFeed() and loadArenaHighlights()
-     both read for typing-test PBs. Without chaining, those two run
-     before News finishes its Supabase query and miss every PB. */
+     every time the hub re-paints. loadArenaNews() must complete
+     first because it populates _arenaNewsItems, which
+     loadArenaLiveFeed() and loadArenaHighlights() both read for
+     typing-test PBs. Without chaining, those two run before News
+     finishes its Supabase query and miss every PB. */
   if (allowed) {
     loadArenaStats();
     updateArenaCardStats();
