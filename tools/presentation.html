@@ -353,6 +353,48 @@
   /* Delete button on user-created decks — appears in top-right of
      the card so the user can remove decks they no longer need.
      Built-in decks don't get this. */
+  /* ─── Cover-slide thumbnail ───
+     Lives at the top of each deck card. 16:9 to match the slide aspect
+     ratio; clips overflow so the scaled-down 1280×720 .pres-slide
+     stays within the card chrome. The inner .pres-deck-thumb-inner
+     hosts the scaled slide content built by _renderDeckThumb(). */
+  .pres-deck-card .pres-deck-thumb{
+    width:100%;
+    aspect-ratio:16 / 9;
+    position:relative;
+    overflow:hidden;
+    border-radius:8px;
+    border:1px solid rgba(0,182,203,0.20);
+    background:#f8fafc;
+    margin-bottom:14px;
+    flex-shrink:0;
+  }
+  [data-theme="light"] .pres-deck-card .pres-deck-thumb{
+    background:#ffffff;
+    border-color:rgba(31,40,63,0.12);
+  }
+  .pres-deck-card .pres-deck-thumb-inner{
+    position:absolute;
+    inset:0;
+    overflow:hidden;
+  }
+  .pres-deck-card .pres-deck-thumb-inner > .pres-slide{
+    transform-origin:0 0;
+    pointer-events:none;
+  }
+  .pres-deck-card .pres-deck-thumb-empty{
+    position:absolute;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:rgba(0,182,203,0.45);
+    font-size:11px;
+    font-weight:600;
+    letter-spacing:0.10em;
+    text-transform:uppercase;
+  }
+
   .pres-deck-card .pres-deck-delete{
     position:absolute; top:10px; right:10px;
     width:26px; height:26px;
@@ -503,6 +545,17 @@
   /* When a deck is open, the thumbnail rail occupies the left
      220px so the stage shifts right to accommodate it. */
   body.pres-deck-open .pres-stage{ left:220px }
+  /* In edit mode, reserve space at the top for the floating edit
+     toolbar (.pres-edit-bar sits at top:68 with ~42px height) so the
+     slide doesn't slide under it. The slide re-fits to the new stage
+     size via fitSlide() on the same class toggle. */
+  body.pres-edit-mode .pres-stage{ top:118px }
+  /* When a text overlay or table cell is selected, the right-side
+     text settings panel sits at right:14 with width:240. Push the
+     stage's right edge in by ~270px so the slide doesn't sit under
+     the panel. Without this, the panel covers content the user is
+     actively editing — exactly the wrong UX. */
+  body.pres-text-selected .pres-stage{ right:270px }
   /* Fullscreen stage clips the overflow that "cover" scaling
      creates on non-16:9 viewports — without it the scaled-up slide
      bleeds past the screen edges into adjacent UI / scrollbars.
@@ -931,7 +984,11 @@
      user flips the app theme; otherwise every unstyled overlay
      would silently flip on theme switch. */
   .pres-overlay-text{ color:#0a1520 }
-  .pres-overlay-text[contenteditable="true"]{
+  /* Use body.pres-edit-mode prefix so this rule's specificity beats
+     `body.pres-edit-mode .pres-overlay { cursor:move }` above —
+     otherwise the move cursor wins and the user can't tell visually
+     that they're inside text-editing mode. */
+  body.pres-edit-mode .pres-overlay-text[contenteditable="true"]{
     cursor:text;
     background:rgba(0,182,203,0.10);
     outline:1px solid var(--accent) !important;
@@ -939,9 +996,34 @@
   /* Underline override — cascades to descendant <a> so toggling
      "no underline" actually removes link underlines too (browser
      default is `text-decoration:underline` on <a> which doesn't
-     respect the parent's text-decoration without this). */
+     respect the parent's text-decoration without this).
+     Also applies to nested <u> tags + any execCommand('underline')
+     output (which wraps selections in either <u> or a span with
+     inline text-decoration), so partial-selection underlines get
+     the same skip-ink:none treatment.
+     - text-underline-offset bumps the line a few px below the
+       baseline so it doesn't crowd the glyphs.
+     - text-decoration-skip-ink:none forces a continuous underline
+       through descenders (j, p, g, q, y). The browser default is
+       'auto', which breaks the underline around each descender. */
   .pres-overlay-text[data-deco="underline"],
-  .pres-overlay-text[data-deco="underline"] a{ text-decoration:underline }
+  .pres-overlay-text[data-deco="underline"] a,
+  .pres-overlay-text u,
+  .pres-overlay-text [style*="underline"]{
+    text-decoration:underline;
+    text-underline-offset:4px;
+    text-decoration-skip-ink:none;
+    -webkit-text-decoration-skip-ink:none;
+  }
+  /* Apply offset + no-skip to ALL underlined text inside an overlay,
+     not just the deco/u/style hooks above — covers any underline
+     produced by browser defaults (e.g. unstyled <a> tags) without
+     having to enumerate every source. */
+  .pres-overlay-text{
+    text-underline-offset:4px;
+    text-decoration-skip-ink:none;
+    -webkit-text-decoration-skip-ink:none;
+  }
   .pres-overlay-text[data-deco="none"],
   .pres-overlay-text[data-deco="none"] a{ text-decoration:none }
   /* Links inherit overlay's text colour by default so a coloured
@@ -2136,26 +2218,71 @@
      SVGs use slide-coord viewBox + preserveAspectRatio:none, so
      setting their CSS width / height to the rendered slide bounds
      in fitSlide() lines tick marks up with actual slide pixels. */
+  /* ─── Google-Slides-style rulers ───
+     Light, almost-white background regardless of theme so tick marks
+     and numerals stay legible; thin top/right border separates the
+     ruler from the slide content. Tick hierarchy: minor (every 10),
+     mid (every 50), major (every 100). Major ticks get a small
+     number (the hundreds place, e.g. 100 → "1", 1200 → "12") so
+     three-digit pixel labels don't bust the 22-px breadth.
+     A magenta "0" pip marks the slide origin. */
   .pres-ruler-h, .pres-ruler-v{
     position:absolute;
-    background:rgba(15,23,42,0.85);
-    border:1px solid rgba(0,182,203,0.40);
+    background:#f7fafc;
+    border:1px solid rgba(31,40,63,0.15);
     pointer-events:none;
     display:none;
     z-index:91;
-    /* Tick strokes use `currentColor` so the same SVG flips with
-       theme — without this, white ticks vanish on the light-mode
-       white-ish ruler bg. */
-    color:rgba(255,255,255,0.78);
+    color:rgba(31,40,63,0.55);
+    font-family:'Roboto','Helvetica',sans-serif;
+    font-size:9px;
+    font-weight:500;
+    letter-spacing:0.02em;
+    box-shadow:0 1px 2px rgba(0,0,0,0.06);
   }
   [data-theme="light"] .pres-ruler-h,
   [data-theme="light"] .pres-ruler-v{
-    background:rgba(255,255,255,0.92);
-    border-color:rgba(31,40,63,0.18);
-    color:rgba(31,40,63,0.80);
+    background:#ffffff;
+    border-color:rgba(31,40,63,0.16);
+    color:rgba(31,40,63,0.58);
+  }
+  /* Slightly darker palette in dark mode for separation from the
+     near-black stage — still light enough that tick marks contrast. */
+  :root:not([data-theme="light"]) .pres-ruler-h,
+  :root:not([data-theme="light"]) .pres-ruler-v{
+    background:#e7ecf3;
+    border-color:rgba(15,23,42,0.40);
+    color:rgba(15,23,42,0.62);
   }
   .pres-ruler-h{ height:22px }
   .pres-ruler-v{ width:22px }
+  .pres-ruler-tick{
+    position:absolute;
+    background:currentColor;
+    pointer-events:none;
+  }
+  .pres-ruler-h .pres-ruler-tick{ bottom:0; width:1px }
+  .pres-ruler-v .pres-ruler-tick{ right:0; height:1px }
+  .pres-ruler-h .pres-ruler-tick.r-min{ height:4px;  opacity:0.45 }
+  .pres-ruler-h .pres-ruler-tick.r-mid{ height:8px;  opacity:0.65 }
+  .pres-ruler-h .pres-ruler-tick.r-maj{ height:12px; opacity:0.85 }
+  .pres-ruler-v .pres-ruler-tick.r-min{ width:4px;   opacity:0.45 }
+  .pres-ruler-v .pres-ruler-tick.r-mid{ width:8px;   opacity:0.65 }
+  .pres-ruler-v .pres-ruler-tick.r-maj{ width:12px;  opacity:0.85 }
+  .pres-ruler-tick.r-zero{
+    background:#d9388e;
+    opacity:1 !important;
+  }
+  .pres-ruler-h .pres-ruler-tick.r-zero{ width:1.5px }
+  .pres-ruler-v .pres-ruler-tick.r-zero{ height:1.5px }
+  .pres-ruler-num{
+    position:absolute;
+    pointer-events:none;
+    line-height:1;
+    user-select:none;
+  }
+  .pres-ruler-h .pres-ruler-num{ top:3px; transform:translateX(2px) }
+  .pres-ruler-v .pres-ruler-num{ left:3px; transform:translateY(2px) }
   body.pres-deck-open.pres-rulers-on:not(.pres-fullscreen) .pres-ruler-h,
   body.pres-deck-open.pres-rulers-on:not(.pres-fullscreen) .pres-ruler-v{ display:block }
   /* Suppress rulers while the stage's `inset` transition runs after
@@ -2503,7 +2630,7 @@
   <div class="pres-tp-row">
     <label>Color</label>
     <div class="pres-tp-color-row">
-      <input type="color" id="pres-tp-color" value="#ffffff">
+      <input type="color" id="pres-tp-color" value="#0a1520">
       <input type="text"  id="pres-tp-color-hex" maxlength="7" placeholder="#hex" spellcheck="false" autocomplete="off">
     </div>
   </div>
@@ -2950,6 +3077,125 @@ const tpLinkAdd     = document.getElementById('pres-tp-link-add');
 const tpLinkRemove  = document.getElementById('pres-tp-link-remove');
 const tpDelete      = document.getElementById('pres-tp-delete');
 
+/* ─── Static (non-interactive) overlay renderer for thumbnails ───
+   The main buildOverlayEl() wires up drag, contenteditable, edit
+   handles, table cell focus, etc — all stateful and dependent on
+   globals like `_selectedId`, `_activeDeck`, `_editMode`. Cards in
+   the picker show a frozen preview of slide 0 for every deck, so
+   we strip everything down to visuals only: positioned div, styles,
+   inner content. No listeners, no handles, no draggable cursor. */
+function _buildThumbOverlay(o) {
+  const el = document.createElement('div');
+  el.className = 'pres-overlay pres-overlay-' + o.type;
+  el.style.left   = o.x + 'px';
+  el.style.top    = o.y + 'px';
+  el.style.width  = o.w + 'px';
+  el.style.height = o.h + 'px';
+  el.style.pointerEvents = 'none';
+  if (o.type === 'text') {
+    if (o.fontFamily) el.style.fontFamily = o.fontFamily;
+    el.style.fontSize   = (o.fontSize || 24) + 'px';
+    el.style.fontWeight = o.bold   ? '800' : '400';
+    el.style.fontStyle  = o.italic ? 'italic' : 'normal';
+    el.style.textAlign  = o.align  || 'left';
+    if (o.color) el.style.color = o.color;
+    if (o.underline === 'underline' || o.underline === 'none') {
+      el.dataset.deco = o.underline;
+    }
+    el.innerHTML = o.html != null ? o.html : '';
+  } else if (o.type === 'image' && o.src) {
+    const img = document.createElement('img');
+    img.src = o.src;
+    img.draggable = false;
+    img.style.width = '100%';
+    img.style.height = '100%';
+    img.style.objectFit = 'cover';
+    el.appendChild(img);
+  } else if (o.type === 'shape') {
+    if (typeof shapeSVG === 'function') el.innerHTML = shapeSVG(o);
+  } else if (o.type === 'table') {
+    /* Static table — render rows × cols with cell html, no handles. */
+    const tbl = document.createElement('table');
+    tbl.style.width = '100%';
+    tbl.style.height = '100%';
+    tbl.style.borderCollapse = 'collapse';
+    (o.rows || []).forEach((row, ri) => {
+      const tr = document.createElement('tr');
+      if (row.h) tr.style.height = row.h + 'px';
+      (o.cols || []).forEach((col, ci) => {
+        const td = document.createElement('td');
+        td.style.border = '1px solid rgba(0,0,0,0.15)';
+        td.style.padding = '4px 6px';
+        td.style.verticalAlign = 'top';
+        if (col.w) td.style.width = col.w + 'px';
+        const cell = (o.cells && o.cells[ri] && o.cells[ri][ci]) || {};
+        if (cell.bgColor)   td.style.background = cell.bgColor;
+        if (cell.textColor) td.style.color = cell.textColor;
+        td.innerHTML = cell.html || '';
+        tr.appendChild(td);
+      });
+      tbl.appendChild(tr);
+    });
+    el.appendChild(tbl);
+  }
+  /* embed type intentionally skipped — iframes in 36 thumbnails on
+     the picker would be slow + flaky. */
+  return el;
+}
+
+/* Render slide 0 of `deck` into the given container as a non-
+   interactive thumbnail. Builds a real .pres-slide element at
+   1280×720, applies the slide template + any background + overlay
+   layer for slideKey 'deckId/0', then scales it via CSS transform
+   to fit the container's width. Re-runs the scale calculation on
+   the next animation frame in case the container size is set after
+   first paint. Empty decks get a "Cover" placeholder. */
+function _renderDeckThumb(deck, container) {
+  if (!container) return;
+  container.innerHTML = '';
+  const slide0 = deck.slides && deck.slides[0];
+  const fn = slide0 ? SLIDES[slide0.fn] : null;
+  if (!fn) {
+    const empty = document.createElement('div');
+    empty.className = 'pres-deck-thumb-empty';
+    empty.textContent = 'Empty deck';
+    container.appendChild(empty);
+    return;
+  }
+  const frame = document.createElement('div');
+  frame.className = 'pres-slide';
+  frame.style.width  = '1280px';
+  frame.style.height = '720px';
+  frame.style.position = 'absolute';
+  frame.style.top  = '0';
+  frame.style.left = '0';
+  /* Per-slide background, if the user set one. The slide CSS reads
+     var(--slide-bg). */
+  const bg = _slideBgs && _slideBgs[deck.id + '/0'];
+  if (bg) frame.style.setProperty('--slide-bg', bg);
+  /* Render the slide template content. */
+  try { fn(frame, deck, (slide0.opts) || {}); }
+  catch (_) { /* templates that throw are skipped */ }
+  /* Layer overlays on top. */
+  const overlays = (_overlays && _overlays[deck.id + '/0']) || [];
+  overlays.forEach(o => {
+    try { frame.appendChild(_buildThumbOverlay(o)); }
+    catch (_) {}
+  });
+  container.appendChild(frame);
+  /* Scale to fit. Container width drives the scale factor. Done in
+     rAF so layout has settled when we measure. */
+  const scale = () => {
+    const w = container.clientWidth;
+    if (w > 0) frame.style.transform = 'scale(' + (w / 1280) + ')';
+  };
+  requestAnimationFrame(scale);
+  /* A second pass once cards are appended to the grid — the picker
+     grid is auto-fill so widths can shift slightly when the grid
+     reflows. */
+  setTimeout(scale, 50);
+}
+
 /* ─── Picker ─── render the deck cards. Built-in decks first,
    then user-created decks, then a "+ New Presentation" tile that
    spawns a fresh empty deck. In edit mode, title + last-updated
@@ -2972,8 +3218,8 @@ function buildPicker() {
     const titleEditableClass = deck.custom ? ' is-editable' : '';
     const dateEditableClass  = deck.custom ? ' is-editable' : '';
     card.innerHTML = `
-      <div class="pres-deck-badge">${deck.badge || 'Deck ' + (i + 1)}</div>
-      <div class="pres-deck-icon">${deck.icon || '🎤'}</div>
+      <div class="pres-deck-thumb"><div class="pres-deck-thumb-inner"></div></div>
+      ${deck.badge ? '<div class="pres-deck-badge">' + deck.badge + '</div>' : ''}
       <h3 class="pres-deck-title${titleEditableClass}" data-field="title">${deck.title}</h3>
       <p class="pres-deck-sub">${deck.description || ''}</p>
       <div class="pres-deck-meta">
@@ -2982,6 +3228,11 @@ function buildPicker() {
         `).join('')}
         <span class="pres-deck-meta-item"><span class="pres-deck-meta-dot"></span><span class="pres-deck-date${dateEditableClass}" data-field="date">${dateDisplay}</span></span>
       </div>`;
+    /* Render slide-0 preview into the thumbnail container. The icon
+       glyph is intentionally dropped — the thumbnail itself is the
+       visual identifier now. */
+    const thumbInner = card.querySelector('.pres-deck-thumb-inner');
+    _renderDeckThumb(deck, thumbInner);
     /* Inline-edit wiring — only fires when in edit mode and the deck
        is custom. Click on the title or date enters an edit state that
        stops propagation so the card's open-deck click doesn't fire. */
@@ -3981,7 +4232,41 @@ document.addEventListener('keydown', (ev) => {
   if (!_editMode) return;
   if (key === 'c' && _selectedId) { ev.preventDefault(); copyOverlay(_selectedId); return; }
   if (key === 'x' && _selectedId) { ev.preventDefault(); cutOverlay(_selectedId); return; }
-  if (key === 'v')                { ev.preventDefault(); pasteOverlay(); return; }
+  if (key === 'v') {
+    /* Priority:
+         1. Internal overlay clipboard (Ctrl+C inside the tool)
+         2. Native paste event — fires only if focus is in an
+            input/textarea/contenteditable; the document-level paste
+            handler then processes table HTML / images / plain text.
+         3. Async Clipboard API fallback — used when no editable is
+            focused (e.g. user just clicked on a blank slide and
+            wants to paste a table from Google Slides). Reads the
+            system clipboard programmatically.
+       Calling preventDefault unconditionally — as we used to —
+       blocked the native event AND the async path, which made
+       pasting anything from outside the tool look like a broken
+       "Clipboard empty" toast. */
+    if (_overlayClipboard) {
+      ev.preventDefault();
+      pasteOverlay();
+      return;
+    }
+    const activeEl = document.activeElement;
+    const inEditable = activeEl && (
+      activeEl.matches && (activeEl.matches('input, textarea') ||
+        activeEl.matches('[contenteditable="true"]')) ||
+      (activeEl.closest && activeEl.closest('[contenteditable="true"]'))
+    );
+    if (inEditable) {
+      /* Native paste will fire here — document-level handler catches it. */
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.read) {
+      ev.preventDefault();
+      _pasteExternalFromAsyncClipboard();
+    }
+    return;
+  }
   if (key === 'd' && _selectedId) { ev.preventDefault(); duplicateOverlay(_selectedId); return; }
   /* Helpful no-op feedback: user pressed a clipboard shortcut while
      nothing was selected. Without this, silent-fail looks like the
@@ -4205,41 +4490,53 @@ document.addEventListener('keydown', (ev) => {
    slide bounds. Major ticks every 100 slide-units; minor every 50;
    centre tick (640 / 360) gets its own bright magenta colour to
    match the smart-guide line. */
+/* Build the ruler markup as absolute-positioned HTML elements rather
+   than a stretched SVG, so number labels stay legible (an SVG with
+   preserveAspectRatio:none would squash the digits horizontally on a
+   narrow viewport). Tick positions are emitted as percentages of the
+   slide span — the parent ruler container is sized to the rendered
+   slide bounds by _positionRulers, so the percentages resolve to the
+   correct pixel offsets at any zoom.
+   Layout:
+     - minor tick every 10 slide-px (faint, short)
+     - mid   tick every 50 slide-px (medium)
+     - major tick every 100 slide-px (bold, with number label)
+     - magenta pip at v=0 to mark the slide origin
+   Numbers are shown as hundreds (100 → "1", 1200 → "12") so they
+   always fit inside the 22-px breadth even on the vertical ruler. */
 function _buildRulerSvg(orientation) {
   const isH = orientation === 'h';
   const span = isH ? 1280 : 720;
-  const centre = span / 2;
-  const breadth = 22;
-  let html = isH
-    ? '<svg viewBox="0 0 ' + span + ' ' + breadth + '" preserveAspectRatio="none" style="width:100%;height:100%;display:block">'
-    : '<svg viewBox="0 0 ' + breadth + ' ' + span + '" preserveAspectRatio="none" style="width:100%;height:100%;display:block">';
-  for (let v = 0; v <= span; v += 50) {
-    const isMajor  = (v % 100 === 0);
-    const isCentre = (v === centre);
-    const len      = isCentre ? 14 : (isMajor ? 11 : 6);
-    /* `currentColor` lets the tick stroke pick up the ruler
-       container's CSS `color`, which is theme-aware. The centre
-       tick stays brand magenta regardless of theme. */
-    const colour   = isCentre ? '#ff4adb' : 'currentColor';
-    const a = breadth - len, b = breadth;
-    if (isH) {
-      html += '<line x1="' + v + '" y1="' + a + '" x2="' + v + '" y2="' + b +
-              '" stroke="' + colour + '" stroke-width="1" vector-effect="non-scaling-stroke"/>';
-    } else {
-      html += '<line x1="' + a + '" y1="' + v + '" x2="' + b + '" y2="' + v +
-              '" stroke="' + colour + '" stroke-width="1" vector-effect="non-scaling-stroke"/>';
-    }
+  const posSide = isH ? 'left' : 'top';
+  let html = '';
+  for (let v = 0; v <= span; v += 10) {
+    const isMaj  = (v % 100 === 0);
+    const isMid  = !isMaj && (v % 50 === 0);
+    const isZero = (v === 0);
+    let cls = 'pres-ruler-tick ';
+    if (isZero)      cls += 'r-zero';
+    else if (isMaj)  cls += 'r-maj';
+    else if (isMid)  cls += 'r-mid';
+    else             cls += 'r-min';
+    const pct = (v / span) * 100;
+    html += '<div class="' + cls + '" style="' + posSide + ':' + pct + '%"></div>';
   }
-  html += '</svg>';
+  for (let v = 100; v < span; v += 100) {
+    const pct = (v / span) * 100;
+    const label = (v / 100);
+    html += '<div class="pres-ruler-num" style="' + posSide + ':' + pct + '%">' + label + '</div>';
+  }
   return html;
 }
 function _positionRulers(stage) {
   const rh = document.getElementById('pres-ruler-h');
   const rv = document.getElementById('pres-ruler-v');
   if (!rh || !rv) return;
-  /* Inject SVG once (idempotent: skip if already present). */
-  if (!rh.querySelector('svg')) rh.innerHTML = _buildRulerSvg('h');
-  if (!rv.querySelector('svg')) rv.innerHTML = _buildRulerSvg('v');
+  /* Inject ruler content once (idempotent: skip if already present).
+     Switched from SVG to absolute-positioned HTML divs so number
+     labels render at their natural size regardless of ruler stretch. */
+  if (!rh.querySelector('.pres-ruler-tick')) rh.innerHTML = _buildRulerSvg('h');
+  if (!rv.querySelector('.pres-ruler-tick')) rv.innerHTML = _buildRulerSvg('v');
   const slideRect = slot.getBoundingClientRect();
   const stageRect = stage.getBoundingClientRect();
   /* Convert from viewport-relative deltas to stage-CONTENT
@@ -4255,6 +4552,25 @@ function _positionRulers(stage) {
   rv.style.left   = (slideLeft - 26) + 'px';
   rv.style.top    = slideTop + 'px';
   rv.style.height = slideRect.height + 'px';
+}
+
+/* Repeatedly reposition the rulers via requestAnimationFrame so they
+   track the slide while a CSS transition on .pres-stage is in flight
+   (e.g. entering edit mode, opening/closing the text panel). Without
+   this, _positionRulers only runs at the END of the transition and
+   the rulers visibly lag behind the slide for ~350ms. Default
+   duration matches the 0.35s ease transition on .pres-stage. */
+function _trackRulersThroughTransition(durationMs) {
+  const stage = document.getElementById('pres-stage');
+  if (!stage) return;
+  if (document.body.classList.contains('pres-fullscreen')) return;
+  const start = performance.now();
+  const dur = durationMs || 380;
+  function tick(now) {
+    _positionRulers(stage);
+    if (now - start < dur) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
 }
 
 /* Ruler toggle — body class drives display, preference persists in
@@ -4719,9 +5035,13 @@ function buildTableEl(o) {
         syncTextPanel();
       });
       td.addEventListener('blur', () => {
-        const newHtml = td.innerHTML;
-        if (cell.html !== newHtml) {
-          cell.html = newHtml;
+        const linked = _autoLinkEmails(td.innerHTML);
+        /* If auto-linking added <a> tags, push the linked markup
+           back into the live td so the new style takes effect
+           immediately without waiting for a renderOverlays. */
+        if (linked !== td.innerHTML) td.innerHTML = linked;
+        if (cell.html !== linked) {
+          cell.html = linked;
           saveOverlays();
           pushHistory();
         }
@@ -4735,6 +5055,18 @@ function buildTableEl(o) {
          1×1 selection (this cell as anchor). */
       td.addEventListener('pointerdown', (ev) => {
         ev.stopPropagation();
+        /* Right-click inside an active multi-cell range must not
+           collapse the selection — the contextmenu that follows is
+           supposed to act on the whole range (e.g. "Cell colours…"
+           applies to every selected cell). Skip the selection reset
+           when this pointerdown is the start of a right-click on a
+           cell already in the active range. */
+        if (ev.button === 2 && _tableCellSelection && _tableCellSelection.overlayId === o.id) {
+          const rect = _selectionRect(_tableCellSelection);
+          const inRange = rect && r >= rect.minR && r <= rect.maxR && c >= rect.minC && c <= rect.maxC;
+          const isMulti = rect && (rect.minR !== rect.maxR || rect.minC !== rect.maxC);
+          if (inRange && isMulti) return;
+        }
         /* Update focused-cell context up front so syncTextPanel
            shows the panel in cell mode without a flicker (the
            browser's focus event fires shortly after pointerdown). */
@@ -4755,6 +5087,12 @@ function buildTableEl(o) {
         _refreshTableCellSelectionVisual(o);
       });
       td.addEventListener('contextmenu', (ev) => {
+        /* Edit-mode only — View mode is read-only, so the
+           context menu (which exposes destructive actions like
+           Delete row, Insert column, Cell colours, etc.) must
+           never open. Let the browser's native menu through so
+           the user can copy text via the normal menu instead. */
+        if (!_editMode) return;
         ev.preventDefault();
         ev.stopPropagation();
         openTableCellMenu(o, r, c, ev.clientX, ev.clientY);
@@ -4903,13 +5241,24 @@ function openCellColorPopover(o, r, c, x, y) {
      first so any unsaved colour changes get committed to history
      before we re-open with a fresh context. */
   if (cellPopover.classList.contains('open')) closeCellColorPopover();
-  _cellPopoverCtx = { overlayId: o.id, row: r, col: c };
+  /* If a multi-cell range is active AND the right-clicked cell is
+     inside it, store the whole range so colour changes apply to every
+     cell. Falls back to a single-cell context when there's no range
+     or the click landed outside it. */
+  let range = null;
+  if (_tableCellSelection && _tableCellSelection.overlayId === o.id) {
+    const rect = _selectionRect(_tableCellSelection);
+    const inRange = rect && r >= rect.minR && r <= rect.maxR && c >= rect.minC && c <= rect.maxC;
+    const isMulti = rect && (rect.minR !== rect.maxR || rect.minC !== rect.maxC);
+    if (inRange && isMulti) range = rect;
+  }
+  _cellPopoverCtx = { overlayId: o.id, row: r, col: c, range: range };
   _cellPopoverDirty = false;
   const cell = o.cells[r][c];
   const tc = (cell.textColor && /^#[0-9a-f]{6}$/i.test(cell.textColor)) ? cell.textColor : '#0a1520';
   const bg = (cell.bgColor   && /^#[0-9a-f]{6}$/i.test(cell.bgColor))   ? cell.bgColor   : '#ffffff';
-  cellTextSwatch.value = tc; cellTextHex.value = tc.toUpperCase();
-  cellBgSwatch.value   = bg; cellBgHex.value   = bg.toUpperCase();
+  _setColorSwatch(cellTextSwatch, tc); cellTextHex.value = tc.toUpperCase();
+  _setColorSwatch(cellBgSwatch,   bg); cellBgHex.value   = bg.toUpperCase();
   /* Position with viewport clamp. */
   cellPopover.style.visibility = 'hidden';
   cellPopover.classList.add('open');
@@ -4934,6 +5283,37 @@ function _applyCellColor(prop, hex) {
   if (hex && !/^#[0-9a-f]{6}$/i.test(hex)) return;
   const o = currentOverlays().find(ov => ov.id === _cellPopoverCtx.overlayId);
   if (!o || o.type !== 'table') return;
+
+  /* Multi-cell range — apply to every cell inside the stored rect.
+     Live-update each affected td so we don't blow away in-progress
+     typing in a non-selected cell elsewhere in the same table. */
+  const range = _cellPopoverCtx.range;
+  if (range) {
+    let changed = false;
+    const el = slot.querySelector('.pres-overlay[data-id="' + o.id + '"]');
+    for (let r = range.minR; r <= range.maxR; r++) {
+      for (let c = range.minC; c <= range.maxC; c++) {
+        const cell = o.cells[r] && o.cells[r][c];
+        if (!cell) continue;
+        if (cell[prop] === hex) continue;
+        cell[prop] = hex;
+        changed = true;
+        if (el) {
+          const td = el.querySelector('td[data-row="' + r + '"][data-col="' + c + '"]');
+          if (td) {
+            if (prop === 'bgColor')   td.style.background = hex || '';
+            if (prop === 'textColor') td.style.color      = hex || '';
+          }
+        }
+      }
+    }
+    if (changed) {
+      _cellPopoverDirty = true;
+      saveOverlays();
+    }
+    return;
+  }
+
   const cell = o.cells[_cellPopoverCtx.row][_cellPopoverCtx.col];
   if (cell[prop] === hex) return;
   cell[prop] = hex;
@@ -4958,20 +5338,51 @@ cellBgSwatch.addEventListener('input', () => {
   cellBgHex.value = cellBgSwatch.value.toUpperCase();
   _applyCellColor('bgColor', cellBgSwatch.value);
 });
+/* Programmatic `input.value =` assignments don't fire input/change
+   events, so the circular swatch button rendered by shared/color-
+   picker.js (which listens for those events) wouldn't repaint when
+   we programmatically swap the colour.
+   IMPORTANT: do NOT dispatch a synthetic 'input' event here to
+   trigger the repaint. Tool code on the same inputs (tpColor,
+   cellTextSwatch, cellBgSwatch) listens for 'input' as a USER-
+   action signal — applying the colour to the selected overlay,
+   saving overlays, re-rendering, and pushing history. A synthetic
+   event indistinguishable from a real one made every selection /
+   panel sync fan out into a full save+render+history cycle. That
+   cascade was the root cause of:
+     • the text-overlay double-click failing (renderOverlays
+       destroyed the DOM element mid-gesture, the second click
+       landed on a fresh element with ev.detail===1);
+     • slides "disappearing" after reload (every selection queued
+       a spurious cloud save, so a reload before the 800ms debounce
+       fired left cloud holding an in-flight intermediate state);
+     • the ruler glitching during slide transitions (layout thrash
+       from repeated full re-renders);
+     • general lag (pushHistory deep-clones the whole deck state).
+   Repaint the swatch button directly instead — color-picker.js
+   inserts it as the previousElementSibling of each color input. */
+function _setColorSwatch(input, value) {
+  if (!input) return;
+  input.value = value;
+  const btn = input.previousElementSibling;
+  if (btn && btn.classList && btn.classList.contains('pp-swatch-btn')) {
+    btn.style.background = value;
+  }
+}
 function _wireHexInput(input, swatch, prop) {
   input.addEventListener('input', () => {
     let v = input.value.trim();
     if (v && !v.startsWith('#')) v = '#' + v;
     if (/^#[0-9a-f]{6}$/i.test(v)) {
-      swatch.value = v.toLowerCase();
+      _setColorSwatch(swatch, v.toLowerCase());
       _applyCellColor(prop, v);
     }
   });
 }
 _wireHexInput(cellTextHex, cellTextSwatch, 'textColor');
 _wireHexInput(cellBgHex,   cellBgSwatch,   'bgColor');
-cellTextClear.addEventListener('click', () => { _applyCellColor('textColor', ''); cellTextSwatch.value = '#0a1520'; cellTextHex.value = ''; });
-cellBgClear  .addEventListener('click', () => { _applyCellColor('bgColor',   ''); cellBgSwatch.value   = '#ffffff'; cellBgHex.value   = ''; });
+cellTextClear.addEventListener('click', () => { _applyCellColor('textColor', ''); _setColorSwatch(cellTextSwatch, '#0a1520'); cellTextHex.value = ''; });
+cellBgClear  .addEventListener('click', () => { _applyCellColor('bgColor',   ''); _setColorSwatch(cellBgSwatch,   '#ffffff'); cellBgHex.value   = ''; });
 /* Outside-click closes — but ignore clicks inside the popover or
    the ctx menu (so right-click → menu → "Cell colours…" doesn't
    close before the popover finishes positioning). */
@@ -5608,17 +6019,58 @@ function buildOverlayEl(o) {
     /* innerHTML so links / formatted spans survive a save+reload. */
     el.innerHTML = o.html != null ? o.html : '';
 
-    /* Double-click in edit mode → focus contenteditable. blur saves. */
-    el.addEventListener('dblclick', (ev) => {
+    /* Click handling in edit mode:
+         - Single click  → no-op here (drag/select handled elsewhere)
+         - Double click  → enter edit mode, select just the word under
+                           the cursor (matches Google Docs / Word)
+         - Triple click  → select all text in the overlay
+       Detail check uses `event.detail` which is the click count in the
+       current multi-click sequence. We unify dblclick + triple-click
+       through a single `click` listener because `dblclick` doesn't fire
+       for detail=3, and we want both behaviours to start from the same
+       contentEditable activation. blur saves. */
+    el.addEventListener('click', (ev) => {
       if (!_editMode) return;
+      if (ev.detail < 2) return;
       ev.stopPropagation();
-      el.contentEditable = 'true';
-      el.focus();
-      const range = document.createRange();
-      range.selectNodeContents(el);
+      if (el.contentEditable !== 'true') {
+        el.contentEditable = 'true';
+        el.focus();
+      }
       const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
+      if (!sel) return;
+      if (ev.detail === 2) {
+        /* Place caret at click position, then expand to word.
+           Selection.modify is non-standard but supported in every
+           target browser; wrap in try/catch so an exotic engine
+           degrades to just placing a caret. */
+        let range = null;
+        if (document.caretRangeFromPoint) {
+          range = document.caretRangeFromPoint(ev.clientX, ev.clientY);
+        } else if (document.caretPositionFromPoint) {
+          const pos = document.caretPositionFromPoint(ev.clientX, ev.clientY);
+          if (pos) {
+            range = document.createRange();
+            range.setStart(pos.offsetNode, pos.offset);
+            range.collapse(true);
+          }
+        }
+        if (range) {
+          sel.removeAllRanges();
+          sel.addRange(range);
+          try {
+            sel.modify('move', 'forward', 'character');
+            sel.modify('move', 'backward', 'word');
+            sel.modify('extend', 'forward', 'word');
+          } catch (_) { /* leave the caret where it landed */ }
+        }
+      } else {
+        /* Triple-click (or more): select every node inside the overlay. */
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
     });
     el.addEventListener('blur', () => {
       if (el.contentEditable !== 'true') return;
@@ -5634,7 +6086,10 @@ function buildOverlayEl(o) {
          call below rebuilds the overlay so the handles reappear
          cleanly even if the user typed them out of existence. */
       el.querySelectorAll('.pres-overlay-del, .pres-overlay-resize, .pres-overlay-edge').forEach(h => h.remove());
-      o.html = el.innerHTML;
+      /* Auto-link bare emails before persisting (Google-Slides style).
+         New emails the user typed/pasted in this edit get wrapped in
+         <a mailto:…>; existing <a> tags are left alone. */
+      o.html = _autoLinkEmails(el.innerHTML);
       if (oldHtml !== o.html) {
         saveOverlays();
         pushHistory();
@@ -5972,8 +6427,17 @@ function syncTextPanel() {
   const focused = _getFocusedCell();
   const cellMode = !!(_editMode && focused && o && o.type === 'table' && o.id === focused.o.id);
   const showPanel = cellMode || !!(o && o.type === 'text' && _editMode);
+  const wasShowingPanel = document.body.classList.contains('pres-text-selected');
   document.body.classList.toggle('pres-text-selected', showPanel);
   document.body.classList.toggle('pres-cell-focused',  cellMode);
+  /* Stage right inset shifts when the text panel comes/goes; let the
+     CSS transition (.35s) start, then re-fit the slide to the new
+     stage width so the user keeps seeing the whole slide. Track the
+     rulers per-frame during the transition so they don't lag. */
+  if (wasShowingPanel !== showPanel) {
+    _trackRulersThroughTransition();
+    if (typeof fitSlide === 'function') setTimeout(fitSlide, 360);
+  }
   if (!showPanel) return;
   if (cellMode) {
     const cell = focused.cell;
@@ -6005,11 +6469,11 @@ function syncTextPanel() {
     tpVAlignMiddle.classList.toggle('on', vAlign === 'middle');
     tpVAlignBottom.classList.toggle('on', vAlign === 'bottom');
     if (cell.textColor) {
-      tpColor.value = cell.textColor;
+      _setColorSwatch(tpColor, cell.textColor);
       tpColorHex.value = cell.textColor;
     } else {
-      tpColor.value = '#0a1520';
-      tpColorHex.value = '';
+      _setColorSwatch(tpColor, '#0a1520');
+      tpColorHex.value = '#0a1520';
     }
     return;
   }
@@ -6022,18 +6486,103 @@ function syncTextPanel() {
   tpAlignCenter.classList.toggle('on', o.align === 'center');
   tpAlignRight.classList.toggle('on',  o.align === 'right');
   if (o.color) {
-    tpColor.value = o.color;
+    _setColorSwatch(tpColor, o.color);
     tpColorHex.value = o.color;
   } else {
-    tpColor.value = '#ffffff';
-    tpColorHex.value = '';
+    _setColorSwatch(tpColor, '#0a1520');
+    tpColorHex.value = '#0a1520';
   }
 }
 
 /* Apply a cell-level property change (font/size/align/textColor) and
    live-mutate the focused td so focus + caret stay put — rebuilding
    the table via renderOverlays would blur the cell mid-edit. */
+/* Return the array of {r, c, cell} records covered by the active
+   multi-cell range, plus the parent overlay. Returns null if there's
+   no selection or only one cell is in the range (in which case the
+   caller should fall through to the single-focused-cell path). */
+function _selectedTableCells() {
+  const sel = _tableCellSelection;
+  if (!sel) return null;
+  const o = currentOverlays().find(x => x.id === sel.overlayId);
+  if (!o || o.type !== 'table') return null;
+  const r = _selectionRect(sel);
+  if (!r) return null;
+  if (r.minR === r.maxR && r.minC === r.maxC) return null;  /* single cell */
+  const cells = [];
+  for (let row = r.minR; row <= r.maxR; row++) {
+    for (let col = r.minC; col <= r.maxC; col++) {
+      const c = o.cells[row] && o.cells[row][col];
+      if (c) cells.push({ r: row, c: col, cell: c });
+    }
+  }
+  return cells.length ? { overlay: o, cells } : null;
+}
+
+/* Auto-link bare email addresses in a piece of HTML, Google-Slides
+   style. Walks the DOM, scans text nodes for the standard email
+   pattern, and replaces each match with an <a href="mailto:..."> so
+   the existing .pres-overlay-text a styling (cyan + underlined)
+   picks them up and clicking in Present mode opens the user's mail
+   client. Skips text nodes that already live inside an <a> so we
+   don't double-wrap or break a user-set link. Called on blur of
+   text overlays and table cells — once typing is "done", any new
+   email that just landed in the content gets linked. */
+function _autoLinkEmails(html) {
+  if (!html || html.indexOf('@') < 0) return html;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const re = /\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g;
+  let changed = false;
+  function walk(node) {
+    if (node.nodeType === 1) {
+      if (node.tagName === 'A') return;  /* don't recurse into existing links */
+      Array.from(node.childNodes).forEach(walk);
+      return;
+    }
+    if (node.nodeType !== 3) return;
+    const text = node.nodeValue;
+    if (!text || text.indexOf('@') < 0) return;
+    re.lastIndex = 0;
+    if (!re.test(text)) return;
+    re.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let lastIdx = 0, m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > lastIdx) {
+        frag.appendChild(document.createTextNode(text.substring(lastIdx, m.index)));
+      }
+      const a = document.createElement('a');
+      a.href = 'mailto:' + m[0];
+      a.textContent = m[0];
+      frag.appendChild(a);
+      lastIdx = re.lastIndex;
+    }
+    if (lastIdx < text.length) {
+      frag.appendChild(document.createTextNode(text.substring(lastIdx)));
+    }
+    node.parentNode.replaceChild(frag, node);
+    changed = true;
+  }
+  walk(tmp);
+  return changed ? tmp.innerHTML : html;
+}
+
 function applyCellChange(fn) {
+  /* Multi-cell branch — write the same property mutation to every
+     cell in the active range, then full re-render the overlay so
+     the new visuals show on each td. Skipping the live in-place
+     style updates here is intentional: the multi-cell case touches
+     many cells, and renderOverlays is simpler + correct. */
+  const multi = _selectedTableCells();
+  if (multi) {
+    multi.cells.forEach(({ cell }) => fn(cell, multi.overlay));
+    saveOverlays();
+    renderOverlays();
+    syncTextPanel();
+    pushHistory();
+    return;
+  }
   const focused = _getFocusedCell();
   if (!focused) return;
   fn(focused.cell, focused.o);
@@ -6054,8 +6603,47 @@ function applyCellChange(fn) {
 /* Run an execCommand against the focused cell. If the user has no
    selection (just a caret), select the whole cell first so the
    command toggles the entire cell's text. Persists the cell's HTML
-   and pushes history. Returns true on success. */
+   and pushes history. Returns true on success.
+   When a multi-cell range is active, the command is applied to
+   every cell in the range. Each cell's HTML is run through a
+   throwaway off-DOM contenteditable so execCommand has a target to
+   act on; the resulting HTML is read back and saved to the cell
+   record. The full overlay re-renders so the new styles paint. */
 function applyCellExec(cmd, val) {
+  const multi = _selectedTableCells();
+  if (multi) {
+    /* Off-DOM scratch element — must be in the document tree for
+       execCommand to act on it, so we tuck it well off-screen. */
+    const scratch = document.createElement('div');
+    scratch.contentEditable = 'true';
+    scratch.style.position = 'fixed';
+    scratch.style.left = '-99999px';
+    scratch.style.top = '0';
+    scratch.style.width = '500px';
+    scratch.style.whiteSpace = 'pre-wrap';
+    document.body.appendChild(scratch);
+    try { document.execCommand('styleWithCSS', false, true); } catch (_) {}
+    try {
+      multi.cells.forEach(({ cell }) => {
+        scratch.innerHTML = cell.html || '';
+        scratch.focus();
+        const range = document.createRange();
+        range.selectNodeContents(scratch);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        try { document.execCommand(cmd, false, val); } catch (_) {}
+        cell.html = scratch.innerHTML;
+      });
+    } finally {
+      scratch.remove();
+    }
+    saveOverlays();
+    renderOverlays();
+    syncTextPanel();
+    pushHistory();
+    return true;
+  }
   const focused = _getFocusedCell();
   if (!focused) return false;
   const td = focused.td;
@@ -6103,6 +6691,11 @@ function setEditMode(on) {
      to refresh them so the body class clears and the panel hides. */
   syncTextPanel();
   syncShapePanel();
+  /* Stage top inset shifts in edit mode (to clear the floating
+     toolbar). Re-fit the slide once the CSS transition lands, and
+     track the rulers per-frame so they don't lag. */
+  _trackRulersThroughTransition();
+  if (typeof fitSlide === 'function') setTimeout(fitSlide, 360);
 }
 segView.addEventListener('click', () => setEditMode(false));
 segEdit.addEventListener('click', () => setEditMode(true));
@@ -6814,12 +7407,12 @@ function cancelBgEditor() {
   closeBgEditor();
 }
 
-/* Click on the bare slide background (NOT on overlays / interactive
-   children) opens the popover. We let overlays' own pointerdown
-   handlers fire normally — they call ev.stopPropagation when
-   appropriate, but here we just gate on whether the click landed on
-   slot/slide-content or an overlay. */
-slot.addEventListener('click', (ev) => {
+/* Double-click on the bare slide background (NOT on overlays /
+   interactive children) opens the popover. Single click would catch
+   too many accidental opens during normal editing (clicking around
+   between overlays). Double-click keeps it explicit — matches how
+   text overlays themselves are entered for editing. */
+slot.addEventListener('dblclick', (ev) => {
   if (!_editMode) return;
   /* Skip if the click is on an overlay or its descendants. */
   if (ev.target.closest('.pres-overlay')) return;
@@ -6991,6 +7584,185 @@ function preserveEditableFocus(container) {
 preserveEditableFocus(textPanel);
 preserveEditableFocus(editBar);
 preserveEditableFocus(shapePicker);
+
+/* ─── External paste sanitiser ───
+   Pasting from Google Slides / Docs / PowerPoint / web pages into a
+   text overlay's contenteditable normally dumps rich HTML — inline
+   styles, font-families, line-heights, sometimes nested tables, MSO
+   conditional comments and span wrappers — that the editor toolbar
+   can't cleanly override. The toolbar uses document.execCommand
+   ('bold', 'foreColor', 'fontSize') on the contenteditable, but
+   those operations only wrap with simple tags / styles, which inline
+   foreign styles outrank. End result: user pastes text, then can't
+   change its font / size / colour properly.
+   Strategy (priority order):
+     1. <table> in clipboard HTML → spawn a native table overlay via
+        _tryPasteAsTable(). Structure (rows × cols) + cell plain text
+        preserved; styling and merged cells dropped.
+     2. Images (kind:'file', type 'image/*') → spawn an image overlay
+        per image via ovAddImage().
+     3. Plain text into the focused text overlay's contenteditable
+        (only meaningful when one is focused).
+   The first two work regardless of which element has focus, so a user
+   can paste a table or screenshot onto a blank slide. Guards on
+   edit-mode + deck-open stop the handler from firing on the picker. */
+
+/* Parse the first <table> in a clipboard HTML string and create a
+   matching table overlay. Returns true on success. Cell content is
+   reduced to plain text (escaped) to dodge the same "can't restyle"
+   trap as the text path — cells stay editable via the in-tool table
+   UI. Merged cells (rowspan/colspan) flatten: the spanned content
+   lands in the top-left of the span, other cells of the span are
+   empty. Image tags inside cells are dropped (Slides serves images
+   from short-lived signed URLs, so embedding them would rot quickly). */
+function _tryPasteAsTable(htmlString) {
+  if (!htmlString || htmlString.indexOf('<table') < 0) return false;
+  let doc;
+  try { doc = new DOMParser().parseFromString(htmlString, 'text/html'); }
+  catch (_) { return false; }
+  const table = doc.querySelector('table');
+  if (!table) return false;
+
+  const sourceRows = Array.from(table.querySelectorAll('tr'));
+  if (!sourceRows.length) return false;
+
+  const rowsData = sourceRows.map(tr =>
+    Array.from(tr.children)
+      .filter(el => el.tagName === 'TD' || el.tagName === 'TH')
+      .map(td => (td.textContent || '').replace(/\s+/g, ' ').trim())
+  );
+  const maxCols = rowsData.reduce((m, r) => Math.max(m, r.length), 0);
+  if (!rowsData.length || !maxCols) return false;
+
+  const esc = (s) => String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const cellW = 200, cellH = 60;
+  const w = cellW * maxCols, h = cellH * rowsData.length;
+  const overlay = {
+    id: 'tbl-' + Date.now(),
+    type: 'table',
+    x: Math.max(0, (1280 - w) / 2),
+    y: Math.max(0, (720 - h) / 2),
+    w, h,
+    cols: Array.from({ length: maxCols }, () => ({ w: cellW })),
+    rows: Array.from({ length: rowsData.length }, () => ({ h: cellH })),
+    cells: rowsData.map(row => {
+      const out = [];
+      for (let c = 0; c < maxCols; c++) {
+        const text = row[c] || '';
+        out.push({ html: esc(text), bgColor: '', textColor: '' });
+      }
+      return out;
+    }),
+  };
+  currentOverlays().push(overlay);
+  saveOverlays();
+  _selectedId = overlay.id;
+  renderOverlays();
+  pushHistory();
+  return true;
+}
+
+/* Async-clipboard fallback — used by the Ctrl+V handler when no
+   editable element is focused (so the browser wouldn't fire a paste
+   event on its own). Pulls table HTML / images / text out of the
+   system clipboard via navigator.clipboard.read() and routes them
+   through the same overlay-creation helpers as the paste handler.
+   Requires HTTPS + a user gesture; the browser may also prompt the
+   first time for clipboard read permission. */
+async function _pasteExternalFromAsyncClipboard() {
+  if (!document.body.classList.contains('pres-edit-mode')) return;
+  if (!document.body.classList.contains('pres-deck-open')) return;
+  let items;
+  try { items = await navigator.clipboard.read(); }
+  catch (_) {
+    if (typeof showPresToast === 'function') showPresToast('Could not read clipboard');
+    return;
+  }
+  let html = '', text = '';
+  const imageBlobs = [];
+  for (const item of items) {
+    for (const t of item.types) {
+      try {
+        if (t === 'text/html' && !html) {
+          html = await (await item.getType(t)).text();
+        } else if (t === 'text/plain' && !text) {
+          text = await (await item.getType(t)).text();
+        } else if (t.indexOf('image/') === 0) {
+          imageBlobs.push(await item.getType(t));
+        }
+      } catch (_) { /* skip unreadable parts */ }
+    }
+  }
+  if (html.indexOf('<table') >= 0 && _tryPasteAsTable(html)) return;
+  if (imageBlobs.length) { imageBlobs.forEach(b => { try { ovAddImage(b); } catch (_) {} }); return; }
+  /* Plain text without a focused editable — there's no obvious place
+     to drop it. Tell the user to click into a text overlay first. */
+  if (typeof showPresToast === 'function') {
+    if (text || html) showPresToast('Click into a text overlay first');
+    else              showPresToast('Clipboard empty');
+  }
+}
+
+document.addEventListener('paste', function (ev) {
+  /* Only act inside an open deck in edit mode. Pasting on the picker
+     or in read-only view does nothing. */
+  if (!document.body.classList.contains('pres-edit-mode')) return;
+  if (!document.body.classList.contains('pres-deck-open')) return;
+
+  const cd = ev.clipboardData;
+  if (!cd) return;
+
+  const editable = ev.target && ev.target.closest
+    && ev.target.closest('.pres-overlay-text[contenteditable="true"]');
+
+  /* 1. Table path — wins over text/image when an HTML table is on the
+     clipboard. Creates a new overlay even if a text overlay is focused;
+     pasting a table into running text isn't a useful default. */
+  const html = cd.getData('text/html') || '';
+  if (html.indexOf('<table') >= 0 && _tryPasteAsTable(html)) {
+    ev.preventDefault();
+    return;
+  }
+
+  /* 2. Image path — extract any image File parts and spawn overlays.
+     A mixed paste (text + image, e.g. dragging a Slides selection)
+     still falls through to the text path below for the text part. */
+  const imageFiles = [];
+  for (let i = 0; i < cd.items.length; i++) {
+    const it = cd.items[i];
+    if (it.kind === 'file' && it.type.indexOf('image/') === 0) {
+      const f = it.getAsFile();
+      if (f) imageFiles.push(f);
+    }
+  }
+
+  /* 3. Text path — only inserts when a text overlay is the paste target.
+     We otherwise don't auto-create a text overlay (no obvious place to
+     anchor it). */
+  const text = editable ? (cd.getData('text/plain') || '') : '';
+
+  if (!imageFiles.length && !text) return;
+
+  ev.preventDefault();
+
+  if (text) {
+    try {
+      document.execCommand('insertText', false, text);
+    } catch (_) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount) {
+        const r = sel.getRangeAt(0);
+        r.deleteContents();
+        r.insertNode(document.createTextNode(text));
+        r.collapse(false);
+      }
+    }
+  }
+
+  imageFiles.forEach(f => { try { ovAddImage(f); } catch (_) {} });
+});
 
 /* Bold / Italic / Underline are selection-aware: if the user has
    highlighted some text inside the contenteditable, the toggle
@@ -7168,11 +7940,11 @@ tpColorHex.addEventListener('change', () => {
     const inCell = sel && sel.rangeCount && fc.td.contains(sel.anchorNode) && !sel.isCollapsed;
     if (inCell) applyCellExec('foreColor', v);
     else        applyCellChange(cell => cell.textColor = v);
-    tpColor.value = v;
+    _setColorSwatch(tpColor, v);
     return;
   }
   applyTextChange(o => o.color = v);
-  tpColor.value = v;
+  _setColorSwatch(tpColor, v);
 });
 /* Link / Unlink — both require the user to be inside the editable
    with a non-collapsed selection so the link wraps just the chosen
