@@ -324,31 +324,29 @@ function applyAccessRestrictions() {
   const hubPill = document.getElementById('hubIdentityPill');
   if (hubPill) hubPill.style.display = 'none';
 
-  if (level === 'company') {
+  /* Company / Client / Guest all get the same VIEW surface — this is an
+     internal-only tool now (no external clients use it), so tier 3
+     (client) and tier 4 (guest) should see everything tier 2 (company)
+     sees. The only differences:
+       • All three lose edit toolbar buttons (.tbtn:not(.pdf-btn)) and
+         the save indicator — they're view-only as far as content
+         editing goes.
+       • Tier 3/4 ADDITIONALLY lose the download buttons (.pdf-btn,
+         #runwayPdfBtn, #runwayJpegBtn) — that's the single
+         differentiator between them and tier 2.
+     The old guest branch hid the whole toolbar (no tab switcher etc.)
+     and the old client branch hid the Runway data-source dropdown;
+     both are gone so 3/4 see the same controls 2 sees, minus
+     download. */
+  if (level === 'company' || level === 'client' || level === 'guest') {
     document.querySelectorAll('.tbtn:not(.pdf-btn)').forEach(b => b.style.display = 'none');
     const saveInd = document.getElementById('save-indicator');
     if (saveInd) saveInd.style.display = 'none';
-    return;
-  }
-  if (level === 'client') {
-    document.querySelectorAll('.tbtn').forEach(b => b.style.display = 'none');
-    const saveInd = document.getElementById('save-indicator');
-    if (saveInd) saveInd.style.display = 'none';
-    const rwPdfBtn  = document.getElementById('runwayPdfBtn');  if (rwPdfBtn)  rwPdfBtn.style.display  = 'none';
-    const rwJpegBtn = document.getElementById('runwayJpegBtn'); if (rwJpegBtn) rwJpegBtn.style.display = 'none';
-    const rwSrcSel = document.getElementById('runwayDataSelect');
-    if (rwSrcSel) {
-      const grp = rwSrcSel.closest('.ctrl-group');
-      if (grp) grp.style.display = 'none';
+    if (level === 'client' || level === 'guest') {
+      document.querySelectorAll('.tbtn.pdf-btn').forEach(b => b.style.display = 'none');
+      const rwPdfBtn  = document.getElementById('runwayPdfBtn');  if (rwPdfBtn)  rwPdfBtn.style.display  = 'none';
+      const rwJpegBtn = document.getElementById('runwayJpegBtn'); if (rwJpegBtn) rwJpegBtn.style.display = 'none';
     }
-    return;
-  }
-  if (level === 'guest') {
-    const toolbar = document.querySelector('.toolbar');
-    if (toolbar) toolbar.style.display = 'none';
-    document.querySelectorAll('.tbtn').forEach(b => b.style.display = 'none');
-    const rwPdfBtn  = document.getElementById('runwayPdfBtn');  if (rwPdfBtn)  rwPdfBtn.style.display  = 'none';
-    const rwJpegBtn = document.getElementById('runwayJpegBtn'); if (rwJpegBtn) rwJpegBtn.style.display = 'none';
     return;
   }
 }

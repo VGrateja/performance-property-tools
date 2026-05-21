@@ -2246,10 +2246,11 @@
      Tier 3 (client) and tier 4 (guest) never see it. Fail-closed:
      hidden by default, shown only when one of the three tier classes
      is set on the body by applyAccessRestrictions(). */
-  .results-card { display: none !important; }
-  body.tier-dev     .results-card,
-  body.tier-admin   .results-card,
-  body.tier-company .results-card { display: flex !important; }
+  /* Results card visible to every signed-in tier — internal tool,
+     and Tier 3/4 viewers should see the same suite Tier 2 sees.
+     The Results-tool itself still gates edit/save via the usual
+     isLimitedUser() / isViewOnly() helpers. */
+  .results-card { display: flex; }
 
   .hub-tool-card-wide {
     /* On tier-4 we span the row so the lite pill is the obvious
@@ -2334,7 +2335,11 @@
     gap: 22px;
     text-align: left;
   }
-  body.tier-guest .hub-tier4-notice { display: flex; }
+  /* Lite-Access upgrade notice retired — tool is now internal-only,
+     no tier 4 contact-us blur wall on the hub. Rule kept off so the
+     notice element (still in the DOM for backwards compat) never
+     surfaces regardless of body class. */
+  body.tier-guest .hub-tier4-notice { display: none; }
 
   .hub-tier4-notice-icon {
     font-size: 36px;
@@ -2425,26 +2430,10 @@
     .hub-tier4-notice-cta { animation: none !important; }
   }
 
-  /* Locked pills — blur + click-block + dimming overlay.
-     pointer-events:none on the button stops clicks; the ::after layer
-     adds the dim/blur "wall" feel without a separate DOM element. */
-  body.tier-guest .hub-tool-card.tier4-locked {
-    pointer-events: none;
-    cursor: not-allowed;
-    filter: blur(2.4px) saturate(0.85);
-    transition: filter 0.3s ease;
-  }
-  body.tier-guest .hub-tool-card.tier4-locked:hover {
-    /* Suppress the pill hover lift since it's not interactive. */
-    transform: none;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.28),
-                inset 0 1px 0 rgba(255, 255, 255, 0.04);
-    border-color: rgba(0, 182, 203, 0.22);
-  }
-  body.tier-guest .hub-tool-card.tier4-locked::before {
-    /* Override the normal hover glow — keep the pill looking dim. */
-    opacity: 0.4;
-  }
+  /* Blur-wall on .tier4-locked pills retired — internal tool now,
+     tier 4 has full view access and these pills click through to
+     the live tool same as for tier 2. Class kept on the buttons for
+     backwards compat; rules below intentionally no-op. */
   /* Sharp, fully clickable Lite pill — no blur, full hover state. */
   body.tier-guest .hub-tool-card.tier4-allowed {
     /* Bump the border so the eye finds it after the blur establishes
@@ -2457,22 +2446,10 @@
     opacity: 0.45;
   }
 
-  /* Tier 2 (company) and Tier 3 (client) don't need a "lite" version —
-     they already have access to the full Online Reports tool — but
-     per request the Lite pill stays visible for Tier 2 (company) so
-     they can hand a lite preview to clients without flipping into
-     the full tool. Tier 3 (client) stays hidden because the full
-     tool is already their default. Tier 0/1 always see it; Tier 4
-     (guest) sees it as their only usable pill. */
-  body.tier-client .hub-tool-card.tier4-allowed {
-    display: none;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    body.tier-guest .hub-tool-card.tier4-locked {
-      transition: none !important;
-    }
-  }
+  /* Lite Online Reports pill stays visible across all tiers — internal
+     tool, so tier 3/4 see the same suite tier 2 sees. They can still
+     open the Lite preview if they want it (useful for sales hand-offs);
+     the full Online Reports tool is one card away in any case. */
 
   /* ─────── Hub → tool page-transition overlay ───────
      Fades in over the hub when the user clicks a tool pill, hands off
@@ -4129,8 +4106,9 @@ document.addEventListener('keydown', (ev) => {
    short steps, centered modal, no element-spotlight tricks. */
 (function setupHubTour(){
   const KEY = 'pp-hub-tour-v1';
-  const tier = sessionStorage.getItem('pp_auth_level') || '';
-  if (tier === 'guest') return;
+  /* Tour shown to every tier — internal tool, no separate lite
+     onboarding path anymore (the old blur-wall + CTA flow that
+     replaced the tour for tier 4 has been removed). */
   try { if (localStorage.getItem(KEY) === 'seen') return; } catch (_) {}
 
   const steps = [
@@ -4241,22 +4219,12 @@ window.PP_HUB_STATS = {
   latest:  'May 2026',
 };
 
-/* Strip onclick attributes from .tier4-locked pills for guest users
-   so they have no inline handler at all — devtools shows a button
-   with no click action wired up. Combined with the JS-level guards
-   in navigateToTool / openOnlineReports, this means even bypassing
-   the CSS pointer-events:none and the blur leaves the pills inert.
-   (URL typing into the address bar is still possible — that's the
-   server-side gate that comes with the Supabase migration.) */
-function neuterTier4LockedPills() {
-  if (!isGuestTier()) return;
-  document.querySelectorAll('.hub-tool-card.tier4-locked').forEach(btn => {
-    btn.removeAttribute('onclick');
-    /* Also disable so keyboard tabbing + Enter / Space don't trigger
-       a click-equivalent on the button. */
-    btn.disabled = true;
-  });
-}
+/* Previously stripped onclick handlers off the .tier4-locked tool
+   pills so a Tier 4 guest who bypassed the CSS blur still couldn't
+   trigger navigation. Internal-only tool now → tier 4 has full view
+   access, so no neutering needed. Kept as a no-op so existing call
+   sites stay safe (legacy bootstrap may still invoke it). */
+function neuterTier4LockedPills() { /* no-op — see above */ }
 
 /* Hub-page bootstrap: if a session is already active, skip straight to the hub.
    Otherwise auth.js has wired up the login form and we stay on step 1. */
@@ -4321,13 +4289,10 @@ function _addCardWatermarks() {
 _addCardWatermarks();
 
 function navigateToTool(url, label) {
-  if (isGuestTier() && !/[?&]lite=1(?:&|$)/.test(String(url))) {
-    /* Tier-4 can only navigate to lite-mode URLs (?lite=1 set by the
-       Lite Online Reports flow — pill → cluster picker → region tile).
-       Every other tool URL silently no-ops. No alert; landing them
-       back on the hub with its "Contact Us" CTA is the right outcome. */
-    return;
-  }
+  /* No tier gate here anymore — internal-only tool now, so tier 3
+     (client) and tier 4 (guest) get the same navigation surface as
+     tier 2 (company). Editing + download are still blocked elsewhere
+     (applyAccessRestrictions, isViewOnly() checks in each tool). */
   const overlay = document.getElementById('hub-page-transition');
   const lab = document.getElementById('hub-page-transition-label');
   if (lab && label) lab.textContent = 'Loading ' + label;
