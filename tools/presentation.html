@@ -4900,6 +4900,11 @@ function ovAddImage(file) {
         x: (1280 - w) / 2, y: (720 - h) / 2,
         w, h,
       };
+      /* Resize + re-encode before upload so the bucket file isn't
+         needlessly huge (slides cap at 1280px; anything bigger is
+         being downscaled at display time anyway). Falls back to the
+         original file if compression fails or makes it bigger. */
+      const uploadBlob = await _maybeCompressImage(file, probe);
       /* Try the Storage upload first. On success the overlay carries
          o.storage (~80 bytes in the cloud payload) and the rendered
          <img> resolves to a signed URL. On failure (network, RLS,
@@ -4908,7 +4913,7 @@ function ovAddImage(file) {
          and the payload grows by the file size, but nothing breaks. */
       let entry;
       try {
-        const path = await _uploadImageToStorage(file, deckId, overlayId);
+        const path = await _uploadImageToStorage(uploadBlob, deckId, overlayId);
         /* Pre-seed the signed URL cache with a URL we can mint now,
            so the first render after this finishes shows the image
            immediately without an extra round trip. */
@@ -7058,6 +7063,76 @@ async function _getSignedImageUrl(path) {
     return data.signedUrl;
   } catch (_) {
     return null;
+  }
+}
+
+/* Resize + re-encode an image before upload so the bucket file isn't
+   needlessly huge. Slides are 1280×720, so any source dimension over
+   ~1600px is rendering at downscaled resolution anyway — discarding
+   those extra pixels is invisible at display time.
+   Rules:
+     • Max side >1600px → scale down to fit.
+     • PNG with transparency (sampled alpha channel) → keep PNG so
+       the alpha survives. PNG is lossless so quality is unchanged.
+     • Everything else → JPEG quality 0.85 (visually indistinguishable
+       from the original for screenshots / charts / photos at slide
+       size, ~5-10× smaller than the unencoded source).
+     • If the compressed Blob ends up larger than the source (which
+       happens with tiny or already-optimised images), fall back to
+       the original.
+   The probe Image is already loaded by the caller, so we draw it
+   directly to canvas — no second decode. Returns a Blob (which the
+   storage client accepts the same as a File). */
+const IMAGE_COMPRESS_MAX_DIM = 1600;
+const IMAGE_COMPRESS_JPEG_QUALITY = 0.85;
+const IMAGE_COMPRESS_SKIP_BYTES = 200 * 1024;  /* don't bother for <200 KB */
+
+function _maybeCompressImage(file, probeImg) {
+  try {
+    const srcW = probeImg.naturalWidth;
+    const srcH = probeImg.naturalHeight;
+    if (!srcW || !srcH) return Promise.resolve(file);
+    const maxSide = Math.max(srcW, srcH);
+    const scale = maxSide > IMAGE_COMPRESS_MAX_DIM ? IMAGE_COMPRESS_MAX_DIM / maxSide : 1;
+    /* Small + already small source: not worth re-encoding. */
+    if (scale === 1 && file.size < IMAGE_COMPRESS_SKIP_BYTES) {
+      return Promise.resolve(file);
+    }
+    const w = Math.round(srcW * scale);
+    const h = Math.round(srcH * scale);
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(probeImg, 0, 0, w, h);
+
+    /* Pick output format. PNG sources can have alpha — sample a corner
+       and check; if anything is < 255 we keep PNG, otherwise JPEG it.
+       GIF source goes through canvas as a static frame so it's safe
+       to re-encode either way; default JPEG. WebP/AVIF treated the
+       same way. */
+    let outType = 'image/jpeg';
+    let outQuality = IMAGE_COMPRESS_JPEG_QUALITY;
+    if (file.type === 'image/png') {
+      try {
+        const sample = ctx.getImageData(0, 0, Math.min(w, 64), Math.min(h, 64)).data;
+        for (let i = 3; i < sample.length; i += 4) {
+          if (sample[i] < 255) { outType = 'image/png'; outQuality = undefined; break; }
+        }
+      } catch (_) { /* getImageData can throw on cross-origin canvas; default JPEG is fine */ }
+    }
+
+    return new Promise(resolve => {
+      canvas.toBlob(blob => {
+        /* Bail out of compression if it made the file bigger, or if
+           the encoder returned null (some browsers do for empty
+           canvases). */
+        if (!blob || blob.size >= file.size) resolve(file);
+        else resolve(blob);
+      }, outType, outQuality);
+    });
+  } catch (_) {
+    return Promise.resolve(file);
   }
 }
 
