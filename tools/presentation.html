@@ -2695,7 +2695,7 @@
   <div class="pres-tp-row">
     <label>List</label>
     <div class="pres-tp-style-row">
-      <button class="pres-tp-btn" id="pres-tp-bullet" type="button" title="Toggle a bulleted list (double-click the text first to enter editing mode)">
+      <button class="pres-tp-btn" id="pres-tp-bullet" type="button" title="Toggle a bulleted list (double-click the text first to enter editing mode). Tab to nest a bullet, Shift+Tab to un-nest.">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
           <circle cx="2" cy="3.5" r="1.2"/>
           <circle cx="2" cy="7"   r="1.2"/>
@@ -5207,13 +5207,26 @@ function buildTableEl(o) {
         ev.stopPropagation();
         openTableCellMenu(o, r, c, ev.clientX, ev.clientY);
       });
-      /* Tab / Shift+Tab — navigate to next / previous cell, matching
-         the standard spreadsheet keystroke. preventDefault stops the
-         browser's default of inserting a literal Tab character into
-         the contenteditable. Wraps within the table; falls off at
-         the ends rather than escaping into other overlays. */
+      /* Tab / Shift+Tab handling — two roles:
+           1. If the caret is inside a <li>, Tab nests / Shift+Tab
+              un-nests the bullet (Word / Google Docs behaviour).
+              Lets users build the workflow-list "● outer / ○
+              nested" look inside table cells too.
+           2. Otherwise, navigate to the next / previous cell
+              (standard spreadsheet keystroke).
+         preventDefault stops the browser's default of inserting a
+         literal Tab character. Wraps within the table; falls off
+         at the ends rather than escaping into other overlays. */
       td.addEventListener('keydown', (ev) => {
         if (ev.key !== 'Tab') return;
+        if (_handleListNestKey(ev)) {
+          /* List nest succeeded — persist the cell's new HTML.
+             _handleListNestKey already called preventDefault. */
+          cell.html = td.innerHTML;
+          saveOverlays();
+          pushHistory();
+          return;
+        }
         ev.preventDefault();
         const tbl = td.closest('table');
         if (!tbl) return;
@@ -6181,6 +6194,20 @@ function buildOverlayEl(o) {
         range.selectNodeContents(el);
         sel.removeAllRanges();
         sel.addRange(range);
+      }
+    });
+    /* Tab / Shift+Tab inside a <li> → nest / un-nest the bullet
+       (browser CSS auto-switches the marker from disc to circle to
+       square as nesting deepens, matching the "● outer / ○ nested"
+       workflow-list look). Only fires while the overlay is in
+       active edit mode; outside of that, Tab does its native
+       focus-traversal thing. */
+    el.addEventListener('keydown', (ev) => {
+      if (el.contentEditable !== 'true') return;
+      if (_handleListNestKey(ev)) {
+        o.html = el.innerHTML;
+        saveOverlays();
+        pushHistory();
       }
     });
     el.addEventListener('blur', () => {
@@ -8382,6 +8409,33 @@ tpLinkRemove.addEventListener('click', () => {
   saveOverlays();
   pushHistory();
 });
+
+/* Indent / outdent a list item with Tab / Shift+Tab. Standard
+   Word / Google Docs behaviour: when the caret is inside a <li>,
+   Tab nests the item under the previous one (creating a child
+   <ul>), Shift+Tab pulls it back out. Browser CSS defaults render
+   each nesting level with a different marker — outer disc (●),
+   first nested circle (○), deeper square — matching the
+   workflow-bullets layout the user asked for. Returns true if
+   the keystroke was handled so the caller can preventDefault and
+   skip its own Tab logic (e.g. table cell navigation falls
+   through only when the caret isn't in a list). */
+function _handleListNestKey(ev) {
+  if (ev.key !== 'Tab') return false;
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return false;
+  let node = sel.anchorNode;
+  let inLi = false;
+  while (node) {
+    if (node.nodeType === 1 && node.tagName === 'LI') { inLi = true; break; }
+    node = node.parentNode;
+  }
+  if (!inLi) return false;
+  ev.preventDefault();
+  try { document.execCommand('styleWithCSS', false, false); } catch (_) {}
+  document.execCommand(ev.shiftKey ? 'outdent' : 'indent');
+  return true;
+}
 
 /* Bulleted-list toggle. Like Bold / Italic, this drives
    document.execCommand on the contenteditable text overlay —

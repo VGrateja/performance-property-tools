@@ -1014,9 +1014,9 @@
          the Online Reports cluster-picker pattern. -->
     <button class="hub-tool-card nav-pill tier4-locked" onclick="openPresentations()">
       <div class="hub-tool-icon">🎤</div>
-      <div class="hub-tool-badge is-wip">🚧 Under Development</div>
+      <div class="hub-tool-badge">Live</div>
       <h2 class="hub-tool-title nav-pill-title">Presentation</h2>
-      <p class="hub-tool-desc">Build advisor-to-client decks with live research embedded — Clock and Runway v Demand stay current on every open. <strong style="color:#f59e0b">Still being built</strong> — feel free to try it; some controls and saved decks may change without notice.</p>
+      <p class="hub-tool-desc">Build advisor-to-client decks with live research embedded — Clock and Runway v Demand stay current on every open.</p>
       <div class="hub-tool-cta">Open Presentation <span>›</span></div>
     </button>
 
@@ -3243,7 +3243,9 @@ async function loadArenaLiveFeed() {
      ⚡ Upset (winner's pre-rating ≥100 below loser's)
      🏆 Big bingo / 7-tile play in scrabble (later — needs move data)
      ⌨️ Recent typing personal best
-   Sorted by priority then recency; top 8 rendered. */
+     🚀 WPM milestone crossing (60 / 80 / 100 / 120)
+   Sorted by priority then recency; current user's own items get
+   pinned to the top of the list. Top 40 rendered. */
 let _arenaHighlightsInFlight = false;
 async function loadArenaHighlights() {
   if (!window.sb) return;
@@ -3395,17 +3397,68 @@ async function loadArenaHighlights() {
 
     /* ── 5. Typing personal bests — reuse the cached news items
        built by loadArenaNews(), which already filters to "strictly
-       beat your previous best" runs. */
-    if (typeof _arenaNewsItems !== 'undefined' && Array.isArray(_arenaNewsItems)) {
-      _arenaNewsItems.slice(0, 3).forEach(n => items.push({
+       beat your previous best" runs. Two changes vs the original
+       slice(0,3) cap:
+         a) Pin the CURRENT USER's most recent PB to the top of the
+            Highlights list (priority -1 — above streaks even) so a
+            user who just set a record always sees themselves.
+         b) Widen the rest of the band to the 10 most recent PBs
+            from everyone else (was 3) so a busy week doesn't push
+            an ordinary user's PB off the card. */
+    let myEmail = '';
+    try { if (typeof getCurrentUserEmail === 'function') myEmail = (getCurrentUserEmail() || '').toLowerCase(); } catch (_) {}
+    const myLocalPart = myEmail ? myEmail.split('@')[0] : '';
+    const pbItems = (typeof _arenaNewsItems !== 'undefined' && Array.isArray(_arenaNewsItems)) ? _arenaNewsItems : [];
+    /* Find this user's most recent PB. PBs have an email field as of
+       this commit; older items pre-field would still match on name
+       (local-part of email), so fall through to name-match. */
+    const myPB = myEmail
+      ? pbItems.find(n => (n.email || '') === myEmail || (myLocalPart && n.name === myLocalPart))
+      : null;
+    if (myPB) {
+      items.push({
+        priority: -1, icon: '⌨️',
+        time: myPB.time ? new Date(myPB.time).getTime() : 0,
+        html: '<strong>You</strong> ' + _escapeHtml(myPB.text.replace(/^[^ ]+ /, '')),
+      });
+    }
+    pbItems
+      .filter(n => !(myEmail && ((n.email || '') === myEmail || (myLocalPart && n.name === myLocalPart))))
+      .slice(0, 10)
+      .forEach(n => items.push({
         priority: 2, icon: '⌨️',
         time: n.time ? new Date(n.time).getTime() : 0,
         html: _escapeHtml(n.text),
       }));
-    }
 
-    /* Sort + take the top 8. Priority first (streaks > upsets > PBs),
-       then recency within each band. */
+    /* ── 6. WPM milestone crossings (60 / 80 / 100 / 120) — built by
+       loadArenaNews into _arenaMilestones. Per-player, fires only
+       the first time their max crossed each threshold. The current
+       user's own crossing gets pinned same as PB above. Priority 1
+       so milestones sit alongside upsets in the sort order. */
+    const milestoneItems = (typeof _arenaMilestones !== 'undefined' && Array.isArray(_arenaMilestones)) ? _arenaMilestones : [];
+    const myMilestone = myEmail
+      ? milestoneItems.find(m => (m.email || '') === myEmail)
+      : null;
+    if (myMilestone) {
+      items.push({
+        priority: -1, icon: '🚀',
+        time: myMilestone.time ? new Date(myMilestone.time).getTime() : 0,
+        html: '<strong>You</strong> crossed <strong>' + myMilestone.threshold + ' WPM</strong> for the first time (' + myMilestone.wpm + ')',
+      });
+    }
+    milestoneItems
+      .filter(m => !(myEmail && (m.email || '') === myEmail))
+      .slice(0, 5)
+      .forEach(m => items.push({
+        priority: 1, icon: '🚀',
+        time: m.time ? new Date(m.time).getTime() : 0,
+        html: '<strong>' + _escapeHtml(m.name) + '</strong> crossed <strong>' + m.threshold + ' WPM</strong> for the first time (' + m.wpm + ')',
+      }));
+
+    /* Sort by priority then recency. Priority -1 pins the current
+       user's own items (PB + milestone crossing) at the very top,
+       followed by streaks (0), upsets + milestones (1), PBs (2). */
     items.sort((a, b) => (a.priority - b.priority) || (b.time - a.time));
     const top = items.slice(0, 40);
     if (!top.length) {
@@ -3630,6 +3683,13 @@ async function loadArenaStats() {
    up animation) and the right-side feed popup that opens when the
    tile is clicked. */
 let _arenaNewsItems = [];
+/* WPM milestone crossings — emitted by loadArenaNews when a player's
+   running max WPM crosses a round threshold for the first time
+   (60 / 80 / 100 / 120). Consumed by loadArenaHighlights so reaching
+   a new WPM bracket shows up as its own Highlights entry rather than
+   getting buried under the rolling top-N PB list. */
+let _arenaMilestones = [];
+const _WPM_MILESTONES = [60, 80, 100, 120];
 let _arenaNewsCycleTimer = null;
 let _arenaNewsCycleIdx = 0;
 let _arenaNewsInFlight = false;
@@ -3668,20 +3728,25 @@ async function loadArenaNews() {
     const ordered = data.slice().reverse();
     const playerMax = {};
     const highlights = [];
+    /* Milestone crossings (60/80/100/120 WPM) emitted into a parallel
+       array so the news ticker stays focused on PBs while the Arena
+       Highlights card surfaces them as their own entry. */
+    const milestones = [];
     ordered.forEach(r => {
       const email = (r.player_email || '').toLowerCase();
       if (!email) return;
       const prev = playerMax[email] || 0;
       if (r.wpm > prev) {
         playerMax[email] = r.wpm;
+        const name = email.split('@')[0];
         if (prev > 0) {
-          const name = email.split('@')[0];
           const list = (r.word_list === 'real-estate') ? 'real-estate' : 'English';
           const sec = r.mode_seconds || 60;
           const text = name + ' set a new personal best — ' + r.wpm + ' WPM (' + sec + 's ' + list + ')';
           highlights.push({
             text: text,
             name: name,
+            email: email,
             wpm: r.wpm,
             sec: sec,
             list: list,
@@ -3690,10 +3755,27 @@ async function loadArenaNews() {
             time: r.completed_at,
           });
         }
+        /* Milestone crossings — when this run pushed the player's
+           running max across any of the 60/80/100/120 thresholds,
+           emit a separate highlight per threshold crossed. First-ever
+           runs ARE counted here (unlike the PB stream above) — going
+           from no record to 70 WPM legitimately crosses the 60 line. */
+        _WPM_MILESTONES.forEach(t => {
+          if (prev < t && r.wpm >= t) {
+            milestones.push({
+              name: name,
+              email: email,
+              wpm: r.wpm,
+              threshold: t,
+              time: r.completed_at,
+            });
+          }
+        });
       }
     });
     /* Newest highlight first for the ticker + popup. */
     _arenaNewsItems = highlights.reverse();
+    _arenaMilestones = milestones.reverse();
     _renderArenaNewsTicker();
     _renderArenaNewsList();
   } catch (e) {
