@@ -2698,6 +2698,286 @@
     .hub-tour-card{animation:none}
     .hub-tour-next:hover{transform:none}
   }
+
+  /* ═══════════════════════════════════════════════════════════════
+     AI CONCIERGE — floating chat widget
+     Step 2 of the AI plan (docs/AI_ACTIONS_SPEC.md). Visible to
+     every signed-in tier (per spec: hub-internal navigation only).
+     Step 2 ships the UI shell with placeholder replies — Step 3
+     wires the /functions/v1/ai-concierge proxy + the 8 actions.
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* Clamp horizontal overflow at the body level so the closed
+     chat panel (position:fixed + transform:translateX(420px))
+     can't extend the document and produce a horizontal scrollbar.
+     `overflow-x: clip` is the modern equivalent of `hidden` that
+     doesn't create a scroll container — important here because
+     the hub's vertical scroll has to keep working. */
+  body{ overflow-x:clip }
+
+  /* Floating launcher button — bottom-right corner. Cyan circle
+     with chat-bubble icon. z-index sits one below the dev tier-
+     switcher (2147483647) so both can coexist for dev users. */
+  .concierge-btn{
+    position:fixed; bottom:20px; right:20px;
+    width:56px; height:56px;
+    border-radius:50%;
+    background:#00b6cb;
+    color:#1f283f;
+    border:none;
+    box-shadow:0 8px 24px rgba(0,182,203,0.4);
+    cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    z-index:2147483645;
+    transition:transform .2s, box-shadow .2s;
+  }
+  .concierge-btn:hover{
+    transform:translateY(-2px);
+    box-shadow:0 12px 32px rgba(0,182,203,0.55);
+  }
+  .concierge-btn:active{ transform:translateY(0) }
+  .concierge-btn svg{ width:26px; height:26px }
+  /* For dev users the tier-switcher (auth.js) is positioned at
+     right:96 to leave the bottom-right corner free for this
+     button — see the comment in _ppBuildTierSwitcher. So no
+     per-tier offset needed here; the button stays in its base
+     bottom:20/right:20 corner across every tier. */
+
+  /* Floating chat box — anchored above the launcher button in
+     the bottom-right corner. Compact (380×520, clamped to the
+     viewport on short screens) instead of a full-height side
+     panel. Hidden state is opacity:0 + slight translate/scale so
+     it animates in from the button rather than sliding across
+     the page. pointer-events:none when closed so the off-state
+     area can't be clicked. */
+  .concierge-panel{
+    position:fixed;
+    right:20px; bottom:90px;
+    width:380px; max-width:calc(100vw - 24px);
+    height:520px; max-height:calc(100vh - 120px);
+    background:rgba(15,23,42,0.96);
+    backdrop-filter:blur(16px) saturate(140%);
+    -webkit-backdrop-filter:blur(16px) saturate(140%);
+    border:1px solid rgba(0,182,203,0.30);
+    border-radius:16px;
+    box-shadow:0 20px 60px rgba(0,0,0,0.45);
+    z-index:2147483644;
+    display:flex; flex-direction:column;
+    opacity:0;
+    transform:translateY(16px) scale(0.96);
+    transform-origin:bottom right;
+    pointer-events:none;
+    transition:opacity .22s ease, transform .22s cubic-bezier(0.32, 0.72, 0, 1);
+    overflow:hidden;
+  }
+  .concierge-panel.open{
+    opacity:1;
+    transform:translateY(0) scale(1);
+    pointer-events:auto;
+  }
+  [data-theme="light"] .concierge-panel{
+    background:rgba(255,255,255,0.97);
+    border-color:rgba(0,182,203,0.40);
+    box-shadow:0 20px 60px rgba(31,40,63,0.22);
+  }
+
+  /* Header — title pill + close button. */
+  .concierge-header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px 20px 12px;
+    border-bottom:1px solid rgba(0,182,203,0.18);
+  }
+  .concierge-title{
+    font-family:'Montserrat',sans-serif;
+    font-weight:800; font-size:13px;
+    letter-spacing:2px; text-transform:uppercase;
+    color:#00b6cb;
+    margin:0;
+  }
+  .concierge-close{
+    background:transparent;
+    border:1px solid rgba(255,255,255,0.18);
+    color:rgba(255,255,255,0.7);
+    width:32px; height:32px;
+    border-radius:50%;
+    cursor:pointer;
+    font-size:18px; line-height:1;
+    display:flex; align-items:center; justify-content:center;
+    transition:all .15s;
+  }
+  .concierge-close:hover{
+    background:rgba(0,182,203,0.12);
+    border-color:rgba(0,182,203,0.5);
+    color:#fff;
+  }
+  [data-theme="light"] .concierge-close{
+    border-color:rgba(31,40,63,0.18);
+    color:rgba(31,40,63,0.65);
+  }
+  [data-theme="light"] .concierge-close:hover{
+    background:rgba(0,182,203,0.10);
+    color:#0a1520;
+  }
+
+  /* Message list. Scrollbar visually hidden but scroll still
+     works (wheel / touch / arrow keys / programmatic scroll all
+     fine) — the conversation feels cleaner without the chunky
+     native bar interrupting the panel's frosted-glass look. */
+  .concierge-messages{
+    flex:1; overflow-y:auto;
+    padding:16px 20px;
+    display:flex; flex-direction:column;
+    gap:10px;
+    scrollbar-width:none;          /* Firefox */
+    -ms-overflow-style:none;       /* legacy Edge / IE */
+  }
+  .concierge-messages::-webkit-scrollbar{ width:0; height:0 } /* Chrome / Safari */
+  .concierge-msg{
+    max-width:85%;
+    padding:10px 14px;
+    border-radius:12px;
+    font-family:'Roboto',sans-serif;
+    font-size:13.5px; line-height:1.45;
+    word-wrap:break-word;
+  }
+  .concierge-msg.user{
+    align-self:flex-end;
+    background:rgba(0,182,203,0.22);
+    border:1px solid rgba(0,182,203,0.40);
+    color:#fff;
+    border-bottom-right-radius:4px;
+    /* Slide-in from the right edge — mirrors the bubble's side
+       so it reads as "sliding in from where you typed". */
+    animation:concierge-msg-in-right .28s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .concierge-msg.assistant{
+    align-self:flex-start;
+    background:rgba(255,255,255,0.06);
+    border:1px solid rgba(255,255,255,0.12);
+    color:rgba(255,255,255,0.92);
+    border-bottom-left-radius:4px;
+    /* Slide-in from the left edge — slightly longer than the
+       user bubble so the AI reply feels like a "considered
+       response" arriving rather than a snap. */
+    animation:concierge-msg-in-left .32s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  @keyframes concierge-msg-in-right{
+    from{ opacity:0; transform:translateX(16px) translateY(6px) scale(0.96) }
+    to  { opacity:1; transform:translateX(0)     translateY(0)   scale(1)    }
+  }
+  @keyframes concierge-msg-in-left{
+    from{ opacity:0; transform:translateX(-16px) translateY(6px) scale(0.96) }
+    to  { opacity:1; transform:translateX(0)      translateY(0)   scale(1)    }
+  }
+  [data-theme="light"] .concierge-msg.user{ color:#0a1520 }
+  [data-theme="light"] .concierge-msg.assistant{
+    background:rgba(31,40,63,0.05);
+    border-color:rgba(31,40,63,0.12);
+    color:#1f283f;
+  }
+  /* Three-dot "thinking" indicator. Same bubble shape as an
+     assistant reply but the body is three real spans that bounce
+     in sequence — Slack / iMessage style — instead of a static
+     unicode ellipsis. Each dot pulses up with a 0.15s stagger so
+     the visual reads as movement, not blinking. */
+  .concierge-msg.concierge-typing{
+    display:inline-flex !important;
+    align-items:center; gap:6px;
+    padding:14px 16px;
+    /* Suppress the slide-in animation on the typing bubble so it
+       just fades in — sliding + bouncing dots fight each other. */
+    animation:concierge-typing-fade-in .2s ease-out;
+  }
+  @keyframes concierge-typing-fade-in{
+    from{ opacity:0 }
+    to  { opacity:1 }
+  }
+  .concierge-typing-dot{
+    width:6px; height:6px;
+    background:currentColor;
+    border-radius:50%;
+    display:inline-block;
+    opacity:0.4;
+    animation:concierge-typing-bounce 1.2s ease-in-out infinite;
+  }
+  .concierge-typing-dot:nth-child(2){ animation-delay:.15s }
+  .concierge-typing-dot:nth-child(3){ animation-delay:.30s }
+  @keyframes concierge-typing-bounce{
+    0%, 60%, 100% { transform:translateY(0)    scale(1);    opacity:0.4  }
+    30%           { transform:translateY(-4px) scale(1.15); opacity:0.95 }
+  }
+  /* Respect users who've opted out of motion — instant message
+     bubbles, dots dimmed but not bouncing. */
+  @media (prefers-reduced-motion: reduce){
+    .concierge-msg.user,
+    .concierge-msg.assistant,
+    .concierge-msg.concierge-typing{ animation:none }
+    .concierge-typing-dot{ animation:none; opacity:0.6 }
+  }
+  .concierge-empty{
+    text-align:center;
+    color:rgba(255,255,255,0.5);
+    font-size:12.5px;
+    padding:40px 20px;
+    font-style:italic;
+    font-family:'Roboto',sans-serif;
+  }
+  [data-theme="light"] .concierge-empty{ color:rgba(31,40,63,0.55) }
+
+  /* Input row. */
+  .concierge-input-row{
+    display:flex; gap:8px; align-items:flex-end;
+    padding:12px 16px 16px;
+    border-top:1px solid rgba(0,182,203,0.18);
+  }
+  .concierge-input{
+    flex:1;
+    resize:none;
+    background:rgba(255,255,255,0.04);
+    border:1px solid rgba(0,182,203,0.22);
+    color:#fff;
+    border-radius:10px;
+    padding:10px 12px;
+    font-family:'Roboto',sans-serif;
+    font-size:13.5px; line-height:1.4;
+    outline:none;
+    min-height:44px; max-height:120px;
+    transition:border-color .15s;
+  }
+  .concierge-input::placeholder{ color:rgba(255,255,255,0.4) }
+  .concierge-input:focus{ border-color:rgba(0,182,203,0.6) }
+  [data-theme="light"] .concierge-input{
+    background:rgba(255,255,255,0.8);
+    color:#0a1520;
+    border-color:rgba(0,182,203,0.35);
+  }
+  [data-theme="light"] .concierge-input::placeholder{ color:rgba(31,40,63,0.45) }
+  .concierge-send{
+    width:44px; height:44px;
+    border-radius:10px;
+    background:#00b6cb;
+    border:none;
+    color:#1f283f;
+    cursor:pointer;
+    font-size:18px; font-weight:700;
+    display:flex; align-items:center; justify-content:center;
+    transition:background .15s, transform .12s;
+    flex-shrink:0;
+  }
+  .concierge-send:hover{ background:#00cee8 }
+  .concierge-send:active{ transform:scale(0.96) }
+  .concierge-send:disabled{
+    opacity:0.45; cursor:not-allowed;
+  }
+
+  @media (max-width: 480px){
+    .concierge-panel{
+      width:calc(100vw - 24px);
+      right:12px;
+      bottom:84px;
+      height:min(520px, calc(100vh - 110px));
+    }
+  }
 </style>
 
 <script>
@@ -4384,6 +4664,718 @@ function navigateToTool(url, label) {
      the hub fully blurs out before the page tear-down. */
   setTimeout(() => { location.href = url; }, 350);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   AI CONCIERGE — UI shell (Step 2 of the AI plan)
+   Floating button + slide-in panel. Visible to every signed-in
+   tier. Send produces a placeholder reply for now; Step 3 will
+   swap in a real call to /functions/v1/ai-concierge and execute
+   the 8 navigation actions on tool_calls.
+
+   Wrapped in a DOMContentLoaded gate because the chat-widget HTML
+   lives at the very end of <body>, AFTER this inline <script>.
+   Without the gate, document.getElementById would return null on
+   first run and the IIFE would bail at its safety check, leaving
+   the button stuck at its default inline display:none.
+   ═══════════════════════════════════════════════════════════════ */
+function _initConciergeUI() {
+  const btn       = document.getElementById('conciergeBtn');
+  const panel     = document.getElementById('conciergePanel');
+  const closeBtn  = document.getElementById('conciergeClose');
+  const messages  = document.getElementById('conciergeMessages');
+  const input     = document.getElementById('conciergeInput');
+  const sendBtn   = document.getElementById('conciergeSend');
+  if (!btn || !panel || !messages || !input || !sendBtn) return;
+
+  /* Visibility — show launcher only for signed-in users. The
+     button's inline display:none is the safe default while
+     sessionStorage is being hydrated; we flip it here once auth
+     state is known. Symmetric across all tiers per the May 2026
+     freeze rule. */
+  function refreshVisibility() {
+    const signedIn = !!sessionStorage.getItem('pp_auth');
+    btn.style.display = signedIn ? 'flex' : 'none';
+    if (!signedIn) {
+      panel.classList.remove('open');
+      panel.setAttribute('aria-hidden', 'true');
+    }
+  }
+  refreshVisibility();
+  /* Re-check on every body-class change (auth.js toggles the
+     tier-* class as the session hydrates) + on storage events
+     (a logout in another tab should hide the launcher here). */
+  new MutationObserver(refreshVisibility).observe(
+    document.body, { attributes: true, attributeFilter: ['class'] }
+  );
+  window.addEventListener('storage', refreshVisibility);
+
+  /* Empty-state placeholder shown until the user sends a first
+     message. Hidden once the conversation begins. */
+  function renderEmptyState() {
+    messages.innerHTML =
+      '<div class="concierge-empty">Ask me to open a tool, find a market report, or explain a hub feature.</div>';
+  }
+  renderEmptyState();
+  let conversationStarted = false;
+
+  function openPanel() {
+    panel.classList.add('open');
+    panel.setAttribute('aria-hidden', 'false');
+    /* Wait for the slide-in transition (~320 ms) before focusing
+       the input so the focus ring doesn't flash off-screen. */
+    setTimeout(() => input.focus(), 200);
+  }
+  function closePanel() {
+    panel.classList.remove('open');
+    panel.setAttribute('aria-hidden', 'true');
+  }
+
+  /* Launcher click toggles — open when closed, close when open.
+     Lets the cyan bubble act as both the open trigger and a
+     dismiss button without having to mouse over to the × in the
+     header. The × and Esc still work too. */
+  btn.addEventListener('click', () => {
+    if (panel.classList.contains('open')) closePanel();
+    else openPanel();
+  });
+  closeBtn.addEventListener('click', closePanel);
+  /* Esc closes the panel only when it's open. */
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && panel.classList.contains('open')) closePanel();
+  });
+
+  /* Auto-grow textarea up to the CSS max-height (120 px). Resets
+     on send so the input doesn't stay tall after a long message. */
+  function autoGrow() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  }
+  input.addEventListener('input', autoGrow);
+
+  /* Enter sends; Shift+Enter inserts a newline (Slack / iMessage
+     / modern-chat convention). */
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+
+  /* Smooth-scroll the message list to the bottom. Uses
+     ScrollIntoView-style native smooth easing when the browser
+     supports it; falls back to instant scrollTop otherwise. We
+     defer the actual scroll to the next animation frame so the
+     newly appended bubble's slide-in animation gets a chance to
+     reach its start position before the scroll begins — without
+     the rAF, the smooth scroll can race the slide-in and the
+     bubble appears mid-air. */
+  function _scrollToBottom() {
+    requestAnimationFrame(() => {
+      try {
+        messages.scrollTo({ top: messages.scrollHeight, behavior: 'smooth' });
+      } catch (_) {
+        messages.scrollTop = messages.scrollHeight;
+      }
+    });
+  }
+
+  function appendMessage(role, text) {
+    const el = document.createElement('div');
+    el.className = 'concierge-msg ' + role;
+    el.textContent = text;
+    messages.appendChild(el);
+    _scrollToBottom();
+    return el;
+  }
+
+  /* Typing indicator — three bouncing dots in an assistant-style
+     bubble. Real DOM nodes (not a unicode ellipsis) so each dot
+     can animate independently and the staggered bounce reads as
+     genuine "thinking" rather than a static glyph. Removed when
+     the reply lands or an error fires. */
+  function showTyping() {
+    const el = document.createElement('div');
+    el.className = 'concierge-msg assistant concierge-typing';
+    el.setAttribute('aria-label', 'AI is thinking');
+    for (let i = 0; i < 3; i++) {
+      const dot = document.createElement('span');
+      dot.className = 'concierge-typing-dot';
+      el.appendChild(dot);
+    }
+    messages.appendChild(el);
+    _scrollToBottom();
+    return el;
+  }
+
+  /* ─── Step 3 wiring: real model + 8 navigation actions ─── */
+
+  const PROXY_URL = 'https://cannojsxduvlewimwoxa.supabase.co/functions/v1/ai-concierge';
+  const MODEL     = 'llama-3.3-70b-versatile';
+  /* Hard cap on tool-call rounds — guards against the model
+     entering a tool-call loop that never lands on a text reply. */
+  const MAX_TOOL_ROUNDS  = 5;
+  /* Hard cap on conversation history length sent to the model so
+     long sessions don't blow up token cost. System prompt is sent
+     fresh every call; only the most recent N user/assistant/tool
+     messages from `history` are included. */
+  const MAX_HISTORY = 20;
+
+  const SYSTEM_PROMPT = `You are the Performance Property internal concierge. Help staff navigate the hub. Be concise (1-2 sentences + an action). When a user wants to go somewhere, CALL THE APPROPRIATE FUNCTION rather than just describing the path.
+
+The hub has 4 swipeable pages: analytics (default — Property Clock, Runway v Demand, Online Reports, Documents, Presentations, Results), pm (Cadence), arena (Typing Test, Chess, Scrabble), vault (Runway Workbook, Demand Score, Lite Reports).
+
+35 Online Reports markets, grouped: Capitals (Adelaide, Brisbane, Canberra, Darwin, Hobart, Melbourne, Perth, Sydney); QLD (Bundaberg, Cairns, Gladstone, Gold Coast, Ipswich, Mackay, Rockhampton, Sunshine Coast, Toowoomba, Townsville); NSW (Albury, Central Coast, Coffs Harbour, Dubbo, Newcastle, Orange, Port Macquarie, Tamworth, Wagga Wagga, Wollongong); Other (Ballarat, Bendigo, Geelong, Mildura, Wodonga, Bunbury, Rockingham, Launceston). Mandurah uses the Rockingham report.
+
+Access tiers — internal-only tool, every signed-in user can VIEW everything: Tier 0 (dev, Vandolf), Tier 1 (admin, Saskia/Shaene/Paul/D.Robbins) can edit + download. Tier 2 (company, other @performanceproperty.com.au) can download but not edit. Tier 3 (client) + Tier 4 (guest) can view everything but cannot edit OR download.
+
+Three libraries to disambiguate: Documents (Whitepapers & Strategies — folder library of research links + training material), Presentations Library (folder library of pre-made slide decks), Presentation Builder (the slide-deck editor itself).
+
+Edit mode is Tier 0-1 only. Saves auto-persist (localStorage instantly + Supabase after ~800ms). Light/dark theme toggle is shared across all hub pages. Arena highlights: typing PBs, WPM milestones (60/80/100/120), win streaks (3+) in Chess/Scrabble, upsets (winner 100+ rating below).
+
+Live data you CAN look up: call getTypingLeader to answer "who's the top typing player?" / "who's leading the typing test?" — it queries the live arena_typing_scores table and returns the current #1 (with WPM). For chess + scrabble leaders, direct the user to the Arena page's "Top of the leaderboards" card via openArenaActivity({activity:'leaderboards'}) — there's no leader-lookup tool for those games yet.
+
+Rules: only navigate inside this hub (no external URLs). If you don't know something, say so — don't invent features. If a user pastes what looks like personal data, contracts, financials, or credentials, refuse and flag it.
+
+CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALLS PROTOCOL — return a tool_calls array on the response message. NEVER write function calls as inline text like \`<function=name>{...}</function>\`, \`<|python_tag|>...\`, or any JSON-resembling syntax embedded in your text reply. Your visible text content must be plain prose only — no tags, no JSON, no XML, no markup of any kind that hints at function invocation. If the user's question doesn't require a tool, just answer in plain prose with no tool_calls at all.`;
+
+  /* The 8 navigation actions from docs/AI_ACTIONS_SPEC.md. Each
+     function block is sent to Groq verbatim so the model knows the
+     exact JSON Schema for arguments. */
+  const TOOL_DEFINITIONS = [
+    { type: 'function', function: {
+      name: 'openHubPage',
+      description: "Switch to a specific page of the main hub. Use when the user wants to navigate to a top-level section (e.g. 'go to the arena page').",
+      parameters: { type: 'object', properties: {
+        page: { type: 'string', enum: ['analytics', 'pm', 'arena', 'vault'],
+          description: "Which hub page. 'analytics' is the default landing with research tools; 'pm' = Cadence; 'arena' = games; 'vault' = internal-only tools." },
+      }, required: ['page'] }
+    }},
+    { type: 'function', function: {
+      name: 'openTool',
+      description: 'Open one of the hub tools by its short ID.',
+      parameters: { type: 'object', properties: {
+        tool: { type: 'string', enum: [
+          'property-clock','runway-demand','demand-score','documents','presentations',
+          'presentation-builder','online-reports','cadence','arena','typing','chess',
+          'scrabble','runway-workbook'
+        ], description: "Short ID. 'documents'=Whitepapers & Strategies; 'presentations'=Library; 'presentation-builder'=editor; 'arena'=landing page; 'typing'/'chess'/'scrabble'=games." },
+      }, required: ['tool'] }
+    }},
+    { type: 'function', function: {
+      name: 'openOnlineReport',
+      description: "Open the online property report for a specific Australian market. 35 supported regions.",
+      parameters: { type: 'object', properties: {
+        location: { type: 'string', description: "Market name (e.g. 'Sydney', 'Gold Coast', 'Port Macquarie'). Mandurah is served from the Rockingham report." },
+        lite: { type: 'boolean', description: 'Open the Lite (preview) version.', default: false },
+      }, required: ['location'] }
+    }},
+    { type: 'function', function: {
+      name: 'openArenaActivity',
+      description: "Open an Arena game or section. Use for 'open chess', 'start typing', 'show leaderboards' etc.",
+      parameters: { type: 'object', properties: {
+        activity: { type: 'string', enum: ['arena','typing','chess','scrabble','leaderboards'],
+          description: "'arena' = landing; 'leaderboards' = jumps to the Top of the Leaderboards card on the arena page." },
+      }, required: ['activity'] }
+    }},
+    { type: 'function', function: {
+      name: 'whichToolFor',
+      description: "When the user describes a task or asks 'which tool for X?', return a short recommendation. Use BEFORE openTool when you're unsure what the user wants.",
+      parameters: { type: 'object', properties: {
+        intent: { type: 'string', description: "User's described task in their own words." },
+      }, required: ['intent'] }
+    }},
+    { type: 'function', function: {
+      name: 'listTools',
+      description: "List the hub's tools, optionally filtered by category.",
+      parameters: { type: 'object', properties: {
+        category: { type: 'string', enum: ['analytics','pm','arena','vault','all'], default: 'all' },
+      } }
+    }},
+    { type: 'function', function: {
+      name: 'explainTier',
+      description: "Explain access tiers. Use for 'why can't I edit?', 'what's my tier?', 'who can see this?'.",
+      parameters: { type: 'object', properties: {
+        tier: { type: 'string', enum: ['dev','admin','company','client','guest','all'], default: 'all' },
+      } }
+    }},
+    { type: 'function', function: {
+      name: 'howDoI',
+      description: "Short step-by-step recipe for a common hub task.",
+      parameters: { type: 'object', properties: {
+        task: { type: 'string', enum: [
+          'export-report-pdf','edit-online-report','switch-theme','add-presentation-theme',
+          'log-chess-match','restart-typing-test','find-arena','switch-hub-page','view-as-another-tier'
+        ] },
+      }, required: ['task'] }
+    }},
+    { type: 'function', function: {
+      name: 'getTypingLeader',
+      description: "Look up the current leader on the Arena Typing Test. Use when the user asks who's #1 / leading / top / best on the typing test. Filters by mode_seconds (15/30/60) and word_list (english/real-estate/code) — defaults to the most common 60s english combo when the user doesn't specify.",
+      parameters: { type: 'object', properties: {
+        mode_seconds: { type: 'number', enum: [15, 30, 60], default: 60, description: 'Test duration in seconds.' },
+        word_list:    { type: 'string', enum: ['english','real-estate','code'], default: 'english', description: 'Which word list the test used.' },
+      } }
+    }},
+  ];
+
+  /* Tool ID → URL map for openTool. Resolved against the hub's
+     own navigateToTool() so the tool's loading overlay + page-
+     transition animation play correctly. */
+  const TOOL_URLS = {
+    'property-clock':       'tools/property-clock.html',
+    'runway-demand':        'tools/runway-demand.html',
+    'demand-score':         'tools/demand-score.html',
+    'documents':            'tools/whitepapers-strategies.html',
+    'presentations':        'tools/presentations-library.html',
+    'presentation-builder': 'tools/presentation.html',
+    'online-reports':       'tools/online-reports.html',
+    'cadence':              'tools/cadence.html',
+    'arena':                'tools/arena.html',
+    'typing':               'tools/arena-typing.html',
+    'chess':                'tools/arena-chess.html',
+    'scrabble':             'tools/arena-scrabble.html',
+    'runway-workbook':      'tools/runway-workbook.html',
+  };
+
+  const REPORT_REGIONS = new Set([
+    'sydney','melbourne','brisbane','adelaide','perth','hobart','canberra','darwin',
+    'bundaberg','cairns','gladstone','gold-coast','ipswich','mackay','rockhampton',
+    'sunshine-coast','toowoomba','townsville',
+    'albury','central-coast','coffs-harbour','dubbo','newcastle','orange',
+    'port-macquarie','tamworth','wagga-wagga','wollongong',
+    'ballarat','bendigo','geelong','mildura','wodonga',
+    'bunbury','rockingham','launceston',
+  ]);
+
+  const TOOL_RECOMMENDATIONS = [
+    { match: /slide|deck|present|pitch/i, tool: 'presentation-builder', note: "Use the Presentation builder. The Presentations Library has pre-made decks you can start from." },
+    { match: /whitepaper|strategy|training|research link|document/i, tool: 'documents', note: "Documents (Whitepapers & Strategies) has all your research links, strategies, and training materials." },
+    { match: /market report|region report|sydney|melbourne|brisbane|adelaide|perth|hobart|canberra|darwin/i, tool: 'online-reports', note: "Online Reports has the deep-dive for every region." },
+    { match: /clock|cycle/i, tool: 'property-clock', note: "National Property Clock shows where each market sits in the cycle." },
+    { match: /runway|forecast|wage/i, tool: 'runway-demand', note: "Runway v Demand pulls live wage-growth forecasts and runway months per region." },
+    { match: /demand score|grid|compare regions/i, tool: 'demand-score', note: "Demand Score Dashboard has the per-region grid with micro-charts." },
+    { match: /cadence|workflow|task|board/i, tool: 'cadence', note: "Cadence is the team workflow tracker." },
+    { match: /typing|wpm|speed test/i, tool: 'typing', note: "Typing Test — 15/30/60s modes." },
+    { match: /chess/i, tool: 'chess', note: "Chess ladder — Phase 0 (manual match logging). All start at 1000 points." },
+    { match: /scrabble/i, tool: 'scrabble', note: "Scrabble — online two-player with lobbies." },
+    { match: /game|arcade|play|fun/i, tool: 'arena', note: "Performance Property Arena has Typing Test, Chess, and Scrabble." },
+    { match: /scenario|workbook|model/i, tool: 'runway-workbook', note: "Runway Workbook (Vault) — scenario modelling for runway + wage assumptions." },
+  ];
+
+  const TOOL_LIST = {
+    analytics: ['National Property Clock','Runway v Demand Score','Online Reports (35 regions)','Documents — Whitepapers & Strategies','Presentations — Library + Builder'],
+    pm:        ['Cadence — workflow tracker'],
+    arena:     ['Typing Test','Chess (ladder)','Scrabble (online)'],
+    vault:     ['Runway Workbook','Demand Score Dashboard','Lite Online Reports'],
+  };
+
+  const TIER_DESCRIPTIONS = {
+    dev:     "Tier 0 (dev). Vandolf only. Full edit + download. Can switch view-as to test other tiers.",
+    admin:   "Tier 1 (admin). Saskia, Shaene, Paul, D. Robbins. Full edit + download.",
+    company: "Tier 2 (company). Other @performanceproperty.com.au staff. View + download, no edit.",
+    client:  "Tier 3 (client). Approved external viewers. View everything, no edit, no download.",
+    guest:   "Tier 4 (guest). Self-registered viewers. View everything, no edit, no download.",
+  };
+
+  const HOW_TO = {
+    'export-report-pdf':      "Open the report → toolbar → PDF button. Filename gets a unique suffix so you won't overwrite an earlier export.",
+    'edit-online-report':     "Open the report → toolbar → View/Edit pill (top right). Edit mode is tier 0-1 only. Edits save automatically.",
+    'switch-theme':           "Sun/moon toggle at the top of the hub. Preference saves per-browser.",
+    'add-presentation-theme': "Presentation builder → right-click any slide → 'Set as Theme'. Tier 0-1 only.",
+    'log-chess-match':        "Open Chess → 'Log Match' button. Pick opponent, enter result. Phase 0 is manual logging.",
+    'restart-typing-test':    "Press Tab, then Enter (Tab arms a one-shot Enter listener).",
+    'find-arena':             "Right-edge pull-tab on the hub labelled 'Performance Property Arena'.",
+    'switch-hub-page':        "Left/right edge pull-tabs to swipe between the 4 hub pages (Analytics, PM, Arena, Vault).",
+    'view-as-another-tier':   "Dev only — bottom-right floating UI lets you switch view-as.",
+  };
+
+  /* All 8 handlers return { ok, message } so the model gets a
+     uniform shape back. Where a handler also performs navigation,
+     the navigation happens as a side effect — the model's reply
+     lands a moment after the new page starts loading. */
+  const ACTION_HANDLERS = {
+    openHubPage({ page }) {
+      const target = (page === 'analytics') ? 'main' : page;
+      if (typeof setHubPage === 'function') {
+        setHubPage(target);
+        return { ok: true, message: 'Switched to ' + page + ' page' };
+      }
+      return { ok: false, message: 'page switcher unavailable' };
+    },
+    openTool({ tool }) {
+      const url = TOOL_URLS[tool];
+      if (!url) return { ok: false, message: 'unknown tool: ' + tool };
+      if (typeof navigateToTool === 'function') {
+        navigateToTool(url, tool);
+        return { ok: true, message: 'Opening ' + tool };
+      }
+      window.location.href = url;
+      return { ok: true, message: 'Opening ' + tool };
+    },
+    openOnlineReport({ location, lite }) {
+      let slug = String(location || '').toLowerCase().replace(/\s+/g, '-');
+      if (slug === 'mandurah') slug = 'rockingham';
+      if (!REPORT_REGIONS.has(slug)) {
+        return { ok: false, message: 'no report for "' + location + '"' };
+      }
+      const url = 'tools/online-reports.html?region=' + slug + (lite ? '&lite=1' : '');
+      if (typeof navigateToTool === 'function') {
+        navigateToTool(url, location + ' report');
+      } else {
+        window.location.href = url;
+      }
+      return { ok: true, message: 'Opening ' + location + ' report' + (lite ? ' (Lite)' : '') };
+    },
+    openArenaActivity({ activity }) {
+      const urls = {
+        arena:        'tools/arena.html',
+        typing:       'tools/arena-typing.html',
+        chess:        'tools/arena-chess.html',
+        scrabble:     'tools/arena-scrabble.html',
+        leaderboards: 'tools/arena.html#leaderboards',
+      };
+      const url = urls[activity];
+      if (!url) return { ok: false, message: 'unknown arena activity: ' + activity };
+      if (typeof navigateToTool === 'function') {
+        navigateToTool(url, activity);
+      } else {
+        window.location.href = url;
+      }
+      return { ok: true, message: 'Opening ' + activity };
+    },
+    whichToolFor({ intent }) {
+      const hit = TOOL_RECOMMENDATIONS.find(r => r.match.test(intent || ''));
+      if (!hit) return { ok: false, message: 'Nothing obviously matches "' + intent + '". Ask the user to describe what they want to see or do.' };
+      return { ok: true, message: hit.note, suggestedTool: hit.tool };
+    },
+    listTools({ category = 'all' } = {}) {
+      if (category === 'all') {
+        return { ok: true, message: Object.entries(TOOL_LIST).map(([k,v]) => k + ': ' + v.join(' | ')).join('\n') };
+      }
+      const v = TOOL_LIST[category];
+      if (!v) return { ok: false, message: 'unknown category: ' + category };
+      return { ok: true, message: category + ': ' + v.join(' | ') };
+    },
+    explainTier({ tier = 'all' } = {}) {
+      if (tier === 'all') {
+        return { ok: true, message: Object.entries(TIER_DESCRIPTIONS).map(([k,v]) => k + ': ' + v).join('\n') };
+      }
+      const v = TIER_DESCRIPTIONS[tier];
+      if (!v) return { ok: false, message: 'unknown tier: ' + tier };
+      return { ok: true, message: v };
+    },
+    howDoI({ task }) {
+      const v = HOW_TO[task];
+      if (!v) return { ok: false, message: 'No walkthrough for "' + task + '".' };
+      return { ok: true, message: v };
+    },
+    /* Data-fetch handler — async, hits arena_typing_scores. Returns
+       the row with the highest WPM for the given mode + list. Falls
+       back to defaults (60s english) when args omitted because the
+       model often calls this with empty args ("who leads typing?"). */
+    async getTypingLeader({ mode_seconds, word_list } = {}) {
+      const mode = (mode_seconds === 15 || mode_seconds === 30 || mode_seconds === 60) ? mode_seconds : 60;
+      const list = (word_list === 'real-estate' || word_list === 'code') ? word_list : 'english';
+      if (!window.sb) return { ok: false, message: 'Database client not loaded.' };
+      try {
+        const { data, error } = await window.sb
+          .from('arena_typing_scores')
+          .select('player_email, wpm, completed_at')
+          .eq('mode_seconds', mode)
+          .eq('word_list', list)
+          .order('wpm', { ascending: false })
+          .limit(1);
+        if (error) return { ok: false, message: 'Lookup failed: ' + (error.message || 'unknown error') };
+        if (!data || !data.length) return { ok: false, message: 'No scores recorded yet for the ' + mode + 's ' + list + ' mode.' };
+        const r = data[0];
+        const name = String(r.player_email || '').split('@')[0] || 'unknown';
+        return {
+          ok: true,
+          message: name + ' leads the ' + mode + 's ' + list + ' Typing Test at ' + r.wpm + ' WPM.',
+          leader: name,
+          wpm: r.wpm,
+          mode_seconds: mode,
+          word_list: list,
+        };
+      } catch (e) {
+        return { ok: false, message: 'Lookup exception: ' + String(e) };
+      }
+    },
+  };
+
+  /* In-memory conversation log. Trimmed to MAX_HISTORY entries
+     before each call so long sessions stay under token cost. The
+     system prompt is sent FRESH every call (not stored in history)
+     so we always have full instructions even after trimming. */
+  const history = [];
+  /* Display log — visible chat bubbles. Kept separate from
+     `history` because we render extras (acknowledgments before
+     navigation tool calls) that don't belong in the model's
+     context window. Persisted to sessionStorage so the chat
+     survives reloads + comes-back-from-a-tool. */
+  const displayLog = [];
+
+  const HISTORY_KEY = 'pp-concierge-history-v1';
+  const DISPLAY_KEY = 'pp-concierge-display-v1';
+
+  function persistChat() {
+    try {
+      sessionStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+      sessionStorage.setItem(DISPLAY_KEY, JSON.stringify(displayLog));
+    } catch (_) { /* quota / serialise errors: silently skip */ }
+  }
+
+  /* Push a visible bubble + persist it. Used for everything the
+     user sees: their own messages, the AI's final text replies,
+     and the random ack we inject before a navigation tool fires.
+     Internal-only history pushes (tool_calls, tool results) don't
+     go through here. */
+  function pushVisible(role, text) {
+    displayLog.push({ role, text });
+    appendMessage(role, text);
+    persistChat();
+  }
+
+  function loadPersistedChat() {
+    try {
+      const h = sessionStorage.getItem(HISTORY_KEY);
+      if (h) {
+        const parsed = JSON.parse(h);
+        if (Array.isArray(parsed)) history.push(...parsed);
+      }
+      const d = sessionStorage.getItem(DISPLAY_KEY);
+      if (d) {
+        const parsed = JSON.parse(d);
+        if (Array.isArray(parsed) && parsed.length) {
+          messages.innerHTML = '';
+          parsed.forEach(item => {
+            if (item && item.role && item.text) {
+              displayLog.push({ role: item.role, text: item.text });
+              appendMessage(item.role, item.text);
+            }
+          });
+          conversationStarted = true;
+        }
+      }
+    } catch (_) { /* corrupt blob: leave the empty-state in place */ }
+  }
+  loadPersistedChat();
+
+  /* Random ack the AI "says" right before a navigation tool fires
+     — the page is about to change, so without this the user would
+     stare at an empty/blank chat as their browser transitions.
+     Only used for nav actions; lookup-only tools (whichToolFor,
+     listTools, explainTier, howDoI) skip the ack so the model's
+     real text reply lands without an extra bubble in front of it. */
+  const NAV_ACKNOWLEDGMENTS = [
+    'Sure, hold on…',
+    'On it!',
+    'Got it — opening now…',
+    'One sec…',
+    'Right away…',
+    'Coming up…',
+    'You got it!',
+    'Sure thing — heading there now…',
+    'Opening that for you…',
+  ];
+  const NAV_ACTIONS = new Set([
+    'openHubPage', 'openTool', 'openOnlineReport', 'openArenaActivity',
+  ]);
+  function _pickAck() {
+    return NAV_ACKNOWLEDGMENTS[Math.floor(Math.random() * NAV_ACKNOWLEDGMENTS.length)];
+  }
+
+  /* Safety-net: strip any inline tool-call artefacts Llama sometimes
+     emits in its text content even when given native function
+     definitions. Catches the older free-text formats:
+       <function=whichToolFor>{"intent":"…"}</function>
+       <|python_tag|>name.call(args)
+       <tool_call>{…}</tool_call>
+     plus raw JSON-shaped function-call blobs on their own line.
+     System prompt instructs the model not to do this, but Llama
+     3.3 still occasionally does — stripping here keeps the user
+     view clean regardless. */
+  function _cleanAssistantText(raw) {
+    if (!raw) return '';
+    let text = String(raw);
+    text = text.replace(/<function=[^>]*>[\s\S]*?<\/function>/g, '');
+    text = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
+    text = text.replace(/<\|python_tag\|>[^\n]*/g, '');
+    /* Standalone JSON-only call (e.g. {"name":"openTool","parameters":{…}}) */
+    text = text.replace(/\{\s*"name"\s*:\s*"[a-zA-Z_]+"\s*,\s*"(?:parameters|arguments)"\s*:\s*\{[\s\S]*?\}\s*\}/g, '');
+    /* Collapse any blank lines the strip left behind. */
+    text = text.replace(/\n{3,}/g, '\n\n').trim();
+    return text;
+  }
+
+  function trimHistory() {
+    if (history.length <= MAX_HISTORY) return history;
+    /* Keep the last MAX_HISTORY entries. Drop oldest first. Tool-
+       call pairs (assistant with tool_calls → tool messages) must
+       stay together for the model to make sense of them; we drop
+       them as a block by removing from the start until we land
+       on a user-role entry. */
+    while (history.length > MAX_HISTORY && history[0].role !== 'user') history.shift();
+    while (history.length > MAX_HISTORY) history.shift();
+    return history;
+  }
+
+  async function _getAccessToken() {
+    if (!window.sb || !window.sb.auth) return null;
+    try {
+      const { data } = await window.sb.auth.getSession();
+      return data && data.session && data.session.access_token || null;
+    } catch (_) { return null; }
+  }
+
+  async function chat(userText) {
+    history.push({ role: 'user', content: userText });
+    persistChat();
+    let typingEl = showTyping();
+
+    const token = await _getAccessToken();
+    if (!token) {
+      typingEl.remove();
+      pushVisible('assistant', 'Your session expired. Please sign in again.');
+      return;
+    }
+
+    try {
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+        trimHistory();
+        const resp = await fetch(PROXY_URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: MODEL,
+            messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history],
+            tools: TOOL_DEFINITIONS,
+            tool_choice: 'auto',
+            temperature: 0.3,
+          }),
+        });
+
+        if (!resp.ok) {
+          const body = await resp.text();
+          console.warn('AI concierge upstream error', resp.status, body);
+          typingEl.remove();
+          pushVisible('assistant', 'Sorry — the AI service returned an error (' + resp.status + '). Try again in a moment.');
+          return;
+        }
+
+        const data = await resp.json();
+        const msg = data && data.choices && data.choices[0] && data.choices[0].message;
+        if (!msg) {
+          typingEl.remove();
+          pushVisible('assistant', 'Sorry — got an empty response from the AI.');
+          return;
+        }
+        history.push(msg);
+
+        /* Tool-call round — execute every requested call and push
+           its result back as a tool message, then loop. Continue
+           until the model returns a plain text reply (no tool_calls). */
+        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+          /* Always retire the current typing indicator before we
+             touch the chat — otherwise the next "re-show typing"
+             at the end of this branch leaves the old `…` bubble
+             stuck in the DOM next to the new one, then only the
+             new one gets removed when the text reply lands and
+             the original sits there forever. */
+          typingEl.remove();
+          /* If any of the requested tools navigates the page, show
+             a quick ack bubble first so the user has a visible "got
+             it, moving" cue before the browser starts transitioning.
+             Without this the chat just sits there until the page
+             unloads, which looks broken. Lookup-only tool calls
+             (whichToolFor, listTools, explainTier, howDoI,
+             getTypingLeader) skip the ack — the model's text reply
+             lands cleanly after. */
+          const hasNav = msg.tool_calls.some(c => c && c.function && NAV_ACTIONS.has(c.function.name));
+          if (hasNav) {
+            pushVisible('assistant', _pickAck());
+          }
+
+          for (const call of msg.tool_calls) {
+            const handler = ACTION_HANDLERS[call.function && call.function.name];
+            let result;
+            try {
+              const args = call.function && call.function.arguments
+                ? JSON.parse(call.function.arguments)
+                : {};
+              result = handler
+                ? handler(args)
+                : { ok: false, message: 'unknown function: ' + (call.function && call.function.name) };
+              /* Some handlers (e.g. getTypingLeader) hit Supabase
+                 and return a Promise. Await whatever the handler
+                 produced so the JSON we ship back to the model is
+                 always the resolved value, not "[object Promise]". */
+              if (result && typeof result.then === 'function') result = await result;
+            } catch (e) {
+              result = { ok: false, message: 'handler error: ' + String(e) };
+            }
+            history.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: JSON.stringify(result),
+            });
+          }
+          persistChat();
+
+          /* For nav rounds the browser is mid-transition; for
+             lookup-only rounds we'll loop again to give the model
+             its tool results. In the latter case re-add a typing
+             indicator so the panel doesn't sit empty between the
+             tool call and the final text reply. */
+          if (!hasNav) typingEl = showTyping();
+          continue;
+        }
+
+        /* Plain text reply — render and exit. Pipe through the
+           cleaner so any inline tool-call leakage (Llama
+           occasionally emits <function=...> tags even when given
+           native functions) gets stripped before the user sees
+           it. If everything was scrubbed (e.g. the entire reply
+           was a malformed inline call), fall back to a polite
+           "didn't catch that" so the bubble isn't empty. */
+        typingEl.remove();
+        const cleaned = _cleanAssistantText(msg.content);
+        pushVisible('assistant', cleaned || 'Sorry — I didn\'t quite catch that. Could you rephrase?');
+        return;
+      }
+
+      /* Hit the round cap — bail with a friendly message. */
+      typingEl.remove();
+      pushVisible('assistant', 'I got stuck running tools — try rephrasing?');
+    } catch (e) {
+      console.warn('AI concierge fetch failed', e);
+      typingEl.remove();
+      pushVisible('assistant', 'Sorry — network error. Check your connection and try again.');
+    }
+  }
+
+  function send() {
+    const text = input.value.trim();
+    if (!text) return;
+    if (!conversationStarted) {
+      messages.innerHTML = '';
+      conversationStarted = true;
+    }
+    pushVisible('user', text);
+    input.value = '';
+    autoGrow();
+    chat(text);
+  }
+  sendBtn.addEventListener('click', send);
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _initConciergeUI);
+} else {
+  _initConciergeUI();
+}
 </script>
 
 <!-- Page-transition overlay: hidden by default; activated by
@@ -4399,5 +5391,35 @@ function navigateToTool(url, label) {
     <div class="htp-sub">Fetching live data</div>
   </div>
 </div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     AI CONCIERGE — floating chat (Step 2 of the AI plan)
+     Visible to every signed-in tier. Step 2 ships the UI shell with
+     a placeholder reply on send — Step 3 replaces that with a real
+     call to /functions/v1/ai-concierge + the 8 navigation actions.
+     ═══════════════════════════════════════════════════════════════ -->
+<button class="concierge-btn" id="conciergeBtn" type="button"
+        aria-label="Open AI Concierge" title="AI Concierge" style="display:none">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+  </svg>
+</button>
+<aside class="concierge-panel" id="conciergePanel" role="dialog"
+       aria-labelledby="conciergeTitle" aria-hidden="true">
+  <div class="concierge-header">
+    <h2 class="concierge-title" id="conciergeTitle">AI Concierge</h2>
+    <button class="concierge-close" id="conciergeClose" type="button"
+            aria-label="Close concierge">×</button>
+  </div>
+  <div class="concierge-messages" id="conciergeMessages"></div>
+  <div class="concierge-input-row">
+    <textarea class="concierge-input" id="conciergeInput"
+              placeholder="Ask me to open a tool or report…"
+              rows="1" aria-label="Message"></textarea>
+    <button class="concierge-send" id="conciergeSend" type="button"
+            aria-label="Send message" title="Send (Enter)">→</button>
+  </div>
+</aside>
 </body>
 </html>
