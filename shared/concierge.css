@@ -1,0 +1,289 @@
+/* ============================================================================
+   AI CONCIERGE — floating chat widget (shared across hub + tool pages)
+   ============================================================================
+   Loaded by index.html (hub) and every signed-in /tools/*.html page so the
+   chat launcher follows the user wherever they go. Mounted via concierge.js
+   which also injects the button + panel HTML, runs the model-call loop, and
+   handles streaming responses + retry. */
+
+/* Clamp horizontal overflow at the body level so the closed chat panel
+   (position:fixed + transform-based offset) can't extend the document and
+   produce a horizontal scrollbar. `overflow-x: clip` is the modern
+   equivalent of `hidden` that doesn't create a scroll container —
+   important here because the host page's vertical scroll must keep
+   working. */
+body{ overflow-x:clip }
+
+/* Floating launcher button — bottom-right corner. Cyan circle with chat-
+   bubble icon. z-index sits one below the dev tier-switcher (2147483647)
+   so both can coexist for dev users on the hub. */
+.concierge-btn{
+  position:fixed; bottom:20px; right:20px;
+  width:56px; height:56px;
+  border-radius:50%;
+  background:#00b6cb;
+  color:#1f283f;
+  border:none;
+  box-shadow:0 8px 24px rgba(0,182,203,0.4);
+  cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  z-index:2147483645;
+  transition:transform .2s, box-shadow .2s;
+}
+.concierge-btn:hover{
+  transform:translateY(-2px);
+  box-shadow:0 12px 32px rgba(0,182,203,0.55);
+}
+.concierge-btn:active{ transform:translateY(0) }
+.concierge-btn svg{ width:26px; height:26px }
+
+/* Floating chat box — anchored above the launcher button in the bottom-
+   right corner. Compact (380×520, clamped to the viewport on short
+   screens). Hidden state is opacity:0 + slight translate/scale so it
+   animates in from the button rather than sliding across the page.
+   pointer-events:none when closed so the off-state area can't be
+   clicked. */
+.concierge-panel{
+  position:fixed;
+  right:20px; bottom:90px;
+  width:380px; max-width:calc(100vw - 24px);
+  height:520px; max-height:calc(100vh - 120px);
+  background:rgba(15,23,42,0.96);
+  backdrop-filter:blur(16px) saturate(140%);
+  -webkit-backdrop-filter:blur(16px) saturate(140%);
+  border:1px solid rgba(0,182,203,0.30);
+  border-radius:16px;
+  box-shadow:0 20px 60px rgba(0,0,0,0.45);
+  z-index:2147483644;
+  display:flex; flex-direction:column;
+  opacity:0;
+  transform:translateY(16px) scale(0.96);
+  transform-origin:bottom right;
+  pointer-events:none;
+  transition:opacity .22s ease, transform .22s cubic-bezier(0.32, 0.72, 0, 1);
+  overflow:hidden;
+}
+.concierge-panel.open{
+  opacity:1;
+  transform:translateY(0) scale(1);
+  pointer-events:auto;
+}
+[data-theme="light"] .concierge-panel{
+  background:rgba(255,255,255,0.97);
+  border-color:rgba(0,182,203,0.40);
+  box-shadow:0 20px 60px rgba(31,40,63,0.22);
+}
+
+/* Header. */
+.concierge-header{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:18px 20px 12px;
+  border-bottom:1px solid rgba(0,182,203,0.18);
+}
+.concierge-title{
+  font-family:'Montserrat',sans-serif;
+  font-weight:800; font-size:13px;
+  letter-spacing:2px; text-transform:uppercase;
+  color:#00b6cb;
+  margin:0;
+}
+.concierge-close{
+  background:transparent;
+  border:1px solid rgba(255,255,255,0.18);
+  color:rgba(255,255,255,0.7);
+  width:32px; height:32px;
+  border-radius:50%;
+  cursor:pointer;
+  font-size:18px; line-height:1;
+  display:flex; align-items:center; justify-content:center;
+  transition:all .15s;
+}
+.concierge-close:hover{
+  background:rgba(0,182,203,0.12);
+  border-color:rgba(0,182,203,0.5);
+  color:#fff;
+}
+[data-theme="light"] .concierge-close{
+  border-color:rgba(31,40,63,0.18);
+  color:rgba(31,40,63,0.65);
+}
+[data-theme="light"] .concierge-close:hover{
+  background:rgba(0,182,203,0.10);
+  color:#0a1520;
+}
+
+/* Message list. Scrollbar visually hidden but scroll still works. */
+.concierge-messages{
+  flex:1; overflow-y:auto;
+  padding:16px 20px;
+  display:flex; flex-direction:column;
+  gap:10px;
+  scrollbar-width:none;
+  -ms-overflow-style:none;
+}
+.concierge-messages::-webkit-scrollbar{ width:0; height:0 }
+
+.concierge-msg{
+  max-width:85%;
+  padding:10px 14px;
+  border-radius:12px;
+  font-family:'Roboto',sans-serif;
+  font-size:13.5px; line-height:1.45;
+  word-wrap:break-word;
+}
+.concierge-msg.user{
+  align-self:flex-end;
+  background:rgba(0,182,203,0.22);
+  border:1px solid rgba(0,182,203,0.40);
+  color:#fff;
+  border-bottom-right-radius:4px;
+  animation:concierge-msg-in-right .28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.concierge-msg.assistant{
+  align-self:flex-start;
+  background:rgba(255,255,255,0.06);
+  border:1px solid rgba(255,255,255,0.12);
+  color:rgba(255,255,255,0.92);
+  border-bottom-left-radius:4px;
+  animation:concierge-msg-in-left .32s cubic-bezier(0.32, 0.72, 0, 1);
+}
+@keyframes concierge-msg-in-right{
+  from{ opacity:0; transform:translateX(16px) translateY(6px) scale(0.96) }
+  to  { opacity:1; transform:translateX(0)     translateY(0)   scale(1)    }
+}
+@keyframes concierge-msg-in-left{
+  from{ opacity:0; transform:translateX(-16px) translateY(6px) scale(0.96) }
+  to  { opacity:1; transform:translateX(0)      translateY(0)   scale(1)    }
+}
+[data-theme="light"] .concierge-msg.user{ color:#0a1520 }
+[data-theme="light"] .concierge-msg.assistant{
+  background:rgba(31,40,63,0.05);
+  border-color:rgba(31,40,63,0.12);
+  color:#1f283f;
+}
+
+/* Three-dot "thinking" indicator. */
+.concierge-msg.concierge-typing{
+  display:inline-flex !important;
+  align-items:center; gap:6px;
+  padding:14px 16px;
+  animation:concierge-typing-fade-in .2s ease-out;
+}
+@keyframes concierge-typing-fade-in{
+  from{ opacity:0 }
+  to  { opacity:1 }
+}
+.concierge-typing-dot{
+  width:6px; height:6px;
+  background:currentColor;
+  border-radius:50%;
+  display:inline-block;
+  opacity:0.4;
+  animation:concierge-typing-bounce 1.2s ease-in-out infinite;
+}
+.concierge-typing-dot:nth-child(2){ animation-delay:.15s }
+.concierge-typing-dot:nth-child(3){ animation-delay:.30s }
+@keyframes concierge-typing-bounce{
+  0%, 60%, 100% { transform:translateY(0)    scale(1);    opacity:0.4  }
+  30%           { transform:translateY(-4px) scale(1.15); opacity:0.95 }
+}
+
+/* Error bubble — same shape as assistant but with a retry pill
+   appended. The retry button re-sends the last user message. */
+.concierge-msg.concierge-error{
+  background:rgba(251,146,60,0.10);
+  border-color:rgba(251,146,60,0.45);
+  color:rgba(255,222,189,0.95);
+}
+[data-theme="light"] .concierge-msg.concierge-error{
+  background:rgba(251,146,60,0.08);
+  border-color:rgba(234,88,12,0.45);
+  color:#7a3409;
+}
+.concierge-retry-btn{
+  display:inline-block;
+  margin-top:8px;
+  padding:5px 10px;
+  background:rgba(251,146,60,0.18);
+  border:1px solid rgba(251,146,60,0.55);
+  color:inherit;
+  border-radius:6px;
+  font-family:'Roboto',sans-serif;
+  font-size:12px; font-weight:600;
+  cursor:pointer;
+  transition:background .15s;
+}
+.concierge-retry-btn:hover{ background:rgba(251,146,60,0.32) }
+
+/* Respect users who've opted out of motion. */
+@media (prefers-reduced-motion: reduce){
+  .concierge-msg.user,
+  .concierge-msg.assistant,
+  .concierge-msg.concierge-typing{ animation:none }
+  .concierge-typing-dot{ animation:none; opacity:0.6 }
+}
+
+.concierge-empty{
+  text-align:center;
+  color:rgba(255,255,255,0.5);
+  font-size:12.5px;
+  padding:40px 20px;
+  font-style:italic;
+  font-family:'Roboto',sans-serif;
+}
+[data-theme="light"] .concierge-empty{ color:rgba(31,40,63,0.55) }
+
+/* Input row. */
+.concierge-input-row{
+  display:flex; gap:8px; align-items:flex-end;
+  padding:12px 16px 16px;
+  border-top:1px solid rgba(0,182,203,0.18);
+}
+.concierge-input{
+  flex:1;
+  resize:none;
+  background:rgba(255,255,255,0.04);
+  border:1px solid rgba(0,182,203,0.22);
+  color:#fff;
+  border-radius:10px;
+  padding:10px 12px;
+  font-family:'Roboto',sans-serif;
+  font-size:13.5px; line-height:1.4;
+  outline:none;
+  min-height:44px; max-height:120px;
+  transition:border-color .15s;
+}
+.concierge-input::placeholder{ color:rgba(255,255,255,0.4) }
+.concierge-input:focus{ border-color:rgba(0,182,203,0.6) }
+[data-theme="light"] .concierge-input{
+  background:rgba(255,255,255,0.8);
+  color:#0a1520;
+  border-color:rgba(0,182,203,0.35);
+}
+[data-theme="light"] .concierge-input::placeholder{ color:rgba(31,40,63,0.45) }
+.concierge-send{
+  width:44px; height:44px;
+  border-radius:10px;
+  background:#00b6cb;
+  border:none;
+  color:#1f283f;
+  cursor:pointer;
+  font-size:18px; font-weight:700;
+  display:flex; align-items:center; justify-content:center;
+  transition:background .15s, transform .12s;
+  flex-shrink:0;
+}
+.concierge-send:hover{ background:#00cee8 }
+.concierge-send:active{ transform:scale(0.96) }
+.concierge-send:disabled{
+  opacity:0.45; cursor:not-allowed;
+}
+
+@media (max-width: 480px){
+  .concierge-panel{
+    width:calc(100vw - 24px);
+    right:12px;
+    bottom:84px;
+    height:min(520px, calc(100vh - 110px));
+  }
+}

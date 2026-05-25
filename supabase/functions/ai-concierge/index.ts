@@ -100,13 +100,14 @@ Deno.serve(async (req) => {
 
   /* Forward to Groq. Pass `tools` / `tool_choice` / `temperature` /
      `max_tokens` through unchanged — the client controls them. We
-     overwrite `model` (whitelist) and DROP `stream` since the client
-     proxy is non-streaming for v1 (simpler error handling; streaming
-     can be added later behind a query param). */
+     overwrite `model` (whitelist) but respect whatever `stream`
+     value the client sent: true → pipe Groq's SSE stream straight
+     through; false → block-and-return the JSON. */
+  const wantsStream = body.stream === true;
   const upstreamBody = {
     ...body,
     model,
-    stream: false,
+    stream: wantsStream,
   };
 
   let upstream: Response;
@@ -123,8 +124,25 @@ Deno.serve(async (req) => {
     return jsonResp({ error: 'upstream_unreachable', detail: String(e) }, 502);
   }
 
-  /* Pass Groq's status + body through. Errors (rate-limit, bad request,
-     etc.) reach the client unchanged so debugging is direct. */
+  /* Streaming path — pipe the upstream body straight to the client
+     so SSE chunks arrive as they're generated. Content-Type +
+     Cache-Control mirror what Groq sets so EventSource-style
+     consumers work. Errors from Groq still surface as a 4xx/5xx
+     with whatever upstream body they returned. */
+  if (wantsStream && upstream.ok) {
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: {
+        ...corsHeaders,
+        'Content-Type':  'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection':    'keep-alive',
+      },
+    });
+  }
+
+  /* Non-streaming (or upstream-error) path — pass status + body
+     through unchanged so the client can see real Groq errors. */
   const text = await upstream.text();
   return new Response(text, {
     status: upstream.status,
