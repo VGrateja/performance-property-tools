@@ -1294,6 +1294,14 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
                   'rows="1" aria-label="Message"></textarea>' +
         '<button class="concierge-send" id="conciergeSend" type="button" ' +
                 'aria-label="Send message" title="Send (Enter)">→</button>' +
+      '</div>' +
+      '<div class="concierge-disclaimer" role="note">' +
+        '<span class="concierge-disclaimer-icon" aria-hidden="true">⚠️</span>' +
+        '<span class="concierge-disclaimer-text">' +
+          'Avoid pasting sensitive info — client data, contracts, ' +
+          'credentials, or anything identifying a real person. ' +
+          'Chats are processed by Groq (US).' +
+        '</span>' +
       '</div>';
     document.body.appendChild(panel);
   }
