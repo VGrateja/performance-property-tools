@@ -226,6 +226,23 @@ async function renderRegion(browser, slug, lite, session) {
     await page.evaluate(() => {
       document.body.style.zoom = '1';
       document.body.classList.remove('edit-mode', 'show-grid');
+      /* Chrome's page.pdf() preserves <a> link annotations for hidden
+         elements — display:none keeps them visually gone but the
+         click-region survives in the PDF (and sometimes Chrome
+         leaks the visual too). Belt-and-braces: physically remove
+         every chrome surface from the DOM before capture. The
+         addStyleTag display:none rules below still apply for any
+         late-injected nodes (concierge widget, etc.) that arrive
+         after this evaluate runs. */
+      const CHROME_SELECTORS = [
+        '.pager', '.ct-panel', '.side-toc', '.mobile-control-bar',
+        '#or-back-to-hub', '#or-cluster-btn', '#or-theme-toggle',
+        '#pdf-overlay', '.bands-modal-bg',
+        '.concierge-btn', '.concierge-panel',
+      ];
+      CHROME_SELECTORS.forEach(sel => {
+        document.querySelectorAll(sel).forEach(el => el.remove());
+      });
     });
 
     /* Inject the print-only behaviours we want, decoupled from the
@@ -235,10 +252,14 @@ async function renderRegion(browser, slug, lite, session) {
        overlays — so none of them leak into the captured PDF. */
     await page.addStyleTag({
       content: `
-        /* Chrome surfaces — none of this belongs in a print PDF. */
+        /* Chrome surfaces — none of this belongs in a print PDF.
+           AI Concierge launcher + panel are loaded on every tool
+           page and would otherwise paint a cyan circle in the
+           bottom-right corner of every PDF page. */
         .pager, .ct-panel, .side-toc, .mobile-control-bar,
         #or-back-to-hub, #or-cluster-btn, #or-theme-toggle,
-        #pdf-overlay, .bands-modal-bg { display: none !important; }
+        #pdf-overlay, .bands-modal-bg,
+        .concierge-btn, .concierge-panel { display: none !important; }
 
         /* Each report page becomes one PDF page. */
         section.page {
