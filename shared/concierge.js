@@ -460,6 +460,22 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
        module). The button id is the canary. */
     if (document.getElementById('conciergeBtn')) return;
 
+    /* Skip injection in any embedded / export context. The widget
+       is only meaningful when the user is interacting with a top-
+       level tool page; it has no business showing inside:
+         - Property Clock / Runway v Demand embeds inside a slide
+           (`?embed=1`, body.embed-mode)
+         - Online Reports' off-screen export iframes (`?exportMode=1`)
+         - Any other iframe consumer we add later
+       The window-top check catches all iframe contexts in one go;
+       the URL-param checks belong-and-braces handle the rare case
+       where a tool is opened standalone with the flag for testing. */
+    try {
+      if (window.top && window.top !== window.self) return;
+    } catch (_) { /* cross-origin → still treat as iframe */ return; }
+    const qs = (location.search || '').toLowerCase();
+    if (qs.includes('embed=1') || qs.includes('exportmode=1')) return;
+
     injectMarkup();
 
     const btn       = document.getElementById('conciergeBtn');
