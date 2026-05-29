@@ -12,6 +12,7 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&family=Roboto:wght@300;400;500;700;900&family=Montserrat:wght@600;700;800&display=swap" rel="stylesheet">
 
   <link rel="stylesheet" href="../shared/concierge.css">
+  <link rel="stylesheet" href="../shared/report-edit.css">
 
 <style>
   /* ── Theme tokens ──────────────────────────────────────────────────
@@ -46,13 +47,18 @@
     font-family:'Roboto', system-ui, -apple-system, sans-serif;
     min-height:100vh;
   }
+  /* Body gradient mirrors the regional Online Reports tool so the
+     three reports read as one visual family. Dark mode: lighter slate
+     at the top fading into deep navy at the bottom. Light mode below
+     is the inverse — cyan/violet wash at top to near-white below. */
   body{
-    background:linear-gradient(160deg, #0f172a 0%, #1e1b4b 50%, #082f49 100%);
+    background:linear-gradient(180deg, #334155 0%, #0f172a 50%, #020617 100%);
     background-attachment: fixed;
   }
   [data-theme="light"] body{
-    background:linear-gradient(160deg, #f0f9ff 0%, #e0e7ff 50%, #cffafe 100%);
+    background:linear-gradient(180deg, #a5f3fc 0%, #e0e7ff 50%, #f8fafc 100%);
     background-attachment: fixed;
+    color:#1a2236;
   }
 
   /* ── Floating top-left navigation pills — back to hub + back to
@@ -132,50 +138,224 @@
     color:#0a6c7c;
   }
 
-  /* ── Side TOC ─────────────────────────────────────────────────────
-     Skinnier than residential; just numbered page chips so users can
-     jump around. Auto-populated from all <section.page> elements. */
-  .side-toc{
-    position:fixed; top:70px; left:16px; bottom:16px;
-    width:48px; z-index:9999;
-    background:rgba(15,23,42,.70);
-    border:1px solid rgba(71,85,105,.35);
-    border-radius:14px;
-    padding:10px 6px;
-    overflow-y:auto;
-    overflow-x:hidden;
-    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+  /* Download menu — small popover anchored under the Download pill.
+     Mirrors the residential PDF/JPG picker but slimmed to the three
+     options that make sense for Research Reports (single-doc tools
+     so there's no page-subset / region-subset picker needed). */
+  #pp-download-menu{
+    position:fixed; top:62px; right:16px; z-index:10001;
+    min-width:280px;
+    background:rgba(15,23,42,.96);
+    border:1px solid rgba(0,182,203,0.45);
+    border-radius:12px;
+    padding:10px;
+    box-shadow:0 12px 32px rgba(0,0,0,0.45);
+    backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    display:none;
+    flex-direction:column;
+    gap:4px;
+    font-family:'DM Sans', system-ui, sans-serif;
   }
-  [data-theme="light"] .side-toc{
-    background:rgba(255,255,255,.78);
-    border-color:rgba(31,40,63,.18);
+  #pp-download-menu.open{ display:flex; }
+  [data-theme="light"] #pp-download-menu{
+    background:rgba(255,255,255,.96);
+    border-color:rgba(0,182,203,0.55);
+    box-shadow:0 12px 32px rgba(31,40,63,0.18);
   }
-  .side-toc-item{
-    width:36px; height:36px; margin:0 auto 6px;
-    display:flex; align-items:center; justify-content:center;
+  .pp-dl-item{
+    display:flex; align-items:center; gap:10px;
+    padding:9px 12px;
     border-radius:8px;
-    font-family:'DM Sans', sans-serif;
-    font-size:12px; font-weight:700;
-    color:rgba(232,238,248,.75);
+    background:transparent;
+    border:1px solid transparent;
+    color:inherit;
     cursor:pointer;
-    transition:background .15s, color .15s;
-    user-select:none;
+    text-align:left;
+    font-size:13px; font-weight:600;
+    transition:background .12s, border-color .12s;
   }
-  [data-theme="light"] .side-toc-item{ color:rgba(26,34,54,.7); }
-  .side-toc-item:hover{ background:rgba(0,182,203,0.20); color:#00b6cb; }
-  .side-toc-item.is-active{
-    background:rgba(0,182,203,0.30);
-    color:#00b6cb;
-    box-shadow:inset 0 0 0 1px rgba(0,182,203,0.50);
+  .pp-dl-item:hover{
+    background:rgba(0,182,203,0.14);
+    border-color:rgba(0,182,203,0.40);
   }
-  .side-toc::-webkit-scrollbar{ width:4px; }
-  .side-toc::-webkit-scrollbar-thumb{ background:rgba(0,182,203,0.30); border-radius:2px; }
+  .pp-dl-item .pp-dl-sub{
+    display:block;
+    font-size:11px; font-weight:500;
+    opacity:0.7;
+    margin-top:2px;
+  }
+  .pp-dl-divider{
+    height:1px; margin:4px 0;
+    background:rgba(255,255,255,0.10);
+  }
+  [data-theme="light"] .pp-dl-divider{ background:rgba(31,40,63,0.10); }
 
-  /* ── Pages — fixed 1200×900 canvas matching residential's layout
-     so downstream PDF capture lands at the right page size. */
+  /* Capture overlay — covers the report while batch downloads run. */
+  #pp-export-overlay{
+    position:fixed; inset:0; z-index:10002;
+    background:rgba(15,23,42,.86);
+    display:none;
+    align-items:center; justify-content:center;
+    backdrop-filter:blur(4px);
+  }
+  #pp-export-overlay.show{ display:flex; }
+  #pp-export-overlay .pp-export-card{
+    background:rgba(15,23,42,.96);
+    border:1px solid rgba(0,182,203,0.45);
+    border-radius:12px;
+    padding:24px 28px;
+    min-width:280px;
+    max-width:420px;
+    text-align:center;
+    color:#e8eef8;
+    font-family:'DM Sans', system-ui, sans-serif;
+  }
+  #pp-export-overlay .pp-export-spinner{
+    width:36px; height:36px;
+    border:3px solid rgba(0,182,203,0.30);
+    border-top-color:#00b6cb;
+    border-radius:50%;
+    margin:0 auto 14px;
+    animation:pp-spin 0.9s linear infinite;
+  }
+  @keyframes pp-spin{ to { transform:rotate(360deg); } }
+  #pp-export-overlay .pp-export-msg{
+    font-size:14px; font-weight:600;
+  }
+
+  /* ── Side TOC (regional-parity layout) ────────────────────────────
+     Wide collapsible column with rich rows (number + label) instead
+     of a chip rail, matching the regional Online Reports tool. Two
+     animation classes drive the cascading collapse/expand:
+       .items-hidden  → rows fade + slide-out (per-row delay set in JS)
+       .collapsed     → outer column shrinks to 40px strip
+     Default state is COLLAPSED on entry so the chart pages aren't
+     immediately squashed by the column — user opts in via the toggle. */
+  .side-toc{
+    position: fixed; left: 10px; top: 56px;
+    bottom: 16px;
+    width: 240px;
+    background: transparent;
+    z-index: 90;
+    padding: 0 0 8px;
+    display: flex;
+    flex-direction: column;
+    transition: width 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .side-toc-scroll{
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: visible;
+    direction: rtl;       /* pushes scrollbar to the visual LEFT edge */
+    background: transparent;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .side-toc-scroll::-webkit-scrollbar         { width: 0; height: 0; background: transparent; }
+  .side-toc-scroll::-webkit-scrollbar-track   { background: transparent; }
+  .side-toc-scroll::-webkit-scrollbar-thumb   { background: transparent; }
+  .side-toc-scroll::-webkit-scrollbar-button  { background: transparent; display: none; }
+  .side-toc-scroll::-webkit-scrollbar-corner  { background: transparent; }
+  .side-toc-inner{
+    direction: ltr;       /* labels read in normal order */
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 0 4px;
+  }
+  .side-toc.collapsed{ width: 40px; }
+  .side-toc.items-hidden .side-toc-item{
+    opacity: 0;
+    transform: translateX(-15px);
+    pointer-events: none;
+  }
+  /* TOC toggle — small ghost-button chevron above the column. */
+  .side-toc-toggle{
+    flex: 0 0 auto;
+    margin: 0 0 10px 4px;
+    width: 32px; height: 32px;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent;
+    border: none;
+    color: rgba(255,255,255,0.85);
+    cursor: pointer;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 14px;
+    z-index: 2;
+    transition: background 0.12s, color 0.12s;
+  }
+  .side-toc-toggle:hover{
+    background: rgba(92,200,224,0.18);
+    color: #fff;
+  }
+  .side-toc-toggle .arrow{
+    display: inline-block;
+    transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+    line-height: 0;
+  }
+  .side-toc.chevron-down .side-toc-toggle .arrow{ transform: rotate(180deg); }
+  [data-theme="light"] .side-toc-toggle{ color: #0a1520; }
+  [data-theme="light"] .side-toc-toggle svg,
+  [data-theme="light"] .side-toc-toggle polyline{ stroke: #0a1520; }
+  [data-theme="light"] .side-toc-toggle:hover{
+    background: rgba(0,182,203,.18);
+    color: #0a1520;
+  }
+  /* Items are styled in shared/report-edit.css — they get .num + .lbl
+     spans + drag-reorder visuals + hover-action buttons from the
+     shared module. We only need to override the base background here
+     so the cards read against the navy body bg. */
+  .side-toc-item{
+    direction: ltr;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-radius: 6px;
+    background: rgba(20,35,50,0.92);
+    color: rgba(255,255,255,0.85);
+    font-family: 'Roboto', sans-serif;
+    font-size: 11px;
+    text-align: left;
+    text-decoration: none;
+    line-height: 1.2;
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+    width: fit-content;
+    max-width: calc(100% - 8px);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    transition:
+      opacity 0.38s ease,
+      transform 0.38s ease;
+  }
+  .side-toc-item:hover{
+    background: rgba(35,55,75,0.96);
+    color: #fff;
+    border-color: rgba(92,200,224,0.5);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.45);
+  }
+  [data-theme="light"] .side-toc-item{
+    background: rgba(255,255,255,0.92);
+    color: #0a1520;
+    border-color: rgba(31,40,63,.15);
+  }
+  [data-theme="light"] .side-toc-item:hover{
+    background: rgba(255,255,255,1);
+    border-color: rgba(0,182,203,.55);
+  }
+
+  /* ── Pages — fixed 1200×900 canvas matching the regional layout
+     so downstream PDF capture lands at the right page size. The
+     collapsible side TOC overlaps the left margin when expanded;
+     no padding-left needed because the column is auto-collapsed
+     at boot and re-collapses easily via its chevron toggle. */
   .page-outer-wrap{
     padding: 24px 0 60px;
-    padding-left: 80px; /* clear the side TOC */
     position: relative;
     z-index: 1;
   }
@@ -187,11 +367,19 @@
     position: relative;
     overflow: hidden;
     box-shadow: 0 8px 40px rgba(0,0,0,0.35);
-    border-radius: 4px;
   }
   [data-theme="light"] .page{
     background: var(--navy);
     color: #e8eef8;
+  }
+  /* Cyan accent stripe at the top of every non-cover page — same
+     visual signature as the regional reports. */
+  .page:not(.cover)::before{
+    content: "";
+    position: absolute; left: 0; right: 0; top: 0; height: 3px;
+    background: linear-gradient(90deg, var(--accent-2) 0%, var(--accent) 50%, transparent 100%);
+    opacity: 0.6;
+    pointer-events: none;
   }
 
   /* Page header — title + Performance logo. Logo aligns top-right. */
@@ -213,9 +401,9 @@
   }
   .rh-section{
     font-family: 'Roboto', sans-serif;
-    font-size: 17px; font-weight: 700; letter-spacing: 0.14em;
+    font-size: 15px; font-weight: 700; letter-spacing: 0.16em;
     text-transform: uppercase; color: #fff;
-    margin-top: 14px;
+    margin-top: 16px;
   }
   .rh-meta{
     display:flex; justify-content:space-between;
@@ -254,50 +442,46 @@
     line-height: 1.45;
   }
 
-  /* ── Cover page — first slide. Mirrors the residential cover layout
-     with the cyan-tinted Sydney harbour image and the report title
-     block bottom-left + Performance logo bottom-right. */
+  /* ── Cover page — mirrors the regional Online Reports cover layout
+     exactly: full-bleed teal-tinted background image, title block
+     anchored bottom-left, branded disclaimer band at the very bottom,
+     subtle "© year" copy at bottom-right. Roboto throughout. */
   .page.cover{
     background:
-      linear-gradient(135deg, rgba(0,182,203,0.50) 0%, rgba(0,182,203,0.35) 60%, rgba(15,40,55,0.85) 100%),
       url('../assets/Reports/sydney-coverpage.jpg') center / cover no-repeat,
       linear-gradient(135deg, #0f2b38 0%, #184058 55%, #1f546d 100%);
+    font-family: 'Roboto', sans-serif;
+    position: relative;
   }
-  .cover-edition{
-    position: absolute; top: 36px; right: 44px;
-    font-family: 'Montserrat', sans-serif;
-    font-size: 22px; font-weight: 800; letter-spacing: 0.10em;
-    color: #fff; text-align: right; line-height: 1.1;
+  .cover-inner{
+    position: absolute; left: 70px; bottom: 90px;
   }
-  .cover-edition .cover-edition-sub{
-    display:block;
-    font-size: 11px; font-weight: 700; letter-spacing: 0.30em;
-    opacity:0.85; margin-top: 4px;
-  }
-  .cover-title-block{
-    position:absolute; left:44px; bottom:120px;
-    color:#fff;
-  }
-  .cover-title-block .ctb-eyebrow{
-    font-family: 'Montserrat', sans-serif;
-    font-size: 16px; font-weight: 700; letter-spacing: 0.20em;
-    text-transform: uppercase; opacity: 0.9;
-    margin-bottom: 6px;
-  }
-  .cover-title-block .ctb-title{
-    font-family: 'Montserrat', sans-serif;
-    font-size: 64px; font-weight: 800; letter-spacing: 0.04em;
-    text-transform: uppercase; line-height: 1.02;
+  .cover-title{
+    font-family: 'Roboto', sans-serif;
+    font-size: 68px; font-weight: 900; line-height: 0.98;
+    color: #fff; letter-spacing: 0.01em;
     margin: 0;
   }
-  .cover-logo{
-    position:absolute; right:44px; bottom:96px;
+  .cover-subtitle{
+    font-family: 'Roboto', sans-serif;
+    font-size: 28px; font-weight: 400; letter-spacing: 0.2em;
+    color: #fff; text-transform: uppercase; margin-top: 10px;
   }
-  .cover-logo img{ height: 56px; width: auto; display:block; }
   .cover-disclaimer{
-    position:absolute; left:44px; right:44px; bottom:22px;
-    font-size:10px; line-height:1.35; text-align:center;
-    color:rgba(255,255,255,0.65);
+    position: absolute; left: 70px; right: 70px; bottom: 28px;
+    text-align: center;
+    font-family: 'Roboto', sans-serif;
+    font-size: 9.5px; color: rgba(255,255,255,0.75);
+    font-style: italic; line-height: 1.45;
+  }
+  .cover-disclaimer strong{
+    font-style: normal; letter-spacing: 0.14em;
+    font-weight: 700; display: block; margin-bottom: 2px;
+  }
+  .cover-copy{
+    position: absolute; right: 70px; bottom: 28px;
+    font-family: 'Roboto', sans-serif;
+    font-size: 10px; color: rgba(255,255,255,0.8);
   }
 
   /* ── Hide chrome surfaces in export / capture contexts. Same
@@ -336,6 +520,121 @@
   .page.is-active-page{
     box-shadow: 0 0 0 2px rgba(0,182,203,0.50), 0 8px 40px rgba(0,0,0,0.35);
   }
+
+  /* ═══════════ Edit-mode pager + sync chrome — Slice 1 ═══════════
+     Mirrors the regional online-reports.html toolbar but laid out as a
+     fixed pill at bottom-center to fit alongside the existing floating
+     top-right buttons (theme / download / cluster / hub). The
+     `.tier1-only` class on the pager root hides it for tier-2+ users
+     via the body.tier-2/3/4 rules below. Slices 2-4 will append more
+     buttons to this same pill (+ Text, + Shape, etc.). */
+  .pp-pager{
+    position:fixed; bottom:18px; left:50%;
+    transform:translateX(-50%);
+    z-index:10001;
+    display:inline-flex; align-items:center; gap:8px;
+    padding:6px 10px;
+    background:rgba(15,23,42,.90);
+    border:1px solid rgba(71,85,105,.5);
+    border-radius:999px;
+    color:#e2e8f0;
+    font-family:'DM Sans', system-ui, sans-serif;
+    font-size:12px; font-weight:600;
+    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    box-shadow:0 6px 22px rgba(0,0,0,.35);
+  }
+  [data-theme="light"] .pp-pager{
+    background:rgba(255,255,255,.95);
+    border-color:rgba(31,40,63,.18);
+    color:#1a2236;
+    box-shadow:0 6px 22px rgba(0,0,0,.12);
+  }
+  .pp-pager .sep{
+    width:1px; height:16px; background:rgba(255,255,255,.18); margin:0 4px;
+  }
+  [data-theme="light"] .pp-pager .sep{ background:rgba(31,40,63,.18); }
+
+  /* View / Edit toggle */
+  .mode-toggle{
+    display:inline-flex;
+    border:1px solid rgba(255,255,255,.18);
+    border-radius:6px;
+    overflow:hidden;
+  }
+  [data-theme="light"] .mode-toggle{ border-color:rgba(31,40,63,.18); }
+  .mode-toggle button{
+    border:none; background:transparent;
+    color:rgba(255,255,255,.7);
+    padding:4px 12px;
+    cursor:pointer;
+    font-size:12px;
+    font-family:'Roboto', sans-serif;
+    letter-spacing:.04em;
+  }
+  [data-theme="light"] .mode-toggle button{ color:rgba(26,34,54,.7); }
+  .mode-toggle button + button{ border-left:1px solid rgba(255,255,255,.12); }
+  [data-theme="light"] .mode-toggle button + button{ border-left-color:rgba(31,40,63,.12); }
+  .mode-toggle button:hover{ background:rgba(92,200,224,.18); color:#fff; }
+  [data-theme="light"] .mode-toggle button:hover{ color:#1a2236; }
+  .mode-toggle button.on{
+    background:var(--accent);
+    color:#0a1520;
+    font-weight:700;
+  }
+
+  /* Hide editing tools while in View mode. Edit-only items get this
+     class; Slice 2+ scaffolds live behind it. */
+  body:not(.edit-mode) .edit-only{ display:none !important; }
+
+  /* Tier gating — hide .tier1-only items for users at tier 2 or below.
+     auth.js stamps body.tier-N. The class is set on the pager root so
+     view-only tiers don't even see the View/Edit pill. */
+  body.tier-2 .tier1-only,
+  body.tier-3 .tier1-only,
+  body.tier-4 .tier1-only{ display:none !important; }
+
+  /* Status pill — colour-codes loading / pending / saving / saved /
+     error states. */
+  .rs-status{
+    display:inline-flex; align-items:center; gap:6px;
+    padding:3px 10px;
+    border-radius:12px;
+    font-size:10.5px; font-weight:600; letter-spacing:.04em;
+    font-family:'Roboto', sans-serif;
+    background:rgba(255,255,255,.06);
+    color:rgba(255,255,255,.7);
+    border:1px solid rgba(255,255,255,.12);
+    transition:background .15s, color .15s, border-color .15s;
+  }
+  [data-theme="light"] .rs-status{
+    background:rgba(31,40,63,.06);
+    color:rgba(31,40,63,.7);
+    border-color:rgba(31,40,63,.12);
+  }
+  .rs-status[data-state="loading"],
+  .rs-status[data-state="saving"]{
+    background:rgba(92,200,224,.18);
+    color:var(--accent-2); border-color:rgba(92,200,224,.4);
+  }
+  .rs-status[data-state="pending"]{
+    background:rgba(251,191,36,.14);
+    color:#fbbf24; border-color:rgba(251,191,36,.35);
+  }
+  .rs-status[data-state="saved"]{
+    background:rgba(34,197,94,.14);
+    color:#4ade80; border-color:rgba(34,197,94,.35);
+  }
+  .rs-status[data-state="error"]{
+    background:rgba(229,123,123,.16);
+    color:#ff9b9b; border-color:rgba(229,123,123,.45);
+  }
+
+  /* Hide the pager in capture / export contexts so it never appears in
+     downloaded PDFs/JPEGs. Capture state is set right before
+     html2canvas runs; export-mode is the URL-flag path used by
+     Puppeteer's pre-render. */
+  body[data-state="capturing"] .pp-pager,
+  body.export-mode .pp-pager{ display:none !important; }
 </style>
 </head>
 
@@ -377,38 +676,398 @@
   </svg>
 </button>
 
-<button id="pp-download-pill" type="button" title="Download this report" onclick="downloadReportPdf()">
+<button id="pp-download-pill" type="button" title="Download options" onclick="toggleDownloadMenu()">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px">
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
     <polyline points="7 10 12 15 17 10"/>
     <line x1="12" y1="15" x2="12" y2="3"/>
   </svg>
-  <span>Download PDF</span>
+  <span>Download</span>
 </button>
 
-<!-- ── Side TOC — auto-populated from page sections below ─────── -->
-<aside class="side-toc" id="sideToc" aria-label="Page navigation">
-  <!-- TOC items injected by JS -->
+<div id="pp-download-menu" role="menu" aria-label="Download options">
+  <button class="pp-dl-item" type="button" onclick="downloadCurrentPdf()">
+    <span>📄 This report — PDF<span class="pp-dl-sub">Single PDF, uses pre-rendered cache if available</span></span>
+  </button>
+  <button class="pp-dl-item" type="button" onclick="downloadCurrentJpegPages()">
+    <span>🖼️ This report — JPEG per page<span class="pp-dl-sub">One image file per page (good for slides / email)</span></span>
+  </button>
+  <div class="pp-dl-divider"></div>
+  <button class="pp-dl-item" type="button" onclick="downloadAllResearchPdfs()">
+    <span>📚 All research reports — PDF<span class="pp-dl-sub">National + Commercial in one batch (cache-first)</span></span>
+  </button>
+</div>
+
+<div id="pp-export-overlay" aria-hidden="true">
+  <div class="pp-export-card">
+    <div class="pp-export-spinner" aria-hidden="true"></div>
+    <div class="pp-export-msg" id="pp-export-msg">Preparing download…</div>
+  </div>
+</div>
+
+<!-- ── Edit-mode pager (tier 0/1) ─────────────────────────────────
+     Bottom-center pill housing the View/Edit toggle + save-status
+     readout. Slices 2-4 will append text/shape/image/page/grid/sync/
+     backup/audit buttons here. Hidden for tier 2+ via .tier1-only,
+     hidden in capture/export contexts via the body class rules above. -->
+<div class="pp-pager tier1-only" id="pp-pager" role="toolbar" aria-label="Report editor toolbar">
+  <div class="mode-toggle" role="tablist" aria-label="View / Edit mode">
+    <button id="btn-mode-view" type="button" class="on" role="tab" aria-selected="true" title="Read-only: all editing tools disabled">View</button>
+    <button id="btn-mode-edit" type="button" role="tab" aria-selected="false" title="Editing tools enabled">Edit</button>
+  </div>
+  <span class="sep edit-only"></span>
+  <button class="pp-edit-btn edit-only" id="btn-add"        type="button" title="Add a new text box on the visible page">+ Text</button>
+  <button class="pp-edit-btn edit-only" id="btn-add-shape" type="button" title="Add a shape (rectangle / ellipse / star / arrow / etc.)">+ Shape</button>
+  <button class="pp-edit-btn edit-only" id="btn-add-image" type="button" title="Insert an image — pick a file, drag and resize on the page">+ Image</button>
+  <input type="file" id="ig-file-input" accept="image/*" style="display:none" />
+  <button class="pp-edit-btn edit-only" id="btn-add-page"  type="button" title="Add a blank new page after the current one">+ Page</button>
+  <button class="pp-edit-btn edit-only" id="btn-grid"      type="button" title="Toggle alignment grid (visual only)">Grid</button>
+  <span class="sep edit-only"></span>
+  <button class="pp-edit-btn edit-only" id="btn-sync"   type="button" title="Apply this report's customisations to the other research region">Sync</button>
+  <button class="pp-edit-btn"           id="btn-backup" type="button" title="Download a JSON backup of this report's customisations, or restore from one">Backup</button>
+  <button class="pp-edit-btn"           id="btn-audit"  type="button" title="View the edit history for this report (read-only)">Audit Log</button>
+  <span class="rs-status edit-only" id="rs-status" data-state="idle" style="display:none" title="Online save status — every edit syncs to the server"></span>
+</div>
+
+<!-- Shape picker popover (opens beneath the "+ Shape" pager button). -->
+<div class="sh-picker" id="sh-picker" role="menu" aria-label="Add shape">
+  <button data-shape="rect"     title="Rectangle" role="menuitem"><svg width="20" height="14" viewBox="0 0 20 14"><rect x="1" y="1" width="18" height="12" fill="none" stroke="#fff" stroke-width="1.5"/></svg></button>
+  <button data-shape="square"   title="Square" role="menuitem"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" fill="none" stroke="#fff" stroke-width="1.5"/></svg></button>
+  <button data-shape="ellipse"  title="Ellipse" role="menuitem"><svg width="20" height="14" viewBox="0 0 20 14"><ellipse cx="10" cy="7" rx="9" ry="6" fill="none" stroke="#fff" stroke-width="1.5"/></svg></button>
+  <button data-shape="circle"   title="Circle" role="menuitem"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="none" stroke="#fff" stroke-width="1.5"/></svg></button>
+  <button data-shape="triangle" title="Triangle" role="menuitem"><svg width="18" height="16" viewBox="0 0 18 16"><polygon points="9,1 17,15 1,15" fill="none" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/></svg></button>
+  <button data-shape="star"     title="Star" role="menuitem"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,1 11.2,6.6 17.1,7 12.6,10.9 14,16.6 9,13.4 4,16.6 5.4,10.9 0.9,7 6.8,6.6" fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+  <button data-shape="heart"    title="Heart" role="menuitem"><svg width="18" height="16" viewBox="0 0 18 16"><path d="M9 14.5 C 9 14.5, 1.5 9.5, 1.5 5.5 C 1.5 2.5, 4 1, 6 1 C 7.5 1, 9 2.5, 9 4 C 9 2.5, 10.5 1, 12 1 C 14 1, 16.5 2.5, 16.5 5.5 C 16.5 9.5, 9 14.5, 9 14.5 Z" fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg></button>
+  <button data-shape="line"     title="Line" role="menuitem"><svg width="20" height="20" viewBox="0 0 20 20"><line x1="2" y1="18" x2="18" y2="2" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+  <button data-shape="arrow"    title="Arrow" role="menuitem"><svg width="20" height="20" viewBox="0 0 20 20"><defs><marker id="pickerN-ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#fff"/></marker></defs><line x1="2" y1="18" x2="16" y2="4" stroke="#fff" stroke-width="1.6" stroke-linecap="round" marker-end="url(#pickerN-ah)"/></svg></button>
+</div>
+
+<!-- Shape formatting panel — shares the right-rail slot with ct-panel.
+     body.shape-selected hides ct-panel while a shape is selected. -->
+<div class="sh-panel" id="sh-panel" aria-label="Shape formatting">
+  <h4>Shape</h4>
+  <div class="sh-type" id="sh-type-label">rectangle</div>
+  <div class="row" id="sh-fill-row">
+    <label>Fill</label>
+    <div class="sh-mini-tabs" id="sh-fill-tabs" role="tablist">
+      <button class="sh-mini-tab on" data-mode="solid"    role="tab">Solid</button>
+      <button class="sh-mini-tab"    data-mode="gradient" role="tab">Gradient</button>
+      <button class="sh-mini-tab"    data-mode="none"     role="tab">None</button>
+    </div>
+    <div class="sh-pane on" data-role="fill" data-mode="solid">
+      <div class="color-row">
+        <input type="color" id="sh-fill-color" value="#5cc8e0" />
+        <input type="text"  class="hex-input" id="sh-fill-color-hex" value="#5cc8e0" maxlength="7" spellcheck="false" autocomplete="off" />
+      </div>
+    </div>
+    <div class="sh-pane" data-role="fill" data-mode="gradient">
+      <div class="grad-stop-row"><span class="grad-label">From</span><input type="color" id="sh-fill-from" value="#5cc8e0" /><input type="text" class="hex-input" id="sh-fill-from-hex" value="#5cc8e0" maxlength="7" spellcheck="false" autocomplete="off" /></div>
+      <div class="grad-stop-row"><span class="grad-label">To</span><input type="color" id="sh-fill-to" value="#0f2b38" /><input type="text" class="hex-input" id="sh-fill-to-hex" value="#0f2b38" maxlength="7" spellcheck="false" autocomplete="off" /></div>
+      <div class="grad-stop-row"><span class="grad-label">Angle</span><input type="range" id="sh-fill-angle" min="0" max="360" step="1" value="135" /><input type="number" id="sh-fill-angle-num" min="0" max="360" step="1" value="135" /></div>
+    </div>
+  </div>
+  <div class="row">
+    <label>Stroke (border)</label>
+    <div class="sh-mini-tabs" id="sh-stroke-tabs" role="tablist">
+      <button class="sh-mini-tab on" data-mode="solid"    role="tab">Solid</button>
+      <button class="sh-mini-tab"    data-mode="gradient" role="tab">Gradient</button>
+      <button class="sh-mini-tab"    data-mode="none"     role="tab">None</button>
+    </div>
+    <div class="sh-pane on" data-role="stroke" data-mode="solid">
+      <div class="color-row">
+        <input type="color" id="sh-stroke-color" value="#0a1520" />
+        <input type="text"  class="hex-input" id="sh-stroke-color-hex" value="#0a1520" maxlength="7" spellcheck="false" autocomplete="off" />
+      </div>
+    </div>
+    <div class="sh-pane" data-role="stroke" data-mode="gradient">
+      <div class="grad-stop-row"><span class="grad-label">From</span><input type="color" id="sh-stroke-from" value="#5cc8e0" /><input type="text" class="hex-input" id="sh-stroke-from-hex" value="#5cc8e0" maxlength="7" spellcheck="false" autocomplete="off" /></div>
+      <div class="grad-stop-row"><span class="grad-label">To</span><input type="color" id="sh-stroke-to" value="#0a1520" /><input type="text" class="hex-input" id="sh-stroke-to-hex" value="#0a1520" maxlength="7" spellcheck="false" autocomplete="off" /></div>
+      <div class="grad-stop-row"><span class="grad-label">Angle</span><input type="range" id="sh-stroke-angle" min="0" max="360" step="1" value="135" /><input type="number" id="sh-stroke-angle-num" min="0" max="360" step="1" value="135" /></div>
+    </div>
+  </div>
+  <div class="row">
+    <label>Stroke width (px)</label>
+    <input type="number" id="sh-stroke-width" min="0" max="40" step="1" value="2" />
+  </div>
+  <div class="row" id="sh-link-row">
+    <label>Link (optional)</label>
+    <div class="link-row">
+      <input type="url" id="sh-link" placeholder="https://…" spellcheck="false" autocomplete="off" />
+      <button type="button" class="sh-link-clear" id="sh-link-clear" title="Remove link" aria-label="Remove link">×</button>
+    </div>
+  </div>
+  <div class="divider"></div>
+  <button class="apply-all-btn" id="sh-apply-all-btn" title="Copy this shape to one or more pages">Copy</button>
+  <button class="delete-btn" id="sh-delete-btn" title="Delete (or press Delete/Backspace)">Delete shape</button>
+</div>
+
+<!-- Page-background popover (right-click any bare .page in edit mode). -->
+<div class="bg-popover" id="bg-popover" role="dialog" aria-label="Edit page background">
+  <h4 id="bg-popover-title">Page Background</h4>
+  <div class="bg-tabs" role="tablist">
+    <button class="bg-tab on" data-mode="solid"    role="tab" aria-selected="true">Solid</button>
+    <button class="bg-tab"    data-mode="gradient" role="tab" aria-selected="false">Gradient</button>
+  </div>
+  <div class="bg-pane on" data-mode="solid">
+    <div class="bg-row">
+      <label for="bg-solid-color">Color</label>
+      <input type="color" id="bg-solid-color" value="#142230" />
+      <input type="text"  id="bg-solid-hex"   value="#142230" maxlength="7" spellcheck="false" />
+    </div>
+  </div>
+  <div class="bg-pane" data-mode="gradient">
+    <div class="bg-row">
+      <label for="bg-grad-c1">From</label>
+      <input type="color" id="bg-grad-c1"     value="#0f2b38" />
+      <input type="text"  id="bg-grad-c1-hex" value="#0f2b38" maxlength="7" spellcheck="false" />
+    </div>
+    <div class="bg-row">
+      <label for="bg-grad-c2">To</label>
+      <input type="color" id="bg-grad-c2"     value="#1f546d" />
+      <input type="text"  id="bg-grad-c2-hex" value="#1f546d" maxlength="7" spellcheck="false" />
+    </div>
+    <div class="bg-row">
+      <label for="bg-grad-angle">Angle</label>
+      <input type="range"  id="bg-grad-angle"     min="0" max="360" step="1" value="135" />
+      <input type="number" id="bg-grad-angle-num" min="0" max="360" step="1" value="135" style="flex:0 0 60px" />
+    </div>
+  </div>
+  <div class="bg-preview" id="bg-preview"></div>
+  <div class="bg-actions">
+    <button class="bg-btn danger" id="bg-reset" title="Restore the page's default background">Reset</button>
+    <div class="bg-actions-right">
+      <button class="bg-btn ghost" id="bg-cancel">Cancel</button>
+      <button class="bg-btn"       id="bg-apply">Apply</button>
+    </div>
+  </div>
+  <button class="bg-btn bg-apply-pages" id="bg-apply-pages" title="Pick which pages also receive this background">Apply to other pages…</button>
+</div>
+
+<!-- Apply-to-pages modal (opens from "Apply to other pages…" in bg popover). -->
+<div class="pp-modal-bg" id="bg-apply-modal-bg" aria-hidden="true">
+  <div class="pp-modal" role="dialog" aria-labelledby="bg-apply-modal-title">
+    <button class="pp-modal-close" id="bg-apply-close" aria-label="Close">×</button>
+    <h3 id="bg-apply-modal-title">Apply background to pages</h3>
+    <div class="pp-modal-sub" id="bg-apply-sub">Pick which pages should receive this background.</div>
+    <label class="pp-pages-all-row">
+      <input type="checkbox" id="bg-apply-all" />
+      <span><strong>All pages</strong></span>
+    </label>
+    <div class="pp-pages-list" id="bg-apply-list"></div>
+    <div class="pp-modal-actions">
+      <button class="pp-modal-btn ghost"   id="bg-apply-cancel">Cancel</button>
+      <button class="pp-modal-btn primary" id="bg-apply-confirm" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- Floating right-click context menu (image overlays). -->
+<div class="or-ctx-menu" id="or-ctx-menu" role="menu"></div>
+
+<!-- ── Backup / Restore modal ──────────────────────────────────────
+     Visible for every tier (download is universal) but the import
+     action only succeeds for tier 0/1 because RLS rejects writes from
+     lower tiers. The .tier1-only gating is therefore intentionally
+     OFF for the trigger — read-only download is a useful feature
+     even for company / client users to grab their own offline copy. -->
+<div class="pp-modal-bg" id="backup-modal-bg" aria-hidden="true">
+  <div class="pp-modal wider" role="dialog" aria-labelledby="backup-modal-title">
+    <button class="pp-modal-close" id="backup-close" aria-label="Close">×</button>
+    <h3 id="backup-modal-title">Backup &amp; Restore</h3>
+    <div class="pp-modal-sub">Save or restore this report's customisations — pick which buckets and which regions to include. Files round-trip cleanly: a backup of just text overlays restores only text overlays, leaving every other bucket untouched.</div>
+
+    <div class="backup-section">
+      <div class="backup-section-title">Current storage</div>
+      <div class="backup-stats" id="backup-stats">…</div>
+    </div>
+
+    <div class="backup-section">
+      <div class="backup-section-title">Download a backup</div>
+      <p class="backup-help">Pick what to save below. Multi-region backups fetch each region's latest state from the server before bundling.</p>
+
+      <div style="font-size:9.5px; text-transform:uppercase; letter-spacing:.1em; color:rgba(255,255,255,.6); margin:12px 0 6px;">What to include</div>
+      <div class="sync-buckets" id="backup-buckets">
+        <label class="sync-check"><input type="checkbox" data-bucket="texts"       checked> <span>Custom text</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="shapes"      checked> <span>Shapes</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="images"      checked> <span>Images</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="pageBgs"     checked> <span>Page backgrounds</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="pageLabels"  checked> <span>Page labels (renamed pages)</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="pageOrder"   checked> <span>Page order</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="customPages" checked> <span>Custom (added) pages</span></label>
+        <label class="sync-check"><input type="checkbox" data-bucket="auditLog"> <span>Edit history</span></label>
+      </div>
+
+      <div style="font-size:9.5px; text-transform:uppercase; letter-spacing:.1em; color:rgba(255,255,255,.6); margin:12px 0 6px;">Which region(s)</div>
+      <div class="sync-region-block">
+        <label><input type="radio" name="backup-region-mode" value="current" checked> Current region <span id="backup-current-region-name" style="color:rgba(255,255,255,.55); margin-left:6px"></span></label>
+        <label><input type="radio" name="backup-region-mode" value="all"> All research regions <span id="backup-all-count" style="color:rgba(255,255,255,.55); margin-left:6px"></span></label>
+        <label><input type="radio" name="backup-region-mode" value="pick"> Pick specific regions…</label>
+        <div class="sync-region-block" id="backup-pick-list" hidden style="padding-left:24px"></div>
+      </div>
+
+      <div class="pp-modal-actions" style="justify-content:flex-start">
+        <button class="pp-modal-btn primary" id="backup-download-btn">Download backup</button>
+      </div>
+    </div>
+
+    <div class="backup-section">
+      <div class="backup-section-title">Restore from a backup</div>
+      <p class="backup-help">Pick a previously-downloaded JSON file. You'll get a preview before anything is overwritten.</p>
+      <input type="file" id="backup-file-input" accept="application/json,.json" style="display:none" />
+      <div class="pp-modal-actions" style="justify-content:flex-start">
+        <button class="pp-modal-btn ghost" id="backup-import-btn">Choose backup file…</button>
+      </div>
+      <div class="backup-preview" id="backup-preview"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Sync modal — apply this region's customisations to the other research region. -->
+<div class="pp-modal-bg" id="sync-modal-bg" aria-hidden="true">
+  <div class="pp-modal" role="dialog" aria-labelledby="sync-modal-title">
+    <button class="pp-modal-close" id="sync-close" aria-label="Close">×</button>
+    <h3 id="sync-modal-title">Apply customisations to other regions</h3>
+    <div class="pp-modal-sub">Copy this report's overlays, page backgrounds, labels, and order onto the other research region. Useful for keeping the National + Commercial reports visually consistent.</div>
+
+    <div class="sync-source" id="sync-source"></div>
+
+    <div style="font-size:9.5px; text-transform:uppercase; letter-spacing:.1em; color:rgba(255,255,255,.6); margin:0 0 6px;">Target region(s)</div>
+    <div class="sync-region-block" id="sync-pick-list"></div>
+
+    <div style="font-size:9.5px; text-transform:uppercase; letter-spacing:.1em; color:rgba(255,255,255,.6); margin:12px 0 6px;">What to copy</div>
+    <div class="sync-buckets" id="sync-buckets">
+      <label class="sync-check"><input type="checkbox" data-bucket="texts"       checked> <span>Custom text</span> <span class="sync-count" id="sync-count-texts">(0)</span></label>
+      <label class="sync-check"><input type="checkbox" data-bucket="shapes"      checked> <span>Shapes</span> <span class="sync-count" id="sync-count-shapes">(0)</span></label>
+      <label class="sync-check"><input type="checkbox" data-bucket="images"      checked> <span>Images</span> <span class="sync-count" id="sync-count-images">(0)</span></label>
+      <label class="sync-check"><input type="checkbox" data-bucket="pageBgs"     checked> <span>Page backgrounds</span> <span class="sync-count" id="sync-count-pageBgs">(0)</span></label>
+      <label class="sync-check"><input type="checkbox" data-bucket="pageLabels"> <span>Page labels</span> <span class="sync-count" id="sync-count-pageLabels">(0)</span></label>
+      <label class="sync-check"><input type="checkbox" data-bucket="pageOrder"> <span>Page order</span> <span class="sync-count" id="sync-count-pageOrder">(0)</span></label>
+      <label class="sync-check"><input type="checkbox" data-bucket="customPages"> <span>Custom (added) pages</span> <span class="sync-count" id="sync-count-customPages">(0)</span></label>
+    </div>
+
+    <div class="sync-result" id="sync-result" hidden></div>
+
+    <div class="pp-modal-actions">
+      <button class="pp-modal-btn ghost"   id="sync-cancel">Cancel</button>
+      <button class="pp-modal-btn primary" id="sync-apply">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Audit log modal — read-only edit history. -->
+<div class="pp-modal-bg" id="audit-modal-bg" aria-hidden="true">
+  <div class="pp-modal" role="dialog" aria-labelledby="audit-modal-title">
+    <button class="pp-modal-close" id="audit-close" aria-label="Close">×</button>
+    <h3 id="audit-modal-title">Edit history</h3>
+    <div class="pp-modal-sub">Append-only record of who saved or synced this report. Frequent auto-saves by the same user inside a 2-minute window collapse into a single bumped-timestamp entry. Capped at 100 rolling entries per region.</div>
+
+    <div class="audit-scope-toggle" role="tablist">
+      <button class="on" data-scope="region" role="tab" aria-selected="true">This region</button>
+      <button data-scope="all" role="tab" aria-selected="false">All research regions</button>
+    </div>
+
+    <div class="audit-list" id="audit-list"></div>
+  </div>
+</div>
+
+<!-- Right-side formatting panel for the selected custom-text overlay.
+     Hidden by default; .edit-mode body class flips it on, and a
+     selected text drops .no-selection from the panel root. -->
+<div class="ct-panel no-selection" id="ct-panel">
+  <h4>Text Settings</h4>
+  <div class="empty">Click a text box to edit its style.</div>
+  <div class="controls">
+    <div class="row">
+      <label>Font</label>
+      <select id="ct-font">
+        <option value="Roboto">Roboto</option>
+        <option value="Montserrat">Montserrat</option>
+        <option value="DM Sans">DM Sans</option>
+        <option value="Ubuntu">Ubuntu</option>
+        <option value="Calibri">Calibri</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>Size (px)</label>
+      <div class="size-row">
+        <button class="size-btn" id="ct-size-minus" title="Smaller">−</button>
+        <input class="size-input" type="number" id="ct-size" min="8" max="140" step="1" />
+        <button class="size-btn" id="ct-size-plus" title="Bigger">+</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Style</label>
+      <div class="style-row">
+        <button class="style-btn bold"      id="ct-bold"      title="Bold">B</button>
+        <button class="style-btn italic"    id="ct-italic"    title="Italic">I</button>
+        <button class="style-btn underline" id="ct-underline" title="Underline" style="text-decoration:underline">U</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Align</label>
+      <div class="style-row">
+        <button class="style-btn align" id="ct-align-left"   title="Align left"   type="button"><svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="1" y1="2" x2="13" y2="2"/><line x1="1" y1="5" x2="9"  y2="5"/><line x1="1" y1="8" x2="11" y2="8"/></svg></button>
+        <button class="style-btn align" id="ct-align-center" title="Align centre" type="button"><svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="1" y1="2" x2="13" y2="2"/><line x1="3" y1="5" x2="11" y2="5"/><line x1="2" y1="8" x2="12" y2="8"/></svg></button>
+        <button class="style-btn align" id="ct-align-right"  title="Align right"  type="button"><svg width="14" height="10" viewBox="0 0 14 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="1" y1="2" x2="13" y2="2"/><line x1="5" y1="5" x2="13" y2="5"/><line x1="3" y1="8" x2="13" y2="8"/></svg></button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Color</label>
+      <div class="color-row">
+        <input type="color" id="ct-color" value="#1a2838" title="Pick a font colour" />
+        <input type="text" id="ct-color-hex" maxlength="7" placeholder="#hex" spellcheck="false" autocomplete="off" title="Type a hex colour (e.g. #ff5733 or #f57)" />
+        <button class="size-btn" id="ct-color-reset" title="Reset to page default">↺</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>Link selected text</label>
+      <div class="link-row">
+        <button class="link-btn" id="ct-link-add"    type="button" title="Double-click the text first to enter editing mode, then highlight what you want to link">Link…</button>
+        <button class="link-btn" id="ct-link-remove" type="button" title="Remove the link from the selected words">Unlink</button>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <button class="apply-all-btn" id="ct-apply-all-btn" title="Copy this text to one or more pages (pick which)">Copy</button>
+    <button class="delete-btn" id="ct-delete-btn" title="Delete (or press Delete/Backspace)">Delete Text</button>
+  </div>
+</div>
+
+<!-- ── Side TOC — collapsible column matching the regional Online
+     Reports layout. The toggle starts COLLAPSED on entry (see
+     setupTocToggle in shared/report-edit.js) so the chart pages
+     aren't immediately squashed by the column; users opt in via the
+     chevron when they want to navigate. The scroll wrapper carries
+     a RTL flip that pushes the vertical scrollbar to the visual
+     LEFT edge of the column; the inner wrap flips back to LTR so
+     labels still read in normal order. ─────────────────────────── -->
+<aside class="side-toc" id="side-toc" aria-label="Report table of contents">
+  <button class="side-toc-toggle" id="side-toc-toggle" type="button" aria-label="Hide / show pages list" title="Hide / show pages list">
+    <svg class="arrow" viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="3 9 7 5 11 9"/>
+    </svg>
+  </button>
+  <div class="side-toc-scroll" id="side-toc-scroll">
+    <div class="side-toc-inner" id="side-toc-inner">
+      <!-- Rows injected by buildSideToc() in the shared module. -->
+    </div>
+  </div>
 </aside>
 
 <!-- ── Pages ──────────────────────────────────────────────────── -->
 <div class="page-outer-wrap" id="page-outer-wrap">
 
-  <!-- Page 1 — Cover ────────────────────────────────────────── -->
+  <!-- Page 1 — Cover. Matches the regional Online Reports cover layout:
+       title block bottom-left, copyright bottom-right, branded
+       disclaimer band along the very bottom edge. ─────────────── -->
   <section class="page cover" id="p1" data-label="Cover">
-    <div class="cover-edition">
-      2026
-      <span class="cover-edition-sub">EDITION</span>
+    <div class="cover-inner">
+      <h1 class="cover-title">National<br>Market<br>Overview</h1>
+      <div class="cover-subtitle">2026 Edition</div>
     </div>
-    <div class="cover-title-block">
-      <div class="ctb-eyebrow">National</div>
-      <h1 class="ctb-title">National<br>Market<br>Overview</h1>
-    </div>
-    <div class="cover-logo">
-      <img src="../assets/Reports/logo-color.png" alt="Performance Property">
-    </div>
+    <div class="cover-copy">© <span class="ppa-year">2026</span> PPA Services Pty Ltd</div>
     <div class="cover-disclaimer">
-      <strong>DISCLAIMER:</strong> The data presented in this report are sourced from 3rd party resources that we have selected due to their reliability and availability over the historical periods that we require for our research to be relevant. Due to the fact that the current year is not yet complete, data presented for the current year are estimated to represent a full year.
+      <strong>DISCLAIMER</strong>
+      The data presented in this report are sourced from 3rd-party resources that we have selected due to their reliability and availability over the historical periods that we require for our research to be relevant. Due to the fact that the current year is not yet complete, data presented for the current year are estimated to represent a full year.
     </div>
   </section>
 
@@ -556,9 +1215,10 @@
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Business Investment</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Australian Bureau of Statistics</span></div></header>
     <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — Manufacturing + Mining + Total industry investment ($M).</div></div></div>
   </section>
-  <section class="page" id="p19" data-label="Page 19">
-    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Page 19 — Title TBC</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span></span></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Chart pending phase 3 wiring.</div></div></div>
+  <section class="page" id="p19" data-label="Residential Lending">
+    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Residential Lending — Owner Occupier vs Investor</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Australian Bureau of Statistics</span></div></header>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — monthly new loan commitments ($M) for owner-occupier vs investor housing.</div></div></div>
+    <div class="rh-foot">New residential loan commitments split by buyer type. Owner-occupier lending tracks first-home + upgrader demand; investor lending leads rental supply.</div>
   </section>
 
   <section class="page" id="p20" data-label="Internet Job Vacancies">
@@ -578,9 +1238,10 @@
   </section>
 
   <!-- Pages 21–32 generic stubs -->
-  <section class="page" id="p21" data-label="Page 21">
-    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Page 21 — Title TBC</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span></span></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Chart pending phase 3 wiring.</div></div></div>
+  <section class="page" id="p21" data-label="National Job Vacancies">
+    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">National Job Vacancies — Private vs Public</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Australian Bureau of Statistics</span></div></header>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — total ABS job vacancies (thousands), split into Private vs Public sector.</div></div></div>
+    <div class="rh-foot">Quarterly job vacancies survey. Private vacancies drive most of the volume; public sector trends are smoother but still cyclical.</div>
   </section>
   <section class="page" id="p22" data-label="Inflation v Cash Rate">
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Inflation v RBA Cash Rate</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: ABS &amp; Reserve Bank of Australia</span></div></header>
@@ -590,41 +1251,47 @@
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Public &amp; Private Engineering &amp; Construction Work Completed</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Australian Bureau of Statistics</span></div></header>
     <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — Private vs Public engineering construction work value.</div></div></div>
   </section>
-  <section class="page" id="p24" data-label="Page 24">
-    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Page 24 — Title TBC</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span></span></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Chart pending phase 3 wiring.</div></div></div>
+  <section class="page" id="p24" data-label="Mortgage Arrears">
+    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Mortgage Arrears by State</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Reserve Bank of Australia</span></div></header>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — monthly housing-loan arrears rates, National + NSW / VIC / QLD / SA / WA.</div></div></div>
+    <div class="rh-foot">Arrears rates measure the share of housing loans more than 30 days overdue. A rising line signals borrower stress.</div>
   </section>
   <section class="page" id="p25" data-label="State Net Overseas Migration">
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">State Net Overseas Migration</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Australian Bureau of Statistics</span></div></header>
     <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — NSW / VIC / QLD / SA / WA net overseas migration.</div></div></div>
   </section>
-  <section class="page" id="p26" data-label="Page 26">
-    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Page 26 — Title TBC</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span></span></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Chart pending phase 3 wiring.</div></div></div>
+  <section class="page" id="p26" data-label="Federal Budget">
+    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Federal Budget — Surplus / Deficit</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Australian Federal Budget Papers</span></div></header>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Bar chart — annual underlying cash balance ($M); positive = surplus, negative = deficit.</div></div></div>
+    <div class="rh-foot">The underlying cash balance is the headline measure of the federal budget position. Sustained deficits drive the rise in government debt-to-GDP.</div>
   </section>
-  <section class="page" id="p27" data-label="Page 27">
-    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Page 27 — Title TBC</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span></span></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Chart pending phase 3 wiring.</div></div></div>
+  <section class="page" id="p27" data-label="Government Debt to GDP">
+    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Australian Government Debt to GDP</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Australian Office of Financial Management</span></div></header>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — Commonwealth government debt as a share of GDP.</div></div></div>
+    <div class="rh-foot">Debt-to-GDP measures sovereign borrowing relative to the size of the economy. Australia's ratio is moderate by OECD standards but trending up since 2008.</div>
   </section>
   <section class="page" id="p28" data-label="Top 20 Economies">
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Top 20 Economies of the World v Debt to GDP Ratio</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Investopedia &amp; World Population Review</span></div></header>
     <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Grouped bar dual-axis — Nominal GDP (trillions) vs Debt-to-GDP Ratio, top 20 economies.</div></div></div>
   </section>
-  <section class="page" id="p29" data-label="Page 29">
-    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Page 29 — Title TBC</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span></span></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Chart pending phase 3 wiring.</div></div></div>
+  <section class="page" id="p29" data-label="Median Income">
+    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Median Weekly Household Income</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Australian Bureau of Statistics</span></div></header>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Dual-axis line — median weekly income (left) and annualised income (right).</div></div></div>
+    <div class="rh-foot">Median household income is the denominator behind affordability and price-to-income measures elsewhere in this report.</div>
   </section>
   <section class="page" id="p30" data-label="Household Debt to Income">
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Household Debt to Income</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Reserve Bank of Australia</span></div></header>
     <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Dual-axis line — Household debt-to-income ratio + quarterly cash rate.</div></div></div>
   </section>
-  <section class="page" id="p31" data-label="Page 31">
-    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Page 31 — Title TBC</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span></span></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Chart pending phase 3 wiring.</div></div></div>
+  <section class="page" id="p31" data-label="State Interstate Migration">
+    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">State Net Interstate Migration</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Australian Bureau of Statistics</span></div></header>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — NSW / VIC / QLD / SA / WA net interstate migration (annual).</div></div></div>
+    <div class="rh-foot">Net interstate migration reshapes regional demand year-to-year. QLD has been the consistent winner; NSW and VIC swing between gains and losses.</div>
   </section>
-  <section class="page" id="p32" data-label="Page 32">
-    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Page 32 — Title TBC</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span></span></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Chart pending phase 3 wiring.</div></div></div>
+  <section class="page" id="p32" data-label="Natural Increase v NOM">
+    <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title">National Research Report</h1><div class="rh-section">Natural Increase v Net Overseas Migration</div><div class="rh-meta"><span>© 2026 PPA Services Pty Ltd</span><span>Source: Australian Bureau of Statistics</span></div></header>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📊</div><div>Line chart — components of national population growth: births minus deaths vs net overseas arrivals.</div></div></div>
+    <div class="rh-foot">Net overseas migration has overtaken natural increase as the larger driver of Australia's population growth post-2005.</div>
   </section>
 
   <!-- Page 33 — Contact / About — final page mirrors the residential
@@ -730,60 +1397,119 @@ function navigateToClusterPicker() {
   setTimeout(() => { location.href = '../index.html?openReports=cluster'; }, 300);
 }
 
-/* ── Side TOC — generated from page sections ────────────────── */
-function buildSideToc() {
-  const toc = document.getElementById('sideToc');
-  if (!toc) return;
-  toc.innerHTML = '';
-  document.querySelectorAll('section.page').forEach((sec, i) => {
-    const item = document.createElement('div');
-    item.className = 'side-toc-item';
-    item.textContent = String(i + 1);
-    item.title = sec.getAttribute('data-label') || ('Page ' + (i + 1));
-    item.dataset.target = sec.id;
-    item.addEventListener('click', () => {
-      sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    toc.appendChild(item);
-  });
+/* buildSideToc() and setupScrollSpy() now live in
+   shared/report-edit.js (they need the full edit-mode wiring:
+   drag handlers, action buttons, label rendering). The shared
+   module's initReportEdit() takes care of both. */
+
+/* ── Download infrastructure ─────────────────────────────────────
+   Mirrors the residential pattern: prebuilt-cache fetch first,
+   live html2canvas+jsPDF only as a fallback. JPEG-per-page export
+   reuses the same capture pipeline.
+
+   The Supabase Storage layout matches residential's bucket: every
+   monthly Puppeteer run drops <month>/<slug>.pdf where slug is
+   'national' or 'commercial'. Same private bucket + signed-URL
+   pattern, same MONTH_KEY derivation. */
+const PREBUILT_BUCKET = 'online-reports';
+
+function _monthKey() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
 }
 
-/* Scroll spy — highlights the TOC item closest to the viewport top. */
-function setupScrollSpy() {
-  const sections = Array.from(document.querySelectorAll('section.page'));
-  const items = Array.from(document.querySelectorAll('.side-toc-item'));
-  if (!sections.length || !items.length) return;
-  const byId = {};
-  items.forEach(it => { byId[it.dataset.target] = it; });
-  const io = new IntersectionObserver((entries) => {
-    entries.forEach(e => {
-      if (e.isIntersecting) {
-        items.forEach(it => it.classList.remove('is-active'));
-        const m = byId[e.target.id];
-        if (m) m.classList.add('is-active');
-      }
-    });
-  }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
-  sections.forEach(s => io.observe(s));
+function _showExportOverlay(msg) {
+  const ov = document.getElementById('pp-export-overlay');
+  const m  = document.getElementById('pp-export-msg');
+  if (m) m.textContent = msg || 'Preparing download…';
+  if (ov) { ov.classList.add('show'); ov.setAttribute('aria-hidden', 'false'); }
+}
+function _hideExportOverlay() {
+  const ov = document.getElementById('pp-export-overlay');
+  if (ov) { ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true'); }
+}
+function _updateExportMsg(msg) {
+  const m = document.getElementById('pp-export-msg');
+  if (m) m.textContent = msg;
 }
 
-/* ── PDF download — html2canvas + jsPDF in-browser capture.
-   This is the same fallback pattern the residential tool uses
-   when the prebuilt cache is empty; it lets the report download
-   work day-one without waiting for the monthly Puppeteer run. */
-async function downloadReportPdf() {
-  if (!window.jspdf || !window.html2canvas) {
-    alert('Export libraries still loading — try again in a moment.');
-    return;
+/* Toggle download menu — also closes on outside-click + Esc. */
+function toggleDownloadMenu() {
+  const menu = document.getElementById('pp-download-menu');
+  if (!menu) return;
+  const opening = !menu.classList.contains('open');
+  menu.classList.toggle('open', opening);
+  if (opening) {
+    setTimeout(() => {
+      document.addEventListener('click', _closeDlMenuOutside, true);
+      document.addEventListener('keydown', _closeDlMenuEsc);
+    }, 0);
+  } else {
+    document.removeEventListener('click', _closeDlMenuOutside, true);
+    document.removeEventListener('keydown', _closeDlMenuEsc);
   }
+}
+function _closeDlMenu() {
+  const menu = document.getElementById('pp-download-menu');
+  if (!menu) return;
+  menu.classList.remove('open');
+  document.removeEventListener('click', _closeDlMenuOutside, true);
+  document.removeEventListener('keydown', _closeDlMenuEsc);
+}
+function _closeDlMenuOutside(ev) {
+  const menu = document.getElementById('pp-download-menu');
+  const pill = document.getElementById('pp-download-pill');
+  if (!menu) return;
+  if (menu.contains(ev.target) || (pill && pill.contains(ev.target))) return;
+  _closeDlMenu();
+}
+function _closeDlMenuEsc(ev) {
+  if (ev.key === 'Escape') _closeDlMenu();
+}
+
+/* Try the prebuilt cache for a given slug. Returns true on success
+   (download triggered), false if the cached file isn't there or the
+   signed-URL fetch failed. Callers can fall back to live capture. */
+async function _tryPrebuiltDownload(slug, filename) {
+  if (!window.sb || !window.sb.storage) return false;
+  const path = _monthKey() + '/' + slug + '.pdf';
+  try {
+    /* createSignedUrl returns null/error for missing files. 60s TTL
+       so a leaked URL expires fast. */
+    const { data, error } = await window.sb.storage
+      .from(PREBUILT_BUCKET)
+      .createSignedUrl(path, 60);
+    if (error || !data || !data.signedUrl) return false;
+    const resp = await fetch(data.signedUrl, { cache: 'no-store' });
+    if (!resp.ok) return false;
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    return true;
+  } catch (_) { return false; }
+}
+
+/* Live in-browser PDF capture — same flow as the residential
+   fallback. Used when the prebuilt cache miss or the user picks
+   "current state of the page" semantics rather than the monthly
+   snapshot. */
+async function _captureReportToPdf(filename) {
+  if (!window.jspdf || !window.html2canvas) throw new Error('Export libraries not loaded');
   document.body.setAttribute('data-state', 'capturing');
   await new Promise(r => setTimeout(r, 150));
   try {
     const { jsPDF } = window.jspdf;
-    const PW = 297, PH = 222.75; /* 4:3 landscape, mm */
+    const PW = 297, PH = 222.75;
     const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [PW, PH], compress: true });
     const pages = document.querySelectorAll('section.page');
     for (let i = 0; i < pages.length; i++) {
+      _updateExportMsg('Capturing page ' + (i + 1) + ' of ' + pages.length + '…');
       pages[i].scrollIntoView({ block: 'center', behavior: 'auto' });
       await new Promise(r => setTimeout(r, 50));
       const canvas = await html2canvas(pages[i], {
@@ -796,12 +1522,109 @@ async function downloadReportPdf() {
       if (i > 0) pdf.addPage([PW, PH], 'landscape');
       pdf.addImage(dataUrl, 'JPEG', 0, 0, PW, PH, undefined, 'FAST');
     }
-    pdf.save('PPA_National_report.pdf');
-  } catch (err) {
-    console.error('PDF export failed', err);
-    alert('PDF export failed: ' + (err && err.message ? err.message : 'unknown error'));
+    pdf.save(filename);
   } finally {
     document.body.removeAttribute('data-state');
+  }
+}
+
+/* User-facing download actions wired to the menu items. */
+async function downloadCurrentPdf() {
+  _closeDlMenu();
+  _showExportOverlay('Checking pre-rendered cache…');
+  const filename = 'PPA_National_report.pdf';
+  try {
+    const cached = await _tryPrebuiltDownload(REPORT_SLUG, filename);
+    if (cached) return;
+    _updateExportMsg('No cached PDF — rendering live (this can take a minute)…');
+    await _captureReportToPdf(filename);
+  } catch (err) {
+    console.error('PDF download failed', err);
+    alert('PDF download failed: ' + (err && err.message ? err.message : 'unknown error'));
+  } finally {
+    _hideExportOverlay();
+  }
+}
+
+async function downloadCurrentJpegPages() {
+  _closeDlMenu();
+  if (!window.html2canvas) { alert('Capture library still loading — try again in a moment.'); return; }
+  _showExportOverlay('Preparing JPEG pages…');
+  document.body.setAttribute('data-state', 'capturing');
+  await new Promise(r => setTimeout(r, 150));
+  let saved = 0;
+  try {
+    const pages = document.querySelectorAll('section.page');
+    for (let i = 0; i < pages.length; i++) {
+      _updateExportMsg('Capturing page ' + (i + 1) + ' of ' + pages.length + '…');
+      const pageEl = pages[i];
+      pageEl.scrollIntoView({ block: 'center', behavior: 'auto' });
+      await new Promise(r => setTimeout(r, 60));
+      const canvas = await html2canvas(pageEl, {
+        scale: 3, useCORS: true, backgroundColor: '#0f1922', logging: false,
+      });
+      const label = (pageEl.getAttribute('data-label') || pageEl.id || ('page-' + (i + 1)))
+        .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+      if (!blob) continue;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'PPA_National_' + label + '.jpg';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      saved++;
+      /* 500 ms gap so Chrome's multi-download throttle doesn't drop
+         later files silently (same fix used in online-reports.html
+         multi-region JPEG). */
+      await new Promise(r => setTimeout(r, 500));
+    }
+  } catch (err) {
+    console.error('JPEG export failed', err);
+    alert('JPEG export failed: ' + (err && err.message ? err.message : 'unknown error'));
+  } finally {
+    document.body.removeAttribute('data-state');
+    _hideExportOverlay();
+    if (saved > 0) console.info('[national-report] saved', saved, 'JPEG page(s)');
+  }
+}
+
+/* Multi-report PDF — pulls every research-report slug from the
+   prebuilt cache. Falls back to live capture only for the CURRENT
+   report (the other report's pages aren't loaded in this tab, so
+   live capture of it would need an off-screen iframe — skipped for
+   simplicity. If the cache is empty for the other report, that
+   download is marked failed and reported at the end). */
+async function downloadAllResearchPdfs() {
+  _closeDlMenu();
+  const targets = [
+    { slug: 'national',   filename: 'PPA_National_report.pdf'   },
+    { slug: 'commercial', filename: 'PPA_Commercial_report.pdf' },
+  ];
+  _showExportOverlay('Fetching pre-rendered reports…');
+  const failed = [];
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      const t = targets[i];
+      _updateExportMsg('Report ' + (i + 1) + ' of ' + targets.length + ': ' + t.slug + '…');
+      const ok = await _tryPrebuiltDownload(t.slug, t.filename);
+      if (!ok) {
+        if (t.slug === REPORT_SLUG) {
+          /* Live fallback for the current report only. */
+          _updateExportMsg(t.slug + ' not in cache — rendering live…');
+          try { await _captureReportToPdf(t.filename); }
+          catch (e) { failed.push(t.slug + ' (live capture failed)'); }
+        } else {
+          failed.push(t.slug + ' (not in cache; open that report directly to render)');
+        }
+      }
+      /* Inter-file gap to dodge Chrome's multi-download throttle. */
+      await new Promise(r => setTimeout(r, 500));
+    }
+  } finally {
+    _hideExportOverlay();
+  }
+  if (failed.length) {
+    alert('Some reports could not be downloaded:\n  • ' + failed.join('\n  • '));
   }
 }
 
@@ -1357,6 +2180,208 @@ function _renderP25_StateNOM(d) {
   }));
 }
 
+function _renderP5_VacancyRate(d) {
+  const labels = d.vacancyRate;
+  const prior  = d.vacancyRateNov2023;
+  const curr   = d.vacancyRateNov2024;
+  if (!Array.isArray(labels) || !labels.length || !prior || !curr) return;
+  _mountChart('p5', Object.assign(_baseChartOption(), {
+    legend: Object.assign(_baseChartOption().legend, { data: ['Nov 2023', 'Nov 2024'] }),
+    xAxis: Object.assign(_baseChartOption().xAxis, {
+      data: labels,
+      axisLabel: { color: '#1a2236', fontSize: 11, interval: 0, rotate: 0 },
+    }),
+    yAxis: Object.assign(_baseChartOption().yAxis, {
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(1) + '%' },
+    }),
+    series: [
+      { name: 'Nov 2023', type: 'bar', data: prior, itemStyle: { color: CHART_COLORS[3] }, barGap: '12%' },
+      { name: 'Nov 2024', type: 'bar', data: curr,  itemStyle: { color: CHART_COLORS[2] }, barGap: '12%',
+        markLine: { silent: true, symbol: 'none', data: [
+          { yAxis: 0.025, lineStyle: { color: '#3ecf8e', type: 'dashed' }, label: { formatter: 'Balanced 2.5%', color: '#3ecf8e', position: 'end' } },
+          { yAxis: 0.030, lineStyle: { color: '#3ecf8e', type: 'dashed' }, label: { formatter: 'Balanced 3%',    color: '#3ecf8e', position: 'end' } },
+        ] } },
+    ],
+  }));
+}
+
+function _renderP19_ResidentialLending(d) {
+  const dates = (d.lendingDate || []).map(v => String(v).slice(0, 10));
+  if (!dates.length || (!d.ownerOccupierAbs && !d.investorAbs)) return;
+  _mountChart('p19', Object.assign(_baseChartOption(), {
+    legend: Object.assign(_baseChartOption().legend, { data: ['Owner Occupier', 'Investor'] }),
+    xAxis: Object.assign(_baseChartOption().xAxis, {
+      data: dates,
+      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(dates.length / 16)) },
+    }),
+    yAxis: Object.assign(_baseChartOption().yAxis, {
+      name: 'New lending ($M)', nameTextStyle: { color: '#1a2236' },
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e3 ? (v/1e3).toFixed(1) + 'b' : v + 'm' },
+    }),
+    series: [
+      { name: 'Owner Occupier', type: 'line', data: d.ownerOccupierAbs || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: 'Investor',       type: 'line', data: d.investorAbs       || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+    ],
+  }));
+}
+
+function _renderP21_NationalJobVacancies(d) {
+  const dates = (d.dateNationalJobVacancies || []).map(v => String(v).slice(0, 10));
+  if (!dates.length || (!d.nationalJobVacanciesPrivate && !d.nationalJobVacanciesPublic && !d.nationalJobVacanciesTotal)) return;
+  _mountChart('p21', Object.assign(_baseChartOption(), {
+    legend: Object.assign(_baseChartOption().legend, { data: ['Total', 'Private', 'Public'] }),
+    xAxis: Object.assign(_baseChartOption().xAxis, {
+      data: dates,
+      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(dates.length / 16)) },
+    }),
+    yAxis: Object.assign(_baseChartOption().yAxis, {
+      name: 'Job vacancies (000s)', nameTextStyle: { color: '#1a2236' },
+      axisLabel: { color: '#1a2236', fontSize: 11 },
+    }),
+    series: [
+      { name: 'Total',   type: 'line', data: d.nationalJobVacanciesTotal   || [], showSymbol: false, lineStyle: { width: 2, color: '#5cc8e0' } },
+      { name: 'Private', type: 'line', data: d.nationalJobVacanciesPrivate || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: 'Public',  type: 'line', data: d.nationalJobVacanciesPublic  || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+    ],
+  }));
+}
+
+function _renderP24_MortgageArrears(d) {
+  const dates = (d.lendingDate || []).map(v => String(v).slice(0, 10));
+  if (!dates.length || !d.arrearsNational) return;
+  /* arrears arrays are slightly shorter than lendingDate — slice
+     the date axis to match so the latest months don't get phantom
+     "no data" points. */
+  const arrLen = d.arrearsNational.length;
+  const aligned = dates.slice(0, arrLen);
+  const series = [
+    ['National', d.arrearsNational, '#000'],
+    ['NSW',      d.arrearsNsw,      '#5cc8e0'],
+    ['VIC',      d.arrearsVic,      '#f5a623'],
+    ['QLD',      d.arrearsQld,      '#3ecf8e'],
+    ['SA',       d.arrearsSa,       '#c2a4d6'],
+    ['WA',       d.arrearsWa,       '#e57373'],
+  ].filter(([_, v]) => Array.isArray(v) && v.length);
+  _mountChart('p24', Object.assign(_baseChartOption(), {
+    legend: Object.assign(_baseChartOption().legend, { data: series.map(s => s[0]) }),
+    xAxis: Object.assign(_baseChartOption().xAxis, {
+      data: aligned,
+      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(aligned.length / 16)) },
+    }),
+    yAxis: Object.assign(_baseChartOption().yAxis, {
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(2) + '%' },
+    }),
+    series: series.map(([name, data, color]) => ({
+      name, type: 'line', data, showSymbol: false, lineStyle: { width: 2, color },
+    })),
+  }));
+}
+
+function _renderP26_FederalBudget(d) {
+  const labels = d.federalBudgetDates || [];
+  const vals   = d.federalBudgetInMillions || [];
+  const pairs  = labels.map((y, i) => [y, vals[i]]).filter(([y, v]) => y && (typeof v === 'number'));
+  if (!pairs.length) return;
+  const xs = pairs.map(p => p[0]);
+  const ys = pairs.map(p => p[1]);
+  _mountChart('p26', Object.assign(_baseChartOption(), {
+    legend: Object.assign(_baseChartOption().legend, { data: ['Surplus / Deficit ($M)'] }),
+    xAxis: Object.assign(_baseChartOption().xAxis, {
+      data: xs,
+      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(xs.length / 18)) },
+    }),
+    yAxis: Object.assign(_baseChartOption().yAxis, {
+      name: '$ millions', nameTextStyle: { color: '#1a2236' },
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => Math.abs(v) >= 1e3 ? (v/1e3).toFixed(0) + 'b' : v + 'm' },
+    }),
+    series: [
+      { name: 'Surplus / Deficit ($M)', type: 'bar', data: ys.map(v => ({
+        value: v,
+        itemStyle: { color: v >= 0 ? '#3ecf8e' : '#e57373' },
+      })) },
+    ],
+  }));
+}
+
+function _renderP27_GovtDebtToGdp(d) {
+  const labels = d.federalBudgetDates || [];
+  const vals   = d.govtDebtToGdp || [];
+  const pairs  = labels.map((y, i) => [y, vals[i]]).filter(([y, v]) => y && (typeof v === 'number'));
+  if (!pairs.length) return;
+  const xs = pairs.map(p => p[0]);
+  const ys = pairs.map(p => p[1]);
+  _mountChart('p27', Object.assign(_baseChartOption(), {
+    legend: Object.assign(_baseChartOption().legend, { data: ['Debt to GDP'] }),
+    xAxis: Object.assign(_baseChartOption().xAxis, {
+      data: xs,
+      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(xs.length / 18)) },
+    }),
+    yAxis: Object.assign(_baseChartOption().yAxis, {
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(0) + '%' },
+    }),
+    series: [
+      { name: 'Debt to GDP', type: 'line', data: ys, showSymbol: false, areaStyle: { opacity: 0.18 }, lineStyle: { width: 2, color: CHART_COLORS[2] }, itemStyle: { color: CHART_COLORS[2] } },
+    ],
+  }));
+}
+
+function _renderP29_MedianIncome(d) {
+  const years = (d.year || []).map(String);
+  if (!years.length || (!d.medianIncome && !d.annualizedMedianIncome)) return;
+  _mountChart('p29', Object.assign(_baseChartOption(), {
+    legend: Object.assign(_baseChartOption().legend, { data: ['Weekly Median Income', 'Annualised Income'] }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    yAxis: [
+      { type: 'value', name: 'Weekly ($)',     nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => '$' + v }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
+      { type: 'value', name: 'Annualised ($)', nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e3 ? '$' + (v/1e3).toFixed(0) + 'k' : '$' + v }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: 'Weekly Median Income', type: 'line', yAxisIndex: 0, data: d.medianIncome           || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: 'Annualised Income',    type: 'line', yAxisIndex: 1, data: d.annualizedMedianIncome || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+    ],
+  }));
+}
+
+function _renderP31_StateInterstateMigration(d) {
+  const years = (d.year || []).map(String);
+  if (!years.length) return;
+  const series = [
+    ['NSW', d.nswNim, '#5cc8e0'],
+    ['VIC', d.vicNim, '#f5a623'],
+    ['QLD', d.qldNim, '#3ecf8e'],
+    ['SA',  d.saNim,  '#c2a4d6'],
+    ['WA',  d.waNim,  '#e57373'],
+  ].filter(([_, v]) => Array.isArray(v) && v.length);
+  if (!series.length) return;
+  _mountChart('p31', Object.assign(_baseChartOption(), {
+    legend: Object.assign(_baseChartOption().legend, { data: series.map(s => s[0]) }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    yAxis: Object.assign(_baseChartOption().yAxis, {
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => Math.abs(v) >= 1e3 ? (v/1e3).toFixed(0) + 'k' : v },
+    }),
+    series: series.map(([name, data, color]) => ({
+      name, type: 'line', data, showSymbol: false, lineStyle: { width: 2, color },
+      markLine: name === 'NSW' ? { silent: true, symbol: 'none', data: [{ yAxis: 0, lineStyle: { color: 'rgba(26,34,54,0.4)', type: 'dashed' } }] } : undefined,
+    })),
+  }));
+}
+
+function _renderP32_NaturalIncreaseVsNOM(d) {
+  const years = (d.year || []).map(String);
+  if (!years.length || (!d.naturalIncrease && !d.netOverseasMigrationNom)) return;
+  _mountChart('p32', Object.assign(_baseChartOption(), {
+    legend: Object.assign(_baseChartOption().legend, { data: ['Natural Increase', 'Net Overseas Migration'] }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    yAxis: Object.assign(_baseChartOption().yAxis, {
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e3 ? (v/1e3).toFixed(0) + 'k' : v },
+    }),
+    series: [
+      { name: 'Natural Increase',       type: 'line', data: d.naturalIncrease         || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: 'Net Overseas Migration', type: 'line', data: d.netOverseasMigrationNom || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+    ],
+  }));
+}
+
 /* Master renderer — calls every per-page renderer in sequence. Each
    one is independently safe; if the data it needs isn't present it
    leaves the page's placeholder intact. Add new renderers here. */
@@ -1371,6 +2396,7 @@ function renderAllCharts(payload) {
   try { _renderP2_MedianPrice(d); }                catch (e) { console.warn('[p2]',  e); }
   try { _renderP3_MedianHousePrice(d); }           catch (e) { console.warn('[p3]',  e); }
   try { _renderP4_MedianHousePriceRest(d); }       catch (e) { console.warn('[p4]',  e); }
+  try { _renderP5_VacancyRate(d); }                catch (e) { console.warn('[p5]',  e); }
   try { _renderP6_DwellingApprovals(d); }          catch (e) { console.warn('[p6]',  e); }
   try { _renderP7_DwellingCommencements(d); }      catch (e) { console.warn('[p7]',  e); }
   try { _renderP8_PopulationGrowth(d); }           catch (e) { console.warn('[p8]',  e); }
@@ -1384,19 +2410,283 @@ function renderAllCharts(payload) {
   try { _renderP16_NationalRetailSpending(d); }    catch (e) { console.warn('[p16]', e); }
   try { _renderP17_Unemployment(d); }              catch (e) { console.warn('[p17]', e); }
   try { _renderP18_BusinessInvestment(d); }        catch (e) { console.warn('[p18]', e); }
+  try { _renderP19_ResidentialLending(d); }        catch (e) { console.warn('[p19]', e); }
   try { _renderP20_InternetJobVacancies(d); }      catch (e) { console.warn('[p20]', e); }
+  try { _renderP21_NationalJobVacancies(d); }      catch (e) { console.warn('[p21]', e); }
   try { _renderP22_InflationVsCashRate(d); }       catch (e) { console.warn('[p22]', e); }
   try { _renderP23_EngineeringWork(d); }           catch (e) { console.warn('[p23]', e); }
+  try { _renderP24_MortgageArrears(d); }           catch (e) { console.warn('[p24]', e); }
   try { _renderP25_StateNOM(d); }                  catch (e) { console.warn('[p25]', e); }
+  try { _renderP26_FederalBudget(d); }             catch (e) { console.warn('[p26]', e); }
+  try { _renderP27_GovtDebtToGdp(d); }             catch (e) { console.warn('[p27]', e); }
   try { _renderP28_TopEconomies(d); }              catch (e) { console.warn('[p28]', e); }
+  try { _renderP29_MedianIncome(d); }              catch (e) { console.warn('[p29]', e); }
   try { _renderP30_HouseholdDebt(d); }             catch (e) { console.warn('[p30]', e); }
+  try { _renderP31_StateInterstateMigration(d); }  catch (e) { console.warn('[p31]', e); }
+  try { _renderP32_NaturalIncreaseVsNOM(d); }      catch (e) { console.warn('[p32]', e); }
 }
 
+/* ═════════════════════════════════════════════════════════════════
+   Edit-mode + Supabase sync — Slice 1 foundation
+   ═════════════════════════════════════════════════════════════════
+   Direct port of the regional online-reports.html edit/sync system.
+   Each region's state is one JSONB document in the `reports_state`
+   Supabase table, keyed by region slug. Buckets inside that document
+   hold each overlay type (texts/shapes/images/pageBgs/...). Boot does
+   a per-bucket merge (cache-wins-if-server-empty), then steady-state
+   edits write to localStorage immediately and schedule a debounced
+   server PUT.
+
+   Slice 1 (this block) ports the foundation: bucket layer, status
+   pill, audit-log data API, debounced save, server boot+merge, and
+   the View/Edit pill toggle. Slices 2-4 will layer on the actual
+   editors (custom-text, shapes, images, page-bg, TOC reorder, backup,
+   audit modal).
+
+   Region slug is 'national' — distinct from every regional online-
+   reports slug (sydney, melbourne, etc.) so the namespace is clean. */
+const ACTIVE_REGION = 'national';
+const RS_SAVE_DEBOUNCE_MS = 800;
+
+const RS_BUCKET_KEYS = {
+  texts:       (slug) => 'ppa-online-reports-custom-texts-v2-' + slug,
+  shapes:      (slug) => 'ppa-online-reports-shapes-v1-'       + slug,
+  images:      (slug) => 'ppa-online-reports-images-v1-'       + slug,
+  pageBgs:     (slug) => 'ppa-online-reports-page-bgs-v1-'     + slug,
+  pageOrder:   (slug) => 'ppa-online-reports-page-order-v1-'   + slug,
+  customPages: (slug) => 'ppa-online-reports-custom-pages-v1-' + slug,
+  pageLabels:  (slug) => 'ppa-online-reports-page-labels-v1-'  + slug,
+  bands:       (slug) => 'ppa-online-reports-bands-v1-'        + slug,
+  auditLog:    (slug) => 'ppa-online-reports-audit-log-v1-'    + slug,
+};
+const RS_BUCKET_DEFAULTS = {
+  texts: [], shapes: [], images: [],
+  pageBgs: {}, pageOrder: [], customPages: [], pageLabels: {}, bands: [],
+  auditLog: [],
+};
+
+function rsBundleFromCache(slug) {
+  const out = {};
+  for (const b of Object.keys(RS_BUCKET_KEYS)) {
+    try {
+      const raw = localStorage.getItem(RS_BUCKET_KEYS[b](slug));
+      out[b] = raw == null ? RS_BUCKET_DEFAULTS[b] : JSON.parse(raw);
+    } catch { out[b] = RS_BUCKET_DEFAULTS[b]; }
+  }
+  return out;
+}
+function rsApplyToCache(slug, state) {
+  for (const b of Object.keys(RS_BUCKET_KEYS)) {
+    if (state[b] !== undefined) {
+      try { localStorage.setItem(RS_BUCKET_KEYS[b](slug), JSON.stringify(state[b])); }
+      catch (_) { /* quota — backup feature surfaces this in Slice 4 */ }
+    }
+  }
+}
+
+/* ─── Audit log (data API only — modal UI lands in Slice 4) ───
+   Append-only, throttled to one entry per (user, action) per 2 minutes
+   so the auto-save loop doesn't flood. Force=true bypasses throttling
+   for explicit user events (sync, import, etc.). Cap at 100 rolling
+   entries — older ones drop off the front. */
+function _rsReadAuditLog(slug) {
+  try {
+    const raw = localStorage.getItem(RS_BUCKET_KEYS.auditLog(slug));
+    return raw == null ? [] : (JSON.parse(raw) || []);
+  } catch { return []; }
+}
+function _rsWriteAuditLog(slug, log) {
+  try { localStorage.setItem(RS_BUCKET_KEYS.auditLog(slug), JSON.stringify(log)); }
+  catch (_) { /* quota — silent fail, audit isn't user-critical */ }
+}
+function rsAppendAudit(action, details, force) {
+  const slug = ACTIVE_REGION;
+  if (!slug) return;
+  const user  = (typeof getCurrentUserDisplay === 'function') ? getCurrentUserDisplay() : 'Unknown';
+  const email = (typeof getCurrentUserEmail   === 'function') ? getCurrentUserEmail()   : '';
+  const log = _rsReadAuditLog(slug);
+  const now = new Date();
+  if (!force && log.length) {
+    const last = log[log.length - 1];
+    if (last.email === email && last.action === action) {
+      const elapsed = now.getTime() - new Date(last.ts).getTime();
+      if (elapsed < 2 * 60 * 1000) {
+        last.ts = now.toISOString();
+        _rsWriteAuditLog(slug, log);
+        return;
+      }
+    }
+  }
+  log.push({ user, email, action, details: details || null, ts: now.toISOString() });
+  if (log.length > 100) log.splice(0, log.length - 100);
+  _rsWriteAuditLog(slug, log);
+}
+
+/* ─── Status pill ─── */
+function rsSetStatus(state) {
+  const pill = document.getElementById('rs-status');
+  if (!pill) return;
+  const labels = {
+    loading: 'Loading…', pending: 'Editing…', saving: 'Saving…',
+    saved: 'Saved', error: 'Offline — saved locally', idle: '',
+  };
+  const txt = labels[state] || '';
+  pill.dataset.state = state;
+  pill.textContent = txt;
+  pill.style.display = txt ? '' : 'none';
+}
+
+/* ─── Supabase load ─── */
+async function rsLoadFromServer(slug) {
+  try {
+    if (!window.sb) throw new Error('Supabase client not loaded');
+    const { data, error } = await window.sb
+      .from('reports_state')
+      .select('payload')
+      .eq('region', slug)
+      .maybeSingle();
+    if (error) throw error;
+    return data && data.payload ? data.payload : {};
+  } catch (e) {
+    console.warn('[national-report] Server load failed (using cache):', e && e.message || e);
+    return null;
+  }
+}
+
+/* ─── Debounced server save ─── */
+let _rsSaveTimer = null;
+let _rsSaveInFlight = false;
+let _rsSavePending = false;
+/* Set during rsBoot's cache-overwrite phase so the reload pipeline
+   doesn't trigger an echo-save when Slice 2+ render callbacks fire. */
+let _rsSuppressSave = false;
+
+function rsScheduleSave() {
+  if (_rsSuppressSave) return;
+  if (_rsSaveInFlight) { _rsSavePending = true; return; }
+  if (_rsSaveTimer) clearTimeout(_rsSaveTimer);
+  rsSetStatus('pending');
+  _rsSaveTimer = setTimeout(rsDoSave, RS_SAVE_DEBOUNCE_MS);
+}
+
+async function rsDoSave() {
+  _rsSaveTimer = null;
+  if (_rsSaveInFlight) return;
+  _rsSaveInFlight = true;
+  rsSetStatus('saving');
+  try {
+    const slug = ACTIVE_REGION;
+    rsAppendAudit('Saved');
+    const state = rsBundleFromCache(slug);
+    if (!window.sb) throw new Error('Supabase client not loaded');
+    const { error } = await window.sb
+      .from('reports_state')
+      .upsert({ region: slug, payload: state }, { onConflict: 'region' });
+    if (error) throw error;
+    rsSetStatus('saved');
+  } catch (e) {
+    console.warn('[national-report] Server save failed (cached locally):', e && e.message || e);
+    rsSetStatus('error');
+  } finally {
+    _rsSaveInFlight = false;
+    if (_rsSavePending) { _rsSavePending = false; rsScheduleSave(); }
+  }
+}
+
+/* ─── Boot: per-bucket cache/server merge ───
+   Strategy mirrors the regionals exactly: cache wins per bucket when
+   server is empty for that bucket; otherwise server wins. Post-import
+   flag forces local-wins across every bucket so a fresh restore isn't
+   clobbered. Reload only if a cache bucket changed. */
+async function rsBoot() {
+  /* View-only tiers (client/guest) skip sync entirely — they can't
+     edit, and RLS would reject their writes anyway. */
+  if (typeof isViewOnly === 'function' && isViewOnly()) {
+    rsSetStatus('idle');
+    return;
+  }
+  rsSetStatus('loading');
+  const slug = ACTIVE_REGION;
+  const remote = await rsLoadFromServer(slug);
+  if (!remote || typeof remote !== 'object') {
+    rsSetStatus('error');
+    return;
+  }
+
+  const cached = rsBundleFromCache(slug);
+  const buckets = Object.keys(RS_BUCKET_KEYS);
+  const isEmpty = (v) =>
+    v == null
+    || (Array.isArray(v) && v.length === 0)
+    || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+
+  const importFlag = 'ppa-online-reports-import-pending-' + slug;
+  let isPostImport = false;
+  try { isPostImport = localStorage.getItem(importFlag) === '1'; } catch (_) {}
+  if (isPostImport) {
+    try { localStorage.removeItem(importFlag); } catch (_) {}
+  }
+
+  const merged = {};
+  let cacheNeedsUpdate  = false;
+  let serverNeedsUpdate = false;
+
+  for (const b of buckets) {
+    const c = cached[b] ?? RS_BUCKET_DEFAULTS[b];
+    const r = remote[b] ?? RS_BUCKET_DEFAULTS[b];
+
+    if (isPostImport) {
+      merged[b] = c;
+      if (JSON.stringify(c) !== JSON.stringify(r)) serverNeedsUpdate = true;
+    } else if (!isEmpty(c) && isEmpty(r)) {
+      merged[b] = c;
+      serverNeedsUpdate = true;
+    } else {
+      merged[b] = r;
+      if (JSON.stringify(c) !== JSON.stringify(r)) cacheNeedsUpdate = true;
+    }
+  }
+
+  if (cacheNeedsUpdate || serverNeedsUpdate) {
+    rsApplyToCache(slug, merged);
+  }
+  if (serverNeedsUpdate) {
+    rsSetStatus('saving');
+    await rsDoSave();
+  }
+  if (cacheNeedsUpdate) {
+    /* Reload so Slice 2+ renderers re-paint from the updated cache.
+       With Slice 1 only there's nothing yet to repaint — left in
+       place so behaviour stays identical when later slices land. */
+    setTimeout(() => location.reload(), 60);
+    return;
+  }
+  rsSetStatus('saved');
+}
+
+/* setupModeToggle() also lives in shared/report-edit.js — it
+   needs to clear text/shape/image selections on switch-back-to-View,
+   which the shared module owns. */
+
 document.addEventListener('DOMContentLoaded', () => {
-  buildSideToc();
-  setupScrollSpy();
+  /* Order:
+       1. Initialise the edit system (rebuilds page DOM from saved
+          order/labels, builds TOC, mounts custom-text overlays, wires
+          mode toggle / format panel / undo / grid)
+       2. Fetch the data feed and render charts
+       3. Apply tier visibility (auth.js sets body.tier-N)
+       4. Pull server state and merge per-bucket */
+  initReportEdit();
   liveBoot();
+  if (typeof applyAccessRestrictions === 'function') applyAccessRestrictions();
+  rsBoot();
 });
 </script>
+
+<!-- Shared edit-mode module — defines initReportEdit(), buildSideToc(),
+     setupModeToggle(), ctAddNew(), and the whole custom-text + page
+     CRUD + undo/redo machinery. Loaded AFTER the inline script so it
+     can see ACTIVE_REGION + the rs* sync helpers as globals. -->
+<script src="../shared/report-edit.js"></script>
 </body>
 </html>

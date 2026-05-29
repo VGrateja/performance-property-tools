@@ -261,6 +261,23 @@ async function renderRegion(browser, slug, lite, session) {
         '#or-back-to-hub', '#or-cluster-btn', '#or-theme-toggle',
         '#pdf-overlay', '.bands-modal-bg',
         '.concierge-btn', '.concierge-panel',
+        /* New chrome on tools/national-report.html and
+           tools/commercial-report.html. IDs are pp-* (rather than the
+           or-* prefix used on the regional tool), and there's a new
+           bottom-center .pp-pager toolbar that hosts the edit-mode
+           controls. All of these need DOM-removing to keep them out
+           of the cached PDFs. */
+        '#pp-back-to-hub', '#pp-back-to-cluster', '#pp-theme-toggle',
+        '#pp-download-pill', '#pp-download-menu', '#pp-export-overlay',
+        '.pp-pager', '#ct-panel',
+        /* Slice 3 — shape picker, shape panel, page-bg popover,
+           apply-to-pages modal, image right-click menu. None of these
+           are visible at boot but the regional file's belt-and-braces
+           pattern is to physically remove them anyway. */
+        '#sh-picker', '#sh-panel', '#bg-popover', '#bg-apply-modal-bg',
+        '#or-ctx-menu',
+        /* Slice 4 — backup, sync, audit modals. */
+        '#backup-modal-bg', '#sync-modal-bg', '#audit-modal-bg',
       ];
       CHROME_SELECTORS.forEach(sel => {
         document.querySelectorAll(sel).forEach(el => el.remove());
@@ -281,7 +298,13 @@ async function renderRegion(browser, slug, lite, session) {
         .pager, .ct-panel, .side-toc, .mobile-control-bar,
         #or-back-to-hub, #or-cluster-btn, #or-theme-toggle,
         #pdf-overlay, .bands-modal-bg,
-        .concierge-btn, .concierge-panel { display: none !important; }
+        .concierge-btn, .concierge-panel,
+        #pp-back-to-hub, #pp-back-to-cluster, #pp-theme-toggle,
+        #pp-download-pill, #pp-download-menu, #pp-export-overlay,
+        .pp-pager, #ct-panel,
+        #sh-picker, #sh-panel, #bg-popover, #bg-apply-modal-bg,
+        #or-ctx-menu,
+        #backup-modal-bg, #sync-modal-bg, #audit-modal-bg { display: none !important; }
 
         /* Each report page becomes one PDF page. */
         section.page {
