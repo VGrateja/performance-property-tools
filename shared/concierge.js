@@ -56,7 +56,9 @@
 
   const SYSTEM_PROMPT = `You are the Performance Property internal concierge. Help staff navigate the hub. Be concise (1-2 sentences + an action). When a user wants to go somewhere, CALL THE APPROPRIATE FUNCTION rather than just describing the path.
 
-The hub has 4 swipeable pages: analytics (default — Property Clock, Runway v Demand, Online Reports, Documents, Presentations, Results), pm (Cadence), arena (Typing Test, Chess, Scrabble), vault (Runway Workbook, Demand Score, Lite Reports).
+The hub has 4 swipeable pages: analytics (default — Property Clock, Runway v Demand, Online Reports, Documents, Presentations, Results, Research Reports), pm (Cadence), arena (Typing Test, Chess, Scrabble), vault (Runway Workbook, Demand Score, Lite Reports).
+
+Research Reports cluster (sits alongside the 35 Online Reports under the same picker): National Market Overview (national-report) and Commercial Market Overview (commercial-report). Different shape from the regional Online Reports — they cover Australia-wide macro indicators (cash rate, inflation, retail turnover, lending, yields, etc.) rather than a single market. Use openTool with 'national-report' or 'commercial-report' when the user asks for them.
 
 35 Online Reports markets, grouped: Capitals (Adelaide, Brisbane, Canberra, Darwin, Hobart, Melbourne, Perth, Sydney); QLD (Bundaberg, Cairns, Gladstone, Gold Coast, Ipswich, Mackay, Rockhampton, Sunshine Coast, Toowoomba, Townsville); NSW (Albury, Central Coast, Coffs Harbour, Dubbo, Newcastle, Orange, Port Macquarie, Tamworth, Wagga Wagga, Wollongong); Other (Ballarat, Bendigo, Geelong, Mildura, Wodonga, Bunbury, Rockingham, Launceston). Mandurah uses the Rockingham report.
 
@@ -94,8 +96,8 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
         tool: { type: 'string', enum: [
           'property-clock','runway-demand','demand-score','documents','presentations',
           'presentation-builder','online-reports','cadence','arena','typing','chess',
-          'scrabble','runway-workbook'
-        ], description: "Short ID. 'documents'=Whitepapers & Strategies; 'presentations'=Library; 'presentation-builder'=editor; 'arena'=landing page; 'typing'/'chess'/'scrabble'=games." },
+          'scrabble','runway-workbook','national-report','commercial-report'
+        ], description: "Short ID. 'documents'=Whitepapers & Strategies; 'presentations'=Library; 'presentation-builder'=editor; 'arena'=landing page; 'typing'/'chess'/'scrabble'=games; 'national-report'=National Market Overview research report; 'commercial-report'=Commercial Market Overview research report." },
       }, required: ['tool'] }
     }},
     { type: 'function', function: {
@@ -197,6 +199,8 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
     'chess':                '/tools/arena-chess.html',
     'scrabble':             '/tools/arena-scrabble.html',
     'runway-workbook':      '/tools/runway-workbook.html',
+    'national-report':      '/tools/national-report.html',
+    'commercial-report':    '/tools/commercial-report.html',
   };
 
   const REPORT_REGIONS = new Set([
@@ -222,10 +226,12 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
     { match: /scrabble/i, tool: 'scrabble', note: "Scrabble — online two-player with lobbies." },
     { match: /game|arcade|play|fun/i, tool: 'arena', note: "Performance Property Arena has Typing Test, Chess, and Scrabble." },
     { match: /scenario|workbook|model/i, tool: 'runway-workbook', note: "Runway Workbook (Vault) — scenario modelling for runway + wage assumptions." },
+    { match: /national (market|overview|report)|australia[- ]wide|macro|cash rate|inflation/i, tool: 'national-report', note: "National Market Overview — Australia-wide macro report (cash rate, inflation, lending, yields, etc.)." },
+    { match: /commercial (market|overview|report|property)|industrial|medical|retail (yield|turnover)|office market/i, tool: 'commercial-report', note: "Commercial Market Overview — Australia-wide commercial / industrial / medical / retail report." },
   ];
 
   const TOOL_LIST = {
-    analytics: ['National Property Clock','Runway v Demand Score','Online Reports (35 regions)','Documents — Whitepapers & Strategies','Presentations — Library + Builder'],
+    analytics: ['National Property Clock','Runway v Demand Score','Online Reports (35 regions)','Research Reports — National + Commercial Market Overview','Documents — Whitepapers & Strategies','Presentations — Library + Builder'],
     pm:        ['Cadence — workflow tracker'],
     arena:     ['Typing Test','Chess (ladder)','Scrabble (online)'],
     vault:     ['Runway Workbook','Demand Score Dashboard','Lite Online Reports'],
