@@ -684,6 +684,17 @@
 const REPORT_SLUG = 'national';
 const REPORT_TITLE = 'National Market Overview';
 
+/* Apps Script Web App URL for the National report's data feed.
+   Paste the /exec URL here after deploying
+   scripts/apps-script-national-report.js as a Web App. The script
+   reads the AUSTRALIA tab of the source spreadsheet and returns
+   { _meta, data: { columnKey: [values] } }. Leave empty during
+   phase-1 testing — the page still loads with stubbed charts. */
+const REPORT_DATA_URL = 'https://script.google.com/macros/s/AKfycbxTYz5pzmKvpHLwYLLjJo68prVjQWNYA5WXc-iR8QQZiho-kez-M_i0Ci1vXLGSxnmsGQ/exec';
+
+/* Holds the fetched payload for chart code in phase 3. */
+let REPORT_DATA = null;
+
 /* ── Export mode detection ───────────────────────────────────── */
 const PP_EXPORT_MODE = (function () {
   try { return new URLSearchParams(location.search).get('exportMode') === '1'; }
@@ -795,13 +806,37 @@ async function downloadReportPdf() {
 }
 
 /* ── Boot ─────────────────────────────────────────────────────── */
+/* liveBoot — fetches the Apps Script feed (if configured), caches
+   the payload in REPORT_DATA so phase-3 chart code can read it, then
+   signals PPA_LIVE_BOOT_DONE so Puppeteer's pre-render loop knows
+   the page is captureable. If the URL isn't set or the fetch fails,
+   we still signal so export mode doesn't hang forever — pages just
+   render with stub placeholders. */
+async function liveBoot() {
+  if (!REPORT_DATA_URL) {
+    console.info('[national-report] REPORT_DATA_URL is empty — skipping data fetch (stubbed mode).');
+    window.PPA_LIVE_BOOT_DONE = true;
+    return;
+  }
+  try {
+    const res = await fetch(REPORT_DATA_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    REPORT_DATA = await res.json();
+    console.info('[national-report] data feed loaded', REPORT_DATA && REPORT_DATA._meta);
+    /* Phase 3 — hand the payload to chart renderers here. */
+    if (typeof renderAllCharts === 'function') renderAllCharts(REPORT_DATA);
+  } catch (err) {
+    console.warn('[national-report] data feed failed:', err);
+  } finally {
+    /* Always set — never block Puppeteer waiting on a failed fetch. */
+    window.PPA_LIVE_BOOT_DONE = true;
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   buildSideToc();
   setupScrollSpy();
-  /* Multi-region exporter compatibility — the parent's iframe loop
-     waits for this flag before snapshotting. Same contract as the
-     residential tool. */
-  setTimeout(() => { window.PPA_LIVE_BOOT_DONE = true; }, 200);
+  liveBoot();
 });
 </script>
 </body>
