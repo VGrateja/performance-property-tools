@@ -2782,10 +2782,23 @@ function setupTocToggle() {
   });
 }
 
-/* ─── Scroll spy — highlights the TOC row matching the most-visible page. */
+/* ─── Scroll spy — highlights the TOC row matching the most-visible
+   page AND updates the pager's "N / M" indicator. The pager indicator
+   uses ctVisiblePageId() (which already picks the page with the most
+   on-screen height) so the number lines up with what the user is
+   actually looking at, not just whichever section is intersecting. */
 function setupScrollSpy() {
   const sections = Array.from(document.querySelectorAll('section.page'));
   if (!sections.length) return;
+  const indicator = document.getElementById('page-indicator');
+  const updateIndicator = () => {
+    if (!indicator) return;
+    const meta = pageMetaList();
+    if (!meta.length) return;
+    const visible = ctVisiblePageId();
+    const idx = Math.max(0, meta.findIndex(m => m.id === visible));
+    indicator.textContent = (idx + 1) + ' / ' + meta.length;
+  };
   const io = new IntersectionObserver((entries) => {
     entries.forEach(e => {
       if (e.isIntersecting) {
@@ -2793,8 +2806,363 @@ function setupScrollSpy() {
         items.forEach(it => it.classList.toggle('active', it.dataset.target === e.target.id));
       }
     });
+    updateIndicator();
   }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
   sections.forEach(s => io.observe(s));
+  /* Initial paint so the indicator reads "1 / N" on first load
+     instead of staying blank until the first scroll event. */
+  updateIndicator();
+  window.addEventListener('scroll', updateIndicator, { passive: true });
+  window.addEventListener('resize', updateIndicator, { passive: true });
+}
+
+/* ─── Region picker. Lists every report tool the hub exposes —
+   the two research reports first, then the 35 regional reports
+   grouped by cluster. Selecting a different entry navigates to
+   that tool's URL (fade-out then redirect). */
+function setupRegionSelect() {
+  const sel = document.getElementById('region-select');
+  if (!sel) return;
+  const slug = _rs_active();
+  sel.innerHTML = '';
+  /* Research group. */
+  const researchGroup = document.createElement('optgroup');
+  researchGroup.label = 'Research Reports';
+  for (const [s, info] of Object.entries(RESEARCH_REGIONS)) {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = info.name;
+    if (s === slug) opt.selected = true;
+    researchGroup.appendChild(opt);
+  }
+  sel.appendChild(researchGroup);
+  /* Regional groups, cluster-by-cluster. */
+  for (const cluster of REGIONAL_CLUSTER_ORDER) {
+    const group = document.createElement('optgroup');
+    group.label = REGIONAL_CLUSTER_LABELS[cluster];
+    const entries = Object.entries(REGIONAL_REGIONS)
+      .filter(([_, info]) => info.cluster === cluster)
+      .sort((a, b) => a[1].name.localeCompare(b[1].name));
+    for (const [s, info] of entries) {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = info.name + ' · ' + info.state;
+      if (s === slug) opt.selected = true;
+      group.appendChild(opt);
+    }
+    sel.appendChild(group);
+  }
+  sel.addEventListener('change', () => {
+    const value = sel.value;
+    if (!value || value === slug) return;
+    const target = (RESEARCH_REGIONS[value] && { url: '/tools/' + RESEARCH_REGIONS[value].url })
+                || (REGIONAL_REGIONS[value]  && { url: '/tools/online-reports.html?region=' + value });
+    if (!target) return;
+    document.body.style.transition = 'opacity .2s ease';
+    document.body.style.opacity = '0';
+    setTimeout(() => { location.href = target.url; }, 200);
+  });
+}
+
+/* ═════════════════════════════════════════════════════════════════
+   Download Report modal — pages + regions picker
+   ─────────────────────────────────────────────────────────────────
+   Mirrors the regional Online Reports' Download Report modal so all
+   three tools share the same UX. The current region is pre-checked
+   in the regions column; the other research region can also be
+   ticked to download both reports in one batch.
+
+   Cancellation is wired through window.__pp_exportCancelled — the
+   inline download functions poll this flag at each page-capture
+   boundary and bail out cleanly when it's set. The Cancel button on
+   the export overlay calls cancelCurrentExport() which both sets
+   the flag and hides the overlay so the user knows the cancel
+   registered (the running loop unwinds within ~1s).
+   ═════════════════════════════════════════════════════════════════ */
+window.__pp_exportCancelled = false;
+window.__pp_exportInProgress = false;
+
+/* Public cancel entry point — the Cancel button on the export
+   overlay (in each HTML file) calls this. Sets the flag; the running
+   capture loop checks it at each iteration and exits before the
+   next render. */
+function cancelCurrentExport() {
+  if (!window.__pp_exportInProgress) return;
+  window.__pp_exportCancelled = true;
+  /* Visible feedback so the user sees the click registered — the
+     overlay message updates immediately while the loop unwinds. */
+  if (typeof _updateExportMsg === 'function') {
+    _updateExportMsg('Cancelling…');
+  }
+}
+window.cancelCurrentExport = cancelCurrentExport;
+
+function openPdfPagesModal() {
+  if (typeof isViewOnly === 'function' && isViewOnly()) {
+    alert('PDF / JPEG download is not available for viewer accounts.');
+    return;
+  }
+  const bg          = document.getElementById('pdf-pages-modal-bg');
+  const pageList    = document.getElementById('pdf-pages-list');
+  const regionList  = document.getElementById('pdf-regions-list');
+  const allPagesCb  = document.getElementById('pdf-pages-all');
+  const allRegionsCb= document.getElementById('pdf-regions-all');
+  if (!bg || !pageList || !regionList) return;
+
+  /* PAGES — built from the current report's meta (post-restore so
+     user-renamed labels show up). Every row defaults checked. */
+  const meta = pageMetaList();
+  pageList.innerHTML = meta.map((m, i) => {
+    const safe = String(m.label).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+    return ''
+      + '<label class="pp-pages-row">'
+      +   '<input type="checkbox" data-page-id="' + m.id + '" checked />'
+      +   '<span class="num">' + (i + 1) + '</span>'
+      +   '<span class="lbl">' + safe + '</span>'
+      + '</label>';
+  }).join('');
+
+  /* REGIONS — pre-check the active region; other research regions
+     are listed but unchecked by default. */
+  const slug = _rs_active();
+  regionList.innerHTML = Object.entries(RESEARCH_REGIONS).map(([s, info]) => {
+    const checked = s === slug ? ' checked' : '';
+    const safeName = String(info.name).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+    return ''
+      + '<label class="pp-pages-row">'
+      +   '<input type="checkbox" data-slug="' + s + '"' + checked + ' />'
+      +   '<span class="lbl">' + safeName + '</span>'
+      + '</label>';
+  }).join('');
+
+  if (allPagesCb) allPagesCb.checked = true;
+  if (allRegionsCb) {
+    const allChecked = Array.from(regionList.querySelectorAll('input[type="checkbox"]')).every(c => c.checked);
+    allRegionsCb.checked = allChecked;
+  }
+
+  /* Per-row change handlers — keep masters in sync + recompute summary. */
+  pageList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const allRows = pageList.querySelectorAll('input[type="checkbox"]');
+      const allChecked = Array.from(allRows).every(c => c.checked);
+      if (allPagesCb) allPagesCb.checked = allChecked;
+      updatePdfPagesConfirmState();
+    });
+  });
+  regionList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const allRows = regionList.querySelectorAll('input[type="checkbox"]');
+      const allChecked = Array.from(allRows).every(c => c.checked);
+      if (allRegionsCb) allRegionsCb.checked = allChecked;
+      updatePdfPagesConfirmState();
+    });
+  });
+
+  updatePdfPagesConfirmState();
+  bg.classList.add('open');
+  bg.setAttribute('aria-hidden', 'false');
+}
+window.openPdfPagesModal = openPdfPagesModal;
+
+function closePdfPagesModal() {
+  const bg = document.getElementById('pdf-pages-modal-bg');
+  if (!bg) return;
+  bg.classList.remove('open');
+  bg.setAttribute('aria-hidden', 'true');
+}
+
+function updatePdfPagesConfirmState() {
+  const confirm = document.getElementById('pdf-pages-confirm');
+  const jpeg    = document.getElementById('pdf-pages-jpeg');
+  const summary = document.getElementById('pdf-pages-summary');
+  const pageRows   = document.querySelectorAll('#pdf-pages-list input[type="checkbox"]');
+  const regionRows = document.querySelectorAll('#pdf-regions-list input[type="checkbox"]');
+  const pCount = document.querySelectorAll('#pdf-pages-list input[type="checkbox"]:checked').length;
+  const rCount = document.querySelectorAll('#pdf-regions-list input[type="checkbox"]:checked').length;
+  const allPages = pageRows.length && pCount === pageRows.length;
+  const allRegions = regionRows.length && rCount === regionRows.length;
+  const anyMissing = !pCount || !rCount;
+  if (confirm) {
+    confirm.disabled = anyMissing;
+    confirm.textContent = anyMissing
+      ? 'Pick pages + regions'
+      : (rCount > 1 ? ('Download ' + rCount + ' PDFs') : 'Download PDF');
+  }
+  if (jpeg) jpeg.disabled = anyMissing;
+  if (summary) {
+    if (anyMissing) {
+      summary.innerHTML = '<span class="pdf-pages-summary-warn">Pick at least one page and one region.</span>';
+    } else {
+      const pagesPart = allPages
+        ? '<strong>All pages</strong>'
+        : ('<strong>' + pCount + '</strong> page' + (pCount === 1 ? '' : 's'));
+      const regionsPart = allRegions
+        ? '<strong>All ' + rCount + ' regions</strong>'
+        : ('<strong>' + rCount + '</strong> region' + (rCount === 1 ? '' : 's'));
+      summary.innerHTML = pagesPart + ' &middot; ' + regionsPart;
+    }
+  }
+}
+
+function setupPdfPagesModal() {
+  const bg = document.getElementById('pdf-pages-modal-bg');
+  if (!bg) return;
+  if (bg.dataset.wired === '1') return;
+  bg.dataset.wired = '1';
+
+  const closeX = document.getElementById('pdf-pages-close');
+  const cancel = document.getElementById('pdf-pages-cancel');
+  if (closeX) closeX.addEventListener('click', closePdfPagesModal);
+  if (cancel) cancel.addEventListener('click', closePdfPagesModal);
+  bg.addEventListener('click', (e) => { if (e.target === bg) closePdfPagesModal(); });
+
+  const allPagesCb  = document.getElementById('pdf-pages-all');
+  const allRegionsCb= document.getElementById('pdf-regions-all');
+  if (allPagesCb) allPagesCb.addEventListener('change', () => {
+    document.querySelectorAll('#pdf-pages-list input[type="checkbox"]').forEach(cb => {
+      cb.checked = allPagesCb.checked;
+    });
+    updatePdfPagesConfirmState();
+  });
+  if (allRegionsCb) allRegionsCb.addEventListener('change', () => {
+    document.querySelectorAll('#pdf-regions-list input[type="checkbox"]').forEach(cb => {
+      cb.checked = allRegionsCb.checked;
+    });
+    updatePdfPagesConfirmState();
+  });
+
+  /* Confirm buttons delegate to host-HTML functions that know how to
+     capture the current report's pages. The host functions are
+     responsible for honouring the cancel flag inside their capture
+     loops. */
+  const pdfBtn  = document.getElementById('pdf-pages-confirm');
+  const jpegBtn = document.getElementById('pdf-pages-jpeg');
+  if (pdfBtn) pdfBtn.addEventListener('click', () => {
+    const sel = _readPdfPagesSelection();
+    if (!sel) return;
+    closePdfPagesModal();
+    /* Host-HTML downloadReport(...) implementation lives inline (see
+       _captureReportToPdf etc.); we pass the picked pages + regions
+       through so the host can route to prebuilt-cache / live render /
+       multi-region as appropriate. */
+    if (typeof window.runReportDownload === 'function') {
+      window.runReportDownload({ kind: 'pdf',  pageIds: sel.pageIds, regions: sel.regions, allPages: sel.allPages });
+    }
+  });
+  if (jpegBtn) jpegBtn.addEventListener('click', () => {
+    const sel = _readPdfPagesSelection();
+    if (!sel) return;
+    closePdfPagesModal();
+    if (typeof window.runReportDownload === 'function') {
+      window.runReportDownload({ kind: 'jpeg', pageIds: sel.pageIds, regions: sel.regions, allPages: sel.allPages });
+    }
+  });
+
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape' && bg.classList.contains('open')) closePdfPagesModal();
+  });
+}
+
+function _readPdfPagesSelection() {
+  const pageRows = document.querySelectorAll('#pdf-pages-list input[type="checkbox"]');
+  const pageChecked = document.querySelectorAll('#pdf-pages-list input[type="checkbox"]:checked');
+  const wantAllPages = pageRows.length > 0 && pageChecked.length === pageRows.length;
+  const pageIds = Array.from(pageChecked).map(cb => cb.dataset.pageId).filter(Boolean);
+  const regions = Array.from(
+    document.querySelectorAll('#pdf-regions-list input[type="checkbox"]:checked')
+  ).map(cb => cb.dataset.slug);
+  if (!pageIds.length || !regions.length) return null;
+  return { pageIds, regions, allPages: wantAllPages };
+}
+
+/* ─── Bands button — chart reference-band UI is a future extension
+   for the research reports (the regional Online Reports tool has
+   per-region growth/correction period bands rendered behind several
+   charts). For now this opens a placeholder alert so the visual
+   parity with the regional pager is maintained without committing
+   to the per-chart markArea integration. */
+function setupBandsStub() {
+  const btn = document.getElementById('btn-bands');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    alert(
+      'Reference Bands are a regional-tool feature — they paint growth '
+      + 'and correction periods behind specific time-series charts.\n\n'
+      + 'They are not yet wired for the National + Commercial research '
+      + 'reports; the storage bucket is in place so future support can '
+      + 'land without a data migration.'
+    );
+  });
+}
+
+/* ─── Refresh button (↻) — re-fetches the Apps Script data feed +
+   re-paints every chart. Spins while the fetch is in flight. The
+   host HTML's inline `liveBoot()` is the work; we just call it. */
+function setupRefreshButton() {
+  const btn = document.getElementById('reportsRefreshBtn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.classList.add('is-spinning');
+    try {
+      if (typeof liveBoot === 'function') {
+        await liveBoot();
+      }
+    } catch (e) {
+      console.warn('[report] refresh failed:', e && e.message || e);
+    } finally {
+      /* Brief delay so the spin animation is visible even on cache
+         hits that return near-instantly. */
+      setTimeout(() => {
+        btn.classList.remove('is-spinning');
+        btn.disabled = false;
+      }, 300);
+    }
+  });
+}
+
+/* ─── Cached-PDF status pill. Lists the Supabase Storage bucket for
+   the current month's pre-rendered PDF and shows either:
+     - "Cached <D Mon YYYY>"  (file present — Download is instant)
+     - "Live render"          (no cached file — Download renders live)
+   Silent on failure (e.g. user signed out, network offline) so the
+   pill just collapses via .prebuilt-status:empty. */
+async function ppRefreshPrebuiltIndicator() {
+  const el = document.getElementById('prebuilt-status');
+  if (!el) return;
+  const slug = _rs_active();
+  const bucket = (typeof PREBUILT_BUCKET !== 'undefined' && PREBUILT_BUCKET) ? PREBUILT_BUCKET : 'online-reports';
+  el.textContent = '';
+  el.classList.remove('cached', 'live');
+  if (!window.sb || !window.sb.storage) return;
+  const monthKey = (() => {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  })();
+  const filename = slug + '.pdf';
+  try {
+    const { data, error } = await window.sb.storage
+      .from(bucket)
+      .list(monthKey, { limit: 100, search: filename });
+    if (error || !Array.isArray(data)) { el.textContent = ''; return; }
+    const hit = data.find(f => f.name === filename);
+    if (hit) {
+      const ts = hit.updated_at || hit.created_at;
+      const d  = ts ? new Date(ts) : new Date();
+      const label = d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+      el.textContent = 'Cached ' + label;
+      el.title = 'Pre-built PDF cached on ' + label + ' — Download will fetch this version instantly.';
+      el.classList.add('cached');
+    } else {
+      el.textContent = 'Live render';
+      el.title = 'No cached PDF for this report this month — Download will render live (~30s).';
+      el.classList.add('live');
+    }
+  } catch (_) {
+    el.textContent = '';
+  }
 }
 
 /* ═════════════ TOC drag-and-drop reorder ═════════════ */
@@ -3021,6 +3389,61 @@ function setupGridToggle() {
   });
 }
 
+/* ═════════════════════════════════════════════════════════════════
+   Auto-zoom — shrink body.zoom to fit narrow viewports
+   ─────────────────────────────────────────────────────────────────
+   The regional Online Reports tool runs this so the 1200-wide pages
+   never overflow a sub-1600 viewport. Without it, a 14"/15" laptop
+   shows the page at 100% and the user has to side-scroll. With it,
+   body.zoom scales the whole report (chrome + pages) so 1200px of
+   content fits in viewport_width / 1600 of the screen.
+
+   Skipped entirely in export mode (Puppeteer iframe runs at 1200px
+   and we want the capture at native size, not a zoom-shrunk version).
+   ═════════════════════════════════════════════════════════════════ */
+const PP_AUTOZOOM_REQUIRED = 1600;
+let _pp_autoZoomRaf = 0;
+
+function applyAutoZoom() {
+  if (typeof PP_EXPORT_MODE !== 'undefined' && PP_EXPORT_MODE) {
+    document.body.style.zoom = '1';
+    return;
+  }
+  if (document.body.classList.contains('export-mode')) {
+    document.body.style.zoom = '1';
+    return;
+  }
+  const vw = window.innerWidth;
+  const zoom = vw < PP_AUTOZOOM_REQUIRED ? Math.max(0.55, vw / PP_AUTOZOOM_REQUIRED) : 1;
+  document.body.style.zoom = String(zoom);
+}
+
+function setupAutoZoom() {
+  applyAutoZoom();
+  window.addEventListener('resize', () => {
+    if (_pp_autoZoomRaf) return;
+    _pp_autoZoomRaf = requestAnimationFrame(() => {
+      _pp_autoZoomRaf = 0;
+      applyAutoZoom();
+    });
+  });
+}
+
+/* ─── Pager-tools collapse/expand. Hides every tool button (View/Edit,
+   edit-only tools, Download, Sync, Backup, Audit, status) behind the
+   chevron at the far right of the pager. Same pattern as the regional
+   pager-tools-toggle. Toggle preference NOT persisted — re-entering
+   the tool always lands on the expanded state so the user sees what's
+   available. */
+function setupPagerToolsToggle() {
+  const btn = document.getElementById('pp-pager-toggle');
+  const pager = document.getElementById('pp-pager');
+  if (!btn || !pager) return;
+  btn.addEventListener('click', () => {
+    pager.classList.toggle('tools-collapsed');
+  });
+}
+
 function setupAddPageButton() {
   const btn = document.getElementById('btn-add-page');
   if (!btn) return;
@@ -3043,6 +3466,71 @@ const RESEARCH_REGIONS = {
   national:   { name: 'National Market Overview',   url: 'national-report.html' },
   commercial: { name: 'Commercial Market Overview', url: 'commercial-report.html' },
 };
+
+/* All regional Online Reports regions. Mirror of REGION_MANIFEST in
+   tools/online-reports.html — kept here so the research-report Sync
+   and Backup modals can target every regional report and so the
+   pager region-select can jump straight into any tool. The URL is
+   relative to /tools/ (sibling of national-report.html). */
+const REGIONAL_REGIONS = {
+  sydney:           { name: 'Sydney',          state: 'NSW', cluster: 'capital' },
+  melbourne:        { name: 'Melbourne',       state: 'VIC', cluster: 'capital' },
+  brisbane:         { name: 'Brisbane',        state: 'QLD', cluster: 'capital' },
+  adelaide:         { name: 'Adelaide',        state: 'SA',  cluster: 'capital' },
+  perth:            { name: 'Perth',           state: 'WA',  cluster: 'capital' },
+  hobart:           { name: 'Hobart',          state: 'TAS', cluster: 'capital' },
+  canberra:         { name: 'Canberra',        state: 'ACT', cluster: 'capital' },
+  darwin:           { name: 'Darwin',          state: 'NT',  cluster: 'capital' },
+  bundaberg:        { name: 'Bundaberg',       state: 'QLD', cluster: 'qld' },
+  cairns:           { name: 'Cairns',          state: 'QLD', cluster: 'qld' },
+  gladstone:        { name: 'Gladstone',       state: 'QLD', cluster: 'qld' },
+  'gold-coast':     { name: 'Gold Coast',      state: 'QLD', cluster: 'qld' },
+  ipswich:          { name: 'Ipswich',         state: 'QLD', cluster: 'qld' },
+  mackay:           { name: 'Mackay',          state: 'QLD', cluster: 'qld' },
+  rockhampton:      { name: 'Rockhampton',     state: 'QLD', cluster: 'qld' },
+  'sunshine-coast': { name: 'Sunshine Coast',  state: 'QLD', cluster: 'qld' },
+  toowoomba:        { name: 'Toowoomba',       state: 'QLD', cluster: 'qld' },
+  townsville:       { name: 'Townsville',      state: 'QLD', cluster: 'qld' },
+  albury:           { name: 'Albury',          state: 'NSW', cluster: 'nsw' },
+  'central-coast':  { name: 'Central Coast',   state: 'NSW', cluster: 'nsw' },
+  'coffs-harbour':  { name: 'Coffs Harbour',   state: 'NSW', cluster: 'nsw' },
+  dubbo:            { name: 'Dubbo',           state: 'NSW', cluster: 'nsw' },
+  newcastle:        { name: 'Newcastle',       state: 'NSW', cluster: 'nsw' },
+  orange:           { name: 'Orange',          state: 'NSW', cluster: 'nsw' },
+  'port-macquarie': { name: 'Port Macquarie',  state: 'NSW', cluster: 'nsw' },
+  tamworth:         { name: 'Tamworth',        state: 'NSW', cluster: 'nsw' },
+  'wagga-wagga':    { name: 'Wagga Wagga',     state: 'NSW', cluster: 'nsw' },
+  wollongong:       { name: 'Wollongong',      state: 'NSW', cluster: 'nsw' },
+  ballarat:         { name: 'Ballarat',        state: 'VIC', cluster: 'vicwatas' },
+  bendigo:          { name: 'Bendigo',         state: 'VIC', cluster: 'vicwatas' },
+  geelong:          { name: 'Geelong',         state: 'VIC', cluster: 'vicwatas' },
+  mildura:          { name: 'Mildura',         state: 'VIC', cluster: 'vicwatas' },
+  wodonga:          { name: 'Wodonga',         state: 'VIC', cluster: 'vicwatas' },
+  bunbury:          { name: 'Bunbury',         state: 'WA',  cluster: 'vicwatas' },
+  rockingham:       { name: 'Rockingham',      state: 'WA',  cluster: 'vicwatas' },
+  launceston:       { name: 'Launceston',      state: 'TAS', cluster: 'vicwatas' },
+};
+const REGIONAL_CLUSTER_ORDER  = ['capital', 'qld', 'nsw', 'vicwatas'];
+const REGIONAL_CLUSTER_LABELS = {
+  capital:  'Capital Cities',
+  qld:      'QLD Regions',
+  nsw:      'NSW Regions',
+  vicwatas: 'VIC / WA / TAS Regions',
+};
+/* Combined registry — every report tool, used by sync / backup /
+   region-select / audit modals to enumerate cross-tool targets.
+   Slugs are unique across both research and regional reports so the
+   reports_state table's region column stays a clean primary key. */
+function allReportRegions() {
+  const out = {};
+  for (const [s, info] of Object.entries(RESEARCH_REGIONS)) {
+    out[s] = Object.assign({}, info, { kind: 'research', url: '/tools/' + info.url });
+  }
+  for (const [s, info] of Object.entries(REGIONAL_REGIONS)) {
+    out[s] = Object.assign({}, info, { kind: 'regional', url: '/tools/online-reports.html?region=' + s });
+  }
+  return out;
+}
 
 /* Bucket → key generator. Matches RS_BUCKET_KEYS from Slice 1 but
    exposed under a separate name here so the sync/backup code reads
@@ -3339,19 +3827,45 @@ async function backupApplyImport(json) {
 
 function backupRefreshRegionPicker() {
   const slug = _rs_active();
-  const all = Object.keys(RESEARCH_REGIONS);
+  const all = allReportRegions();
+  const allSlugs = Object.keys(all);
   const currentNameEl = document.getElementById('backup-current-region-name');
-  if (currentNameEl) currentNameEl.textContent = RESEARCH_REGIONS[slug] ? '(' + RESEARCH_REGIONS[slug].name + ')' : '';
+  if (currentNameEl) currentNameEl.textContent = all[slug] ? '(' + all[slug].name + ')' : '';
   const allCountEl = document.getElementById('backup-all-count');
-  if (allCountEl) allCountEl.textContent = '(' + all.length + ')';
+  if (allCountEl) allCountEl.textContent = '(' + allSlugs.length + ')';
   const pickList = document.getElementById('backup-pick-list');
   if (pickList) {
     pickList.innerHTML = '';
-    for (const s of all) {
-      const m = RESEARCH_REGIONS[s];
-      const lbl = document.createElement('label');
-      lbl.innerHTML = '<input type="checkbox" data-slug="' + s + '"' + (s === slug ? ' checked' : '') + '> ' + m.name;
-      pickList.appendChild(lbl);
+    /* Research first, regional groups after — same ordering as the
+       sync picker so users see one consistent tool registry. */
+    const researchSlugs = Object.keys(RESEARCH_REGIONS);
+    if (researchSlugs.length) {
+      const h = document.createElement('div');
+      h.className = 'sync-cluster-header';
+      h.textContent = 'Research Reports';
+      pickList.appendChild(h);
+      for (const s of researchSlugs) {
+        const m = RESEARCH_REGIONS[s];
+        const lbl = document.createElement('label');
+        lbl.innerHTML = '<input type="checkbox" data-slug="' + s + '"' + (s === slug ? ' checked' : '') + '> ' + m.name;
+        pickList.appendChild(lbl);
+      }
+    }
+    for (const cluster of REGIONAL_CLUSTER_ORDER) {
+      const slugs = Object.keys(REGIONAL_REGIONS)
+        .filter(s => REGIONAL_REGIONS[s].cluster === cluster)
+        .sort((a, b) => REGIONAL_REGIONS[a].name.localeCompare(REGIONAL_REGIONS[b].name));
+      if (!slugs.length) continue;
+      const h = document.createElement('div');
+      h.className = 'sync-cluster-header';
+      h.textContent = REGIONAL_CLUSTER_LABELS[cluster];
+      pickList.appendChild(h);
+      for (const s of slugs) {
+        const m = REGIONAL_REGIONS[s];
+        const lbl = document.createElement('label');
+        lbl.innerHTML = '<input type="checkbox" data-slug="' + s + '"' + (s === slug ? ' checked' : '') + '> ' + m.name + ' <span class="sync-count">' + m.state + '</span>';
+        pickList.appendChild(lbl);
+      }
     }
   }
   const currentRadio = document.querySelector('input[name="backup-region-mode"][value="current"]');
@@ -3422,24 +3936,77 @@ function syncOpenModal() {
   const bg = document.getElementById('sync-modal-bg');
   if (!bg) return;
   const slug = _rs_active();
-  const m = RESEARCH_REGIONS[slug];
-  const src = document.getElementById('sync-source');
-  if (src) src.innerHTML = '<span class="label">From</span><strong>' + (m ? m.name : slug) + '</strong>';
+  const m = RESEARCH_REGIONS[slug] || REGIONAL_REGIONS[slug];
 
-  /* Target picker — every OTHER research region. With 2 regions
-     there's only one target, but the picker is still rendered as a
-     checkbox list so the UX matches when we eventually add a 3rd. */
+  /* From-Source card — "Region <name>" "Kind <Research / Regional>". */
+  const src = document.getElementById('sync-source');
+  if (src) {
+    const kind = RESEARCH_REGIONS[slug] ? 'Research' : 'Regional';
+    src.innerHTML = '<span class="label">Region</span><strong>' + (m ? m.name : slug) + '</strong>'
+      + '  <span class="label" style="margin-left:14px">Kind</span><strong>' + kind + '</strong>';
+  }
+
+  /* Radio-mode counts. */
+  const otherResearch = Object.keys(RESEARCH_REGIONS).filter(s => s !== slug);
+  const otherResearchEl = document.getElementById('sync-other-research-name');
+  if (otherResearchEl) {
+    if (otherResearch.length === 1) {
+      const tm = RESEARCH_REGIONS[otherResearch[0]];
+      otherResearchEl.textContent = tm.name;
+    } else if (otherResearch.length > 1) {
+      otherResearchEl.textContent = '(' + otherResearch.length + ')';
+    } else {
+      otherResearchEl.textContent = '(none)';
+    }
+  }
+  const regionalCountEl = document.getElementById('sync-regional-count');
+  if (regionalCountEl) regionalCountEl.textContent = '(' + Object.keys(REGIONAL_REGIONS).length + ')';
+  const allCountEl = document.getElementById('sync-all-count');
+  if (allCountEl) {
+    const allOthers = otherResearch.length + Object.keys(REGIONAL_REGIONS).length;
+    allCountEl.textContent = '(' + allOthers + ')';
+  }
+
+  /* Pick-grid — 2-column, with cluster headers. Populated once; hidden
+     by default and revealed when the "Pick specific regions…" radio
+     fires. Every entry is rendered (unchecked by default). */
   const pickList = document.getElementById('sync-pick-list');
   if (pickList) {
     pickList.innerHTML = '';
-    for (const targetSlug of Object.keys(RESEARCH_REGIONS)) {
-      if (targetSlug === slug) continue;
-      const tm = RESEARCH_REGIONS[targetSlug];
-      const lbl = document.createElement('label');
-      lbl.innerHTML = '<input type="checkbox" data-slug="' + targetSlug + '" checked> ' + tm.name;
-      pickList.appendChild(lbl);
+    if (otherResearch.length) {
+      const h = document.createElement('div');
+      h.className = 'sync-cluster-header';
+      h.textContent = 'Research Reports';
+      pickList.appendChild(h);
+      for (const targetSlug of otherResearch) {
+        const tm = RESEARCH_REGIONS[targetSlug];
+        const lbl = document.createElement('label');
+        lbl.innerHTML = '<input type="checkbox" data-slug="' + targetSlug + '"> ' + tm.name;
+        pickList.appendChild(lbl);
+      }
     }
+    for (const cluster of REGIONAL_CLUSTER_ORDER) {
+      const slugs = Object.keys(REGIONAL_REGIONS)
+        .filter(s => REGIONAL_REGIONS[s].cluster === cluster && s !== slug)
+        .sort((a, b) => REGIONAL_REGIONS[a].name.localeCompare(REGIONAL_REGIONS[b].name));
+      if (!slugs.length) continue;
+      const h = document.createElement('div');
+      h.className = 'sync-cluster-header';
+      h.textContent = REGIONAL_CLUSTER_LABELS[cluster];
+      pickList.appendChild(h);
+      for (const targetSlug of slugs) {
+        const tm = REGIONAL_REGIONS[targetSlug];
+        const lbl = document.createElement('label');
+        lbl.innerHTML = '<input type="checkbox" data-slug="' + targetSlug + '"> ' + tm.name + ' <span class="sync-count">' + tm.state + '</span>';
+        pickList.appendChild(lbl);
+      }
+    }
+    pickList.hidden = true;
   }
+  /* Reset radio + pick-list visibility every open. */
+  document.querySelectorAll('input[name="sync-target"]').forEach(r => {
+    r.checked = (r.value === 'research');
+  });
 
   /* Live bucket counts from the active region's localStorage. */
   ['texts','shapes','images','pageBgs','pageLabels','pageOrder','customPages'].forEach(b => {
@@ -3453,6 +4020,18 @@ function syncOpenModal() {
 }
 
 function syncCollectTargets() {
+  const slug = _rs_active();
+  const mode = (document.querySelector('input[name="sync-target"]:checked') || {}).value || 'research';
+  if (mode === 'research') {
+    return Object.keys(RESEARCH_REGIONS).filter(s => s !== slug);
+  }
+  if (mode === 'regional') {
+    return Object.keys(REGIONAL_REGIONS).filter(s => s !== slug);
+  }
+  if (mode === 'all') {
+    return Object.keys(RESEARCH_REGIONS).concat(Object.keys(REGIONAL_REGIONS)).filter(s => s !== slug);
+  }
+  /* pick mode */
   return Array.from(document.querySelectorAll('#sync-pick-list input[type="checkbox"]:checked'))
     .map(cb => cb.dataset.slug);
 }
@@ -3555,6 +4134,15 @@ function setupSyncModal() {
   bg.addEventListener('click', ev => { if (ev.target === bg) bg.classList.remove('open'); });
   const applyBtn = document.getElementById('sync-apply');
   if (applyBtn) applyBtn.addEventListener('click', syncApply);
+  /* Radio mode → toggle the pick-grid visibility. */
+  document.querySelectorAll('input[name="sync-target"]').forEach(r => {
+    r.addEventListener('change', () => {
+      const pickList = document.getElementById('sync-pick-list');
+      if (!pickList) return;
+      const mode = (document.querySelector('input[name="sync-target"]:checked') || {}).value;
+      pickList.hidden = (mode !== 'pick');
+    });
+  });
   document.addEventListener('keydown', ev => {
     if (ev.key === 'Escape' && bg.classList.contains('open')) bg.classList.remove('open');
   });
@@ -3607,12 +4195,17 @@ function _rsRenderAuditList(entries, opts) {
 }
 
 async function _rsFetchAllAuditLogs() {
-  const slugs = Object.keys(RESEARCH_REGIONS);
+  /* Fetch every research + regional tool's audit log so the
+     "All reports" view spans 37 regions. Per-region errors are
+     swallowed silently so one failing fetch doesn't break the
+     merged view. */
+  const all = allReportRegions();
+  const slugs = Object.keys(all);
   const results = await Promise.all(slugs.map(async (slug) => {
     try {
       const remote = await rsLoadFromServer(slug);
       const log = (remote && Array.isArray(remote.auditLog)) ? remote.auditLog : [];
-      const label = RESEARCH_REGIONS[slug].name;
+      const label = all[slug].name;
       return log.map(e => Object.assign({}, e, { regionSlug: slug, regionLabel: label }));
     } catch (_) {
       return [];
@@ -3728,6 +4321,15 @@ function initReportEdit() {
   setupModeToggle();
   setupGridToggle();
   setupAddPageButton();
+  setupPagerToolsToggle();
+  setupRegionSelect();
+  setupBandsStub();
+  setupRefreshButton();
+  setupAutoZoom();
+  /* Cached-PDF indicator runs asynchronously — the pill is empty
+     until the storage.list() round-trip completes, which keeps the
+     boot path snappy and the pill silent-on-failure. */
+  ppRefreshPrebuiltIndicator();
   _ctEntries  = ctLoad();
   _shEntries  = shLoad();
   _imgEntries = imgLoad();
@@ -3743,6 +4345,7 @@ function initReportEdit() {
   setupBackupModal();
   setupSyncModal();
   setupAuditModal();
+  setupPdfPagesModal();
 }
 
 /* Expose entry point + commonly-called functions on window so the

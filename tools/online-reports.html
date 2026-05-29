@@ -11289,9 +11289,30 @@ function populateRegionSelect() {
     if (slug === ACTIVE_REGION) opt.selected = true;
     sel.appendChild(opt);
   });
+  /* Research Reports — added so the user can jump straight from any
+     regional report into the National or Commercial Market Overview
+     without going back through the cluster picker. They live under
+     their own optgroup so the regional list stays the primary
+     navigation path. */
+  const researchGroup = document.createElement('optgroup');
+  researchGroup.label = 'Research Reports';
+  [['national',   'National Market Overview'],
+   ['commercial', 'Commercial Market Overview']].forEach(([s, label]) => {
+    const opt = document.createElement('option');
+    opt.value = '__research__' + s;
+    opt.textContent = label;
+    researchGroup.appendChild(opt);
+  });
+  sel.appendChild(researchGroup);
   sel.addEventListener('change', () => {
+    const value = sel.value;
+    if (value && value.indexOf('__research__') === 0) {
+      const target = value.slice('__research__'.length);
+      location.href = '/tools/' + target + '-report.html';
+      return;
+    }
     const url = new URL(location.href);
-    url.searchParams.set('region', sel.value);
+    url.searchParams.set('region', value);
     location.href = url.toString();
   });
 
@@ -14251,7 +14272,10 @@ function backupGetSelectedRegions() {
   const slug = ACTIVE_REGION;
   const mode = (document.querySelector('input[name="backup-region-mode"]:checked') || {}).value || 'current';
   if (mode === 'current') return [slug];
-  if (mode === 'all')     return Object.keys(REGION_MANIFEST);
+  /* "All" now spans BOTH the 35 regional regions and the two
+     research-report tools (National + Commercial) so a single
+     backup file can carry every Online Reports tool's state. */
+  if (mode === 'all')     return Object.keys(REGION_MANIFEST).concat(['national', 'commercial']);
   /* pick mode */
   return Array.from(document.querySelectorAll('#backup-pick-list input[type="checkbox"]:checked'))
     .map(cb => cb.dataset.slug);
@@ -14546,11 +14570,17 @@ function setupBackupModal() {
    handler so it always reflects the latest manifest + active region. */
 function backupRefreshRegionPicker() {
   const slug = ACTIVE_REGION;
-  const allSlugs = Object.keys(REGION_MANIFEST);
+  /* Research-report tools — added so a backup can span every Online
+     Reports tool the hub exposes, not just the 35 regional regions. */
+  const BACKUP_RESEARCH_REGIONS = {
+    national:   { name: 'National Market Overview' },
+    commercial: { name: 'Commercial Market Overview' },
+  };
+  const allSlugs = Object.keys(REGION_MANIFEST).concat(Object.keys(BACKUP_RESEARCH_REGIONS));
 
   const currentNameEl = document.getElementById('backup-current-region-name');
   if (currentNameEl) {
-    const m = REGION_MANIFEST[slug];
+    const m = REGION_MANIFEST[slug] || BACKUP_RESEARCH_REGIONS[slug];
     currentNameEl.textContent = m ? '(' + m.name + ')' : '';
   }
   const allCountEl = document.getElementById('backup-all-count');
@@ -14559,7 +14589,21 @@ function backupRefreshRegionPicker() {
   const pickList = document.getElementById('backup-pick-list');
   if (pickList) {
     pickList.innerHTML = '';
-    for (const s of allSlugs) {
+    /* Research Reports header + rows first. */
+    const researchHeader = document.createElement('div');
+    researchHeader.className = 'sync-cluster-header';
+    researchHeader.textContent = 'Research Reports';
+    researchHeader.style.cssText = 'font-size:9.5px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.5);background:rgba(255,255,255,.04);padding:6px 12px 4px;border-bottom:1px solid rgba(255,255,255,.06);margin-top:4px;border-radius:4px;';
+    pickList.appendChild(researchHeader);
+    for (const s of Object.keys(BACKUP_RESEARCH_REGIONS)) {
+      const m = BACKUP_RESEARCH_REGIONS[s];
+      const lbl = document.createElement('label');
+      lbl.innerHTML = '<input type="checkbox" data-slug="' + s + '"'
+        + (s === slug ? ' checked' : '') + '> ' + m.name;
+      pickList.appendChild(lbl);
+    }
+    /* Then the existing regional list. */
+    for (const s of Object.keys(REGION_MANIFEST)) {
       const m = REGION_MANIFEST[s];
       const lbl = document.createElement('label');
       lbl.innerHTML = '<input type="checkbox" data-slug="' + s + '"'
@@ -14568,9 +14612,7 @@ function backupRefreshRegionPicker() {
       pickList.appendChild(lbl);
     }
   }
-  /* Default the radio back to "current" every time the modal opens —
-     keeps single-region backups one-click without surprising the user
-     with a stale multi-region choice from earlier. */
+  /* Default the radio back to "current" every time the modal opens. */
   const currentRadio = document.querySelector('input[name="backup-region-mode"][value="current"]');
   if (currentRadio) currentRadio.checked = true;
   if (pickList) pickList.hidden = true;
@@ -14747,9 +14789,36 @@ function syncOpenModal() {
     stateSel.value = activeState;
   }
 
-  /* Pick-list (rendered once, hidden until "Pick specific regions…"). */
+  /* Pick-list (rendered once, hidden until "Pick specific regions…").
+     Now spans REGIONAL regions AND the two research-report tools
+     (National + Commercial) so the user can push customisations
+     cross-tool — e.g. apply Sydney's text overlays to the National
+     Market Overview, or any of the 35 regional reports. Research
+     entries get rendered first under their own header. */
   const pickList = document.getElementById('sync-pick-list');
   pickList.innerHTML = '';
+  /* Research-report targets — only meaningful when the source is a
+     regional region. (When sourced from National/Commercial those
+     are already in REGION_MANIFEST equivalents below; this block is
+     skipped if the source is itself a research region.) */
+  const SYNC_RESEARCH_REGIONS = {
+    national:   { name: 'National Market Overview',   state: '—' },
+    commercial: { name: 'Commercial Market Overview', state: '—' },
+  };
+  const researchTargets = Object.keys(SYNC_RESEARCH_REGIONS).filter(s => s !== slug);
+  if (researchTargets.length) {
+    const h = document.createElement('div');
+    h.className = 'sync-cluster-header';
+    h.textContent = 'Research Reports';
+    h.style.cssText = 'font-size:9.5px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.5);background:rgba(255,255,255,.04);padding:6px 12px 4px;border-bottom:1px solid rgba(255,255,255,.06);margin-top:4px;border-radius:4px;';
+    pickList.appendChild(h);
+    for (const targetSlug of researchTargets) {
+      const tm = SYNC_RESEARCH_REGIONS[targetSlug];
+      const lbl = document.createElement('label');
+      lbl.innerHTML = '<input type="checkbox" data-slug="' + targetSlug + '"> ' + tm.name;
+      pickList.appendChild(lbl);
+    }
+  }
   for (const targetSlug of allOthers) {
     const tm = REGION_MANIFEST[targetSlug];
     const lbl = document.createElement('label');
