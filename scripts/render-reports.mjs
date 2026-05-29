@@ -76,6 +76,30 @@ const REGION_SLUGS = [
   'rockingham', 'bunbury', 'launceston',
 ];
 
+/* Research-reports slugs — Australia-wide reports that live in
+   their own tool files (national-report.html / commercial-report.html)
+   rather than online-reports.html. They share the same Storage
+   bucket + month-key path scheme so the front-end download flow
+   doesn't need to know they're a different shape — it just asks
+   for `online-reports/<month>/national.pdf` or `.../commercial.pdf`.
+   Lite mode does not apply to these (no Tier-4 lite preview). */
+const RESEARCH_REPORT_SLUGS = ['national', 'commercial'];
+function isResearchReportSlug(slug) {
+  return RESEARCH_REPORT_SLUGS.indexOf(slug) >= 0;
+}
+function reportUrlForSlug(slug, lite) {
+  const liteSuffix = lite ? '&lite=1' : '';
+  if (isResearchReportSlug(slug)) {
+    /* Research reports live in their own tool files. They don't
+       take a region param — the tool file IS the report. */
+    return APP_URL.replace(/\/$/, '') +
+      '/tools/' + slug + '-report.html?exportMode=1' + liteSuffix;
+  }
+  return APP_URL.replace(/\/$/, '') +
+    '/tools/online-reports.html?region=' + encodeURIComponent(slug) +
+    '&exportMode=1' + liteSuffix;
+}
+
 const MONTH_KEY = (() => {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
@@ -189,9 +213,7 @@ async function renderRegion(browser, slug, lite, session) {
     await page.setViewport({ width: 1200, height: 900, deviceScaleFactor: 1.5 });
     await injectSession(page, session);
 
-    const url = APP_URL.replace(/\/$/, '') +
-      '/tools/online-reports.html?region=' + encodeURIComponent(slug) +
-      '&exportMode=1' + (lite ? '&lite=1' : '');
+    const url = reportUrlForSlug(slug, lite);
 
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 120000 });
 
@@ -468,7 +490,9 @@ async function main() {
     ],
   });
 
-  const total   = REGION_SLUGS.length * 2;
+  /* Total = (region slugs × 2 for lite/full) + (research slugs × 1).
+     Research reports are full-only — they don't have a lite preview. */
+  const total   = (REGION_SLUGS.length * 2) + RESEARCH_REPORT_SLUGS.length;
   let   done    = 0;
   let   ok      = 0;
   const failed  = [];
@@ -479,22 +503,31 @@ async function main() {
 
   console.log('Rendering ' + total + ' PDFs into ' + BUCKET + '/' + MONTH_KEY + '/…\n');
 
+  /* Build the iteration list — every (slug, lite) pair we need to
+     render. Research reports skip the lite=true iteration. */
+  const renderTargets = [];
+  for (const slug of REGION_SLUGS) {
+    renderTargets.push({ slug, lite: false });
+    renderTargets.push({ slug, lite: true  });
+  }
+  for (const slug of RESEARCH_REPORT_SLUGS) {
+    renderTargets.push({ slug, lite: false });
+  }
+
   try {
-    for (const slug of REGION_SLUGS) {
-      for (const lite of [false, true]) {
-        done++;
-        const label = '(' + done + '/' + total + ') ' + slug + (lite ? ' (lite)' : ' (full)');
-        const t0    = Date.now();
-        try {
-          const { buf, path } = await renderAndUploadWithRetry(browser, sb, slug, lite, session, label);
-          const dt = ((Date.now() - t0) / 1000).toFixed(1);
-          console.log(label + ' → ' + path + '  (' + dt + 's, ' + Math.round(buf.length / 1024) + ' KB)');
-          ok++;
-          if (!lite) successfulFullSlugs.push(slug);
-        } catch (err) {
-          console.error(label + ' FAILED after 2 attempts: ' + (err && err.message || err));
-          failed.push(slug + (lite ? ' (lite)' : ' (full)'));
-        }
+    for (const { slug, lite } of renderTargets) {
+      done++;
+      const label = '(' + done + '/' + total + ') ' + slug + (lite ? ' (lite)' : ' (full)');
+      const t0    = Date.now();
+      try {
+        const { buf, path } = await renderAndUploadWithRetry(browser, sb, slug, lite, session, label);
+        const dt = ((Date.now() - t0) / 1000).toFixed(1);
+        console.log(label + ' → ' + path + '  (' + dt + 's, ' + Math.round(buf.length / 1024) + ' KB)');
+        ok++;
+        if (!lite) successfulFullSlugs.push(slug);
+      } catch (err) {
+        console.error(label + ' FAILED after 2 attempts: ' + (err && err.message || err));
+        failed.push(slug + (lite ? ' (lite)' : ' (full)'));
       }
     }
 
