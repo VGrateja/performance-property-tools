@@ -862,6 +862,14 @@
       <img class="pp-logo-light" src="assets/Reports/logo-color-black.png" alt="Performance Property"/>
     </div>
     <div class="hub-nav-meta">
+      <!-- Hub-wide search (#9). Opens a command palette over tools +
+           every report region. Also opens on "/" or Ctrl/⌘-K. -->
+      <button class="hub-search-btn" id="hubSearchBtn" type="button"
+              title="Search tools & reports ( / )" aria-label="Search tools and reports">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <span class="hub-search-btn-label">Search</span>
+        <kbd class="hub-search-btn-kbd">/</kbd>
+      </button>
       <!-- Pending approvals pill — visible only to Tier 0/1 (admin),
            and only when the cache reports ≥1 pending user. JS in
            shared/auth.js or below toggles its visibility. -->
@@ -4433,6 +4441,263 @@ function navigateToTool(url, label) {
     <div class="htp-sub">Fetching live data</div>
   </div>
 </div>
+
+<!-- ══════════ HUB-WIDE SEARCH (#9) ══════════
+     Command palette over every tool + report region. Opens from the
+     topbar Search button, or "/" / Ctrl-⌘-K. Reuses REGION_CLUSTERS
+     (the region catalogue) and the existing navigate* handlers — no new
+     data source, no backend. -->
+<style>
+  .hub-search-btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: rgba(255,255,255,0.06); color: var(--muted, #9fb0c0);
+    border: 1px solid rgba(255,255,255,0.14); border-radius: 999px;
+    padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .hub-search-btn:hover { background: rgba(255,255,255,0.12); color: #fff; border-color: rgba(255,255,255,0.3); }
+  .hub-search-btn svg { width: 15px; height: 15px; }
+  .hub-search-btn-kbd {
+    font: inherit; font-size: 11px; line-height: 1; padding: 2px 6px;
+    border: 1px solid rgba(255,255,255,0.25); border-radius: 5px; opacity: .8;
+  }
+  [data-theme="light"] .hub-search-btn { background: rgba(0,0,0,0.04); color: #5b6b7a; border-color: rgba(0,0,0,0.14); }
+  [data-theme="light"] .hub-search-btn:hover { background: rgba(0,0,0,0.08); color: #0f172a; }
+  @media (max-width: 640px) { .hub-search-btn-label, .hub-search-btn-kbd { display: none; } }
+
+  .hub-cmd-bg {
+    position: fixed; inset: 0; z-index: 11000; display: none;
+    align-items: flex-start; justify-content: center;
+    /* Near-solid scrim, NO backdrop-filter. The hub itself is hidden while
+       the palette is open (see body.hub-cmd-open #mainPage below), so this
+       just needs to be a clean dark backdrop — no live blur (which would
+       re-blur the page every repaint and lag). */
+    background: rgba(8,13,20,0.94);
+    padding: 12vh 16px 16px;
+  }
+  .hub-cmd-bg.open { display: flex; }
+  .hub-cmd {
+    width: 560px; max-width: 96vw; max-height: 70vh; display: flex; flex-direction: column;
+    background: #0e1722; color: #e8eef5; border: 1px solid rgba(0,182,203,0.35);
+    border-radius: 14px; box-shadow: 0 24px 60px rgba(0,0,0,0.55); overflow: hidden;
+    font-family: 'Roboto', Arial, sans-serif;
+  }
+  [data-theme="light"] .hub-cmd { background: #fff; color: #0f172a; border-color: rgba(0,150,170,0.3); }
+  .hub-cmd-inputwrap { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  [data-theme="light"] .hub-cmd-inputwrap { border-bottom-color: rgba(0,0,0,0.08); }
+  .hub-cmd-inputwrap svg { width: 18px; height: 18px; color: #00b6cb; flex: 0 0 auto; }
+  .hub-cmd-inputwrap input { flex: 1; background: none; border: none; outline: none; color: inherit; font: inherit; font-size: 16px; }
+  .hub-cmd-inputwrap kbd { font-size: 11px; padding: 2px 6px; border: 1px solid rgba(255,255,255,0.22); border-radius: 5px; opacity: .7; }
+  [data-theme="light"] .hub-cmd-inputwrap kbd { border-color: rgba(0,0,0,0.18); }
+  /* `contain` keeps each keystroke's list rebuild from reflowing/repainting
+     anything outside the results box. */
+  .hub-cmd-results { overflow-y: auto; padding: 6px; contain: layout paint; }
+  /* Full-hide: while the palette is open, the hub does ZERO painting —
+     no cards, no animations, no compositing behind the scrim. The palette
+     lives outside #mainPage so it stays visible. This makes typing smooth
+     regardless of how heavy the hub or the machine is. (Animations also
+     paused as belt-and-braces so they don't compute while hidden.) */
+  body.hub-cmd-open #mainPage { visibility: hidden; }
+  body.hub-cmd-open #mainPage * { animation-play-state: paused !important; }
+  .hub-cmd-group { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: rgba(255,255,255,0.4); padding: 8px 10px 4px; }
+  [data-theme="light"] .hub-cmd-group { color: rgba(0,0,0,0.4); }
+  .hub-cmd-row {
+    width: 100%; display: flex; align-items: center; gap: 11px; text-align: left;
+    background: none; border: none; color: inherit; font: inherit; cursor: pointer;
+    padding: 9px 11px; border-radius: 8px;
+  }
+  .hub-cmd-row:hover, .hub-cmd-row.active { background: rgba(0,182,203,0.16); }
+  [data-theme="light"] .hub-cmd-row:hover, [data-theme="light"] .hub-cmd-row.active { background: rgba(0,182,203,0.14); }
+  .hub-cmd-ico { font-size: 17px; width: 22px; text-align: center; flex: 0 0 auto; }
+  .hub-cmd-main { flex: 1; min-width: 0; }
+  .hub-cmd-label { display: block; font-size: 14px; font-weight: 600; }
+  .hub-cmd-sub { display: block; font-size: 11.5px; color: rgba(255,255,255,0.5); }
+  [data-theme="light"] .hub-cmd-sub { color: rgba(0,0,0,0.5); }
+  .hub-cmd-type { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: rgba(255,255,255,0.4); border: 1px solid rgba(255,255,255,0.18); border-radius: 5px; padding: 2px 7px; flex: 0 0 auto; }
+  [data-theme="light"] .hub-cmd-type { color: rgba(0,0,0,0.45); border-color: rgba(0,0,0,0.16); }
+  .hub-cmd-empty { padding: 22px 14px; text-align: center; color: rgba(255,255,255,0.5); font-size: 13px; }
+  [data-theme="light"] .hub-cmd-empty { color: rgba(0,0,0,0.5); }
+</style>
+<div class="hub-cmd-bg" id="hubCmdBg" aria-hidden="true">
+  <div class="hub-cmd" role="dialog" aria-label="Search tools and reports">
+    <div class="hub-cmd-inputwrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="hubCmdInput" type="text" placeholder="Search tools and report regions…" autocomplete="off" spellcheck="false" aria-label="Search query" />
+      <kbd>esc</kbd>
+    </div>
+    <div class="hub-cmd-results" id="hubCmdResults"></div>
+  </div>
+</div>
+<script>
+(function hubSearch() {
+  /* Static tool index — mirrors the hub cards. Each `run` reuses the same
+     handler the card's onclick calls, so access gating + the loading
+     transition are unchanged. */
+  const TOOLS = [
+    { label: 'Online Reports',        kw: 'research regions capital regional residential', icon: '📊', run: () => openOnlineReports({ lite: false }) },
+    { label: 'Property Clock',         kw: 'cycle market timing phase', icon: '🕑', run: () => navigateToTool('tools/property-clock.html', 'Property Clock') },
+    { label: 'Runway v Demand',        kw: 'supply pipeline absorption', icon: '🛫', run: () => navigateToTool('tools/runway-demand.html', 'Runway v Demand') },
+    { label: 'Presentations',          kw: 'decks slides advisor client builder library', icon: '🖥️', run: () => openPresentations() },
+    { label: 'Documents',              kw: 'whitepapers strategies research links folders', icon: '📁', run: () => navigateToTool('tools/whitepapers-strategies.html', 'Documents') },
+    { label: 'Cadence',                kw: 'workflow board tasks pm requests', icon: '🗂️', run: () => navigateToCadence() },
+    { label: 'Arena',                  kw: 'games leaderboard results scores', icon: '🏆', run: () => navigateToResults() },
+    { label: 'Typing Test',            kw: 'arena game typing speed', icon: '⌨️', run: () => navigateToTool('tools/arena-typing.html', 'Typing Test') },
+    { label: 'Chess',                  kw: 'arena game chess multiplayer', icon: '♟️', run: () => navigateToTool('tools/arena-chess.html', 'Chess') },
+    { label: 'Scrabble',               kw: 'arena game scrabble words multiplayer', icon: '🔡', run: () => navigateToTool('tools/arena-scrabble.html', 'Scrabble') },
+    { label: 'Runway Workbook',        kw: 'scenario modelling vault', icon: '📒', run: () => navigateToTool('tools/runway-workbook.html', 'Runway Workbook') },
+    { label: 'Demand Score Dashboard', kw: 'demand score dashboard vault', icon: '📈', run: () => navigateToTool('tools/demand-score.html', 'Demand Score Dashboard') },
+  ];
+
+  /* Report regions — flattened from the REGION_CLUSTERS catalogue, routed
+     the same way showRegions() does (research entries carry their own url). */
+  function reportEntries() {
+    const out = [];
+    if (typeof REGION_CLUSTERS === 'undefined') return out;
+    Object.keys(REGION_CLUSTERS).forEach(ck => {
+      const c = REGION_CLUSTERS[ck];
+      (c.regions || []).forEach(r => {
+        const url = r.url
+          ? r.url
+          : ('tools/online-reports.html?cluster=' + encodeURIComponent(ck) + '&region=' + encodeURIComponent(r.slug));
+        out.push({
+          label: r.name, sub: (r.state ? r.state + ' · ' : '') + c.name,
+          kw: (r.name + ' ' + (r.state || '') + ' ' + c.name + ' report').toLowerCase(),
+          icon: r.icon || '📍', type: 'Report',
+          run: () => navigateToTool(url, r.name),
+        });
+      });
+    });
+    return out;
+  }
+
+  function buildIndex() {
+    const tools = TOOLS.map(t => ({ ...t, type: 'Tool', sub: t.sub || 'Tool', search: (t.label + ' ' + t.kw).toLowerCase() }));
+    const reports = reportEntries().map(r => ({ ...r, search: (r.label + ' ' + r.kw).toLowerCase() }));
+    return tools.concat(reports);
+  }
+
+  let INDEX = [];
+  let active = 0;
+  let shown = [];
+  const bg     = document.getElementById('hubCmdBg');
+  const input  = document.getElementById('hubCmdInput');
+  const results= document.getElementById('hubCmdResults');
+  if (!bg || !input || !results) return;
+
+  function score(item, q) {
+    const label = item.label.toLowerCase();
+    if (label === q) return 5;
+    if (label.startsWith(q)) return 4;
+    if (label.includes(q)) return 3;
+    if (item.search.includes(q)) return 2;
+    /* token match — every query word appears somewhere */
+    const toks = q.split(/\s+/).filter(Boolean);
+    if (toks.length && toks.every(t => item.search.includes(t))) return 1;
+    return 0;
+  }
+
+  function render(q) {
+    q = (q || '').trim().toLowerCase();
+    let items;
+    if (!q) {
+      items = INDEX.filter(i => i.type === 'Tool');   // empty query → show tools
+    } else {
+      items = INDEX
+        .map(i => ({ i, s: score(i, q) }))
+        .filter(x => x.s > 0)
+        .sort((a, b) => b.s - a.s || a.i.label.localeCompare(b.i.label))
+        .slice(0, 14)
+        .map(x => x.i);
+    }
+    shown = items;
+    active = 0;
+    if (!items.length) {
+      results.innerHTML = '<div class="hub-cmd-empty">No tools or reports match “' + q.replace(/[<>&]/g, '') + '”.</div>';
+      return;
+    }
+    let html = '';
+    let lastType = null;
+    items.forEach((it, n) => {
+      if (it.type !== lastType) { html += '<div class="hub-cmd-group">' + (it.type === 'Tool' ? 'Tools' : 'Reports') + '</div>'; lastType = it.type; }
+      const sub = it.sub ? '<span class="hub-cmd-sub">' + esc(it.sub) + '</span>' : '';
+      html += '<button class="hub-cmd-row' + (n === 0 ? ' active' : '') + '" data-i="' + n + '" type="button">'
+        + '<span class="hub-cmd-ico">' + (it.icon || '•') + '</span>'
+        + '<span class="hub-cmd-main"><span class="hub-cmd-label">' + esc(it.label) + '</span>' + sub + '</span>'
+        + '<span class="hub-cmd-type">' + it.type + '</span></button>';
+    });
+    results.innerHTML = html;
+  }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+  function setActive(n) {
+    const rows = results.querySelectorAll('.hub-cmd-row');
+    if (!rows.length) return;
+    active = (n + rows.length) % rows.length;
+    rows.forEach((r, i) => r.classList.toggle('active', i === active));
+    const el = rows[active];
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  }
+  function run(n) {
+    const it = shown[n];
+    if (!it) return;
+    close();
+    try { it.run(); } catch (e) { console.warn('hub-search nav failed', e); }
+  }
+
+  function open() {
+    INDEX = buildIndex();
+    bg.classList.add('open');
+    /* Freeze the hub's animations (celestial/CTA pulses) while the palette
+       is up — no point repainting them behind the dim, and it frees frame
+       budget for snappy typing. Resumed on close. */
+    document.body.classList.add('hub-cmd-open');
+    bg.setAttribute('aria-hidden', 'false');
+    input.value = '';
+    render('');
+    setTimeout(() => input.focus(), 0);
+  }
+  function close() {
+    bg.classList.remove('open');
+    document.body.classList.remove('hub-cmd-open');
+    bg.setAttribute('aria-hidden', 'true');
+  }
+  window.PPHubSearch = { open, close };
+
+  /* Coalesce keystrokes to one render per frame — fast typing won't stack
+     up repeated list rebuilds. */
+  let _renderRaf = 0;
+  input.addEventListener('input', () => {
+    if (_renderRaf) cancelAnimationFrame(_renderRaf);
+    _renderRaf = requestAnimationFrame(() => { _renderRaf = 0; render(input.value); });
+  });
+  input.addEventListener('keydown', ev => {
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); setActive(active + 1); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); setActive(active - 1); }
+    else if (ev.key === 'Enter') { ev.preventDefault(); run(active); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); close(); }
+  });
+  results.addEventListener('click', ev => {
+    const row = ev.target.closest('.hub-cmd-row');
+    if (row) run(parseInt(row.dataset.i, 10));
+  });
+  bg.addEventListener('click', ev => { if (ev.target === bg) close(); });
+
+  const btn = document.getElementById('hubSearchBtn');
+  if (btn) btn.addEventListener('click', open);
+
+  /* Global shortcuts: "/" or Ctrl/⌘-K, only when the hub is visible and the
+     user isn't typing into a field / contenteditable. */
+  document.addEventListener('keydown', ev => {
+    const hubVisible = (() => { const m = document.getElementById('mainPage'); return m && m.style.display !== 'none'; })();
+    if (!hubVisible) return;
+    if (bg.classList.contains('open')) return;   // palette handles its own keys
+    const ae = document.activeElement;
+    const typing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
+    if ((ev.key === 'k' || ev.key === 'K') && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); open(); return; }
+    if (ev.key === '/' && !typing) { ev.preventDefault(); open(); }
+  });
+})();
+</script>
 
 <!-- AI Concierge chat — the launcher button + slide-in panel + all
      logic live in shared/concierge.js (also loaded on every signed-in
