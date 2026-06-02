@@ -225,6 +225,19 @@ async function renderRegion(browser, slug, lite, session) {
       { timeout: 90000, polling: 200 }
     );
 
+    /* #7: image overlays now load via a signed-URL round-trip
+       (createSignedUrl → <img> fetch from the private report-images bucket),
+       which can finish after PPA_LIVE_BOOT_DONE. Wait until every overlay
+       <img> has actually decoded so it appears in the captured PDF.
+       Best-effort: a stuck/failed image times out rather than blocking the
+       render (a missing overlay is better than no PDF). Reports with no
+       image overlays pass this instantly (every() over an empty list). */
+    await page.waitForFunction(
+      () => Array.from(document.querySelectorAll('.image-overlay img'))
+        .every(im => im.complete && im.naturalWidth > 0),
+      { timeout: 20000, polling: 200 }
+    ).catch(() => {});
+
     /* Force fonts to load + settle. Without this, glyphs sometimes
        render with the fallback face on first paint. */
     await page.evaluate(() => document.fonts && document.fonts.ready);
@@ -279,6 +292,8 @@ async function renderRegion(browser, slug, lite, session) {
         /* Slice 4 — backup, sync, audit modals. */
         '#backup-modal-bg', '#sync-modal-bg', '#audit-modal-bg',
         '#pdf-pages-modal-bg', '#history-modal-bg',
+        /* #8 — AI commentary draft modal (injected by report-edit.js). */
+        '#pp-ai-modal-bg',
       ];
       CHROME_SELECTORS.forEach(sel => {
         document.querySelectorAll(sel).forEach(el => el.remove());
@@ -306,7 +321,7 @@ async function renderRegion(browser, slug, lite, session) {
         #sh-picker, #sh-panel, #bg-popover, #bg-apply-modal-bg,
         #or-ctx-menu,
         #backup-modal-bg, #sync-modal-bg, #audit-modal-bg,
-        #pdf-pages-modal-bg, #history-modal-bg { display: none !important; }
+        #pdf-pages-modal-bg, #history-modal-bg, #pp-ai-modal-bg { display: none !important; }
 
         /* Each report page becomes one PDF page. */
         section.page {

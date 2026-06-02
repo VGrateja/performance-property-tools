@@ -657,29 +657,95 @@ function _captureGroupDragItems() {
     if (!entry) return;
     items.push({
       kind: 'text', el, entry,
-      startX: entry.x || 0,
-      startY: entry.y || 0,
+      startX: parseFloat(el.style.left) || 0,
+      startY: parseFloat(el.style.top) || 0,
+    });
+  });
+  document.querySelectorAll('.shape.selected').forEach(el => {
+    const entry = _shEntries.find(e => e.id === el.dataset.id);
+    if (!entry) return;
+    items.push({
+      kind: 'shape', el, entry,
+      startX:  entry.x,  startY:  entry.y,
+      startX1: entry.x1, startY1: entry.y1,
+      startX2: entry.x2, startY2: entry.y2,
+    });
+  });
+  document.querySelectorAll('.image-overlay.selected').forEach(el => {
+    const entry = _imgEntries.find(e => e.id === el.dataset.id);
+    if (!entry) return;
+    items.push({
+      kind: 'image', el, entry,
+      startX: entry.x, startY: entry.y,
     });
   });
   return items;
 }
 
+/* Apply (dx, dy) to every captured drag item. Text overlays update only
+   inline left/top during the drag (entry.x/y commits on mouseup, matching
+   the single-item path). Shapes + images update entry geometry directly +
+   redraw so handles/bbox track each frame; lines/arrows also translate both
+   endpoints and re-derive the bbox. */
 function _applyGroupDragDelta(items, dx, dy) {
-  items.forEach(it => {
-    it.el.style.left = (it.startX + dx) + 'px';
-    it.el.style.top  = (it.startY + dy) + 'px';
+  items.forEach(item => {
+    if (item.kind === 'text') {
+      item.el.style.left = (item.startX + dx) + 'px';
+      item.el.style.top  = (item.startY + dy) + 'px';
+    } else if (item.kind === 'image') {
+      item.entry.x = Math.round(item.startX + dx);
+      item.entry.y = Math.round(item.startY + dy);
+      imgRedraw(item.el, item.entry);
+    } else {
+      item.entry.x = Math.round(item.startX + dx);
+      item.entry.y = Math.round(item.startY + dy);
+      if (item.entry.type === 'line' || item.entry.type === 'arrow') {
+        item.entry.x1 = Math.round(item.startX1 + dx);
+        item.entry.y1 = Math.round(item.startY1 + dy);
+        item.entry.x2 = Math.round(item.startX2 + dx);
+        item.entry.y2 = Math.round(item.startY2 + dy);
+        _shRecalcBbox(item.entry);
+      }
+      shRedraw(item.el, item.entry);
+    }
   });
 }
 
+/* Commit a finished group drag: reconcile text entries from their live
+   inline style, then write each storage bucket that changed and push exactly
+   ONE undo snapshot for the whole drag (naive ctSave + shSave would push
+   two history steps). */
 function _commitGroupDrag(items) {
-  /* Pull the final position back out of the live DOM (mid-drag
-     mousemove set element.style.left/top via _applyGroupDragDelta);
-     each entry's x/y catches up to where the user dropped it. */
-  items.forEach(it => {
-    it.entry.x = parseInt(it.el.style.left, 10);
-    it.entry.y = parseInt(it.el.style.top,  10);
+  let textChanged = false, shapeChanged = false, imageChanged = false;
+  items.forEach(item => {
+    if (item.kind === 'text') {
+      const x = parseFloat(item.el.style.left) || 0;
+      const y = parseFloat(item.el.style.top) || 0;
+      if (x !== item.startX || y !== item.startY) {
+        item.entry.x = x;
+        item.entry.y = y;
+        textChanged = true;
+      }
+    } else if (item.kind === 'image') {
+      if (item.entry.x !== item.startX || item.entry.y !== item.startY) imageChanged = true;
+    } else {
+      if (item.entry.x !== item.startX || item.entry.y !== item.startY) shapeChanged = true;
+    }
   });
-  ctSave(_ctEntries);
+  const n = (textChanged ? 1 : 0) + (shapeChanged ? 1 : 0) + (imageChanged ? 1 : 0);
+  if (n >= 2) {
+    if (textChanged)  localStorage.setItem(ctStorageKey(),  JSON.stringify(_ctEntries));
+    if (shapeChanged) localStorage.setItem(shStorageKey(),  JSON.stringify(_shEntries));
+    if (imageChanged) localStorage.setItem(imgStorageKey(), JSON.stringify(_imgEntries));
+    if (!_ctRestoring) ctPushHistory();
+    _rs_scheduleSave();
+  } else if (textChanged) {
+    ctSave(_ctEntries);
+  } else if (shapeChanged) {
+    shSave(_shEntries);
+  } else if (imageChanged) {
+    imgSave(_imgEntries);
+  }
 }
 
 /* ─── Per-word selection styling. Stashed selection survives the
@@ -760,7 +826,7 @@ function ctVisiblePageId() {
   return bestId;
 }
 
-function ctAddNew() {
+function ctAddNew(initialText) {
   const pageId = ctVisiblePageId();
   if (!pageId) return;
   const page = document.getElementById(pageId);
@@ -789,7 +855,7 @@ function ctAddNew() {
     pageId,
     x: Math.round(xOnPage),
     y: Math.round(yOnPage),
-    text: 'Double-click to edit. Tip: {year} auto-updates.',
+    text: (typeof initialText === 'string' && initialText) ? initialText : 'Double-click to edit. Tip: {year} auto-updates.',
     cls: onDarkPage ? 'light' : 'on-chart',
     fontSize: 12,
     fontFamily: 'Roboto',
@@ -2098,13 +2164,26 @@ function imgMakeEl(entry) {
   el.style.width  = entry.w + 'px';
   el.style.height = entry.h + 'px';
   el.innerHTML =
-    '<img src="' + _shEscapeAttr(entry.src) + '" alt="" draggable="false" />' +
+    '<img alt="" draggable="false" />' +
     '<div class="ig-handle nw" data-corner="nw"></div>' +
     '<div class="ig-handle ne" data-corner="ne"></div>' +
     '<div class="ig-handle sw" data-corner="sw"></div>' +
     '<div class="ig-handle se" data-corner="se"></div>';
   imgAttachHandlers(el, entry);
   page.appendChild(el);
+  /* Resolve the <img> source. A stored path → short-lived signed URL
+     (re-signed lazily on cache expiry); a legacy base64 src → inline as-is.
+     storagePath is async, so the element returns immediately and the src
+     lands a tick later (the PDF renderer waits for .image-overlay imgs to
+     finish loading before capture — see render-reports.mjs). */
+  const imgEl = el.querySelector('img');
+  if (imgEl) {
+    if (entry.storagePath) {
+      _imgGetSignedUrl(entry.storagePath).then(url => { if (url) imgEl.src = url; });
+    } else if (entry.src) {
+      imgEl.src = entry.src;
+    }
+  }
   return el;
 }
 
@@ -2211,6 +2290,85 @@ function imgAttachHandlers(el, entry) {
   });
 }
 
+/* ── Image overlay storage (#7, migration 033) ──────────────────────────────
+   Uploaded images live in the PRIVATE `report-images` bucket as
+   <regionSlug>/<overlayId>.<ext>; the entry carries `storagePath` instead of
+   a base64 data URL, so reports_state.payload + the localStorage cache + every
+   sync/backup stay tiny. Backward-compatible: legacy entries that still hold a
+   base64 `src` render directly (see imgMakeEl) and are left untouched. Mirrors
+   the presentation tool's proven path (migration 029). */
+const IMG_BUCKET                = 'report-images';
+const IMG_SIGNED_URL_TTL_SECONDS = 3600;             /* server-side expiry */
+const IMG_SIGNED_URL_REFRESH_MS  = 55 * 60 * 1000;   /* re-sign 5 min early */
+const _imgSignedUrlCache = new Map();                /* path -> { url, expiresAt } */
+
+async function _imgGetSignedUrl(path) {
+  if (!path) return null;
+  if (typeof window === 'undefined' || !window.sb || !window.sb.storage) return null;
+  const now = Date.now();
+  const cached = _imgSignedUrlCache.get(path);
+  if (cached && cached.expiresAt > now) return cached.url;
+  try {
+    const { data, error } = await window.sb.storage
+      .from(IMG_BUCKET)
+      .createSignedUrl(path, IMG_SIGNED_URL_TTL_SECONDS);
+    if (error || !data || !data.signedUrl) return null;
+    _imgSignedUrlCache.set(path, { url: data.signedUrl, expiresAt: now + IMG_SIGNED_URL_REFRESH_MS });
+    return data.signedUrl;
+  } catch (_) { return null; }
+}
+
+/* Resize + re-encode before upload so the bucket file isn't needlessly huge.
+   Caps the longest side at 1600px (report pages render smaller anyway) and
+   JPEGs non-transparent sources at q0.85. Keeps PNG if an alpha channel is
+   detected. Falls back to the original if compression isn't a win. The probe
+   Image is already decoded by the caller. */
+const IMG_COMPRESS_MAX_DIM      = 1600;
+const IMG_COMPRESS_JPEG_QUALITY = 0.85;
+const IMG_COMPRESS_SKIP_BYTES   = 200 * 1024;
+
+function _imgMaybeCompress(file, probeImg) {
+  try {
+    const srcW = probeImg.naturalWidth, srcH = probeImg.naturalHeight;
+    if (!srcW || !srcH) return Promise.resolve(file);
+    const maxSide = Math.max(srcW, srcH);
+    const scale = maxSide > IMG_COMPRESS_MAX_DIM ? IMG_COMPRESS_MAX_DIM / maxSide : 1;
+    if (scale === 1 && file.size < IMG_COMPRESS_SKIP_BYTES) return Promise.resolve(file);
+    const w = Math.round(srcW * scale), h = Math.round(srcH * scale);
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(probeImg, 0, 0, w, h);
+    let outType = 'image/jpeg', outQuality = IMG_COMPRESS_JPEG_QUALITY;
+    if (file.type === 'image/png') {
+      try {
+        const sample = ctx.getImageData(0, 0, Math.min(w, 64), Math.min(h, 64)).data;
+        for (let i = 3; i < sample.length; i += 4) {
+          if (sample[i] < 255) { outType = 'image/png'; outQuality = undefined; break; }
+        }
+      } catch (_) { /* cross-origin canvas — default JPEG is fine */ }
+    }
+    return new Promise(resolve => {
+      canvas.toBlob(blob => { resolve(!blob || blob.size >= file.size ? file : blob); }, outType, outQuality);
+    });
+  } catch (_) { return Promise.resolve(file); }
+}
+
+/* Upload to report-images/<slug>/<id>.<ext>; returns the path. upsert:true so
+   re-adding the same overlay id replaces cleanly. Throws on failure so the
+   caller can fall back to inlining a data URL. */
+async function _imgUploadToStorage(blob, slug, id) {
+  if (typeof window === 'undefined' || !window.sb || !window.sb.storage) throw new Error('Storage client not loaded');
+  if (!slug || !id) throw new Error('Missing region/overlay id for upload');
+  const mime = blob.type || 'image/png';
+  let ext = (mime.split('/')[1] || 'png').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (ext === 'jpeg') ext = 'jpg';
+  const path = slug + '/' + id + '.' + ext;
+  const { error } = await window.sb.storage.from(IMG_BUCKET).upload(path, blob, { upsert: true, contentType: mime });
+  if (error) throw error;
+  return path;
+}
+
 function imgAddFromFile(file) {
   if (!file) return;
   if (!/^image\//.test(file.type)) {
@@ -2221,7 +2379,7 @@ function imgAddFromFile(file) {
   reader.onload = (e) => {
     const dataUrl = e.target.result;
     const probe = new Image();
-    probe.onload = () => {
+    probe.onload = async () => {
       const pageId = ctVisiblePageId();
       if (!pageId) return;
       const page = document.getElementById(pageId);
@@ -2241,13 +2399,22 @@ function imgAddFromFile(file) {
       const yMid = (vt + vb) / 2;
       const yOnPage = yMid - pageRect.top - h / 2;
       const xOnPage = page.clientWidth / 2 - w / 2;
+      const id = 'ig-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       const entry = {
-        id: 'ig-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        pageId, src: dataUrl,
+        id, pageId,
         x: Math.max(8, Math.round(xOnPage)),
         y: Math.max(8, Math.round(yOnPage)),
         w, h,
       };
+      /* Upload the binary to Storage and keep only a path reference. On ANY
+         failure (offline, RLS, storage down) fall back to inlining the base64
+         data URL so the user never loses the image — it just stays heavy. */
+      try {
+        const blob = await _imgMaybeCompress(file, probe);
+        entry.storagePath = await _imgUploadToStorage(blob, _rs_active(), id);
+      } catch (_) {
+        entry.src = dataUrl;
+      }
       _imgEntries.push(entry);
       try { imgSave(_imgEntries); }
       catch (_) { _imgEntries.pop(); return; }
@@ -4724,6 +4891,185 @@ function setupHistoryModal() {
   });
 }
 
+/* ═════════════════════════════════════════════════════════════════
+   AI commentary drafting (#8)
+   ─────────────────────────────────────────────────────────────────
+   A "✨ Draft" button in the edit toolbar opens a modal: the user
+   describes the commentary they want, Groq (via the existing
+   ai-concierge proxy — no new backend, stays on the free tier) drafts
+   it with the active region as context, the user reviews/edits, then
+   inserts it as a custom-text overlay. The button + modal are injected
+   by this module so no per-tool HTML changes are needed. Writer-gated
+   in practice: the button is .edit-only (hidden outside edit mode,
+   which only writers can enter) and the insert writes via ctSave →
+   reports_state, which RLS gates on is_writer().
+   ═════════════════════════════════════════════════════════════════ */
+const AI_DRAFT_PROXY_URL = 'https://cannojsxduvlewimwoxa.supabase.co/functions/v1/ai-concierge';
+
+async function _aiDraftToken() {
+  try {
+    const { data } = await window.sb.auth.getSession();
+    return (data && data.session && data.session.access_token) || null;
+  } catch (_) { return null; }
+}
+
+/* Calls the Groq proxy for a commentary draft. Region context comes from
+   the shared registries (name/state only — no PII, no client data). The
+   system prompt forbids invented statistics so the model stays qualitative
+   unless the user supplies figures. Returns trimmed prose; throws on error. */
+async function _aiDraftCommentary(brief) {
+  if (typeof window === 'undefined' || !window.sb) throw new Error('Not signed in.');
+  const token = await _aiDraftToken();
+  if (!token) throw new Error('Not signed in.');
+  const slug = _rs_active();
+  const info = (RESEARCH_REGIONS && RESEARCH_REGIONS[slug]) || (REGIONAL_REGIONS && REGIONAL_REGIONS[slug]) || {};
+  const regionName = info.name || slug || 'this region';
+  const stateBit = info.state ? (', ' + info.state) : '';
+  const system =
+    'You are a property-market analyst writing concise commentary for a Performance Property research report. '
+    + 'Region: ' + regionName + stateBit + ' (Australia). '
+    + 'Write in professional, factual Australian English. Output ONLY the commentary prose — no preamble, '
+    + 'no markdown, no headings, no bullet symbols — ready to drop straight into a report text box. Be concise '
+    + 'unless the request asks for more. Do NOT invent specific statistics or figures; stay qualitative unless '
+    + 'the user supplies numbers in their request.';
+  const resp = await fetch(AI_DRAFT_PROXY_URL, {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'system', content: system }, { role: 'user', content: String(brief || '') }],
+      temperature: 0.4,
+      stream: false,
+    }),
+  });
+  if (!resp.ok) {
+    if (resp.status === 429) throw new Error('Rate-limited by Groq — wait ~60s and try again.');
+    let detail = '';
+    try { const j = await resp.json(); detail = (j && j.error && (j.error.message || j.error)) || ''; } catch (_) {}
+    throw new Error('AI request failed (' + resp.status + ')' + (detail ? ': ' + detail : ''));
+  }
+  const data = await resp.json();
+  const text = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+  if (!text || !String(text).trim()) throw new Error('The AI returned an empty response.');
+  return String(text).trim();
+}
+
+/* Plain prose → HTML for a custom-text overlay (entry.text is rendered as
+   HTML). Escape the specials, turn newlines into <br>. */
+function _aiDraftToHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\r\n?|\n/g, '<br>');
+}
+
+function setupAiDraft() {
+  const tools = document.getElementById('pp-pager-tools') || document.getElementById('pager-tools');
+  if (!tools) return;                              // no edit toolbar on this page
+  if (document.getElementById('btn-ai-draft')) return;  // idempotent
+
+  /* Toolbar button. `pp-edit-btn` styles it on the research reports; on the
+     regional tool the #pager-tools button selector styles it (extra class is
+     harmless). `.edit-only` hides it outside edit mode in both. */
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.id = 'btn-ai-draft';
+  btn.className = 'pp-edit-btn edit-only';
+  btn.title = 'Draft report commentary with AI';
+  btn.textContent = '✨ Draft';
+  tools.appendChild(btn);
+
+  /* Self-contained modal (styled in report-edit.css, loaded by all report
+     tools). Injected once into <body>. */
+  if (!document.getElementById('pp-ai-modal-bg')) {
+    const bg = document.createElement('div');
+    bg.className = 'pp-ai-modal-bg';
+    bg.id = 'pp-ai-modal-bg';
+    bg.setAttribute('aria-hidden', 'true');
+    bg.innerHTML =
+      '<div class="pp-ai-modal" role="dialog" aria-label="Draft commentary with AI">'
+      + '<button class="pp-ai-close" id="pp-ai-close" type="button" aria-label="Close">×</button>'
+      + '<h3 class="pp-ai-title">✨ Draft commentary</h3>'
+      + '<p class="pp-ai-sub">Describe the commentary you want. The active region (<strong id="pp-ai-region"></strong>) is sent as context. Review and edit before inserting — the model can be wrong, so check any claims.</p>'
+      + '<textarea id="pp-ai-brief" class="pp-ai-input" rows="3" placeholder="e.g. Two sentences on the rental market outlook and what’s driving it"></textarea>'
+      + '<div class="pp-ai-actions"><button class="pp-ai-btn primary" id="pp-ai-go" type="button">Draft</button></div>'
+      + '<div class="pp-ai-result" id="pp-ai-result" hidden>'
+      +   '<label class="pp-ai-label">Draft (editable)</label>'
+      +   '<textarea id="pp-ai-output" class="pp-ai-input" rows="7"></textarea>'
+      +   '<div class="pp-ai-actions">'
+      +     '<button class="pp-ai-btn ghost" id="pp-ai-regen" type="button">Re-draft</button>'
+      +     '<button class="pp-ai-btn primary" id="pp-ai-insert" type="button">Insert as text box</button>'
+      +   '</div>'
+      + '</div>'
+      + '<div class="pp-ai-status" id="pp-ai-status" hidden></div>'
+      + '</div>';
+    document.body.appendChild(bg);
+  }
+
+  const bg      = document.getElementById('pp-ai-modal-bg');
+  const briefEl = document.getElementById('pp-ai-brief');
+  const goBtn   = document.getElementById('pp-ai-go');
+  const resultEl= document.getElementById('pp-ai-result');
+  const outEl   = document.getElementById('pp-ai-output');
+  const statusEl= document.getElementById('pp-ai-status');
+
+  const setStatus = (msg, isErr) => {
+    if (!statusEl) return;
+    if (!msg) { statusEl.hidden = true; statusEl.textContent = ''; return; }
+    statusEl.hidden = false;
+    statusEl.textContent = msg;
+    statusEl.classList.toggle('error', !!isErr);
+  };
+  const open = () => {
+    const slug = _rs_active();
+    const info = (RESEARCH_REGIONS && RESEARCH_REGIONS[slug]) || (REGIONAL_REGIONS && REGIONAL_REGIONS[slug]) || {};
+    const regionEl = document.getElementById('pp-ai-region');
+    if (regionEl) regionEl.textContent = info.name || slug || 'current';
+    if (resultEl) resultEl.hidden = true;
+    if (outEl) outEl.value = '';
+    setStatus('');
+    bg.classList.add('open');
+    if (briefEl) briefEl.focus();
+  };
+  const close = () => { bg.classList.remove('open'); };
+
+  const run = async () => {
+    const brief = (briefEl && briefEl.value || '').trim();
+    if (!brief) { setStatus('Type what you’d like the commentary to cover.', true); return; }
+    goBtn.disabled = true;
+    if (document.getElementById('pp-ai-regen')) document.getElementById('pp-ai-regen').disabled = true;
+    setStatus('Drafting…');
+    try {
+      const text = await _aiDraftCommentary(brief);
+      if (outEl) outEl.value = text;
+      if (resultEl) resultEl.hidden = false;
+      setStatus('');
+    } catch (e) {
+      setStatus((e && e.message) || 'Could not draft commentary.', true);
+    } finally {
+      goBtn.disabled = false;
+      if (document.getElementById('pp-ai-regen')) document.getElementById('pp-ai-regen').disabled = false;
+    }
+  };
+
+  btn.addEventListener('click', open);
+  if (goBtn) goBtn.addEventListener('click', run);
+  const regenBtn = document.getElementById('pp-ai-regen');
+  if (regenBtn) regenBtn.addEventListener('click', run);
+  const closeBtn = document.getElementById('pp-ai-close');
+  if (closeBtn) closeBtn.addEventListener('click', close);
+  bg.addEventListener('click', ev => { if (ev.target === bg) close(); });
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape' && bg.classList.contains('open')) close();
+  });
+  const insertBtn = document.getElementById('pp-ai-insert');
+  if (insertBtn) insertBtn.addEventListener('click', () => {
+    const text = (outEl && outEl.value || '').trim();
+    if (!text) { setStatus('Nothing to insert yet.', true); return; }
+    close();
+    ctAddNew(_aiDraftToHtml(text));   // drops a custom-text overlay on the visible page
+  });
+}
+
 /* ═════════════ Entry point — host HTML calls this after DOMContentLoaded ═════════════ */
 function initReportEdit() {
   /* Opt-out config (the #5 consolidation seam). A host tool can set
@@ -4783,6 +5129,7 @@ function initReportEdit() {
   if (OPTS.audit  !== false) setupAuditModal();
   setupHistoryModal();
   if (OPTS.downloadModal !== false) setupPdfPagesModal();
+  if (OPTS.aiDraft !== false) setupAiDraft();
 }
 
 /* Expose entry point + commonly-called functions on window so the
