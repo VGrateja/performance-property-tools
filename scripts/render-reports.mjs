@@ -278,7 +278,7 @@ async function renderRegion(browser, slug, lite, session) {
         '#or-ctx-menu',
         /* Slice 4 — backup, sync, audit modals. */
         '#backup-modal-bg', '#sync-modal-bg', '#audit-modal-bg',
-        '#pdf-pages-modal-bg',
+        '#pdf-pages-modal-bg', '#history-modal-bg',
       ];
       CHROME_SELECTORS.forEach(sel => {
         document.querySelectorAll(sel).forEach(el => el.remove());
@@ -306,7 +306,7 @@ async function renderRegion(browser, slug, lite, session) {
         #sh-picker, #sh-panel, #bg-popover, #bg-apply-modal-bg,
         #or-ctx-menu,
         #backup-modal-bg, #sync-modal-bg, #audit-modal-bg,
-        #pdf-pages-modal-bg { display: none !important; }
+        #pdf-pages-modal-bg, #history-modal-bg { display: none !important; }
 
         /* Each report page becomes one PDF page. */
         section.page {

@@ -165,7 +165,23 @@ function setPageLabel(pageId, label) {
 /* ═════════════ Custom-text overlay system ═════════════ */
 function ctStorageKey() { return CT_STORAGE_KEY(_rs_active()); }
 
+/* Pre-region legacy custom-text bucket (no region suffix). Only ever
+   written by the old regional tool; migrated once into Sydney's v2
+   bucket. Harmless for the research reports — the key never exists
+   there, so the migration is a no-op. */
+const CT_LEGACY_KEY = 'ppa-online-reports-custom-texts-v1';
+
 function ctLoad() {
+  /* One-time migration: fold any legacy (un-suffixed) entries into the
+     Sydney bucket, then drop the legacy key. Sydney is hardcoded on
+     purpose — that's where the pre-region data belongs. */
+  try {
+    const legacy = localStorage.getItem(CT_LEGACY_KEY);
+    if (legacy && !localStorage.getItem(CT_STORAGE_KEY('sydney'))) {
+      localStorage.setItem(CT_STORAGE_KEY('sydney'), legacy);
+    }
+    if (legacy) localStorage.removeItem(CT_LEGACY_KEY);
+  } catch (_) { /* storage may be disabled — ignore */ }
   let entries;
   try { entries = JSON.parse(localStorage.getItem(ctStorageKey()) || '[]') || []; }
   catch (e) { entries = []; }
@@ -350,6 +366,17 @@ function ctEntryById(id) { return _ctEntries.find(e => e.id === id); }
    come from REGION_MANIFEST in the regional file). */
 function ctRender(t) {
   if (t == null) return '';
+  /* Pluggable token resolver. A host tool can set window.PPA_CT_TOKENS to
+     a function(str) => str that does its own substitution — e.g. the
+     regional Online Reports tool injects full REGION_MANIFEST-based
+     {STATE}/{PEER}/{KIND} resolution. When unset (national/commercial),
+     the built-in below runs unchanged. This is the seam that lets the
+     regional tool reuse this shared ctRender without losing its richer
+     token set during the #5 consolidation. */
+  if (typeof window !== 'undefined' && typeof window.PPA_CT_TOKENS === 'function') {
+    try { return window.PPA_CT_TOKENS(String(t)); }
+    catch (_) { /* fall through to the built-in on any resolver error */ }
+  }
   const slug = _rs_active();
   const regionName =
     (slug === 'national') ? 'National' :
@@ -662,21 +689,29 @@ function _commitGroupDrag(items) {
    the entry-level apply. */
 let _ctSavedSel = null;
 function _ctSaveSel() {
+  /* Null out on every fail path so a stale selection from a previous
+     edit can't leak into a different text box's per-word styling. */
   const editing = document.querySelector('.custom-text.editing');
-  if (!editing) return;
+  if (!editing) { _ctSavedSel = null; return; }
   const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0) return;
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { _ctSavedSel = null; return; }
   const range = sel.getRangeAt(0);
-  if (!editing.contains(range.commonAncestorContainer)) return;
+  if (!editing.contains(range.commonAncestorContainer)) { _ctSavedSel = null; return; }
   _ctSavedSel = { editing, range: range.cloneRange() };
 }
 function _ctClearSavedSel() { _ctSavedSel = null; }
 function _ctRestoreSel() {
   if (!_ctSavedSel) return false;
+  const { editing, range } = _ctSavedSel;
+  /* Guard against use-after-blur: the editing element may have been
+     removed, or had its 'editing' class cleared, since we saved. */
+  if (!document.body.contains(editing) || !editing.classList.contains('editing')) return false;
+  if (!editing.contains(range.commonAncestorContainer)) return false;
+  editing.focus();
   const sel = window.getSelection();
   if (!sel) return false;
   sel.removeAllRanges();
-  sel.addRange(_ctSavedSel.range);
+  sel.addRange(range);
   return true;
 }
 function _ctApplyToSelection(stylesObj) {
@@ -737,11 +772,17 @@ function ctAddNew() {
   const yOnPage = visibleMid - pageRect.top;
   const xOnPage = page.clientWidth / 2 - 60;
 
-  /* Cover and Contact pages have dark backgrounds; everything else
-     uses the light .rh-body chart panel. Pick the right text colour
-     class so the new overlay is readable immediately. */
-  const onDarkPage = (pageId === 'p1' || page.classList.contains('cover')
-    || page.id === (_rs_active() === 'commercial' ? 'p25' : 'p33'));
+  /* Dark-background pages need light text to stay readable. The set
+     differs per report: the regional reports use p1 (cover) + p2
+     (at-a-glance); the research reports use p1 (cover) + the contact
+     page (commercial p25 / national p33, also tagged .cover). Scope
+     the research-only IDs so a regional Perth p33 (a normal chart
+     page) isn't wrongly treated as dark. */
+  const _slug = _rs_active();
+  const onDarkPage = REGIONAL_REGIONS[_slug]
+    ? (pageId === 'p1' || pageId === 'p2')
+    : (pageId === 'p1' || page.classList.contains('cover')
+       || page.id === (_slug === 'commercial' ? 'p25' : 'p33'));
 
   const entry = {
     id: 'ct-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -841,10 +882,15 @@ function ctInit() {
     if (ev.target.closest('.custom-text')) return;
     if (ev.target.closest('.shape')) return;
     if (ev.target.closest('.image-overlay')) return;
-    if (ev.target.closest('.pp-pager')) return;
+    /* `.pager` is the regional tool's pager class; `.pp-pager` is the
+       research reports'. Match both so clicking the pager never
+       deselects an overlay mid-edit in either host. */
+    if (ev.target.closest('.pp-pager, .pager')) return;
     if (ev.target.closest('.ct-panel')) return;
     if (ev.target.closest('.sh-panel')) return;
     if (ev.target.closest('.side-toc')) return;
+    if (ev.target.closest('#sh-picker')) return;
+    if (ev.target.closest('#bg-popover')) return;
     ctDeselectAll();
     shDeselectAll();
     imgDeselectAll();
@@ -2272,6 +2318,7 @@ function setupImages() {
     _selUpdateMultiClass();
     orShowCtxMenu(ev.clientX, ev.clientY, [
       { label: 'Copy to all pages', action: () => _imgCopyToAll(id) },
+      { label: 'Copy to pages…',     action: () => _imgCopyToPages(entry) },
       { label: 'Delete',             action: () => imgDelete(id) },
     ]);
   });
@@ -2286,10 +2333,42 @@ function _imgCopyToAll(id) {
   const others = pageMetaList().filter(m => m.id !== entry.pageId);
   if (!others.length) return;
   others.forEach(m => {
-    const clone = Object.assign({}, entry, {
-      id: 'ig-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      pageId: m.id,
-    });
+    /* Deep copy so each clone is fully independent — a shallow
+       Object.assign would share any nested fields between siblings. */
+    const clone = JSON.parse(JSON.stringify(entry));
+    clone.id = 'ig-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    clone.pageId = m.id;
+    _imgEntries.push(clone);
+    imgMakeEl(clone);
+  });
+  imgSave(_imgEntries);
+}
+
+/* Prompt-based "copy to specific pages" for images — mirrors
+   _shCopyPagesOpen; Slice 4's modal will replace both. */
+function _imgCopyToPages(entry) {
+  if (!entry) return;
+  const others = pageMetaList().filter(m => m.id !== entry.pageId);
+  if (!others.length) { alert('There are no other pages to copy this image to.'); return; }
+  const list = others.map((m, i) => (i + 1) + '. ' + m.label).join('\n');
+  const ans = window.prompt(
+    'Copy this image to which pages?\n\nType "all" for every page, OR a comma-separated list of numbers:\n\n' + list,
+    'all'
+  );
+  if (ans == null) return;
+  const trimmed = ans.trim().toLowerCase();
+  let targets = [];
+  if (trimmed === 'all' || trimmed === '*' || trimmed === '') {
+    targets = others.map(m => m.id);
+  } else {
+    const nums = trimmed.split(/[,\s]+/).map(n => parseInt(n, 10) - 1).filter(n => n >= 0 && n < others.length);
+    targets = nums.map(n => others[n].id);
+  }
+  if (!targets.length) { alert('No valid pages picked.'); return; }
+  targets.forEach(pid => {
+    const clone = JSON.parse(JSON.stringify(entry));
+    clone.id = 'ig-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    clone.pageId = pid;
     _imgEntries.push(clone);
     imgMakeEl(clone);
   });
@@ -2471,14 +2550,13 @@ function cancelPageBgEditor() {
 function setupPageBgEditor() {
   const pop = _bgPopover();
   if (!pop) return;
-  /* Right-click on a bare .page in edit mode opens the editor.
-     Left-click is reserved for selection / drag in the overlay
-     systems, so we only trigger on right-click here (matches the
-     regional UX for the new tools where left-click would interfere
-     with the +Page custom-pages workflow). */
+  /* Double-click a bare .page in edit mode opens the editor. Single
+     clicks are reserved for selection / drag in the overlay systems
+     (and the +Page custom-pages workflow), so a double-click is the
+     explicit, low-collision gesture for the page background. */
   const wrap = document.querySelector('.page-outer-wrap');
   if (wrap) {
-    wrap.addEventListener('contextmenu', ev => {
+    wrap.addEventListener('dblclick', ev => {
       if (!document.body.classList.contains('edit-mode')) return;
       const t = ev.target;
       if (!t || !t.classList || !t.classList.contains('page')) return;
@@ -3436,8 +3514,10 @@ function setupAutoZoom() {
    the tool always lands on the expanded state so the user sees what's
    available. */
 function setupPagerToolsToggle() {
-  const btn = document.getElementById('pp-pager-toggle');
-  const pager = document.getElementById('pp-pager');
+  /* Research reports use #pp-pager(-toggle); the regional tool uses
+     #pager-tools(-toggle). Fall back so the chevron wires up in both. */
+  const btn = document.getElementById('pp-pager-toggle') || document.getElementById('pager-tools-toggle');
+  const pager = document.getElementById('pp-pager') || document.getElementById('pager-tools');
   if (!btn || !pager) return;
   btn.addEventListener('click', () => {
     pager.classList.toggle('tools-collapsed');
@@ -3517,6 +3597,131 @@ const REGIONAL_CLUSTER_LABELS = {
   nsw:      'NSW Regions',
   vicwatas: 'VIC / WA / TAS Regions',
 };
+
+/* ---------------------------------------------------------------------------
+ * Per-region page drops — the DOM page IDs each regional report does NOT
+ * render. The regional template (online-reports.html) drops these pages per
+ * region, so an overlay / label / page-bg keyed to a dropped page is
+ * meaningless there. Cross-tool sync must filter those out before writing to
+ * a target, or the target silently accumulates orphan entries on pages it
+ * never shows (and they leak into its monthly PDF strip logic).
+ *
+ * CANONICAL-PENDING (#5 cutover): this MIRRORS REGION_MANIFEST's pageDrops in
+ * tools/online-reports.html. Until that file is consolidated onto this
+ * module, the two copies MUST be kept in step — change both together. The
+ * cutover's job is to make online-reports.html read these from here so the
+ * duplication goes away.
+ * ------------------------------------------------------------------------- */
+const _PP_PERTH_ONLY = ['p32', 'p33'];
+const _PP_DROPS_31P  = [..._PP_PERTH_ONLY];
+const _PP_DROPS_30P  = ['p27', ..._PP_PERTH_ONLY];
+const _PP_DROPS_29P  = ['p26', 'p27', ..._PP_PERTH_ONLY];
+const _PP_DROPS_26P  = ['p14', 'p22', 'p24', 'p26', 'p27', ..._PP_PERTH_ONLY];
+const REGIONAL_PAGEDROPS = {
+  /* capitals */
+  sydney: _PP_DROPS_31P, melbourne: _PP_DROPS_31P, brisbane: _PP_DROPS_31P,
+  adelaide: _PP_DROPS_31P, perth: [], hobart: _PP_DROPS_30P,
+  canberra: _PP_DROPS_29P, darwin: _PP_DROPS_29P,
+  /* QLD regions */
+  bundaberg: _PP_DROPS_26P, cairns: _PP_DROPS_26P, gladstone: _PP_DROPS_26P,
+  'gold-coast': _PP_DROPS_26P, ipswich: _PP_DROPS_26P, mackay: _PP_DROPS_26P,
+  rockhampton: _PP_DROPS_26P, 'sunshine-coast': _PP_DROPS_26P,
+  toowoomba: _PP_DROPS_26P, townsville: _PP_DROPS_26P,
+  /* NSW regions */
+  albury: _PP_DROPS_26P, 'central-coast': _PP_DROPS_26P, 'coffs-harbour': _PP_DROPS_26P,
+  dubbo: _PP_DROPS_26P, newcastle: _PP_DROPS_26P, orange: ['p7', ..._PP_DROPS_26P],
+  'port-macquarie': _PP_DROPS_26P, tamworth: _PP_DROPS_26P,
+  'wagga-wagga': _PP_DROPS_26P, wollongong: _PP_DROPS_26P,
+  /* VIC / WA / TAS regions */
+  ballarat: _PP_DROPS_26P, bendigo: _PP_DROPS_26P, geelong: _PP_DROPS_26P,
+  mildura: ['p11', ..._PP_DROPS_26P], wodonga: _PP_DROPS_26P,
+  bunbury: _PP_DROPS_26P, rockingham: _PP_DROPS_26P, launceston: _PP_DROPS_26P,
+};
+
+/* Drop-set lookup for a target slug. Returns null when the target has no
+   drops to apply: research targets (national/commercial render every page)
+   and Perth (the 33-page superset) — both mean "don't filter anything". */
+function _regionDropSet(targetSlug) {
+  const drops = REGIONAL_PAGEDROPS[targetSlug];
+  if (!drops || !drops.length) return null;
+  return new Set(drops);
+}
+
+/* Leading 4-digit year of a band's `from` field ("2008" or "2008-03-01"),
+   or null if it isn't a parseable year. Private name to avoid colliding
+   with the regional tool's own bandToYear once this module is loaded
+   there at cutover. */
+function _ppBandToYear(d) {
+  if (typeof d === 'number') return d;
+  const m = String(d).match(/^(\d{4})/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/* First chart year for a sync target. Regional charts start later than
+   Sydney, so bands predating a target's first year render off-axis there.
+   Prefer live data (PPA_REGION_DATA), then a region stub (REGIONS), then
+   a kind-based floor: regional reports start ~2000, research ~1985.
+   Mirrors regional's syncBandStartYearForTarget. */
+function _syncBandStartYearForTarget(targetSlug) {
+  try {
+    const live = (typeof window !== 'undefined' && window.PPA_REGION_DATA) ? window.PPA_REGION_DATA[targetSlug] : null;
+    const yrs = live && live.medianPrice && live.medianPrice.years;
+    if (yrs && yrs.length) { const y = Number(yrs[0]); if (Number.isFinite(y)) return y; }
+  } catch (_) {}
+  try {
+    const stub = (typeof window !== 'undefined' && window.REGIONS) ? window.REGIONS[targetSlug] : null;
+    if (stub && stub.priceYears && stub.priceYears.length) { const y = Number(stub.priceYears[0]); if (Number.isFinite(y)) return y; }
+  } catch (_) {}
+  return REGIONAL_REGIONS[targetSlug] ? 2000 : 1985;
+}
+
+/* Filter one sync bucket's value so nothing keyed to a page the target
+   region doesn't render gets written there. Shapes handled:
+     • array of entries each carrying .pageId  (texts / shapes / images)
+     • object map keyed by pageId              (pageBgs / pageLabels)
+     • pageOrder array of bare page IDs
+   Anything else (or no drops) is returned unchanged. Non-destructive: the
+   source region keeps its full data; only the copy written to the target
+   is trimmed. Returns { value, dropped } so the caller can report counts. */
+function _syncFilterForTarget(value, targetSlug, bucket) {
+  /* Bands clip by the target's chart start year, independent of page
+     drops (bands aren't keyed to a pageId). Handled before the page-drop
+     short-circuit so it applies to EVERY target — including Perth and the
+     research reports, which _regionDropSet() exempts from page filtering. */
+  if (bucket === 'bands' && Array.isArray(value)) {
+    const startYear = _syncBandStartYearForTarget(targetSlug);
+    let dropped = 0;
+    const kept = value.filter((b) => {
+      const fromYear = _ppBandToYear(b && b.from);
+      if (fromYear != null && fromYear < startYear) { dropped++; return false; }
+      return true;
+    });
+    return { value: kept, dropped };
+  }
+  const dropSet = _regionDropSet(targetSlug);
+  if (!dropSet) return { value, dropped: 0 };
+  if (bucket === 'customPages') return { value, dropped: 0 }; // user-added IDs never collide with template drops
+  if (Array.isArray(value)) {
+    let dropped = 0;
+    const kept = value.filter((e) => {
+      const pid = (bucket === 'pageOrder') ? e : (e && e.pageId);
+      if (pid && dropSet.has(pid)) { dropped++; return false; }
+      return true;
+    });
+    return { value: kept, dropped };
+  }
+  if (value && typeof value === 'object') {
+    let dropped = 0;
+    const out = {};
+    for (const [pid, v] of Object.entries(value)) {
+      if (dropSet.has(pid)) { dropped++; continue; }
+      out[pid] = v;
+    }
+    return { value: out, dropped };
+  }
+  return { value, dropped: 0 };
+}
+
 /* Combined registry — every report tool, used by sync / backup /
    region-select / audit modals to enumerate cross-tool targets.
    Slugs are unique across both research and regional reports so the
@@ -3719,8 +3924,13 @@ function backupParseFile(file, onValid, onError) {
       if (!json || (json.tool !== 'ppa-research-reports' && json.tool !== 'ppa-online-reports')) {
         return onError('That file does not look like a valid Performance Property reports backup.');
       }
-      if (!json.regions || typeof json.regions !== 'object') {
-        return onError('Backup file is in an unrecognised format (missing regions).');
+      /* Accept v3 (multi-region: json.regions) AND legacy v1/v2
+         (single-region flat localStorage dump: json.data). Reject
+         anything else so we never half-restore an unknown format. */
+      const isV3 = json.regions && typeof json.regions === 'object';
+      const isLegacy = json.data && typeof json.data === 'object';
+      if (!isV3 && !isLegacy) {
+        return onError('Backup file is in an unrecognised format (missing regions/data).');
       }
       onValid(json);
     } catch (err) {
@@ -3735,25 +3945,42 @@ function backupRenderPreview(json) {
   const host = document.getElementById('backup-preview');
   if (!host) return;
   const exportedAt = json.exportedAt ? new Date(json.exportedAt).toLocaleString() : 'unknown';
-  const regionSlugs = Object.keys(json.regions || {});
-  const buckets = (json.scope && Array.isArray(json.scope.buckets))
-    ? json.scope.buckets
-    : Object.keys(json.regions[regionSlugs[0]] || {});
-  /* Cross-tool import warning — a regional backup carrying e.g.
-     "sydney" can be restored here but those slugs won't render in the
-     research-reports namespace. Warn explicitly. */
-  const isResearchTool = (json.tool === 'ppa-research-reports');
-  const unknownSlugs = regionSlugs.filter(s => !RESEARCH_REGIONS[s]);
+  const isV3 = json.regions && typeof json.regions === 'object';
+  const isKnown = (s) => !!(RESEARCH_REGIONS[s] || REGIONAL_REGIONS[s]);
+
   let html = '<div><strong>Backup contents</strong></div>';
   html += '<div style="margin-top:6px">Exported: ' + exportedAt + '</div>';
-  html += '<div><strong>' + regionSlugs.length + '</strong> region' + (regionSlugs.length === 1 ? '' : 's') + ': ' + regionSlugs.join(', ') + '</div>';
-  html += '<div><strong>' + buckets.length + '</strong> bucket type' + (buckets.length === 1 ? '' : 's') + ': ' + buckets.join(', ') + '</div>';
-  if (!isResearchTool) {
-    html += '<div class="warn" style="margin-top:6px">Note: this backup was produced by the regional Online Reports tool. Regions matching ' + Object.keys(RESEARCH_REGIONS).join(' / ') + ' will be restored here; other slugs will be ignored.</div>';
-  } else if (unknownSlugs.length) {
-    html += '<div class="warn" style="margin-top:6px">' + unknownSlugs.length + ' unknown region slug(s) (' + unknownSlugs.join(', ') + ') will be skipped.</div>';
+  let onConfirm;
+
+  if (isV3) {
+    const regionSlugs = Object.keys(json.regions || {});
+    const buckets = (json.scope && Array.isArray(json.scope.buckets))
+      ? json.scope.buckets
+      : Object.keys(json.regions[regionSlugs[0]] || {});
+    const unknownSlugs = regionSlugs.filter(s => !isKnown(s));
+    html += '<div><strong>' + regionSlugs.length + '</strong> region' + (regionSlugs.length === 1 ? '' : 's') + ': ' + regionSlugs.join(', ') + '</div>';
+    html += '<div><strong>' + buckets.length + '</strong> bucket type' + (buckets.length === 1 ? '' : 's') + ': ' + buckets.join(', ') + '</div>';
+    if (unknownSlugs.length) {
+      html += '<div class="warn" style="margin-top:6px">' + unknownSlugs.length + ' unrecognised region slug(s) (' + unknownSlugs.join(', ') + ') will be skipped.</div>';
+    }
+    html += '<div style="margin-top:8px;color:rgba(255,255,255,0.55);font-size:10.5px">Restore overwrites the selected buckets on each known region. Other buckets stay untouched. The page reloads after restore.</div>';
+    onConfirm = () => backupApplyImport(json);
+  } else {
+    /* Legacy v1/v2 single-region flat dump (json.data keyed by full
+       localStorage key, json.region = source slug). Restores into the
+       active region, remapping key suffixes if they differ. */
+    const slug = _rs_active();
+    const exportedSlug = json.region || '?';
+    const sameRegion = exportedSlug === slug;
+    const keyCount = Object.keys(json.data || {}).length;
+    html += '<div>From region: <strong>' + exportedSlug + '</strong>';
+    if (!sameRegion) html += ' <span class="warn">(active region is ' + slug + ' — keys will be remapped)</span>';
+    html += '</div>';
+    html += '<div>' + keyCount + ' storage entr' + (keyCount === 1 ? 'y' : 'ies') + '.</div>';
+    html += '<div style="margin-top:8px;color:rgba(255,255,255,0.55);font-size:10.5px">Importing overwrites the current ' + slug + ' customisations. The page reloads after import.</div>';
+    onConfirm = () => _backupApplyLegacy(json, sameRegion);
   }
-  html += '<div style="margin-top:8px;color:rgba(255,255,255,0.55);font-size:10.5px">Restore overwrites the selected buckets on each known region. Other buckets stay untouched. The page reloads after restore.</div>';
+
   html += '<div class="preview-actions">';
   html += '<button class="pp-modal-btn ghost"   id="backup-cancel-import">Cancel</button>';
   html += '<button class="pp-modal-btn primary" id="backup-confirm-import">Restore this backup</button>';
@@ -3766,14 +3993,18 @@ function backupRenderPreview(json) {
     const fileInput = document.getElementById('backup-file-input');
     if (fileInput) fileInput.value = '';
   });
-  document.getElementById('backup-confirm-import').addEventListener('click', () => backupApplyImport(json));
+  document.getElementById('backup-confirm-import').addEventListener('click', onConfirm);
 }
 
 async function backupApplyImport(json) {
   const slug = _rs_active();
-  const knownTargets = Object.keys(json.regions || {}).filter(s => RESEARCH_REGIONS[s]);
+  /* Accept any known report slug — research OR regional — so this v3
+     path works both for the research reports and for the regional tool
+     once it loads this shared module (post-#5 cutover). This mirrors the
+     sync modal, which already writes across both namespaces. */
+  const knownTargets = Object.keys(json.regions || {}).filter(s => RESEARCH_REGIONS[s] || REGIONAL_REGIONS[s]);
   if (!knownTargets.length) {
-    alert('Backup contained no recognised research-region data.');
+    alert('Backup contained no recognised report regions.');
     return;
   }
   const host = document.getElementById('backup-preview');
@@ -3823,6 +4054,35 @@ async function backupApplyImport(json) {
     alert('Restored ' + okCount + ' of ' + knownTargets.length + ' regions on the server. ' + errors.length + ' failed — check the console for details.');
   }
   setTimeout(() => location.reload(), 60);
+}
+
+/* Legacy v1/v2 restore — a single-region flat localStorage dump
+   (json.data keyed by full localStorage key; json.region = source slug).
+   Clears the active region's buckets, then writes the file's entries
+   back, remapping the source slug suffix to the active region so e.g. a
+   Sydney backup can seed Melbourne. Sets the import-pending flag so
+   rsBoot uses local-wins on reload. Faithful port of the regional tool's
+   pre-v3 path; v3 backups go through backupApplyImport instead. */
+function _backupApplyLegacy(json, sameRegion) {
+  const slug = _rs_active();
+  const exportedSlug = json.region || slug;
+  const remap = (key) =>
+    (sameRegion || !key.endsWith('-' + exportedSlug))
+      ? key
+      : key.slice(0, key.length - ('-' + exportedSlug).length) + '-' + slug;
+  /* Clear existing entries for the active region first so stale keys
+     not present in the backup don't survive the restore. */
+  for (const k of backupCollectKeys()) localStorage.removeItem(k);
+  for (const [k, v] of Object.entries(json.data || {})) {
+    if (typeof v !== 'string') continue;
+    try { localStorage.setItem(remap(k), v); }
+    catch (e) {
+      alert('Backup restore stopped: localStorage is full. Some entries may not have been restored. Free up space and try again.');
+      break;
+    }
+  }
+  try { localStorage.setItem('ppa-online-reports-import-pending-' + slug, '1'); } catch (_) {}
+  location.reload();
 }
 
 function backupRefreshRegionPicker() {
@@ -4091,12 +4351,18 @@ async function syncApply() {
 
   if (result) result.innerHTML = 'Saving to ' + targets.length + ' region' + (targets.length === 1 ? '' : 's') + '…';
   let okCount = 0;
+  let totalDropped = 0;
   const errors = [];
   for (const target of targets) {
     try {
       const merged = Object.assign({}, targetStates[target] || {});
       for (const b of buckets) {
-        const value = sourceData[b];
+        /* Trim anything keyed to a page this target region doesn't render,
+           so we never seed orphan overlays on dropped pages. Source-side
+           data is untouched — only the copy written here is filtered. */
+        const filtered = _syncFilterForTarget(sourceData[b], target, b);
+        const value = filtered.value;
+        totalDropped += filtered.dropped;
         merged[b] = value;
         try { localStorage.setItem(BACKUP_BUCKET_KEYS[b](target), JSON.stringify(value)); }
         catch (_) {}
@@ -4114,6 +4380,9 @@ async function syncApply() {
 
   if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Apply'; }
   let html = 'Synced to <strong>' + okCount + '</strong> of <strong>' + targets.length + '</strong> region' + (targets.length === 1 ? '' : 's') + ' on the server.';
+  if (totalDropped) {
+    html += '<br><span style="color:rgba(255,255,255,0.7);font-size:11px">Skipped <strong>' + totalDropped + '</strong> ' + (totalDropped === 1 ? 'entry' : 'entries') + ' tied to pages a target region doesn\'t include.</span>';
+  }
   html += '<br><br><span style="color:rgba(255,255,255,0.7);font-size:11px">Note: page IDs (p1, p2, …) overlap between the National and Commercial reports, but those pages display different content. Overlays positioned for a specific chart on one report may land on an unrelated page on the other. Review the target report after syncing.</span>';
   if (errors.length) {
     if (result) result.classList.add('error');
@@ -4298,8 +4567,175 @@ function setupAuditModal() {
   });
 }
 
+/* ═════════════════════════════════════════════════════════════════
+   Version history + restore (migration 030: reports_state_history)
+   ─────────────────────────────────────────────────────────────────
+   A server-side safety net distinct from the audit log: the audit log
+   records who/when, this restores actual prior CONTENT. The list shows
+   archived versions for the active region (metadata only — payloads
+   are large, so we fetch a version's full payload only on restore via
+   the restore_reports_state RPC, which also force-archives the current
+   state so a restore is itself undoable).
+
+   Read access is writer-only (RLS on reports_state_history). All
+   queries go through window.sb against production, independent of any
+   MCP / tooling connection.
+   ═════════════════════════════════════════════════════════════════ */
+function _historyRelTime(ts) {
+  const then = new Date(ts).getTime();
+  if (!Number.isFinite(then)) return '';
+  const s = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (s < 60)     return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60)     return m + 'm ago';
+  const h = Math.round(m / 60);
+  if (h < 24)     return h + 'h ago';
+  const d = Math.round(h / 24);
+  if (d < 30)     return d + 'd ago';
+  const mo = Math.round(d / 30);
+  return mo + 'mo ago';
+}
+
+async function _historyLoadVersions() {
+  if (!window.sb) return [];
+  const slug = _rs_active();
+  /* Metadata only — never pull the (large) payloads into the list. */
+  const { data, error } = await window.sb
+    .from('reports_state_history')
+    .select('id, saved_at, saved_by')
+    .eq('region', slug)
+    .order('saved_at', { ascending: false });
+  if (error || !Array.isArray(data)) {
+    console.warn('[history] load failed:', error && error.message || error);
+    return null;
+  }
+  /* Resolve author names in one query (writers can read all profiles). */
+  const ids = Array.from(new Set(data.map(r => r.saved_by).filter(Boolean)));
+  let names = {};
+  if (ids.length) {
+    try {
+      const { data: profs } = await window.sb
+        .from('profiles').select('id, full_name, email').in('id', ids);
+      (profs || []).forEach(p => { names[p.id] = p.full_name || p.email || ''; });
+    } catch (_) {}
+  }
+  return data.map(r => Object.assign({}, r, { authorName: names[r.saved_by] || '' }));
+}
+
+function _historyRenderList(versions) {
+  const list = document.getElementById('history-list');
+  if (!list) return;
+  if (versions === null) {
+    list.innerHTML = '<div class="audit-empty">Couldn\'t load version history. If this report has never been saved since version history was enabled, there\'s nothing here yet.</div>';
+    return;
+  }
+  if (!versions.length) {
+    list.innerHTML = '<div class="audit-empty">No earlier versions archived yet. Versions are captured automatically as this report is edited.</div>';
+    return;
+  }
+  list.innerHTML = versions.map((v, i) => {
+    const d = new Date(v.saved_at);
+    const abs = d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+    const rel = _historyRelTime(v.saved_at);
+    const who = v.authorName ? _rsEsc(v.authorName) : 'Unknown';
+    const latestTag = i === 0 ? '<span class="pp-history-tag">most recent</span>' : '';
+    return '<div class="pp-history-entry">'
+      + '<div class="pp-history-meta">'
+      +   '<div class="pp-history-when">' + _rsEsc(abs) + ' <span class="pp-history-rel">· ' + _rsEsc(rel) + '</span>' + latestTag + '</div>'
+      +   '<div class="pp-history-who">' + who + '</div>'
+      + '</div>'
+      + '<button class="pp-modal-btn pp-history-restore" data-version-id="' + v.id + '">Restore</button>'
+      + '</div>';
+  }).join('');
+  list.querySelectorAll('.pp-history-restore').forEach(btn => {
+    btn.addEventListener('click', () => historyRestore(parseInt(btn.dataset.versionId, 10)));
+  });
+}
+
+async function openHistoryModal() {
+  const modal = document.getElementById('history-modal-bg');
+  if (!modal) return;
+  const sub = document.getElementById('history-sub');
+  const slug = _rs_active();
+  const name = (RESEARCH_REGIONS[slug] || REGIONAL_REGIONS[slug] || {}).name || slug;
+  if (sub) sub.innerHTML = 'Earlier saved versions of <strong>' + _rsEsc(name) + '</strong>. Restoring overwrites the current report — but the current state is archived first, so you can undo a restore.';
+  const list = document.getElementById('history-list');
+  if (list) list.innerHTML = '<div class="audit-loading">Loading version history…</div>';
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+  const versions = await _historyLoadVersions();
+  /* Bail if the user closed the modal mid-fetch. */
+  if (!modal.classList.contains('open')) return;
+  _historyRenderList(versions);
+}
+function closeHistoryModal() {
+  const modal = document.getElementById('history-modal-bg');
+  if (modal) { modal.classList.remove('open'); modal.setAttribute('aria-hidden', 'true'); }
+}
+
+async function historyRestore(versionId) {
+  if (!Number.isFinite(versionId)) return;
+  const slug = _rs_active();
+  if (!confirm('Restore this report to the selected version?\n\nThis overwrites the current report for everyone. Your current version is archived first, so you can undo this from version history.')) {
+    return;
+  }
+  const list = document.getElementById('history-list');
+  if (list) list.innerHTML = '<div class="audit-loading">Restoring…</div>';
+  try {
+    if (!window.sb) throw new Error('Supabase client not loaded');
+    const { error } = await window.sb.rpc('restore_reports_state', {
+      p_region: slug, p_version_id: versionId,
+    });
+    if (error) throw error;
+    rsAppendAuditFn('Restored version', 'Rolled back to an earlier saved version', true);
+    /* Re-fetch the now-restored payload and rewrite the local cache so
+       rsBoot repaints from it; import-pending forces local-wins on the
+       per-bucket merge. Same mechanism as a backup restore. */
+    const restored = await rsLoadFromServer(slug);
+    if (restored && typeof restored === 'object') {
+      for (const [bucket, value] of Object.entries(restored)) {
+        if (BACKUP_BUCKET_KEYS[bucket]) {
+          try { localStorage.setItem(BACKUP_BUCKET_KEYS[bucket](slug), JSON.stringify(value)); }
+          catch (_) {}
+        }
+      }
+    }
+    try { localStorage.setItem('ppa-online-reports-import-pending-' + slug, '1'); } catch (_) {}
+    setTimeout(() => location.reload(), 60);
+  } catch (e) {
+    console.error('[history] restore failed', e);
+    alert('Restore failed: ' + (e && e.message ? e.message : 'unknown error')
+      + '\n\n(If this says "not authorized", you need dev/admin rights. If it mentions a missing function, migration 030 hasn\'t been applied to this project yet.)');
+    /* Re-render the list so the user can retry. */
+    _historyRenderList(await _historyLoadVersions());
+  }
+}
+
+function setupHistoryModal() {
+  const bg = document.getElementById('history-modal-bg');
+  if (!bg) return;
+  const trigger = document.getElementById('btn-history');
+  if (trigger) trigger.addEventListener('click', openHistoryModal);
+  const closeBtn = document.getElementById('history-close');
+  if (closeBtn) closeBtn.addEventListener('click', closeHistoryModal);
+  bg.addEventListener('click', ev => { if (ev.target === bg) closeHistoryModal(); });
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape' && bg.classList.contains('open')) closeHistoryModal();
+  });
+}
+
 /* ═════════════ Entry point — host HTML calls this after DOMContentLoaded ═════════════ */
 function initReportEdit() {
+  /* Opt-out config (the #5 consolidation seam). A host tool can set
+     window.PPA_REPORT_EDIT_OPTS = { regionSelect:false, bands:false,
+     refresh:false, prebuiltIndicator:false, downloadModal:false,
+     audit:false } to suppress the shared module's version of a
+     subsystem it implements itself. The regional Online Reports tool
+     will use this to keep its richer region nav / reference bands /
+     multi-region PDF export / live-data refresh while reusing the
+     shared overlay engine. Unset (national/commercial) → every flag is
+     undefined → every subsystem runs exactly as before. */
+  var OPTS = (typeof window !== 'undefined' && window.PPA_REPORT_EDIT_OPTS) || {};
   /* Order matters:
        1. Restore page DOM (custom pages + saved order)
        2. Apply stored labels onto data-label (so chrome reads them)
@@ -4322,14 +4758,14 @@ function initReportEdit() {
   setupGridToggle();
   setupAddPageButton();
   setupPagerToolsToggle();
-  setupRegionSelect();
-  setupBandsStub();
-  setupRefreshButton();
+  if (OPTS.regionSelect !== false) setupRegionSelect();
+  if (OPTS.bands       !== false) setupBandsStub();
+  if (OPTS.refresh     !== false) setupRefreshButton();
   setupAutoZoom();
   /* Cached-PDF indicator runs asynchronously — the pill is empty
      until the storage.list() round-trip completes, which keeps the
      boot path snappy and the pill silent-on-failure. */
-  ppRefreshPrebuiltIndicator();
+  if (OPTS.prebuiltIndicator !== false) ppRefreshPrebuiltIndicator();
   _ctEntries  = ctLoad();
   _shEntries  = shLoad();
   _imgEntries = imgLoad();
@@ -4342,10 +4778,11 @@ function initReportEdit() {
      with tier1-only gating; their no-op early-out when the HTML
      scaffolds aren't present keeps things safe if a future tool
      leaves them out. */
-  setupBackupModal();
-  setupSyncModal();
-  setupAuditModal();
-  setupPdfPagesModal();
+  if (OPTS.backup !== false) setupBackupModal();
+  if (OPTS.sync   !== false) setupSyncModal();
+  if (OPTS.audit  !== false) setupAuditModal();
+  setupHistoryModal();
+  if (OPTS.downloadModal !== false) setupPdfPagesModal();
 }
 
 /* Expose entry point + commonly-called functions on window so the
