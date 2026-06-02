@@ -76,3 +76,46 @@ jobs:
           PDF_RENDERER_PASSWORD:     ${{ secrets.PDF_RENDERER_PASSWORD }}
           APP_URL:                   ${{ secrets.APP_URL }}
         run: npm run render-reports
+
+      # -----------------------------------------------------------------------
+      # Proactive failure alert (#4). render-reports.mjs exits non-zero if ANY
+      # report fails OR on a total crash, so this fires for every failure mode
+      # (and for an earlier-step failure like checkout/npm install too).
+      #
+      # Emails the maintainer via Resend — the same provider + verified sender
+      # the notify-cadence function uses, so no new vendor. Best-effort: a
+      # missing RESEND_API_KEY or a Resend hiccup logs a warning and never
+      # masks the real failure. GitHub's own "scheduled workflow failed" email
+      # to the repo owner remains the backstop.
+      #
+      # One-time setup (repo Settings → Secrets and variables → Actions):
+      #   RESEND_API_KEY      same value already set on the notify-cadence fn
+      #   RENDER_ALERT_EMAIL  (optional) recipient; defaults to vandolf@…
+      # -----------------------------------------------------------------------
+      - name: Alert on failure
+        if: failure()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_TO:       ${{ secrets.RENDER_ALERT_EMAIL }}
+          RUN_URL:        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$RESEND_API_KEY" ]; then
+            echo "::warning::RESEND_API_KEY not set as a repo secret — failure email skipped. Add it under Settings → Secrets and variables → Actions (same value as the notify-cadence function) to enable inbox alerts."
+            exit 0
+          fi
+          TO="${ALERT_TO:-vandolf@performanceproperty.com.au}"
+          HTML="<p style=\"font-family:Arial,sans-serif;font-size:14px;color:#0f172a\">The monthly <strong>Online Reports PDF render</strong> failed.</p><p style=\"font-family:Arial,sans-serif;font-size:13px;color:#475569\">Cached PDFs were not refreshed for this month — the tools fall back to live html2canvas rendering, so reports still download, but the \"Cached &lt;date&gt;\" pill won't advance until this is fixed. Open the run to see which reports failed and why.</p><p><a href=\"$RUN_URL\" style=\"display:inline-block;background:#00b6cb;color:#0a1520;padding:11px 22px;border-radius:6px;text-decoration:none;font-weight:700;font-size:13px;font-family:Arial,sans-serif\">View the failed run →</a></p>"
+          BODY=$(jq -n \
+            --arg from "Performance Property Alerts <cadence@performanceproperty.com.au>" \
+            --arg to "$TO" \
+            --arg subject "⚠ Monthly Online Reports PDF render FAILED" \
+            --arg html "$HTML" \
+            '{from:$from, to:$to, subject:$subject, html:$html}')
+          if curl -sS -X POST https://api.resend.com/emails \
+               -H "Authorization: Bearer $RESEND_API_KEY" \
+               -H "Content-Type: application/json" \
+               -d "$BODY"; then
+            echo "Failure alert emailed to $TO"
+          else
+            echo "::warning::Could not send the failure-alert email (Resend error) — see the run logs above."
+          fi
