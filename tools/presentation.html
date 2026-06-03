@@ -2471,6 +2471,31 @@
     color:#7a3409;
     border-color:rgba(234,88,12,0.7);
   }
+  /* Autosave status pill (bottom-right). The cloud save is debounced, so
+     a writer who reloaded mid-debounce used to silently lose a just-added
+     page. This shows "Saving…/Saved" so they know it's safe to reload. */
+  .pres-savestat{
+    position:fixed; bottom:18px; right:18px;
+    display:none; align-items:center; gap:7px;
+    padding:7px 13px;
+    background:rgba(15,23,42,0.92); color:#cfe9ee;
+    border:1px solid rgba(0,182,203,0.45); border-radius:18px;
+    font:600 12px/1 'Roboto', sans-serif; letter-spacing:0.02em;
+    box-shadow:0 4px 14px rgba(0,0,0,0.30);
+    z-index:10000; pointer-events:none;
+  }
+  .pres-savestat.show{ display:inline-flex; }
+  .pres-savestat::before{
+    content:''; width:8px; height:8px; border-radius:50%; background:#8b95a7;
+  }
+  .pres-savestat.is-saving::before{ background:#fbbf24; animation:presSaveBlink 1s infinite; }
+  .pres-savestat.is-saved::before{ background:#4ade80; }
+  .pres-savestat.is-error{ border-color:rgba(251,146,60,0.85); color:#ffe2b3; }
+  .pres-savestat.is-error::before{ background:#fb923c; }
+  @keyframes presSaveBlink{ 0%,100%{opacity:1} 50%{opacity:0.35} }
+  [data-theme="light"] .pres-savestat{
+    background:rgba(255,255,255,0.96); color:#0a4d57; border-color:rgba(0,182,203,0.5);
+  }
   [data-theme="light"] .pres-toast{
     background:rgba(255,255,255,0.96);
     color:#0a1520;
@@ -9210,51 +9235,172 @@ const PRES_SAVE_DEBOUNCE_MS   = 800;
 
 let _canWritePresCloud   = false;   /* tier 0/1 → true */
 let _presCloudSaveTimer  = null;
+let _presSavePending     = false;   /* an edit is waiting for the debounce to fire */
+let _presSaveInFlight    = false;   /* a save request is currently running */
+let _presSaveStatEl      = null;
+let _presSaveStatTimer   = null;
+let _presCloudLoadedAt   = null;    /* row updated_at this tab is working from (concurrent-edit guard) */
+
+/* Bottom-right "Saving…/Saved" pill so a writer can see their change
+   reached the cloud before reloading. Only shown to writers. */
+function _setPresSaveStatus(state) {
+  if (!_canWritePresCloud) return;
+  if (!_presSaveStatEl) {
+    _presSaveStatEl = document.createElement('div');
+    _presSaveStatEl.className = 'pres-savestat';
+    document.body.appendChild(_presSaveStatEl);
+  }
+  const el = _presSaveStatEl;
+  el.classList.remove('is-saving', 'is-saved', 'is-error');
+  if (_presSaveStatTimer) { clearTimeout(_presSaveStatTimer); _presSaveStatTimer = null; }
+  if (state === 'saving') {
+    el.textContent = 'Saving…';
+    el.classList.add('show', 'is-saving');
+  } else if (state === 'saved') {
+    el.textContent = 'Saved';
+    el.classList.add('show', 'is-saved');
+    _presSaveStatTimer = setTimeout(() => el.classList.remove('show'), 1800);
+  } else if (state === 'error') {
+    el.textContent = 'Save failed';
+    el.classList.add('show', 'is-error');
+  } else if (state === 'conflict') {
+    el.textContent = '⚠ Edited elsewhere';
+    el.classList.add('show', 'is-error');
+  }
+}
+
+function _presCloudPayload() {
+  return {
+    customDecks:     _customDecks      || [],
+    overlays:        _overlays         || {},
+    slideBgs:        _slideBgs         || {},
+    themes:          _themes           || [],
+    deckActiveTheme: _deckActiveTheme  || {},
+  };
+}
+
+/* The actual cloud write. Cancels any pending debounce and persists the
+   full payload, updating the status pill and the concurrent-edit baseline.
+   opts.skipConflict bypasses the guard (used on unload flush, where we
+   can't prompt and prioritise saving the user's own change). */
+async function _doPresCloudSave(opts) {
+  opts = opts || {};
+  if (!_canWritePresCloud || !window.sb) return;
+  clearTimeout(_presCloudSaveTimer);
+  _presCloudSaveTimer = null;
+  _presSavePending  = false;
+  _presSaveInFlight = true;
+  _setPresSaveStatus('saving');
+  try {
+    /* Concurrent-edit guard: the row carries an updated_at that a trigger
+       bumps on every write. If the cloud is newer than the version this tab
+       loaded, someone else (another tab / admin) saved in the meantime —
+       don't silently overwrite their whole deck set. */
+    if (!opts.skipConflict && _presCloudLoadedAt) {
+      try {
+        const { data: cur, error: rErr } = await window.sb
+          .from('presentation_state')
+          .select('updated_at')
+          .eq('id', 1)
+          .single();
+        if (!rErr && cur && cur.updated_at &&
+            Date.parse(cur.updated_at) > Date.parse(_presCloudLoadedAt)) {
+          _setPresSaveStatus('conflict');
+          const reload = window.confirm(
+            'The shared presentations were changed somewhere else (another tab, '
+            + 'or another editor) since you opened this page.\n\n'
+            + 'OK  —  Reload and load their latest version. Any unsaved edits in '
+            + 'THIS tab will be lost.\n\n'
+            + 'Cancel  —  Keep your version; your next save overwrites theirs.'
+          );
+          if (reload) {
+            /* Discard the pending change so the pagehide flush can't write
+               our stale payload over theirs before the reload reads it. */
+            _presSavePending = false;
+            _presSaveInFlight = false;
+            location.reload();
+            return;
+          }
+          /* Overwrite chosen — adopt the current server version as our new
+             baseline so we don't immediately re-trigger the guard. */
+          _presCloudLoadedAt = cur.updated_at;
+          _setPresSaveStatus('saving');
+        }
+      } catch (_) { /* read failed — proceed with the save rather than block the user */ }
+    }
+
+    const { data: saved, error } = await window.sb
+      .from('presentation_state')
+      .update({ payload: _presCloudPayload() })
+      .eq('id', 1)
+      .select('updated_at')
+      .single();
+    if (error) {
+      console.warn('Presentation cloud save:', error);
+      const detail = (error && (error.message || error.code)) || 'see console';
+      _setPresSaveStatus('error');
+      showPresToast(
+        'Cloud save failed (' + detail + '). Your changes may not survive a reload — try removing some content or contact admin.',
+        { duration: 8000, warn: true }
+      );
+    } else {
+      /* Advance our baseline to the version we just wrote, so our own save
+         isn't mistaken for someone else's edit on the next save. */
+      if (saved && saved.updated_at) _presCloudLoadedAt = saved.updated_at;
+      _setPresSaveStatus('saved');
+    }
+  } catch (e) {
+    console.warn('Presentation cloud save failed:', e);
+    _setPresSaveStatus('error');
+    showPresToast(
+      'Cloud save failed — your changes may not survive a reload. Check the network connection.',
+      { duration: 7000, warn: true }
+    );
+  } finally {
+    _presSaveInFlight = false;
+  }
+}
 
 function _schedulePresCloudSave() {
   if (!_canWritePresCloud) return;
+  _presSavePending = true;
+  _setPresSaveStatus('saving');
   clearTimeout(_presCloudSaveTimer);
-  _presCloudSaveTimer = setTimeout(async () => {
-    try {
-      if (!window.sb) return;
-      const payload = {
-        customDecks:     _customDecks      || [],
-        overlays:        _overlays         || {},
-        slideBgs:        _slideBgs         || {},
-        themes:          _themes           || [],
-        deckActiveTheme: _deckActiveTheme  || {},
-      };
-      const { error } = await window.sb
-        .from('presentation_state')
-        .update({ payload })
-        .eq('id', 1);
-      if (error) {
-        console.warn('Presentation cloud save:', error);
-        const detail = (error && (error.message || error.code)) || 'see console';
-        showPresToast(
-          'Cloud save failed (' + detail + '). Your changes may not survive a reload — try removing some content or contact admin.',
-          { duration: 8000, warn: true }
-        );
-      }
-    } catch (e) {
-      console.warn('Presentation cloud save failed:', e);
-      showPresToast(
-        'Cloud save failed — your changes may not survive a reload. Check the network connection.',
-        { duration: 7000, warn: true }
-      );
-    }
-  }, PRES_SAVE_DEBOUNCE_MS);
+  _presCloudSaveTimer = setTimeout(_doPresCloudSave, PRES_SAVE_DEBOUNCE_MS);
 }
+
+/* Flush a pending debounced save immediately — used when the page is about
+   to be hidden/closed/reloaded so a page added <800ms earlier still reaches
+   the cloud. This is the fix for the debounce race that silently dropped
+   newly-added pages when a writer reloaded right after adding one. */
+function _flushPresCloudSave() {
+  if (!_canWritePresCloud) return;
+  if (_presSavePending && !_presSaveInFlight) _doPresCloudSave({ skipConflict: true });
+}
+
+/* visibilitychange→hidden fires on tab switch / minimise and as the first
+   teardown signal on reload+close, while the page is still alive enough to
+   complete the request. pagehide is the backstop. Registered once; both
+   guard on _canWritePresCloud at fire time, so registering before auth
+   resolves is fine. */
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') _flushPresCloudSave();
+});
+window.addEventListener('pagehide', _flushPresCloudSave);
 
 async function _hydratePresFromCloud() {
   try {
     if (!window.sb) return;
     const { data, error } = await window.sb
       .from('presentation_state')
-      .select('payload')
+      .select('payload, updated_at')
       .eq('id', 1)
       .single();
     if (error) return;
+    /* Baseline for the concurrent-edit guard: the row version this tab is
+       working from. Any later save compares against this to avoid silently
+       clobbering edits made in another tab / by another admin. */
+    _presCloudLoadedAt = (data && data.updated_at) || _presCloudLoadedAt;
     const cloud = data && data.payload;
     if (!cloud || typeof cloud !== 'object') return;
 
