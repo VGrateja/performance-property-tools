@@ -1065,16 +1065,15 @@
   }
   .pres-overlay-text[data-deco="none"],
   .pres-overlay-text[data-deco="none"] a{ text-decoration:none }
-  /* Links render in the brand cyan (matches the comment near
-     _autoLinkEmails — "cyan + underlined"). Covers links inside
-     text overlays AND inside table cells (both run through
-     _autoLinkEmails on blur, and both can hold user-typed links).
-     Important so pasted HTML with an inline blue colour from
-     Google Slides / Docs doesn't override it; without !important,
-     a span with an inline color: rgb(17,85,204) sitting around
-     the <a> wins on specificity. */
+  /* Links INHERIT the surrounding text colour so the text-colour control
+     applies to linked text (no forced cyan), and the underline uses the
+     link's OWN colour via currentColor — so a link's underline always
+     matches its text, even when the link is a different colour than the
+     rest of the overlay. (Set a link's colour with the text-colour control;
+     pasted links keep their source colour and can be recoloured the same
+     way.) Covers links in text overlays AND table cells. */
   .pres-overlay-text a,
-  .pres-table td a{ color:#0090a8 !important; cursor:pointer }
+  .pres-table td a{ color:inherit; text-decoration-color:currentColor; cursor:pointer }
   /* Bullet / numbered lists inside text overlays. Browser defaults
      leave the <ul> with a 40px left padding-INLINE-start which can
      get clipped or look uneven; force a clean indent + outside-
@@ -1738,6 +1737,25 @@
   }
   body.pres-shape-selected .pres-sh-panel{ display:block }
   body.pres-fullscreen      .pres-sh-panel{ display:none !important }
+
+  /* Image settings panel — same right-rail slot + chrome as the shape
+     panel; shows when an image overlay is selected in edit mode. Reuses
+     the .pres-sh-* inner classes for rows/labels/buttons. */
+  .pres-img-panel{
+    position:fixed; top:68px; right:14px; width:260px;
+    max-height:calc(100vh - 200px); overflow-y:auto; padding:14px;
+    background:rgba(15,23,42,0.92); border:1px solid rgba(0,182,203,0.30);
+    border-radius:10px; backdrop-filter:blur(14px) saturate(140%);
+    box-shadow:0 12px 30px rgba(0,0,0,0.45); color:#e6ecff;
+    z-index:96; display:none; font-size:12px;
+  }
+  [data-theme="light"] .pres-img-panel{
+    background:rgba(255,255,255,0.96); border-color:rgba(0,182,203,0.45);
+    color:#0a1520; box-shadow:0 12px 30px rgba(31,40,63,0.18);
+  }
+  body.pres-image-selected .pres-img-panel{ display:block }
+  body.pres-fullscreen     .pres-img-panel{ display:none !important }
+  body.pres-image-selected .pres-stage{ right:290px }
 
   .pres-sh-title{
     font-size:11px; font-weight:700; letter-spacing:0.14em; text-transform:uppercase;
@@ -2960,6 +2978,21 @@
   <button class="pres-sh-delete" id="pres-sh-delete" type="button" title="Delete this shape (or press Delete)">Delete Shape</button>
 </aside>
 
+<!-- Image settings panel — shows when an image overlay is selected in
+     edit mode. Reuses the .pres-sh-* row/label classes. Opacity-focused;
+     Copy / Delete remain on the image right-click menu + Delete key. -->
+<aside class="pres-img-panel" id="pres-img-panel" aria-label="Image settings">
+  <div class="pres-sh-title">Image Settings</div>
+  <div class="pres-sh-row">
+    <label>Opacity</label>
+    <div class="pres-sh-grad-row">
+      <input type="range"  id="pres-img-opacity"     min="0" max="100" step="1" value="100" aria-label="Image opacity percent">
+      <input type="number" id="pres-img-opacity-num" min="0" max="100" step="1" value="100">
+    </div>
+  </div>
+  <div style="margin-top:10px;opacity:0.6;font-size:11px">Right-click the image for Copy&nbsp;/&nbsp;Delete.</div>
+</aside>
+
 <!-- Copy-to-slides modal — a per-slide checkbox list with Select all
      / Clear shortcuts. Used by the text-panel button and by the
      image / shape right-click "Copy to slides…" entry. -->
@@ -3282,6 +3315,7 @@ function _buildThumbOverlay(o) {
   } else if (o.type === 'image' && (o.src || o.storage)) {
     const img = document.createElement('img');
     img.draggable = false;
+    img.style.opacity = (o.opacity != null ? o.opacity : 1);   // image overlay opacity (0–1)
     img.style.width = '100%';
     img.style.height = '100%';
     img.style.objectFit = 'cover';
@@ -3762,6 +3796,7 @@ function buildThumbOverlayEl(o) {
   } else if (o.type === 'image') {
     const img = document.createElement('img');
     img.draggable = false;
+    img.style.opacity = (o.opacity != null ? o.opacity : 1);   // image overlay opacity (0–1)
     img.style.width = '100%';
     img.style.height = '100%';
     /* Same dual-mode handling as the interactive renderer: storage
@@ -6670,6 +6705,7 @@ function buildOverlayEl(o) {
   } else if (o.type === 'image') {
     const img = document.createElement('img');
     img.draggable = false;
+    img.style.opacity = (o.opacity != null ? o.opacity : 1);   // image overlay opacity (0–1)
     /* New (storage-backed) image overlays carry o.storage = bucket
        path; render fetches a signed URL. Legacy overlays still using
        inlined o.src (base64 data URL) keep working until migrated. */
@@ -7802,6 +7838,10 @@ function _shApplyPaintToPanel(role, value) {
    text-panel pattern). The same `getSelectedOverlay()` drives both
    syncShapePanel and syncTextPanel so only one panel ever shows. */
 function syncShapePanel() {
+  /* Drive the image panel from here too: syncShapePanel runs at every
+     selection-change point (always paired with syncTextPanel), so one call
+     here covers them all without editing each call site. */
+  syncImagePanel();
   const o = getSelectedOverlay();
   const showPanel = !!(o && o.type === 'shape' && _editMode);
   const wasShowingPanel = document.body.classList.contains('pres-shape-selected');
@@ -7835,6 +7875,48 @@ function _shCommitSelected(mut) {
   mut(o);
   saveOverlays();
   renderOverlays();
+}
+
+/* ── Image settings panel (opacity) ───────────────────────────────────
+   Mirrors the shape-panel pattern: syncImagePanel() shows/hides on
+   selection, _imgCommitSelected() mutates + (optionally) saves + re-renders. */
+const imgOpacityRange = document.getElementById('pres-img-opacity');
+const imgOpacityNum   = document.getElementById('pres-img-opacity-num');
+
+function syncImagePanel() {
+  const o = getSelectedOverlay();
+  const showPanel = !!(o && o.type === 'image' && _editMode);
+  const wasShowing = document.body.classList.contains('pres-image-selected');
+  document.body.classList.toggle('pres-image-selected', showPanel);
+  if (wasShowing !== showPanel) {
+    _trackRulersThroughTransition();
+    if (typeof fitSlide === 'function') setTimeout(fitSlide, 360);
+  }
+  if (!showPanel) return;
+  const pct = Math.round((o.opacity != null ? o.opacity : 1) * 100);
+  if (imgOpacityRange) imgOpacityRange.value = String(pct);
+  if (imgOpacityNum)   imgOpacityNum.value   = String(pct);
+}
+
+function _imgCommitSelected(mut, persist) {
+  const o = getSelectedOverlay();
+  if (!o || o.type !== 'image') return;
+  mut(o);
+  if (persist) saveOverlays();   // commit (slider release) — input keeps drags off the save/history path
+  renderOverlays();
+}
+
+if (imgOpacityRange && imgOpacityNum) {
+  const applyOpacity = (raw, persist) => {
+    const v = Math.max(0, Math.min(100, parseInt(raw, 10) || 0));
+    imgOpacityRange.value = String(v);
+    imgOpacityNum.value   = String(v);
+    _imgCommitSelected(o => { o.opacity = v / 100; }, persist);
+  };
+  imgOpacityRange.addEventListener('input',  () => applyOpacity(imgOpacityRange.value, false));
+  imgOpacityRange.addEventListener('change', () => applyOpacity(imgOpacityRange.value, true));
+  imgOpacityNum.addEventListener('input',    () => applyOpacity(imgOpacityNum.value, false));
+  imgOpacityNum.addEventListener('change',   () => applyOpacity(imgOpacityNum.value, true));
 }
 
 /* Wire all controls for one paint role (fill or stroke). Tabs
@@ -9101,6 +9183,7 @@ document.addEventListener('pointerdown', (ev) => {
   if (ev.target.closest('.pres-slide')) return;       /* slot handler will manage */
   if (ev.target.closest('.pres-text-panel')) return;  /* keep selection while editing styles */
   if (ev.target.closest('.pres-sh-panel'))   return;  /* shape settings panel — clicks were deselecting + closing it */
+  if (ev.target.closest('.pres-img-panel'))  return;  /* image settings panel (opacity) — same: don't deselect on its clicks */
   if (ev.target.closest('.pres-bg-popover')) return;  /* bg popover edits the slide bg, not selection */
   if (ev.target.closest('.pres-shape-picker')) return;
   if (ev.target.closest('.pres-embed-picker')) return;
