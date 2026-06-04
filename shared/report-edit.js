@@ -1269,6 +1269,7 @@ function ctInit() {
   const applyAllBtn = document.getElementById('ct-apply-all-btn');
   if (applyAllBtn) applyAllBtn.addEventListener('click', () => {
     ctWithSelected((_el, entry) => {
+      if (_ppCopyModalReady) { ppCopyPagesOpenForKind('text', entry); return; }
       const meta = pageMetaList();
       const others = meta.filter(m => m.id !== entry.pageId);
       if (!others.length) { alert('There are no other pages to copy this overlay to.'); return; }
@@ -2085,7 +2086,9 @@ function setupShapes() {
   const shCopyBtn = document.getElementById('sh-apply-all-btn');
   if (shCopyBtn) shCopyBtn.addEventListener('click', () => {
     const entry = shGetSelectedEntry();
-    if (entry) _shCopyPagesOpen(entry);
+    if (!entry) return;
+    if (_ppCopyModalReady) ppCopyPagesOpenForKind('shape', entry);
+    else _shCopyPagesOpen(entry);
   });
 
   document.addEventListener('keydown', ev => {
@@ -2485,7 +2488,7 @@ function setupImages() {
     _selUpdateMultiClass();
     orShowCtxMenu(ev.clientX, ev.clientY, [
       { label: 'Copy to all pages', action: () => _imgCopyToAll(id) },
-      { label: 'Copy to pages…',     action: () => _imgCopyToPages(entry) },
+      { label: 'Copy to pages…',     action: () => { if (_ppCopyModalReady) ppCopyPagesOpenForKind('image', entry); else _imgCopyToPages(entry); } },
       { label: 'Delete',             action: () => imgDelete(id) },
     ]);
   });
@@ -5070,6 +5073,217 @@ function setupAiDraft() {
   });
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   NATIONAL / COMMERCIAL add-ons — arrow-key nudge + copy-to-pages modal.
+   ─────────────────────────────────────────────────────────────────────
+   Everything here is uniquely named (pp*) so it can NEVER collide with the
+   regional tool's own inline setupKeyboardNudge / copyPagesOpenForKind /
+   _copyPagesContext (which would be a parse-time SyntaxError that kills this
+   whole module). They're also gated in initReportEdit and opted OUT by the
+   regional via PPA_REPORT_EDIT_OPTS, so they only ever activate on the
+   National / Commercial reports — the regional keeps its own versions.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Arrow-key nudge for the selected overlay(s) — text / shape / image.
+   1px per press, 10px with Shift. Skipped while typing in a field. */
+function ppSetupArrowKeyNudge() {
+  document.addEventListener('keydown', ev => {
+    if (!document.body.classList.contains('edit-mode')) return;
+    if (!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(ev.key)) return;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+    const step = ev.shiftKey ? 10 : 1;
+    const dx = ev.key === 'ArrowLeft' ? -step : ev.key === 'ArrowRight' ? step : 0;
+    const dy = ev.key === 'ArrowUp'   ? -step : ev.key === 'ArrowDown'  ? step : 0;
+
+    const ctSel  = Array.from(document.querySelectorAll('.custom-text.selected'));
+    const shSel  = Array.from(document.querySelectorAll('.shape.selected'));
+    const imgSel = Array.from(document.querySelectorAll('.image-overlay.selected'));
+    if (!ctSel.length && !shSel.length && !imgSel.length) return;
+    ev.preventDefault();
+
+    let textChanged = false, shapeChanged = false, imageChanged = false;
+    ctSel.forEach(el => {
+      const entry = _ctEntries.find(e => e.id === el.dataset.id);
+      if (!entry) return;
+      entry.x = (entry.x || 0) + dx; entry.y = (entry.y || 0) + dy;
+      el.style.left = entry.x + 'px'; el.style.top = entry.y + 'px';
+      textChanged = true;
+    });
+    shSel.forEach(el => {
+      const entry = _shEntries.find(e => e.id === el.dataset.id);
+      if (!entry) return;
+      if (entry.type === 'line' || entry.type === 'arrow') {
+        entry.x1 += dx; entry.y1 += dy; entry.x2 += dx; entry.y2 += dy;
+        _shRecalcBbox(entry);
+      } else {
+        entry.x = (entry.x || 0) + dx; entry.y = (entry.y || 0) + dy;
+      }
+      shRedraw(el, entry);
+      shapeChanged = true;
+    });
+    imgSel.forEach(el => {
+      const entry = _imgEntries.find(e => e.id === el.dataset.id);
+      if (!entry) return;
+      entry.x = (entry.x || 0) + dx; entry.y = (entry.y || 0) + dy;
+      imgRedraw(el, entry);
+      imageChanged = true;
+    });
+
+    const n = (textChanged ? 1 : 0) + (shapeChanged ? 1 : 0) + (imageChanged ? 1 : 0);
+    if (n >= 2) {
+      if (textChanged)  localStorage.setItem(ctStorageKey(),  JSON.stringify(_ctEntries));
+      if (shapeChanged) localStorage.setItem(shStorageKey(),  JSON.stringify(_shEntries));
+      if (imageChanged) localStorage.setItem(imgStorageKey(), JSON.stringify(_imgEntries));
+      if (!_ctRestoring) ctPushHistory();
+      _rs_scheduleSave();
+    } else if (textChanged) {
+      ctSave(_ctEntries);
+    } else if (shapeChanged) {
+      shSave(_shEntries);
+    } else if (imageChanged) {
+      imgSave(_imgEntries);
+    }
+  });
+}
+
+/* Copy-to-pages page-picker modal (pp-modal). _ppCopyModalReady gates the
+   shared copy triggers: true only after this wires up (i.e. the host has the
+   pp-modal markup AND didn't opt out), so the regional falls back to its own
+   path. */
+let _ppCopyPagesCtx   = null;   /* { kind, entryId } stashed at open-time */
+let _ppCopyModalReady = false;
+
+function ppCopyPagesOpenForKind(kind, entryOverride) {
+  let entry = entryOverride;
+  if (!entry) {
+    if      (kind === 'shape') entry = shGetSelectedEntry();
+    else if (kind === 'image') entry = imgGetSelectedEntry();
+    else                       entry = ctGetSelectedEntry();
+  }
+  if (!entry) return;
+  const bg      = document.getElementById('copy-pages-modal-bg');
+  const list    = document.getElementById('copy-pages-list');
+  const sub     = document.getElementById('copy-pages-sub');
+  const titleEl = document.getElementById('copy-pages-modal-title');
+  const allCb   = document.getElementById('copy-pages-all');
+  if (!bg || !list || !sub || !allCb) return;
+  const allPages   = Array.from(document.querySelectorAll('section.page[id]'));
+  const otherPages = allPages.filter(p => p.id !== entry.pageId);
+  if (!otherPages.length) { alert('There are no other pages to copy to.'); return; }
+  _ppCopyPagesCtx = { kind, entryId: entry.id };
+  if (titleEl) titleEl.textContent = (kind === 'shape') ? 'Copy shape to pages'
+                                   : (kind === 'image') ? 'Copy image to pages'
+                                                        : 'Copy text to pages';
+  const srcPage  = document.getElementById(entry.pageId);
+  const srcLabel = srcPage ? (srcPage.dataset.label || srcPage.id) : entry.pageId;
+  const srcIdx   = allPages.indexOf(srcPage) + 1;
+  if (kind === 'shape') {
+    sub.innerHTML = 'Copying <strong>' + _shEscapeAttr(entry.type || 'shape') + '</strong> shape from page ' + srcIdx + ' (' + srcLabel + ').';
+  } else if (kind === 'image') {
+    sub.innerHTML = 'Copying <strong>image</strong> from page ' + srcIdx + ' (' + srcLabel + ').';
+  } else {
+    const preview = String(entry.text || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    sub.innerHTML = 'Copying <strong>"' + (preview || '(blank)') + '"</strong> from page ' + srcIdx + ' (' + srcLabel + ').';
+  }
+  list.innerHTML = '';
+  otherPages.forEach((page) => {
+    const idx = allPages.indexOf(page) + 1;
+    const label = page.dataset.label || page.id;
+    const row = document.createElement('label');
+    row.className = 'pp-pages-row';
+    row.innerHTML = '<input type="checkbox" data-page-id="' + page.id + '" />' +
+      '<span class="num">' + idx + '</span><span class="lbl">' + label + '</span>';
+    list.appendChild(row);
+  });
+  allCb.checked = false;
+  ppCopyPagesUpdateCount();
+  bg.classList.add('open');
+  bg.setAttribute('aria-hidden', 'false');
+}
+
+function ppCopyPagesClose() {
+  const bg = document.getElementById('copy-pages-modal-bg');
+  if (!bg) return;
+  bg.classList.remove('open');
+  bg.setAttribute('aria-hidden', 'true');
+  _ppCopyPagesCtx = null;
+}
+
+function ppCopyPagesUpdateCount() {
+  const list = document.getElementById('copy-pages-list');
+  const btn  = document.getElementById('copy-pages-confirm');
+  if (!list || !btn) return;
+  const checked = list.querySelectorAll('input[type="checkbox"]:checked').length;
+  btn.disabled = checked === 0;
+  btn.textContent = checked === 0 ? 'Copy' : 'Copy to ' + checked + ' page' + (checked === 1 ? '' : 's');
+}
+
+function ppSetupCopyPagesModal() {
+  const bg = document.getElementById('copy-pages-modal-bg');
+  if (!bg) return;
+  _ppCopyModalReady = true;
+  const list       = document.getElementById('copy-pages-list');
+  const allCb      = document.getElementById('copy-pages-all');
+  const closeBtn   = document.getElementById('copy-pages-close');
+  const cancelBtn  = document.getElementById('copy-pages-cancel');
+  const confirmBtn = document.getElementById('copy-pages-confirm');
+  if (closeBtn)  closeBtn.addEventListener('click', ppCopyPagesClose);
+  if (cancelBtn) cancelBtn.addEventListener('click', ppCopyPagesClose);
+  bg.addEventListener('click', ev => { if (ev.target === bg) ppCopyPagesClose(); });
+  if (allCb && list) {
+    allCb.addEventListener('change', () => {
+      list.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = allCb.checked; });
+      ppCopyPagesUpdateCount();
+    });
+    list.addEventListener('change', () => {
+      const cbs = list.querySelectorAll('input[type="checkbox"]');
+      const checked = list.querySelectorAll('input[type="checkbox"]:checked');
+      allCb.checked = (cbs.length > 0 && checked.length === cbs.length);
+      ppCopyPagesUpdateCount();
+    });
+  }
+  if (confirmBtn) confirmBtn.addEventListener('click', () => {
+    const ctx = _ppCopyPagesCtx;
+    let entry = null;
+    if (ctx) {
+      if      (ctx.kind === 'shape') entry = shEntryById(ctx.entryId);
+      else if (ctx.kind === 'image') entry = imgEntryById(ctx.entryId);
+      else                           entry = ctEntryById(ctx.entryId);
+    }
+    if (!entry) { ppCopyPagesClose(); return; }
+    const targetIds = Array.from(list.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.dataset.pageId);
+    if (!targetIds.length) return;
+    if (ctx.kind === 'shape') {
+      targetIds.forEach(pageId => {
+        const clone = JSON.parse(JSON.stringify(entry));
+        clone.id = 'sh-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        clone.pageId = pageId; _shEntries.push(clone); shMakeEl(clone);
+      });
+      shSave(_shEntries);
+    } else if (ctx.kind === 'image') {
+      targetIds.forEach(pageId => {
+        const clone = JSON.parse(JSON.stringify(entry));
+        clone.id = 'ig-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        clone.pageId = pageId; _imgEntries.push(clone); imgMakeEl(clone);
+      });
+      imgSave(_imgEntries);
+    } else {
+      targetIds.forEach(pageId => {
+        const clone = Object.assign({}, entry, { id: 'ct-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), pageId: pageId });
+        _ctEntries.push(clone); ctMakeEl(clone);
+      });
+      ctSave(_ctEntries);
+    }
+    ppCopyPagesClose();
+  });
+  document.addEventListener('keydown', ev => {
+    if (ev.key !== 'Escape') return;
+    if (!bg.classList.contains('open')) return;
+    ppCopyPagesClose();
+  });
+}
+
 /* ═════════════ Entry point — host HTML calls this after DOMContentLoaded ═════════════ */
 function initReportEdit() {
   /* Opt-out config (the #5 consolidation seam). A host tool can set
@@ -5120,6 +5334,11 @@ function initReportEdit() {
   setupImages();
   setupPageBgEditor();
   setupPageBgApplyModal();
+  /* National/Commercial add-ons (uniquely named, opted out by the regional
+     which has its own). Copy-pages sets _ppCopyModalReady, which switches the
+     shared copy triggers from prompt → modal. */
+  if (OPTS.copyPages    !== false) ppSetupCopyPagesModal();
+  if (OPTS.keyboardNudge !== false) ppSetupArrowKeyNudge();
   /* Slice 4 — backup/sync/audit modals. Triggers live on the pager
      with tier1-only gating; their no-op early-out when the HTML
      scaffolds aren't present keeps things safe if a future tool
