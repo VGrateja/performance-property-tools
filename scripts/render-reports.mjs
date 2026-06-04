@@ -294,6 +294,10 @@ async function renderRegion(browser, slug, lite, session) {
         '#pdf-pages-modal-bg', '#history-modal-bg',
         /* #8 — AI commentary draft modal (injected by report-edit.js). */
         '#pp-ai-modal-bg',
+        /* Live-data loading overlay on the research reports — hidden in
+           export mode by CSS + liveBoot, but remove it from the DOM too so
+           it can never paint behind the first captured page. */
+        '#live-loading-overlay',
       ];
       CHROME_SELECTORS.forEach(sel => {
         document.querySelectorAll(sel).forEach(el => el.remove());
@@ -321,7 +325,8 @@ async function renderRegion(browser, slug, lite, session) {
         #sh-picker, #sh-panel, #bg-popover, #bg-apply-modal-bg,
         #or-ctx-menu,
         #backup-modal-bg, #sync-modal-bg, #audit-modal-bg,
-        #pdf-pages-modal-bg, #history-modal-bg, #pp-ai-modal-bg { display: none !important; }
+        #pdf-pages-modal-bg, #history-modal-bg, #pp-ai-modal-bg,
+        #live-loading-overlay { display: none !important; }
 
         /* Each report page becomes one PDF page. */
         section.page {

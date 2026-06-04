@@ -469,6 +469,51 @@
   body.export-mode .concierge-btn,
   body.export-mode .concierge-panel{ display:none !important; }
 
+  /* ─────── Live-data loading overlay (regional-parity) ───────
+     Shown while liveBoot() fetches the feed + renders charts, so the report
+     never appears with blank graphs. Visible by default in the markup; JS
+     adds .hidden once data + charts are ready. Hidden in export/capture so
+     it never lands in the rendered PDFs/JPGs. */
+  body.export-mode #live-loading-overlay,
+  body[data-state="capturing"] #live-loading-overlay { display:none !important; }
+  .live-loading-overlay {
+    position: fixed; inset: 0;
+    background: radial-gradient(ellipse at center, rgba(15,25,34,0.40) 0%, rgba(8,16,24,0.72) 100%);
+    backdrop-filter: blur(14px) saturate(120%);
+    -webkit-backdrop-filter: blur(14px) saturate(120%);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 99999; opacity: 1; transition: opacity 0.45s ease; pointer-events: all;
+  }
+  .live-loading-overlay.hidden { opacity: 0; pointer-events: none; }
+  .live-loading-card {
+    background: linear-gradient(160deg, rgba(28,44,60,0.95) 0%, rgba(18,30,42,0.95) 100%);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 14px;
+    padding: 28px 38px 26px; min-width: 320px;
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    color: rgba(255,255,255,0.92); font-family: var(--font-sans, 'Roboto', system-ui, sans-serif);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(22,191,214,0.06) inset;
+    animation: live-card-enter 0.5s cubic-bezier(0.22,1,0.36,1) both, live-card-float 4s ease-in-out 0.5s infinite;
+  }
+  .live-loading-dots { display: flex; gap: 8px; align-items: center; height: 14px; }
+  .live-loading-dots span {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--cyan, #16bfd6); box-shadow: 0 0 10px rgba(22,191,214,0.55);
+    animation: live-dot-wave 1.2s ease-in-out infinite;
+  }
+  .live-loading-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .live-loading-dots span:nth-child(3) { animation-delay: 0.30s; }
+  .live-loading-region {
+    font-size: 19px; font-weight: 600; letter-spacing: 0.01em;
+    color: var(--cyan, #16bfd6); line-height: 1.2; text-align: center; margin-top: 4px;
+  }
+  .live-loading-sub {
+    font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: rgba(255,255,255,0.45); text-align: center;
+  }
+  @keyframes live-card-enter { from { opacity:0; transform: translateY(12px) scale(0.96); } to { opacity:1; transform: translateY(0) scale(1); } }
+  @keyframes live-card-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+  @keyframes live-dot-wave { 0%,60%,100% { transform: translateY(0) scale(1); opacity:0.5; } 30% { transform: translateY(-6px) scale(1.15); opacity:1; } }
+
   /* Tier-gating: tier 3+4 lose the Download button (inside the pager). */
   body.tier-3 #pp-download-pill,
   body.tier-4 #pp-download-pill{ display:none; }
@@ -583,6 +628,17 @@
 <script src="../shared/error-reporter.js"></script>
 <script src="../shared/auth.js"></script>
 <script src="../shared/auth-gate.js"></script>
+
+<!-- Live-data loading overlay — visible by default so it paints instantly;
+     liveBoot() hides it once the feed + charts are ready, so the report
+     never shows blank graphs. Hidden in export/capture via CSS. -->
+<div id="live-loading-overlay" class="live-loading-overlay" role="status" aria-live="polite">
+  <div class="live-loading-card">
+    <div class="live-loading-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+    <div class="live-loading-region" id="live-loading-region">Loading report…</div>
+    <div class="live-loading-sub" id="live-loading-sub">Fetching live data</div>
+  </div>
+</div>
 
 <a id="pp-back-to-hub" href="../index.html" title="Back to hub"
    onclick="event.preventDefault(); navigateToHubWithFade();">
@@ -1665,14 +1721,38 @@ async function downloadAllResearchPdfs() {
    is captureable. If the URL isn't set or the fetch fails, we still
    signal so export mode doesn't hang forever — pages just render
    with stub placeholders. */
+/* ── Live-data loading overlay ──────────────────────────────────
+   Visible by default in the markup so it paints instantly; liveBoot hides
+   it once the feed has loaded + charts rendered, so the report never shows
+   blank graphs. Min-visible floor avoids a flash; the fetch timeout +
+   failsafe guarantee it can never block the page indefinitely. Skipped in
+   export mode. */
+const LIVE_OVERLAY_START  = Date.now();
+const LIVE_OVERLAY_MIN_MS = PP_EXPORT_MODE ? 0 : 600;
+function hideLiveLoadingOverlay() {
+  const ov = document.getElementById('live-loading-overlay');
+  if (!ov) return;
+  const wait = Math.max(0, LIVE_OVERLAY_MIN_MS - (Date.now() - LIVE_OVERLAY_START));
+  setTimeout(() => ov.classList.add('hidden'), wait);
+}
+/* Failsafe — never leave the overlay covering the page if the feed stalls. */
+setTimeout(function () { try { hideLiveLoadingOverlay(); } catch (_) {} }, PP_EXPORT_MODE ? 0 : 23000);
+
 async function liveBoot() {
   if (!REPORT_DATA_URL) {
     console.info('[commercial-report] REPORT_DATA_URL is empty — skipping data fetch (stubbed mode).');
     window.PPA_LIVE_BOOT_DONE = true;
+    hideLiveLoadingOverlay();
     return;
   }
   try {
-    const res = await fetch(REPORT_DATA_URL, { cache: 'no-store' });
+    /* Abort a hung fetch so the overlay + PPA_LIVE_BOOT_DONE never wait
+       forever; generous window for Apps Script cold starts. */
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 20000);
+    let res;
+    try { res = await fetch(REPORT_DATA_URL, { cache: 'no-store', signal: ctrl.signal }); }
+    finally { clearTimeout(to); }
     if (!res.ok) throw new Error('HTTP ' + res.status);
     REPORT_DATA = await res.json();
     console.info('[commercial-report] data feed loaded', REPORT_DATA && REPORT_DATA._meta);
@@ -1682,6 +1762,7 @@ async function liveBoot() {
   } finally {
     /* Always set — never block Puppeteer waiting on a failed fetch. */
     window.PPA_LIVE_BOOT_DONE = true;
+    hideLiveLoadingOverlay();
   }
 }
 
