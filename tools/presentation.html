@@ -3228,10 +3228,15 @@ function scrubLegacyDeckPlaceholders() {
 scrubLegacyDeckPlaceholders();
 function saveCustomDecks() {
   _safeLsSet(CUSTOM_DECKS_KEY, JSON.stringify(_customDecks));
-  /* Push to shared cloud bin (debounced; admin-only). Defined later
-     in the script — guarded with typeof so this stays safe to call
-     before the cloud-sync block has executed. */
-  if (typeof _schedulePresCloudSave === 'function') _schedulePresCloudSave();
+  /* Structural changes (add/remove/reorder pages + decks) save to the cloud
+     IMMEDIATELY rather than on the 800ms debounce — these are deliberate,
+     infrequent actions and users often reload right after, so the debounce
+     (and an exit-flush that may not finish) was the "hit or miss" that
+     dropped freshly-added pages. Content tweaks keep the debounce. Guarded
+     with typeof so this stays safe to call before the cloud-sync block
+     has executed. */
+  if (typeof _savePresCloudNow === 'function') _savePresCloudNow();
+  else if (typeof _schedulePresCloudSave === 'function') _schedulePresCloudSave();
 }
 function getAllDecks() { return DECKS.concat(_customDecks); }
 function findDeck(id) {
@@ -4258,7 +4263,12 @@ function pasteSlidesAfter(afterIdx) {
    session-only (page reload restores). User decks live in
    _customDecks → localStorage and need an explicit save. */
 function saveActiveDeckIfCustom() {
-  if (_activeDeck && _activeDeck.custom) saveCustomDecks();
+  /* All real decks live in _customDecks now (the built-in DECKS const is
+     empty), so persist whenever the active deck is one of them — don't rely
+     solely on a `custom` flag that an older cloud-saved deck might lack. */
+  if (_activeDeck && (_activeDeck.custom || _customDecks.indexOf(_activeDeck) !== -1)) {
+    saveCustomDecks();
+  }
 }
 
 /* ═══ THEMES ═══════════════════════════════════════════════════════
@@ -9363,6 +9373,12 @@ async function _doPresCloudSave(opts) {
     );
   } finally {
     _presSaveInFlight = false;
+    /* Edits that arrived while this save was in flight (pending still set)
+       are persisted in a short follow-up so nothing is left only in memory
+       / localStorage. */
+    if (_presSavePending && _canWritePresCloud && !_presCloudSaveTimer) {
+      _presCloudSaveTimer = setTimeout(_doPresCloudSave, 150);
+    }
   }
 }
 
@@ -9372,6 +9388,20 @@ function _schedulePresCloudSave() {
   _setPresSaveStatus('saving');
   clearTimeout(_presCloudSaveTimer);
   _presCloudSaveTimer = setTimeout(_doPresCloudSave, PRES_SAVE_DEBOUNCE_MS);
+}
+
+/* Immediate (non-debounced) save for STRUCTURAL changes — adding, removing,
+   reordering or duplicating pages and decks. Skips the 800ms wait so a
+   freshly-added page reaches the cloud in a few hundred ms, well before a
+   quick refresh. If a save is already running, the change is marked pending
+   and the in-flight save's finally re-fires to capture it. */
+function _savePresCloudNow() {
+  if (!_canWritePresCloud) return;
+  _presSavePending = true;
+  _setPresSaveStatus('saving');
+  clearTimeout(_presCloudSaveTimer);
+  _presCloudSaveTimer = null;
+  if (!_presSaveInFlight) _doPresCloudSave();
 }
 
 /* Flush a pending debounced save immediately — used when the page is about
@@ -9392,6 +9422,21 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') _flushPresCloudSave();
 });
 window.addEventListener('pagehide', _flushPresCloudSave);
+
+/* Last-resort guard: if a cloud write is still pending or in flight when the
+   user reloads/closes, warn them. The async write (183 kB — too big for the
+   browser's keepalive guarantee) can be cancelled mid-flight during teardown,
+   which is how a freshly-added page was lost on a quick refresh ("hit or
+   miss"). Only prompts when there's genuinely unsaved work, so it's silent in
+   the normal case — and the native prompt buys the in-flight request time to
+   finish. */
+window.addEventListener('beforeunload', (e) => {
+  if (!_canWritePresCloud) return;
+  if (_presSavePending || _presSaveInFlight) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 async function _hydratePresFromCloud() {
   try {
@@ -9470,6 +9515,25 @@ async function _hydratePresFromCloud() {
        active slide's overlays re-render only if a deck is open;
        the theme panel re-renders only if it's currently open. */
     buildPicker();
+    /* CRITICAL: we just replaced every deck OBJECT in _customDecks with the
+       cloud copies, but _activeDeck may still point at the pre-hydrate object
+       (e.g. a ?deck= deep-link opened the deck before this async load
+       resolved). That old object is no longer in _customDecks, so slide
+       inserts on it mutate a detached deck and never get serialized on save —
+       the new page shows and says "Saved", then vanishes on refresh. Rebind
+       _activeDeck to the freshly-loaded deck of the same id and re-render so
+       all later edits + saves operate on the array that actually persists. */
+    if (_activeDeck) {
+      const live = findDeck(_activeDeck.id);
+      if (live && live !== _activeDeck) {
+        _activeDeck = live;
+        if (typeof buildThumbnails === 'function') buildThumbnails();
+        if (typeof renderSlide === 'function') {
+          const n = (live.slides || []).length;
+          renderSlide(Math.min(_slideIdx, Math.max(0, n - 1)));
+        }
+      }
+    }
     if (_activeDeck && typeof renderOverlays === 'function') renderOverlays();
     if (document.body.classList.contains('pres-theme-panel-open')) renderThemePanel();
   } catch (e) {
