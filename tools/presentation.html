@@ -213,7 +213,9 @@
   #pres-undo{ right:140px; display:none !important; }
   #pres-redo{ right:96px;  display:none !important; }
 
-  /* Fullscreen mode hides every piece of floating chrome. */
+  /* Fullscreen mode hides every piece of floating chrome — including the
+     AI Concierge widget (button + any open panel), which shouldn't appear
+     over a live presentation. */
   body.pres-fullscreen #pp-back-to-hub,
   body.pres-fullscreen #pres-theme-toggle,
   body.pres-fullscreen #pres-decks-btn,
@@ -221,6 +223,8 @@
   body.pres-fullscreen #pres-redo,
   body.pres-fullscreen .pres-mode-btn,
   body.pres-fullscreen #pres-savestat,
+  body.pres-fullscreen .concierge-btn,
+  body.pres-fullscreen .concierge-panel,
   body.pres-fullscreen .pres-mode-toggle{ display:none !important; }
 
   /* ─── Picker (Choose a Presentation) ─── */
@@ -1693,6 +1697,20 @@
   }
   .pres-copy-go:hover{ background:#00a3b8 }
 
+  /* Online Report embed chooser — region / page dropdowns. */
+  .pres-orembed-select{
+    font-family:inherit; font-size:13px; padding:8px 10px; width:100%;
+    background:rgba(255,255,255,0.06); color:inherit;
+    border:1px solid rgba(255,255,255,0.16); border-radius:6px;
+    cursor:pointer;
+  }
+  [data-theme="light"] .pres-orembed-select{
+    background:#fff; border-color:rgba(31,40,63,0.20);
+  }
+  /* Native dropdown lists render on a light surface — keep option text
+     dark so it stays readable regardless of the modal's theme. */
+  .pres-orembed-select option, .pres-orembed-select optgroup{ color:#1f283f; }
+
   .pres-tp-copy{
     width:100%;
     margin-bottom:8px;
@@ -2708,6 +2726,39 @@
     <span style="font-size:18px">📈</span>
     <span style="font-size:11px;font-weight:600">Runway · Units</span>
   </button>
+  <button class="pres-shape-pick" data-embed="online-report" type="button" title="A single page from any Online Report" style="width:100%;flex-direction:row;justify-content:flex-start;gap:8px;padding:8px 12px">
+    <span style="font-size:18px">📑</span>
+    <span style="font-size:11px;font-weight:600">Online Report…</span>
+  </button>
+</div>
+
+<!-- Online Report embed chooser — pick a Region then a Page; inserts a
+     live, read-only embed of that report page. Reuses the .pres-copy-*
+     modal frame for visual consistency. -->
+<div class="pres-copy-backdrop" id="pres-orembed-backdrop"></div>
+<div class="pres-copy-modal" id="pres-orembed-modal" style="width:420px">
+  <div class="pres-copy-head">
+    <h3>Embed an Online Report page</h3>
+    <button class="pres-copy-x" id="pres-orembed-x" type="button" title="Close">×</button>
+  </div>
+  <div style="padding:14px 16px; display:flex; flex-direction:column; gap:12px">
+    <label style="display:flex; flex-direction:column; gap:5px; font-size:12px">
+      <span style="opacity:0.8">Report</span>
+      <select id="pres-orembed-region" class="pres-orembed-select"></select>
+    </label>
+    <label style="display:flex; flex-direction:column; gap:5px; font-size:12px">
+      <span style="opacity:0.8">Page</span>
+      <select id="pres-orembed-page" class="pres-orembed-select"></select>
+    </label>
+    <p style="margin:0; font-size:11px; opacity:0.6; line-height:1.45">
+      Inserts a live, read-only snapshot of that report page. Charts stay
+      interactive — hover for tooltips. Drag, resize, or crop it like any embed.
+    </p>
+  </div>
+  <div class="pres-copy-foot">
+    <button class="pres-copy-cancel" id="pres-orembed-cancel" type="button">Cancel</button>
+    <button class="pres-copy-go" id="pres-orembed-insert" type="button">Insert</button>
+  </div>
 </div>
 
 <!-- Shape picker popover — appears under the + Shape button on click.
@@ -5489,6 +5540,202 @@ function ovAddEmbed(kind) {
   pushHistory();
 }
 
+/* ─── Online Report embed ─── embed a single page from any regional
+   Online Report (tools/online-reports.html). The chooser is Region →
+   Page; the embed loads online-reports.html in single-page export mode
+   (?region=&exportMode=1&page=) so all chrome is hidden but the charts
+   stay live + interactive (hover/tooltips work).
+
+   OR_REGIONS / OR_PAGES / page-drops mirror online-reports.html's
+   REGION_MANIFEST + section data-labels. Kept as a local copy (the hub
+   keeps its own region catalogue the same way) — these lists are stable;
+   if a region or page is added there, add it here too. pageDrops hides
+   pages a given region's report doesn't include, so the user can't pick
+   a page that would embed blank. */
+const OR_PAGE_DROPS = {
+  cap31: ['p32', 'p33'],                                  /* capitals (Syd/Mel/Bri/Ade): no Perth-only pages */
+  cap30: ['p27', 'p32', 'p33'],                           /* Hobart */
+  cap29: ['p26', 'p27', 'p32', 'p33'],                    /* Canberra / Darwin */
+  reg26: ['p14', 'p22', 'p24', 'p26', 'p27', 'p32', 'p33'], /* 26-page regional */
+};
+const OR_REGIONS = [
+  /* Research Reports — separate HTML files, own page maps, no region param.
+     pagesKey is resolved to a page map in orResolve() (at call time, so it
+     dodges the temporal-dead-zone on the maps declared further down). */
+  { slug: 'national',       name: 'National Research Report',   cluster: 'Research Reports', file: 'national-report.html',   pagesKey: 'national' },
+  { slug: 'commercial',     name: 'Commercial Research Report', cluster: 'Research Reports', file: 'commercial-report.html', pagesKey: 'commercial' },
+  /* Capital Cities */
+  { slug: 'sydney',         name: 'Sydney',         cluster: 'Capital Cities',          drops: OR_PAGE_DROPS.cap31 },
+  { slug: 'melbourne',      name: 'Melbourne',      cluster: 'Capital Cities',          drops: OR_PAGE_DROPS.cap31 },
+  { slug: 'brisbane',       name: 'Brisbane',       cluster: 'Capital Cities',          drops: OR_PAGE_DROPS.cap31 },
+  { slug: 'adelaide',       name: 'Adelaide',       cluster: 'Capital Cities',          drops: OR_PAGE_DROPS.cap31 },
+  { slug: 'perth',          name: 'Perth',          cluster: 'Capital Cities',          drops: [] /* full 33p incl. Iron Ore + Mineral Exploration */ },
+  { slug: 'hobart',         name: 'Hobart',         cluster: 'Capital Cities',          drops: OR_PAGE_DROPS.cap30 },
+  { slug: 'canberra',       name: 'Canberra',       cluster: 'Capital Cities',          drops: OR_PAGE_DROPS.cap29 },
+  { slug: 'darwin',         name: 'Darwin',         cluster: 'Capital Cities',          drops: OR_PAGE_DROPS.cap29 },
+  /* QLD Regions */
+  { slug: 'mackay',         name: 'Mackay',         cluster: 'QLD Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'bundaberg',      name: 'Bundaberg',      cluster: 'QLD Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'ipswich',        name: 'Ipswich',        cluster: 'QLD Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'rockhampton',    name: 'Rockhampton',    cluster: 'QLD Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'gladstone',      name: 'Gladstone',      cluster: 'QLD Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'cairns',         name: 'Cairns',         cluster: 'QLD Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'townsville',     name: 'Townsville',     cluster: 'QLD Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'sunshine-coast', name: 'Sunshine Coast', cluster: 'QLD Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'toowoomba',      name: 'Toowoomba',      cluster: 'QLD Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'gold-coast',     name: 'Gold Coast',     cluster: 'QLD Regions',             drops: OR_PAGE_DROPS.reg26 },
+  /* NSW Regions */
+  { slug: 'albury',         name: 'Albury',         cluster: 'NSW Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'central-coast',  name: 'Central Coast',  cluster: 'NSW Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'coffs-harbour',  name: 'Coffs Harbour',  cluster: 'NSW Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'dubbo',          name: 'Dubbo',          cluster: 'NSW Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'orange',         name: 'Orange',         cluster: 'NSW Regions',             drops: ['p7', ...OR_PAGE_DROPS.reg26] /* also no Industry */ },
+  { slug: 'port-macquarie', name: 'Port Macquarie', cluster: 'NSW Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'newcastle',      name: 'Newcastle',      cluster: 'NSW Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'tamworth',       name: 'Tamworth',       cluster: 'NSW Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'wagga-wagga',    name: 'Wagga Wagga',    cluster: 'NSW Regions',             drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'wollongong',     name: 'Wollongong',     cluster: 'NSW Regions',             drops: OR_PAGE_DROPS.reg26 },
+  /* VIC / WA / TAS Regions */
+  { slug: 'ballarat',       name: 'Ballarat',       cluster: 'VIC / WA / TAS Regions',  drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'bendigo',        name: 'Bendigo',        cluster: 'VIC / WA / TAS Regions',  drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'geelong',        name: 'Geelong',        cluster: 'VIC / WA / TAS Regions',  drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'wodonga',        name: 'Wodonga',        cluster: 'VIC / WA / TAS Regions',  drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'mildura',        name: 'Mildura',        cluster: 'VIC / WA / TAS Regions',  drops: ['p11', ...OR_PAGE_DROPS.reg26] /* also no Pop Movement */ },
+  { slug: 'rockingham',     name: 'Rockingham',     cluster: 'VIC / WA / TAS Regions',  drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'bunbury',        name: 'Bunbury',        cluster: 'VIC / WA / TAS Regions',  drops: OR_PAGE_DROPS.reg26 },
+  { slug: 'launceston',     name: 'Launceston',     cluster: 'VIC / WA / TAS Regions',  drops: OR_PAGE_DROPS.reg26 },
+];
+const OR_PAGES = [
+  ['p1', 'Cover'],            ['p2', 'At a Glance'],      ['p3', 'Median Price'],
+  ['p4', 'YoY Price'],        ['p5', 'Stock vs DoM'],     ['p6', 'Trends'],
+  ['p7', 'Industry'],         ['p8', 'Pyramid'],          ['p9', 'Price to Income'],
+  ['p10', 'Vacancy v Rent'],  ['p11', 'Pop Movement'],    ['p12', 'Pop Change'],
+  ['p13', 'Job Creation'],    ['p14', 'Mortgage Arrears'],['p15', 'House v Unit'],
+  ['p16', 'Aff. Index House'],['p17', 'Aff. Index Unit'], ['p18', 'Lending v Price'],
+  ['p19', 'Dwelling Sales'],  ['p20', 'Dwelling Approvals'],['p21', 'New HH v Housing'],
+  ['p22', 'FHB %'],           ['p23', 'Income/Rent AI'],  ['p24', 'Retail Turnover'],
+  ['p25', 'Unemployment'],    ['p26', 'Business Inv.'],   ['p27', 'Current Inv.'],
+  ['p28', 'Yield/Cash House'],['p29', 'Yield/Cash Unit'], ['p30', 'Syd v Melb'],
+  ['p31', 'Contact Us'],      ['p32', 'Iron Ore Price'],  ['p33', 'Mineral Exploration'],
+];
+/* The two Research Reports (national-report.html / commercial-report.html)
+   have their own page structures — separate label maps, no region param.
+   Mirrors their section data-labels. */
+const OR_PAGES_NATIONAL = [
+  ['p1', 'Cover'],                              ['p2', 'Median Price'],
+  ['p3', 'Median House Price'],                 ['p4', 'Median House Price 2'],
+  ['p5', 'Vacancy Rate'],                       ['p6', 'Dwelling Approvals'],
+  ['p7', 'Dwelling Commencements'],             ['p8', 'Population Growth'],
+  ['p9', 'Population Pyramid'],                  ['p10', 'Household Type'],
+  ['p11', 'Affordability Index'],               ['p12', 'Affordability Index Regional'],
+  ['p13', 'Price to Income Ratio'],             ['p14', 'Price to Income Ratio Regional'],
+  ['p15', 'FHB % Population'],                   ['p16', 'National Retail Spending'],
+  ['p17', 'Unemployment Rate'],                 ['p18', 'Business Investment'],
+  ['p19', 'Job Vacancies'],                     ['p20', 'Internet Job Vacancies'],
+  ['p21', 'Federal Budget'],                    ['p22', 'Inflation v Cash Rate'],
+  ['p23', 'Engineering Work'],                  ['p24', 'National Population Movement'],
+  ['p25', 'State Net Overseas Migration'],      ['p26', 'State Net Interstate Migration'],
+  ['p27', 'Govt Debt to GDP v. RBA Cash Rate'], ['p28', 'Top 20 Economies'],
+  ['p29', 'Investor v Homebuyer Lending'],      ['p30', 'Household Debt to Income'],
+  ['p31', 'Mortgage Arrears - National'],       ['p32', 'Mortgage Arrears - State'],
+  ['p33', 'Contact Us'],
+];
+const OR_PAGES_COMMERCIAL = [
+  ['p1', 'Cover'],                       ['p2', 'Why Commercial Property?'],
+  ['p3', 'Risk v Long Term Return'],     ['p4', 'Why Must Commercial Rise?'],
+  ['p5', 'Cash Rate v Inflation'],       ['p6', 'Building Price Indices'],
+  ['p7', 'Building Approvals'],          ['p8', 'Retail Turnover'],
+  ['p9', 'Population Growth'],           ['p10', 'What is Competitive Net Yield?'],
+  ['p11', 'Return on Stocks & Gold'],    ['p12', 'Government Bonds Yield'],
+  ['p13', 'Corporate Bond Yield'],       ['p14', 'Gov Bond Yields by Maturity'],
+  ['p15', 'Industrial'],                 ['p16', 'Industrial Vacancy'],
+  ['p17', 'Freight Movement'],           ['p18', 'Medical'],
+  ['p19', 'Individuals Accessing a GP'], ['p20', 'Population Pyramid'],
+  ['p21', 'GP Visits by Age'],           ['p22', 'Federal Health Budget'],
+  ['p23', 'Work From Home'],             ['p24', 'E-Commerce Sales'],
+  ['p25', 'Contact Us'],
+];
+/* Look up a chooser entry by its dropdown value (slug / report key). */
+function orEntry(slug) { return OR_REGIONS.find(r => r.slug === slug); }
+/* Resolve an entry to the bits needed to build the embed: which HTML file
+   to load, the region param (null for the National/Commercial research
+   reports, which aren't region-scoped), the page label map, and any pages
+   that report omits. Regional entries fall back to the shared defaults. */
+function orResolve(entry) {
+  if (!entry) return null;
+  const isResearch = !!entry.file; /* national/commercial set `file` explicitly */
+  const pageMaps = { national: OR_PAGES_NATIONAL, commercial: OR_PAGES_COMMERCIAL };
+  return {
+    file:   entry.file || 'online-reports.html',
+    region: isResearch ? null : entry.slug,
+    pages:  entry.pagesKey ? pageMaps[entry.pagesKey] : OR_PAGES,
+    drops:  entry.drops || [],
+  };
+}
+function orFillRegionSelect() {
+  const sel = document.getElementById('pres-orembed-region');
+  if (!sel || sel.options.length) return; /* build once */
+  let lastCluster = '', group = null;
+  OR_REGIONS.forEach(r => {
+    if (r.cluster !== lastCluster) {
+      group = document.createElement('optgroup');
+      group.label = r.cluster;
+      sel.appendChild(group);
+      lastCluster = r.cluster;
+    }
+    const o = document.createElement('option');
+    o.value = r.slug; o.textContent = r.name;
+    group.appendChild(o);
+  });
+}
+function orFillPageSelect() {
+  const rsel = document.getElementById('pres-orembed-region');
+  const psel = document.getElementById('pres-orembed-page');
+  if (!rsel || !psel) return;
+  const r = orResolve(orEntry(rsel.value)) || orResolve(OR_REGIONS[0]);
+  const drops = new Set(r.drops);
+  const prev = psel.value;
+  psel.innerHTML = '';
+  r.pages.forEach(([id, label]) => {
+    if (drops.has(id)) return;
+    const o = document.createElement('option');
+    o.value = id;
+    o.textContent = label + '  (' + id + ')';
+    psel.appendChild(o);
+  });
+  /* Keep the prior page selected across a report switch only if that page
+     exists (and isn't dropped) in the newly selected report. */
+  if (prev && r.pages.some(p => p[0] === prev) && !drops.has(prev)) psel.value = prev;
+}
+function ovAddOnlineReportEmbed(slug, pageId) {
+  const entry = orEntry(slug);
+  const r = orResolve(entry);
+  if (!entry || !r) return;
+  const pageEntry = r.pages.find(p => p[0] === pageId);
+  if (!pageEntry) return;
+  /* Research reports aren't region-scoped, so omit the region param. */
+  const src = r.region
+    ? r.file + '?region=' + encodeURIComponent(r.region) + '&exportMode=1&page=' + encodeURIComponent(pageId)
+    : r.file + '?exportMode=1&page=' + encodeURIComponent(pageId);
+  /* 4:3 default — matches the 1200×900 report page so it embeds without
+     letterboxing. The user can resize / crop from there. */
+  const w = 800, h = 600;
+  currentOverlays().push({
+    id:    'embed-or-' + slug + '-' + pageId + '-' + Date.now(),
+    type:  'embed',
+    src:   src,
+    title: entry.name + ' — ' + pageEntry[1],
+    x: (1280 - w) / 2,
+    y: (720 - h) / 2,
+    w, h,
+    cropT: 0, cropB: 0, cropL: 0, cropR: 0,
+  });
+  saveOverlays();
+  _selectedId = currentOverlays()[currentOverlays().length - 1].id;
+  renderOverlays();
+  pushHistory();
+}
+
 /* ─── Table overlays ─── 3×3 default; the user can resize columns
    and rows individually by dragging cell boundaries. Cells are
    contenteditable — click to focus, type to enter text. Right-click
@@ -8162,8 +8409,11 @@ addEmbedBtn.addEventListener('click', (ev) => {
 });
 embedPicker.querySelectorAll('.pres-shape-pick').forEach(btn => {
   btn.addEventListener('click', () => {
-    ovAddEmbed(btn.dataset.embed);
     embedPicker.classList.remove('open');
+    /* Online Report needs a Region → Page choice first, so open the
+       chooser instead of inserting straight away. */
+    if (btn.dataset.embed === 'online-report') { openOrEmbedChooser(); return; }
+    ovAddEmbed(btn.dataset.embed);
   });
 });
 document.addEventListener('click', (ev) => {
@@ -8172,6 +8422,31 @@ document.addEventListener('click', (ev) => {
   }
 });
 preserveEditableFocus(embedPicker);
+
+/* Online Report embed chooser — Region → Page, then Insert. */
+const orEmbedBackdrop = document.getElementById('pres-orembed-backdrop');
+const orEmbedModal    = document.getElementById('pres-orembed-modal');
+const orEmbedRegion   = document.getElementById('pres-orembed-region');
+const orEmbedPage     = document.getElementById('pres-orembed-page');
+function openOrEmbedChooser() {
+  orFillRegionSelect();
+  orFillPageSelect();
+  orEmbedBackdrop.classList.add('open');
+  orEmbedModal.classList.add('open');
+}
+function closeOrEmbedChooser() {
+  orEmbedBackdrop.classList.remove('open');
+  orEmbedModal.classList.remove('open');
+}
+orEmbedRegion.addEventListener('change', orFillPageSelect);
+document.getElementById('pres-orembed-x').addEventListener('click', closeOrEmbedChooser);
+document.getElementById('pres-orembed-cancel').addEventListener('click', closeOrEmbedChooser);
+orEmbedBackdrop.addEventListener('click', closeOrEmbedChooser);
+document.getElementById('pres-orembed-insert').addEventListener('click', () => {
+  const slug = orEmbedRegion.value, pageId = orEmbedPage.value;
+  if (slug && pageId) ovAddOnlineReportEmbed(slug, pageId);
+  closeOrEmbedChooser();
+});
 
 /* + Slide / Delete slide — handled by the thumbnail rail's
    "+ Slide" tile, the right-click context menu on each thumbnail,

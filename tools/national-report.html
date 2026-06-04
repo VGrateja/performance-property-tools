@@ -1704,6 +1704,50 @@ const PP_EXPORT_MODE = (function () {
 })();
 if (PP_EXPORT_MODE) document.body.classList.add('export-mode');
 
+/* ── Single-page embed (?page=pX) ───────────────────────────────────
+   Used by the presentation builder's "Online Report" embed: show ONE
+   page, scaled to fill the iframe, with chrome hidden. The charts stay
+   live + interactive (hover/tooltips) — a live read-only snapshot.
+   Pairs with exportMode=1 (skips the loading overlay so it paints
+   immediately) but self-hides chrome so it also works standalone. */
+const PP_EMBED_PAGE = (function () {
+  try { return new URLSearchParams(location.search).get('page') || ''; }
+  catch (e) { return ''; }
+})();
+if (PP_EMBED_PAGE) {
+  const es = document.createElement('style');
+  es.textContent = ''
+    + 'html, body { overflow: hidden !important; background: transparent !important; margin: 0 !important; }'
+    + '.pp-pager, .side-toc, #pp-back-to-hub, #pp-back-to-cluster, '
+    + '  .concierge-btn, .concierge-panel { display: none !important; }'
+    /* Keep the loading overlay visible while the feed + charts load, so the
+       embed shows "Loading" instead of a blank page — overrides the
+       export-mode rule that normally hides it. (hideLiveLoadingOverlay
+       fades it via opacity, so this display override doesn't block the
+       hide once charts are ready.) */
+    + 'body.export-mode #live-loading-overlay { display: flex !important; }'
+    + '.page-outer-wrap { padding: 0 !important; margin: 0 !important; }'
+    + 'section.page { display: none !important; }'
+    + 'section.page.pp-embed-only { display: block !important; '
+    + '  transform: scale(var(--pp-embed-scale, 1)) !important; transform-origin: top left !important; '
+    + '  margin: 0 !important; }';
+  document.head.appendChild(es);
+  const _ppEmbedApply = function () {
+    const target = document.getElementById(PP_EMBED_PAGE);
+    if (!target) return;
+    document.querySelectorAll('section.page.pp-embed-only').forEach(el => el.classList.remove('pp-embed-only'));
+    target.classList.add('pp-embed-only');
+    const rescale = () => {
+      const vw = window.innerWidth || 1200;
+      document.documentElement.style.setProperty('--pp-embed-scale', String(vw / 1200));
+    };
+    rescale();
+    window.addEventListener('resize', rescale);
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(_ppEmbedApply, 0));
+  else setTimeout(_ppEmbedApply, 0);
+}
+
 /* ── Theme persistence ───────────────────────────────────────── */
 const THEME_KEY = 'pp-theme';
 function applyTheme(theme) {
@@ -2116,8 +2160,11 @@ function hideLiveLoadingOverlay() {
   const wait = Math.max(0, LIVE_OVERLAY_MIN_MS - (Date.now() - LIVE_OVERLAY_START));
   setTimeout(() => ov.classList.add('hidden'), wait);
 }
-/* Failsafe — never leave the overlay covering the page if the feed stalls. */
-setTimeout(function () { try { hideLiveLoadingOverlay(); } catch (_) {} }, PP_EXPORT_MODE ? 0 : 23000);
+/* Failsafe — never leave the overlay covering the page if the feed stalls.
+   In a presentation embed we WANT the overlay to persist until liveBoot's
+   finally hides it (so the slide shows "Loading", not blank graphs), so the
+   embed path uses the normal 23s backstop rather than the 0ms export kill. */
+setTimeout(function () { try { hideLiveLoadingOverlay(); } catch (_) {} }, (PP_EXPORT_MODE && !PP_EMBED_PAGE) ? 0 : 23000);
 
 async function liveBoot() {
   if (!REPORT_DATA_URL) {
