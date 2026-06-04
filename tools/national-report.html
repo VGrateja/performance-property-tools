@@ -2603,16 +2603,21 @@ function _renderP11_AffordabilityIndex(d) {
   const years = (d.year || []).map(String);
   if (!years.length) return;
   if (!d.aiCapCity && !d.capCityMedianPrice) return;
+  /* p11 begins at 1990 per request — slice the year axis and both series in
+     lockstep so values stay aligned with their years. */
+  const _from = _fromYear(years, 1990);
+  const yrs   = years.slice(_from);
+  const _sl   = a => Array.isArray(a) ? a.slice(_from) : a;
   _mountChart('p11', Object.assign(_baseChartOption(), {
     legend: Object.assign(_baseChartOption().legend, { data: ['Affordability Index', 'Median House Price'] }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: yrs }),
     yAxis: [
       { type: 'value', name: 'Affordability Index', nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(0) + '%' }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
       { type: 'value', name: 'Median House Price',  nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e6 ? (v/1e6).toFixed(1) + 'm' : v >= 1e3 ? (v/1e3) + 'k' : v }, splitLine: { show: false } },
     ],
     series: [
-      { name: 'Affordability Index', type: 'bar',  yAxisIndex: 0, data: d.aiCapCity || [], itemStyle: { color: CHART_COLORS[2] } },
-      { name: 'Median House Price',  type: 'line', yAxisIndex: 1, data: d.capCityMedianPrice || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: 'Affordability Index', type: 'bar',  yAxisIndex: 0, data: _sl(d.aiCapCity || []), itemStyle: { color: CHART_COLORS[2] } },
+      { name: 'Median House Price',  type: 'line', yAxisIndex: 1, data: _sl(d.capCityMedianPrice || []), showSymbol: false, lineStyle: { width: 2, color: '#000' } },
     ],
   }));
 }
@@ -2632,21 +2637,46 @@ function _renderP13_PriceToIncomeRatio(d) {
 }
 
 function _renderP10_HouseholdType(d) {
-  const years = (d.householdTypeYear || []).map(String);
-  if (!years.length) return;
+  const rawYears = d.householdTypeYear || [];
+  if (!rawYears.length) return;
+  /* householdTypeYear is stored as the prior 31 Dec (UTC) — the census year is
+     the next year, giving 1991, 1996, 2001, 2006, 2011, 2016, 2021. */
+  const years = rawYears.map(s => { const dt = new Date(s); return String(dt.getUTCMonth() === 11 ? dt.getUTCFullYear() + 1 : dt.getUTCFullYear()); });
+  /* The category arrays are SHARES (0–1), not counts — multiply by the total
+     households for that census to get the actual counts the report shows
+     (millions). Without this the y-axis read raw decimals (0.39) and the hover
+     showed long decimal shares (0.3926768…). */
+  const total = d.householdByTypeTotal || [];
+  const toCounts = arr => Array.isArray(arr) ? arr.map((v, i) => (v == null || total[i] == null) ? null : Math.round(v * total[i])) : arr;
   const fields = [
-    ['Couples w/ Children',  d.coupleWithChildren,         CHART_COLORS[2]],
-    ['Couples w/o Children', d.couplesWithoutChildren,     CHART_COLORS[3]],
-    ['1 Parent Fam',          d.oneParentFamilies,          '#f5d566'],
-    ['Lone Person',           d.lonePerson,                 CHART_COLORS[1]],
-    ['Other',                 d.otherFamilies,              '#f5a623'],
-    ['Group',                 d.groupHousehold,             '#3ecf8e'],
+    ['Couples w/ Children',  toCounts(d.coupleWithChildren),     CHART_COLORS[2]],
+    ['Couples w/o Children', toCounts(d.couplesWithoutChildren), CHART_COLORS[3]],
+    ['1 Parent Fam',          toCounts(d.oneParentFamilies),      '#f5d566'],
+    ['Lone Person',           toCounts(d.lonePerson),             CHART_COLORS[1]],
+    ['Other',                 toCounts(d.otherFamilies),          '#f5a623'],
+    ['Group',                 toCounts(d.groupHousehold),         '#3ecf8e'],
   ].filter(([_, v]) => Array.isArray(v) && v.length);
   if (!fields.length) return;
   _mountChart('p10', Object.assign(_baseChartOption(), {
+    /* Counts shown cleanly (m / k) so the hover no longer reads as raw shares. */
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'shadow' },
+      backgroundColor: 'rgba(15,25,34,0.95)', borderColor: '#2a3a48',
+      textStyle: { color: '#fff', fontFamily: 'Ubuntu, "Roboto", sans-serif', fontSize: 12 },
+      formatter: (params) => {
+        const arr  = Array.isArray(params) ? params : [params];
+        const head = arr.length ? arr[0].axisValue : '';
+        const fmt  = (val) => { const v = Number(val); return isNaN(v) ? '—' : (v >= 1e6 ? (v/1e6).toFixed(2) + 'm' : v >= 1e3 ? (v/1e3).toFixed(0) + 'k' : String(Math.round(v))); };
+        const lines = arr.map(p => '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + p.color + ';margin-right:6px"></span>' + p.seriesName + ': <strong>' + fmt(p.value) + '</strong>');
+        return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + lines.join('<br/>');
+      },
+    },
     legend: Object.assign(_baseChartOption().legend, { data: fields.map(f => f[0]) }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    /* Census years on one row — identity formatter skips _mountChart's year-staircase. */
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: years, axisLabel: { color: '#1a2236', fontSize: 11, formatter: (v) => v } }),
+    /* Counts axis pinned 0–3m in 500k steps (0, 500k, 1m … 3m), matching the report. */
     yAxis: Object.assign(_baseChartOption().yAxis, {
+      min: 0, max: 3000000, interval: 500000,
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e6 ? (v/1e6) + 'm' : v >= 1e3 ? (v/1e3) + 'k' : v },
     }),
     series: fields.map(([name, data, color]) => ({
