@@ -1571,9 +1571,9 @@
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title"></h1><div class="rh-section"></div><div class="rh-meta"></div></header>
     <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — Manufacturing + Mining + Total industry investment ($M).</div></div></div>
   </section>
-  <section class="page" id="p19" data-label="Residential Lending">
+  <section class="page" id="p19" data-label="Job Vacancies">
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title"></h1><div class="rh-section"></div><div class="rh-meta"></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — monthly new loan commitments ($M) for owner-occupier vs investor housing.</div></div></div>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — total ABS job vacancies (thousands), Private vs Public sector.</div></div></div>
     <div class="rh-foot"></div>
   </section>
 
@@ -2328,9 +2328,13 @@ function _mountChart(pageId, option) {
   _xAxes.forEach(ax => {
     if (!ax || ax.type !== 'category') return;
     const al = ax.axisLabel = Object.assign({}, ax.axisLabel || {});
-    al.interval = 0;
-    al.rotate = 0;
+    /* A renderer that supplies its own formatter manages its own labels (e.g.
+       date axes that thin out + rotate, or region / census-year axes on one
+       row) — leave its interval/rotate intact. Only the default (year) case
+       gets every-label + the staircase. */
     if (typeof al.formatter !== 'function') {
+      al.interval = 0;
+      al.rotate = 0;
       al.lineHeight = 14;
       al.formatter = (v, i) => (i % 2 === 0) ? String(v) : '\n' + String(v);
     }
@@ -2676,8 +2680,8 @@ function _renderP10_HouseholdType(d) {
       },
     },
     legend: Object.assign(_baseChartOption().legend, { data: fields.map(f => f[0]) }),
-    /* Census years on one row — identity formatter skips _mountChart's year-staircase. */
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: years, axisLabel: { color: '#1a2236', fontSize: 11, formatter: (v) => v } }),
+    /* Census years on one row — identity formatter skips _mountChart's year-staircase; interval:0 shows all 7. */
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: years, axisLabel: { color: '#1a2236', fontSize: 11, interval: 0, formatter: (v) => v } }),
     /* Counts axis pinned 0–3m in 500k steps (0, 500k, 1m … 3m), matching the report. */
     yAxis: Object.assign(_baseChartOption().yAxis, {
       min: 0, max: 3000000, interval: 500000,
@@ -3080,22 +3084,30 @@ function _renderP5_VacancyRate(d) {
   }));
 }
 
-function _renderP19_ResidentialLending(d) {
-  const dates = (d.lendingDate || []).map(v => String(v).slice(0, 10));
-  if (!dates.length || (!d.ownerOccupierAbs && !d.investorAbs)) return;
+function _renderP19_JobVacancies(d) {
+  const raw = d.dateNationalJobVacancies || [];
+  if (!raw.length || (!d.nationalJobVacanciesPrivate && !d.nationalJobVacanciesPublic)) return;
+  /* Dates are stored as the prior month-end (UTC); shift +12h and read UTC so
+     the label is the intended local date, e.g. "1 May 1988". */
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dates = raw.map(s => { const dt = new Date(new Date(s).getTime() + 12 * 3600 * 1000); return dt.getUTCDate() + ' ' + MON[dt.getUTCMonth()] + ' ' + dt.getUTCFullYear(); });
   _mountChart('p19', Object.assign(_baseChartOption(), {
-    legend: Object.assign(_baseChartOption().legend, { data: ['Owner Occupier', 'Investor'] }),
+    legend: Object.assign(_baseChartOption().legend, { data: ['Private', 'Public'] }),
     xAxis: Object.assign(_baseChartOption().xAxis, {
       data: dates,
-      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(dates.length / 16)) },
+      /* Own formatter (so _mountChart leaves this date axis alone) + thinned,
+         rotated labels like the source report. More labels than before, and
+         showMin/MaxLabel guarantee the first AND latest date are always shown
+         (a numeric interval alone can skip the last tick). */
+      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(dates.length / 28)), showMinLabel: true, showMaxLabel: true, formatter: (v) => v },
     }),
     yAxis: Object.assign(_baseChartOption().yAxis, {
-      name: 'New lending ($M)', nameTextStyle: { color: '#1a2236' },
-      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e3 ? (v/1e3).toFixed(1) + 'b' : v + 'm' },
+      name: 'Private / Public', nameTextStyle: { color: '#1a2236' },
+      axisLabel: { color: '#1a2236', fontSize: 11 },
     }),
     series: [
-      { name: 'Owner Occupier', type: 'line', data: d.ownerOccupierAbs || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
-      { name: 'Investor',       type: 'line', data: d.investorAbs       || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+      { name: 'Private', type: 'line', data: d.nationalJobVacanciesPrivate || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: 'Public',  type: 'line', data: d.nationalJobVacanciesPublic  || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
     ],
   }));
 }
@@ -3285,7 +3297,7 @@ function renderAllCharts(payload) {
   try { _renderP16_NationalRetailSpending(d); }    catch (e) { console.warn('[p16]', e); }
   try { _renderP17_Unemployment(d); }              catch (e) { console.warn('[p17]', e); }
   try { _renderP18_BusinessInvestment(d); }        catch (e) { console.warn('[p18]', e); }
-  try { _renderP19_ResidentialLending(d); }        catch (e) { console.warn('[p19]', e); }
+  try { _renderP19_JobVacancies(d); }              catch (e) { console.warn('[p19]', e); }
   try { _renderP20_InternetJobVacancies(d); }      catch (e) { console.warn('[p20]', e); }
   try { _renderP21_NationalJobVacancies(d); }      catch (e) { console.warn('[p21]', e); }
   try { _renderP22_InflationVsCashRate(d); }       catch (e) { console.warn('[p22]', e); }
