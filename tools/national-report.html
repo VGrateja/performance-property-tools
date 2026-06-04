@@ -2331,14 +2331,17 @@ function _mountChart(pageId, option) {
     }
   });
   /* Reference Bands (Growth / Correction periods) — drawn behind the price
-     charts only, matching the regional. Geometry + colours come from the
-     shared report-edit.js bands engine (ppBandsMarkArea). We attach the
-     markArea to the first real line series so it paints behind the data, and
-     append two dummy line series (empty data, band-coloured) plus rect legend
-     entries so the bands read in the legend exactly like the regional. The
-     dummies are appended at the END (not the front) so the real series keep
-     their default-palette indices and their line colours don't shift. */
+     charts only, matching the regional. Hidden entirely until the user has
+     saved a custom band set (ppBandsLoad() returns a non-empty array): an
+     untouched report shows no default shading and no legend swatches, and both
+     appear together the moment a band is added/edited. Geometry + colours come
+     from the shared report-edit.js bands engine (ppBandsMarkArea). The markArea
+     attaches to the first real line series; two dummy line series (empty data,
+     band-coloured) + rect legend entries give the legend swatches, appended at
+     the END so the real series keep their default-palette colours. */
+  const _customBands = (typeof ppBandsLoad === 'function') ? ppBandsLoad() : null;
   if (_PP_BAND_PAGES.indexOf(pageId) >= 0 &&
+      Array.isArray(_customBands) && _customBands.length &&
       typeof ppBandsMarkArea === 'function' &&
       Array.isArray(option.series) && option.series.length) {
     try {
@@ -2372,19 +2375,30 @@ function _mountChart(pageId, option) {
    They short-circuit gracefully if the columns they need aren't in
    the payload — so a renderer never blocks the others. */
 
+/* p2/p3/p4 begin at 1980 — the national feed carries 1975+, but these price
+   charts start at 1980 per request. Slice the year axis and every series in
+   lockstep (same start index) so values stay aligned with their years. */
+function _from1980(years) {
+  const i = years.findIndex(y => Number(y) >= 1980);
+  return i < 0 ? 0 : i;
+}
+
 function _renderP2_MedianPrice(d) {
   const years = (d.year || []).map(String);
   if (!years.length || !d.capCityMedianPrice) return;
+  const _from = _from1980(years);
+  const yrs   = years.slice(_from);
+  const _sl   = a => Array.isArray(a) ? a.slice(_from) : a;
   _mountChart('p2', Object.assign(_baseChartOption(), {
     legend: { top: 4, left: 60, orient: 'horizontal', itemGap: 28, itemWidth: 22, itemHeight: 12, textStyle: { color: '#1a2236', fontSize: 12, fontWeight: 600 }, data: ['Cap City Median Price', 'Regional Median Price'] },
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: yrs }),
     yAxis: Object.assign(_baseChartOption().yAxis, {
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e6 ? (v/1e6) + 'm' : v >= 1e3 ? (v/1e3) + 'k' : v },
     }),
     series: [
-      { name: 'Cap City Median Price', type: 'line', data: d.capCityMedianPrice, smooth: false, showSymbol: false, lineStyle: { width: 2 },
-        markLine: { silent: true, symbol: 'none', data: _recessionMarkLines(years) } },
-      { name: 'Regional Median Price', type: 'line', data: d.regionalMedianPrice || [], smooth: false, showSymbol: false, lineStyle: { width: 2 } },
+      { name: 'Cap City Median Price', type: 'line', data: _sl(d.capCityMedianPrice), smooth: false, showSymbol: false, lineStyle: { width: 2 },
+        markLine: { silent: true, symbol: 'none', data: _recessionMarkLines(yrs) } },
+      { name: 'Regional Median Price', type: 'line', data: _sl(d.regionalMedianPrice || []), smooth: false, showSymbol: false, lineStyle: { width: 2 } },
     ],
   }));
 }
@@ -2392,6 +2406,8 @@ function _renderP2_MedianPrice(d) {
 function _renderP3_MedianHousePrice(d) {
   const years = (d.year || []).map(String);
   if (!years.length) return;
+  const _from = _from1980(years);
+  const yrs   = years.slice(_from);
   const series = [
     ['Sydney',    d.nswMedianHousePrice],
     ['Perth',     d.waMedianHousePrice],
@@ -2402,13 +2418,13 @@ function _renderP3_MedianHousePrice(d) {
   if (!series.length) return;
   _mountChart('p3', Object.assign(_baseChartOption(), {
     legend: Object.assign(_baseChartOption().legend, { data: series.map(s => s[0]) }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: yrs }),
     yAxis: Object.assign(_baseChartOption().yAxis, {
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e6 ? (v/1e6).toFixed(1) + 'm' : v >= 1e3 ? (v/1e3) + 'k' : v },
     }),
     series: series.map(([name, data], i) => ({
-      name, type: 'line', data, showSymbol: false, lineStyle: { width: 2 },
-      markLine: i === 0 ? { silent: true, symbol: 'none', data: _recessionMarkLines(years) } : undefined,
+      name, type: 'line', data: data.slice(_from), showSymbol: false, lineStyle: { width: 2 },
+      markLine: i === 0 ? { silent: true, symbol: 'none', data: _recessionMarkLines(yrs) } : undefined,
     })),
   }));
 }
@@ -2426,15 +2442,17 @@ function _renderP4_MedianHousePriceRest(d) {
     ['Geelong',        d.geelongMedianHousePrice],
   ].filter(([_, v]) => Array.isArray(v) && v.length);
   if (!series.length) return;
+  const _from = _from1980(years);
+  const yrs   = years.slice(_from);
   _mountChart('p4', Object.assign(_baseChartOption(), {
     legend: Object.assign(_baseChartOption().legend, { data: series.map(s => s[0]) }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: yrs }),
     yAxis: Object.assign(_baseChartOption().yAxis, {
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e6 ? (v/1e6).toFixed(1) + 'm' : v >= 1e3 ? (v/1e3) + 'k' : v },
     }),
     series: series.map(([name, data], i) => ({
-      name, type: 'line', data, showSymbol: false, lineStyle: { width: 2 },
-      markLine: i === 0 ? { silent: true, symbol: 'none', data: _recessionMarkLines(years) } : undefined,
+      name, type: 'line', data: data.slice(_from), showSymbol: false, lineStyle: { width: 2 },
+      markLine: i === 0 ? { silent: true, symbol: 'none', data: _recessionMarkLines(yrs) } : undefined,
     })),
   }));
 }
