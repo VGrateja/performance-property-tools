@@ -9283,7 +9283,7 @@ let _ctClipboard = null;
 let _ctPasteStep = 0;           /* incremental paste offset multiplier */
 const _CT_PASTE_OFFSET = 15;    /* px shift between successive pastes */
 
-function _ctClipboardCopy() {
+function _ctClipboardCopy(skipStore) {
   const items = [];
   document.querySelectorAll('.custom-text.selected').forEach(el => {
     const entry = _ctEntries.find(e => e.id === el.dataset.id);
@@ -9300,6 +9300,7 @@ function _ctClipboardCopy() {
   if (!items.length) return false;
   _ctClipboard = items;
   _ctPasteStep = 0;
+  if (!skipStore && typeof ppClipboardStore === 'function') ppClipboardStore(items);  /* mirror to cross-report clipboard (skipped by duplicate) */
   return true;
 }
 
@@ -9354,16 +9355,27 @@ function _ctClipboardPaste(opts) {
      (used by Ctrl+D / duplicate). Otherwise the whole group lands
      on whichever page is currently in view, while preserving the
      items' relative offsets. */
-  if (!_ctClipboard || !_ctClipboard.length) return false;
-  const visiblePageId = ctVisiblePageId();
-  if (!opts || !opts.inPlace) {
-    if (!visiblePageId) return false;
+  /* Resolve the clipboard: in-memory (copied this session = same report) first,
+     else the cross-report localStorage clipboard. `exact` = the items came from
+     a DIFFERENT report → keep each item's original page + position with no
+     cascade offset, so the layout lands identically in this report. */
+  let items = _ctClipboard;
+  let exact = false;
+  if ((!items || !items.length) && typeof ppClipboardLoadShared === 'function') {
+    const shared = ppClipboardLoadShared();
+    if (shared) { items = shared.items; exact = (typeof ppReportId === 'function') && (shared.source !== ppReportId()); }
   }
-  /* Successive pastes fan out diagonally so cloned items don't
-     perfectly stack on the originals. Reset on every fresh copy/cut. */
-  _ctPasteStep += 1;
-  const dx = _CT_PASTE_OFFSET * _ctPasteStep;
-  const dy = _CT_PASTE_OFFSET * _ctPasteStep;
+  if (!items || !items.length) return false;
+  /* Only duplicate keeps the original pageId. A cross-report (exact) paste
+     lands on the page you're VIEWING, at each item's original x/y (no offset). */
+  const inPlace = !!(opts && opts.inPlace);
+  const visiblePageId = ctVisiblePageId();
+  if (!inPlace && !visiblePageId) return false;
+  /* Successive same-report pastes fan out diagonally so clones don't stack on
+     the originals; a cross-report (exact) paste uses no offset. */
+  if (!exact) _ctPasteStep += 1;
+  const dx = exact ? 0 : _CT_PASTE_OFFSET * _ctPasteStep;
+  const dy = exact ? 0 : _CT_PASTE_OFFSET * _ctPasteStep;
 
   /* Pre-clear current selection so the freshly pasted items become
      the new selection (added below). */
@@ -9372,12 +9384,12 @@ function _ctClipboardPaste(opts) {
   if (typeof imgDeselectAll === 'function') imgDeselectAll();
 
   let textChanged = false, shapeChanged = false, imageChanged = false;
-  _ctClipboard.forEach(item => {
+  items.forEach(item => {
     if (item.kind === 'text') {
       const orig = item.data;
       const clone = Object.assign({}, JSON.parse(JSON.stringify(orig)), {
         id: 'ct-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        pageId: (opts && opts.inPlace) ? orig.pageId : visiblePageId,
+        pageId: inPlace ? orig.pageId : visiblePageId,
         x: (+orig.x || 0) + dx,
         y: (+orig.y || 0) + dy,
       });
@@ -9388,7 +9400,7 @@ function _ctClipboardPaste(opts) {
     } else if (item.kind === 'shape') {
       const clone = JSON.parse(JSON.stringify(item.data));
       clone.id = 'sh-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      clone.pageId = (opts && opts.inPlace) ? clone.pageId : visiblePageId;
+      clone.pageId = inPlace ? clone.pageId : visiblePageId;
       clone.x = (+clone.x || 0) + dx;
       clone.y = (+clone.y || 0) + dy;
       /* Line / arrow store endpoints separately — translate those
@@ -9406,7 +9418,7 @@ function _ctClipboardPaste(opts) {
     } else if (item.kind === 'image') {
       const clone = JSON.parse(JSON.stringify(item.data));
       clone.id = 'ig-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      clone.pageId = (opts && opts.inPlace) ? clone.pageId : visiblePageId;
+      clone.pageId = inPlace ? clone.pageId : visiblePageId;
       clone.x = (+clone.x || 0) + dx;
       clone.y = (+clone.y || 0) + dy;
       _imgEntries.push(clone);
@@ -9445,7 +9457,7 @@ function _ctDuplicateSelected() {
      so this doesn't clobber whatever they last copied. */
   const savedClip = _ctClipboard;
   const savedStep = _ctPasteStep;
-  if (!_ctClipboardCopy()) {
+  if (!_ctClipboardCopy(true)) {
     _ctClipboard = savedClip; _ctPasteStep = savedStep;
     return false;
   }

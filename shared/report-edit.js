@@ -5348,6 +5348,33 @@ let _ppClipboard = null;
 let _ppPasteStep = 0;
 const _PP_PASTE_OFFSET = 15;
 
+/* ── Cross-report clipboard ───────────────────────────────────────
+   Copy/paste between different reports (other regions, or national /
+   commercial) is a fresh page load, so the in-memory clipboard is gone.
+   We mirror every copy/cut into localStorage under one shared key + the
+   same {kind,data} item format both the shared and the regional inline
+   copy/paste already use. On paste, if the in-memory clipboard is empty we
+   fall back to this; and when the clipboard came from a DIFFERENT report we
+   paste onto the page being viewed at each item's original x/y (no cascade
+   offset) so it lands at the same position you'd expect. */
+const _PP_CLIP_KEY = 'ppa-report-clipboard-v1';
+function ppReportId() {
+  try {
+    const tool = (location.pathname || '').split('/').pop() || '';
+    const region = new URLSearchParams(location.search).get('region') || '';
+    return tool + (region ? ('?region=' + region) : '');
+  } catch (e) { return String(location.href); }
+}
+function ppClipboardStore(items) {
+  try { localStorage.setItem(_PP_CLIP_KEY, JSON.stringify({ source: ppReportId(), items: items })); } catch (e) {}
+}
+function ppClipboardLoadShared() {
+  try {
+    const o = JSON.parse(localStorage.getItem(_PP_CLIP_KEY) || 'null');
+    return (o && Array.isArray(o.items) && o.items.length) ? o : null;
+  } catch (e) { return null; }
+}
+
 function ppPersistOverlayChanges(textChanged, shapeChanged, imageChanged) {
   const n = (textChanged ? 1 : 0) + (shapeChanged ? 1 : 0) + (imageChanged ? 1 : 0);
   if (n >= 2) {
@@ -5365,7 +5392,7 @@ function ppPersistOverlayChanges(textChanged, shapeChanged, imageChanged) {
   }
 }
 
-function ppClipboardCopy() {
+function ppClipboardCopy(skipStore) {
   const items = [];
   document.querySelectorAll('.custom-text.selected').forEach(el => {
     const entry = _ctEntries.find(e => e.id === el.dataset.id);
@@ -5382,6 +5409,7 @@ function ppClipboardCopy() {
   if (!items.length) return false;
   _ppClipboard = items;
   _ppPasteStep = 0;
+  if (!skipStore) ppClipboardStore(items);   /* mirror to the cross-report clipboard (skipped by duplicate) */
   return true;
 }
 
@@ -5417,22 +5445,35 @@ function ppClipboardCut() {
 }
 
 function ppClipboardPaste(opts) {
-  if (!_ppClipboard || !_ppClipboard.length) return false;
+  /* Resolve the clipboard: in-memory (copied this session = same report) first,
+     else the cross-report localStorage clipboard. `exact` = the items came from
+     a DIFFERENT report → keep each item's original page + position, no offset. */
+  let items = _ppClipboard;
+  let exact = false;
+  if (!items || !items.length) {
+    const shared = ppClipboardLoadShared();
+    if (shared) { items = shared.items; exact = (shared.source !== ppReportId()); }
+  }
+  if (!items || !items.length) return false;
+  /* Only duplicate keeps the original pageId. A cross-report (exact) paste
+     lands on the page you're VIEWING, at each item's original x/y (no offset)
+     — so it goes where you paste it, not back onto the source page. */
+  const inPlace = !!(opts && opts.inPlace);
   const visiblePageId = ctVisiblePageId();
-  if (!opts || !opts.inPlace) { if (!visiblePageId) return false; }
-  _ppPasteStep += 1;
-  const dx = _PP_PASTE_OFFSET * _ppPasteStep;
-  const dy = _PP_PASTE_OFFSET * _ppPasteStep;
+  if (!inPlace && !visiblePageId) return false;
+  if (!exact) _ppPasteStep += 1;
+  const dx = exact ? 0 : _PP_PASTE_OFFSET * _ppPasteStep;
+  const dy = exact ? 0 : _PP_PASTE_OFFSET * _ppPasteStep;
   ctDeselectAll();
   if (typeof shDeselectAll  === 'function') shDeselectAll();
   if (typeof imgDeselectAll === 'function') imgDeselectAll();
   let textChanged = false, shapeChanged = false, imageChanged = false;
-  _ppClipboard.forEach(item => {
+  items.forEach(item => {
     if (item.kind === 'text') {
       const orig = item.data;
       const clone = Object.assign({}, JSON.parse(JSON.stringify(orig)), {
         id: 'ct-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        pageId: (opts && opts.inPlace) ? orig.pageId : visiblePageId,
+        pageId: inPlace ? orig.pageId : visiblePageId,
         x: (+orig.x || 0) + dx,
         y: (+orig.y || 0) + dy,
       });
@@ -5443,7 +5484,7 @@ function ppClipboardPaste(opts) {
     } else if (item.kind === 'shape') {
       const clone = JSON.parse(JSON.stringify(item.data));
       clone.id = 'sh-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      clone.pageId = (opts && opts.inPlace) ? clone.pageId : visiblePageId;
+      clone.pageId = inPlace ? clone.pageId : visiblePageId;
       clone.x = (+clone.x || 0) + dx;
       clone.y = (+clone.y || 0) + dy;
       if (clone.type === 'line' || clone.type === 'arrow') {
@@ -5457,7 +5498,7 @@ function ppClipboardPaste(opts) {
     } else if (item.kind === 'image') {
       const clone = JSON.parse(JSON.stringify(item.data));
       clone.id = 'ig-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      clone.pageId = (opts && opts.inPlace) ? clone.pageId : visiblePageId;
+      clone.pageId = inPlace ? clone.pageId : visiblePageId;
       clone.x = (+clone.x || 0) + dx;
       clone.y = (+clone.y || 0) + dy;
       _imgEntries.push(clone);
@@ -5476,7 +5517,7 @@ function ppClipboardPaste(opts) {
 function ppDuplicateSelected() {
   const savedClip = _ppClipboard;
   const savedStep = _ppPasteStep;
-  if (!ppClipboardCopy()) { _ppClipboard = savedClip; _ppPasteStep = savedStep; return false; }
+  if (!ppClipboardCopy(true)) { _ppClipboard = savedClip; _ppPasteStep = savedStep; return false; }
   ppClipboardPaste({ inPlace: true });
   _ppClipboard = savedClip; _ppPasteStep = savedStep;
   return true;
