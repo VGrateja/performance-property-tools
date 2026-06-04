@@ -1639,9 +1639,9 @@
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title"></h1><div class="rh-section"></div><div class="rh-meta"></div></header>
     <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Dual-axis line — Household debt-to-income ratio + quarterly cash rate.</div></div></div>
   </section>
-  <section class="page" id="p31" data-label="State Interstate Migration">
+  <section class="page" id="p31" data-label="Mortgage Arrears - National">
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title"></h1><div class="rh-section"></div><div class="rh-meta"></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — NSW / VIC / QLD / SA / WA net interstate migration (annual).</div></div></div>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — national mortgage arrears (% 30+ days due) vs the monthly RBA cash rate.</div></div></div>
     <div class="rh-foot"></div>
   </section>
   <section class="page" id="p32" data-label="Natural Increase v NOM">
@@ -3010,21 +3010,30 @@ function _renderP28_TopEconomies(d) {
 }
 
 function _renderP30_HouseholdDebt(d) {
-  const dates = (d.lendingDate || []).map(v => String(v).slice(0, 10));
-  if (!dates.length || (!d.householdDebttoincomeRatio && !d.monthlyCashRate)) return;
+  const raw = d.quarterYear || [];
+  if (!raw.length || (!d.householdDebttoincomeRatio && !d.quarterlyCashRate)) return;
+  /* Household Debt to Income — quarterly from 1988. The series are indexed by
+     quarterYear (NOT lendingDate, which is monthly and only from 2004), and the
+     cash rate is quarterlyCashRate (which carries the ~14% 1990 peak; the old
+     monthlyCashRate maxed at ~7%). Dates stored as the prior quarter-end (UTC);
+     +12h then read UTC for the intended local "D MMM YYYY". */
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dates = raw.map(s => { const dt = new Date(new Date(s).getTime() + 12 * 3600 * 1000); return dt.getUTCDate() + ' ' + MON[dt.getUTCMonth()] + ' ' + dt.getUTCFullYear(); });
   _mountChart('p30', Object.assign(_baseChartOption(), {
     legend: Object.assign(_baseChartOption().legend, { data: ['Household debt-to-income ratio', 'Quarterly Cash Rate'] }),
+    /* Own formatter so _mountChart leaves this date axis alone; rotated +
+       thinned; first/latest always shown. */
     xAxis: Object.assign(_baseChartOption().xAxis, {
       data: dates,
-      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(dates.length / 16)) },
+      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(dates.length / 28)), showMinLabel: true, showMaxLabel: true, formatter: (v) => v },
     }),
     yAxis: [
-      { type: 'value', name: 'Debt-to-income', nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11 }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
-      { type: 'value', name: 'Cash Rate',      nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(0) + '%' }, splitLine: { show: false } },
+      { type: 'value', name: 'Household debt-to-income ratio', nameTextStyle: { color: '#1a2236' }, min: 0, max: 200, interval: 25, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11 }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
+      { type: 'value', name: 'Quarterly Cash Rate',           nameTextStyle: { color: '#1a2236' }, min: 0, max: 0.14, interval: 0.02, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(0) + '%' }, splitLine: { show: false } },
     ],
     series: [
       { name: 'Household debt-to-income ratio', type: 'line', yAxisIndex: 0, data: d.householdDebttoincomeRatio || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
-      { name: 'Quarterly Cash Rate',            type: 'line', yAxisIndex: 1, data: d.monthlyCashRate            || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+      { name: 'Quarterly Cash Rate',            type: 'line', yAxisIndex: 1, data: d.quarterlyCashRate          || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
     ],
   }));
 }
@@ -3392,6 +3401,48 @@ function _renderP29_MedianIncome(d) {
   }));
 }
 
+function _renderP31_MortgageArrears(d) {
+  const raw = d.lendingDate || [];
+  if (!raw.length || (!d.arrearsNational && !d.monthlyCashRate)) return;
+  /* Mortgage Arrears - National (left %) vs Monthly Cash Rate (right %).
+     Both series are monthly, length ~257 (to ~May 2025) — slice the date axis
+     to match. Dates stored as prior month-end (UTC); +12h then read UTC for the
+     intended local "D MMM YYYY". */
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const n = Math.max((d.arrearsNational || []).length, (d.monthlyCashRate || []).length) || raw.length;
+  const dates = raw.slice(0, n).map(s => { const dt = new Date(new Date(s).getTime() + 12 * 3600 * 1000); return dt.getUTCDate() + ' ' + MON[dt.getUTCMonth()] + ' ' + dt.getUTCFullYear(); });
+  _mountChart('p31', Object.assign(_baseChartOption(), {
+    /* Both % — show 2dp in the hover (Arrears 1.98%, Cash Rate 7.25%). */
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'line', lineStyle: { color: '#6a7a88', type: 'dashed' } },
+      backgroundColor: 'rgba(15,25,34,0.95)', borderColor: '#2a3a48',
+      textStyle: { color: '#fff', fontFamily: 'Ubuntu, "Roboto", sans-serif', fontSize: 12 },
+      formatter: (params) => {
+        const arr  = Array.isArray(params) ? params : [params];
+        const head = arr.length ? arr[0].axisValue : '';
+        const lines = arr.map(p => { const v = Number(p.value); const fmt = isNaN(v) ? '—' : (v * 100).toFixed(2) + '%'; return '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + p.color + ';margin-right:6px"></span>' + p.seriesName + ': <strong>' + fmt + '</strong>'; });
+        return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + lines.join('<br/>');
+      },
+    },
+    legend: Object.assign(_baseChartOption().legend, { data: ['Arrears', 'Monthly Cash Rate'] }),
+    xAxis: Object.assign(_baseChartOption().xAxis, {
+      data: dates,
+      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(dates.length / 28)), showMinLabel: true, showMaxLabel: true, formatter: (v) => v },
+    }),
+    yAxis: [
+      { type: 'value', name: 'Arrears', nameTextStyle: { color: '#1a2236' }, min: 0, max: 0.02, interval: 0.0025, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (Math.round(v * 10000) / 100) + '%' }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
+      { type: 'value', name: 'Monthly Cash Rate', nameTextStyle: { color: '#1a2236' }, min: 0, max: 0.08, interval: 0.01, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(0) + '%' }, splitLine: { show: false } },
+    ],
+    series: [
+      /* itemStyle.color matches lineStyle.color so the legend icon matches the
+         line (without itemStyle, the legend icon falls back to the palette by
+         series index, which made the two icons look swapped). */
+      { name: 'Arrears',           type: 'line', yAxisIndex: 0, data: d.arrearsNational || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' }, itemStyle: { color: '#f5a623' } },
+      { name: 'Monthly Cash Rate', type: 'line', yAxisIndex: 1, data: d.monthlyCashRate  || [], showSymbol: false, lineStyle: { width: 2, color: '#000' }, itemStyle: { color: '#000' } },
+    ],
+  }));
+}
+
 function _renderP31_StateInterstateMigration(d) {
   const years = (d.year || []).map(String);
   if (!years.length) return;
@@ -3472,7 +3523,7 @@ function renderAllCharts(payload) {
   try { _renderP28_TopEconomies(d); }              catch (e) { console.warn('[p28]', e); }
   try { _renderP29_InvestorVsHomebuyer(d); }       catch (e) { console.warn('[p29]', e); }
   try { _renderP30_HouseholdDebt(d); }             catch (e) { console.warn('[p30]', e); }
-  try { _renderP31_StateInterstateMigration(d); }  catch (e) { console.warn('[p31]', e); }
+  try { _renderP31_MortgageArrears(d); }           catch (e) { console.warn('[p31]', e); }
   try { _renderP32_NaturalIncreaseVsNOM(d); }      catch (e) { console.warn('[p32]', e); }
 }
 
