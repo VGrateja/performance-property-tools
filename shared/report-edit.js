@@ -5442,6 +5442,208 @@ function ppSetupCopyPaste() {
   });
 }
 
+/* ─── Reference Bands (growth / correction periods behind price charts) ───
+   Ported from the regional tool with pp* names so it can't collide with the
+   regional's inline BANDS / bandsLoad / setupBandsModal (the regional opts
+   out via PPA_REPORT_EDIT_OPTS.bands=false and keeps its own). The host's
+   _mountChart paints the bands behind the pages listed in its _PP_BAND_PAGES
+   via ppBandsMarkArea(). Data lives in the shared 'bands' storage bucket so
+   the sync layer bundles it. */
+const _PP_BAND_DEFAULTS = [
+  { from: 1982, to: 1985, type: 'correct' },
+  { from: 1985, to: 1991, type: 'growth'  },
+  { from: 1991, to: 1996, type: 'correct' },
+  { from: 1996, to: 2004, type: 'growth'  },
+  { from: 2004, to: 2009, type: 'correct' },
+  { from: 2009, to: 2020, type: 'growth'  },
+  { from: 2020, to: 2022, type: 'correct' },
+  { from: 2022, to: 2026, type: 'growth'  },
+];
+const _PP_BAND_GROWTH_COLOR     = 'rgba(155, 215, 225, 0.55)';
+const _PP_BAND_CORRECTION_COLOR = 'rgba(180, 185, 192, 0.50)';
+
+function ppBandsStorageKey() { return 'ppa-online-reports-bands-v1-' + _rs_active(); }
+function ppBandsDefaults() {
+  return _PP_BAND_DEFAULTS.map(b => ({
+    id: 'band-default-' + b.from + '-' + b.to, type: b.type,
+    from: b.from + '-01-01', to: b.to + '-01-01',
+  }));
+}
+function ppBandsLoad() {
+  try { const raw = localStorage.getItem(ppBandsStorageKey()); if (!raw) return null;
+        const arr = JSON.parse(raw); return Array.isArray(arr) ? arr : null; }
+  catch (e) { return null; }
+}
+function ppBandsSave(bands) {
+  if (bands == null) localStorage.removeItem(ppBandsStorageKey());
+  else               localStorage.setItem(ppBandsStorageKey(), JSON.stringify(bands));
+  _rs_scheduleSave();
+}
+function ppBandsActive() { return ppBandsLoad() || ppBandsDefaults(); }
+function ppBandToYear(d) {
+  if (typeof d === 'number') return d;
+  const m = String(d).match(/^(\d{4})/);
+  return m ? parseInt(m[1], 10) : null;
+}
+/* markArea data (pairs of points) for the charts that paint bands. */
+function ppBandsMarkArea() {
+  return ppBandsActive().map(b => ([
+    { xAxis: String(ppBandToYear(b.from)), itemStyle: { color: b.type === 'growth' ? _PP_BAND_GROWTH_COLOR : _PP_BAND_CORRECTION_COLOR } },
+    { xAxis: String(ppBandToYear(b.to)) },
+  ]));
+}
+function ppBandsFormatDate(d) {
+  if (!d) return '';
+  if (/^\d{4}$/.test(String(d))) d = d + '-01-01';
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return d;
+  return dt.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+function ppBandsNormalizeForInput(d) {
+  if (!d) return '';
+  if (/^\d{4}$/.test(String(d))) return d + '-01-01';
+  return String(d).slice(0, 10);
+}
+function ppBandsRefreshCharts() {
+  if (typeof renderAllCharts === 'function' && typeof REPORT_DATA !== 'undefined' && REPORT_DATA) {
+    try { renderAllCharts(REPORT_DATA); } catch (_) {}
+  }
+}
+
+function ppBandsRefresh() {
+  const list = document.getElementById('bands-list');
+  if (!list) return;
+  const sub = document.getElementById('bands-sub');
+  const bands = ppBandsActive();
+  if (sub) sub.textContent = (ppBandsLoad() ? 'Custom set — saved for this report.' : 'Default set shown. Add or edit any row to start a custom set.')
+    + ' Drawn behind the price charts.';
+  if (!bands.length) {
+    list.innerHTML = '<table class="bands-table"><tbody><tr class="empty-row"><td>No bands. Click "+ Add band" to create one.</td></tr></tbody></table>';
+    return;
+  }
+  let html = '<table class="bands-table"><thead><tr><th style="width:24px"></th><th>Type</th><th>From</th><th>To</th><th style="text-align:right;">Actions</th></tr></thead><tbody>';
+  for (const b of bands) {
+    const typeLabel = b.type === 'growth' ? 'Growth' : 'Correction';
+    const cls       = b.type === 'growth' ? 'growth' : 'correct';
+    html += '<tr class="band-row" draggable="true" data-id="' + b.id + '">' +
+      '<td class="band-drag-cell" title="Drag to reorder"><span class="band-drag-handle" aria-hidden="true">⋮⋮</span></td>' +
+      '<td><span class="band-type-pill ' + cls + '" role="button" tabindex="0" data-action="toggle-type" data-id="' + b.id + '" title="Click to flip type" style="cursor:pointer">' + typeLabel + '</span></td>' +
+      '<td>' + ppBandsFormatDate(b.from) + '</td>' +
+      '<td>' + ppBandsFormatDate(b.to)   + '</td>' +
+      '<td style="text-align:right;">' +
+        '<button class="bands-row-action" data-action="edit" data-id="' + b.id + '">Edit</button>' +
+        '<button class="bands-row-action delete" data-action="delete" data-id="' + b.id + '">Delete</button>' +
+      '</td></tr>';
+  }
+  html += '</tbody></table>';
+  list.innerHTML = html;
+  list.querySelectorAll('button[data-action], span[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.action === 'edit')        ppBandsOpenForm(btn.dataset.id);
+      if (btn.dataset.action === 'delete')      ppBandsDelete(btn.dataset.id);
+      if (btn.dataset.action === 'toggle-type') ppBandsToggleType(btn.dataset.id);
+    });
+    if (btn.tagName === 'SPAN' && btn.dataset.action === 'toggle-type') {
+      btn.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ppBandsToggleType(btn.dataset.id); } });
+    }
+  });
+  /* Drag-reorder. */
+  let _dragId = null;
+  list.querySelectorAll('tr.band-row').forEach(row => {
+    row.addEventListener('dragstart', (e) => { _dragId = row.dataset.id; row.classList.add('band-row-dragging'); try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', _dragId); } catch (_) {} });
+    row.addEventListener('dragend', () => { row.classList.remove('band-row-dragging'); list.querySelectorAll('tr.band-row.drop-above, tr.band-row.drop-below').forEach(r => r.classList.remove('drop-above', 'drop-below')); _dragId = null; });
+    row.addEventListener('dragover', (e) => { if (!_dragId || _dragId === row.dataset.id) return; e.preventDefault(); const rect = row.getBoundingClientRect(); const before = (e.clientY - rect.top) < (rect.height / 2); row.classList.toggle('drop-above', before); row.classList.toggle('drop-below', !before); });
+    row.addEventListener('dragleave', () => { row.classList.remove('drop-above', 'drop-below'); });
+    row.addEventListener('drop', (e) => { if (!_dragId || _dragId === row.dataset.id) return; e.preventDefault(); const rect = row.getBoundingClientRect(); const before = (e.clientY - rect.top) < (rect.height / 2); ppBandsReorder(_dragId, row.dataset.id, before); });
+    row.querySelectorAll('button, .band-type-pill').forEach(el => { el.addEventListener('mousedown', (e) => e.stopPropagation()); el.setAttribute('draggable', 'false'); });
+  });
+}
+function ppBandsReorder(srcId, targetId, placeBefore) {
+  const list = (ppBandsLoad() || ppBandsDefaults()).slice();
+  const srcIdx = list.findIndex(b => String(b.id) === String(srcId));
+  if (srcIdx < 0) return;
+  const [src] = list.splice(srcIdx, 1);
+  const tgtIdx = list.findIndex(b => String(b.id) === String(targetId));
+  if (tgtIdx < 0) list.push(src);
+  else list.splice(placeBefore ? tgtIdx : tgtIdx + 1, 0, src);
+  ppBandsSave(list); ppBandsRefresh(); ppBandsRefreshCharts();
+}
+function ppBandsToggleType(id) {
+  const list = ppBandsLoad() || ppBandsDefaults();
+  const b = list.find(x => x.id === id);
+  if (!b) return;
+  b.type = (b.type === 'growth') ? 'correction' : 'growth';
+  ppBandsSave(list); ppBandsRefresh(); ppBandsRefreshCharts();
+}
+function ppBandsOpenForm(id) {
+  const form = document.getElementById('bands-edit-form');
+  if (!form) return;
+  const all = ppBandsActive();
+  if (id) {
+    const b = all.find(x => x.id === id);
+    if (!b) return;
+    document.getElementById('band-id').value   = id;
+    document.getElementById('band-type').value = b.type === 'growth' ? 'growth' : 'correct';
+    document.getElementById('band-from').value = ppBandsNormalizeForInput(b.from);
+    document.getElementById('band-to').value   = ppBandsNormalizeForInput(b.to);
+  } else {
+    document.getElementById('band-id').value   = '';
+    document.getElementById('band-type').value = 'growth';
+    document.getElementById('band-from').value = '';
+    document.getElementById('band-to').value   = '';
+  }
+  form.classList.add('open');
+  document.getElementById('band-from').focus();
+}
+function ppBandsCloseForm() {
+  const form = document.getElementById('bands-edit-form');
+  if (form) form.classList.remove('open');
+}
+function ppBandsSaveForm() {
+  const id   = document.getElementById('band-id').value;
+  const type = document.getElementById('band-type').value;
+  const from = document.getElementById('band-from').value;
+  const to   = document.getElementById('band-to').value;
+  if (!from || !to) { alert('Both From and To dates are required.'); return; }
+  if (from >= to)   { alert('"From" date must be before "To" date.'); return; }
+  const list = ppBandsLoad() || ppBandsDefaults();
+  if (id) { const b = list.find(x => x.id === id); if (b) Object.assign(b, { type, from, to }); }
+  else    { list.push({ id: 'band-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), type, from, to }); }
+  ppBandsSave(list); ppBandsCloseForm(); ppBandsRefresh(); ppBandsRefreshCharts();
+}
+function ppBandsDelete(id) {
+  const list = (ppBandsLoad() || ppBandsDefaults()).filter(x => x.id !== id);
+  ppBandsSave(list); ppBandsRefresh(); ppBandsRefreshCharts();
+}
+function ppBandsResetDefaults() {
+  if (!confirm('Discard your custom bands and restore the defaults?')) return;
+  ppBandsSave(null); ppBandsCloseForm(); ppBandsRefresh(); ppBandsRefreshCharts();
+}
+function ppSetupBandsModal() {
+  const bg = document.getElementById('bands-modal-bg');
+  const btn = document.getElementById('btn-bands');
+  if (!bg || !btn) return;
+  const close = () => { bg.classList.remove('open'); bg.setAttribute('aria-hidden', 'true'); ppBandsCloseForm(); };
+  btn.addEventListener('click', () => { ppBandsRefresh(); bg.classList.add('open'); bg.setAttribute('aria-hidden', 'false'); });
+  const closeBtn  = document.getElementById('bands-close');
+  if (closeBtn) closeBtn.addEventListener('click', close);
+  bg.addEventListener('click', ev => { if (ev.target === bg) close(); });
+  const addBtn = document.getElementById('band-add');
+  if (addBtn) addBtn.addEventListener('click', () => ppBandsOpenForm(null));
+  const cancelBtn = document.getElementById('band-cancel');
+  if (cancelBtn) cancelBtn.addEventListener('click', ppBandsCloseForm);
+  const saveBtn = document.getElementById('band-save');
+  if (saveBtn) saveBtn.addEventListener('click', ppBandsSaveForm);
+  const resetBtn = document.getElementById('band-reset');
+  if (resetBtn) resetBtn.addEventListener('click', ppBandsResetDefaults);
+  document.addEventListener('keydown', ev => {
+    if (ev.key !== 'Escape' || !bg.classList.contains('open')) return;
+    const form = document.getElementById('bands-edit-form');
+    if (form && form.classList.contains('open')) ppBandsCloseForm();
+    else close();
+  });
+}
+
 /* ═════════════ Entry point — host HTML calls this after DOMContentLoaded ═════════════ */
 function initReportEdit() {
   /* Opt-out config (the #5 consolidation seam). A host tool can set
@@ -5477,7 +5679,7 @@ function initReportEdit() {
   setupAddPageButton();
   setupPagerToolsToggle();
   if (OPTS.regionSelect !== false) setupRegionSelect();
-  if (OPTS.bands       !== false) setupBandsStub();
+  if (OPTS.bands       !== false) ppSetupBandsModal();
   if (OPTS.refresh     !== false) setupRefreshButton();
   setupAutoZoom();
   /* Cached-PDF indicator runs asynchronously — the pill is empty
