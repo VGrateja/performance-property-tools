@@ -2763,17 +2763,21 @@ function subscribeToGame(gameId) {
     .on('postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'arena_scrabble_games', filter: 'id=eq.' + gameId },
         (payload) => {
-          const prevMover = payload.old ? payload.old.to_move : _prevToMove;
+          /* (#4) Use our locally-tracked previous mover, NOT payload.old:
+             Supabase Realtime only puts the PK in payload.old unless the
+             table is REPLICA IDENTITY FULL, so payload.old.to_move is
+             undefined here. _prevToMove is seeded on open + updated below. */
+          const prevMover = _prevToMove;
           _gameRow = payload.new;
-          /* (#4) A turn just ended when to_move advances. Chime for every
-             player EXCEPT the one who just moved — alerts the next player
-             and everyone waiting that the turn handed off. Free swaps don't
+          /* A turn just ended when to_move advances. Chime for every player
+             EXCEPT the one who just moved — alerts the next player and
+             everyone waiting that the turn handed off. Free swaps don't
              change to_move, so they correctly stay silent. */
           if (payload.new && prevMover != null && payload.new.to_move !== prevMover
               && _mySeat && prevMover !== _mySeat) {
             soundTurn();
           }
-          _prevToMove = payload.new ? payload.new.to_move : _prevToMove;
+          if (payload.new && payload.new.to_move != null) _prevToMove = payload.new.to_move;
           paintAll();
         })
     .subscribe();
