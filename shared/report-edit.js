@@ -5284,6 +5284,164 @@ function ppSetupCopyPagesModal() {
   });
 }
 
+/* Copy / cut / paste / duplicate for overlays — Ctrl+C / X / V / D, covering
+   text, shape AND image. Ported from the regional tool with pp* names (the
+   regional has its own inline _ctClipboard / setupCopyPaste; unique names
+   avoid the parse-time collision that breaks the shared module). Uses an
+   internal JS clipboard, not the OS clipboard, so it doesn't fight a
+   contenteditable's own text copy/paste. Gated + opted out by the regional. */
+let _ppClipboard = null;
+let _ppPasteStep = 0;
+const _PP_PASTE_OFFSET = 15;
+
+function ppPersistOverlayChanges(textChanged, shapeChanged, imageChanged) {
+  const n = (textChanged ? 1 : 0) + (shapeChanged ? 1 : 0) + (imageChanged ? 1 : 0);
+  if (n >= 2) {
+    if (textChanged)  localStorage.setItem(ctStorageKey(),  JSON.stringify(_ctEntries));
+    if (shapeChanged) localStorage.setItem(shStorageKey(),  JSON.stringify(_shEntries));
+    if (imageChanged) localStorage.setItem(imgStorageKey(), JSON.stringify(_imgEntries));
+    if (!_ctRestoring) ctPushHistory();
+    _rs_scheduleSave();
+  } else if (textChanged) {
+    ctSave(_ctEntries);
+  } else if (shapeChanged) {
+    shSave(_shEntries);
+  } else if (imageChanged) {
+    imgSave(_imgEntries);
+  }
+}
+
+function ppClipboardCopy() {
+  const items = [];
+  document.querySelectorAll('.custom-text.selected').forEach(el => {
+    const entry = _ctEntries.find(e => e.id === el.dataset.id);
+    if (entry) items.push({ kind: 'text', data: JSON.parse(JSON.stringify(entry)) });
+  });
+  document.querySelectorAll('.shape.selected').forEach(el => {
+    const entry = _shEntries.find(e => e.id === el.dataset.id);
+    if (entry) items.push({ kind: 'shape', data: JSON.parse(JSON.stringify(entry)) });
+  });
+  document.querySelectorAll('.image-overlay.selected').forEach(el => {
+    const entry = _imgEntries.find(e => e.id === el.dataset.id);
+    if (entry) items.push({ kind: 'image', data: JSON.parse(JSON.stringify(entry)) });
+  });
+  if (!items.length) return false;
+  _ppClipboard = items;
+  _ppPasteStep = 0;
+  return true;
+}
+
+function ppClipboardCut() {
+  if (!ppClipboardCopy()) return false;
+  const ctSelected  = Array.from(document.querySelectorAll('.custom-text.selected'));
+  const shSelected  = Array.from(document.querySelectorAll('.shape.selected'));
+  const imgSelected = Array.from(document.querySelectorAll('.image-overlay.selected'));
+  let textChanged = false, shapeChanged = false, imageChanged = false;
+  if (ctSelected.length) {
+    const ids = new Set(ctSelected.map(el => el.dataset.id));
+    _ctEntries = _ctEntries.filter(e => !ids.has(e.id));
+    ctSelected.forEach(el => el.remove());
+    textChanged = true;
+  }
+  if (shSelected.length) {
+    const ids = new Set(shSelected.map(el => el.dataset.id));
+    _shEntries = _shEntries.filter(e => !ids.has(e.id));
+    shSelected.forEach(el => el.remove());
+    shapeChanged = true;
+  }
+  if (imgSelected.length) {
+    const ids = new Set(imgSelected.map(el => el.dataset.id));
+    _imgEntries = _imgEntries.filter(e => !ids.has(e.id));
+    imgSelected.forEach(el => el.remove());
+    imageChanged = true;
+  }
+  ppPersistOverlayChanges(textChanged, shapeChanged, imageChanged);
+  ctUpdateSidebar();
+  if (typeof shUpdatePanel === 'function') shUpdatePanel();
+  _selUpdateMultiClass();
+  return true;
+}
+
+function ppClipboardPaste(opts) {
+  if (!_ppClipboard || !_ppClipboard.length) return false;
+  const visiblePageId = ctVisiblePageId();
+  if (!opts || !opts.inPlace) { if (!visiblePageId) return false; }
+  _ppPasteStep += 1;
+  const dx = _PP_PASTE_OFFSET * _ppPasteStep;
+  const dy = _PP_PASTE_OFFSET * _ppPasteStep;
+  ctDeselectAll();
+  if (typeof shDeselectAll  === 'function') shDeselectAll();
+  if (typeof imgDeselectAll === 'function') imgDeselectAll();
+  let textChanged = false, shapeChanged = false, imageChanged = false;
+  _ppClipboard.forEach(item => {
+    if (item.kind === 'text') {
+      const orig = item.data;
+      const clone = Object.assign({}, JSON.parse(JSON.stringify(orig)), {
+        id: 'ct-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        pageId: (opts && opts.inPlace) ? orig.pageId : visiblePageId,
+        x: (+orig.x || 0) + dx,
+        y: (+orig.y || 0) + dy,
+      });
+      _ctEntries.push(clone);
+      const el = ctMakeEl(clone);
+      if (el) el.classList.add('selected');
+      textChanged = true;
+    } else if (item.kind === 'shape') {
+      const clone = JSON.parse(JSON.stringify(item.data));
+      clone.id = 'sh-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      clone.pageId = (opts && opts.inPlace) ? clone.pageId : visiblePageId;
+      clone.x = (+clone.x || 0) + dx;
+      clone.y = (+clone.y || 0) + dy;
+      if (clone.type === 'line' || clone.type === 'arrow') {
+        clone.x1 = (+clone.x1 || 0) + dx; clone.y1 = (+clone.y1 || 0) + dy;
+        clone.x2 = (+clone.x2 || 0) + dx; clone.y2 = (+clone.y2 || 0) + dy;
+      }
+      _shEntries.push(clone);
+      const el = shMakeEl(clone);
+      if (el) el.classList.add('selected');
+      shapeChanged = true;
+    } else if (item.kind === 'image') {
+      const clone = JSON.parse(JSON.stringify(item.data));
+      clone.id = 'ig-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      clone.pageId = (opts && opts.inPlace) ? clone.pageId : visiblePageId;
+      clone.x = (+clone.x || 0) + dx;
+      clone.y = (+clone.y || 0) + dy;
+      _imgEntries.push(clone);
+      const el = imgMakeEl(clone);
+      if (el) el.classList.add('selected');
+      imageChanged = true;
+    }
+  });
+  ppPersistOverlayChanges(textChanged, shapeChanged, imageChanged);
+  ctUpdateSidebar();
+  if (typeof shUpdatePanel === 'function') shUpdatePanel();
+  _selUpdateMultiClass();
+  return true;
+}
+
+function ppDuplicateSelected() {
+  const savedClip = _ppClipboard;
+  const savedStep = _ppPasteStep;
+  if (!ppClipboardCopy()) { _ppClipboard = savedClip; _ppPasteStep = savedStep; return false; }
+  ppClipboardPaste({ inPlace: true });
+  _ppClipboard = savedClip; _ppPasteStep = savedStep;
+  return true;
+}
+
+function ppSetupCopyPaste() {
+  document.addEventListener('keydown', ev => {
+    if (!document.body.classList.contains('edit-mode')) return;
+    if (!(ev.ctrlKey || ev.metaKey)) return;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) return;
+    const k = (ev.key || '').toLowerCase();
+    if (k === 'c') { if (ppClipboardCopy()) ev.preventDefault(); }
+    else if (k === 'x') { if (ppClipboardCut()) ev.preventDefault(); }
+    else if (k === 'v') { if (ppClipboardPaste()) ev.preventDefault(); }
+    else if (k === 'd') { if (ppDuplicateSelected()) ev.preventDefault(); }
+  });
+}
+
 /* ═════════════ Entry point — host HTML calls this after DOMContentLoaded ═════════════ */
 function initReportEdit() {
   /* Opt-out config (the #5 consolidation seam). A host tool can set
@@ -5339,6 +5497,7 @@ function initReportEdit() {
      shared copy triggers from prompt → modal. */
   if (OPTS.copyPages    !== false) ppSetupCopyPagesModal();
   if (OPTS.keyboardNudge !== false) ppSetupArrowKeyNudge();
+  if (OPTS.copyPaste    !== false) ppSetupCopyPaste();
   /* Slice 4 — backup/sync/audit modals. Triggers live on the pager
      with tier1-only gating; their no-op early-out when the HTML
      scaffolds aren't present keeps things safe if a future tool
