@@ -5147,6 +5147,60 @@ function ppSetupArrowKeyNudge() {
   });
 }
 
+/* Arrow-key PAGE navigation — Down/Up jump instantly to the next/previous
+   page. Mouse-wheel scrolling is untouched (it still scrolls smoothly), since
+   this only intercepts the Down/Up keys. Mirrors the regional tool. Skipped
+   while typing into an input/textarea/contentEditable, and — in edit mode —
+   while a text/shape/image overlay is selected, so the nudge handler keeps the
+   arrows for moving that overlay. The regional opts out (OPTS.arrowKeyNav
+   false) and uses its own inline setupArrowKeyNav. */
+function ppSetupArrowKeyNav() {
+  document.addEventListener('keydown', ev => {
+    if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+    if (document.body.classList.contains('edit-mode') &&
+        (document.querySelector('.custom-text.selected') ||
+         document.querySelector('.shape.selected') ||
+         document.querySelector('.image-overlay.selected'))) return;
+
+    const meta = pageMetaList();
+    if (!meta.length) return;
+    const visible = ctVisiblePageId();
+    const idx = Math.max(0, meta.findIndex(m => m.id === visible));
+    const nextIdx = ev.key === 'ArrowDown'
+      ? Math.min(meta.length - 1, idx + 1)
+      : Math.max(0, idx - 1);
+    if (nextIdx === idx) return;
+    ev.preventDefault();
+    const targetId = meta[nextIdx].id;
+    const target = document.getElementById(targetId);
+    if (target) target.scrollIntoView({ behavior: 'auto', block: 'start' });
+
+    /* Instant active-highlight swap (don't wait for the scroll spy's
+       measurement, which feels laggy under fast Up/Down taps). */
+    document.querySelectorAll('.side-toc-item').forEach(it => {
+      it.classList.toggle('active', it.dataset.target === targetId);
+    });
+    /* Keep the active TOC item in view without disturbing the document scroll
+       the line above just set. */
+    const tocItem = document.querySelector('.side-toc-item[data-target="' + targetId + '"]');
+    if (tocItem) {
+      const tocScroll = tocItem.closest('.side-toc-scroll');
+      if (tocScroll) {
+        const itemRect = tocItem.getBoundingClientRect();
+        const scrollRect = tocScroll.getBoundingClientRect();
+        const buffer = 12;
+        if (itemRect.top < scrollRect.top + buffer) {
+          tocScroll.scrollTop -= (scrollRect.top + buffer) - itemRect.top;
+        } else if (itemRect.bottom > scrollRect.bottom - buffer) {
+          tocScroll.scrollTop += itemRect.bottom - (scrollRect.bottom - buffer);
+        }
+      }
+    }
+  });
+}
+
 /* Copy-to-pages page-picker modal (pp-modal). _ppCopyModalReady gates the
    shared copy triggers: true only after this wires up (i.e. the host has the
    pp-modal markup AND didn't opt out), so the regional falls back to its own
@@ -5699,6 +5753,7 @@ function initReportEdit() {
      shared copy triggers from prompt → modal. */
   if (OPTS.copyPages    !== false) ppSetupCopyPagesModal();
   if (OPTS.keyboardNudge !== false) ppSetupArrowKeyNudge();
+  if (OPTS.arrowKeyNav  !== false) ppSetupArrowKeyNav();
   if (OPTS.copyPaste    !== false) ppSetupCopyPaste();
   /* Slice 4 — backup/sync/audit modals. Triggers live on the pager
      with tier1-only gating; their no-op early-out when the HTML
