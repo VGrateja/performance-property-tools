@@ -2335,6 +2335,59 @@ function _mountChart(pageId, option) {
       al.formatter = (v, i) => (i % 2 === 0) ? String(v) : '\n' + String(v);
     }
   });
+  /* Y-axis NAME (axis legend) placement — match the regional: rotate the name
+     90° and centre it along the axis, instead of ECharts' default top-corner
+     spot where it crowded the legend / sat awkwardly. Applied to any value axis
+     that has a name but hasn't set its own nameLocation (p6 sets its own). The
+     right axis (index 1) gets a slightly smaller gap since its labels are
+     narrower. Single-axis charts use grid.left=60 / dual-axis grid.right=60,
+     both wide enough for the rotated name. */
+  const _yAxes = Array.isArray(option.yAxis) ? option.yAxis : (option.yAxis ? [option.yAxis] : []);
+  _yAxes.forEach((ax, i) => {
+    if (!ax || !ax.name || ax.nameLocation) return;
+    ax.nameLocation = 'middle';
+    ax.nameRotate   = 90;
+    if (ax.nameGap == null) ax.nameGap = (i === 0 ? 50 : 40);
+    ax.nameTextStyle = { fontFamily: 'Ubuntu, "Roboto", sans-serif', fontStyle: 'italic', fontSize: 10, color: '#2f3d4a', fontWeight: 500 };
+  });
+  /* Tooltip number formatting — the default axis tooltip showed raw values, so
+     percentage series (stored as decimals) read as long digit strings. Reuse
+     each series' own value-axis label formatter so hovered numbers match the
+     axis exactly (% as %, $ as $, counts as k), styled like the regional's dark
+     tooltip card. Skipped when the renderer set its own tooltip formatter
+     (p5/p6). For horizontal bars the value lives on the x-axis. */
+  if (option.tooltip && option.tooltip.trigger === 'axis' && typeof option.tooltip.formatter !== 'function') {
+    const _xa = Array.isArray(option.xAxis) ? option.xAxis[0] : option.xAxis;
+    const _horizontal = !!(_xa && _xa.type === 'value');
+    const _valFmt = (p) => {
+      let f;
+      if (_horizontal) {
+        f = _xa.axisLabel && _xa.axisLabel.formatter;
+      } else {
+        const s  = (option.series || [])[p.seriesIndex];
+        const yi = (s && s.yAxisIndex) || 0;
+        const ax = _yAxes[yi] || _yAxes[0];
+        f = ax && ax.axisLabel && ax.axisLabel.formatter;
+      }
+      const v = p.value;
+      if (typeof f === 'function') { try { return f(v); } catch (_) {} }
+      return (v == null || isNaN(Number(v))) ? '—' : Number(v).toLocaleString('en-AU');
+    };
+    Object.assign(option.tooltip, {
+      backgroundColor: 'rgba(15,25,34,0.95)',
+      borderColor: '#2a3a48',
+      textStyle: { color: '#fff', fontFamily: 'Ubuntu, "Roboto", sans-serif', fontSize: 12 },
+      formatter: (params) => {
+        const arr  = Array.isArray(params) ? params : [params];
+        const head = arr.length ? arr[0].axisValue : '';
+        const lines = arr.map(p =>
+          '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + p.color + ';margin-right:6px"></span>' +
+          p.seriesName + ': <strong>' + _valFmt(p) + '</strong>'
+        );
+        return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + lines.join('<br/>');
+      },
+    });
+  }
   /* Reference Bands (Growth / Correction periods) — drawn behind the price
      charts only, matching the regional. Hidden entirely until the user has
      saved a custom band set (ppBandsLoad() returns a non-empty array): an
@@ -2380,13 +2433,15 @@ function _mountChart(pageId, option) {
    They short-circuit gracefully if the columns they need aren't in
    the payload — so a renderer never blocks the others. */
 
-/* p2/p3/p4 begin at 1980 — the national feed carries 1975+, but these price
-   charts start at 1980 per request. Slice the year axis and every series in
-   lockstep (same start index) so values stay aligned with their years. */
-function _from1980(years) {
-  const i = years.findIndex(y => Number(y) >= 1980);
+/* Several charts begin later than the feed's 1975 start (p2/p3/p4 at 1980, p6
+   at 1997, …). _fromYear returns the index of the first year >= minYear; the
+   renderer slices the year axis and every series in lockstep (same start
+   index) so values stay aligned with their years. */
+function _fromYear(years, minYear) {
+  const i = years.findIndex(y => Number(y) >= minYear);
   return i < 0 ? 0 : i;
 }
+function _from1980(years) { return _fromYear(years, 1980); }
 
 function _renderP2_MedianPrice(d) {
   const years = (d.year || []).map(String);
@@ -2473,18 +2528,49 @@ function _renderP6_DwellingApprovals(d) {
   const years = (d.year || []).map(String);
   if (!years.length) return;
   if (!d.buildingApprovalsHouse && !d.buildingApprovalUnits && !d.buildingApprovalsTotal) return;
+  /* p6 begins at 1990 per request — slice the year axis and every series in
+     lockstep so values stay aligned with their years. */
+  const _from = _fromYear(years, 1990);
+  const yrs   = years.slice(_from);
+  const _sl   = a => Array.isArray(a) ? a.slice(_from) : a;
   _mountChart('p6', Object.assign(_baseChartOption(), {
+    /* The default tooltip showed raw values — the Pop Change % series is a
+       decimal (0.012…) so it read as a long string of digits. Format it as a
+       clean percentage and the dwelling-approval counts with thousands
+       separators, styled like the regional's tooltip. */
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'line', lineStyle: { color: '#6a7a88', type: 'dashed' } },
+      backgroundColor: 'rgba(15,25,34,0.95)',
+      borderColor: '#2a3a48',
+      textStyle: { color: '#fff', fontFamily: 'Ubuntu, "Roboto", sans-serif', fontSize: 12 },
+      formatter: (params) => {
+        const head = (params && params[0]) ? params[0].axisValue : '';
+        const lines = (params || []).map(p => {
+          const v = Number(p.value);
+          let fmt;
+          if (isNaN(v)) fmt = '—';
+          else if (p.seriesName === 'National Population Change %') fmt = (v * 100).toFixed(1) + '%';
+          else fmt = Math.round(v).toLocaleString('en-AU');
+          return '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + p.color + ';margin-right:6px"></span>' + p.seriesName + ': <strong>' + fmt + '</strong>';
+        });
+        return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + lines.join('<br/>');
+      },
+    },
     legend: Object.assign(_baseChartOption().legend, { data: ['House', 'Units', 'Total', 'National Population Change %'] }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: yrs }),
     yAxis: [
-      { type: 'value', name: 'House / Units / Total', nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e3 ? (v/1e3) + 'k' : v }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
-      { type: 'value', name: 'Pop Change %',           nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(1) + '%' }, splitLine: { show: false } },
+      /* Axis names placed like the regional's dual-axis charts — rotated 90°
+         and centred along each axis, instead of stacked at the top where they
+         crowded the legend / sat off to the side. */
+      { type: 'value', name: 'House / Units / Total', nameLocation: 'middle', nameGap: 50, nameRotate: 90, nameTextStyle: { fontFamily: 'Ubuntu, "Roboto", sans-serif', fontStyle: 'italic', fontSize: 10, color: '#2f3d4a', fontWeight: 500 }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e3 ? (v/1e3) + 'k' : v }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
+      { type: 'value', name: 'Pop Change %',           nameLocation: 'middle', nameGap: 40, nameRotate: 90, nameTextStyle: { fontFamily: 'Ubuntu, "Roboto", sans-serif', fontStyle: 'italic', fontSize: 10, color: '#2f3d4a', fontWeight: 500 }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(1) + '%' }, splitLine: { show: false } },
     ],
     series: [
-      { name: 'House',  type: 'line', yAxisIndex: 0, data: d.buildingApprovalsHouse || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
-      { name: 'Units',  type: 'line', yAxisIndex: 0, data: d.buildingApprovalUnits  || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
-      { name: 'Total',  type: 'line', yAxisIndex: 0, data: d.buildingApprovalsTotal || [], showSymbol: false, lineStyle: { width: 2, color: '#5cc8e0' } },
-      { name: 'National Population Change %', type: 'line', yAxisIndex: 1, data: d.changeNational || [], showSymbol: false, lineStyle: { width: 2, color: '#c2a4d6' } },
+      { name: 'House',  type: 'line', yAxisIndex: 0, data: _sl(d.buildingApprovalsHouse || []), showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: 'Units',  type: 'line', yAxisIndex: 0, data: _sl(d.buildingApprovalUnits  || []), showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+      { name: 'Total',  type: 'line', yAxisIndex: 0, data: _sl(d.buildingApprovalsTotal || []), showSymbol: false, lineStyle: { width: 2, color: '#5cc8e0' } },
+      { name: 'National Population Change %', type: 'line', yAxisIndex: 1, data: _sl(d.changeNational || []), showSymbol: false, lineStyle: { width: 2, color: '#c2a4d6' } },
     ],
   }));
 }
@@ -2493,17 +2579,22 @@ function _renderP7_DwellingCommencements(d) {
   const years = (d.year || []).map(String);
   if (!years.length) return;
   if (!d.dwellingCommencedH && !d.dwellingCommencedOther && !d.dwellingCommencedTotal) return;
+  /* p7 begins at 1990 per request — slice the year axis and every series in
+     lockstep so values stay aligned with their years. */
+  const _from = _fromYear(years, 1990);
+  const yrs   = years.slice(_from);
+  const _sl   = a => Array.isArray(a) ? a.slice(_from) : a;
   _mountChart('p7', Object.assign(_baseChartOption(), {
     legend: Object.assign(_baseChartOption().legend, { data: ['House', 'Other', 'Total'] }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: yrs }),
     yAxis: Object.assign(_baseChartOption().yAxis, {
       name: 'House / Other / Total', nameTextStyle: { color: '#1a2236' },
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e3 ? (v/1e3) + 'k' : v },
     }),
     series: [
-      { name: 'House', type: 'line', data: d.dwellingCommencedH     || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
-      { name: 'Other', type: 'line', data: d.dwellingCommencedOther || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
-      { name: 'Total', type: 'line', data: d.dwellingCommencedTotal || [], showSymbol: false, lineStyle: { width: 2, color: '#5cc8e0' } },
+      { name: 'House', type: 'line', data: _sl(d.dwellingCommencedH     || []), showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: 'Other', type: 'line', data: _sl(d.dwellingCommencedOther || []), showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+      { name: 'Total', type: 'line', data: _sl(d.dwellingCommencedTotal || []), showSymbol: false, lineStyle: { width: 2, color: '#5cc8e0' } },
     ],
   }));
 }
@@ -2615,16 +2706,76 @@ function _renderP20_InternetJobVacancies(d) {
 function _renderP8_PopulationGrowth(d) {
   const years = (d.year || []).map(String);
   if (!years.length || !d.populationNational) return;
+  /* p8 begins at 1983 per request — slice the year axis and every series in
+     lockstep so values stay aligned with their years. */
+  const _from = _fromYear(years, 1983);
+  const yrs   = years.slice(_from);
+  const _sl   = a => Array.isArray(a) ? a.slice(_from) : a;
+  /* Long-term average of the % change series (mean of valid points over the
+     visible range), drawn as a dashed reference line on the % axis and shown
+     in the tooltip. */
+  const _pctVals = _sl(d.changeNational || []).filter(v => v != null && !isNaN(Number(v)));
+  const _lta = _pctVals.length ? _pctVals.reduce((s, v) => s + Number(v), 0) / _pctVals.length : null;
   _mountChart('p8', Object.assign(_baseChartOption(), {
+    /* Custom tooltip: population in millions, % change as a percentage, and the
+       long-term average appended as its own line. */
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'line', lineStyle: { color: '#6a7a88', type: 'dashed' } },
+      backgroundColor: 'rgba(15,25,34,0.95)',
+      borderColor: '#2a3a48',
+      textStyle: { color: '#fff', fontFamily: 'Ubuntu, "Roboto", sans-serif', fontSize: 12 },
+      formatter: (params) => {
+        const arr  = Array.isArray(params) ? params : [params];
+        const head = arr.length ? arr[0].axisValue : '';
+        const lines = arr.filter(p => p.seriesName !== 'Long-Term Average').map(p => {
+          const v = Number(p.value);
+          const fmt = (p.seriesName === '% Change of Population')
+            ? (isNaN(v) ? '—' : (v * 100).toFixed(1) + '%')
+            : (isNaN(v) ? '—' : (v / 1e6).toFixed(2) + 'm');
+          return '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + p.color + ';margin-right:6px"></span>' + p.seriesName + ': <strong>' + fmt + '</strong>';
+        });
+        if (_lta != null) {
+          lines.push('<span style="display:inline-block;width:10px;border-top:2px dashed #9aa7b2;margin-right:6px;vertical-align:middle"></span>Long-Term Average: <strong>' + (_lta * 100).toFixed(2) + '%</strong>');
+        }
+        return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + lines.join('<br/>');
+      },
+    },
     legend: Object.assign(_baseChartOption().legend, { data: ['Number of Population', '% Change of Population'] }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: years }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: yrs }),
     yAxis: [
-      { type: 'value', name: 'Population', nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e6 ? (v/1e6).toFixed(0) + 'm' : v }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
-      { type: 'value', name: '% Change',   nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(1) + '%' }, splitLine: { show: false } },
+      /* Left axis 14m → 28m in 2m steps so the ticks read 14m, 16m … 28m
+         (not 1m increments) and the population line fills the panel. */
+      { type: 'value', min: 14000000, max: 28000000, interval: 2000000, name: 'Population', nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e6 ? (v/1e6).toFixed(0) + 'm' : v }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
+      /* Right axis pinned to 0–2.5% in 0.5% steps. Without an explicit range
+         it was re-derived to align tick-counts with the fixed left axis, which
+         shifted where 1.42% landed (it pointed at the 1% mark). Pinning it puts
+         the long-term-average line at the correct height. */
+      { type: 'value', min: 0, max: 0.025, interval: 0.005, name: '% Change', nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(1) + '%' }, splitLine: { show: false } },
     ],
     series: [
-      { name: 'Number of Population',  type: 'line', yAxisIndex: 0, data: d.populationNational, showSymbol: false, lineStyle: { width: 2, color: '#000' } },
-      { name: '% Change of Population', type: 'line', yAxisIndex: 1, data: d.changeNational || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+      { name: 'Number of Population',  type: 'line', yAxisIndex: 0, data: _sl(d.populationNational), showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: '% Change of Population', type: 'line', yAxisIndex: 1, data: _sl(d.changeNational || []), showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+      /* Long-term average reference line — drawn as a constant-value series on
+         the % axis (yAxisIndex 1) so it is GUARANTEED to sit at the right
+         height. A markLine attached to the secondary-axis series mis-rendered
+         (it landed at the 1% mark instead of 1.42%). Not listed in legend.data,
+         so it stays out of the legend. The grey badge sits on the first
+         (leftmost) point, anchored to extend rightward so it never clips. */
+      ...(_lta == null ? [] : [{
+        name: 'Long-Term Average', type: 'line', yAxisIndex: 1, symbol: 'none', silent: true, z: 1,
+        lineStyle: { color: '#6a7a88', type: 'dashed', width: 1.5 },
+        data: yrs.map((y, i) => i === 0 ? {
+          value: _lta,
+          label: {
+            show: true, position: [0, -8], align: 'left', verticalAlign: 'bottom',
+            formatter: 'Long-Term Average (' + (_lta * 100).toFixed(2) + '%)',
+            backgroundColor: '#6a7a88', color: '#fff',
+            padding: [3, 7, 3, 7], borderRadius: 3,
+            fontSize: 10, fontWeight: 700, fontFamily: 'Ubuntu, "Roboto", sans-serif',
+          },
+        } : _lta),
+      }]),
     ],
   }));
 }
@@ -2813,10 +2964,34 @@ function _renderP5_VacancyRate(d) {
   const curr   = d.vacancyRateNov2024;
   if (!Array.isArray(labels) || !labels.length || !prior || !curr) return;
   _mountChart('p5', Object.assign(_baseChartOption(), {
+    /* Vacancy rates are stored as decimals (0.025 = 2.5%); the default
+       tooltip showed the raw decimal, which read wrong. Format as a percentage
+       (matching the y-axis) and style the card like the regional's tooltip —
+       dark background, colour dot, bold value, category header. 'shadow'
+       axis-pointer suits the bar chart. */
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      backgroundColor: 'rgba(15,25,34,0.95)',
+      borderColor: '#2a3a48',
+      textStyle: { color: '#fff', fontFamily: 'Ubuntu, "Roboto", sans-serif', fontSize: 12 },
+      formatter: (params) => {
+        const head = (params && params[0]) ? params[0].axisValue : '';
+        const lines = (params || []).map(p => {
+          const v = Number(p.value);
+          const fmt = isNaN(v) ? '—' : (v * 100).toFixed(1) + '%';
+          return '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + p.color + ';margin-right:6px"></span>' + p.seriesName + ': <strong>' + fmt + '</strong>';
+        });
+        return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + lines.join('<br/>');
+      },
+    },
     legend: Object.assign(_baseChartOption().legend, { data: ['Nov 2023', 'Nov 2024'] }),
     xAxis: Object.assign(_baseChartOption().xAxis, {
       data: labels,
-      axisLabel: { color: '#1a2236', fontSize: 11, interval: 0, rotate: 0 },
+      /* Region names fit on one row without overlapping — set an explicit
+         (identity) formatter so _mountChart's year-staircase logic (which
+         drops alternate labels to a second line) is skipped here. */
+      axisLabel: { color: '#1a2236', fontSize: 11, interval: 0, rotate: 0, formatter: (v) => v },
     }),
     yAxis: Object.assign(_baseChartOption().yAxis, {
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(1) + '%' },
