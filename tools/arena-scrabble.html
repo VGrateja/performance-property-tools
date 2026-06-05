@@ -1676,6 +1676,10 @@
     border: 1px dashed rgba(139,92,246,0.30);
   }
   [data-theme="light"] .scrabble-result-breakdown { color: rgba(31,40,63,0.65); }
+  .scrabble-result-breakdown-line { padding: 1px 0; }
+  .scrabble-result-breakdown-line strong { color: rgba(255,255,255,0.92); font-weight: 800; }
+  [data-theme="light"] .scrabble-result-breakdown-line strong { color: rgba(31,40,63,0.92); }
+  .scrabble-result-breakdown-line.is-note { margin-top: 6px; opacity: 0.8; font-style: italic; }
 
   .scrabble-result-actions {
     display: flex; justify-content: center; gap: 10px;
@@ -2161,7 +2165,7 @@
     <div class="scrabble-result-breakdown" id="scrabbleResultBreakdown"></div>
 
     <div class="scrabble-result-actions">
-      <button class="scrabble-modal-btn is-secondary" type="button" id="scrabbleResultCloseBtn">Back to lobby</button>
+      <button class="scrabble-modal-btn is-secondary" type="button" id="scrabbleResultCloseBtn">Close &amp; stay</button>
       <button class="scrabble-modal-btn is-primary"   type="button" id="scrabbleResultRematchBtn">Rematch</button>
     </div>
   </div>
@@ -4308,6 +4312,29 @@ const $resultCloseBtn   = document.getElementById('scrabbleResultCloseBtn');
 const $resultRematchBtn = document.getElementById('scrabbleResultRematchBtn');
 
 let _settlePending = false;   // true while WE'RE the settling client
+let _resultShownForGame = null;  // game id whose end-of-game window we've shown
+let _endModalFetching = false;   // an end-window match fetch is in flight
+
+/* Show the end-of-game window to EVERY client once the game flips to
+   'completed' — not only whoever called settle. The game-row UPDATE
+   handler runs paintAll() on the flip, so we hook in there: fetch the
+   recorded match (the settler wrote it in the same transaction) and
+   render the same result window for the other players + spectators.
+   Guarded by _resultShownForGame so it shows exactly once per game and
+   never re-pops while players stay on the board to chat. */
+async function maybeShowEndModal() {
+  if (!_gameRow || _gameRow.status !== 'completed') return;
+  if (_resultShownForGame === _gameRow.id) return;   // already shown (incl. the settler's RPC path)
+  if (_settlePending || _endModalFetching) return;   // settler renders from its RPC return; no double-fetch
+  _endModalFetching = true;
+  const gid = _gameRow.id;
+  try {
+    const match = await fetchLatestMatchForGame({ id: gid });
+    if (match) { _resultShownForGame = gid; showResultModalFromMatch(match); }
+  } finally {
+    _endModalFetching = false;
+  }
+}
 
 /* Hook into submit so we trigger settle when the RPC's end_hint fires. */
 async function settleGameNatural(termination) {
@@ -4351,6 +4378,9 @@ paintAll = function() {
   _origPaintAll2();
   maybeAutoSettle();
   maybeShowDrawOffer();
+  /* A status flip to 'completed' arrives here as a game-row UPDATE →
+     pop the end-of-game window for everyone, not just the settler. */
+  maybeShowEndModal();
   /* void_by/void_agreed arrive via the game-row UPDATE → refresh the
      Void button's pending/disabled state in lockstep with the banner. */
   updateActionButtons();
@@ -4482,6 +4512,7 @@ function showResultModalFromMatch(match) {
 function showResultModalCore(r) {
   const players = r.players || [];
   if (!players.length) return;
+  if (_gameRow) _resultShownForGame = _gameRow.id;   // dedupe vs. the realtime broadcaster
   const nameOf = p => (p.name && p.name.trim()) ? p.name : ((p.email || '').split('@')[0] || '—');
 
   /* Title from MY perspective. */
@@ -4512,6 +4543,13 @@ function showResultModalCore(r) {
     title = winnerNames + (winners.length > 1 ? ' tied' : ' wins');
     sub   = terminationLabel(r.termination);
   }
+  /* Out-of-tiles: the title only conveys win/lose, so spell out the
+     REASON for everyone — name the player who emptied their rack while
+     the bag was empty. */
+  if (r.termination === 'out_of_tiles') {
+    const outP = players.find(p => (p.leftover || 0) === 0);
+    sub = (outP ? nameOf(outP) : 'A player') + ' played their last tile with the bag empty — the game is over.';
+  }
   $resultTitle.textContent = title;
   $resultSub.textContent   = sub;
 
@@ -4536,17 +4574,30 @@ function showResultModalCore(r) {
     '</div>';
   }).join('');
 
-  /* Breakdown line — leftover penalty applied during out-of-tiles. */
+  /* Breakdown — show how each final score was reached, visible to all
+     players + spectators. At game end every player loses the value of
+     the tiles still on their rack; on out-of-tiles the player who went
+     out also collects the sum of everyone else's leftover. */
   const bits = [];
-  if (r.termination === 'out_of_tiles') {
+  const totalLeft = players.reduce((s, p) => s + (p.leftover || 0), 0);
+  const outP = (r.termination === 'out_of_tiles') ? players.find(p => (p.leftover || 0) === 0) : null;
+  if (['out_of_tiles', 'six_passes', 'resign', 'agreement'].includes(r.termination)) {
     players.forEach(p => {
-      if (p.leftover && p.leftover > 0) {
-        bits.push(nameOf(p) + " left −" + p.leftover);
+      const nm   = escapeHtml(nameOf(p));
+      const lv   = p.leftover || 0;
+      const fin  = (p.score != null ? p.score : 0);
+      if (outP && p.user_id === outP.user_id) {
+        bits.push('<div class="scrabble-result-breakdown-line">' + nm + ' went out' +
+          (totalLeft > 0 ? ' · +' + totalLeft + ' from opponents’ tiles' : '') +
+          ' → <strong>' + fin + '</strong></div>');
+      } else if (lv > 0) {
+        bits.push('<div class="scrabble-result-breakdown-line">' + nm + ' · ' + (fin + lv) +
+          ' − ' + lv + ' (tiles left) = <strong>' + fin + '</strong></div>');
       }
     });
   }
-  if (!r.ranked) bits.push('Casual — points unchanged.');
-  $resultBreakdown.textContent = bits.length ? bits.join(' · ') : '';
+  if (!r.ranked) bits.push('<div class="scrabble-result-breakdown-line is-note">Casual — ladder points unchanged.</div>');
+  $resultBreakdown.innerHTML = bits.join('');
   $resultBreakdown.style.display = bits.length ? 'block' : 'none';
 
   $resultModal.classList.add('is-open');
@@ -4673,8 +4724,11 @@ if ($drawDeclineBtn) {
 /* ─── Result-modal actions ─── */
 if ($resultCloseBtn) {
   $resultCloseBtn.addEventListener('click', () => {
+    /* Dismiss the window but STAY on the board so players can keep
+       chatting. Leaving is done explicitly via "← Back to lobby".
+       Do NOT closeGameView() here. */
     $resultModal.classList.remove('is-open');
-    closeGameView();
+    showGameError('Game over — you can keep chatting. Press “← Back to lobby” when you’re done.', true);
   });
 }
 if ($resultRematchBtn) {
@@ -4720,6 +4774,7 @@ const _origCloseGameView2 = closeGameView;
 closeGameView = function() {
   if ($resultModal) $resultModal.classList.remove('is-open');
   if ($drawOfferBanner) $drawOfferBanner.style.display = 'none';
+  _resultShownForGame = null;   // next game starts with a fresh end-window guard
   _origCloseGameView2();
 };
 
