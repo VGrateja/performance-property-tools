@@ -2115,13 +2115,100 @@ function _mountChart(pageId, option) {
   _xAxes.forEach(ax => {
     if (!ax || ax.type !== 'category') return;
     const al = ax.axisLabel = Object.assign({}, ax.axisLabel || {});
-    al.interval = 0;
-    al.rotate = 0;
-    if (typeof al.formatter !== 'function') {
+    /* A renderer that sets its own axisLabel.formatter fully controls its own
+       label spacing + rotation (opts out of everything below). */
+    if (typeof al.formatter === 'function') return;
+    const data = Array.isArray(ax.data) ? ax.data : [];
+    /* A genuine date/year label is "2020", "2020-06-30" or "Jan 90". Feed tabs
+       sometimes append source/metadata notes ("Source: …", URLs, "average per
+       year") to the period column — those are NOT dates and must never paint
+       onto the axis (they'd smear across the plot). */
+    const isDateLabel = s => {
+      s = String(s).trim();
+      return /^\d{4}\b/.test(s) ||
+             /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*\d{2,4}$/i.test(s);
+    };
+    const yearOf = s => {
+      s = String(s);
+      let m = s.match(/^(\d{4})\b/);   // ISO / leading 4-digit year ("2020-06-30")
+      if (m) return m[1];
+      m = s.match(/(\d{2,4})\s*$/);    // trailing year ("Jan 90", "FY24")
+      return m ? m[1] : s;
+    };
+    const dateRows  = data.filter(isDateLabel).length;
+    const uniqYears = new Set(data.filter(isDateLabel).map(yearOf)).size;
+    if (uniqYears && dateRows > uniqYears + 4) {
+      /* Sub-yearly (monthly / quarterly): showing every category smears the
+         labels, so thin to ONE label per YEAR — the first row of each year —
+         rotated 45°. Non-date rows are skipped entirely. */
+      let prevY = null;
+      const showIdx = new Set();
+      data.forEach((v, i) => { if (!isDateLabel(v)) return; const y = yearOf(v); if (y !== prevY) { showIdx.add(i); prevY = y; } });
+      al.interval = (idx) => showIdx.has(idx);
+      al.rotate = 45;
+    } else {
+      /* Yearly (one row per year) — show every label, staircased onto two
+         lines so they don't overlap (matches the regional). Any non-date
+         (source/metadata) rows render blank. */
+      al.interval = 0;
+      al.rotate = 0;
       al.lineHeight = 14;
-      al.formatter = (v, i) => (i % 2 === 0) ? String(v) : '\n' + String(v);
+      al.formatter = (v, i) => isDateLabel(v) ? ((i % 2 === 0) ? String(v) : '\n' + String(v)) : '';
     }
   });
+  /* Y-axis NAME placement — rotate the axis name 90° and centre it ALONG the
+     axis (regional style) for any named axis that didn't pin its own position.
+     Without this the name sits horizontally above the axis, cramped against
+     the top tick. Left axis sits a touch further out than the right. */
+  const _yAxes = Array.isArray(option.yAxis) ? option.yAxis : (option.yAxis ? [option.yAxis] : []);
+  _yAxes.forEach((ax, i) => {
+    if (!ax || !ax.name || ax.nameLocation !== undefined) return;
+    ax.nameLocation = 'middle';
+    ax.nameRotate   = 90;
+    ax.nameGap      = (i === 0 ? 50 : 40);
+    ax.nameTextStyle = Object.assign(
+      { fontFamily: 'Ubuntu,"Roboto",sans-serif', fontStyle: 'italic', fontSize: 10, color: '#2f3d4a', fontWeight: 500 },
+      ax.nameTextStyle || {}
+    );
+  });
+  /* Tooltip number formatting — the default axis tooltip shows RAW values, so
+     percentage series (stored as decimals like 0.045) read as weird long
+     numbers. Reuse each series' own value-axis label formatter so hovered
+     numbers match the axis exactly (% as %, $ as $, counts as k/m), in a dark
+     card. Skipped when the renderer set its own tooltip.formatter. For
+     horizontal bars the value lives on the x-axis. */
+  if (option.tooltip && option.tooltip.trigger === 'axis' && typeof option.tooltip.formatter !== 'function') {
+    const _xa = Array.isArray(option.xAxis) ? option.xAxis[0] : option.xAxis;
+    const _horizontal = !!(_xa && _xa.type === 'value');
+    const _valFmt = (p) => {
+      let f;
+      if (_horizontal) {
+        f = _xa.axisLabel && _xa.axisLabel.formatter;
+      } else {
+        const s  = (option.series || [])[p.seriesIndex];
+        const yi = (s && s.yAxisIndex) || 0;
+        const ax = _yAxes[yi] || _yAxes[0];
+        f = ax && ax.axisLabel && ax.axisLabel.formatter;
+      }
+      const v = p.value;
+      if (typeof f === 'function') { try { return f(v); } catch (_) {} }
+      return (v == null || isNaN(Number(v))) ? '—' : Number(v).toLocaleString('en-AU');
+    };
+    Object.assign(option.tooltip, {
+      backgroundColor: 'rgba(15,25,34,0.95)',
+      borderColor: '#2a3a48',
+      textStyle: { color: '#fff', fontFamily: 'Ubuntu, "Roboto", sans-serif', fontSize: 12 },
+      formatter: (params) => {
+        const arr  = Array.isArray(params) ? params : [params];
+        const head = arr.length ? arr[0].axisValue : '';
+        const lines = arr.map(p =>
+          '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + p.color + ';margin-right:6px"></span>' +
+          p.seriesName + ': <strong>' + _valFmt(p) + '</strong>'
+        );
+        return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + lines.join('<br/>');
+      },
+    });
+  }
   /* Reference Bands (Growth / Correction periods) — drawn behind the value
      chart only, matching the regional. Hidden entirely until the user has
      saved a custom band set (ppBandsLoad() returns a non-empty array): an
@@ -2182,18 +2269,37 @@ function _renderP5_CashRateInflation(tabs) {
   const t = tabs['cash-rateinflation-rate-data'];
   if (!t || !t.effectiveDate || !t.cashRate) return;
   const labels = t.effectiveDate.map(_shortDate);
-  _mountChart('p5', Object.assign(_baseChartOption(), {
-    legend: Object.assign(_baseChartOption().legend, { data: ['Cash Rate', 'Inflation Rate'] }),
-    xAxis: Object.assign(_baseChartOption().xAxis, {
+  const base = _baseChartOption();
+  _mountChart('p5', Object.assign(base, {
+    grid: { left: 55, right: 28, top: 50, bottom: 74, containLabel: false },
+    /* Legend stays on TOP (house style — never move report legends to the
+       bottom). */
+    legend: Object.assign(base.legend, { data: ['Cash Rate', 'Inflation Rate'], left: 55 }),
+    /* Investment-committee forecast callout in the (empty) top-right of the
+       plot, with the verdict word in green — matches the reference. */
+    graphic: [
+      { type: 'text', right: 16, top: 52, style: {
+          text: 'INVESTMENT\nCOMMITTEE\nPREDICTING CASH\nRATE TO',
+          textAlign: 'right', fontStyle: 'italic', fontWeight: 'bold',
+          fontSize: 12, fill: '#1a2236', lineHeight: 17 } },
+      { type: 'text', right: 16, top: 120, style: {
+          text: 'CONTRACT',
+          textAlign: 'right', fontStyle: 'italic', fontWeight: 'bold',
+          fontSize: 13, fill: '#3ecf8e' } },
+    ],
+    xAxis: Object.assign(base.xAxis, {
       data: labels,
-      axisLabel: { color: '#1a2236', fontSize: 10, rotate: 45, interval: Math.max(1, Math.floor(labels.length / 16)) },
+      /* _mountChart thins this high-frequency date axis to one label per year
+         (rotated) automatically. */
+      axisLabel: { color: '#1a2236', fontSize: 10 },
     }),
-    yAxis: Object.assign(_baseChartOption().yAxis, {
-      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(1) + '%' },
+    yAxis: Object.assign(base.yAxis, {
+      min: -0.025, max: 0.20, interval: 0.025,
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (+(v * 100).toFixed(1)) + '%' },
     }),
     series: [
-      { name: 'Inflation Rate', type: 'bar',  data: t.inflationRate || [], itemStyle: { color: CHART_COLORS[2] }, barWidth: 4 },
-      { name: 'Cash Rate',      type: 'line', data: t.cashRate, showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: 'Inflation Rate', type: 'bar',  data: t.inflationRate || [], itemStyle: { color: CHART_COLORS[2] }, barWidth: 3 },
+      { name: 'Cash Rate',      type: 'line', data: t.cashRate, showSymbol: false, lineStyle: { width: 2, color: '#000' }, z: 3 },
     ],
   }));
 }
@@ -2280,7 +2386,7 @@ function _renderP22_FedHealthBudget(tabs) {
   if (!t || !t.date || !t.data) return;
   _mountChart('p22', Object.assign(_baseChartOption(), {
     legend: Object.assign(_baseChartOption().legend, { data: ['Spendings'] }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: t.date }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: t.date.map(_shortDate) }),
     yAxis: Object.assign(_baseChartOption().yAxis, {
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1000 ? (v/1000).toFixed(0) + 'k' : v },
     }),
@@ -2378,13 +2484,21 @@ function _renderP3_RiskReward(tabs) {
 function _renderP6_BuildingPrice(tabs) {
   const t = tabs['building-price-indices-data'];
   if (!t || !t.periodyearJune30) return;
-  const years = t.periodyearJune30.map(String);
+  /* Keep only real year rows — the feed tab appends trailing source/metadata
+     notes (e.g. "Source: …", URLs, "average per year") to the period column
+     that would otherwise occupy bogus x-axis slots. Slice every series to the
+     same rows so they stay aligned. */
+  const raw  = t.periodyearJune30.map(String);
+  const keep = [];
+  raw.forEach((v, i) => { if (/^\s*(19|20)\d{2}\b/.test(v)) keep.push(i); });
+  const years = keep.map(i => raw[i].trim());
+  const pick  = arr => Array.isArray(arr) ? keep.map(i => arr[i]) : arr;
   const series = [
-    ['Adelaide', t.adel],
-    ['Brisbane', t.bris],
-    ['Darwin',   t.dwn],
-    ['Hobart',   t.hob],
-    ['Canberra', t.can],
+    ['Adelaide', pick(t.adel)],
+    ['Brisbane', pick(t.bris)],
+    ['Darwin',   pick(t.dwn)],
+    ['Hobart',   pick(t.hob)],
+    ['Canberra', pick(t.can)],
   ].filter(([_, v]) => Array.isArray(v) && v.length);
   if (!series.length) return;
   _mountChart('p6', Object.assign(_baseChartOption(), {
@@ -2592,7 +2706,7 @@ function _renderP19_GPVisits(tabs) {
   if (!t || !t.date) return;
   _mountChart('p19', Object.assign(_baseChartOption(), {
     legend: Object.assign(_baseChartOption().legend, { data: ['Australian Population', 'Saw a GP', '% of Population'] }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: t.date }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: t.date.map(_shortDate) }),
     yAxis: [
       { type: 'value', name: 'Population',  nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1e6 ? (v/1e6).toFixed(0) + 'm' : v }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
       { type: 'value', name: '% of Pop',    nameTextStyle: { color: '#1a2236' }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(0) + '%' }, splitLine: { show: false }, min: 0.7, max: 0.9 },
@@ -2654,7 +2768,7 @@ function _renderP24_ECommerce(tabs) {
   if (!t || !t.date || !t.data) return;
   _mountChart('p24', Object.assign(_baseChartOption(), {
     legend: Object.assign(_baseChartOption().legend, { data: ['E-Commerce Sales'] }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: t.date.map(String) }),
+    xAxis: Object.assign(_baseChartOption().xAxis, { data: t.date.map(_shortDate) }),
     yAxis: Object.assign(_baseChartOption().yAxis, {
       name: '$ Billions', nameTextStyle: { color: '#1a2236' },
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => '$' + v + 'b' },
