@@ -1439,9 +1439,9 @@
     <h2 class="sd-title"></h2>
     <p class="sd-body"></p>
   </section>
-  <section class="page" id="p11" data-label="Return on Stocks &amp; Gold">
+  <section class="page" id="p11" data-label="Term Deposits">
     <header class="rh-head"><div class="rh-brand"><img src="../assets/Reports/logo-color.png" alt="Performance Property"></div><h1 class="rh-title"></h1><div class="rh-section"></div><div class="rh-meta"></div></header>
-    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — Apple, ASX 200, and Gold annual % return (2004–2024).</div></div></div>
+    <div class="rh-body"><div class="rh-body-placeholder"><div class="ph-icon">📈</div><div>Line chart — All Term Deposits rate, 2004–present, with 20/10/5-year averages.</div></div></div>
     <div class="rh-foot"></div>
   </section>
 
@@ -2105,6 +2105,13 @@ function _mountChart(pageId, option) {
         if (s.symbol === undefined)     s.symbol = 'circle';
         if (s.symbolSize === undefined) s.symbolSize = 8;
         if (s.showSymbol === undefined) s.showSymbol = false;
+        /* The legend icon + symbol take their colour from itemStyle.color,
+           which otherwise falls back to the palette-by-index and MISMATCHES a
+           line that set an explicit lineStyle.color (the "mixed colours" bug).
+           Mirror the line colour onto itemStyle so the legend marker matches. */
+        if (s.lineStyle && s.lineStyle.color && (!s.itemStyle || s.itemStyle.color === undefined)) {
+          s.itemStyle = Object.assign({}, s.itemStyle, { color: s.lineStyle.color });
+        }
       }
     });
   }
@@ -2568,30 +2575,89 @@ function _renderP9_PopulationGrowth(tabs) {
   }));
 }
 
-function _renderP11_ReturnsStocksGold(tabs) {
-  const t = tabs['return-on-stocks-and-gold'];
-  if (!t || !t.year) return;
-  /* Year column is descending (2024→2004) and has 21 entries while
-     the data columns have 22 (the last value is a 20-year average).
-     Reverse to chronological + trim the trailing average. */
-  const yrs = t.year.slice().reverse().map(String);
-  const trim = arr => Array.isArray(arr) ? arr.slice(0, yrs.length).reverse() : [];
-  const series = [
-    ['Apple',    trim(t.appleAnnualChange),       '#000'],
-    ['ASX 200',  trim(t.spdrAsx200AnnualChange),  '#5cc8e0'],
-    ['Gold',     trim(t.goldAnnualChange),        '#f5a623'],
-  ].filter(([_, v]) => v.length);
-  if (!series.length) return;
-  _mountChart('p11', Object.assign(_baseChartOption(), {
-    legend: Object.assign(_baseChartOption().legend, { data: series.map(s => s[0]) }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: yrs }),
-    yAxis: Object.assign(_baseChartOption().yAxis, {
-      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(0) + '%' },
-    }),
-    series: series.map(([name, data, color], i) => ({
-      name, type: 'line', data, showSymbol: false, lineStyle: { width: 2, color },
-      markLine: i === 0 ? { silent: true, symbol: 'none', data: [{ yAxis: 0, lineStyle: { color: 'rgba(26,34,54,0.4)', type: 'dashed' } }] } : undefined,
+function _renderP11_TermDeposits(tabs) {
+  /* Tab slug = "Term Deposits" → "term-deposits"; the rate column "All Term
+     Deposits" → "allTermDeposits". Column names are auto-detected so a slightly
+     different header still works. */
+  const t = tabs['term-deposits'] || tabs['term-deposit'] || tabs['all-term-deposits'] || tabs['term-deposits-data'];
+  if (!t) return;
+  const keys = Object.keys(t).filter(k => Array.isArray(t[k]) && t[k].length);
+  if (!keys.length) return;
+  const isDateVal = v => typeof v === 'string' && /^\d{4}-\d{2}/.test(v);
+  let dateKey = ['date', 'effectiveDate', 'period', 'month', 'asAtDate'].find(k => Array.isArray(t[k]) && t[k].some(isDateVal));
+  if (!dateKey) dateKey = keys.find(k => t[k].some(isDateVal));
+  /* The rate series lives in COLUMN E — header "5 year average (1 year)" →
+     key "5YearAverage1Year". Despite the name it's the All Term Deposits rate
+     (peaks ~8.25% in Jul 2008). Do NOT use column C "10 year average (1 year)"
+     (= "10YearAverage1Year"), which is a different, lower series. */
+  const _norm = k => String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+  let valKey = keys.find(k => k !== dateKey && /^5yearaverage/.test(_norm(k)));
+  if (!valKey) valKey = ['allTermDeposits', 'allTermDeposit', 'termDeposits'].find(k => Array.isArray(t[k]) && t[k].some(v => typeof v === 'number'));
+  if (!valKey) {
+    /* Last resort: the numeric column with the WIDEST spread (the rate, not a
+       near-flat average). */
+    let bestRange = -1;
+    keys.forEach(k => {
+      if (k === dateKey) return;
+      const nums = t[k].filter(v => typeof v === 'number');
+      if (nums.length < 3) return;
+      const range = Math.max.apply(null, nums) - Math.min.apply(null, nums);
+      if (range > bestRange) { bestRange = range; valKey = k; }
+    });
+  }
+  if (!dateKey || !valKey) return;
+
+  /* Start the series at Jan 2004 — drop any earlier history the feed carries. */
+  const keep = [];
+  t[dateKey].forEach((d, i) => { const m = String(d).match(/(\d{4})/); if (m && +m[1] >= 2004) keep.push(i); });
+  const rawDates = keep.map(i => String(t[dateKey][i]));
+  const labels   = rawDates.map(_shortDate);
+  const vals     = keep.map(i => { const v = t[valKey][i]; return typeof v === 'number' ? v : (v == null ? null : parseFloat(v)); });
+  const present  = vals.filter(v => v != null && !isNaN(v));
+  if (!present.length) return;
+
+  /* Normalise to PERCENT units regardless of how the sheet stores the rate:
+     a decimal (0.0825) → ×100, an already-percent value (8.25) → ×1, or a
+     ×100-scaled integer (825) → ÷100. Keep 2 decimals so the peak reads 8.25%. */
+  const mx0   = Math.max.apply(null, present);
+  const scale = mx0 <= 1 ? 100 : (mx0 > 20 ? 0.01 : 1);
+  const pct   = vals.map(v => (v == null || isNaN(v)) ? null : +(v * scale).toFixed(2));
+  const maxPct = Math.max.apply(null, pct.filter(v => v != null));
+
+  /* Trailing 20 / 10 / 5-year averages (percent), by calendar-year window. */
+  const yearOf = d => { const m = String(d).match(/(\d{4})/); return m ? +m[1] : null; };
+  const yrs = rawDates.map(yearOf);
+  const latest = Math.max.apply(null, yrs.filter(Boolean));
+  const avgWin = (n) => {
+    let sum = 0, cnt = 0;
+    for (let i = 0; i < pct.length; i++) {
+      if (pct[i] == null || yrs[i] == null) continue;
+      if (yrs[i] > latest - n) { sum += pct[i]; cnt++; }
+    }
+    return cnt ? sum / cnt : null;
+  };
+  const fmtAvg = a => a == null ? '—' : a.toFixed(2) + '%';
+
+  const base = _baseChartOption();
+  _mountChart('p11', Object.assign(base, {
+    grid: { left: 52, right: 28, top: 50, bottom: 74, containLabel: false },
+    legend: Object.assign(base.legend, { data: ['All Term Deposits'] }),
+    /* 20 / 10 / 5-year average callouts, top-right (computed from the data). */
+    graphic: [20, 10, 5].map((n, i) => ({
+      type: 'text', right: 12 + (2 - i) * 96, top: 14,
+      style: {
+        text: n + ' YEAR\nAVERAGE\n' + fmtAvg(avgWin(n)),
+        textAlign: 'center', fontWeight: 'bold', fontSize: 13, fill: '#1a2236', lineHeight: 18,
+      },
     })),
+    xAxis: Object.assign(base.xAxis, { data: labels, axisLabel: { color: '#1a2236', fontSize: 10 } }),
+    yAxis: Object.assign(base.yAxis, {
+      min: 0, max: Math.max(9, Math.ceil(maxPct)), interval: 1,
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v + '%' },
+    }),
+    series: [
+      { name: 'All Term Deposits', type: 'line', data: pct, showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+    ],
   }));
 }
 
@@ -2791,7 +2857,7 @@ function renderAllCharts(payload) {
   try { _renderP7_BuildingApprovals(tabs); }     catch (e) { console.warn('[p7]',  e); }
   try { _renderP8_RetailTurnover(tabs); }        catch (e) { console.warn('[p8]',  e); }
   try { _renderP9_PopulationGrowth(tabs); }      catch (e) { console.warn('[p9]',  e); }
-  try { _renderP11_ReturnsStocksGold(tabs); }    catch (e) { console.warn('[p11]', e); }
+  try { _renderP11_TermDeposits(tabs); }         catch (e) { console.warn('[p11]', e); }
   try { _renderP12_GovBondsYield(tabs); }        catch (e) { console.warn('[p12]', e); }
   try { _renderP13_CorporateBond(tabs); }        catch (e) { console.warn('[p13]', e); }
   try { _renderP14_GovBondMaturities(tabs); }    catch (e) { console.warn('[p14]', e); }
