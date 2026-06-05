@@ -2378,32 +2378,39 @@ function _renderP12_GovBondsYield(tabs) {
 function _renderP20_PopulationPyramid(tabs) {
   const t = tabs['population-pyramid-data'];
   if (!t || !t.ageGroupYears) return;
+  const ageStart = label => { const m = String(label).match(/\d+/); return m ? +m[0] : 0; };
+  const ages  = t.ageGroupYears.map(String);
+  const d2000 = t['2000'] || [];
+  const d2020 = t['2020'] || [];
+  /* Order ascending by age so 0-04 sits at the BOTTOM and 85+ at the TOP
+     (data[0] is the bottom row on a non-inverted horizontal category axis). */
+  const order = ages.map((_, i) => i).sort((a, b) => ageStart(ages[a]) - ageStart(ages[b]));
+  const cats  = order.map(i => ages[i]);
+  const s2000 = order.map(i => d2000[i]);
+  const s2020 = order.map(i => d2020[i]);
   const opt = _baseChartOption();
-  /* Horizontal grouped bars — swap axes. */
+  /* Horizontal grouped bars — 2000 (cyan) over 2020 (grey) per age band. */
   _mountChart('p20', {
     backgroundColor: 'transparent',
-    color: CHART_COLORS.slice(),
     textStyle: opt.textStyle,
-    grid: { left: 60, right: 40, top: 30, bottom: 70 },
+    grid: { left: 64, right: 30, top: 50, bottom: 40 },
     legend: Object.assign(opt.legend, { data: ['2000', '2020'] }),
     tooltip: opt.tooltip,
     xAxis: {
-      type: 'value',
+      type: 'value', min: 0, max: 0.09, interval: 0.01,
       axisLine: { show: false }, axisTick: { show: false },
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(0) + '%' },
       splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } },
     },
     yAxis: {
-      type: 'category',
-      data: t.ageGroupYears,
-      inverse: true,
+      type: 'category', data: cats,
       axisLine: { lineStyle: { color: '#1a2236' } },
       axisTick: { show: false },
       axisLabel: { color: '#1a2236', fontSize: 11 },
     },
     series: [
-      { name: '2000', type: 'bar', data: t['2000'] || [], itemStyle: { color: CHART_COLORS[2] } },
-      { name: '2020', type: 'bar', data: t['2020'] || [], itemStyle: { color: CHART_COLORS[3] } },
+      { name: '2000', type: 'bar', data: s2000, itemStyle: { color: CHART_COLORS[2] } },
+      { name: '2020', type: 'bar', data: s2020, itemStyle: { color: CHART_COLORS[3] } },
     ],
   });
 }
@@ -2411,14 +2418,27 @@ function _renderP20_PopulationPyramid(tabs) {
 function _renderP22_FedHealthBudget(tabs) {
   const t = tabs['fed-gov-health-budget-data'];
   if (!t || !t.date || !t.data) return;
-  _mountChart('p22', Object.assign(_baseChartOption(), {
-    legend: Object.assign(_baseChartOption().legend, { data: ['Spendings'] }),
-    xAxis: Object.assign(_baseChartOption().xAxis, { data: t.date.map(_shortDate) }),
-    yAxis: Object.assign(_baseChartOption().yAxis, {
-      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v >= 1000 ? (v/1000).toFixed(0) + 'k' : v },
+  const labels = t.date.map(String);   // financial-year labels e.g. "2015-16"
+  const nums = (t.data || []).filter(v => typeof v === 'number' && !isNaN(v));
+  if (!nums.length) return;
+  /* The budget is stored in $millions (~117000); the reference shows $billions
+     (0–120). Scale to billions when the values are clearly in the thousands+,
+     otherwise leave as-is. (Pinning a 20-step interval on the raw $millions
+     range produced thousands of gridlines — the grey smear.) */
+  const maxRaw = Math.max.apply(null, nums);
+  const scale  = maxRaw > 1000 ? 0.001 : 1;
+  const data   = t.data.map(v => (typeof v === 'number' && !isNaN(v)) ? +(v * scale).toFixed(1) : v);
+  const maxV   = maxRaw * scale;
+  const base = _baseChartOption();
+  _mountChart('p22', Object.assign(base, {
+    legend: Object.assign(base.legend, { data: ['Spendings'] }),
+    xAxis: Object.assign(base.xAxis, { data: labels }),
+    yAxis: Object.assign(base.yAxis, {
+      min: 0, max: Math.max(120, Math.ceil(maxV / 20) * 20), interval: 20,
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v },
     }),
     series: [
-      { name: 'Spendings', type: 'bar', data: t.data, itemStyle: { color: CHART_COLORS[2] }, barWidth: '60%' },
+      { name: 'Spendings', type: 'bar', data: data, itemStyle: { color: CHART_COLORS[2] }, barWidth: '60%' },
     ],
   }));
 }
@@ -2827,17 +2847,30 @@ function _renderP21_GPByAge(tabs) {
   const t = tabs['pop-accessing-health-services-data'];
   if (!t || !t.range || !t.sawAGeneralPractitioner) return;
   const opt = _baseChartOption();
+  /* Vertical bars — age bracket on the x-axis, % accessing health services on
+     the y-axis (0–100%). */
   _mountChart('p21', {
     backgroundColor: 'transparent',
-    color: CHART_COLORS.slice(),
     textStyle: opt.textStyle,
-    grid: { left: 60, right: 60, top: 30, bottom: 60 },
-    legend: Object.assign(opt.legend, { data: ['Saw a GP'] }),
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: p => p[0].name + '<br>' + (p[0].value * 100).toFixed(1) + '%' },
-    xAxis: { type: 'value', axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(0) + '%' }, splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } }, max: 1 },
-    yAxis: { type: 'category', data: t.range, axisLine: { lineStyle: { color: '#1a2236' } }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 12 }, name: 'Age group', nameLocation: 'middle', nameGap: 50, nameTextStyle: { color: '#1a2236' } },
+    grid: { left: 56, right: 28, top: 30, bottom: 40 },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    xAxis: {
+      type: 'category', data: t.range,
+      axisLine: { lineStyle: { color: '#1a2236' } },
+      axisTick: { show: false },
+      /* Identity formatter opts out of the centralized date-axis handling so
+         the age brackets ("15-24") render as-is. */
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => v },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value', min: 0, max: 1, interval: 0.2,
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: v => (v * 100).toFixed(0) + '%' },
+      splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } },
+    },
     series: [
-      { name: 'Saw a GP', type: 'bar', data: t.sawAGeneralPractitioner, itemStyle: { color: CHART_COLORS[2] }, label: { show: true, position: 'right', color: '#1a2236', formatter: p => (p.value * 100).toFixed(1) + '%' } },
+      { name: 'Accessing health services', type: 'bar', data: t.sawAGeneralPractitioner, itemStyle: { color: CHART_COLORS[2] }, barWidth: '55%' },
     ],
   });
 }
