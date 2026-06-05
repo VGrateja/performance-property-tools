@@ -745,17 +745,25 @@
        sticky pin engages on scroll (top). */
     position: sticky; top: 62px; align-self: flex-start;
     margin-top: 34px;
-    max-height: calc(100vh - 82px); overflow-y: auto;
-    scrollbar-width: thin; scrollbar-color: rgba(139,92,246,0.40) transparent;
+    /* Bounded column: the words list (capped to ~5 rows) and the chat log
+       below each scroll internally, so the panel itself doesn't scroll. */
+    max-height: calc(100vh - 82px); overflow: hidden;
   }
-  .scrabble-words-panel::-webkit-scrollbar { width: 6px; }
-  .scrabble-words-panel::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.40); border-radius: 3px; }
   .scrabble-words-head {
     font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
     font-weight: 700; color: rgba(255,255,255,0.5);
+    flex: 0 0 auto;
   }
   [data-theme="light"] .scrabble-words-head { color: rgba(10,21,32,0.55); }
-  .scrabble-words-list { display: flex; flex-direction: column; gap: 6px; }
+  /* Shows ~5 plays; older ones are pushed below and reachable by scrolling.
+     Newest is rendered on top (see renderWordsPanel). */
+  .scrabble-words-list {
+    display: flex; flex-direction: column; gap: 6px;
+    flex: 0 0 auto; max-height: 264px; overflow-y: auto; padding-right: 2px;
+    scrollbar-width: thin; scrollbar-color: rgba(139,92,246,0.40) transparent;
+  }
+  .scrabble-words-list::-webkit-scrollbar { width: 6px; }
+  .scrabble-words-list::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.40); border-radius: 3px; }
   .scrabble-word-row {
     background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10);
     border-radius: 8px; padding: 7px 10px;
@@ -1079,15 +1087,21 @@
   [data-theme="light"] .scrabble-score-preview-hint { color: rgba(31,40,63,0.45); }
 
   /* In-game chat (#3) — players + spectators. Ephemeral realtime broadcast.
-     flex:0 0 auto so the block sizes to its content and never shrinks below
-     it inside the flex-column sidebar (which would let the log spill over
-     the Back-to-lobby button). The sidebar scrolls if it runs out of room. */
-  .scrabble-chat-block { display: flex; flex-direction: column; flex: 0 0 auto; }
+     Lives at the bottom of the left column under Words Played: it fills the
+     remaining height and the log scrolls internally, with the input pinned
+     at the bottom. */
+  .scrabble-chat-block { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  .scrabble-chat-block .scrabble-game-block-title { flex: 0 0 auto; }
   .scrabble-chat-log {
-    min-height: 90px; max-height: 200px; overflow-y: auto;
+    flex: 1 1 auto; min-height: 60px; overflow-y: auto;
     display: flex; flex-direction: column; gap: 5px;
     padding: 4px 2px; margin-bottom: 8px;
+    scrollbar-width: thin; scrollbar-color: rgba(139,92,246,0.40) transparent;
   }
+  .scrabble-chat-log::-webkit-scrollbar { width: 6px; }
+  .scrabble-chat-log::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.40); border-radius: 3px; }
+  .scrabble-chat-form { flex: 0 0 auto; }
+  @media (max-width: 900px){ .scrabble-chat-log { max-height: 220px; } }
   .scrabble-chat-empty { font-size: 11.5px; color: rgba(255,255,255,0.4); padding: 6px 2px; }
   [data-theme="light"] .scrabble-chat-empty { color: rgba(31,40,63,0.4); }
   .scrabble-chat-msg { font-size: 12.5px; line-height: 1.35; word-break: break-word; }
@@ -1820,6 +1834,19 @@
       <div class="scrabble-words-head">Words played</div>
       <div class="scrabble-words-list" id="scrabbleWordsList"></div>
       <div class="scrabble-words-empty" id="scrabbleWordsEmpty">No words yet — play one and it'll appear here.</div>
+
+      <!-- Chat sits under Words Played (players + spectators). Fills the rest
+           of the left column; the log scrolls with the input pinned below. -->
+      <div class="scrabble-game-block scrabble-chat-block">
+        <div class="scrabble-game-block-title">Chat</div>
+        <div class="scrabble-chat-log" id="scrabbleChatLog">
+          <div class="scrabble-chat-empty" id="scrabbleChatEmpty">No messages yet — say hi to players &amp; spectators.</div>
+        </div>
+        <form class="scrabble-chat-form" id="scrabbleChatForm" autocomplete="off">
+          <input type="text" id="scrabbleChatInput" maxlength="240" placeholder="Message…" aria-label="Chat message">
+          <button type="submit" class="scrabble-rack-tool" id="scrabbleChatSend">Send</button>
+        </form>
+      </div>
     </aside>
 
     <div class="scrabble-board-wrap">
@@ -1885,17 +1912,6 @@
       </div>
 
       <button class="scrabble-game-leave" type="button" id="scrabbleGameBackBtn">← Back to lobby</button>
-
-      <div class="scrabble-game-block scrabble-chat-block">
-        <div class="scrabble-game-block-title">Chat</div>
-        <div class="scrabble-chat-log" id="scrabbleChatLog">
-          <div class="scrabble-chat-empty" id="scrabbleChatEmpty">No messages yet — say hi to players &amp; spectators.</div>
-        </div>
-        <form class="scrabble-chat-form" id="scrabbleChatForm" autocomplete="off">
-          <input type="text" id="scrabbleChatInput" maxlength="240" placeholder="Message players &amp; spectators…" aria-label="Chat message">
-          <button type="submit" class="scrabble-rack-tool" id="scrabbleChatSend">Send</button>
-        </form>
-      </div>
 
     </aside>
 
@@ -3319,7 +3335,9 @@ function renderWordsPanel() {
   if (!list) return;
   if (!_movesLog.length) { list.innerHTML = ''; if (empty) empty.style.display = ''; return; }
   if (empty) empty.style.display = 'none';
-  list.innerHTML = _movesLog.map(m => {
+  /* Newest on top: render the log in reverse-ply order so the latest play is
+     always visible without scrolling; older plays are pushed down. */
+  list.innerHTML = _movesLog.slice().reverse().map(m => {
     const who = escapeHtml(_logPlayerName(m.player_user_id));
     const pl  = m.payload || {};
 
