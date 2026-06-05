@@ -923,16 +923,22 @@
     font-size: calc(var(--board-cell) * 0.22);
     color: #2a1810;
   }
-  /* Last-move highlight on the squares of the most recent play —
-     a soft pulse fading on first paint so the eye is drawn to the
-     freshly-landed tiles. */
+  /* Last-move highlight on the squares of the most recent play — a bold
+     violet ring + glow so the freshly-played word clearly stands out, plus
+     a brighter flash on first paint. The square's overflow:hidden clips
+     outward shadows (that's why the old ring looked faint), so these squares
+     are un-clipped and lifted above their neighbours while highlighted. */
+  .scrabble-square.is-last-move { overflow: visible; z-index: 3; }
   .scrabble-square.is-last-move .scrabble-tile {
-    box-shadow: 0 0 0 2px #a78bfa, 0 1px 0 rgba(0,0,0,0.20);
+    box-shadow:
+      0 0 0 3px #8b5cf6,
+      0 0 13px 3px rgba(139,92,246,0.85),
+      0 1px 0 rgba(0,0,0,0.20);
     animation: scrabbleLastMoveFlash 1.6s ease-out;
   }
   @keyframes scrabbleLastMoveFlash {
-    0%   { box-shadow: 0 0 0 6px rgba(167,139,250,0.55), 0 1px 0 rgba(0,0,0,0.20); }
-    100% { box-shadow: 0 0 0 2px #a78bfa, 0 1px 0 rgba(0,0,0,0.20); }
+    0%   { box-shadow: 0 0 0 7px rgba(139,92,246,0.75), 0 0 22px 7px rgba(139,92,246,0.95), 0 1px 0 rgba(0,0,0,0.20); }
+    100% { box-shadow: 0 0 0 3px #8b5cf6, 0 0 13px 3px rgba(139,92,246,0.85), 0 1px 0 rgba(0,0,0,0.20); }
   }
 
   /* Centre square pulses gently when the board is empty so the
@@ -1188,7 +1194,7 @@
   }
   .rg-tile i { position: absolute; right: 2px; bottom: 0; font-style: normal; font-size: 8px; font-weight: 700; }
   .rg-tile.is-blank { color: rgba(42,24,16,0.5); }
-  .rg-tile.is-new { outline: 2px solid #a78bfa; outline-offset: 1px; }
+  .rg-tile.is-new { outline: 2px solid #34d399; outline-offset: 1px; }
   .rg-tile.is-center::after {
     content: '★'; position: absolute; left: 2px; top: -1px; font-size: 9px; color: #b9577a;
   }
@@ -1314,18 +1320,28 @@
 
   /* ── Interactive placement (S6) ── */
 
-  /* Pending tile (placed this turn but not yet submitted). Slightly
-     translucent + purple outline so it's clear what's committed vs
-     what's still picked up. Clicking returns it to the rack. */
+  /* Pending tile (the tiles YOU'RE placing this turn, not yet submitted).
+     Emerald green + glow — deliberately a DIFFERENT colour from the violet
+     last-move highlight so "what I'm placing now" reads distinctly from "the
+     word that was just played". Un-clipped + lifted so the ring shows fully.
+     Clicking returns it to the rack. */
+  .scrabble-square.is-pending { overflow: visible; z-index: 2; }
   .scrabble-square.is-pending .scrabble-tile {
-    box-shadow: 0 0 0 2px #a78bfa, 0 1px 0 rgba(0,0,0,0.20);
+    box-shadow: 0 0 0 3px #34d399, 0 0 10px 2px rgba(52,211,153,0.75), 0 1px 0 rgba(0,0,0,0.20);
     cursor: pointer;
   }
   .scrabble-square.is-pending .scrabble-tile::after {
     content: '';
     position: absolute; inset: 0;
-    background: rgba(139,92,246,0.12);
+    background: rgba(52,211,153,0.16);
     pointer-events: none;
+  }
+  /* Existing board tiles your pending word attaches to — same green ring so
+     the whole word being formed is highlighted (and overrides the violet
+     last-move ring where they touch). */
+  .scrabble-square.is-pending-word { overflow: visible; z-index: 2; }
+  .scrabble-square.is-pending-word .scrabble-tile {
+    box-shadow: 0 0 0 3px #34d399, 0 0 10px 2px rgba(52,211,153,0.75), 0 1px 0 rgba(0,0,0,0.20);
   }
 
   /* Empty square highlight when a rack tile is selected — shows that
@@ -1904,7 +1920,7 @@
       <button class="scrabble-rules-close" type="button" id="scrabbleRulesClose" aria-label="Close rule guide">×</button>
     </div>
     <div class="scrabble-rules-body">
-      <p class="scrabble-rules-intro">Tiles outlined in purple are the ones you're placing this turn.</p>
+      <p class="scrabble-rules-intro">Tiles outlined in green are the ones you're placing this turn; a violet glow marks the last word played.</p>
 
       <div class="scrabble-rule">
         <h4><span class="rg-num">1</span> Your first word covers the centre</h4>
@@ -3001,9 +3017,45 @@ async function openGameInternal(gameId) {
   subscribeToGame(gameId);
 }
 
+/* Core highlight geometry: given the tiles placed in a move (array of
+   {row,col,letter,blank}), return EVERY square of EVERY word they form — the
+   main word plus any cross words — INCLUDING the tiles already on the board
+   that those words attach to (e.g. playing S onto CAT yields all of CATS).
+   The placed tiles are overlaid onto the current board first so it's correct
+   even before that board state is committed (used for both the last submitted
+   move and the live pending placement). */
+function _wordSquares(tiles) {
+  if (!Array.isArray(tiles) || !tiles.length) return [];
+  const arr = (((_gameRow && _gameRow.board) || '')).split('');
+  if (arr.length < DIM * DIM) return tiles.map(t => t.row * DIM + t.col);   // board not ready — placed tiles only
+  tiles.forEach(t => {
+    const idx = t.row * DIM + t.col;
+    if (idx >= 0 && idx < arr.length) {
+      arr[idx] = t.blank ? String(t.letter || '').toLowerCase() : String(t.letter || '').toUpperCase();
+    }
+  });
+  const occ = (r, c) => (r >= 0 && r < DIM && c >= 0 && c < DIM && arr[r * DIM + c] && arr[r * DIM + c] !== '.');
+  const out = new Set();
+  const addRun = (r0, c0, dr, dc) => {
+    let r = r0, c = c0;
+    while (occ(r - dr, c - dc)) { r -= dr; c -= dc; }   // back up to the run start
+    const cells = [];
+    while (occ(r, c)) { cells.push(r * DIM + c); r += dr; c += dc; }
+    if (cells.length >= 2) cells.forEach(i => out.add(i));
+  };
+  let minR = 99, maxR = -1, minC = 99, maxC = -1;
+  tiles.forEach(t => { minR = Math.min(minR, t.row); maxR = Math.max(maxR, t.row); minC = Math.min(minC, t.col); maxC = Math.max(maxC, t.col); });
+  const across = (minR === maxR);
+  const single = (minR === maxR && minC === maxC);
+  if (across)            addRun(minR, minC, 0, 1);   // main word (horizontal)
+  if (!across || single) addRun(minR, minC, 1, 0);   // main word (vertical) / both for a lone tile
+  tiles.forEach(t => { if (across) addRun(t.row, t.col, 1, 0); else addRun(t.row, t.col, 0, 1); });   // cross words
+  tiles.forEach(t => out.add(t.row * DIM + t.col));  // always include the placed tiles
+  return Array.from(out);
+}
 function lastMoveSquares_(move) {
   if (!move || move.kind !== 'play' || !move.payload || !Array.isArray(move.payload.tiles)) return [];
-  return move.payload.tiles.map(t => t.row * DIM + t.col);
+  return _wordSquares(move.payload.tiles);
 }
 
 /* ─── Realtime subscriptions ─── */
@@ -3582,9 +3634,23 @@ paintRack = function() {
 const _origPaintBoard = paintBoard;
 paintBoard = function() {
   _origPaintBoard();
+  if (!$board) return;
+  /* Extend the green pending highlight to the WHOLE word(s) being formed —
+     the existing board tiles your pending tiles attach to also light up green.
+     Where that overlaps the violet last-move ring, green wins (we strip
+     is-last-move from those squares). */
+  if (_pendingTiles.length) {
+    const pendingSet = new Set(_pendingTiles.map(t => t.row * DIM + t.col));
+    _wordSquares(_pendingTiles).forEach(idx => {
+      if (pendingSet.has(idx)) return;          // the placed tiles are drawn below
+      const cell = $board.children[idx];
+      if (!cell) return;
+      cell.classList.remove('is-last-move');    // green overrides violet on touched tiles
+      cell.classList.add('is-pending-word');
+    });
+  }
   /* Layer the pending tiles on top — same .scrabble-tile, with an
      .is-pending modifier on the parent square. */
-  if (!$board) return;
   _pendingTiles.forEach(t => {
     const idx = t.row * DIM + t.col;
     const cell = $board.children[idx];
