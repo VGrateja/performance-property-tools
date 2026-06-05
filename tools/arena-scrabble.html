@@ -572,6 +572,8 @@
   .scrabble-match-result.is-draw { background: rgba(245,158,11,0.18); color: #f59e0b; }
   .scrabble-match-result.is-casual { background: rgba(71,85,105,0.20); color: rgba(255,255,255,0.55); }
   [data-theme="light"] .scrabble-match-result.is-casual { color: rgba(31,40,63,0.55); }
+  .scrabble-match-result.is-void { background: rgba(100,116,139,0.22); color: rgba(255,255,255,0.50); text-decoration: line-through; }
+  [data-theme="light"] .scrabble-match-result.is-void { color: rgba(31,40,63,0.50); }
   .scrabble-match-text {
     flex: 1 1 auto; min-width: 0;
     font-size: 13px; line-height: 1.5;
@@ -1924,14 +1926,14 @@
           <button class="scrabble-action-btn is-primary" type="button" id="scrabblePlayBtn" disabled title="Commit your tiles. If any word isn't in the dictionary you forfeit the turn.">End Turn</button>
           <button class="scrabble-action-btn" type="button" id="scrabbleExchangeBtn" disabled>Exchange</button>
           <button class="scrabble-action-btn" type="button" id="scrabblePassBtn" disabled>Pass</button>
-          <button class="scrabble-action-btn" type="button" id="scrabbleDrawBtn" disabled>Offer draw</button>
+          <button class="scrabble-action-btn" type="button" id="scrabbleDrawBtn" disabled title="Request to void the game — every other player must agree. If ranked, no points change.">Void Game</button>
           <button class="scrabble-action-btn is-danger" type="button" id="scrabbleResignBtn" disabled style="grid-column:1/-1;">Resign</button>
         </div>
         <div class="scrabble-game-error" id="scrabbleGameError"></div>
         <div class="scrabble-draw-offer" id="scrabbleDrawOfferBanner" style="display:none;">
           <span id="scrabbleDrawOfferText"></span>
           <div class="scrabble-draw-offer-buttons" id="scrabbleDrawOfferButtons" style="display:none;">
-            <button class="scrabble-action-btn is-primary" type="button" id="scrabbleDrawAcceptBtn">Accept draw</button>
+            <button class="scrabble-action-btn is-primary" type="button" id="scrabbleDrawAcceptBtn">Agree to void</button>
             <button class="scrabble-action-btn is-danger"  type="button" id="scrabbleDrawDeclineBtn">Decline</button>
           </div>
         </div>
@@ -2416,6 +2418,17 @@ async function loadRecentMatches() {
 function renderMatchRow(m) {
   const players = (m.players || []).slice().sort((a, b) => a.finish_rank - b.finish_rank);
   if (!players.length) return '';
+
+  /* Voided games are shown plainly as voided (no winner, no points). */
+  if (m.termination === 'void') {
+    const vwhen = m.ended_at ? friendlyTime(m.ended_at) : '';
+    return '<li class="scrabble-match-row">' +
+      '<span class="scrabble-match-result is-void">VOID</span>' +
+      '<span class="scrabble-match-text">Game voided · ' + players.length + ' players</span>' +
+      '<span class="scrabble-match-meta">' + escapeHtml(formatTurnTime(m.turn_time_seconds) + ' · ' + vwhen) + '</span>' +
+    '</li>';
+  }
+
   const nameOf = p => (p.name && p.name.trim()) ? p.name : ((p.email || '').split('@')[0] || '—');
 
   /* All players tied for 1st (multi-way draw) = "draw"; otherwise the
@@ -3026,7 +3039,7 @@ async function openGameInternal(gameId) {
      table with all seats, and my rack — in parallel. */
   const [{ data: game, error: gErr }, { data: players }, rackRes] = await Promise.all([
     window.sb.from('arena_scrabble_games').select('*').eq('id', gameId).maybeSingle(),
-    window.sb.from('arena_scrabble_game_players').select('seat, user_id, email, name, score, pts_before, resigned').eq('game_id', gameId),
+    window.sb.from('arena_scrabble_game_players').select('seat, user_id, email, name, score, pts_before, resigned, void_cooldown_until').eq('game_id', gameId),
     _isSpectating
       ? Promise.resolve({ data: null })
       : window.sb.from('arena_scrabble_racks').select('rack').eq('game_id', gameId).eq('player_user_id', _me.userId).maybeSingle(),
@@ -3170,6 +3183,8 @@ function subscribeToGame(gameId) {
           const idx = _gamePlayers.findIndex(p => p.seat === payload.new.seat);
           if (idx >= 0) _gamePlayers[idx] = { ..._gamePlayers[idx], ...payload.new };
           paintPlayers();
+          /* A void-cooldown / resign change here affects Void-button state. */
+          if (typeof updateActionButtons === 'function') updateActionButtons();
         })
     .subscribe();
 }
@@ -4336,6 +4351,9 @@ paintAll = function() {
   _origPaintAll2();
   maybeAutoSettle();
   maybeShowDrawOffer();
+  /* void_by/void_agreed arrive via the game-row UPDATE → refresh the
+     Void button's pending/disabled state in lockstep with the banner. */
+  updateActionButtons();
 };
 
 function maybeAutoSettle() {
@@ -4359,20 +4377,37 @@ function maybeAutoSettle() {
   }
 }
 
+/* Void-request banner (was the draw-offer banner). Shows the pending void,
+   the agreement progress, and Agree/Decline buttons to the players who still
+   need to respond. */
 function maybeShowDrawOffer() {
   if (!_gameRow || !$drawOfferBanner) return;
-  const offer = _gameRow.draw_offer_by;
-  if (!offer || _isSpectating) {
-    $drawOfferBanner.style.display = 'none';
-    return;
-  }
-  /* If the offer is from me, just show a "you offered a draw" note;
-     if it's from the opponent, show accept/decline buttons. */
-  if (offer === _mySeat) {
-    $drawOfferText.innerHTML = '<strong>Draw offered.</strong> Waiting for opponent…';
+  const by = _gameRow.void_by;
+  if (by == null) { $drawOfferBanner.style.display = 'none'; return; }
+
+  const agreed = Array.isArray(_gameRow.void_agreed) ? _gameRow.void_agreed : [];
+  const active = _gamePlayers.filter(p => !p.resigned).length;
+  const requester = _gamePlayers.find(p => p.seat === by);
+  const reqName = requester
+    ? ((requester.name && requester.name.trim()) ? requester.name : ((requester.email || '').split('@')[0] || 'A player'))
+    : 'A player';
+  const countTxt = ' <span style="opacity:.75">(' + agreed.length + '/' + active + ' agreed)</span>';
+
+  const iAmActive  = !!_mySeat && !amIResigned();
+  const iRequested = (by === _mySeat);
+  const iAgreed    = !!_mySeat && agreed.indexOf(_mySeat) >= 0;
+
+  if (_isSpectating || !iAmActive) {
+    $drawOfferText.innerHTML = '<strong>' + escapeHtml(reqName) + '</strong> requested to void the game.' + countTxt;
+    $drawOfferButtons.style.display = 'none';
+  } else if (iRequested) {
+    $drawOfferText.innerHTML = '<strong>You requested to void.</strong> Waiting for all players to agree.' + countTxt;
+    $drawOfferButtons.style.display = 'none';
+  } else if (iAgreed) {
+    $drawOfferText.innerHTML = '<strong>You agreed to void.</strong> Waiting for the rest.' + countTxt;
     $drawOfferButtons.style.display = 'none';
   } else {
-    $drawOfferText.innerHTML = '<strong>Draw offered.</strong> Accept to end the game with current scores.';
+    $drawOfferText.innerHTML = '<strong>' + escapeHtml(reqName) + ' wants to void the game.</strong> Every player must agree.' + countTxt;
     $drawOfferButtons.style.display = 'flex';
   }
   $drawOfferBanner.style.display = 'block';
@@ -4454,9 +4489,13 @@ function showResultModalCore(r) {
   const topRank = players[0].finish_rank;
   const winners = players.filter(p => p.finish_rank === topRank);
   const isDraw  = winners.length > 1;
+  const isVoid  = r.termination === 'void';
 
   let title, sub;
-  if (isDraw && (!me || me.finish_rank === topRank)) {
+  if (isVoid) {
+    title = 'Game voided';
+    sub   = 'All players agreed to void the game — no points were changed.';
+  } else if (isDraw && (!me || me.finish_rank === topRank)) {
     title = 'Draw';
     sub = (r.termination === 'agreement' ? 'Players agreed to a draw.'
          : r.termination === 'six_passes' ? 'Six consecutive zero-score turns — game ends in a draw.'
@@ -4481,7 +4520,7 @@ function showResultModalCore(r) {
     const isMe = _me && p.user_id === _me.userId;
     const isWinner = p.finish_rank === topRank;
     let deltaHtml = '';
-    if (r.ranked && p.pts_after != null && p.pts_before != null) {
+    if (r.ranked && !isVoid && p.pts_after != null && p.pts_before != null) {
       const d = p.pts_after - p.pts_before;
       const cls = d > 0 ? 'is-up' : d < 0 ? 'is-down' : '';
       deltaHtml = '<span class="scrabble-result-row-delta ' + cls + '">' +
@@ -4533,6 +4572,7 @@ function terminationLabel(t) {
        : t === 'resign'       ? 'Opponent resigned.'
        : t === 'agreement'    ? 'Draw by agreement.'
        : t === 'timeout'      ? 'Out of time.'
+       : t === 'void'         ? 'Game voided — no points changed.'
        : '';
 }
 function formatDelta(n) {
@@ -4586,18 +4626,24 @@ if ($resignBtn) {
   });
 }
 
-/* ─── Offer / accept / decline draw ─── */
+/* ─── Void Game (request / agree / decline) ─── */
 if ($drawBtn) {
   $drawBtn.addEventListener('click', async () => {
     if (!_gameRow || !_mySeat) return;
+    if (!confirm('Request to void this game? Every other player must agree. If anyone declines, the game continues and you can\'t request again for 5 minutes (others still can). If ranked, no points change.')) return;
     clearGameError();
     $drawBtn.disabled = true;
-    const { error } = await window.sb
-      .from('arena_scrabble_games')
-      .update({ draw_offer_by: _mySeat })
-      .eq('id', _gameRow.id);
-    if (error) showGameError('Offer failed: ' + (error.message || 'unknown error'));
-    updateActionButtons();
+    try {
+      const { data, error } = await window.sb.rpc('request_void_scrabble_game', { p_game_id: _gameRow.id });
+      if (error) {
+        showGameError(error.message || 'Void request failed.');
+      } else if (data && data.voided && data.players) {
+        /* No other active players — voided straight away. */
+        _settlePending = true; showResultModalFromRpc(data); _settlePending = false;
+      } else {
+        showGameError('Void requested — waiting for all players to agree.', true);
+      }
+    } finally { updateActionButtons(); }
   });
 }
 if ($drawAcceptBtn) {
@@ -4605,26 +4651,22 @@ if ($drawAcceptBtn) {
     if (!_gameRow) return;
     $drawAcceptBtn.disabled = true;
     try {
-      const { data, error } = await window.sb.rpc('settle_scrabble_game', {
-        p_game_id:     _gameRow.id,
-        p_termination: 'agreement',
-      });
-      if (error) showGameError('Accept failed: ' + (error.message || 'unknown error'));
-      else {
-        _settlePending = true;
-        showResultModalFromRpc(data);
-        _settlePending = false;
-      }
+      const { data, error } = await window.sb.rpc('respond_void_scrabble_game', { p_game_id: _gameRow.id, p_agree: true });
+      if (error) showGameError('Failed: ' + (error.message || 'unknown error'));
+      else if (data && data.voided && data.players) { _settlePending = true; showResultModalFromRpc(data); _settlePending = false; }
+      else showGameError('You agreed to void — waiting for the rest.', true);
     } finally { $drawAcceptBtn.disabled = false; }
   });
 }
 if ($drawDeclineBtn) {
   $drawDeclineBtn.addEventListener('click', async () => {
     if (!_gameRow) return;
-    await window.sb
-      .from('arena_scrabble_games')
-      .update({ draw_offer_by: null })
-      .eq('id', _gameRow.id);
+    $drawDeclineBtn.disabled = true;
+    try {
+      const { error } = await window.sb.rpc('respond_void_scrabble_game', { p_game_id: _gameRow.id, p_agree: false });
+      if (error) showGameError('Failed: ' + (error.message || 'unknown error'));
+      else showGameError('Void declined — the game continues.', true);
+    } finally { $drawDeclineBtn.disabled = false; }
   });
 }
 
@@ -4648,13 +4690,28 @@ if ($resultRematchBtn) {
   });
 }
 
-/* Update the action-button enable logic to also turn on Draw + Resign. */
+/* Update the action-button enable logic to also turn on Void Game + Resign. */
+let _voidCooldownTimer = null;
 const _origUpdateActionButtons = updateActionButtons;
 updateActionButtons = function() {
   _origUpdateActionButtons();
   const active = !!_gameRow && _gameRow.status === 'active' && !_isSpectating && !!_mySeat && !amIResigned();
-  if ($drawBtn)   $drawBtn.disabled   = !active || (_gameRow && _gameRow.draw_offer_by === _mySeat);
+  /* Void Game: blocked while a void is already pending, or while I'm on a
+     post-decline cooldown (other players are unaffected). */
+  const voidPending = !!(_gameRow && _gameRow.void_by != null);
+  const me = _gamePlayers.find(p => p.seat === _mySeat);
+  const cdMs = (me && me.void_cooldown_until) ? (new Date(me.void_cooldown_until).getTime() - Date.now()) : 0;
+  const onCooldown = cdMs > 0;
+  if ($drawBtn) {
+    $drawBtn.disabled = !active || voidPending || onCooldown;
+    $drawBtn.title = onCooldown
+      ? 'Void on cooldown — your last request was declined (try again soon)'
+      : 'Request to void the game — every other player must agree. If ranked, no points change.';
+  }
   if ($resignBtn) $resignBtn.disabled = !active;
+  /* No realtime event fires when a cooldown expires, so re-check then. */
+  clearTimeout(_voidCooldownTimer);
+  if (onCooldown && cdMs < 6 * 60000) _voidCooldownTimer = setTimeout(() => updateActionButtons(), cdMs + 300);
 };
 
 /* Close-modal cleanup — keep the result modal visible if user is
