@@ -11,6 +11,10 @@
 <link rel="stylesheet" href="../shared/color-picker.css">
 <script src="../shared/theme.js"></script>
 <script src="../shared/color-picker.js" defer></script>
+<!-- Native slide charts (Phase 3): ECharts + the billboard chart engine.
+     Deferred so they don't block first paint; ready before charts render. -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" defer></script>
+<script src="../shared/present-charts.js" defer></script>
 
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&family=Montserrat:wght@400;600;700;800&family=Raleway:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
@@ -2730,6 +2734,13 @@
     <span style="font-size:18px">📑</span>
     <span style="font-size:11px;font-weight:600">Online Report…</span>
   </button>
+  <!-- Phase-3 PREVIEW: drops a sample native animated chart so the chart
+       overlay + Present-mode build can be tested. Replaced by the real
+       report+page → cached-data picker once that's wired. -->
+  <button class="pres-shape-pick" data-embed="chart-sample" type="button" title="Insert a sample animated chart (preview)" style="width:100%;flex-direction:row;justify-content:flex-start;gap:8px;padding:8px 12px">
+    <span style="font-size:18px">📊</span>
+    <span style="font-size:11px;font-weight:600">Sample chart</span>
+  </button>
 </div>
 
 <!-- Online Report embed chooser — pick a Region then a Page; inserts a
@@ -4725,6 +4736,22 @@ function renderSlide(i) {
   syncThumbActive();
 }
 
+/* Present-mode "advance": if the current slide has a chart still building,
+   the advance key reveals its next step (click-to-build); only once every
+   chart on the slide is fully built does it move to the next slide. In
+   windowed/edit mode it always just advances (charts show fully built
+   there). */
+function presentBuildOrAdvance() {
+  if (document.body.classList.contains('pres-fullscreen') && _activeDeck) {
+    const charts = currentOverlays().filter(o => o.type === 'chart');
+    for (let i = 0; i < charts.length; i++) {
+      const c = _chartControllers[charts[i].id];
+      if (c && !c.isComplete()) { c.next(); return; }
+    }
+  }
+  renderSlide(_slideIdx + 1);
+}
+
 /* Coalesce per-keystroke nudges into one undo step. A burst of
    arrow presses (e.g. holding Right for 20 frames) shouldn't
    flood the history stack with 20 entries. Push once 500ms
@@ -4795,7 +4822,7 @@ document.addEventListener('keydown', (ev) => {
   const isPresentMode = document.body.classList.contains('pres-fullscreen');
   if (ev.key === 'ArrowUp'   || ev.key === 'PageUp')                                                  { ev.preventDefault(); renderSlide(_slideIdx - 1); }
   if (ev.key === 'ArrowDown' || ev.key === 'PageDown' || ev.key === 'Enter' ||
-      (ev.key === ' ' && !isPresentMode))                                                             { ev.preventDefault(); renderSlide(_slideIdx + 1); }
+      (ev.key === ' ' && !isPresentMode))                                                             { ev.preventDefault(); presentBuildOrAdvance(); }
   if (ev.key === 'Home')                { ev.preventDefault(); renderSlide(0); }
   if (ev.key === 'End')                 { ev.preventDefault(); renderSlide(_activeDeck.slides.length - 1); }
   if (ev.key === 'f' || ev.key === 'F') { ev.preventDefault(); togglePresentationMode(); }
@@ -4814,7 +4841,7 @@ window.addEventListener('message', (ev) => {
   if (!ev.data || ev.data.type !== 'pres-nav') return;
   if (!_activeDeck) return;
   if (ev.data.key === 'Enter') {
-    renderSlide(_slideIdx + 1);
+    presentBuildOrAdvance();
   }
 });
 
@@ -4911,6 +4938,8 @@ function enterPresentationMode() {
     document.documentElement.requestFullscreen().catch(() => {/* ignore */});
   }
   fitSlide();
+  /* Rebuild overlays so charts re-init UN-built (they build on advance). */
+  renderOverlays();
 }
 function exitPresentationMode() {
   document.body.classList.remove('pres-fullscreen');
@@ -4923,6 +4952,8 @@ function exitPresentationMode() {
     document.exitFullscreen().catch(() => {});
   }
   fitSlide();
+  /* Rebuild overlays so charts re-show fully built for editing. */
+  renderOverlays();
   /* Safety net — if the stage transition gets interrupted the
      transitionend listener won't fire. Clear the class after the
      nominal duration. Only re-positions rulers (NOT a full
@@ -4951,6 +4982,7 @@ document.addEventListener('fullscreenchange', () => {
     const needsSync = document.body.classList.contains('pres-fullscreen');
     if (needsSync) {
       document.body.classList.remove('pres-fullscreen');
+      renderOverlays();   // charts re-show fully built once out of Present
       document.body.classList.add('pres-stage-transitioning');
       setTimeout(() => {
         if (document.body.classList.contains('pres-stage-transitioning')) {
@@ -5427,6 +5459,36 @@ function ovAddShape(kind) {
   renderOverlays();
   pushHistory();
 }
+/* PREVIEW (Phase 3): insert a sample native animated chart so the chart
+   overlay + Present-mode click-to-build can be tested end-to-end. The real
+   path (report + page picker → cached snapshot → spec) replaces this. */
+function ovAddChartSample() {
+  if (!_activeDeck) return;
+  const years = []; for (let y = 2008; y <= 2025; y++) years.push(String(y));
+  const spec = {
+    type: 'multiLine', unit: 'aud',
+    title: 'Sydney median price', subtitle: 'House vs unit · 2008–2025',
+    data: { x: years, series: [
+      { name: 'House', values: [520,505,540,560,575,600,665,760,880,910,905,940,1050,1180,1120,1190,1240,1320].map(v => v * 1000) },
+      { name: 'Unit',  values: [430,425,445,460,470,485,520,575,640,660,655,675,720,775,745,780,805,840].map(v => v * 1000) },
+    ] },
+  };
+  const w = 820, h = 460;
+  currentOverlays().push({
+    id: 'c' + Date.now(), type: 'chart',
+    x: Math.round((1280 - w) / 2), y: Math.round((720 - h) / 2),
+    w, h,
+    /* Fixed design size — the chart renders at this and is CSS-scaled to
+       w/h, so its contents scale with the box. */
+    baseW: w, baseH: h,
+    spec,
+  });
+  saveOverlays();
+  _selectedId = currentOverlays()[currentOverlays().length - 1].id;
+  renderOverlays();
+  pushHistory();
+}
+
 function ovAddImage(file) {
   if (!_activeDeck) return;
   const deckId = _activeDeck.id;
@@ -6796,8 +6858,14 @@ function applySlideBg() {
 /* ─── Render overlays for the current slide ─── runs after each
    renderSlide() so freshly-rewritten slot innerHTML gets the
    per-slide overlays appended on top. */
+/* Live PresentChart controllers, keyed by chart-overlay id. Populated in
+   buildOverlayEl, disposed here before each re-render to avoid leaks. The
+   Present-mode driver reads these to build charts step-by-step. */
+const _chartControllers = {};
+
 function renderOverlays() {
   if (!slot) return;
+  for (const id in _chartControllers) { try { _chartControllers[id].dispose(); } catch (_) {} delete _chartControllers[id]; }
   slot.querySelectorAll('.pres-overlay').forEach(el => el.remove());
   if (!_activeDeck) return;
   const arr = _overlays[slideKey()] || [];
@@ -7036,6 +7104,42 @@ function buildOverlayEl(o) {
     el.style.width  = (o.w + 12) + 'px';
     el.style.height = (o.h + 12) + 'px';
     el.appendChild(buildTableEl(o));
+  } else if (o.type === 'chart') {
+    /* Native "billboard" chart drawn by shared/present-charts.js from
+       o.spec. Rendered at a FIXED base size and CSS-scaled to fill the
+       overlay box, so the whole graph (fonts, lines, spacing) scales WITH
+       the box — not just the frame. Resize is proportional, so one uniform
+       scale fits with no distortion. SVG renderer keeps it crisp at any
+       scale. pointer-events:none in edit (drag/select the overlay); auto
+       in Present (tooltips). */
+    /* Lock a STABLE design size the first time we render this chart, so
+       resize always scales relative to a fixed base — never the live,
+       already-mutated o.w (which made the scale compute to 1 and the
+       content not move until a refresh). Self-heals charts saved before
+       baseW existed. */
+    if (o.baseW == null) o.baseW = o.w;
+    if (o.baseH == null) o.baseH = o.h;
+    const baseW = o.baseW, baseH = o.baseH;
+    const cont = document.createElement('div');
+    cont.className = 'pres-chart-host';
+    cont.style.cssText =
+      'position:absolute;top:0;left:0;width:' + baseW + 'px;height:' + baseH + 'px;' +
+      'transform-origin:top left;transform:scale(' + (o.w / baseW) + ');' +
+      'pointer-events:' + (_editMode ? 'none' : 'auto') + ';';
+    el.appendChild(cont);
+    /* Create after layout — echarts.init needs the element connected
+       (buildOverlayEl runs before el is appended). cont has an explicit
+       px size, so it sizes correctly regardless of flow. */
+    requestAnimationFrame(() => {
+      if (!cont.isConnected || !window.PresentChart || !o.spec) return;
+      const ctrl = window.PresentChart.create(cont, o.spec);
+      _chartControllers[o.id] = ctrl;
+      /* Edit/windowed: show the chart fully built so it can be sized.
+         Present: leave un-built — it builds on each advance. */
+      if (!document.body.classList.contains('pres-fullscreen')) {
+        while (!ctrl.isComplete()) ctrl.next();
+      }
+    });
   }
 
   /* Delete badge — visible only when this overlay is selected and
@@ -7061,7 +7165,7 @@ function buildOverlayEl(o) {
      overlay. For text, only the box bounds change — the font
      size is unchanged so the contenteditable just re-flows
      within the new width. */
-  if (o.type === 'image' || o.type === 'shape' || o.type === 'embed' || o.type === 'text' || o.type === 'table') {
+  if (o.type === 'image' || o.type === 'shape' || o.type === 'embed' || o.type === 'text' || o.type === 'table' || o.type === 'chart') {
     const rh = document.createElement('div');
     rh.className = 'pres-overlay-resize';
     rh.title = 'Drag to resize';
@@ -7075,7 +7179,9 @@ function buildOverlayEl(o) {
       const scale = slideRect.width / 1280;
       const startX = ev.clientX, startY = ev.clientY;
       const origW = o.w, origH = o.h;
-      const proportional = o.type === 'image';
+      /* Charts resize proportionally (like images) so the graph keeps its
+         shape — never stretched too tall or too wide. */
+      const proportional = o.type === 'image' || o.type === 'chart';
       /* Tables scale every column / row by the same ratio so the
          relative cell sizes are preserved when the user resizes
          the whole table from the SE corner. Capture the original
@@ -7150,6 +7256,14 @@ function buildOverlayEl(o) {
             iframe.style.width  = (o.w + (o.cropL || 0) + (o.cropR || 0)) + 'px';
             iframe.style.height = (o.h + (o.cropT || 0) + (o.cropB || 0)) + 'px';
           }
+        }
+        if (o.type === 'chart') {
+          /* Scale the fixed-size chart to the new box so its CONTENTS
+             scale too (not just the frame). Proportional resize → one
+             uniform scale. */
+          const host = el.querySelector('.pres-chart-host');
+          const bW = o.baseW || origW;   // FIXED base (set at render / drag start) — never the live o.w
+          if (host) host.style.transform = 'scale(' + (o.w / bW) + ')';
         }
       };
       const onUp = () => {
@@ -8413,6 +8527,7 @@ embedPicker.querySelectorAll('.pres-shape-pick').forEach(btn => {
     /* Online Report needs a Region → Page choice first, so open the
        chooser instead of inserting straight away. */
     if (btn.dataset.embed === 'online-report') { openOrEmbedChooser(); return; }
+    if (btn.dataset.embed === 'chart-sample') { ovAddChartSample(); return; }
     ovAddEmbed(btn.dataset.embed);
   });
 });
