@@ -4933,32 +4933,31 @@ document.addEventListener('keydown', (ev) => {
   if (key === 'c' && _selectedId) { ev.preventDefault(); copyOverlay(_selectedId); return; }
   if (key === 'x' && _selectedId) { ev.preventDefault(); cutOverlay(_selectedId); return; }
   if (key === 'v') {
-    /* Priority:
-         1. Internal overlay clipboard (Ctrl+C inside the tool)
-         2. Native paste event — fires only if focus is in an
-            input/textarea/contenteditable; the document-level paste
-            handler then processes table HTML / images / plain text.
-         3. Async Clipboard API fallback — used when no editable is
-            focused (e.g. user just clicked on a blank slide and
-            wants to paste a table from Google Slides). Reads the
-            system clipboard programmatically.
-       Calling preventDefault unconditionally — as we used to —
-       blocked the native event AND the async path, which made
-       pasting anything from outside the tool look like a broken
-       "Clipboard empty" toast. */
+    /* Priority (order matters — see the clipboard bug below):
+         1. Focus is in a FIELD/editable (the colour hex input, a panel
+            textarea, a contenteditable) → defer to the NATIVE paste so the
+            SYSTEM clipboard lands in the field. This MUST come first: an
+            overlay copied earlier (Ctrl+C in-tool) lives in _overlayClipboard
+            forever, and copying something outside the app can't clear it — so
+            if we checked _overlayClipboard first, pasting a hex you copied
+            from a text file into the colour input would wrongly paste the
+            old overlay instead of the hex.
+         2. Not in a field → paste the internal overlay clipboard (the
+            overlay copied with Ctrl+C in-tool) onto the slide.
+         3. Still nothing → read the system clipboard for a table/image to
+            drop on the slide (async Clipboard API).
+       (preventDefault only in cases 2/3, so case 1's native + async paths
+       keep working.) */
+    const activeEl = document.activeElement;
+    const inEditable = !!(activeEl && (
+      (activeEl.matches && (activeEl.matches('input, textarea') ||
+        activeEl.matches('[contenteditable="true"]'))) ||
+      (activeEl.closest && activeEl.closest('[contenteditable="true"]'))
+    ));
+    if (inEditable) return;   // native paste → system clipboard into the field
     if (_overlayClipboard) {
       ev.preventDefault();
       pasteOverlay();
-      return;
-    }
-    const activeEl = document.activeElement;
-    const inEditable = activeEl && (
-      activeEl.matches && (activeEl.matches('input, textarea') ||
-        activeEl.matches('[contenteditable="true"]')) ||
-      (activeEl.closest && activeEl.closest('[contenteditable="true"]'))
-    );
-    if (inEditable) {
-      /* Native paste will fire here — document-level handler catches it. */
       return;
     }
     if (navigator.clipboard && navigator.clipboard.read) {
@@ -6724,7 +6723,11 @@ function buildTableEl(o) {
          colspan / rowspan covers their slot. */
       if (cell._hidden) return;
       const td = document.createElement('td');
-      td.contentEditable = 'true';
+      /* Editable ONLY in edit mode — in view mode the cell must be read-only
+         (typing into a table while just viewing was a bug). setEditMode()
+         re-renders overlays, so flipping modes rebuilds this with the right
+         state. (Text overlays gate the same way.) */
+      td.contentEditable = _editMode ? 'true' : 'false';
       td.dataset.row = r;
       td.dataset.col = c;
       if ((cell.colspan || 1) > 1) td.colSpan = cell.colspan;
