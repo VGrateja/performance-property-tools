@@ -30,6 +30,12 @@
     { year: 2001, label: 'Dot Com Crash' }, { year: 2008, label: 'GFC' }, { year: 2020, label: 'Covid-19' },
   ];
 
+  /* Per-page option BUILDERS keyed by page id ('p2'..). Populated by reg().
+     Both the slide engine (via createFromModule → the registry) and the
+     national report (via _mountChart) render from these — one source. */
+  NS.national = NS.national || {};
+  NS.national.builders = NS.national.builders || {};
+
   function baseOption() {
     return {
       backgroundColor: 'transparent',
@@ -64,7 +70,7 @@
   /* The pure (DOM-free, band-free) half of national-report.html's _mountChart:
      line-marker defaults, staircase year axis, rotated y-axis names, and the
      dark axis tooltip that reuses each series' axis formatter. */
-  function applyDefaults(option) {
+  function applyDefaults(option, opts) {
     if (Array.isArray(option.series)) {
       option.series.forEach(function (s) {
         if (s && s.type === 'line') {
@@ -120,13 +126,14 @@
         },
       });
     }
-    /* Slide-fill: a SINGLE value-axis chart doesn't need the wide right margin
-       the dual-axis default (right:60) reserves for a 2nd axis — pull it in so
-       the plot fills the slide. Skipped for dual-axis (yAxis is an array),
-       charts with a right-anchored callout (graphic) or any markLine (whose
-       end-labels can sit in the right margin), so nothing clips. */
+    /* Slide-fill (opt-in via opts.slideFill — the slide engine passes it; the
+       report does NOT, so the report's look is unchanged): a SINGLE value-axis
+       chart doesn't need the wide right margin the dual-axis default (right:60)
+       reserves for a 2nd axis — pull it in so the plot fills the slide. Skipped
+       for dual-axis (yAxis array), right-anchored callouts (graphic), or any
+       markLine (whose end-labels can sit in the right margin), so nothing clips. */
     var _hasML = (option.series || []).some(function (s) { return s && s.markLine; });
-    if (option.grid && !Array.isArray(option.yAxis) && !option.graphic && !_hasML &&
+    if (opts && opts.slideFill && option.grid && !Array.isArray(option.yAxis) && !option.graphic && !_hasML &&
         typeof option.grid.right === 'number' && option.grid.right >= 50) {
       option.grid = Object.assign({}, option.grid, { right: 34 });
     }
@@ -137,10 +144,12 @@
      We apply the shared defaults, then init + setOption (animation off; the
      presentation engine turns it on for the click-to-build reveal). */
   function reg(name, build) {
+    /* Expose the raw builder (the report renders from these too — one source). */
+    NS.national.builders[name.replace(/^national-/, '')] = build;
     NS.register(name, function (el, data) {
       var opt = build(data || {});
       if (!opt) { return echarts.init(el); }   // nothing to draw
-      applyDefaults(opt);
+      applyDefaults(opt, { slideFill: true });   // slide path → fill the box
       var chart = echarts.init(el, null, { renderer: 'canvas' });
       chart.setOption(opt);
       return chart;

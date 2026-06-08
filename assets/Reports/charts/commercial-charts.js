@@ -27,6 +27,11 @@
     { year: 2001, label: 'Dot Com Crash' }, { year: 2008, label: 'GFC' }, { year: 2020, label: 'Covid-19' },
   ];
 
+  /* Per-page option BUILDERS keyed by page id. Populated by reg(); both the
+     slide engine and the commercial report render from these — one source. */
+  NS.commercial = NS.commercial || {};
+  NS.commercial.builders = NS.commercial.builders || {};
+
   function baseOption() {
     return {
       backgroundColor: 'transparent',
@@ -61,7 +66,7 @@
   /* The pure (DOM-free, band-free) half of commercial-report.html's
      _mountChart: line markers, line→marker colour mirror, staircase year axis,
      rotated y-names, dark axis tooltip reusing each series' axis formatter. */
-  function applyDefaults(option) {
+  function applyDefaults(option, opts) {
     if (Array.isArray(option.series)) {
       option.series.forEach(function (s) {
         if (s && s.type === 'line') {
@@ -122,10 +127,11 @@
         },
       });
     }
-    /* Slide-fill: single value-axis charts don't need the wide dual-axis
-       right margin — pull it in (see national-charts.js for rationale). */
+    /* Slide-fill (opt-in via opts.slideFill; the report doesn't pass it, so its
+       look is unchanged) — pull in the wide right margin on single value-axis
+       charts (see national-charts.js for rationale). */
     var _hasML = (option.series || []).some(function (s) { return s && s.markLine; });
-    if (option.grid && !Array.isArray(option.yAxis) && !option.graphic && !_hasML &&
+    if (opts && opts.slideFill && option.grid && !Array.isArray(option.yAxis) && !option.graphic && !_hasML &&
         typeof option.grid.right === 'number' && option.grid.right >= 50) {
       option.grid = Object.assign({}, option.grid, { right: 34 });
     }
@@ -133,10 +139,12 @@
   }
 
   function reg(name, build) {
+    /* Expose the raw builder (the report renders from these too — one source). */
+    NS.commercial.builders[name.replace(/^commercial-/, '')] = build;
     NS.register(name, function (el, data) {
       var opt = build(data || {});
       if (!opt) { return echarts.init(el); }
-      applyDefaults(opt);
+      applyDefaults(opt, { slideFill: true });   // slide path → fill the box
       var chart = echarts.init(el, null, { renderer: 'canvas' });
       chart.setOption(opt);
       return chart;
