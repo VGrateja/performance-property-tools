@@ -5481,6 +5481,34 @@ function _orAlign(yearCol, valueCol) {
   }
   return { years, values };
 }
+/* Multi-series align: x = year rows with ANY usable value; each series gets
+   its value (optionally transformed, e.g. decimal→percent) or null (gap). */
+function _orSeries(yearCol, defs, transform) {
+  const yc = yearCol || [];
+  const rows = [];
+  for (let i = 0; i < yc.length; i++) {
+    const y = parseInt(yc[i], 10);
+    if (!Number.isFinite(y)) continue;
+    const vals = defs.map(d => {
+      const v = (d.col || [])[i];
+      if (v === '' || v == null || (typeof v === 'number' && isNaN(v))) return null;
+      return transform ? transform(Number(v)) : Number(v);
+    });
+    if (vals.every(v => v == null)) continue;
+    rows.push({ y, vals });
+  }
+  return {
+    x: rows.map(r => String(r.y)),
+    series: defs.map((d, i) => ({ name: d.name, values: rows.map(r => r.vals[i]) })),
+  };
+}
+/* Alias-aware column picker: returns the first present column, so the
+   regional feeds' renamed columns (e.g. changeLga vs changeMetro) resolve
+   without per-region special-casing. */
+function _orCol(raw, ...names) {
+  for (const n of names) { if (Array.isArray(raw[n]) && raw[n].length) return raw[n]; }
+  return [];
+}
 /* Per-page recipes: raw region feed → PresentChart spec (or null).
    Mirrors online-reports.html's mapLiveToRegion column choices. */
 const OR_CHART_RECIPES = {
@@ -5504,6 +5532,39 @@ const OR_CHART_RECIPES = {
       title: (regionName ? regionName + ' — ' : '') + 'Median price',
       subtitle: 'House vs unit',
       data: { x, series: [ { name: 'House', values: house }, { name: 'Unit', values: unit } ] },
+    };
+  },
+  /* p9 — Price to Income: house vs unit ratio lines (consistent column
+     names across capital + regional feeds, so no alias handling needed). */
+  p9: function (raw, regionName) {
+    const d = _orSeries(raw.year, [
+      { name: 'House', col: raw.priceToIncomeHouse },
+      { name: 'Unit',  col: raw.priceToIncomeUnit },
+    ]);
+    if (!d.x.length) return null;
+    return {
+      type: 'multiLine', unit: 'num',
+      title: (regionName ? regionName + ' — ' : '') + 'Price to income',
+      subtitle: 'House vs unit (ratio)',
+      data: d,
+    };
+  },
+  /* p12 — Population change (annual %): region vs state (+ national for
+     capitals). Region column is renamed on regional feeds (changeLga);
+     regionals have no national column (it's derived from a peer city in
+     the report), so they degrade to region + state. Raw values are
+     decimals → ×100 for percent. */
+  p12: function (raw, regionName) {
+    const defs = [{ name: regionName || 'Region', col: _orCol(raw, 'changeMetro', 'changeLga') }];
+    if (Array.isArray(raw.changeState)    && raw.changeState.length)    defs.push({ name: 'State',    col: raw.changeState });
+    if (Array.isArray(raw.changeNational) && raw.changeNational.length) defs.push({ name: 'National', col: raw.changeNational });
+    const d = _orSeries(raw.year, defs, v => v * 100);
+    if (!d.x.length) return null;
+    return {
+      type: 'multiLine', unit: 'pct',
+      title: (regionName ? regionName + ' — ' : '') + 'Population change',
+      subtitle: 'Annual % change',
+      data: d,
     };
   },
 };
