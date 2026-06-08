@@ -17,8 +17,34 @@
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" defer></script>
 <script src="../shared/present-charts.js" defer></script>
 <script src="../shared/report-cache.js" defer></script>
+<!-- Exact online-report chart modules: slide charts render the SAME ECharts
+     modules the reports use (assets/Reports/charts/*), so a slide graph is
+     pixel-identical to the report — colours, staircase axis, legend icons,
+     crisis lines + bands. Load order matters: theme → helpers → modules.
+     present-charts.js's createFromModule() drives the build animation. -->
+<script src="../assets/Reports/charts/_theme.js" defer></script>
+<script src="../assets/Reports/charts/_helpers.js" defer></script>
+<script src="../assets/Reports/charts/chart-median-price.js" defer></script>
+<script src="../assets/Reports/charts/chart-yoy-price.js" defer></script>
+<script src="../assets/Reports/charts/chart-stock-dom.js" defer></script>
+<script src="../assets/Reports/charts/chart-long-term-trends.js" defer></script>
+<script src="../assets/Reports/charts/chart-population-pyramid.js" defer></script>
+<script src="../assets/Reports/charts/chart-price-to-income.js" defer></script>
+<script src="../assets/Reports/charts/chart-change-in-population.js" defer></script>
+<script>
+  /* Slide charts are CSS-scaled (rendered once at a fixed base size), so
+     ECharts never needs to resize on window changes — and the report
+     modules' per-chart window-resize binding would otherwise accumulate
+     across overlay re-renders. Neutralise it here. PpaCharts loads via the
+     deferred scripts above (after this inline script parses), so patch on
+     DOMContentLoaded, which fires after all deferred scripts have run but
+     before any chart is created on user action. */
+  document.addEventListener('DOMContentLoaded', function () {
+    if (window.PpaCharts) window.PpaCharts.attachResize = function () { return function () {}; };
+  });
+</script>
 
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&family=Montserrat:wght@400;600;700;800&family=Raleway:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&family=Ubuntu:wght@300;400;500;700&family=Montserrat:wght@400;600;700;800&family=Raleway:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
 <style>
   /* ============================================================
@@ -5509,84 +5535,79 @@ function _orCol(raw, ...names) {
   for (const n of names) { if (Array.isArray(raw[n]) && raw[n].length) return raw[n]; }
   return [];
 }
-/* Per-page recipes: raw region feed → PresentChart spec (or null).
-   Mirrors online-reports.html's mapLiveToRegion column choices. */
+/* Recession markers + growth/correction bands — the SAME region-agnostic
+   constants the online reports overlay on the long-history price charts
+   (CRISES / BANDS in online-reports.html). Passed straight to the report
+   chart modules so the slide chart's red recession lines + tinted period
+   bands are identical to the report. */
+const OR_CRISES = [
+  { year: 1982, label: 'Severe Recession' },
+  { year: 1991, label: 'Major Recession' },
+  { year: 2001, label: 'Dot Com Crash' },
+  { year: 2008, label: 'GFC' },
+  { year: 2020, label: 'Covid-19' },
+];
+const OR_BANDS = [
+  { from: 1982, to: 1985, type: 'correct' }, { from: 1985, to: 1991, type: 'growth' },
+  { from: 1991, to: 1996, type: 'correct' }, { from: 1996, to: 2004, type: 'growth' },
+  { from: 2004, to: 2009, type: 'correct' }, { from: 2009, to: 2020, type: 'growth' },
+  { from: 2020, to: 2022, type: 'correct' }, { from: 2022, to: 2026, type: 'growth' },
+];
+/* Per-page recipes: raw region feed → a slide chart spec { module, data }.
+   `module` is the online-report chart module (assets/Reports/charts/
+   chart-<module>.js); `data` is that module's OWN data shape — so the slide
+   renders the EXACT report graph (present-charts.js createFromModule), then
+   animates the build. Column choices mirror mapLiveToRegion. */
 const OR_CHART_RECIPES = {
-  /* p3 — Median Price: house vs unit lines (full $ values, intersected
-     years so both series stay index-aligned). */
+  /* p3 — Median Price (module: median-price). House vs unit $ lines with
+     recession lines + growth/correction bands. Intersect the two series'
+     years so they stay index-aligned (the module reads house[i]/unit[i]
+     paired with years[i]). */
   p3: function (raw, regionName) {
     const H = _orAlign(raw.year, raw.medianHousePrice);
     const U = _orAlign(raw.year, raw.medianUnitPrice);
     if (!H.years.length || !U.years.length) return null;
     const start = Math.max(H.years[0], U.years[0]);
     const end   = Math.min(H.years[H.years.length - 1], U.years[U.years.length - 1]);
-    const x = [], house = [], unit = [];
+    const years = [], house = [], unit = [];
     for (let y = start; y <= end; y++) {
       const hi = H.years.indexOf(y), ui = U.years.indexOf(y);
       if (hi < 0 || ui < 0) continue;
-      x.push(String(y)); house.push(H.values[hi]); unit.push(U.values[ui]);
+      years.push(y); house.push(H.values[hi]); unit.push(U.values[ui]);
     }
-    if (!x.length) return null;
-    return {
-      type: 'multiLine', unit: 'aud',
-      title: (regionName ? regionName + ' — ' : '') + 'Median price',
-      subtitle: 'House vs unit',
-      data: { x, series: [ { name: 'House', values: house }, { name: 'Unit', values: unit } ] },
-    };
+    if (!years.length) return null;
+    /* grid override: the report's median-price module ships bottom:160 (tuned
+       for the tall report panel) which leaves a big gap on a slide — pull it
+       in to match its sibling yoy-price (bottom:55), keeping every other
+       margin so the rest of the layout stays report-exact. */
+    return { module: 'median-price', grid: { bottom: 55 }, data: { medianPrice: { years, house, unit }, crises: OR_CRISES, bands: OR_BANDS } };
   },
-  /* p4 — Year-on-Year price growth: % change of the median house/unit
-     series (derived, like the report's yoy-price chart — no extra columns).
-     View starts at 1980; first point per series is null (no prior year). */
+  /* p4 — Year-on-Year price growth (module: yoy-price). The module derives
+     the YoY % itself from medianPrice (and clips its view to 1980+), so we
+     just hand it the same medianPrice data as p3 + the recession overlays. */
   p4: function (raw, regionName) {
-    const H = _orAlign(raw.year, raw.medianHousePrice);
-    const U = _orAlign(raw.year, raw.medianUnitPrice);
-    if (!H.years.length || !U.years.length) return null;
-    const start = Math.max(H.years[0], U.years[0]);
-    const end   = Math.min(H.years[H.years.length - 1], U.years[U.years.length - 1]);
-    const yrs = [], house = [], unit = [];
-    for (let y = start; y <= end; y++) {
-      const hi = H.years.indexOf(y), ui = U.years.indexOf(y);
-      if (hi < 0 || ui < 0) continue;
-      yrs.push(y); house.push(H.values[hi]); unit.push(U.values[ui]);
-    }
-    let from = yrs.findIndex(y => y >= 1980); if (from < 0) from = 0;
-    const Y = yrs.slice(from), Hs = house.slice(from), Us = unit.slice(from);
-    if (Y.length < 2) return null;
-    const yoy = arr => arr.map((v, i) => (i === 0 ? null : ((v - arr[i - 1]) / arr[i - 1]) * 100));
-    return {
-      type: 'multiLine', unit: 'pct',
-      title: (regionName ? regionName + ' — ' : '') + 'Year-on-year price growth',
-      subtitle: 'House vs unit · annual % change',
-      data: { x: Y.map(String), series: [
-        { name: 'House', values: yoy(Hs) },
-        { name: 'Unit',  values: yoy(Us) },
-      ] },
-    };
+    const m = OR_CHART_RECIPES.p3(raw, regionName);
+    if (!m) return null;
+    return { module: 'yoy-price', data: m.data };
   },
-  /* p5 — Stock vs Days on Market: house/unit listings as bars (left axis)
-     + days-on-market as a line (right axis). Keep only years where all
-     three are present (mirrors mapLiveToRegion). */
+  /* p5 — Stock vs Days on Market (module: stock-dom). House/unit listings as
+     bars (left axis) + days-on-market as a line (right axis). Keep only years
+     where all three columns are present (mirrors mapLiveToRegion). */
   p5: function (raw, regionName) {
     const yArr = raw.year || [], somH = raw.somHouse || [], somU = raw.somUnit || [], adomH = raw.adomHouse || [];
-    const x = [], house = [], unit = [], dom = [];
+    const years = [], house = [], unit = [], dom = [];
     const len = Math.min(yArr.length, somH.length, somU.length, adomH.length);
     for (let i = 0; i < len; i++) {
       if (somH[i] === '' || somH[i] == null) continue;
       if (somU[i] === '' || somU[i] == null) continue;
       if (adomH[i] === '' || adomH[i] == null) continue;
-      x.push(String(parseInt(yArr[i], 10)));
+      years.push(parseInt(yArr[i], 10));
       house.push(Math.round(Number(somH[i])));
       unit.push(Math.round(Number(somU[i])));
       dom.push(Math.round(Number(adomH[i])));
     }
-    if (!x.length) return null;
-    return {
-      type: 'dualBarLine',
-      title: (regionName ? regionName + ' — ' : '') + 'Stock vs days on market',
-      subtitle: 'Listings (bars) · days on market (line)',
-      barUnit: 'num', lineUnit: 'num',
-      data: { x, bars: [ { name: 'Houses', values: house }, { name: 'Units', values: unit } ], line: { name: 'Days on market', values: dom } },
-    };
+    if (!years.length) return null;
+    return { module: 'stock-dom', data: { stockVsDom: { years, house, unit, dom } } };
   },
   /* p6 — Long-Term Trends: compound annual growth by horizon (LT/10/7/5/3
      yr), house vs unit grouped bars. Mirrors mapLiveToRegion: prefer the
@@ -5636,17 +5657,17 @@ const OR_CHART_RECIPES = {
       uMap['3y']  ?? fromPct(_orLatest(raw.cagrUnit3yr))   ?? cagr(mu, 3),
     ];
     if (house.every(v => v == null) && unit.every(v => v == null)) return null;
-    return {
-      type: 'bars', unit: 'pct',
-      title: (regionName ? regionName + ' — ' : '') + 'Long-term growth',
-      subtitle: 'Compound annual growth · house vs unit',
-      data: { x: ['Long-term', '10yr', '7yr', '5yr', '3yr'], series: [ { name: 'House', values: house }, { name: 'Unit', values: unit } ] },
-    };
+    return { module: 'long-term-trends', data: { longTermTrends: {
+      horizons: ['LT', '10 Years', '7 Years', '5 Years', '3 Years'],
+      house, unit,
+    } } };
   },
-  /* p8 — Population Pyramid: % of population by age group, region vs
-     comparison (national for capitals, state for regionals — columns are
-     renamed on regional feeds). Back-to-back horizontal bars. Decimals
-     auto-scaled to percent. */
+  /* p8 — Population Pyramid (module: population-pyramid). NB: despite the
+     name the report renders this as GROUPED HORIZONTAL BARS — region vs
+     comparison (national for capitals, state for regionals) — not a
+     back-to-back pyramid. The module sums male+female per age group, so we
+     put the % total in `male` and 0 in `female` (matching mapLiveToRegion).
+     Decimals auto-scaled to percent. */
   p8: function (raw, regionName, region) {
     const ages = (raw.pyramidAge || []).filter(v => v !== '' && v != null);
     const reg = (_orCol(raw, 'pyramidPctMetro', 'pyramidPctLga') || []).filter(v => v !== '' && v != null).map(Number);
@@ -5654,53 +5675,57 @@ const OR_CHART_RECIPES = {
     if (!ages.length || !reg.length || !cmp.length) return null;
     const maxV = Math.max.apply(null, reg.concat(cmp));
     const scale = (maxV > 0 && maxV < 1) ? 100 : 1;
-    const r = reg.map(v => v * scale), c = cmp.map(v => v * scale);
-    const n = Math.min(ages.length, r.length, c.length);
+    const m = reg.map(v => +(v * scale).toFixed(2));
+    const c = cmp.map(v => +(v * scale).toFixed(2));
+    const n = Math.min(ages.length, m.length, c.length);
     if (n < 1) return null;
-    const cmpLabel = (region && region.cluster && region.cluster !== 'Capital Cities') ? 'State' : 'National';
-    return {
-      type: 'pyramid', unit: 'pct',
-      title: (regionName ? regionName + ' — ' : '') + 'Population by age',
-      subtitle: '% of population by age group',
-      data: {
-        ages: ages.slice(0, n).map(String),
-        left:  { name: regionName || 'Region', values: r.slice(0, n) },
-        right: { name: cmpLabel,                values: c.slice(0, n) },
-      },
-    };
+    const isRegional = region && region.cluster && region.cluster !== 'Capital Cities';
+    const zeros = m.slice(0, n).map(() => 0);
+    return { module: 'population-pyramid', data: { populationPyramid: {
+      ageGroups: ages.slice(0, n).map(String),
+      regionLabel: regionName || 'Region',
+      compareLabel: isRegional ? 'State' : 'National',
+      sydney:   { male: m.slice(0, n), female: zeros.slice() },
+      national: { male: c.slice(0, n), female: zeros.slice() },
+    } } };
   },
-  /* p9 — Price to Income: house vs unit ratio lines (consistent column
-     names across capital + regional feeds, so no alias handling needed). */
+  /* p9 — Price to Income (module: price-to-income). House vs unit ratio
+     lines + recession markers. Consistent column names across capital +
+     regional feeds, so no alias handling needed. */
   p9: function (raw, regionName) {
     const d = _orSeries(raw.year, [
       { name: 'House', col: raw.priceToIncomeHouse },
       { name: 'Unit',  col: raw.priceToIncomeUnit },
     ]);
     if (!d.x.length) return null;
-    return {
-      type: 'multiLine', unit: 'num',
-      title: (regionName ? regionName + ' — ' : '') + 'Price to income',
-      subtitle: 'House vs unit (ratio)',
-      data: d,
-    };
+    return { module: 'price-to-income', data: {
+      priceToIncome: { years: d.x.map(Number), house: d.series[0].values, unit: d.series[1].values },
+      crises: OR_CRISES,
+    } };
   },
-  /* p12 — Population change (annual %): region vs state (+ national for
-     capitals). Region column is renamed on regional feeds (changeLga);
-     regionals have no national column (it's derived from a peer city in
-     the report), so they degrade to region + state. Raw values are
-     decimals → ×100 for percent. */
-  p12: function (raw, regionName) {
-    const defs = [{ name: regionName || 'Region', col: _orCol(raw, 'changeMetro', 'changeLga') }];
-    if (Array.isArray(raw.changeState)    && raw.changeState.length)    defs.push({ name: 'State',    col: raw.changeState });
-    if (Array.isArray(raw.changeNational) && raw.changeNational.length) defs.push({ name: 'National', col: raw.changeNational });
-    const d = _orSeries(raw.year, defs, v => v * 100);
+  /* p12 — Population change (module: change-in-population). Region vs state
+     (+ national for capitals) annual % lines + a long-term-average ref line
+     (drawn by the module). Region column is renamed on regional feeds
+     (changeLga); regionals carry no national column in the raw feed (the
+     report derives it from a peer city, which isn't in this cluster
+     snapshot), so the 3rd line is empty for them. Decimals → ×100. */
+  p12: function (raw, regionName, region) {
+    const d = _orSeries(raw.year, [
+      { name: 'region', col: _orCol(raw, 'changeMetro', 'changeLga') },
+      { name: 'state',  col: raw.changeState || [] },
+      { name: 'third',  col: raw.changeNational || [] },
+    ], v => v * 100);
     if (!d.x.length) return null;
-    return {
-      type: 'multiLine', unit: 'pct',
-      title: (regionName ? regionName + ' — ' : '') + 'Population change',
-      subtitle: 'Annual % change',
-      data: d,
-    };
+    const isRegional = region && region.cluster && region.cluster !== 'Capital Cities';
+    return { module: 'change-in-population', data: { changeInPopulation: {
+      years: d.x.map(Number),
+      sydney:   d.series[0].values,
+      nsw:      d.series[1].values,
+      national: d.series[2].values,
+      regionLabel: regionName || 'Region',
+      stateLabel:  'State',
+      thirdLabel:  isRegional ? 'Peer city' : 'National',
+    } } };
   },
 };
 /* Forgiving region lookup (tabs may arrive with trailing punctuation). */
@@ -5769,11 +5794,13 @@ async function ovAddReportChart(slug, pageId) {
   if (!raw) { showPresToast('That region isn’t in the stored data yet.'); return; }
   const spec = isStat ? _orBuildStatSpec(pageId.slice(5), raw, region.name) : recipe(raw, region.name, region);
   if (!spec) { showPresToast('That chart has no data for this region.'); return; }
-  /* Size by shape: big numbers squarer, pyramids taller (vertical age
-     axis), line/bar/dual-axis landscape. */
-  let w = 820, h = 460;
+  /* Size by shape: big numbers squarer; the population chart is taller (long
+     age-group labels down the side); everything else is a landscape report
+     graph. The report charts' grids use fixed pixel margins tuned for a
+     ~landscape panel, so a wide-ish base keeps the proportions report-like. */
+  let w = 880, h = 520;
   if (spec.type === 'bigNumber') { w = 560; h = 360; }
-  else if (spec.type === 'pyramid') { w = 640; h = 540; }
+  else if (spec.module === 'population-pyramid') { w = 720; h = 560; }
   currentOverlays().push({
     id: 'c' + Date.now(), type: 'chart',
     x: Math.round((1280 - w) / 2), y: Math.round((720 - h) / 2),

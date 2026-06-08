@@ -1,12 +1,20 @@
 /* ════════════════════════════════════════════════════════════════════
-   shared/present-charts.js — "billboard" presentation chart engine
-   (window.PresentChart)
+   shared/present-charts.js — presentation chart engine (window.PresentChart)
    ────────────────────────────────────────────────────────────────────
-   Renders a single report chart onto a slide as a BIG, bold, animated
-   "billboard" (vs the dense "spreadsheet" look of the reports). The whole
-   point of Phase 3: the graph itself lives on the slide, redesigned for a
-   live audience, and it BUILDS step-by-step as the presenter clicks
-   (Google Slides can't animate graphs — this is the differentiator).
+   Puts a report graph on a slide and BUILDS it step-by-step as the presenter
+   clicks (Google Slides can't animate graphs — this is the differentiator).
+
+   PRIMARY PATH — createFromModule (spec.module): render the EXACT online-
+   report chart module (assets/Reports/charts/chart-*.js) so the slide graph
+   is pixel-identical to the report (colours, staircase axis, legend icons,
+   crisis lines + period bands, axis names — and no title, so it's just the
+   graph), then layer the click-to-build reveal on top. This is what the
+   recipes in presentation.html produce.
+
+   At-a-Glance headline stats use the bigNumber type (count-up). The older
+   type-based "billboard" renderers (line/bars/dualBarLine/pyramid) are kept
+   for the standalone preview lab (present-chart-lab.html) but are no longer
+   the path the real tool takes.
 
    Usage:
      const ctrl = PresentChart.create(containerEl, spec);
@@ -105,6 +113,166 @@
     return wrap;
   }
 
+  /* ── Shared axes — match the ONLINE REPORTS' presentation ──
+     X (category/years): every label shown on a 2-ROW STAIRCASE (even index
+     on the upper row, odd index dropped to a lower row via a '\n' prefix),
+     so no years are skipped — mirrors the reports' staircaseYearAxis.
+     Y (value): formatted labels, subtle splitLine, and a rotated axis NAME
+     down the side (nameLocation middle, rotate 90) like the reports.
+     Pass yMin (e.g. 0) to anchor the baseline; otherwise the axis auto-
+     scales tight to the data. */
+  function axisX(cats) {
+    return {
+      type: 'category', data: cats, boundaryGap: false,
+      axisLine: { lineStyle: { color: THEME.grid } },
+      axisTick: { show: false, alignWithLabel: true },
+      axisLabel: {
+        color: THEME.inkDim, fontSize: 12, interval: 0, lineHeight: 15,
+        formatter: function (v, i) { return (i % 2 === 0) ? v : '\n' + v; },
+      },
+    };
+  }
+  function axisY(unit, name, yMin) {
+    var y = {
+      type: 'value',
+      name: name || '', nameLocation: 'middle', nameRotate: 90, nameGap: 52,
+      nameTextStyle: { color: THEME.inkDim, fontSize: 13, fontStyle: 'italic' },
+      axisLine: { show: false }, axisTick: { show: false },
+      splitLine: { lineStyle: { color: THEME.grid } },
+      axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, formatter: function (v) { return fmt(v, unit); } },
+    };
+    if (yMin == null) y.scale = true; else y.min = yMin;
+    return y;
+  }
+
+  /* Reveal a chart one series at a time by ADDING each series via a merge
+     setOption — ECharts then plays that series' ENTRANCE animation (line
+     draws in, bars grow). A plain empty→full data swap does NOT animate (a
+     data length change isn't tweened — the points just appear), which is
+     why reveals looked instant. `finals` are extra build steps run after
+     all series are shown, each called with (chart, shownSeries). baseOption
+     must not depend on its own `series` (the helper manages it). */
+  function revealBySeries(chart, baseOption, fullSeries, finals) {
+    baseOption.series = [];
+    chart.setOption(baseOption);
+    var shown = [];
+    var builds = fullSeries.map(function (s) {
+      return function () { shown.push(s); chart.setOption({ series: shown.slice() }); };
+    });
+    (finals || []).forEach(function (fn) { builds.push(function () { fn(chart, shown); }); });
+    return stepController(builds, {
+      reset: function () { shown.length = 0; chart.setOption({ series: [] }, { replaceMerge: ['series'] }); },
+      resize: function () { chart.resize(); },
+      dispose: function () { chart.dispose(); },
+    });
+  }
+
+  /* ═══ EXACT REPORT CHART (window.PpaCharts module) + build animation ═══
+     The primary Phase-3 path: render the SAME chart module the online
+     reports use (shared/../assets/Reports/charts/chart-*.js) so the slide
+     graph is pixel-identical to the report — its colours, staircase axis,
+     legend icons, crisis lines + growth/correction bands, axis names. The
+     report modules carry NO title, so the slide chart shows just the graph
+     (the page header/sub-header from the report is intentionally absent —
+     more room for the graph).
+
+     The modules render statically (animation:false). We layer the
+     click-to-build reveal on top WITHOUT touching them: render once, harvest
+     the fully-resolved option via getOption(), lock the value-axis bounds to
+     the full-data extent (so the axis doesn't jump as lines appear), then
+     reveal each data-bearing series one click at a time by ADDING it back via
+     a merge setOption — which is what makes ECharts play the entrance
+     (draw-in / grow) animation (a plain data swap doesn't tween; see
+     revealBySeries note). Empty legend-only series (e.g. the Growth /
+     Correction swatches) stay on screen the whole time.
+
+     spec = { module:'median-price', data:{...module's own shape...} } */
+  function createFromModule(host, spec) {
+    if (!window.echarts) { host.textContent = 'Chart engine needs ECharts.'; return nullController(); }
+    if (!window.PpaCharts || !window.PpaCharts.registry || !window.PpaCharts.registry[spec.module]) {
+      host.textContent = 'Report chart library not loaded (' + spec.module + ').';
+      return nullController();
+    }
+    var renderFn = window.PpaCharts.registry[spec.module];
+    /* The module calls echarts.init() itself — hand it a plot div that fills
+       the (px-sized) host so it renders at the slide's base size. */
+    clearEl(host);
+    var plot = document.createElement('div');
+    plot.style.cssText = 'width:100%;height:100%;';
+    host.appendChild(plot);
+
+    var chart;
+    try { chart = renderFn(plot, spec.data || {}); }
+    catch (e) { host.textContent = 'Chart failed: ' + (e && e.message || e); return nullController(); }
+    if (!chart && window.echarts.getInstanceByDom) chart = window.echarts.getInstanceByDom(plot);
+    if (!chart) return nullController();
+
+    var full = chart.getOption();
+    var allSeries = full.series || [];
+
+    /* Lock value-axis min/max to the full-data extent (read from the rendered
+       model) so the axis stays put while series are revealed. Category axes
+       are already stable; left untouched. Best-effort — if the internal
+       accessor ever changes, we just fall back to ECharts' auto-scaling. */
+    var axisLock = {};
+    ['xAxis', 'yAxis'].forEach(function (k) {
+      var defs = full[k]; if (!defs) return;
+      var arr = Array.isArray(defs) ? defs : [defs];
+      axisLock[k] = arr.map(function (def, i) {
+        if (def && def.type && def.type !== 'value') return {};
+        try {
+          var ext = chart.getModel().getComponent(k, i).axis.scale.getExtent();
+          if (ext && isFinite(ext[0]) && isFinite(ext[1])) return { min: ext[0], max: ext[1] };
+        } catch (_) {}
+        return {};
+      });
+    });
+
+    /* Data-bearing series reveal on clicks; empty (legend-only) series stay. */
+    var staticSeries = [], revealSeries = [];
+    allSeries.forEach(function (s) {
+      var hasData = Array.isArray(s.data) && s.data.some(function (d) {
+        var v = (d && typeof d === 'object' && 'value' in d) ? d.value : d;
+        return v != null && !(typeof v === 'number' && isNaN(v));
+      });
+      (hasData ? revealSeries : staticSeries).push(s);
+    });
+
+    /* Enable the build animation (modules ship animation:false) + apply the
+       axis lock. Same easing/duration as the rest of the engine for a
+       consistent feel. */
+    chart.setOption({
+      animation: true,
+      animationDuration: THEME.drawMs, animationEasing: THEME.easing,
+      animationDurationUpdate: THEME.drawMs, animationEasingUpdate: THEME.easing,
+      animationDelay: function (i) { return i * 14; },
+      animationDelayUpdate: function (i) { return i * 14; },
+      xAxis: axisLock.xAxis, yAxis: axisLock.yAxis,
+    });
+    /* Optional slide-only layout tweak: a report module's grid is tuned for
+       the report's panel; a recipe can reclaim empty slide space WITHOUT
+       touching the shared module (e.g. median-price ships a tall bottom
+       margin that leaves a big gap on a 16:9 slide). Merges over the grid. */
+    if (spec.grid) chart.setOption({ grid: spec.grid });
+
+    var shown = [];
+    /* Pre-build state: only the always-on series (replaceMerge drops the
+       data series cleanly so re-revealing animates again). */
+    function showStatic() { chart.setOption({ series: staticSeries.slice() }, { replaceMerge: ['series'] }); }
+    showStatic();
+
+    var builds = revealSeries.map(function (s) {
+      /* Default merge (no replaceMerge): the previously-shown series keep
+         their index and DON'T re-animate; the newly appended one enters. */
+      return function () { shown.push(s); chart.setOption({ series: staticSeries.concat(shown) }); };
+    });
+    return stepController(builds, {
+      reset: function () { shown.length = 0; showStatic(); },
+      resize: function () { try { chart.resize(); } catch (_) {} },
+      dispose: function () { try { chart.dispose(); } catch (_) {} },
+    });
+  }
+
   /* ═══ LINE / MULTILINE ═══ */
   function createLine(host, spec) {
     if (!window.echarts) { host.textContent = 'Chart engine needs ECharts.'; return nullController(); }
@@ -135,56 +303,38 @@
     });
     var unit = spec.unit || 'num';
 
+    /* Full series (with data) — revealed one at a time by the helper so
+       each line plays its entrance DRAW animation. */
+    var fullSeries = series.map(function (s) {
+      return { name: s.name, type: 'line', smooth: s.smooth, showSymbol: s.showSymbol,
+               symbolSize: s.symbolSize, lineStyle: s.lineStyle, itemStyle: s.itemStyle,
+               emphasis: s.emphasis, data: s._values };
+    });
     var baseOption = {
       backgroundColor: 'transparent',
       textStyle: { fontFamily: THEME.font, color: THEME.ink },
-      /* Legend on TOP (matches the reports' convention + never clips at the
-         bottom). Extra top margin leaves room for the legend AND the
-         latest-value callout that pops above the lead line. */
-      grid: { left: 64, right: 48, top: 50, bottom: 36, containLabel: true },
+      /* Legend on TOP (reports' convention; auto-grows from shown series).
+         Top margin leaves room for it + the latest-value callout. */
+      grid: { left: 70, right: 48, top: 50, bottom: 52, containLabel: true },
       legend: series.length > 1
         ? { top: 8, left: 'center', itemGap: 26, textStyle: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 }, icon: 'roundRect' }
         : undefined,
       tooltip: { trigger: 'axis', backgroundColor: 'rgba(15,23,42,0.94)', borderColor: 'rgba(255,255,255,0.12)', textStyle: { color: '#fff', fontSize: 15 } },
-      xAxis: {
-        type: 'category', data: cats, boundaryGap: false,
-        axisLine: { lineStyle: { color: THEME.grid } },
-        axisTick: { show: false },
-        axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, hideOverlap: true },
-      },
-      yAxis: {
-        type: 'value', scale: true,
-        axisLine: { show: false }, axisTick: { show: false },
-        splitLine: { lineStyle: { color: THEME.grid } },
-        axisLabel: {
-          color: THEME.inkDim, fontSize: THEME.axisSize,
-          formatter: function (v) { return fmt(v, unit); },
-        },
-      },
-      animationDuration: THEME.drawMs,
-      animationEasing: THEME.easing,
-      series: series.map(function (s) {
-        return { name: s.name, type: s.type, smooth: s.smooth, showSymbol: s.showSymbol,
-                 symbolSize: s.symbolSize, lineStyle: s.lineStyle, itemStyle: s.itemStyle,
-                 emphasis: s.emphasis, data: [] };
-      }),
+      xAxis: axisX(cats),
+      yAxis: axisY(unit, spec.yName, spec.yMin),
+      /* Smooth eased entrance; per-point stagger draws the line left→right.
+         (See ANIMATION SMOOTHNESS notes.) */
+      animation: true,
+      animationDuration: THEME.drawMs, animationEasing: THEME.easing,
+      animationDurationUpdate: THEME.drawMs, animationEasingUpdate: THEME.easing,
+      animationDelay: function (i) { return i * 14; },
+      animationDelayUpdate: function (i) { return i * 14; },
     };
-    chart.setOption(baseOption);
-
-    /* Build steps: one per series (draw it in), then a callout pop. */
-    var builds = [];
-    series.forEach(function (s, i) {
-      builds.push(function () {
-        baseOption.series[i].data = s._values;
-        chart.setOption(baseOption);
-      });
-    });
-    builds.push(function () {
-      // Pop the latest value on the lead (first) series as a callout.
-      var lead = series[0];
-      var lv = lastNum(lead._values);
-      if (lv == null) return;
-      baseOption.series[0].markPoint = {
+    /* Final step: pop the latest value on the lead series as a callout. */
+    var calloutBuild = function (chart, shown) {
+      var lv = lastNum(series[0]._values);
+      if (lv == null || !shown[0]) return;
+      shown[0].markPoint = {
         symbol: 'circle', symbolSize: 14,
         itemStyle: { color: THEME.palette[0], borderColor: '#fff', borderWidth: 2 },
         label: {
@@ -192,21 +342,11 @@
           formatter: fmt(lv, unit), color: '#fff', fontSize: THEME.valueSize, fontWeight: 800,
           backgroundColor: 'rgba(10,21,32,0.88)', padding: [5, 9], borderRadius: 7,
         },
-        data: [{ type: 'max' }],
-        animationDuration: 500,
+        data: [{ type: 'max' }], animationDuration: 500,
       };
-      chart.setOption(baseOption);
-    });
-
-    return stepController(builds, {
-      reset: function () {
-        series.forEach(function (s, i) { baseOption.series[i].data = []; baseOption.series[i].markPoint = undefined; });
-        chart.setOption(baseOption, { replaceMerge: ['series'] });
-        chart.setOption(baseOption);
-      },
-      resize: function () { chart.resize(); },
-      dispose: function () { chart.dispose(); },
-    });
+      chart.setOption({ series: shown.slice() });
+    };
+    return revealBySeries(chart, baseOption, fullSeries, [calloutBuild]);
   }
 
   /* ═══ BARS ═══ */
@@ -226,47 +366,42 @@
     var defs = multi ? spec.data.series : [{ name: spec.title || '', values: spec.data.values || [] }];
     var maxIdx = (!multi) ? defs[0].values.reduce(function (m, v, i) { return (v != null && (defs[0].values[m] == null || v > defs[0].values[m])) ? i : m; }, 0) : -1;
 
-    var option = {
+    /* Full bar series (with data) — revealed one group at a time so each
+       grows on entry. */
+    var fullSeries = defs.map(function (d, i) {
+      return {
+        name: d.name, type: 'bar', data: d.values.slice(),
+        barWidth: multi ? undefined : '52%',
+        itemStyle: { color: THEME.palette[i % THEME.palette.length], borderRadius: [6, 6, 0, 0] },
+        /* Per-bar value labels only for single-series (grouped would crowd). */
+        label: multi ? { show: false } : { show: true, position: 'top', color: THEME.ink, fontSize: THEME.valueSize, fontWeight: 800, formatter: function (p) { return fmt(p.value, unit); } },
+      };
+    });
+    var baseOption = {
       backgroundColor: 'transparent',
       textStyle: { fontFamily: THEME.font, color: THEME.ink },
-      grid: { left: 24, right: 36, top: multi ? 50 : 44, bottom: 36, containLabel: true },
-      legend: multi ? { top: 8, left: 'center', itemGap: 24, data: defs.map(function (d) { return d.name; }), textStyle: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 }, icon: 'roundRect' } : undefined,
+      grid: { left: 62, right: 36, top: multi ? 50 : 44, bottom: 36, containLabel: true },
+      legend: multi ? { top: 8, left: 'center', itemGap: 24, textStyle: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 }, icon: 'roundRect' } : undefined,
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: 'rgba(15,23,42,0.94)', textStyle: { color: '#fff', fontSize: 15 } },
-      xAxis: { type: 'category', data: cats, axisLine: { lineStyle: { color: THEME.grid } }, axisTick: { show: false }, axisLabel: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 } },
-      yAxis: { type: 'value', scale: true, axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: THEME.grid } }, axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, formatter: function (v) { return fmt(v, unit); } } },
+      /* Bar categories (e.g. growth horizons) are few — keep them on one
+         row, all shown. */
+      xAxis: { type: 'category', data: cats, axisLine: { lineStyle: { color: THEME.grid } }, axisTick: { show: false }, axisLabel: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600, interval: 0 } },
+      yAxis: axisY(unit, spec.yName, spec.yMin),
+      animation: true,
       animationDuration: THEME.drawMs, animationEasing: THEME.easing,
-      series: defs.map(function (d, i) {
-        return {
-          name: d.name, type: 'bar', data: [],
-          barWidth: multi ? undefined : '52%',
-          itemStyle: { color: THEME.palette[i % THEME.palette.length], borderRadius: [6, 6, 0, 0] },
-          /* Per-bar value labels only for single-series (grouped would crowd). */
-          label: multi ? { show: false } : { show: true, position: 'top', color: THEME.ink, fontSize: THEME.valueSize, fontWeight: 800, formatter: function (p) { return fmt(p.value, unit); } },
-        };
-      }),
+      animationDurationUpdate: THEME.drawMs, animationEasingUpdate: THEME.easing,
+      animationDelay: function (i) { return i * 14; },
+      animationDelayUpdate: function (i) { return i * 14; },
     };
-    chart.setOption(option);
-
-    var builds;
-    if (multi) {
-      /* Reveal one series (grow its bars) per step. */
-      builds = defs.map(function (d, i) { return function () { option.series[i].data = d.values; chart.setOption(option); }; });
-    } else {
-      builds = [
-        function () { option.series[0].data = defs[0].values.slice(); chart.setOption(option); },
-        function () {
-          option.series[0].data = defs[0].values.map(function (v, i) {
-            return { value: v, itemStyle: { color: i === maxIdx ? THEME.palette[1] : THEME.palette[0], borderRadius: [6, 6, 0, 0] } };
-          });
-          chart.setOption(option);
-        },
-      ];
-    }
-    return stepController(builds, {
-      reset: function () { option.series.forEach(function (s) { s.data = []; }); chart.setOption(option); },
-      resize: function () { chart.resize(); },
-      dispose: function () { chart.dispose(); },
-    });
+    /* Single-series final step: highlight the biggest bar. */
+    var finals = multi ? [] : [function (chart, shown) {
+      if (!shown[0]) return;
+      shown[0].data = defs[0].values.map(function (v, i) {
+        return { value: v, itemStyle: { color: i === maxIdx ? THEME.palette[1] : THEME.palette[0], borderRadius: [6, 6, 0, 0] } };
+      });
+      chart.setOption({ series: shown.slice() });
+    }];
+    return revealBySeries(chart, baseOption, fullSeries, finals);
   }
 
   /* ═══ DUAL AXIS: bars (left) + line (right) ═══
@@ -289,38 +424,32 @@
     var lineUnit = spec.lineUnit || 'num';
     var lineColor = THEME.palette[bars.length % THEME.palette.length];
 
-    var option = {
+    /* Full series (with data) — bars first, then the line, revealed in
+       that order so each enters with its own grow/draw animation. */
+    var fullSeries = bars.map(function (b, i) {
+      return { name: b.name, type: 'bar', yAxisIndex: 0, data: b.values.slice(), itemStyle: { color: THEME.palette[i % THEME.palette.length], borderRadius: [4, 4, 0, 0] } };
+    }).concat(lineDef ? [{
+      name: lineDef.name, type: 'line', yAxisIndex: 1, smooth: 0.18, showSymbol: false,
+      data: lineDef.values.slice(), lineStyle: { width: THEME.lineWidth, color: lineColor }, itemStyle: { color: lineColor },
+    }] : []);
+    var baseOption = {
       backgroundColor: 'transparent',
       textStyle: { fontFamily: THEME.font, color: THEME.ink },
-      grid: { left: 60, right: 60, top: 50, bottom: 36, containLabel: true },
-      legend: { top: 8, left: 'center', itemGap: 22,
-        data: bars.map(function (b) { return b.name; }).concat(lineDef ? [lineDef.name] : []),
-        textStyle: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 }, icon: 'roundRect' },
+      grid: { left: 70, right: 70, top: 50, bottom: 52, containLabel: true },
+      legend: { top: 8, left: 'center', itemGap: 22, textStyle: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 }, icon: 'roundRect' },
       tooltip: { trigger: 'axis', backgroundColor: 'rgba(15,23,42,0.94)', borderColor: 'rgba(255,255,255,0.12)', textStyle: { color: '#fff', fontSize: 15 } },
-      xAxis: { type: 'category', data: cats, axisLine: { lineStyle: { color: THEME.grid } }, axisTick: { show: false }, axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, hideOverlap: true } },
+      xAxis: axisX(cats),
       yAxis: [
-        { type: 'value', scale: true, axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: THEME.grid } }, axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, formatter: function (v) { return fmt(v, barUnit); } } },
-        { type: 'value', scale: true, axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false }, axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, formatter: function (v) { return fmt(v, lineUnit); } } },
+        Object.assign(axisY(barUnit, spec.barName), {}),
+        Object.assign(axisY(lineUnit, spec.lineName), { splitLine: { show: false } }),
       ],
+      animation: true,
       animationDuration: THEME.drawMs, animationEasing: THEME.easing,
-      series: bars.map(function (b, i) {
-        return { name: b.name, type: 'bar', yAxisIndex: 0, data: [], itemStyle: { color: THEME.palette[i % THEME.palette.length], borderRadius: [4, 4, 0, 0] } };
-      }).concat(lineDef ? [{
-        name: lineDef.name, type: 'line', yAxisIndex: 1, smooth: 0.18, showSymbol: false,
-        data: [], lineStyle: { width: THEME.lineWidth, color: lineColor }, itemStyle: { color: lineColor },
-      }] : []),
+      animationDurationUpdate: THEME.drawMs, animationEasingUpdate: THEME.easing,
+      animationDelay: function (i) { return i * 14; },
+      animationDelayUpdate: function (i) { return i * 14; },
     };
-    chart.setOption(option);
-
-    var builds = [];
-    bars.forEach(function (b, i) { builds.push(function () { option.series[i].data = b.values; chart.setOption(option); }); });
-    if (lineDef) builds.push(function () { option.series[bars.length].data = lineDef.values; chart.setOption(option); });
-
-    return stepController(builds, {
-      reset: function () { option.series.forEach(function (s) { s.data = []; }); chart.setOption(option); },
-      resize: function () { chart.resize(); },
-      dispose: function () { chart.dispose(); },
-    });
+    return revealBySeries(chart, baseOption, fullSeries, []);
   }
 
   /* ═══ PYRAMID: back-to-back horizontal bars ═══
@@ -343,11 +472,17 @@
     var unit = spec.unit || 'pct';
     var negate = function (arr) { return arr.map(function (v) { return v == null ? null : -Math.abs(v); }); };
 
-    var option = {
+    /* Full series (with data) — left (extends left, negated) then right;
+       revealed in order so each side grows in. */
+    var fullSeries = [
+      { name: left.name,  type: 'bar', data: negate(left.values), barWidth: '92%', itemStyle: { color: THEME.palette[0] } },
+      { name: right.name, type: 'bar', data: right.values.slice(), barWidth: '92%', barGap: '-100%', itemStyle: { color: THEME.palette[1] } },
+    ];
+    var baseOption = {
       backgroundColor: 'transparent',
       textStyle: { fontFamily: THEME.font, color: THEME.ink },
       grid: { left: 24, right: 24, top: 50, bottom: 36, containLabel: true },
-      legend: { top: 8, left: 'center', itemGap: 24, data: [left.name, right.name], textStyle: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 }, icon: 'roundRect' },
+      legend: { top: 8, left: 'center', itemGap: 24, textStyle: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 }, icon: 'roundRect' },
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: 'rgba(15,23,42,0.94)', textStyle: { color: '#fff', fontSize: 15 },
         formatter: function (ps) {
           var s = ps && ps[0] ? ('Age ' + ps[0].axisValue) : '';
@@ -356,23 +491,13 @@
         } },
       xAxis: { type: 'value', axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: THEME.grid } }, axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, formatter: function (v) { return fmt(Math.abs(v), unit); } } },
       yAxis: { type: 'category', data: ages, axisLine: { lineStyle: { color: THEME.grid } }, axisTick: { show: false }, axisLabel: { color: THEME.ink, fontSize: 13 } },
+      animation: true,
       animationDuration: THEME.drawMs, animationEasing: THEME.easing,
-      series: [
-        { name: left.name,  type: 'bar', data: [], barWidth: '92%', itemStyle: { color: THEME.palette[0] } },
-        { name: right.name, type: 'bar', data: [], barWidth: '92%', barGap: '-100%', itemStyle: { color: THEME.palette[1] } },
-      ],
+      animationDurationUpdate: THEME.drawMs, animationEasingUpdate: THEME.easing,
+      animationDelay: function (i) { return i * 14; },
+      animationDelayUpdate: function (i) { return i * 14; },
     };
-    chart.setOption(option);
-
-    var builds = [
-      function () { option.series[0].data = negate(left.values); chart.setOption(option); },
-      function () { option.series[1].data = right.values.slice(); chart.setOption(option); },
-    ];
-    return stepController(builds, {
-      reset: function () { option.series[0].data = []; option.series[1].data = []; chart.setOption(option); },
-      resize: function () { chart.resize(); },
-      dispose: function () { chart.dispose(); },
-    });
+    return revealBySeries(chart, baseOption, fullSeries, []);
   }
 
   /* ═══ BIG NUMBER (pure DOM, count-up) ═══ */
@@ -386,7 +511,7 @@
       wrap.appendChild(t);
     }
     var big = document.createElement('div');
-    big.style.cssText = 'font-size:120px;font-weight:800;line-height:1.05;color:' + THEME.palette[0] + ';margin:10px 0;';
+    big.style.cssText = 'font-size:120px;font-weight:800;line-height:1.05;color:' + THEME.palette[0] + ';margin:10px 0;font-variant-numeric:tabular-nums;';
     big.textContent = '—';
     wrap.appendChild(big);
     var cap = document.createElement('div');
@@ -399,16 +524,32 @@
     var unit = spec.unit || 'num';
     var raf = null;
 
+    /* Format the counting value in the TARGET's FIXED scale, so it never
+       jumps units mid-count (e.g. $k → $M). With tabular-nums on the
+       element, the digits change without the number jittering. */
+    function fixedFmt(t, u) {
+      var a = Math.abs(t);
+      if (u === 'pct') return function (v) { return v.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'; };
+      if (u === 'aud') {
+        if (a >= 1e6) return function (v) { return '$' + (v / 1e6).toLocaleString('en-AU', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + 'M'; };
+        if (a >= 1e3) return function (v) { return '$' + Math.round(v / 1e3).toLocaleString('en-AU') + 'k'; };
+        return function (v) { return '$' + Math.round(v).toLocaleString('en-AU'); };
+      }
+      if (a >= 1e6) return function (v) { return (v / 1e6).toLocaleString('en-AU', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + 'M'; };
+      if (a >= 1e3) return function (v) { return Math.round(v / 1e3).toLocaleString('en-AU') + 'k'; };
+      return function (v) { return Math.round(v).toLocaleString('en-AU'); };
+    }
+    var countFmt = fixedFmt(target, unit);
     function countUp() {
-      var startT = null, dur = 1100;
+      var startT = null, dur = 1200;
       cancelAnimationFrame(raf);
       function tick(ts) {
         if (startT == null) startT = ts;
         var p = Math.min(1, (ts - startT) / dur);
         var eased = 1 - Math.pow(1 - p, 3);   // cubicOut
-        big.textContent = fmt(target * eased, unit);
+        big.textContent = countFmt(target * eased);
         if (p < 1) raf = requestAnimationFrame(tick);
-        else big.textContent = fmt(target, unit);
+        else big.textContent = countFmt(target);
       }
       raf = requestAnimationFrame(tick);
     }
@@ -470,6 +611,10 @@
     if (!container || !spec) return nullController();
     clearEl(container);
     container.style.position = container.style.position || 'relative';
+    /* Primary path: render the EXACT online-report chart module + animate.
+       (Recipes that still carry a billboard `type` fall through below; the
+       At-a-Glance big numbers use type:'bigNumber'.) */
+    if (spec.module) return createFromModule(container, spec);
     switch (spec.type) {
       case 'line':
       case 'multiLine': return createLine(container, spec);
