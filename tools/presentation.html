@@ -31,6 +31,32 @@
 <script src="../assets/Reports/charts/chart-population-pyramid.js" defer></script>
 <script src="../assets/Reports/charts/chart-price-to-income.js" defer></script>
 <script src="../assets/Reports/charts/chart-change-in-population.js" defer></script>
+<script src="../assets/Reports/charts/chart-industry-value.js" defer></script>
+<script src="../assets/Reports/charts/chart-vacancy-vs-rent.js" defer></script>
+<script src="../assets/Reports/charts/chart-population-movement.js" defer></script>
+<script src="../assets/Reports/charts/chart-job-creation.js" defer></script>
+<script src="../assets/Reports/charts/chart-mortgage-arrears.js" defer></script>
+<script src="../assets/Reports/charts/chart-house-v-unit-price.js" defer></script>
+<script src="../assets/Reports/charts/chart-affordability-house.js" defer></script>
+<script src="../assets/Reports/charts/chart-affordability-unit.js" defer></script>
+<script src="../assets/Reports/charts/chart-lending-vs-price.js" defer></script>
+<script src="../assets/Reports/charts/chart-dwelling-sales.js" defer></script>
+<script src="../assets/Reports/charts/chart-dwelling-approvals.js" defer></script>
+<script src="../assets/Reports/charts/chart-new-households-v-housing.js" defer></script>
+<script src="../assets/Reports/charts/chart-fhb-percentage.js" defer></script>
+<script src="../assets/Reports/charts/chart-income-to-rent-ai.js" defer></script>
+<script src="../assets/Reports/charts/chart-retail-turnover.js" defer></script>
+<script src="../assets/Reports/charts/chart-unemployment.js" defer></script>
+<script src="../assets/Reports/charts/chart-business-investment.js" defer></script>
+<script src="../assets/Reports/charts/chart-current-investment-value.js" defer></script>
+<script src="../assets/Reports/charts/chart-yield-vs-cash-house.js" defer></script>
+<script src="../assets/Reports/charts/chart-yield-vs-cash-unit.js" defer></script>
+<script src="../assets/Reports/charts/chart-sydney-vs-melbourne.js" defer></script>
+<script src="../assets/Reports/charts/chart-iron-ore-price.js" defer></script>
+<script src="../assets/Reports/charts/chart-mineral-exploration-expenditure.js" defer></script>
+<!-- Research-report (National / Commercial) chart modules — same registry
+     contract; ported from their inline renderers into shared modules. -->
+<script src="../assets/Reports/charts/national-charts.js" defer></script>
 <script>
   /* Slide charts are CSS-scaled (rendered once at a fixed base size), so
      ECharts never needs to resize on window changes — and the report
@@ -5535,6 +5561,82 @@ function _orCol(raw, ...names) {
   for (const n of names) { if (Array.isArray(raw[n]) && raw[n].length) return raw[n]; }
   return [];
 }
+/* Region → state + peer (mirrors online-reports REGION_MANIFEST) so charts
+   that label series per state/peer (population-movement, mortgage-arrears,
+   unemployment, sydney-vs-melbourne) read correctly per region — the report
+   modules otherwise fall back to Sydney/NSW/Melbourne. */
+const OR_REGION_META = {
+  sydney:{s:'NSW',p:'melbourne'}, melbourne:{s:'VIC',p:'sydney'}, brisbane:{s:'QLD',p:'sydney'},
+  adelaide:{s:'SA',p:'sydney'}, perth:{s:'WA',p:'sydney'}, hobart:{s:'TAS',p:'sydney'},
+  canberra:{s:'ACT',p:'sydney'}, darwin:{s:'NT',p:'sydney'},
+  mackay:{s:'QLD',p:'brisbane'}, bundaberg:{s:'QLD',p:'brisbane'}, ipswich:{s:'QLD',p:'brisbane'},
+  rockhampton:{s:'QLD',p:'brisbane'}, gladstone:{s:'QLD',p:'brisbane'}, cairns:{s:'QLD',p:'brisbane'},
+  townsville:{s:'QLD',p:'brisbane'}, 'sunshine-coast':{s:'QLD',p:'brisbane'}, toowoomba:{s:'QLD',p:'brisbane'},
+  'gold-coast':{s:'QLD',p:'brisbane'},
+  albury:{s:'NSW',p:'sydney'}, 'central-coast':{s:'NSW',p:'sydney'}, 'coffs-harbour':{s:'NSW',p:'sydney'},
+  dubbo:{s:'NSW',p:'sydney'}, orange:{s:'NSW',p:'sydney'}, 'port-macquarie':{s:'NSW',p:'sydney'},
+  newcastle:{s:'NSW',p:'sydney'}, tamworth:{s:'NSW',p:'sydney'}, 'wagga-wagga':{s:'NSW',p:'sydney'},
+  wollongong:{s:'NSW',p:'sydney'},
+  ballarat:{s:'VIC',p:'melbourne'}, bendigo:{s:'VIC',p:'melbourne'}, geelong:{s:'VIC',p:'melbourne'},
+  wodonga:{s:'VIC',p:'melbourne'}, mildura:{s:'VIC',p:'melbourne'}, rockingham:{s:'WA',p:'perth'},
+  bunbury:{s:'WA',p:'perth'}, launceston:{s:'TAS',p:'hobart'},
+};
+function _orStateOf(slug) { return (OR_REGION_META[slug] || {}).s || 'State'; }
+function _orPeerName(slug) {
+  const p = (OR_REGION_META[slug] || {}).p;
+  const r = p && OR_REGIONS.find(x => x.slug === p);
+  return (r && r.name) || 'Peer';
+}
+/* Generic multi-column aligner over a key axis (year, or month/quarter label).
+   mode 'strict' keeps rows where EVERY value col is present; 'loose' keeps any
+   row with at least one value (missing → null). keyParse maps a raw key cell →
+   output key (default: integer year). Returns { keys:[...], cols:[[...], ...] }
+   index-aligned to keys. Mirrors mapLiveToRegion's liveAlignYears(Loose). */
+function _orAlignCols(keyCol, valCols, opts) {
+  opts = opts || {};
+  const mode = opts.mode || 'strict';
+  const kp = opts.keyParse || (k => { const n = parseInt(k, 10); return Number.isFinite(n) ? n : null; });
+  const kc = keyCol || [];
+  const keys = [], cols = valCols.map(() => []);
+  for (let i = 0; i < kc.length; i++) {
+    const k = kp(kc[i]);
+    if (k == null || k === '') continue;
+    const vals = valCols.map(vc => {
+      const v = (vc || [])[i];
+      if (v === '' || v == null || (typeof v === 'number' && isNaN(v))) return null;
+      return Number(v);
+    });
+    const present = vals.filter(v => v != null).length;
+    if (present === 0) continue;
+    if (mode === 'strict' && present < valCols.length) continue;
+    keys.push(k);
+    vals.forEach((v, j) => cols[j].push(v));
+  }
+  return { keys, cols };
+}
+/* ISO date (or Date) → "YYYY-MM" month key, matching the reports' monthly
+   charts. +12h then UTC so an end-of-month timestamp lands in its own month. */
+function _orMonthKey(cell) {
+  if (cell == null || cell === '') return null;
+  let d = (cell instanceof Date) ? cell : new Date(cell);
+  if (isNaN(d.getTime())) {
+    const m = String(cell).match(/^(\d{4})-(\d{2})/);
+    return m ? m[1] + '-' + m[2] : null;
+  }
+  d = new Date(d.getTime() + 12 * 3600 * 1000);
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0');
+}
+/* Quarter cell → "Q# YYYY" (mineral-exploration). Accepts an already-formatted
+   "Q1 2007" or an ISO date. */
+function _orQuarterKey(cell) {
+  if (cell == null || cell === '') return null;
+  const s = String(cell).trim();
+  if (/^Q[1-4]\s*\d{4}$/i.test(s)) return s.toUpperCase().replace(/\s+/, ' ');
+  let d = (cell instanceof Date) ? cell : new Date(cell);
+  if (isNaN(d.getTime())) return s;
+  d = new Date(d.getTime() + 12 * 3600 * 1000);
+  return 'Q' + (Math.floor(d.getUTCMonth() / 3) + 1) + ' ' + d.getUTCFullYear();
+}
 /* Recession markers + growth/correction bands — the SAME region-agnostic
    constants the online reports overlay on the long-history price charts
    (CRISES / BANDS in online-reports.html). Passed straight to the report
@@ -5727,7 +5829,276 @@ const OR_CHART_RECIPES = {
       thirdLabel:  isRegional ? 'Peer city' : 'National',
     } } };
   },
+  /* p7 — Industry Value Added (module: industry-value, donut). Names +
+     %-of-GSP, sorted descending; decimals auto-scaled to %. Colours come
+     from the module's palette18 in order. */
+  p7: function (raw) {
+    const names = raw.industrySector || [], vals = raw.industryPctGsp || [];
+    const rows = [], n = Math.min(names.length, vals.length);
+    for (let i = 0; i < n; i++) {
+      if (names[i] === '' || names[i] == null) continue;
+      if (vals[i] === '' || vals[i] == null || isNaN(Number(vals[i]))) continue;
+      rows.push({ n: String(names[i]), v: Number(vals[i]) });
+    }
+    if (!rows.length) return null;
+    const maxV = Math.max.apply(null, rows.map(r => r.v));
+    const scale = (maxV > 0 && maxV < 1) ? 100 : 1;
+    rows.forEach(r => { r.v = Math.round(r.v * scale * 10) / 10; });
+    rows.sort((a, b) => b.v - a.v);
+    return { module: 'industry-value', box: { w: 980, h: 540 }, data: { industry: rows } };
+  },
+  /* p10 — Vacancy vs Rent (module: vacancy-vs-rent). Rent house/unit bars +
+     vacancy line; year≥2000; vacancy ×100. */
+  p10: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.medianRentHouse, raw.medianRentUnit, raw.vacancyRate], { mode: 'strict' });
+    const i0 = a.keys.findIndex(y => y >= 2000); if (i0 < 0) return null;
+    return { module: 'vacancy-vs-rent', data: { vacancyVsRent: {
+      years: a.keys.slice(i0),
+      rentHouse: a.cols[0].slice(i0).map(v => Math.round(v)),
+      rentUnit:  a.cols[1].slice(i0).map(v => Math.round(v)),
+      vacancy:   a.cols[2].slice(i0).map(v => Math.round(v * 1e4) / 100),
+    } } };
+  },
+  /* p11 — Population Movement (module: population-movement). Natural increase /
+     NIM / NOM bars (thousands) + state population line (millions). */
+  p11: function (raw, regionName, region) {
+    const a = _orAlignCols(raw.year, [raw.naturalIncrease, raw.nim, raw.nom, raw.populationState], { mode: 'loose' });
+    let s = -1;
+    for (let i = 0; i < a.keys.length; i++) { if (a.cols[0][i] != null || a.cols[1][i] != null || a.cols[2][i] != null) { s = i; break; } }
+    if (s < 0) return null;
+    const div = (j, d) => a.cols[j].slice(s).map(v => v == null ? null : v / d);
+    return { module: 'population-movement', data: { populationMovement: {
+      years: a.keys.slice(s),
+      naturalIncrease: div(0, 1000), nim: div(1, 1000), nom: div(2, 1000),
+      nswPopulation: div(3, 1e6), stateLabel: _orStateOf(region ? region.slug : ''),
+    } } };
+  },
+  /* p13 — Job Creation (module: job-creation). Monthly index, single line. */
+  p13: function (raw, regionName) {
+    const a = _orAlignCols(raw.monthlyDate, [raw.jobCreationIndex], { mode: 'strict', keyParse: _orMonthKey });
+    if (!a.keys.length) return null;
+    return { module: 'job-creation', data: { jobCreation: {
+      months: a.keys, sydney: a.cols[0].map(v => Math.round(v * 10) / 10), regionLabel: regionName || 'Region',
+    } } };
+  },
+  /* p14 — Mortgage Arrears (module: mortgage-arrears). Monthly state +
+     national arrears lines; ×100. */
+  p14: function (raw, regionName, region) {
+    const a = _orAlignCols(raw.monthlyDate, [raw.arrearsState, raw.arrearsNational], { mode: 'loose', keyParse: _orMonthKey });
+    if (!a.keys.length) return null;
+    const pct = v => v == null ? null : Math.round(v * 1e4) / 100;
+    return { module: 'mortgage-arrears', data: { mortgageArrears: {
+      months: a.keys, nsw: a.cols[0].map(pct), national: a.cols[1].map(pct), stateLabel: _orStateOf(region ? region.slug : ''),
+    } } };
+  },
+  /* p15 — House v Unit Price (module: house-v-unit-price). Reuses medianPrice
+     + unit-as-%-of-house line and its long-term average. */
+  p15: function (raw, regionName) {
+    const m = OR_CHART_RECIPES.p3(raw, regionName);
+    if (!m) return null;
+    const D = m.data.medianPrice;
+    const pct = D.house.map((h, i) => h ? Math.round((D.unit[i] / h) * 1000) / 10 : null);
+    const valid = pct.filter(v => v != null);
+    const lta = valid.length ? Math.round((valid.reduce((a2, b) => a2 + b, 0) / valid.length) * 10) / 10 : null;
+    return { module: 'house-v-unit-price', data: { housePriceComparison: { years: D.years, house: D.house, unit: D.unit, pct, longTermAvg: lta } } };
+  },
+  /* p16 — Affordability Index House (module: affordability-house). AI bar +
+     house price-movement line; both ×100. */
+  p16: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.aiHouseStateIncome, raw.houseYoY], { mode: 'strict' });
+    if (!a.keys.length) return null;
+    const pct = v => Math.round(v * 1e4) / 100;
+    return { module: 'affordability-house', data: { affordabilityHouse: { years: a.keys, ai: a.cols[0].map(pct), priceMovement: a.cols[1].map(pct) } } };
+  },
+  /* p17 — Affordability Index Unit (module: affordability-unit). */
+  p17: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.aiUnitStateIncome, raw.unitYoY], { mode: 'strict' });
+    if (!a.keys.length) return null;
+    const pct = v => Math.round(v * 1e4) / 100;
+    return { module: 'affordability-unit', data: { affordabilityUnit: { years: a.keys, ai: a.cols[0].map(pct), priceMovement: a.cols[1].map(pct) } } };
+  },
+  /* p18 — Lending vs Price (module: lending-vs-price). Monthly investor /
+     owner-occupier lending (normalised to $m) + monthly median prices. */
+  p18: function (raw) {
+    const a = _orAlignCols(raw.monthlyDate, [raw.investor, raw.ownerOccupier, raw.medianHouseMonthly, raw.medianUnitMonthly], { mode: 'loose', keyParse: _orMonthKey });
+    if (!a.keys.length) return null;
+    const lend = a.cols[0].concat(a.cols[1]).filter(v => v != null).map(Math.abs);
+    if (!lend.length) return null;
+    const maxL = Math.max.apply(null, lend);
+    const sc = maxL > 1e7 ? 1e-6 : (maxL > 100 ? 1 : 1000);
+    const scl = j => a.cols[j].map(v => v == null ? null : v * sc);
+    const intc = j => a.cols[j].map(v => v == null ? null : Math.round(v));
+    return { module: 'lending-vs-price', data: { lendingVsPrice: {
+      months: a.keys, investor: scl(0), ownerOcc: scl(1), medianHouse: intc(2), medianUnit: intc(3),
+    } } };
+  },
+  /* p19 — Dwelling Sales (module: dwelling-sales). House/unit sales lines +
+     median price lines. */
+  p19: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.salesHouse, raw.salesUnits, raw.medianHousePrice, raw.medianUnitPrice], { mode: 'strict' });
+    if (!a.keys.length) return null;
+    const r = j => a.cols[j].map(v => Math.round(v));
+    return { module: 'dwelling-sales', data: { dwellingSales: { years: a.keys, house: r(0), units: r(1), medianHouse: r(2), medianUnit: r(3) } } };
+  },
+  /* p20 — Dwelling Approvals (module: dwelling-approvals). House/unit/total
+     approval bars + population-change line. */
+  p20: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.buildingApprovalsHouse, raw.buildingApprovalsUnits, raw.buildingApprovalsTotal, _orCol(raw, 'changeMetro', 'changeLga')], { mode: 'loose' });
+    let s = -1;
+    for (let i = 0; i < a.keys.length; i++) { if (a.cols[0][i] != null || a.cols[1][i] != null || a.cols[2][i] != null) { s = i; break; } }
+    if (s < 0) return null;
+    const intc = j => a.cols[j].slice(s).map(v => v == null ? null : Math.round(v));
+    return { module: 'dwelling-approvals', data: { dwellingApprovals: {
+      years: a.keys.slice(s), house: intc(0), units: intc(1), total: intc(2),
+      popChange: a.cols[3].slice(s).map(v => v == null ? null : Math.round(v * 1e4) / 100),
+    } } };
+  },
+  /* p21 — New Households v Housing (module: new-households-v-housing). New
+     households + building-approval bars + vacancy line; year≥2010. */
+  p21: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.household, raw.buildingApprovalsTotal, raw.vacancyRate], { mode: 'loose' });
+    const i0 = a.keys.findIndex(y => y >= 2010); if (i0 < 0) return null;
+    const intc = j => a.cols[j].slice(i0).map(v => v == null ? null : Math.round(v));
+    return { module: 'new-households-v-housing', data: { newHouseholdsVHousing: {
+      years: a.keys.slice(i0), newHouseholds: intc(0), buildingApprovals: intc(1),
+      vacancy: a.cols[2].slice(i0).map(v => v == null ? null : Math.round(v * 1e4) / 100),
+    } } };
+  },
+  /* p22 — FHB % Population (module: fhb-percentage). Annualised FHB bar +
+     FHB-as-%-of-population line. */
+  p22: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.annualisedFhb, raw.fhbPctPopulation], { mode: 'strict' });
+    if (!a.keys.length) return null;
+    return { module: 'fhb-percentage', data: { fhbPopulation: { years: a.keys, annualised: a.cols[0].map(v => Math.round(v)), pct: a.cols[1].map(v => Math.round(v * 1e4) / 100) } } };
+  },
+  /* p23 — Income to Rent AI (module: income-to-rent-ai). Rent-to-income +
+     affordability-index lines for house & unit; all ×100. */
+  p23: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.rentToIncomeHouse, raw.rentToIncomeUnit, raw.aiHouseStateIncome, raw.aiUnitStateIncome], { mode: 'strict' });
+    if (!a.keys.length) return null;
+    const pct = v => Math.round(v * 1e4) / 100;
+    return { module: 'income-to-rent-ai', data: { incomeToRentAi: { years: a.keys, house: a.cols[0].map(pct), unit: a.cols[1].map(pct), aiHouse: a.cols[2].map(pct), aiUnit: a.cols[3].map(pct) } } };
+  },
+  /* p24 — Retail Turnover (module: retail-turnover). Turnover line + median
+     house price line + recession markers; year≥1990. */
+  p24: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.retailTurnover, raw.medianHousePrice], { mode: 'loose' });
+    const i0 = a.keys.findIndex(y => y >= 1990); if (i0 < 0) return null;
+    const intc = j => a.cols[j].slice(i0).map(v => v == null ? null : Math.round(v));
+    return { module: 'retail-turnover', data: { retailTurnover: { years: a.keys.slice(i0), turnover: intc(0), housePrice: intc(1) }, crises: OR_CRISES } };
+  },
+  /* p25 — Unemployment (module: unemployment). Region + state unemployment
+     lines + house YoY (right axis); start where YoY begins; all ×100. */
+  p25: function (raw, regionName, region) {
+    const a = _orAlignCols(raw.year, [_orCol(raw, 'unemploymentMetro', 'unemploymentLga'), raw.unemploymentState, raw.houseYoY], { mode: 'loose' });
+    let s = -1;
+    for (let i = 0; i < a.keys.length; i++) { if (a.cols[2][i] != null) { s = i; break; } }
+    if (s < 0) return null;
+    const pct = v => v == null ? null : Math.round(v * 1e4) / 100;
+    return { module: 'unemployment', data: { unemploymentRate: {
+      years: a.keys.slice(s), sydney: a.cols[0].slice(s).map(pct), nsw: a.cols[1].slice(s).map(pct), houseYoy: a.cols[2].slice(s).map(pct),
+      regionLabel: regionName || 'Region', stateLabel: _orStateOf(region ? region.slug : ''),
+    } } };
+  },
+  /* p26 — Business Investment (module: business-investment). Investment line +
+     median house price line + recession markers. */
+  p26: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.businessInvestment, raw.medianHousePrice], { mode: 'strict' });
+    if (!a.keys.length) return null;
+    return { module: 'business-investment', data: { businessInvestment: { years: a.keys, investment: a.cols[0].map(v => Math.round(v)), housePrice: a.cols[1].map(v => Math.round(v)) }, crises: OR_CRISES } };
+  },
+  /* p27 — Current Investment Value (module: current-investment-value). Gross
+     yield by capital city (categorical bars). Needs the cross-city columns
+     (usually only on capital-city feeds) — returns null otherwise. */
+  p27: function (raw) {
+    const cities = raw.currentInvestmentValue || [], yh = raw.capCityYieldHouse || [], yu = raw.capCityYieldUnit || [];
+    const C = [], H = [], U = [], n = Math.min(cities.length, yh.length, yu.length);
+    for (let i = 0; i < n; i++) {
+      if (cities[i] === '' || cities[i] == null) continue;
+      if ((yh[i] === '' || yh[i] == null) && (yu[i] === '' || yu[i] == null)) continue;
+      C.push(String(cities[i])); H.push(yh[i]); U.push(yu[i]);
+    }
+    if (!C.length) return null;
+    const allv = H.concat(U).filter(v => v !== '' && v != null && !isNaN(Number(v))).map(Number);
+    if (!allv.length) return null;
+    const scale = Math.max.apply(null, allv.map(Math.abs)) < 1 ? 100 : 1;
+    const conv = v => (v === '' || v == null || isNaN(Number(v))) ? null : Math.round(Number(v) * scale * 100) / 100;
+    return { module: 'current-investment-value', data: { currentInvestmentValue: { cities: C, houseYield: H.map(conv), unitYield: U.map(conv) } } };
+  },
+  /* p28 — Yield vs Cash Rate, House (module: yield-vs-cash-house). Gross yield
+     + cash + variable rates + median house price; clipped to first positive
+     median-unit year; recession markers. */
+  p28: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.grossYieldHouse, raw.cashRate, raw.bankRate, raw.medianHousePrice, raw.medianRentHouse, raw.medianUnitPrice], { mode: 'loose' });
+    let s = -1;
+    for (let i = 0; i < a.keys.length; i++) { const u = a.cols[5][i]; if (u != null && u > 0) { s = i; break; } }
+    if (s < 0) return null;
+    const sl = j => a.cols[j].slice(s);
+    const gy = sl(0), cr = sl(1), br = sl(2), mh = sl(3), rh = sl(4);
+    const pct = v => v == null ? null : Math.round(v * 1e4) / 100;
+    const yieldRate = gy.map((g, i) => g != null ? Math.round(g * 1e4) / 100 : ((rh[i] != null && mh[i]) ? Math.round((rh[i] * 52 / mh[i]) * 1e4) / 100 : null));
+    return { module: 'yield-vs-cash-house', data: { yieldVsCashHouse: { years: a.keys.slice(s), yieldRate, cashRate: cr.map(pct), variableRate: br.map(pct), housePrice: mh.map(v => v == null ? null : Math.round(v)) }, crises: OR_CRISES } };
+  },
+  /* p29 — Yield vs Cash Rate, Unit (module: yield-vs-cash-unit). */
+  p29: function (raw) {
+    const a = _orAlignCols(raw.year, [raw.grossYieldUnit, raw.cashRate, raw.bankRate, raw.medianUnitPrice], { mode: 'loose' });
+    let s = -1;
+    for (let i = 0; i < a.keys.length; i++) { const u = a.cols[3][i]; if (u != null && u > 0) { s = i; break; } }
+    if (s < 0) return null;
+    const sl = j => a.cols[j].slice(s); const pct = v => v == null ? null : Math.round(v * 1e4) / 100;
+    return { module: 'yield-vs-cash-unit', data: { yieldVsCashUnit: { years: a.keys.slice(s), yieldRate: sl(0).map(pct), cashRate: sl(1).map(pct), variableRate: sl(2).map(pct), unitPrice: sl(3).map(v => v == null ? null : Math.round(v)) }, crises: OR_CRISES } };
+  },
+  /* p30 — Region vs Peer median house price (module: sydney-vs-melbourne).
+     Region + peer bars + ratio line; needs the peer column (capCityComparison)
+     baked into the feed row; year≥1990. */
+  p30: function (raw, regionName, region) {
+    const a = _orAlignCols(raw.year, [raw.medianHousePrice, raw.capCityComparison], { mode: 'loose' });
+    const i0 = a.keys.findIndex(y => y >= 1990); if (i0 < 0) return null;
+    const sh = a.cols[0].slice(i0).map(v => v == null ? null : Math.round(v));
+    const mh = a.cols[1].slice(i0).map(v => v == null ? null : Math.round(v));
+    if (mh.every(v => v == null)) return null;
+    const diff = sh.map((sv, i) => (sv != null && mh[i]) ? Math.round((sv / mh[i]) * 1000) / 10 : null);
+    const valid = diff.filter(v => v != null);
+    const lta = valid.length ? Math.round((valid.reduce((a2, b) => a2 + b, 0) / valid.length) * 10) / 10 : null;
+    return { module: 'sydney-vs-melbourne', data: { sydneyVsMelbourne: { years: a.keys.slice(i0), sydneyHouse: sh, melbourneHouse: mh, difference: diff, longTermAvg: lta, regionLabel: regionName || 'Region', peerLabel: _orPeerName(region ? region.slug : '') } } };
+  },
+  /* p32 — Iron Ore Price (module: iron-ore-price, Perth-only). Median house
+     price + iron-ore price (right axis); recession markers. */
+  p32: function (raw) {
+    if (!_orCol(raw, 'ironOre').length) return null;
+    const a = _orAlignCols(raw.year, [raw.medianHousePrice, raw.ironOre], { mode: 'loose' });
+    if (!a.keys.length) return null;
+    return { module: 'iron-ore-price', data: { ironOrePrice: { years: a.keys, medianHouse: a.cols[0].map(v => v == null ? null : Math.round(v)), ironOre: a.cols[1].map(v => v == null ? null : Math.round(v)) }, crises: OR_CRISES } };
+  },
+  /* p33 — Mineral Exploration Expenditure (module: mineral-exploration-
+     expenditure, Perth-only). Quarterly single line ($m). */
+  p33: function (raw) {
+    if (!_orCol(raw, 'mineralExploration').length) return null;
+    const q = raw.meQuarter || [], v = raw.mineralExploration || [];
+    const quarters = [], values = [], n = Math.min(q.length, v.length);
+    for (let i = 0; i < n; i++) {
+      const qk = _orQuarterKey(q[i]);
+      if (qk == null) continue;
+      if (v[i] === '' || v[i] == null || isNaN(Number(v[i]))) continue;
+      quarters.push(qk); values.push(Math.round(Number(v[i]) * 10) / 10);
+    }
+    if (!quarters.length) return null;
+    return { module: 'mineral-exploration-expenditure', data: { mineralExploration: { quarters, values } } };
+  },
 };
+/* National research-report chart recipes → { module:'national-pN', data }.
+   `data` is the FLAT national snapshot columns (snap.data); the national chart
+   modules (assets/Reports/charts/national-charts.js) read the fields directly.
+   Guard on the primary column(s) so an empty page shows a friendly toast
+   rather than a blank chart. (More national pages added over time.) */
+const NR_CHART_RECIPES = {
+  p2: d => (d && d.year && d.capCityMedianPrice) ? { module: 'national-p2', data: d } : null,
+  p3: d => (d && d.year && (d.nswMedianHousePrice || d.vicMedianHousePrice || d.qldMedianHousePrice || d.waMedianHousePrice || d.saMedianHousePrice)) ? { module: 'national-p3', data: d } : null,
+  p4: d => (d && d.year && (d.ntMedianHousePrice || d.actMedianHousePrice || d.tasMedianHousePrice || d.sunshineCoastMedianHousePrice || d.goldCoastMedianHousePrice)) ? { module: 'national-p4', data: d } : null,
+};
+/* Commercial research-report chart recipes (read snap.tabs[slug][col]) — to
+   come in the commercial batch. */
+const CR_CHART_RECIPES = {};
 /* Forgiving region lookup (tabs may arrive with trailing punctuation). */
 function _orRegionLookup(regions, slug) {
   if (!regions) return null;
@@ -5776,30 +6147,43 @@ async function ovAddReportChart(slug, pageId) {
   if (!_activeDeck) return;
   const region = OR_REGIONS.find(r => r.slug === slug);
   if (!region) return;
-  if (region.cluster === 'Research Reports') {
-    showPresToast('National / Commercial charts are coming soon — pick a city or regional report for now.');
-    return;
-  }
-  const isStat = pageId.indexOf('stat:') === 0;
-  const recipe = isStat ? null : OR_CHART_RECIPES[pageId];
-  if (!isStat && !recipe) { showPresToast('That page isn’t available as a chart yet — more chart types are being added.'); return; }
   if (!window.PPReportCache) { showPresToast('Chart-data module not loaded — reload the page and try again.'); return; }
-  const source = OR_CLUSTER_SOURCE[region.cluster];
-  if (!source) { showPresToast('No data source for this report yet.'); return; }
-  showPresToast('Loading chart data…');
-  let snap = null;
-  try { snap = await window.PPReportCache.readSnapshot(source); } catch (_) {}
-  if (!snap) { showPresToast('No stored data for this report yet — open the report and press “Save data” first.'); return; }
-  const raw = _orRegionLookup(snap.regions, slug);
-  if (!raw) { showPresToast('That region isn’t in the stored data yet.'); return; }
-  const spec = isStat ? _orBuildStatSpec(pageId.slice(5), raw, region.name) : recipe(raw, region.name, region);
-  if (!spec) { showPresToast('That chart has no data for this region.'); return; }
+  let spec = null;
+  if (region.cluster === 'Research Reports') {
+    /* National / Commercial research reports: the snapshot is FLAT, not
+       per-region — national = snap.data.<field>, commercial = snap.tabs[..].
+       Their charts are their own modules (national-charts.js etc.) keyed by
+       page in NR_/CR_CHART_RECIPES. */
+    const recipes = region.slug === 'national' ? NR_CHART_RECIPES : CR_CHART_RECIPES;
+    const recipe = recipes[pageId];
+    if (!recipe) { showPresToast('That page isn’t available as a chart yet — more are being added.'); return; }
+    showPresToast('Loading chart data…');
+    let snap = null;
+    try { snap = await window.PPReportCache.readSnapshot(region.slug); } catch (_) {}
+    if (!snap) { showPresToast('No stored data for this report yet — open the report and press “Save data” first.'); return; }
+    spec = recipe(region.slug === 'national' ? (snap.data || {}) : (snap.tabs || {}));
+  } else {
+    const isStat = pageId.indexOf('stat:') === 0;
+    const recipe = isStat ? null : OR_CHART_RECIPES[pageId];
+    if (!isStat && !recipe) { showPresToast('That page isn’t available as a chart yet — more chart types are being added.'); return; }
+    const source = OR_CLUSTER_SOURCE[region.cluster];
+    if (!source) { showPresToast('No data source for this report yet.'); return; }
+    showPresToast('Loading chart data…');
+    let snap = null;
+    try { snap = await window.PPReportCache.readSnapshot(source); } catch (_) {}
+    if (!snap) { showPresToast('No stored data for this report yet — open the report and press “Save data” first.'); return; }
+    const raw = _orRegionLookup(snap.regions, slug);
+    if (!raw) { showPresToast('That region isn’t in the stored data yet.'); return; }
+    spec = isStat ? _orBuildStatSpec(pageId.slice(5), raw, region.name) : recipe(raw, region.name, region);
+  }
+  if (!spec) { showPresToast('That chart has no data for this region / page.'); return; }
   /* Size by shape: big numbers squarer; the population chart is taller (long
      age-group labels down the side); everything else is a landscape report
      graph. The report charts' grids use fixed pixel margins tuned for a
      ~landscape panel, so a wide-ish base keeps the proportions report-like. */
   let w = 880, h = 520;
   if (spec.type === 'bigNumber') { w = 560; h = 360; }
+  else if (spec.box) { w = spec.box.w; h = spec.box.h; }
   else if (spec.module === 'population-pyramid') { w = 720; h = 560; }
   currentOverlays().push({
     id: 'c' + Date.now(), type: 'chart',
@@ -6077,7 +6461,8 @@ function orFillPageSelect() {
   const rsel = document.getElementById('pres-orembed-region');
   const psel = document.getElementById('pres-orembed-page');
   if (!rsel || !psel) return;
-  const r = orResolve(orEntry(rsel.value)) || orResolve(OR_REGIONS[0]);
+  const entry = orEntry(rsel.value) || OR_REGIONS[0];
+  const r = orResolve(entry) || orResolve(OR_REGIONS[0]);
   const drops = new Set(r.drops);
   const prev = psel.value;
   psel.innerHTML = '';
@@ -6105,10 +6490,22 @@ function orFillPageSelect() {
       });
       psel.appendChild(g);
     }
+  } else {
+    /* Research reports (National / Commercial): region is null, so list the
+       report's pages that have a chart-module recipe in its own recipe map. */
+    const recipes = entry.slug === 'national' ? NR_CHART_RECIPES
+                  : entry.slug === 'commercial' ? CR_CHART_RECIPES : {};
+    r.pages.forEach(([id, label]) => {
+      if (drops.has(id) || !recipes[id]) return;
+      const o = document.createElement('option');
+      o.value = id;
+      o.textContent = label + '  (' + id + ')';
+      psel.appendChild(o); added++;
+    });
   }
   if (!added) {
-    /* Research reports (and any report with no recipes yet) — nothing to
-       insert as a native chart yet. */
+    /* Reports with no recipes yet (e.g. Commercial until its batch lands) —
+       nothing to insert as a native chart yet. */
     const o = document.createElement('option');
     o.value = '';
     o.textContent = 'Charts coming soon for this report';
