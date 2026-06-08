@@ -5825,8 +5825,11 @@ const OR_CHART_RECIPES = {
       nsw:      d.series[1].values,
       national: d.series[2].values,
       regionLabel: regionName || 'Region',
-      stateLabel:  'State',
-      thirdLabel:  isRegional ? 'Peer city' : 'National',
+      stateLabel:  _orStateOf(region ? region.slug : ''),
+      /* Capitals' 3rd line is National; regionals' is their peer capital
+         (e.g. Mackay → Brisbane) — its data is injected by ovAddReportChart
+         from the peer's cluster snapshot before this recipe runs. */
+      thirdLabel:  isRegional ? _orPeerName(region ? region.slug : '') : 'National',
     } } };
   },
   /* p7 — Industry Value Added (module: industry-value, donut). Names +
@@ -6219,8 +6222,34 @@ async function ovAddReportChart(slug, pageId) {
     let snap = null;
     try { snap = await window.PPReportCache.readSnapshot(source); } catch (_) {}
     if (!snap) { showPresToast('No stored data for this report yet — open the report and press “Save data” first.'); return; }
-    const raw = _orRegionLookup(snap.regions, slug);
+    let raw = _orRegionLookup(snap.regions, slug);
     if (!raw) { showPresToast('That region isn’t in the stored data yet.'); return; }
+    /* Regional Population Change (p12) draws a 3rd line for the PEER capital
+       (e.g. Mackay → Brisbane), whose data lives in a DIFFERENT cluster
+       snapshot. Mirror mapLiveToRegion: pull the peer's metro change, align it
+       to this region's year axis, and inject it as changeNational (the column
+       p12 reads for the 3rd series). Capitals already carry changeNational. */
+    if (pageId === 'p12' && region.cluster !== 'Capital Cities'
+        && !(Array.isArray(raw.changeNational) && raw.changeNational.length)) {
+      try {
+        const peerSlug = (OR_REGION_META[slug] || {}).p;
+        const peerEntry = peerSlug && OR_REGIONS.find(r => r.slug === peerSlug);
+        const peerSource = peerEntry && OR_CLUSTER_SOURCE[peerEntry.cluster];
+        if (peerSource) {
+          const peerSnap = await window.PPReportCache.readSnapshot(peerSource);
+          const peerRaw = peerSnap && _orRegionLookup(peerSnap.regions, peerSlug);
+          if (peerRaw && Array.isArray(peerRaw.year) && Array.isArray(peerRaw.changeMetro)) {
+            const peerYears = peerRaw.year.map(y => parseInt(y, 10));
+            raw = Object.assign({}, raw, {
+              changeNational: (raw.year || []).map(y => {
+                const i = peerYears.indexOf(parseInt(y, 10));
+                return i >= 0 ? peerRaw.changeMetro[i] : null;
+              }),
+            });
+          }
+        }
+      } catch (_) { /* peer feed unavailable → the 3rd line just stays empty */ }
+    }
     spec = isStat ? _orBuildStatSpec(pageId.slice(5), raw, region.name) : recipe(raw, region.name, region);
   }
   if (!spec) { showPresToast('That chart has no data for this region / page.'); return; }
