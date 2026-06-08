@@ -220,34 +220,104 @@
     host.appendChild(plot);
     var chart = window.echarts.init(plot, null, { renderer: 'svg' });
     var cats = spec.data.x || [];
-    var values = (spec.data.values || []);
     var unit = spec.unit || 'num';
-    var maxIdx = values.reduce(function (m, v, i) { return (v != null && (values[m] == null || v > values[m])) ? i : m; }, 0);
+    /* Single bar series (spec.data.values) OR grouped (spec.data.series). */
+    var multi = Array.isArray(spec.data.series);
+    var defs = multi ? spec.data.series : [{ name: spec.title || '', values: spec.data.values || [] }];
+    var maxIdx = (!multi) ? defs[0].values.reduce(function (m, v, i) { return (v != null && (defs[0].values[m] == null || v > defs[0].values[m])) ? i : m; }, 0) : -1;
 
     var option = {
       backgroundColor: 'transparent',
       textStyle: { fontFamily: THEME.font, color: THEME.ink },
-      grid: { left: 24, right: 36, top: 44, bottom: 36, containLabel: true },
+      grid: { left: 24, right: 36, top: multi ? 50 : 44, bottom: 36, containLabel: true },
+      legend: multi ? { top: 8, left: 'center', itemGap: 24, data: defs.map(function (d) { return d.name; }), textStyle: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 }, icon: 'roundRect' } : undefined,
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: 'rgba(15,23,42,0.94)', textStyle: { color: '#fff', fontSize: 15 } },
       xAxis: { type: 'category', data: cats, axisLine: { lineStyle: { color: THEME.grid } }, axisTick: { show: false }, axisLabel: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 } },
       yAxis: { type: 'value', scale: true, axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: THEME.grid } }, axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, formatter: function (v) { return fmt(v, unit); } } },
       animationDuration: THEME.drawMs, animationEasing: THEME.easing,
-      series: [{ type: 'bar', data: [], barWidth: '52%', itemStyle: { color: THEME.palette[0], borderRadius: [8, 8, 0, 0] },
-                 label: { show: true, position: 'top', color: THEME.ink, fontSize: THEME.valueSize, fontWeight: 800, formatter: function (p) { return fmt(p.value, unit); } } }],
+      series: defs.map(function (d, i) {
+        return {
+          name: d.name, type: 'bar', data: [],
+          barWidth: multi ? undefined : '52%',
+          itemStyle: { color: THEME.palette[i % THEME.palette.length], borderRadius: [6, 6, 0, 0] },
+          /* Per-bar value labels only for single-series (grouped would crowd). */
+          label: multi ? { show: false } : { show: true, position: 'top', color: THEME.ink, fontSize: THEME.valueSize, fontWeight: 800, formatter: function (p) { return fmt(p.value, unit); } },
+        };
+      }),
     };
     chart.setOption(option);
 
-    var builds = [
-      function () { option.series[0].data = values.slice(); chart.setOption(option); },
-      function () {
-        option.series[0].data = values.map(function (v, i) {
-          return { value: v, itemStyle: { color: i === maxIdx ? THEME.palette[1] : THEME.palette[0], borderRadius: [8, 8, 0, 0] } };
-        });
-        chart.setOption(option);
-      },
-    ];
+    var builds;
+    if (multi) {
+      /* Reveal one series (grow its bars) per step. */
+      builds = defs.map(function (d, i) { return function () { option.series[i].data = d.values; chart.setOption(option); }; });
+    } else {
+      builds = [
+        function () { option.series[0].data = defs[0].values.slice(); chart.setOption(option); },
+        function () {
+          option.series[0].data = defs[0].values.map(function (v, i) {
+            return { value: v, itemStyle: { color: i === maxIdx ? THEME.palette[1] : THEME.palette[0], borderRadius: [6, 6, 0, 0] } };
+          });
+          chart.setOption(option);
+        },
+      ];
+    }
     return stepController(builds, {
-      reset: function () { option.series[0].data = []; chart.setOption(option); },
+      reset: function () { option.series.forEach(function (s) { s.data = []; }); chart.setOption(option); },
+      resize: function () { chart.resize(); },
+      dispose: function () { chart.dispose(); },
+    });
+  }
+
+  /* ═══ DUAL AXIS: bars (left) + line (right) ═══
+     spec.data = { x, bars:[{name,values}], line:{name,values} } with
+     spec.barUnit / spec.lineUnit. Build: grow each bar series, then draw
+     the line. */
+  function createDualBarLine(host, spec) {
+    if (!window.echarts) { host.textContent = 'Chart engine needs ECharts.'; return nullController(); }
+    host.style.display = 'flex';
+    host.style.flexDirection = 'column';
+    mountTitle(host, spec);
+    var plot = document.createElement('div');
+    plot.style.cssText = 'flex:1 1 auto;min-height:0;width:100%;';
+    host.appendChild(plot);
+    var chart = window.echarts.init(plot, null, { renderer: 'svg' });
+    var cats = (spec.data && spec.data.x) || [];
+    var bars = (spec.data && spec.data.bars) || [];
+    var lineDef = (spec.data && spec.data.line) || null;
+    var barUnit = spec.barUnit || 'num';
+    var lineUnit = spec.lineUnit || 'num';
+    var lineColor = THEME.palette[bars.length % THEME.palette.length];
+
+    var option = {
+      backgroundColor: 'transparent',
+      textStyle: { fontFamily: THEME.font, color: THEME.ink },
+      grid: { left: 60, right: 60, top: 50, bottom: 36, containLabel: true },
+      legend: { top: 8, left: 'center', itemGap: 22,
+        data: bars.map(function (b) { return b.name; }).concat(lineDef ? [lineDef.name] : []),
+        textStyle: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 }, icon: 'roundRect' },
+      tooltip: { trigger: 'axis', backgroundColor: 'rgba(15,23,42,0.94)', borderColor: 'rgba(255,255,255,0.12)', textStyle: { color: '#fff', fontSize: 15 } },
+      xAxis: { type: 'category', data: cats, axisLine: { lineStyle: { color: THEME.grid } }, axisTick: { show: false }, axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, hideOverlap: true } },
+      yAxis: [
+        { type: 'value', scale: true, axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: THEME.grid } }, axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, formatter: function (v) { return fmt(v, barUnit); } } },
+        { type: 'value', scale: true, axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false }, axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, formatter: function (v) { return fmt(v, lineUnit); } } },
+      ],
+      animationDuration: THEME.drawMs, animationEasing: THEME.easing,
+      series: bars.map(function (b, i) {
+        return { name: b.name, type: 'bar', yAxisIndex: 0, data: [], itemStyle: { color: THEME.palette[i % THEME.palette.length], borderRadius: [4, 4, 0, 0] } };
+      }).concat(lineDef ? [{
+        name: lineDef.name, type: 'line', yAxisIndex: 1, smooth: 0.18, showSymbol: false,
+        data: [], lineStyle: { width: THEME.lineWidth, color: lineColor }, itemStyle: { color: lineColor },
+      }] : []),
+    };
+    chart.setOption(option);
+
+    var builds = [];
+    bars.forEach(function (b, i) { builds.push(function () { option.series[i].data = b.values; chart.setOption(option); }); });
+    if (lineDef) builds.push(function () { option.series[bars.length].data = lineDef.values; chart.setOption(option); });
+
+    return stepController(builds, {
+      reset: function () { option.series.forEach(function (s) { s.data = []; }); chart.setOption(option); },
       resize: function () { chart.resize(); },
       dispose: function () { chart.dispose(); },
     });
@@ -352,6 +422,7 @@
       case 'line':
       case 'multiLine': return createLine(container, spec);
       case 'bars':      return createBars(container, spec);
+      case 'dualBarLine': return createDualBarLine(container, spec);
       case 'bigNumber': return createBigNumber(container, spec);
       default:
         container.textContent = 'Unsupported chart type: ' + spec.type;

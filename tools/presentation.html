@@ -5563,6 +5563,86 @@ const OR_CHART_RECIPES = {
       ] },
     };
   },
+  /* p5 — Stock vs Days on Market: house/unit listings as bars (left axis)
+     + days-on-market as a line (right axis). Keep only years where all
+     three are present (mirrors mapLiveToRegion). */
+  p5: function (raw, regionName) {
+    const yArr = raw.year || [], somH = raw.somHouse || [], somU = raw.somUnit || [], adomH = raw.adomHouse || [];
+    const x = [], house = [], unit = [], dom = [];
+    const len = Math.min(yArr.length, somH.length, somU.length, adomH.length);
+    for (let i = 0; i < len; i++) {
+      if (somH[i] === '' || somH[i] == null) continue;
+      if (somU[i] === '' || somU[i] == null) continue;
+      if (adomH[i] === '' || adomH[i] == null) continue;
+      x.push(String(parseInt(yArr[i], 10)));
+      house.push(Math.round(Number(somH[i])));
+      unit.push(Math.round(Number(somU[i])));
+      dom.push(Math.round(Number(adomH[i])));
+    }
+    if (!x.length) return null;
+    return {
+      type: 'dualBarLine',
+      title: (regionName ? regionName + ' — ' : '') + 'Stock vs days on market',
+      subtitle: 'Listings (bars) · days on market (line)',
+      barUnit: 'num', lineUnit: 'num',
+      data: { x, bars: [ { name: 'Houses', values: house }, { name: 'Units', values: unit } ], line: { name: 'Days on market', values: dom } },
+    };
+  },
+  /* p6 — Long-Term Trends: compound annual growth by horizon (LT/10/7/5/3
+     yr), house vs unit grouped bars. Mirrors mapLiveToRegion: prefer the
+     sheet's labelled LT-trends block, then the yearly cagr* columns, then
+     CAGR computed from the median series. Decimals auto-scaled to percent. */
+  p6: function (raw, regionName) {
+    const H = _orAlign(raw.year, raw.medianHousePrice);
+    const U = _orAlign(raw.year, raw.medianUnitPrice);
+    if (!H.years.length || !U.years.length) return null;
+    const start = Math.max(H.years[0], U.years[0]);
+    const end   = Math.min(H.years[H.years.length - 1], U.years[U.years.length - 1]);
+    const mh = [], mu = [];
+    for (let y = start; y <= end; y++) {
+      const hi = H.years.indexOf(y), ui = U.years.indexOf(y);
+      if (hi < 0 || ui < 0) continue;
+      mh.push(H.values[hi]); mu.push(U.values[ui]);
+    }
+    if (mh.length < 2) return null;
+    const cagr = (vals, n) => {
+      if (!Array.isArray(vals) || vals.length < n + 1) return null;
+      const e = Number(vals[vals.length - 1]), s = Number(vals[vals.length - 1 - n]);
+      if (!s || !e || isNaN(s) || isNaN(e)) return null;
+      return (Math.pow(e / s, 1 / n) - 1) * 100;
+    };
+    const fromPct = v => { if (v == null || v === '' || isNaN(Number(v))) return null; const n = Number(v); return Math.abs(n) < 1 ? n * 100 : n; };
+    const trendKey = s => { const t = String(s || '').toUpperCase().trim(); if (!t) return null; if (t === 'LT' || t.indexOf('LONG') >= 0) return 'LT'; const m = t.match(/(\d+)/); return m ? m[1] + 'y' : null; };
+    const labels = raw.ltTrends || [], ltH = raw.ltCagrHouse || [], ltU = raw.ltCagrUnit || [];
+    const hMap = {}, uMap = {};
+    for (let i = 0; i < labels.length; i++) {
+      const k = trendKey(labels[i]); if (!k) continue;
+      const h = fromPct(ltH[i]), u = fromPct(ltU[i]);
+      if (h != null) hMap[k] = h;
+      if (u != null) uMap[k] = u;
+    }
+    const house = [
+      hMap.LT     ?? cagr(mh, mh.length - 1),
+      hMap['10y'] ?? fromPct(_orLatest(raw.cagrHouse10yr)) ?? cagr(mh, 10),
+      hMap['7y']  ?? cagr(mh, 7),
+      hMap['5y']  ?? cagr(mh, 5),
+      hMap['3y']  ?? fromPct(_orLatest(raw.cagrHouse3yr))  ?? cagr(mh, 3),
+    ];
+    const unit = [
+      uMap.LT     ?? cagr(mu, mu.length - 1),
+      uMap['10y'] ?? fromPct(_orLatest(raw.cagrUnit10yr))  ?? cagr(mu, 10),
+      uMap['7y']  ?? cagr(mu, 7),
+      uMap['5y']  ?? cagr(mu, 5),
+      uMap['3y']  ?? fromPct(_orLatest(raw.cagrUnit3yr))   ?? cagr(mu, 3),
+    ];
+    if (house.every(v => v == null) && unit.every(v => v == null)) return null;
+    return {
+      type: 'bars', unit: 'pct',
+      title: (regionName ? regionName + ' — ' : '') + 'Long-term growth',
+      subtitle: 'Compound annual growth · house vs unit',
+      data: { x: ['Long-term', '10yr', '7yr', '5yr', '3yr'], series: [ { name: 'House', values: house }, { name: 'Unit', values: unit } ] },
+    };
+  },
   /* p9 — Price to Income: house vs unit ratio lines (consistent column
      names across capital + regional feeds, so no alias handling needed). */
   p9: function (raw, regionName) {
