@@ -1,0 +1,59 @@
+# =============================================================================
+# Monthly report-data snapshot refresh.
+#
+# Refreshes the report_data_cache table (migration 040) so the online reports,
+# the research reports, and the presentation embeds load fast from the stored
+# snapshot instead of cold-starting the Google Apps Script feeds. This is the
+# unattended twin of the dev/admin "Save data" button in the reports.
+#
+# Triggers:
+#   • Cron — 13th of every month at 03:30 UTC. Lands AFTER the CoreLogic
+#            10th-of-month data refresh finishes (~11th-12th) and one day
+#            after the PDF render (12th), so the snapshot carries the new
+#            month's data.
+#   • Manual — workflow_dispatch, for a mid-month data correction (same as
+#            clicking "Save data" in a report).
+#
+# Required GitHub Secrets (already present for the PDF renderer):
+#   SUPABASE_URL                https://<project-ref>.supabase.co
+#   SUPABASE_SERVICE_ROLE_KEY   server-side write to report_data_cache
+# =============================================================================
+
+name: Refresh Report Data Cache
+
+on:
+  schedule:
+    - cron: '30 3 13 * *'   # 03:30 UTC on the 13th of every month
+  workflow_dispatch:         # manual trigger from the Actions tab
+
+permissions:
+  contents: read
+
+concurrency:
+  group: refresh-report-cache
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh snapshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 15      # six feeds, sequential, generous headroom for cold starts
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Node 22+ — supabase-js v2 wants a native WebSocket at createClient().
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Refresh report snapshots
+        env:
+          SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: npm run refresh-report-cache

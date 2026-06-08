@@ -5166,11 +5166,16 @@ const PP_FORCE_FRESH = (function () {
   catch (_) { return false; }
 })();
 
+/* Records where each cluster's data came from on the last fetch
+   (cache/snapshot/live) so liveBoot can log it — used to measure the
+   cache win. */
+const _liveDataSrc = {};
+
 async function liveDataFetch(cluster) {
   const url = REPORTS_DATA_URLS[cluster];
   /* 1) localStorage — instant, per-browser (15-min TTL). */
   const cached = liveDataReadCache(cluster);
-  if (cached) return cached;
+  if (cached) { _liveDataSrc[cluster] = 'cache'; return cached; }
   /* 2) Supabase snapshot — shared + fast; the monthly stored copy.
         SKIPPED only with ?fresh=1 (the monthly PDF renderer), which runs
         before the snapshot refresh and must capture the freshest Google
@@ -5178,7 +5183,7 @@ async function liveDataFetch(cluster) {
         this snapshot, so it loads fast. */
   if (!PP_FORCE_FRESH && window.PPReportCache) {
     const stored = await window.PPReportCache.readSnapshot(cluster);
-    if (stored) { liveDataWriteCache(cluster, stored); return stored; }
+    if (stored) { _liveDataSrc[cluster] = 'snapshot'; liveDataWriteCache(cluster, stored); return stored; }
   }
   /* 3) Live Apps Script feed — slow cold-start; reached when nothing is
         stored yet (before the first "Save data") or with ?fresh=1. */
@@ -5187,6 +5192,7 @@ async function liveDataFetch(cluster) {
     const res = await fetch(url);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();
+    _liveDataSrc[cluster] = 'live';
     liveDataWriteCache(cluster, json);
     return json;
   } catch (e) {
@@ -6727,7 +6733,12 @@ async function liveBoot() {
      this is a no-op for already-warm or unwired clusters. */
   liveBootPrefetchOtherClusters(m.cluster, peerCluster);
 
-  console.info('[reports] live data applied for', slug, '— mapped:', Object.keys(mapped));
+  /* Load-speed readout (for measuring the cache win): time from page start
+     to data applied, + whether the active cluster came from the fast
+     snapshot or the slow live feed. */
+  console.info('[reports] live data applied for', slug,
+    'in', (Date.now() - LIVE_OVERLAY_T0) + 'ms', '(' + (_liveDataSrc[m.cluster] || '?') + ')',
+    '— mapped:', Object.keys(mapped));
   } finally {
     /* Route every exit (success, error, or any early return inside
        the try) through the same scheduler so the overlay always
