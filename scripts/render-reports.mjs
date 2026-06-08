@@ -89,15 +89,20 @@ function isResearchReportSlug(slug) {
 }
 function reportUrlForSlug(slug, lite) {
   const liteSuffix = lite ? '&lite=1' : '';
+  /* fresh=1: the monthly PDF must capture the LATEST Google data. It runs
+     on the 12th, before the ~13th-14th Supabase snapshot refresh, so it
+     bypasses the snapshot cache and reads the live feed directly. (Live
+     viewers + the presentation embed read the fast snapshot instead.) */
+  const freshSuffix = '&fresh=1';
   if (isResearchReportSlug(slug)) {
     /* Research reports live in their own tool files. They don't
        take a region param — the tool file IS the report. */
     return APP_URL.replace(/\/$/, '') +
-      '/tools/' + slug + '-report.html?exportMode=1' + liteSuffix;
+      '/tools/' + slug + '-report.html?exportMode=1' + liteSuffix + freshSuffix;
   }
   return APP_URL.replace(/\/$/, '') +
     '/tools/online-reports.html?region=' + encodeURIComponent(slug) +
-    '&exportMode=1' + liteSuffix;
+    '&exportMode=1' + liteSuffix + freshSuffix;
 }
 
 const MONTH_KEY = (() => {
