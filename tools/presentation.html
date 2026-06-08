@@ -11,10 +11,12 @@
 <link rel="stylesheet" href="../shared/color-picker.css">
 <script src="../shared/theme.js"></script>
 <script src="../shared/color-picker.js" defer></script>
-<!-- Native slide charts (Phase 3): ECharts + the billboard chart engine.
-     Deferred so they don't block first paint; ready before charts render. -->
+<!-- Native slide charts (Phase 3): ECharts + the billboard chart engine +
+     the report-data snapshot cache (window.PPReportCache) that feeds charts
+     from the stored data. Deferred so they don't block first paint. -->
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" defer></script>
 <script src="../shared/present-charts.js" defer></script>
+<script src="../shared/report-cache.js" defer></script>
 
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&family=Montserrat:wght@400;600;700;800&family=Raleway:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
@@ -2730,16 +2732,9 @@
     <span style="font-size:18px">📈</span>
     <span style="font-size:11px;font-weight:600">Runway · Units</span>
   </button>
-  <button class="pres-shape-pick" data-embed="online-report" type="button" title="A single page from any Online Report" style="width:100%;flex-direction:row;justify-content:flex-start;gap:8px;padding:8px 12px">
-    <span style="font-size:18px">📑</span>
-    <span style="font-size:11px;font-weight:600">Online Report…</span>
-  </button>
-  <!-- Phase-3 PREVIEW: drops a sample native animated chart so the chart
-       overlay + Present-mode build can be tested. Replaced by the real
-       report+page → cached-data picker once that's wired. -->
-  <button class="pres-shape-pick" data-embed="chart-sample" type="button" title="Insert a sample animated chart (preview)" style="width:100%;flex-direction:row;justify-content:flex-start;gap:8px;padding:8px 12px">
+  <button class="pres-shape-pick" data-embed="online-report" type="button" title="Add a chart from any Online Report page" style="width:100%;flex-direction:row;justify-content:flex-start;gap:8px;padding:8px 12px">
     <span style="font-size:18px">📊</span>
-    <span style="font-size:11px;font-weight:600">Sample chart</span>
+    <span style="font-size:11px;font-weight:600">Report chart…</span>
   </button>
 </div>
 
@@ -2749,7 +2744,7 @@
 <div class="pres-copy-backdrop" id="pres-orembed-backdrop"></div>
 <div class="pres-copy-modal" id="pres-orembed-modal" style="width:420px">
   <div class="pres-copy-head">
-    <h3>Embed an Online Report page</h3>
+    <h3>Add a report chart</h3>
     <button class="pres-copy-x" id="pres-orembed-x" type="button" title="Close">×</button>
   </div>
   <div style="padding:14px 16px; display:flex; flex-direction:column; gap:12px">
@@ -2762,8 +2757,9 @@
       <select id="pres-orembed-page" class="pres-orembed-select"></select>
     </label>
     <p style="margin:0; font-size:11px; opacity:0.6; line-height:1.45">
-      Inserts a live, read-only snapshot of that report page. Charts stay
-      interactive — hover for tooltips. Drag, resize, or crop it like any embed.
+      Inserts that page’s graph as a native, animated chart from the stored
+      data — fast, drag/resize like an image, and it builds step-by-step in
+      Present mode. (More chart types are being added.)
     </p>
   </div>
   <div class="pres-copy-foot">
@@ -5459,29 +5455,93 @@ function ovAddShape(kind) {
   renderOverlays();
   pushHistory();
 }
-/* PREVIEW (Phase 3): insert a sample native animated chart so the chart
-   overlay + Present-mode click-to-build can be tested end-to-end. The real
-   path (report + page picker → cached snapshot → spec) replaces this. */
-function ovAddChartSample() {
+/* ─── Native report charts (Phase 3, increment 2b) ───
+   Insert the GRAPH from a report page as a native billboard chart, drawn by
+   the engine from the cached snapshot (window.PPReportCache) — no iframe.
+   The region+page chooser feeds this. Each supported page has a recipe that
+   pulls the right columns from the raw feed and builds a PresentChart spec.
+   Pages without a recipe yet aren't insertable as charts (more are added
+   over time). */
+const OR_CLUSTER_SOURCE = {
+  'Capital Cities': 'capital',
+  'QLD Regions': 'qld',
+  'NSW Regions': 'nsw',
+  'VIC / WA / TAS Regions': 'vicwatas',
+};
+/* Strict align: keep only rows where BOTH the year and value are usable. */
+function _orAlign(yearCol, valueCol) {
+  const years = [], values = [];
+  const yc = yearCol || [], vc = valueCol || [];
+  for (let i = 0; i < yc.length; i++) {
+    const y = parseInt(yc[i], 10);
+    const v = vc[i];
+    if (!Number.isFinite(y)) continue;
+    if (v === '' || v == null || (typeof v === 'number' && isNaN(v))) continue;
+    years.push(y); values.push(Number(v));
+  }
+  return { years, values };
+}
+/* Per-page recipes: raw region feed → PresentChart spec (or null).
+   Mirrors online-reports.html's mapLiveToRegion column choices. */
+const OR_CHART_RECIPES = {
+  /* p3 — Median Price: house vs unit lines (full $ values, intersected
+     years so both series stay index-aligned). */
+  p3: function (raw, regionName) {
+    const H = _orAlign(raw.year, raw.medianHousePrice);
+    const U = _orAlign(raw.year, raw.medianUnitPrice);
+    if (!H.years.length || !U.years.length) return null;
+    const start = Math.max(H.years[0], U.years[0]);
+    const end   = Math.min(H.years[H.years.length - 1], U.years[U.years.length - 1]);
+    const x = [], house = [], unit = [];
+    for (let y = start; y <= end; y++) {
+      const hi = H.years.indexOf(y), ui = U.years.indexOf(y);
+      if (hi < 0 || ui < 0) continue;
+      x.push(String(y)); house.push(H.values[hi]); unit.push(U.values[ui]);
+    }
+    if (!x.length) return null;
+    return {
+      type: 'multiLine', unit: 'aud',
+      title: (regionName ? regionName + ' — ' : '') + 'Median price',
+      subtitle: 'House vs unit',
+      data: { x, series: [ { name: 'House', values: house }, { name: 'Unit', values: unit } ] },
+    };
+  },
+};
+/* Forgiving region lookup (tabs may arrive with trailing punctuation). */
+function _orRegionLookup(regions, slug) {
+  if (!regions) return null;
+  if (regions[slug]) return regions[slug];
+  for (const k of Object.keys(regions)) {
+    if (String(k).toLowerCase().trim().replace(/[^a-z0-9-]+$/g, '') === slug) return regions[k];
+  }
+  return null;
+}
+async function ovAddReportChart(slug, pageId) {
   if (!_activeDeck) return;
-  const years = []; for (let y = 2008; y <= 2025; y++) years.push(String(y));
-  const spec = {
-    type: 'multiLine', unit: 'aud',
-    title: 'Sydney median price', subtitle: 'House vs unit · 2008–2025',
-    data: { x: years, series: [
-      { name: 'House', values: [520,505,540,560,575,600,665,760,880,910,905,940,1050,1180,1120,1190,1240,1320].map(v => v * 1000) },
-      { name: 'Unit',  values: [430,425,445,460,470,485,520,575,640,660,655,675,720,775,745,780,805,840].map(v => v * 1000) },
-    ] },
-  };
+  const region = OR_REGIONS.find(r => r.slug === slug);
+  if (!region) return;
+  if (region.cluster === 'Research Reports') {
+    showPresToast('National / Commercial charts are coming soon — pick a city or regional report for now.');
+    return;
+  }
+  const recipe = OR_CHART_RECIPES[pageId];
+  if (!recipe) { showPresToast('That page isn’t available as a chart yet — more chart types are being added.'); return; }
+  if (!window.PPReportCache) { showPresToast('Chart-data module not loaded — reload the page and try again.'); return; }
+  const source = OR_CLUSTER_SOURCE[region.cluster];
+  if (!source) { showPresToast('No data source for this report yet.'); return; }
+  showPresToast('Loading chart data…');
+  let snap = null;
+  try { snap = await window.PPReportCache.readSnapshot(source); } catch (_) {}
+  if (!snap) { showPresToast('No stored data for this report yet — open the report and press “Save data” first.'); return; }
+  const raw = _orRegionLookup(snap.regions, slug);
+  if (!raw) { showPresToast('That region isn’t in the stored data yet.'); return; }
+  const spec = recipe(raw, region.name);
+  if (!spec) { showPresToast('That chart has no data for this region.'); return; }
   const w = 820, h = 460;
   currentOverlays().push({
     id: 'c' + Date.now(), type: 'chart',
     x: Math.round((1280 - w) / 2), y: Math.round((720 - h) / 2),
-    w, h,
-    /* Fixed design size — the chart renders at this and is CSS-scaled to
-       w/h, so its contents scale with the box. */
-    baseW: w, baseH: h,
-    spec,
+    w, h, baseW: w, baseH: h, spec,
   });
   saveOverlays();
   _selectedId = currentOverlays()[currentOverlays().length - 1].id;
@@ -8527,7 +8587,6 @@ embedPicker.querySelectorAll('.pres-shape-pick').forEach(btn => {
     /* Online Report needs a Region → Page choice first, so open the
        chooser instead of inserting straight away. */
     if (btn.dataset.embed === 'online-report') { openOrEmbedChooser(); return; }
-    if (btn.dataset.embed === 'chart-sample') { ovAddChartSample(); return; }
     ovAddEmbed(btn.dataset.embed);
   });
 });
@@ -8559,7 +8618,8 @@ document.getElementById('pres-orembed-cancel').addEventListener('click', closeOr
 orEmbedBackdrop.addEventListener('click', closeOrEmbedChooser);
 document.getElementById('pres-orembed-insert').addEventListener('click', () => {
   const slug = orEmbedRegion.value, pageId = orEmbedPage.value;
-  if (slug && pageId) ovAddOnlineReportEmbed(slug, pageId);
+  /* Native chart from the cached snapshot (no live iframe embed). */
+  if (slug && pageId) ovAddReportChart(slug, pageId);
   closeOrEmbedChooser();
 });
 
