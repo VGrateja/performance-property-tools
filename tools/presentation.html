@@ -5606,6 +5606,41 @@ function _orRegionLookup(regions, slug) {
   }
   return null;
 }
+/* Latest non-blank numeric in a column. */
+function _orLatest(col) {
+  if (!Array.isArray(col)) return null;
+  for (let i = col.length - 1; i >= 0; i--) {
+    const v = col[i];
+    if (v === '' || v == null || (typeof v === 'number' && isNaN(v))) continue;
+    return Number(v);
+  }
+  return null;
+}
+/* At-a-Glance single stats → big-number (count-up) specs. col(raw) returns
+   the source column (alias-aware where regionals rename it); transform
+   scales decimals → percent. */
+const AT_GLANCE_STATS = [
+  { key: 'median-house', label: 'Median house price',         unit: 'aud', col: r => r.medianHousePrice },
+  { key: 'median-unit',  label: 'Median unit price',          unit: 'aud', col: r => r.medianUnitPrice },
+  { key: 'pop',          label: 'Population',                 unit: 'num', col: r => _orCol(r, 'populationMetro', 'populationLga') },
+  { key: 'pop-growth',   label: 'Population growth',          unit: 'pct', col: r => _orCol(r, 'changeMetro', 'changeLga'), transform: v => v * 100 },
+  { key: 'vacancy',      label: 'Vacancy rate',               unit: 'pct', col: r => r.vacancyRate,     transform: v => v * 100 },
+  { key: 'dom-house',    label: 'Avg days on market (house)', unit: 'num', col: r => r.adomHouse },
+  { key: 'cagr3-house',  label: '3-year growth p.a. (house)', unit: 'pct', col: r => r.cagrHouse3yr,    transform: v => v * 100 },
+  { key: 'yield-house',  label: 'Gross yield (house)',        unit: 'pct', col: r => r.grossYieldHouse, transform: v => v * 100 },
+];
+function _orBuildStatSpec(key, raw, regionName) {
+  const stat = AT_GLANCE_STATS.find(s => s.key === key);
+  if (!stat) return null;
+  const v = _orLatest(stat.col(raw));
+  if (v == null) return null;
+  return {
+    type: 'bigNumber', unit: stat.unit,
+    value: stat.transform ? stat.transform(v) : v,
+    title: stat.label,
+    subtitle: regionName || '',
+  };
+}
 async function ovAddReportChart(slug, pageId) {
   if (!_activeDeck) return;
   const region = OR_REGIONS.find(r => r.slug === slug);
@@ -5614,8 +5649,9 @@ async function ovAddReportChart(slug, pageId) {
     showPresToast('National / Commercial charts are coming soon — pick a city or regional report for now.');
     return;
   }
-  const recipe = OR_CHART_RECIPES[pageId];
-  if (!recipe) { showPresToast('That page isn’t available as a chart yet — more chart types are being added.'); return; }
+  const isStat = pageId.indexOf('stat:') === 0;
+  const recipe = isStat ? null : OR_CHART_RECIPES[pageId];
+  if (!isStat && !recipe) { showPresToast('That page isn’t available as a chart yet — more chart types are being added.'); return; }
   if (!window.PPReportCache) { showPresToast('Chart-data module not loaded — reload the page and try again.'); return; }
   const source = OR_CLUSTER_SOURCE[region.cluster];
   if (!source) { showPresToast('No data source for this report yet.'); return; }
@@ -5625,9 +5661,11 @@ async function ovAddReportChart(slug, pageId) {
   if (!snap) { showPresToast('No stored data for this report yet — open the report and press “Save data” first.'); return; }
   const raw = _orRegionLookup(snap.regions, slug);
   if (!raw) { showPresToast('That region isn’t in the stored data yet.'); return; }
-  const spec = recipe(raw, region.name);
+  const spec = isStat ? _orBuildStatSpec(pageId.slice(5), raw, region.name) : recipe(raw, region.name);
   if (!spec) { showPresToast('That chart has no data for this region.'); return; }
-  const w = 820, h = 460;
+  /* Big-number stats are squarer; line/bar charts are landscape. */
+  const w = (spec.type === 'bigNumber') ? 560 : 820;
+  const h = (spec.type === 'bigNumber') ? 360 : 460;
   currentOverlays().push({
     id: 'c' + Date.now(), type: 'chart',
     x: Math.round((1280 - w) / 2), y: Math.round((720 - h) / 2),
@@ -5915,9 +5953,23 @@ function orFillPageSelect() {
     o.textContent = label + '  (' + id + ')';
     psel.appendChild(o);
   });
-  /* Keep the prior page selected across a report switch only if that page
-     exists (and isn't dropped) in the newly selected report. */
-  if (prev && r.pages.some(p => p[0] === prev) && !drops.has(prev)) psel.value = prev;
+  /* At-a-Glance single stats as big-number charts — online reports only
+     (research reports have their own structure). */
+  if (r.region && typeof AT_GLANCE_STATS !== 'undefined') {
+    const g = document.createElement('optgroup');
+    g.label = 'At a Glance — big number';
+    AT_GLANCE_STATS.forEach(s => {
+      const o = document.createElement('option');
+      o.value = 'stat:' + s.key;
+      o.textContent = s.label;
+      g.appendChild(o);
+    });
+    psel.appendChild(g);
+  }
+  /* Keep the prior selection across a report switch when it still exists
+     (a normal page, or an At-a-Glance stat on another online report). */
+  if (prev && ((r.pages.some(p => p[0] === prev) && !drops.has(prev)) ||
+               (prev.indexOf('stat:') === 0 && r.region))) psel.value = prev;
 }
 function ovAddOnlineReportEmbed(slug, pageId) {
   const entry = orEntry(slug);
