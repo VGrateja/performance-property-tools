@@ -806,6 +806,8 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js"></script>
+<!-- Report-data snapshot cache + global "Save data" refresh (window.PPReportCache). -->
+<script src="../shared/report-cache.js"></script>
 <script src="../shared/error-reporter.js"></script>
 <script src="../shared/auth.js"></script>
 <script src="../shared/auth-gate.js"></script>
@@ -902,8 +904,13 @@
 <div class="pp-pager tier1-only" id="pp-pager" role="toolbar" aria-label="Report editor toolbar">
   <div class="pp-pager-tools" id="pp-pager-tools">
     <button id="reportsRefreshBtn" type="button"
-            title="Refresh data from the Google Sheet"
-            aria-label="Refresh report data">↻</button>
+            title="Reload report data from the stored snapshot"
+            aria-label="Reload report data">↻</button>
+    <!-- Dev/Admin only (the whole pager is .tier1-only): pull the latest
+         data from Google and save it to Supabase so this report + the
+         presentation embed load fast from the stored snapshot. -->
+    <button class="pp-edit-btn" id="reportsCacheUpdateBtn" type="button"
+            title="Dev/Admin: fetch the latest data from Google and save it to Supabase, so this report and presentations load fast. Run after the monthly data update, or for a mid-month change.">⤓ Save data</button>
     <select id="region-select" title="Switch research report"></select>
     <span class="sep">│</span>
     <span class="page-indicator" id="page-indicator" title="Current page · scroll to jump">1 / 25</span>
@@ -2003,6 +2010,23 @@ function hideLiveLoadingOverlay() {
    backstop rather than the 0ms export kill. */
 setTimeout(function () { try { hideLiveLoadingOverlay(); } catch (_) {} }, (PP_EXPORT_MODE && !PP_EMBED_PAGE) ? 0 : 23000);
 
+/* ═════════════════════════════════════════════════════════════════════
+   SUPABASE SNAPSHOT CACHE — the monthly stored copy
+   ─────────────────────────────────────────────────────────────────────
+   The Apps Script feed cold-starts at up to ~20 s, the bulk of this
+   report's load time. The data only changes monthly, so we read a stored
+   copy from Supabase instead of phoning Google. The cache read/write + the
+   GLOBAL "Save data" refresh live in shared/report-cache.js
+   (window.PPReportCache, source='commercial'). The PDF renderer passes
+   ?fresh=1 to bypass the snapshot and capture live data; the presentation
+   embed (exportMode=1, no fresh) reads the snapshot, so it loads fast.
+   ═════════════════════════════════════════════════════════════════════ */
+const REPORT_CACHE_SOURCE = 'commercial';
+const PP_FORCE_FRESH = (function () {
+  try { return new URLSearchParams(location.search).get('fresh') === '1'; }
+  catch (_) { return false; }
+})();
+
 async function liveBoot() {
   if (!REPORT_DATA_URL) {
     console.info('[commercial-report] REPORT_DATA_URL is empty — skipping data fetch (stubbed mode).');
@@ -2011,16 +2035,31 @@ async function liveBoot() {
     return;
   }
   try {
-    /* Abort a hung fetch so the overlay + PPA_LIVE_BOOT_DONE never wait
-       forever; generous window for Apps Script cold starts. */
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 20000);
-    let res;
-    try { res = await fetch(REPORT_DATA_URL, { cache: 'no-store', signal: ctrl.signal }); }
-    finally { clearTimeout(to); }
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    REPORT_DATA = await res.json();
-    console.info('[commercial-report] data feed loaded', REPORT_DATA && REPORT_DATA._meta);
+    let data = null;
+    /* Supabase snapshot first (fast) — unless ?fresh=1 (the PDF renderer,
+       which must capture live data before the monthly snapshot refresh). */
+    if (!PP_FORCE_FRESH && window.PPReportCache) {
+      data = await window.PPReportCache.readSnapshot(REPORT_CACHE_SOURCE);
+    }
+    /* Live Apps Script feed (slow cold-start) — only when no snapshot is
+       stored yet, or when forced fresh. Prefer the shared module's fetch;
+       fall back to a direct fetch if it isn't available for any reason. */
+    if (!data) {
+      if (window.PPReportCache) {
+        data = await window.PPReportCache.fetchLive(REPORT_CACHE_SOURCE);
+      } else {
+        const ctrl = new AbortController();
+        const to = setTimeout(() => ctrl.abort(), 20000);
+        try {
+          const res = await fetch(REPORT_DATA_URL, { cache: 'no-store', signal: ctrl.signal });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          data = await res.json();
+        } finally { clearTimeout(to); }
+      }
+    }
+    if (!data) throw new Error('no data from snapshot or feed');
+    REPORT_DATA = data;
+    console.info('[commercial-report] data loaded', REPORT_DATA && REPORT_DATA._meta);
     renderAllCharts(REPORT_DATA);
   } catch (err) {
     console.warn('[commercial-report] data feed failed:', err);
@@ -3195,6 +3234,41 @@ document.addEventListener('DOMContentLoaded', () => {
   liveBoot();
   if (typeof applyAccessRestrictions === 'function') applyAccessRestrictions();
   rsBoot();
+
+  /* Dev/Admin "⤓ Save data": refresh the Supabase snapshot from Google.
+     The slow Google fetch happens here, off-stage, on an explicit click —
+     never during a viewer's load. The write is RLS-protected (is_writer). */
+  const cacheBtn = document.getElementById('reportsCacheUpdateBtn');
+  if (cacheBtn) {
+    const cacheBtnLabel = cacheBtn.textContent;
+    cacheBtn.addEventListener('click', async () => {
+      if (cacheBtn.disabled) return;
+      if (!window.PPReportCache) { alert('Cache module not loaded — reload the page and try again.'); return; }
+      if (!confirm('Fetch the latest data from Google and save it to Supabase for ALL reports — the National and Commercial reports PLUS every region?\n\nThis can take up to a minute (it wakes up each Google feed). Once done, every report and presentation loads fast from the stored copy for everyone — you only need to do this once per update.')) return;
+      cacheBtn.disabled = true;
+      cacheBtn.textContent = 'Saving…';
+      try {
+        const res = await window.PPReportCache.updateAllSnapshots({
+          onProgress: (done, total) => { cacheBtn.textContent = 'Saving ' + done + '/' + total + '…'; }
+        });
+        await liveBoot();   // re-render this report from its fresh snapshot
+        if (res.ok) {
+          cacheBtn.textContent = 'Saved ✓';
+        } else if (res.updated.length) {
+          cacheBtn.textContent = 'Partly saved';
+          alert('Saved: ' + res.updated.join(', ') + '\nFailed: ' + res.failed.join(', ') + '\n\nThe failed feeds may have timed out — try again in a moment.');
+        } else {
+          cacheBtn.textContent = 'Failed';
+          alert('Could not save any data. Check your connection and that you have edit access, then try again.');
+        }
+      } catch (e) {
+        cacheBtn.textContent = 'Failed';
+        alert('Save failed: ' + (e && e.message || e));
+      } finally {
+        setTimeout(() => { cacheBtn.textContent = cacheBtnLabel; cacheBtn.disabled = false; }, 2500);
+      }
+    });
+  }
 });
 </script>
 

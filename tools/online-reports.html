@@ -16,6 +16,10 @@
      below so it acts as a base; regional inline rules still win conflicts. -->
 <link rel="stylesheet" href="../shared/report-edit.css">
 <script src="../shared/theme.js"></script>
+<!-- Report-data snapshot cache + global "Save data" refresh (window.PPReportCache).
+     Classic script so it's defined before the inline boot code runs; uses
+     window.sb only at call-time, so load order vs supabase-client is fine. -->
+<script src="../shared/report-cache.js"></script>
 <script src="../shared/color-picker.js" defer></script>
 <!-- PPA chart system: theme + helpers + per-chart modules + region data.
      Order matters: theme -> helpers -> chart modules -> data.
@@ -5145,15 +5149,12 @@ function liveDataWriteCache(cluster, data) {
    SUPABASE SNAPSHOT CACHE — the monthly stored copy
    ─────────────────────────────────────────────────────────────────────
    The Apps Script feeds cold-start at 10-25 s per cluster, which is the
-   bulk of the report's load time (regionals fetch TWO clusters). Since
-   the data only changes once a month, we keep a copy of each cluster's
-   feed in Supabase (table report_data_cache, keyed by `source` = cluster
-   slug) and read THAT on load instead of phoning Google. Reads are open
-   to any authenticated user; writes require a writer (dev/admin) — RLS
-   enforced. The snapshot is refreshed by the dev/admin "Update stored
-   data" button (reportCacheUpdateAll) and, later, a monthly scheduled job.
+   bulk of the report's load time (regionals fetch TWO clusters). Since the
+   data only changes monthly, we read a stored copy from Supabase instead
+   of phoning Google. The cache read/write + the GLOBAL "Save data" refresh
+   live in shared/report-cache.js (window.PPReportCache, keyed by `source`
+   = cluster slug); this page just layers its localStorage cache in front.
    ═════════════════════════════════════════════════════════════════════ */
-const REPORT_CACHE_TABLE = 'report_data_cache';
 
 /* The monthly PDF renderer opens reports with ?fresh=1 so it always
    captures the latest Google data (it runs on the 12th, before the
@@ -5165,41 +5166,6 @@ const PP_FORCE_FRESH = (function () {
   catch (_) { return false; }
 })();
 
-async function reportCacheReadSupabase(cluster) {
-  try {
-    if (!window.sb) return null;
-    const { data, error } = await window.sb
-      .from(REPORT_CACHE_TABLE)
-      .select('data')
-      .eq('source', cluster)
-      .maybeSingle();
-    if (error) throw error;
-    return data && data.data ? data.data : null;
-  } catch (e) {
-    console.warn('[reports] Supabase snapshot read failed for', cluster, e && e.message || e);
-    return null;
-  }
-}
-
-async function reportCacheWriteSupabase(cluster, json) {
-  if (!window.sb) throw new Error('Supabase client not loaded');
-  const { error } = await window.sb
-    .from(REPORT_CACHE_TABLE)
-    .upsert({ source: cluster, data: json, updated_at: new Date().toISOString() }, { onConflict: 'source' });
-  if (error) throw error;
-}
-
-/* Force a fresh fetch straight from the Apps Script feed, bypassing both
-   the localStorage and Supabase caches. Used only by the admin "Update
-   stored data" flow, so the slow Google call happens off-stage. */
-async function reportCacheFetchLive(cluster) {
-  const url = REPORTS_DATA_URLS[cluster];
-  if (!url) return null;
-  const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  return await res.json();
-}
-
 async function liveDataFetch(cluster) {
   const url = REPORTS_DATA_URLS[cluster];
   /* 1) localStorage — instant, per-browser (15-min TTL). */
@@ -5210,12 +5176,12 @@ async function liveDataFetch(cluster) {
         before the snapshot refresh and must capture the freshest Google
         data. The presentation embed (exportMode=1, no fresh flag) reads
         this snapshot, so it loads fast. */
-  if (!PP_FORCE_FRESH) {
-    const stored = await reportCacheReadSupabase(cluster);
+  if (!PP_FORCE_FRESH && window.PPReportCache) {
+    const stored = await window.PPReportCache.readSnapshot(cluster);
     if (stored) { liveDataWriteCache(cluster, stored); return stored; }
   }
   /* 3) Live Apps Script feed — slow cold-start; reached when nothing is
-        stored yet (before the first "Update stored data") or with ?fresh=1. */
+        stored yet (before the first "Save data") or with ?fresh=1. */
   if (!url) return null;
   try {
     const res = await fetch(url);
@@ -5227,28 +5193,6 @@ async function liveDataFetch(cluster) {
     console.warn('[reports] live data fetch failed for cluster', cluster, e && e.message || e);
     return null;
   }
-}
-
-/* Admin "Update stored data": fetch every wired cluster fresh from Google
-   and upsert it into Supabase, refreshing the local cache so the re-render
-   is instant. Dev/admin only (button is tier-gated; RLS enforces the write).
-   Returns { ok, updated:[...], failed:[...] }. */
-async function reportCacheUpdateAll() {
-  const clusters = Object.keys(REPORTS_DATA_URLS).filter(c => REPORTS_DATA_URLS[c]);
-  const updated = [], failed = [];
-  await Promise.all(clusters.map(async (cluster) => {
-    try {
-      const json = await reportCacheFetchLive(cluster);
-      if (!json) { failed.push(cluster); return; }
-      await reportCacheWriteSupabase(cluster, json);
-      liveDataWriteCache(cluster, json);
-      updated.push(cluster);
-    } catch (e) {
-      console.warn('[reports] cache update failed for', cluster, e && e.message || e);
-      failed.push(cluster);
-    }
-  }));
-  return { ok: failed.length === 0, updated, failed };
 }
 
 /* Industry-donut color palette. The sheet stores only sector names +
@@ -10346,11 +10290,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const cacheBtnLabel = cacheBtn.textContent;
     cacheBtn.addEventListener('click', async () => {
       if (cacheBtn.disabled) return;
-      if (!confirm('Fetch the latest data from Google and save it to Supabase?\n\nThis can take 30-60 seconds (it wakes up each Google feed). Once done, the reports and presentations will load fast from the stored copy for everyone.')) return;
+      if (!window.PPReportCache) { alert('Cache module not loaded — reload the page and try again.'); return; }
+      if (!confirm('Fetch the latest data from Google and save it to Supabase for ALL reports — every region PLUS the National and Commercial reports?\n\nThis can take up to a minute (it wakes up each Google feed). Once done, every report and presentation loads fast from the stored copy for everyone — you only need to do this once per update.')) return;
       cacheBtn.disabled = true;
       cacheBtn.textContent = 'Saving…';
       try {
-        const res = await reportCacheUpdateAll();
+        const res = await window.PPReportCache.updateAllSnapshots({
+          onProgress: (done, total) => { cacheBtn.textContent = 'Saving ' + done + '/' + total + '…'; }
+        });
+        /* Drop the local cluster caches so this page re-reads the fresh
+           snapshot, then re-render the current region. */
+        try { Object.keys(REPORTS_DATA_URLS).forEach(c => localStorage.removeItem(REPORTS_DATA_CACHE_KEY(c))); } catch (_) {}
+        await liveBoot();
         if (res.ok) {
           cacheBtn.textContent = 'Saved ✓';
         } else if (res.updated.length) {
