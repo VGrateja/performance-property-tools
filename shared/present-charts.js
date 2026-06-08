@@ -323,6 +323,58 @@
     });
   }
 
+  /* ═══ PYRAMID: back-to-back horizontal bars ═══
+     spec.data = { ages:[...], left:{name,values}, right:{name,values} }.
+     Left bars extend left of zero, right bars extend right — a population-
+     pyramid shape comparing two cohorts by age group. Build: left, then
+     right. */
+  function createPyramid(host, spec) {
+    if (!window.echarts) { host.textContent = 'Chart engine needs ECharts.'; return nullController(); }
+    host.style.display = 'flex';
+    host.style.flexDirection = 'column';
+    mountTitle(host, spec);
+    var plot = document.createElement('div');
+    plot.style.cssText = 'flex:1 1 auto;min-height:0;width:100%;';
+    host.appendChild(plot);
+    var chart = window.echarts.init(plot, null, { renderer: 'svg' });
+    var ages = (spec.data && spec.data.ages) || [];
+    var left = (spec.data && spec.data.left) || { name: 'Left', values: [] };
+    var right = (spec.data && spec.data.right) || { name: 'Right', values: [] };
+    var unit = spec.unit || 'pct';
+    var negate = function (arr) { return arr.map(function (v) { return v == null ? null : -Math.abs(v); }); };
+
+    var option = {
+      backgroundColor: 'transparent',
+      textStyle: { fontFamily: THEME.font, color: THEME.ink },
+      grid: { left: 24, right: 24, top: 50, bottom: 36, containLabel: true },
+      legend: { top: 8, left: 'center', itemGap: 24, data: [left.name, right.name], textStyle: { color: THEME.ink, fontSize: THEME.axisSize, fontWeight: 600 }, icon: 'roundRect' },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: 'rgba(15,23,42,0.94)', textStyle: { color: '#fff', fontSize: 15 },
+        formatter: function (ps) {
+          var s = ps && ps[0] ? ('Age ' + ps[0].axisValue) : '';
+          (ps || []).forEach(function (p) { s += '<br/>' + p.marker + p.seriesName + ': ' + fmt(Math.abs(p.value), unit); });
+          return s;
+        } },
+      xAxis: { type: 'value', axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: THEME.grid } }, axisLabel: { color: THEME.inkDim, fontSize: THEME.axisSize, formatter: function (v) { return fmt(Math.abs(v), unit); } } },
+      yAxis: { type: 'category', data: ages, axisLine: { lineStyle: { color: THEME.grid } }, axisTick: { show: false }, axisLabel: { color: THEME.ink, fontSize: 13 } },
+      animationDuration: THEME.drawMs, animationEasing: THEME.easing,
+      series: [
+        { name: left.name,  type: 'bar', data: [], barWidth: '92%', itemStyle: { color: THEME.palette[0] } },
+        { name: right.name, type: 'bar', data: [], barWidth: '92%', barGap: '-100%', itemStyle: { color: THEME.palette[1] } },
+      ],
+    };
+    chart.setOption(option);
+
+    var builds = [
+      function () { option.series[0].data = negate(left.values); chart.setOption(option); },
+      function () { option.series[1].data = right.values.slice(); chart.setOption(option); },
+    ];
+    return stepController(builds, {
+      reset: function () { option.series[0].data = []; option.series[1].data = []; chart.setOption(option); },
+      resize: function () { chart.resize(); },
+      dispose: function () { chart.dispose(); },
+    });
+  }
+
   /* ═══ BIG NUMBER (pure DOM, count-up) ═══ */
   function createBigNumber(host, spec) {
     var wrap = document.createElement('div');
@@ -423,6 +475,7 @@
       case 'multiLine': return createLine(container, spec);
       case 'bars':      return createBars(container, spec);
       case 'dualBarLine': return createDualBarLine(container, spec);
+      case 'pyramid':   return createPyramid(container, spec);
       case 'bigNumber': return createBigNumber(container, spec);
       default:
         container.textContent = 'Unsupported chart type: ' + spec.type;

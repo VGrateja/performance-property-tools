@@ -5643,6 +5643,32 @@ const OR_CHART_RECIPES = {
       data: { x: ['Long-term', '10yr', '7yr', '5yr', '3yr'], series: [ { name: 'House', values: house }, { name: 'Unit', values: unit } ] },
     };
   },
+  /* p8 — Population Pyramid: % of population by age group, region vs
+     comparison (national for capitals, state for regionals — columns are
+     renamed on regional feeds). Back-to-back horizontal bars. Decimals
+     auto-scaled to percent. */
+  p8: function (raw, regionName, region) {
+    const ages = (raw.pyramidAge || []).filter(v => v !== '' && v != null);
+    const reg = (_orCol(raw, 'pyramidPctMetro', 'pyramidPctLga') || []).filter(v => v !== '' && v != null).map(Number);
+    const cmp = (_orCol(raw, 'pyramidPctNational', 'pyramidPctState') || []).filter(v => v !== '' && v != null).map(Number);
+    if (!ages.length || !reg.length || !cmp.length) return null;
+    const maxV = Math.max.apply(null, reg.concat(cmp));
+    const scale = (maxV > 0 && maxV < 1) ? 100 : 1;
+    const r = reg.map(v => v * scale), c = cmp.map(v => v * scale);
+    const n = Math.min(ages.length, r.length, c.length);
+    if (n < 1) return null;
+    const cmpLabel = (region && region.cluster && region.cluster !== 'Capital Cities') ? 'State' : 'National';
+    return {
+      type: 'pyramid', unit: 'pct',
+      title: (regionName ? regionName + ' — ' : '') + 'Population by age',
+      subtitle: '% of population by age group',
+      data: {
+        ages: ages.slice(0, n).map(String),
+        left:  { name: regionName || 'Region', values: r.slice(0, n) },
+        right: { name: cmpLabel,                values: c.slice(0, n) },
+      },
+    };
+  },
   /* p9 — Price to Income: house vs unit ratio lines (consistent column
      names across capital + regional feeds, so no alias handling needed). */
   p9: function (raw, regionName) {
@@ -5741,11 +5767,13 @@ async function ovAddReportChart(slug, pageId) {
   if (!snap) { showPresToast('No stored data for this report yet — open the report and press “Save data” first.'); return; }
   const raw = _orRegionLookup(snap.regions, slug);
   if (!raw) { showPresToast('That region isn’t in the stored data yet.'); return; }
-  const spec = isStat ? _orBuildStatSpec(pageId.slice(5), raw, region.name) : recipe(raw, region.name);
+  const spec = isStat ? _orBuildStatSpec(pageId.slice(5), raw, region.name) : recipe(raw, region.name, region);
   if (!spec) { showPresToast('That chart has no data for this region.'); return; }
-  /* Big-number stats are squarer; line/bar charts are landscape. */
-  const w = (spec.type === 'bigNumber') ? 560 : 820;
-  const h = (spec.type === 'bigNumber') ? 360 : 460;
+  /* Size by shape: big numbers squarer, pyramids taller (vertical age
+     axis), line/bar/dual-axis landscape. */
+  let w = 820, h = 460;
+  if (spec.type === 'bigNumber') { w = 560; h = 360; }
+  else if (spec.type === 'pyramid') { w = 640; h = 540; }
   currentOverlays().push({
     id: 'c' + Date.now(), type: 'chart',
     x: Math.round((1280 - w) / 2), y: Math.round((720 - h) / 2),
