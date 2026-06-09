@@ -297,17 +297,45 @@
      and vars are defined globally in common.css. */
   .pres-picker{
     position:absolute; inset:0;
-    display:flex; flex-direction:column; align-items:center;
-    padding:80px 24px 80px;
+    display:flex; flex-direction:column;
     /* overflow:hidden mirrors the hub. The orbs (::before / ::after)
        sit at top:-200px / bottom:-180px with their own animated
        transforms — without clipping, those negative offsets register
        as overflow and the browser briefly paints a scrollbar even
-       though the content fits. The hub does the same. */
+       though the content fits. The hub does the same. The heading +
+       deck grid scroll together inside .pres-picker-scroll below, so the
+       orbs stay put and cards never clip mid-row. */
     overflow:hidden;
     background: linear-gradient(160deg, var(--pp-bg-1) 0%, var(--pp-bg-2) 45%, var(--pp-bg-3) 100%);
     animation: pp-cycle-dark 50s ease-in-out infinite;
   }
+  /* Scroll layer — holds the heading + deck grid and scrolls them as one
+     when there are more decks than fit (e.g. Edit mode adds the New /
+     Import tiles). Whole-content scroll (not a bounded grid) so deck cards
+     are never sliced mid-row. */
+  .pres-picker-scroll{
+    flex:1 1 auto;
+    min-height:0;
+    width:100%;
+    overflow-y:auto;
+    overflow-x:hidden;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:80px 24px 80px;
+    scrollbar-width:thin;
+    scrollbar-color:rgba(255,255,255,0.22) transparent;
+  }
+  .pres-picker-scroll::-webkit-scrollbar{ width:10px; }
+  .pres-picker-scroll::-webkit-scrollbar-thumb{
+    background:rgba(255,255,255,0.18);
+    border-radius:8px;
+    border:3px solid transparent;
+    background-clip:content-box;
+  }
+  .pres-picker-scroll::-webkit-scrollbar-thumb:hover{ background:rgba(255,255,255,0.30); background-clip:content-box; }
+  [data-theme="light"] .pres-picker-scroll{ scrollbar-color:rgba(0,0,0,0.25) transparent; }
+  [data-theme="light"] .pres-picker-scroll::-webkit-scrollbar-thumb{ background:rgba(0,0,0,0.18); background-clip:content-box; }
   [data-theme="light"] .pres-picker{
     animation: pp-cycle-light 50s ease-in-out infinite;
   }
@@ -2650,10 +2678,12 @@
 <!-- Picker — "Choose a Presentation" cards. Visible by default;
      hidden when a deck is open. -->
 <section class="pres-picker" id="pres-picker">
-  <div class="pres-picker-eyebrow">Presentation</div>
-  <h1 class="pres-picker-title">Choose a Presentation</h1>
-  <p class="pres-picker-sub">Open a deck below. The Property Clock and Runway v Demand inside each deck pull live from the analyst platform — no manual updates.</p>
-  <div class="pres-picker-grid" id="pres-picker-grid"><!-- cards injected by JS --></div>
+  <div class="pres-picker-scroll">
+    <div class="pres-picker-eyebrow">Presentation</div>
+    <h1 class="pres-picker-title">Choose a Presentation</h1>
+    <p class="pres-picker-sub">Open a deck below. The Property Clock and Runway v Demand inside each deck pull live from the analyst platform — no manual updates.</p>
+    <div class="pres-picker-grid" id="pres-picker-grid"><!-- cards injected by JS --></div>
+  </div>
 </section>
 
 <!-- Edit-mode toolbar — floating pill above the slide stage. Shows
@@ -3460,6 +3490,7 @@ function _buildThumbOverlay(o) {
       el.dataset.deco = o.underline;
     }
     el.innerHTML = o.html != null ? o.html : '';
+    _applyTextVAlign(el, o);
   } else if (o.type === 'image' && (o.src || o.storage)) {
     const img = document.createElement('img');
     img.draggable = false;
@@ -3476,6 +3507,7 @@ function _buildThumbOverlay(o) {
     } else if (o.src) {
       img.src = o.src;
     }
+    _applyImageCrop(el, img, o);
     el.appendChild(img);
   } else if (o.type === 'shape') {
     if (typeof shapeSVG === 'function') el.innerHTML = shapeSVG(o);
@@ -3694,6 +3726,30 @@ function buildPicker() {
     '<div class="pres-deck-new-label">New Presentation</div>';
   newCard.addEventListener('click', createNewDeck);
   pickerGrid.appendChild(newCard);
+
+  /* "⤓ Import Google Slides" tile — turns an advisor's existing deck into
+     an editable presentation (raw materials: text + images). */
+  const importCard = document.createElement('button');
+  importCard.className = 'pres-deck-card pres-deck-new';
+  importCard.type = 'button';
+  importCard.title = 'Import an existing Google Slides deck as an editable presentation';
+  importCard.innerHTML =
+    '<div class="pres-deck-new-plus">⤓</div>' +
+    '<div class="pres-deck-new-label">Import Google Slides</div>';
+  importCard.addEventListener('click', importGoogleSlides);
+  pickerGrid.appendChild(importCard);
+
+  /* "🖼 Import Slides as Images" — pixel-perfect snapshots as locked
+     full-slide backgrounds (not element-editable, but an exact copy). */
+  const snapCard = document.createElement('button');
+  snapCard.className = 'pres-deck-card pres-deck-new';
+  snapCard.type = 'button';
+  snapCard.title = 'Import a Google Slides deck as pixel-perfect snapshot images (exact look, not element-editable)';
+  snapCard.innerHTML =
+    '<div class="pres-deck-new-plus">🖼</div>' +
+    '<div class="pres-deck-new-label">Import Slides as Images</div>';
+  snapCard.addEventListener('click', importGoogleSlidesSnapshot);
+  pickerGrid.appendChild(snapCard);
 }
 
 /* Spawn a new empty user-created deck. Title comes from a prompt
@@ -3720,6 +3776,307 @@ function createNewDeck() {
   _customDecks.push(deck);
   saveCustomDecks();
   openDeck(deck.id);
+}
+
+/* ─── Google Slides import ───────────────────────────────────────────
+   Turns an advisor's existing Google Slides deck into an editable custom
+   deck. Reader = scripts/apps-script-slides-import.js (standalone Apps
+   Script web app). RAW MATERIALS only — text + images; tables, lines,
+   charts and per-run rich text are NOT imported (advisor restyles here).
+
+   The reader returns STRUCTURAL JSON by default (text + geometry; images
+   are {imgIndex} placeholders, no bytes) so the payload stays a few KB,
+   then we pull each image one-at-a-time via ?img=<n> and upload it to
+   Storage — base64 bytes never travel in one giant blob.
+
+   SLIDES_IMPORT_URL must be the deployment's "/exec" Web app URL (Deploy →
+   Manage deployments), NOT the script.googleusercontent.com/echo URL the
+   browser redirects to — that one carries a request-scoped key and expires. */
+const SLIDES_IMPORT_URL = 'https://script.google.com/macros/s/AKfycbyjeUsbQJer49awXWAX7DTNVWMEElL1nC6KexOrNlDOe18_RpmyF-_iPP7RI0cEGeE/exec';
+
+/* Slides paragraph alignment → overlay align. */
+function _slidesAlign(a) {
+  a = String(a || '').toLowerCase();
+  if (a === 'center') return 'center';
+  if (a === 'end' || a === 'right') return 'right';
+  if (a === 'justified' || a === 'justify') return 'justify';
+  return 'left';   // start / unknown
+}
+
+/* Is a hex colour dark enough to want white text on top? (YIQ brightness,
+   threshold leans white so brand teals/blues read as dark.) */
+function _slidesIsDark(hex) {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex || '').trim());
+  if (!m) return false;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return (r * 299 + g * 587 + b * 114) / 1000 < 150;
+}
+
+/* Vertically anchor an imported text overlay inside its box (Slides centres /
+   bottom-aligns text in tall boxes; we render top by default). No-op unless
+   the overlay carries valign:'middle'|'bottom', so existing decks are unchanged. */
+function _applyTextVAlign(el, o) {
+  if (o.valign !== 'middle' && o.valign !== 'bottom') return;
+  el.style.display = 'flex';
+  el.style.flexDirection = 'column';
+  el.style.justifyContent = (o.valign === 'middle') ? 'center' : 'flex-end';
+}
+
+/* Plain Slides text → the overlay's html field (escape, newline→<br>). */
+function _slidesTextHtml(t) {
+  const esc = String(t == null ? '' : t)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return esc.replace(/\r\n|\r|\n/g, '<br>');
+}
+
+/* Fetch a structural or single-image payload from the reader web app.
+   Mirrors report-cache.fetchLive's abort/timeout shape; follows the Apps
+   Script 302 → googleusercontent transparently. */
+async function _slidesFetch(params, timeoutMs) {
+  if (!SLIDES_IMPORT_URL) throw new Error('Slides import URL not configured');
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs || 60000);
+  try {
+    const url = SLIDES_IMPORT_URL + (SLIDES_IMPORT_URL.indexOf('?') === -1 ? '?' : '&') + params;
+    const res = await fetch(url, { signal: ctrl.signal, redirect: 'follow' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if (json && json.error) throw new Error(json.error);
+    return json;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/* Import a Google Slides deck (prompted URL/id) as a new editable deck:
+   structural JSON → blank slides → text overlays mapped by the point→
+   1280×720 fit, then each image pulled via ?img= and uploaded to Storage. */
+async function importGoogleSlides() {
+  if (!SLIDES_IMPORT_URL) {
+    alert('The Google Slides import endpoint is not set yet — paste the Apps Script /exec URL into SLIDES_IMPORT_URL in presentation.html.');
+    return;
+  }
+  const deckUrl = prompt('Paste the Google Slides URL (or deck id) to import:');
+  if (deckUrl === null) return;                 /* Cancel */
+  const id = (deckUrl || '').trim();
+  if (!id) return;
+
+  showPresToast('Reading deck…', { duration: 60000 });
+  let doc;
+  try {
+    doc = await _slidesFetch('id=' + encodeURIComponent(id), 60000);
+  } catch (e) {
+    showPresToast('Could not read deck: ' + ((e && e.message) || 'fetch failed'), { duration: 7000, warn: true });
+    return;
+  }
+  const meta = doc._meta || {};
+  const slides = Array.isArray(doc.slides) ? doc.slides : [];
+  if (!slides.length) {
+    showPresToast('That deck has no slides (or could not be read).', { duration: 6000, warn: true });
+    return;
+  }
+
+  /* Fit-and-center the deck page into the 1280×720 slide (preserves aspect;
+     a non-16:9 deck pillar/letterboxes rather than stretching). */
+  const pageW = meta.pageW || 720, pageH = meta.pageH || 405;
+  const s = Math.min(1280 / pageW, 720 / pageH);
+  const offX = (1280 - pageW * s) / 2;
+  const offY = (720 - pageH * s) / 2;
+
+  const now = new Date().toISOString();
+  const deckId = 'user-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  const deck = {
+    id: deckId, custom: true,
+    title: meta.title || 'Imported Presentation',
+    titleHtml: meta.title || 'Imported Presentation',
+    sub: '',
+    meta: new Date().toLocaleDateString('en-AU', { month: 'long', year: 'numeric' }),
+    icon: '⤓',
+    slides: slides.map(() => ({ fn: 'blank', custom: true })),
+    lastUpdated: now,
+  };
+
+  /* Text overlays go down immediately; images are queued for the slow
+     fetch+upload pass below. Overlay refs are shared between _overlays and
+     the job list so filling job.overlay.storage updates the live array. */
+  const imageJobs = [];
+  let txtCount = 0, shpCount = 0;
+  slides.forEach((sl, si) => {
+    const arr = [];
+    (sl.elements || []).forEach((el, ei) => {
+      const x = offX + (el.x || 0) * s, y = offY + (el.y || 0) * s;
+      const w = Math.max(8, (el.w || 0) * s), h = Math.max(8, (el.h || 0) * s);
+      if (el.type === 'text') {
+        /* Inherited (placeholder/theme) text colour isn't exposed by the API,
+           so when none was captured, pick black/white for contrast against the
+           effective background (the box fill, else the slide bg). Fixes white
+           titles / white-on-brand-colour text importing dark + invisible. */
+        let color = el.color || '';
+        if (!color) {
+          const ebg = el.bgColor || sl.background || '';
+          if (ebg && _slidesIsDark(ebg)) color = '#ffffff';
+        }
+        const tov = {
+          id: 't' + Date.now() + '-' + si + '-' + ei, type: 'text',
+          x: x, y: y, w: w, h: h,
+          html: _slidesTextHtml(el.text),
+          fontFamily: el.fontFamily || 'Montserrat',
+          fontSize: Math.max(6, Math.round((el.fontSize || 18) * s)),
+          bold: !!el.bold, italic: !!el.italic,
+          align: _slidesAlign(el.align),
+          color: color,
+        };
+        if (el.underline)  tov.underline  = 'underline';
+        if (el.lineHeight) tov.lineHeight = el.lineHeight;
+        if (el.bgColor)    tov.bgColor    = el.bgColor;
+        if (el.valign === 'middle' || el.valign === 'bottom') tov.valign = el.valign;
+        arr.push(tov);
+        txtCount++;
+      } else if (el.type === 'shape') {
+        arr.push({
+          id: 's' + Date.now() + '-' + si + '-' + ei, type: 'shape',
+          kind: el.kind || 'rect',
+          x: x, y: y, w: w, h: h,
+          fill: el.fill || 'transparent',
+          stroke: el.stroke || (el.fill || '#000000'),
+          strokeWidth: Math.max(0, Math.round((el.strokeWidth || 0) * s)),
+        });
+        shpCount++;
+      } else if (el.type === 'image' && typeof el.imgIndex === 'number') {
+        const ov = { id: 'i' + Date.now() + '-' + si + '-' + ei, type: 'image', x: x, y: y, w: w, h: h };
+        if (el.cropFracL || el.cropFracR || el.cropFracT || el.cropFracB) {
+          ov.cropFracL = el.cropFracL || 0; ov.cropFracR = el.cropFracR || 0;
+          ov.cropFracT = el.cropFracT || 0; ov.cropFracB = el.cropFracB || 0;
+        }
+        arr.push(ov);
+        imageJobs.push({ overlay: ov, imgIndex: el.imgIndex });
+      }
+    });
+    _overlays[deckId + '/' + si] = arr;
+    if (sl.background) _slideBgs[deckId + '/' + si] = sl.background;
+  });
+
+  _customDecks.push(deck);
+  saveCustomDecks();
+  saveOverlays();
+  if (typeof saveSlideBgs === 'function') saveSlideBgs();
+
+  /* Images one at a time (small responses; avoids the parallel-queue
+     timeouts the report feeds hit). Each: ?img= → blob → Storage. */
+  let okImg = 0, failImg = 0;
+  for (let i = 0; i < imageJobs.length; i++) {
+    const job = imageJobs[i];
+    showPresToast('Importing images… ' + (i + 1) + '/' + imageJobs.length, { duration: 60000 });
+    try {
+      const got = await _slidesFetch('id=' + encodeURIComponent(id) + '&img=' + job.imgIndex, 60000);
+      if (!got || !got.dataUrl) throw new Error('no image data');
+      const blob = await (await fetch(got.dataUrl)).blob();
+      const path = await _uploadImageToStorage(blob, deckId, job.overlay.id);
+      try { if (typeof _getSignedImageUrl === 'function') await _getSignedImageUrl(path); } catch (_) {}
+      job.overlay.storage = path;
+      okImg++;
+    } catch (e) {
+      console.warn('Slides import: image', job.imgIndex, 'failed', e);
+      /* Keep the slot (position/size) but mark it so the gap is obvious. */
+      job.overlay.type = 'text';
+      job.overlay.html = '[image ' + job.imgIndex + ' — import failed]';
+      job.overlay.fontFamily = 'Montserrat'; job.overlay.fontSize = 12;
+      job.overlay.color = '#b00020'; job.overlay.align = 'center';
+      failImg++;
+    }
+    saveOverlays();
+  }
+
+  saveCustomDecks();
+  buildPicker();
+
+  const skipped = meta.skipped || {};
+  const skipBits = Object.keys(skipped).map(k => skipped[k] + ' ' + k);
+  let summary = 'Imported "' + deck.title + '": ' + slides.length + ' slides, ' +
+    txtCount + ' text, ' + shpCount + ' shape' + (shpCount === 1 ? '' : 's') + ', ' +
+    okImg + ' image' + (okImg === 1 ? '' : 's');
+  if (failImg) summary += ' (' + failImg + ' image' + (failImg > 1 ? 's' : '') + ' failed)';
+  if (skipBits.length) summary += '. Not imported: ' + skipBits.join(', ');
+  showPresToast(summary, { duration: 9000, warn: !!failImg });
+
+  openDeck(deckId);
+}
+
+/* Import a Google Slides deck as PIXEL-PERFECT SNAPSHOTS: each slide is
+   rendered to a PNG by Google and set as a LOCKED full-slide background image
+   (behind everything, can't be dragged/deleted by accident). Not element-
+   editable, but looks identical — the user layers editable text/charts on top.
+   Reuses the image-overlay path (Storage upload + signed-URL refresh). */
+async function importGoogleSlidesSnapshot() {
+  if (!SLIDES_IMPORT_URL) {
+    alert('The Google Slides import endpoint is not set yet — paste the Apps Script /exec URL into SLIDES_IMPORT_URL in presentation.html.');
+    return;
+  }
+  const deckUrl = prompt('Paste the Google Slides URL (or deck id) to import as snapshot images:');
+  if (deckUrl === null) return;
+  const id = (deckUrl || '').trim();
+  if (!id) return;
+
+  showPresToast('Reading deck…', { duration: 60000 });
+  let doc;
+  try {
+    doc = await _slidesFetch('id=' + encodeURIComponent(id) + '&mode=snapshot', 60000);
+  } catch (e) {
+    showPresToast('Could not read deck: ' + ((e && e.message) || 'fetch failed'), { duration: 7000, warn: true });
+    return;
+  }
+  const meta = doc._meta || {};
+  const n = meta.slideCount || (Array.isArray(doc.slides) ? doc.slides.length : 0);
+  if (!n) {
+    showPresToast('That deck has no slides (or could not be read).', { duration: 6000, warn: true });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const deckId = 'user-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  const title = (meta.title || 'Imported Presentation') + ' (snapshots)';
+  const deck = {
+    id: deckId, custom: true,
+    title: title, titleHtml: title,
+    sub: '',
+    meta: new Date().toLocaleDateString('en-AU', { month: 'long', year: 'numeric' }),
+    icon: '🖼',
+    slides: Array.from({ length: n }, () => ({ fn: 'blank', custom: true })),
+    lastUpdated: now,
+  };
+  _customDecks.push(deck);
+  saveCustomDecks();
+
+  /* Pull each slide's PNG one at a time → Storage → locked full-slide overlay. */
+  let ok = 0, fail = 0;
+  for (let i = 0; i < n; i++) {
+    showPresToast('Importing slide images… ' + (i + 1) + '/' + n, { duration: 60000 });
+    try {
+      const got = await _slidesFetch('id=' + encodeURIComponent(id) + '&thumb=' + i, 90000);
+      if (!got || !got.dataUrl) throw new Error('no image');
+      const blob = await (await fetch(got.dataUrl)).blob();
+      const overlayId = 'i' + Date.now() + '-bg-' + i;
+      const path = await _uploadImageToStorage(blob, deckId, overlayId);
+      try { if (typeof _getSignedImageUrl === 'function') await _getSignedImageUrl(path); } catch (_) {}
+      _overlays[deckId + '/' + i] = [{
+        id: overlayId, type: 'image', x: 0, y: 0, w: 1280, h: 720,
+        storage: path, locked: true, protected: true,
+      }];
+      ok++;
+    } catch (e) {
+      console.warn('Snapshot import: slide', i, 'failed', e);
+      fail++;
+    }
+    saveOverlays();
+  }
+
+  saveCustomDecks();
+  buildPicker();
+  let summary = 'Imported "' + title + '": ' + ok + ' slide image' + (ok === 1 ? '' : 's');
+  if (fail) summary += ' (' + fail + ' failed)';
+  showPresToast(summary, { duration: 8000, warn: !!fail });
+  openDeck(deckId);
 }
 
 /* Duplicate any deck (built-in or custom) into a fresh custom copy.
@@ -3939,6 +4296,7 @@ function buildThumbOverlayEl(o) {
       el.dataset.deco = o.underline;
     }
     el.innerHTML = o.html != null ? o.html : '';
+    _applyTextVAlign(el, o);
   } else if (o.type === 'shape') {
     el.innerHTML = shapeSVG(o);
   } else if (o.type === 'image') {
@@ -3954,6 +4312,7 @@ function buildThumbOverlayEl(o) {
     } else if (o.src) {
       img.src = o.src;
     }
+    _applyImageCrop(el, img, o);
     el.appendChild(img);
   } else if (o.type === 'embed') {
     /* Placeholder badge — the thumbnail rail can't run iframes. */
@@ -7595,6 +7954,26 @@ function _psResolvePaint(v, role, entryId, gradAccum) {
   return 'none';
 }
 
+/* Apply a Google-Slides crop window to an imported image overlay: scale the
+   full image up and offset it so only the cropped sub-rectangle shows, with
+   the overlay box clipping the rest. Fractions (0–1) are of the full image;
+   no-op when the overlay carries no crop. Used by all three image renderers
+   (thumbnail / present / editor) so crop is consistent everywhere. */
+function _applyImageCrop(el, img, o) {
+  const cl = +o.cropFracL || 0, cr = +o.cropFracR || 0, ct = +o.cropFracT || 0, cb = +o.cropFracB || 0;
+  if (!(cl || cr || ct || cb)) return;
+  const vw = Math.max(0.02, 1 - cl - cr), vh = Math.max(0.02, 1 - ct - cb);
+  el.style.overflow = 'hidden';
+  img.style.position = 'absolute';
+  img.style.width  = (100 / vw) + '%';
+  img.style.height = (100 / vh) + '%';
+  img.style.left   = (-(cl / vw) * 100) + '%';
+  img.style.top    = (-(ct / vh) * 100) + '%';
+  img.style.objectFit = 'fill';
+  img.style.maxWidth = 'none';
+  img.style.maxHeight = 'none';
+}
+
 function shapeSVG(o) {
   const w = Math.max(2, +o.w || 2);
   const h = Math.max(2, +o.h || 2);
@@ -7798,6 +8177,7 @@ function buildOverlayEl(o) {
     }
     /* innerHTML so links / formatted spans survive a save+reload. */
     el.innerHTML = o.html != null ? o.html : '';
+    _applyTextVAlign(el, o);
 
     /* Click handling in edit mode:
          - Single click  → no-op here (drag/select handled elsewhere)
@@ -7904,6 +8284,7 @@ function buildOverlayEl(o) {
     } else if (o.src) {
       img.src = o.src;
     }
+    _applyImageCrop(el, img, o);
     el.appendChild(img);
   } else if (o.type === 'embed') {
     /* Live-tool iframe rendered with edge cropping + corner resize.
@@ -8225,6 +8606,7 @@ function buildOverlayEl(o) {
      factor before applying to slide-space coords. */
   el.addEventListener('pointerdown', (ev) => {
     if (!_editMode) return;
+    if (o.locked) return;   /* locked (e.g. snapshot background) — not draggable */
     if (el.contentEditable === 'true' && document.activeElement === el) return;
     if (ev.target.classList.contains('pres-overlay-del')) return;
     if (ev.target.classList.contains('pres-overlay-resize')) return;
