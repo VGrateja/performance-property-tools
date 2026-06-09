@@ -147,7 +147,9 @@ function doGet(e) {
         snapshot: true,
         revisionId: SL_revisionId(id),   // lets the tool re-sync only when the deck actually changed
       },
-      slides: ss.map(function () { return {}; }),
+      /* Per-slide page id = stable identity so the tool can keep user overlays
+         attached to the right source slide across inserts / deletes / reorders. */
+      slides: ss.map(function (s) { var pid = ''; try { pid = s.getObjectId(); } catch (e) {} return { id: pid }; }),
     });
   }
 

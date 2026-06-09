@@ -4035,7 +4035,8 @@ async function importGoogleSlidesSnapshot() {
     return;
   }
   const meta = doc._meta || {};
-  const n = meta.slideCount || (Array.isArray(doc.slides) ? doc.slides.length : 0);
+  const srcSlides = Array.isArray(doc.slides) ? doc.slides : [];
+  const n = srcSlides.length || meta.slideCount || 0;
   if (!n) {
     showPresToast('That deck has no slides (or could not be read).', { duration: 6000, warn: true });
     return;
@@ -4050,7 +4051,10 @@ async function importGoogleSlidesSnapshot() {
     sub: '',
     meta: new Date().toLocaleDateString('en-AU', { month: 'long', year: 'numeric' }),
     icon: '🖼',
-    slides: Array.from({ length: n }, () => ({ fn: 'blank', custom: true })),
+    /* srcPageId ties each tool-slide to its Google source page, so on re-sync a
+       slide's overlays follow it (or are removed with it) even when pages are
+       inserted / deleted / reordered. */
+    slides: Array.from({ length: n }, (_, i) => ({ fn: 'blank', custom: true, srcPageId: (srcSlides[i] && srcSlides[i].id) || '' })),
     lastUpdated: now,
     /* Remember the source so the deck can be re-synced when the Google deck
        changes (manual "Sync slides" button + auto-on-open when revision differs). */
@@ -4114,7 +4118,8 @@ async function refreshSnapshotDeck(deck, opts) {
     return;
   }
   const meta = doc._meta || {};
-  const n = meta.slideCount || (Array.isArray(doc.slides) ? doc.slides.length : 0);
+  const srcSlides = Array.isArray(doc.slides) ? doc.slides : [];
+  const n = srcSlides.length || meta.slideCount || 0;
   if (!n) { if (opts.toast) showPresToast('Source deck has no slides (or could not be read).', { duration: 6000, warn: true }); return; }
 
   /* Auto path only re-pulls when the source actually changed — needs a
@@ -4124,37 +4129,70 @@ async function refreshSnapshotDeck(deck, opts) {
   if (opts.auto && (!newRev || newRev === src.revisionId)) return;
 
   const deckId = deck.id;
+  /* Re-render source slide `j` to a PNG, upload (unique path each sync to dodge
+     a stale signed-URL / CDN cache), and set it as the snapshotBg of `arr`. */
+  const pullInto = async (j, arr) => {
+    const got = await _slidesFetch('id=' + encodeURIComponent(src.id) + '&thumb=' + j, 90000);
+    if (!got || !got.dataUrl) throw new Error('no image');
+    const blob = await (await fetch(got.dataUrl)).blob();
+    const path = await _uploadImageToStorage(blob, deckId, 'snap-' + j + '-' + Date.now());
+    try { if (typeof _getSignedImageUrl === 'function') await _getSignedImageUrl(path); } catch (_) {}
+    const bg = arr.find(o => o.snapshotBg);
+    if (bg) { bg.storage = path; delete bg.src; }
+    else arr.unshift({ id: 'i' + Date.now() + '-bg-' + j, type: 'image', x: 0, y: 0, w: 1280, h: 720, storage: path, locked: true, protected: true, snapshotBg: true });
+  };
+
+  /* Map by SOURCE PAGE ID when available so EVERY overlay (text, shape, image,
+     embed, chart, …) follows its slide across inserts / deletes / reorders — and
+     a deleted source page takes its slide AND all its overlays with it. Falls
+     back to positional only for decks imported before per-slide ids existed. */
+  const haveIds = srcSlides.some(s => s && s.id) && (deck.slides || []).some(s => s && s.srcPageId);
   let ok = 0, fail = 0, removed = 0;
-  for (let i = 0; i < n; i++) {
-    if (opts.toast) showPresToast('Syncing slide images… ' + (i + 1) + '/' + n, { duration: 60000 });
-    if (i >= deck.slides.length) deck.slides.push({ fn: 'blank', custom: true });
-    const key = deckId + '/' + i;
-    if (!Array.isArray(_overlays[key])) _overlays[key] = [];
-    try {
-      const got = await _slidesFetch('id=' + encodeURIComponent(src.id) + '&thumb=' + i, 90000);
-      if (!got || !got.dataUrl) throw new Error('no image');
-      const blob = await (await fetch(got.dataUrl)).blob();
-      /* Unique path each sync so the new image isn't served from a stale
-         signed-URL / CDN cache. */
-      const path = await _uploadImageToStorage(blob, deckId, 'snap-' + i + '-' + Date.now());
-      try { if (typeof _getSignedImageUrl === 'function') await _getSignedImageUrl(path); } catch (_) {}
-      const arr = _overlays[key];
-      const bg = arr.find(o => o.snapshotBg);
-      if (bg) { bg.storage = path; delete bg.src; }
-      else arr.unshift({ id: 'i' + Date.now() + '-bg-' + i, type: 'image', x: 0, y: 0, w: 1280, h: 720, storage: path, locked: true, protected: true, snapshotBg: true });
-      ok++;
-    } catch (e) { console.warn('Snapshot sync: slide', i, 'failed', e); fail++; }
-    saveOverlays();
-  }
-  /* Source shrank: drop trailing slides that are ONLY a snapshot (never the
-     user's own added content). */
-  while (deck.slides.length > n) {
-    const idx = deck.slides.length - 1;
-    const arr = _overlays[deckId + '/' + idx] || [];
-    if (arr.length && !arr.every(o => o.snapshotBg)) break;
-    delete _overlays[deckId + '/' + idx];
-    deck.slides.pop();
-    removed++;
+
+  if (haveIds) {
+    const oldByPage = {};
+    (deck.slides || []).forEach((sl, i) => {
+      const pid = sl && sl.srcPageId;
+      if (pid && !(pid in oldByPage)) oldByPage[pid] = { slide: sl, overlays: _overlays[deckId + '/' + i] || [] };
+    });
+    const newSlides = [], newOverlays = {};
+    for (let j = 0; j < n; j++) {
+      if (opts.toast) showPresToast('Syncing slide images… ' + (j + 1) + '/' + n, { duration: 60000 });
+      const pid = (srcSlides[j] && srcSlides[j].id) || ('__new_' + j);
+      const prev = oldByPage[pid];
+      const slide = prev ? prev.slide : { fn: 'blank', custom: true };
+      slide.srcPageId = pid;
+      const arr = prev ? prev.overlays : [];   // carry ALL this source slide's overlays
+      if (prev) delete oldByPage[pid];          // matched → survives (not removed)
+      try { await pullInto(j, arr); ok++; } catch (e) { console.warn('Snapshot sync: slide', j, 'failed', e); fail++; }
+      newSlides[j] = slide;
+      newOverlays[deckId + '/' + j] = arr;
+    }
+    /* Whatever's left in oldByPage = source pages that were DELETED → their
+       slides + every overlay on them are dropped (not carried forward). */
+    removed = Object.keys(oldByPage).length;
+    Object.keys(_overlays).forEach(k => { if (k.indexOf(deckId + '/') === 0) delete _overlays[k]; });
+    Object.keys(newOverlays).forEach(k => { _overlays[k] = newOverlays[k]; });
+    deck.slides = newSlides;
+  } else {
+    /* Positional fallback (deck imported before per-slide ids — re-import to
+       get identity-based overlay tracking). */
+    for (let j = 0; j < n; j++) {
+      if (opts.toast) showPresToast('Syncing slide images… ' + (j + 1) + '/' + n, { duration: 60000 });
+      if (j >= deck.slides.length) deck.slides.push({ fn: 'blank', custom: true });
+      const key = deckId + '/' + j;
+      if (!Array.isArray(_overlays[key])) _overlays[key] = [];
+      try { await pullInto(j, _overlays[key]); ok++; } catch (e) { console.warn('Snapshot sync: slide', j, 'failed', e); fail++; }
+      saveOverlays();
+    }
+    while (deck.slides.length > n) {
+      const idx = deck.slides.length - 1;
+      const arr = _overlays[deckId + '/' + idx] || [];
+      if (arr.length && !arr.every(o => o.snapshotBg)) break;
+      delete _overlays[deckId + '/' + idx];
+      deck.slides.pop();
+      removed++;
+    }
   }
 
   deck.snapshotSource.revisionId = newRev;
