@@ -3268,6 +3268,73 @@ function updatePdfPagesConfirmState() {
       summary.innerHTML = pagesPart + ' &middot; ' + regionsPart;
     }
   }
+  updatePdfPageSections();
+}
+
+/* Lean per-family page sections (Increment 2): the page checklist can only be
+   the CURRENT report's pages (pageMetaList reads the live DOM — other tools
+   aren't loaded). So label the checklist with the current report FAMILY, and
+   when reports from the OTHER family are also selected, show a "downloads as
+   the full PDF" section listing them — making the regional/research page split
+   explicit. Pure UI: the export split in _dispatchReportDownload already routes
+   the current family's page selection and the other family's full cached PDF.
+   Auto-runs from updatePdfPagesConfirmState (fires on every page/region tick). */
+function updatePdfPageSections() {
+  const pageList = document.getElementById('pdf-pages-list');
+  if (!pageList) return;
+  const pagesCol = pageList.parentElement;
+  const _esc = (str) => String(str).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  const activeSlug = (typeof _rs_active === 'function') ? _rs_active() : null;
+  const activeIsResearch = !!(activeSlug && RESEARCH_REGIONS[activeSlug]);
+  const curFamLabel   = activeIsResearch ? 'Research report' : 'Regional report';
+  const otherFamLabel = activeIsResearch ? 'Research report' : 'Regional report';   // label of the OTHER family
+  const otherFamName  = activeIsResearch ? 'Regional' : 'Research';
+
+  const sel = Array.from(document.querySelectorAll('#pdf-regions-list input[type="checkbox"]:checked')).map(c => c.dataset.slug);
+  const otherSel = sel.filter(s => (!!RESEARCH_REGIONS[s]) !== activeIsResearch);
+  const regionalSel = sel.filter(s => !!REGIONAL_REGIONS[s]);
+
+  /* Label the page checklist with the current family. */
+  const title = pagesCol && pagesCol.querySelector('.pdf-pages-section-title');
+  if (title) title.textContent = curFamLabel + ' pages';
+
+  /* Availability note — only meaningful for the regional family with >1 region
+     selected (page sets differ per region; missing pages are skipped). */
+  let note = document.getElementById('pp-pages-note');
+  if (!note) {
+    note = document.createElement('div');
+    note.id = 'pp-pages-note';
+    note.style.cssText = 'margin:6px 2px 0;font-size:11px;opacity:.7;';
+    pageList.after(note);
+  }
+  if (!activeIsResearch && regionalSel.length > 1) {
+    note.style.display = '';
+    note.textContent = 'Pages not present in a selected region are skipped for that region.';
+  } else {
+    note.style.display = 'none';
+  }
+
+  /* Other-family section — appears only when the other family has picks. */
+  let other = document.getElementById('pp-other-family');
+  if (!other) {
+    other = document.createElement('div');
+    other.id = 'pp-other-family';
+    other.style.cssText = 'margin:12px 2px 0;padding:10px;border:1px dashed rgba(255,255,255,0.18);border-radius:8px;font-size:12px;line-height:1.5;';
+    note.after(other);
+  }
+  if (otherSel.length) {
+    const names = otherSel.map(s => _esc((RESEARCH_REGIONS[s] || REGIONAL_REGIONS[s] || {}).name || s));
+    other.style.display = '';
+    other.innerHTML =
+        '<div style="font-weight:700;text-transform:uppercase;letter-spacing:.06em;font-size:11px;opacity:.6;margin-bottom:4px;">'
+      +   otherFamName + ' reports'
+      + '</div>'
+      + '<div>Download as the <strong>full PDF</strong> (the page selection above applies to '
+      +   curFamLabel.toLowerCase() + 's only):</div>'
+      + '<div style="opacity:.85;margin-top:4px;">' + names.join(', ') + '</div>';
+  } else {
+    other.style.display = 'none';
+  }
 }
 
 function setupPdfPagesModal() {
