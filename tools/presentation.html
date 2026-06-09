@@ -2717,6 +2717,10 @@
     </svg>
     + Table
   </button>
+  <button class="pres-edit-btn" id="pres-refresh-charts" type="button" title="Refresh all report-chart data on this deck from the latest Online Reports cache">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><polyline points="21 4 21 10 15 10"/></svg>
+    Refresh data
+  </button>
   <button class="pres-edit-btn" id="pres-theme-btn" type="button" title="Theme picker — pick a saved slide as the default for new pages, or right-click any slide thumbnail to set it as a Theme">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="9"/>
@@ -4263,6 +4267,10 @@ function openDeck(id) {
      can't undo back into a different deck's state. */
   resetHistory();
   pushHistory();
+  /* Auto-update report-chart data from the latest cache (silent, best-effort).
+     Runs after the first render so the deck appears instantly; charts whose
+     numbers changed re-render a beat later. No-op when nothing changed. */
+  if (typeof refreshReportCharts === 'function') { refreshReportCharts().catch(() => {}); }
 }
 
 /* ─── Thumbnail rail ─── render every slide of the active deck as a
@@ -6207,7 +6215,17 @@ const OR_CHART_RECIPES = {
     const scale = (maxV > 0 && maxV < 1) ? 100 : 1;
     rows.forEach(r => { r.v = Math.round(r.v * scale * 10) / 10; });
     rows.sort((a, b) => b.v - a.v);
-    return { module: 'industry-value', box: { w: 980, h: 540 }, data: { industry: rows } };
+    return {
+      module: 'industry-value', box: { w: 980, h: 540 },
+      /* Slide-only legend tweak: the donut centres at 32% width, so the
+         module's far-right legend leaves a big gap on a 16:9 slide. Anchor the
+         legend's LEFT edge just right of the donut (right:'auto' cancels the
+         module's right:30) and bump the text a touch. Report is untouched (it
+         renders the module directly, not via this recipe). */
+      legend: { left: '58%', right: 'auto', itemGap: 8, textStyle: { fontSize: 13 } },
+      legendStagger: true,   /* cascade the legend items in, synced with the donut build */
+      data: { industry: rows },
+    };
   },
   /* p10 — Vacancy vs Rent (module: vacancy-vs-rent). Rent house/unit bars +
      vacancy line; year≥2000; vacancy ×100. */
@@ -6552,42 +6570,44 @@ function _orBuildStatSpec(key, raw, regionName) {
     subtitle: regionName || '',
   };
 }
-async function ovAddReportChart(slug, pageId) {
-  if (!_activeDeck) return;
+/* Build a report-chart spec ({module,data,…} or a bigNumber stat spec) from
+   the CURRENT cache for a region + page. PURE: no toast, no insert. Returns
+   { spec } on success or { error } with a user message. `snapCache` (optional
+   {}) memoises snapshot reads so a deck-wide refresh reads each source once.
+   Shared by ovAddReportChart (insert) and refreshReportCharts (auto-update). */
+async function buildReportChartSpec(slug, pageId, snapCache) {
+  if (!window.PPReportCache) return { error: 'Chart-data module not loaded — reload the page and try again.' };
   const region = OR_REGIONS.find(r => r.slug === slug);
-  if (!region) return;
-  if (!window.PPReportCache) { showPresToast('Chart-data module not loaded — reload the page and try again.'); return; }
+  if (!region) return { error: 'Unknown region.' };
+  const getSnap = async (src) => {
+    if (snapCache && Object.prototype.hasOwnProperty.call(snapCache, src)) return snapCache[src];
+    let s = null;
+    try { s = await window.PPReportCache.readSnapshot(src); } catch (_) {}
+    if (snapCache) snapCache[src] = s;
+    return s;
+  };
   let spec = null;
   if (region.cluster === 'Research Reports') {
-    /* National / Commercial research reports: the snapshot is FLAT, not
-       per-region — national = snap.data.<field>, commercial = snap.tabs[..].
-       Their charts are their own modules (national-charts.js etc.) keyed by
-       page in NR_/CR_CHART_RECIPES. */
+    /* National / Commercial research reports: snapshot is FLAT, not per-region
+       — national = snap.data.<field>, commercial = snap.tabs[..]. */
     const recipes = region.slug === 'national' ? NR_CHART_RECIPES : CR_CHART_RECIPES;
     const recipe = recipes[pageId];
-    if (!recipe) { showPresToast('That page isn’t available as a chart yet — more are being added.'); return; }
-    showPresToast('Loading chart data…');
-    let snap = null;
-    try { snap = await window.PPReportCache.readSnapshot(region.slug); } catch (_) {}
-    if (!snap) { showPresToast('No stored data for this report yet — open the report and press “Save data” first.'); return; }
+    if (!recipe) return { error: 'That page isn’t available as a chart yet — more are being added.' };
+    const snap = await getSnap(region.slug);
+    if (!snap) return { error: 'No stored data for this report yet — open the report and press “Save data” first.' };
     spec = recipe(region.slug === 'national' ? (snap.data || {}) : (snap.tabs || {}));
   } else {
     const isStat = pageId.indexOf('stat:') === 0;
     const recipe = isStat ? null : OR_CHART_RECIPES[pageId];
-    if (!isStat && !recipe) { showPresToast('That page isn’t available as a chart yet — more chart types are being added.'); return; }
+    if (!isStat && !recipe) return { error: 'That page isn’t available as a chart yet — more chart types are being added.' };
     const source = OR_CLUSTER_SOURCE[region.cluster];
-    if (!source) { showPresToast('No data source for this report yet.'); return; }
-    showPresToast('Loading chart data…');
-    let snap = null;
-    try { snap = await window.PPReportCache.readSnapshot(source); } catch (_) {}
-    if (!snap) { showPresToast('No stored data for this report yet — open the report and press “Save data” first.'); return; }
+    if (!source) return { error: 'No data source for this report yet.' };
+    const snap = await getSnap(source);
+    if (!snap) return { error: 'No stored data for this report yet — open the report and press “Save data” first.' };
     let raw = _orRegionLookup(snap.regions, slug);
-    if (!raw) { showPresToast('That region isn’t in the stored data yet.'); return; }
-    /* Regional Population Change (p12) draws a 3rd line for the PEER capital
-       (e.g. Mackay → Brisbane), whose data lives in a DIFFERENT cluster
-       snapshot. Mirror mapLiveToRegion: pull the peer's metro change, align it
-       to this region's year axis, and inject it as changeNational (the column
-       p12 reads for the 3rd series). Capitals already carry changeNational. */
+    if (!raw) return { error: 'That region isn’t in the stored data yet.' };
+    /* Regional Population Change (p12): inject the PEER capital's metro change
+       (3rd line) from its own cluster snapshot — mirrors mapLiveToRegion. */
     if (pageId === 'p12' && region.cluster !== 'Capital Cities'
         && !(Array.isArray(raw.changeNational) && raw.changeNational.length)) {
       try {
@@ -6595,7 +6615,7 @@ async function ovAddReportChart(slug, pageId) {
         const peerEntry = peerSlug && OR_REGIONS.find(r => r.slug === peerSlug);
         const peerSource = peerEntry && OR_CLUSTER_SOURCE[peerEntry.cluster];
         if (peerSource) {
-          const peerSnap = await window.PPReportCache.readSnapshot(peerSource);
+          const peerSnap = await getSnap(peerSource);
           const peerRaw = peerSnap && _orRegionLookup(peerSnap.regions, peerSlug);
           if (peerRaw && Array.isArray(peerRaw.year) && Array.isArray(peerRaw.changeMetro)) {
             const peerYears = peerRaw.year.map(y => parseInt(y, 10));
@@ -6607,11 +6627,23 @@ async function ovAddReportChart(slug, pageId) {
             });
           }
         }
-      } catch (_) { /* peer feed unavailable → the 3rd line just stays empty */ }
+      } catch (_) { /* peer feed unavailable → 3rd line stays empty */ }
     }
     spec = isStat ? _orBuildStatSpec(pageId.slice(5), raw, region.name) : recipe(raw, region.name, region);
   }
-  if (!spec) { showPresToast('That chart has no data for this region / page.'); return; }
+  if (!spec) return { error: 'That chart has no data for this region / page.' };
+  return { spec: spec };
+}
+
+/* Insert a report chart onto the current slide. Builds the spec from the cache
+   and stores its SOURCE (region + page) so the data can be auto-refreshed in
+   place later (see refreshReportCharts). */
+async function ovAddReportChart(slug, pageId) {
+  if (!_activeDeck) return;
+  showPresToast('Loading chart data…');
+  const built = await buildReportChartSpec(slug, pageId);
+  if (built.error) { showPresToast(built.error); return; }
+  const spec = built.spec;
   /* Size by shape: big numbers squarer; the population chart is taller (long
      age-group labels down the side); everything else is a landscape report
      graph. The report charts' grids use fixed pixel margins tuned for a
@@ -6624,11 +6656,53 @@ async function ovAddReportChart(slug, pageId) {
     id: 'c' + Date.now(), type: 'chart',
     x: Math.round((1280 - w) / 2), y: Math.round((720 - h) / 2),
     w, h, baseW: w, baseH: h, spec,
+    source: { slug: slug, pageId: pageId },   // enables auto-refresh from the cache
   });
   saveOverlays();
   _selectedId = currentOverlays()[currentOverlays().length - 1].id;
   renderOverlays();
   pushHistory();
+}
+
+/* Auto-update: re-read the CURRENT report-data cache and rebuild every report
+   chart's data on the active deck IN PLACE — keeping each overlay's size,
+   position and animation, plus its module/legend; only the numbers change.
+   Best-effort: a chart whose source can't be rebuilt keeps its existing data.
+   Charts added before this feature have no stored `source` and are skipped
+   (re-insert once to enable). Called on deck open + the "Refresh data" button. */
+async function refreshReportCharts(opts) {
+  opts = opts || {};
+  if (!_activeDeck || !window.PPReportCache) return { updated: 0, total: 0 };
+  const jobs = [];
+  Object.keys(_overlays).forEach(k => {
+    if (k.indexOf(_activeDeck.id + '/') !== 0) return;
+    (_overlays[k] || []).forEach(o => {
+      if (o.type === 'chart' && o.spec && o.source && o.source.slug && o.source.pageId) jobs.push(o);
+    });
+  });
+  if (!jobs.length) {
+    if (opts.toast) showPresToast('No auto-updating charts on this deck yet — re-insert report charts to enable.', { duration: 5000, warn: true });
+    return { updated: 0, total: 0 };
+  }
+  const snapCache = {};
+  let updated = 0;
+  for (const o of jobs) {
+    try {
+      const built = await buildReportChartSpec(o.source.slug, o.source.pageId, snapCache);
+      /* Only replace when the data actually differs, so an unchanged cache
+         doesn't churn cloud saves or needlessly re-animate the charts. */
+      if (built && built.spec && JSON.stringify(built.spec) !== JSON.stringify(o.spec)) {
+        o.spec = built.spec;
+        updated++;
+      }
+    } catch (_) { /* keep this chart's existing data */ }
+  }
+  if (updated) { saveOverlays(); renderOverlays(); }
+  if (opts.toast) {
+    showPresToast(updated ? ('Chart data refreshed — ' + updated + ' chart' + (updated === 1 ? '' : 's') + ' updated.')
+                          : 'Charts already up to date.', { duration: 4000 });
+  }
+  return { updated: updated, total: jobs.length };
 }
 
 function ovAddImage(file) {
@@ -6718,16 +6792,19 @@ function ovDelete(id) {
    embeds can coexist on one slide. NOT protected (user can
    delete it via the × tab or Delete key). */
 const EMBED_KINDS = {
-  'clock':         { src: 'property-clock.html?embed=1',           title: 'National Property Clock' },
-  'runway-house':  { src: 'runway-demand.html?embed=1&view=house', title: 'Runway v Demand — Houses' },
-  'runway-unit':   { src: 'runway-demand.html?embed=1&view=unit',  title: 'Runway v Demand — Units' },
+  'clock':         { src: 'property-clock.html?embed=1',           title: 'National Property Clock', baseW: 720,  baseH: 400 },
+  'runway-house':  { src: 'runway-demand.html?embed=1&view=house', title: 'Runway v Demand — Houses', baseW: 1136, baseH: 760 },
+  'runway-unit':   { src: 'runway-demand.html?embed=1&view=unit',  title: 'Runway v Demand — Units',  baseW: 1136, baseH: 760 },
 };
 function ovAddEmbed(kind) {
   const spec = EMBED_KINDS[kind];
   if (!spec) return;
-  /* Default size = roughly half the slide; positioned near
-     centre so the user can immediately see + drag it. */
-  const w = 720, h = 400;
+  /* baseW/baseH = the iframe's fixed render size (per tool); the overlay
+     CSS-scales it to the box so the tool's whole content scales with the box.
+     Insert PRESERVING the base aspect so it fills the box; runway's exact
+     height is measured from its loaded content (see the embed render). */
+  const baseW = spec.baseW || 720, baseH = spec.baseH || 400;
+  const w = 640, h = Math.round(w * baseH / baseW);
   currentOverlays().push({
     id: 'embed-' + kind + '-' + Date.now(),
     type: 'embed',
@@ -6735,8 +6812,7 @@ function ovAddEmbed(kind) {
     title: spec.title,
     x: (1280 - w) / 2,
     y: (720 - h) / 2,
-    w, h,
-    cropT: 0, cropB: 0, cropL: 0, cropR: 0,
+    w, h, baseW, baseH,
   });
   saveOverlays();
   _selectedId = currentOverlays()[currentOverlays().length - 1].id;
@@ -8287,25 +8363,57 @@ function buildOverlayEl(o) {
     _applyImageCrop(el, img, o);
     el.appendChild(img);
   } else if (o.type === 'embed') {
-    /* Live-tool iframe rendered with edge cropping + corner resize.
-       Iframe size = (w + cropL + cropR) × (h + cropT + cropB), so
-       SE corner drag changes w/h and the iframe scales with it
-       (resize), while edge drags adjust only the crop and shift
-       the iframe via negative left/top so the corresponding side
-       hides under overflow:hidden (cut, no scale change). */
-    const cL = o.cropL || 0, cR = o.cropR || 0;
-    const cT = o.cropT || 0, cB = o.cropB || 0;
+    /* Live-tool iframe rendered at a FIXED base size and CSS-scaled (CONTAIN +
+       centre) to fit the overlay box, so the tool's WHOLE content scales with
+       the box and is never cut. Base WIDTH = the tool's designed width (so its
+       layout doesn't wrap/reflow); runway's base HEIGHT is MEASURED from its
+       loaded content (same-origin) so the iframe is exactly tall enough — no
+       guessing, no internal clip. Resize is proportional. pointer-events:none
+       in edit (overlay stays draggable); auto in Present (tool interactive). */
+    const isRunway = /runway-demand/.test(o.src || '');
+    if (isRunway) o.baseW = 1136;            // runway content max-width 1120 + 2×8px inner padding → no side gap
+    if (o.baseW == null) o.baseW = o.w;
+    if (o.baseH == null) o.baseH = o.h;
     const iframe = document.createElement('iframe');
     iframe.src = o.src;
     iframe.title = o.title || 'Embed';
     iframe.loading = 'lazy';
-    iframe.style.cssText =
-      'border:0;display:block;background:transparent;' +
-      'width:'  + (o.w + cL + cR) + 'px;' +
-      'height:' + (o.h + cT + cB) + 'px;' +
-      'left:'   + (-cL) + 'px;' +
-      'top:'    + (-cT) + 'px;' +
-      'pointer-events:' + (_editMode ? 'none' : 'auto');
+    iframe.style.cssText = 'position:absolute;border:0;display:block;background:transparent;transform-origin:top left;pointer-events:' + (_editMode ? 'none' : 'auto') + ';';
+    const fitEmbed = () => {
+      const bW = o.baseW, bH = o.baseH || bW;
+      const sc = Math.min(o.w / bW, o.h / bH);
+      iframe.style.width  = bW + 'px';
+      iframe.style.height = bH + 'px';
+      iframe.style.transform = 'scale(' + sc + ')';
+      iframe.style.left = Math.round((o.w - bW * sc) / 2) + 'px';
+      iframe.style.top  = Math.round((o.h - bH * sc) / 2) + 'px';
+    };
+    fitEmbed();
+    if (isRunway) {
+      /* Measure the real content height once loaded so the base is exactly
+         tall enough, then snap the box to that aspect so it fills (no bars). */
+      const measureEmbed = () => {
+        try {
+          const d = iframe.contentDocument;
+          /* Measure the CONTENT wrapper, not documentElement — the page is
+             min-height:100vh, so scrollHeight just echoes the iframe's own
+             height (leaving navy space below the chart). .runway-inner wraps
+             the actual controls + chart + legend = the true content height. */
+          const inner = d && d.querySelector('.runway-inner');
+          const ch = inner ? Math.ceil(inner.getBoundingClientRect().height)
+                           : (d && (d.documentElement.scrollHeight || (d.body && d.body.scrollHeight)));
+          if (ch && ch > 80 && Math.abs(ch - (o.baseH || 0)) > 2) {
+            o.baseH = ch;
+            o.h = Math.round(o.w * ch / o.baseW);
+            el.style.height = o.h + 'px';
+            fitEmbed();
+          }
+        } catch (_) {}
+      };
+      /* Measure on load, then once more after layout settles (fonts / chart
+         draw can nudge the height). */
+      iframe.addEventListener('load', () => { measureEmbed(); setTimeout(measureEmbed, 500); });
+    }
     el.appendChild(iframe);
   } else if (o.type === 'table') {
     /* Table overlay: width/height tracks the sum of col / row sizes
@@ -8392,7 +8500,7 @@ function buildOverlayEl(o) {
       const origW = o.w, origH = o.h;
       /* Charts resize proportionally (like images) so the graph keeps its
          shape — never stretched too tall or too wide. */
-      const proportional = o.type === 'image' || o.type === 'chart';
+      const proportional = o.type === 'image' || o.type === 'chart' || o.type === 'embed';
       /* Tables scale every column / row by the same ratio so the
          relative cell sizes are preserved when the user resizes
          the whole table from the SE corner. Capture the original
@@ -8462,10 +8570,15 @@ function buildOverlayEl(o) {
           handles.forEach(h => el.appendChild(h));
         }
         if (o.type === 'embed') {
+          /* Scale the fixed-size iframe to fit the new box (CONTAIN + centre)
+             so the tool's content scales with the box and is never cut. */
           const iframe = el.querySelector('iframe');
+          const bW = o.baseW || origW, bH = o.baseH || origH;
           if (iframe) {
-            iframe.style.width  = (o.w + (o.cropL || 0) + (o.cropR || 0)) + 'px';
-            iframe.style.height = (o.h + (o.cropT || 0) + (o.cropB || 0)) + 'px';
+            const sc = Math.min(o.w / bW, o.h / bH);
+            iframe.style.transform = 'scale(' + sc + ')';
+            iframe.style.left = Math.round((o.w - bW * sc) / 2) + 'px';
+            iframe.style.top  = Math.round((o.h - bH * sc) / 2) + 'px';
           }
         }
         if (o.type === 'chart') {
@@ -8496,8 +8609,10 @@ function buildOverlayEl(o) {
      disappears under the overlay's top edge; symmetric for bottom
      / left / right. The iframe size stays the same throughout
      because (w + cropL + cropR) is conserved as one shrinks the
-     other grows. */
-  if (o.type === 'embed') {
+     other grows.
+     DISABLED: embeds now scale their CONTENT proportionally (fixed base +
+     transform:scale, like charts), so per-side cropping no longer applies. */
+  if (false) {
     ['t', 'b', 'l', 'r'].forEach(side => {
       const eh = document.createElement('div');
       eh.className = 'pres-overlay-edge ' + side;
@@ -9721,6 +9836,8 @@ imageInput.addEventListener('change', (ev) => {
    rows by dragging cell boundaries. */
 const addTableBtn = document.getElementById('pres-add-table');
 if (addTableBtn) addTableBtn.addEventListener('click', ovAddTable);
+const refreshChartsBtn = document.getElementById('pres-refresh-charts');
+if (refreshChartsBtn) refreshChartsBtn.addEventListener('click', () => refreshReportCharts({ toast: true }));
 
 /* + Embed opens a small picker positioned beneath the button.
    Clicking an option spawns a draggable / resizable embed overlay

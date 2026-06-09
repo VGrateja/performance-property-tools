@@ -219,12 +219,26 @@
       var defs = full[k]; if (!defs) return;
       var arr = Array.isArray(defs) ? defs : [defs];
       axisLock[k] = arr.map(function (def, i) {
-        if (def && def.type && def.type !== 'value') return {};
+        if (def && def.type && def.type !== 'value') return {};   // category / log axes are already stable
+        if (def && typeof def.max === 'number') return {};        // module already pinned a NICE max (niceAxis) — keep it exactly like the report
         try {
-          var ext = chart.getModel().getComponent(k, i).axis.scale.getExtent();
-          if (ext && isFinite(ext[0]) && isFinite(ext[1])) return { min: ext[0], max: ext[1] };
+          var axis = chart.getModel().getComponent(k, i).axis;
+          var ext  = axis.scale.getExtent();
+          var step = (axis.scale.getInterval && axis.scale.getInterval()) || 0;
+          if (ext && isFinite(ext[0]) && isFinite(ext[1]) && step > 0) {
+            /* Freeze an AUTO-scaled axis to the SAME nice tick grid ECharts
+               shows at full data (the report's look): snap min DOWN / max UP to
+               the tick step so the top tick is a clean multiple — not a stub
+               like …12,14 or …20k,21k that pinning the raw data max produced.
+               Honour an explicit module min (e.g. min:0) so a zero-based axis
+               stays zero-based. */
+            var lo = (def && typeof def.min === 'number') ? def.min : Math.floor((ext[0] + 1e-9) / step) * step;
+            var hi = Math.ceil((ext[1] - 1e-9) / step) * step;
+            if (hi <= lo) hi = lo + step;
+            return { min: lo, max: hi, interval: step };
+          }
         } catch (_) {}
-        return {};
+        return {};   // couldn't compute a clean grid → leave ECharts to nice it
       });
     });
 
@@ -254,6 +268,55 @@
        touching the shared module (e.g. median-price ships a tall bottom
        margin that leaves a big gap on a 16:9 slide). Merges over the grid. */
     if (spec.grid) chart.setOption({ grid: spec.grid });
+    /* Same idea for the legend: a recipe can pull it closer to the plot /
+       resize its text for the slide WITHOUT touching the shared module
+       (e.g. the industry donut sits left, so the report's far-right legend
+       leaves a big mid-slide gap). Merges over the legend. */
+    if (spec.legend) chart.setOption({ legend: spec.legend });
+
+    /* Optional slide-only legend ENTRANCE: cascade the legend items in (synced
+       with the data reveal) instead of showing them all at once. Opt-in via
+       spec.legendStagger (e.g. the industry donut). Item names come from the
+       legend's own data, else the pie series' slice names. */
+    var legendNames = null, legendTimer = null, legendStarted = false;
+    if (spec.legendStagger) {
+      var lg = full.legend; if (Array.isArray(lg)) lg = lg[0];
+      if (lg && lg.data && lg.data.length) {
+        legendNames = lg.data.slice();
+      } else {
+        var pieS = allSeries.filter(function (s) { return s && s.type === 'pie'; })[0];
+        if (pieS && Array.isArray(pieS.data)) {
+          legendNames = pieS.data.map(function (d) { return (d && typeof d === 'object') ? d.name : d; })
+                             .filter(function (n) { return n != null && n !== ''; });
+        }
+      }
+      if (legendNames && legendNames.length) {
+        /* Pin the legend's top so cascading items append DOWNWARD. The module's
+           top:'middle' re-centres the whole block every time an item is added,
+           yanking the existing items up each tick — that was the start-of-
+           animation glitch. Centre the FULL list once, up front, then hold it. */
+        var legH = (chart.getHeight && chart.getHeight()) || 540;
+        var topPx = Math.max(8, Math.round((legH - legendNames.length * 22) / 2));   // ~22px per row
+        chart.setOption({ legend: { top: topPx, data: [] } });   // fixed top + start hidden
+      } else legendNames = null;
+    }
+    function startLegendReveal() {
+      if (!legendNames || legendStarted) return;
+      legendStarted = true;
+      var total = legendNames.length;
+      var per = Math.max(16, Math.min(40, Math.round((THEME.drawMs || 1100) / (total * 2))));   // snappy stagger
+      var i = 0;
+      (function tick() {
+        i += 1;
+        chart.setOption({ legend: { data: legendNames.slice(0, i) } });
+        if (i < total) legendTimer = setTimeout(tick, per);
+      })();
+    }
+    function resetLegend() {
+      if (legendTimer) { clearTimeout(legendTimer); legendTimer = null; }
+      legendStarted = false;
+      if (legendNames) chart.setOption({ legend: { data: [] } });
+    }
 
     var shown = [];
     /* Pre-build state: only the always-on series (replaceMerge drops the
@@ -261,15 +324,23 @@
     function showStatic() { chart.setOption({ series: staticSeries.slice() }, { replaceMerge: ['series'] }); }
     showStatic();
 
-    var builds = revealSeries.map(function (s) {
+    var builds = revealSeries.map(function (s, idx) {
       /* Default merge (no replaceMerge): the previously-shown series keep
-         their index and DON'T re-animate; the newly appended one enters. */
-      return function () { shown.push(s); chart.setOption({ series: staticSeries.concat(shown) }); };
+         their index and DON'T re-animate; the newly appended one enters.
+         The first data reveal also kicks off the legend cascade (if any). */
+      return function () {
+        shown.push(s);
+        chart.setOption({ series: staticSeries.concat(shown) });
+        if (idx === 0) startLegendReveal();
+      };
     });
+    /* Requested a staggered legend but there's no data series to trigger it →
+       just show it, so the legend isn't left permanently empty. */
+    if (legendNames && revealSeries.length === 0) startLegendReveal();
     return stepController(builds, {
-      reset: function () { shown.length = 0; showStatic(); },
+      reset: function () { shown.length = 0; resetLegend(); showStatic(); },
       resize: function () { try { chart.resize(); } catch (_) {} },
-      dispose: function () { try { chart.dispose(); } catch (_) {} },
+      dispose: function () { if (legendTimer) { try { clearTimeout(legendTimer); } catch (_) {} } try { chart.dispose(); } catch (_) {} },
     });
   }
 
