@@ -3173,18 +3173,35 @@ function openPdfPagesModal() {
   /* REGIONS — pre-check the active region; other research regions
      are listed but unchecked by default. */
   const slug = _rs_active();
-  regionList.innerHTML = Object.entries(RESEARCH_REGIONS).map(([s, info]) => {
-    const checked = s === slug ? ' checked' : '';
-    const safeName = String(info.name).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-    return ''
-      + '<label class="pp-pages-row">'
-      +   '<input type="checkbox" data-slug="' + s + '"' + checked + ' />'
-      +   '<span class="lbl">' + safeName + '</span>'
-      + '</label>';
-  }).join('');
+  const _esc = (str) => String(str).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  const _regRow = (s, name) => ''
+    + '<label class="pp-pages-row">'
+    +   '<input type="checkbox" data-slug="' + s + '"' + (s === slug ? ' checked' : '') + ' />'
+    +   '<span class="lbl">' + _esc(name) + '</span>'
+    + '</label>';
+  const _regHdr = (label) => '<div class="pp-region-group" style="font-size:11px;font-weight:700;'
+    + 'letter-spacing:.08em;text-transform:uppercase;opacity:.55;margin:12px 2px 4px;">' + _esc(label) + '</div>';
+  /* Unified report list: the 35 regional reports grouped by cluster, then a
+     Research Reports group (National + Commercial). The active report is
+     pre-checked; everything else starts unchecked. Cross-family picks (e.g. a
+     regional report selected from the National report) download as the cached
+     full PDF — see _dispatchReportDownload. */
+  let _regHtml = '';
+  REGIONAL_CLUSTER_ORDER.forEach(cl => {
+    const rows = Object.entries(REGIONAL_REGIONS).filter(([, info]) => info.cluster === cl);
+    if (!rows.length) return;
+    _regHtml += _regHdr(REGIONAL_CLUSTER_LABELS[cl] || cl);
+    rows.forEach(([s, info]) => { _regHtml += _regRow(s, info.name); });
+  });
+  _regHtml += _regHdr('Research Reports');
+  Object.entries(RESEARCH_REGIONS).forEach(([s, info]) => { _regHtml += _regRow(s, info.name); });
+  regionList.innerHTML = _regHtml;
 
   if (allPagesCb) allPagesCb.checked = true;
   if (allRegionsCb) {
+    const allLbl = allRegionsCb.closest('label');
+    const st = allLbl && allLbl.querySelector('strong');
+    if (st) st.textContent = 'All reports';
     const allChecked = Array.from(regionList.querySelectorAll('input[type="checkbox"]')).every(c => c.checked);
     allRegionsCb.checked = allChecked;
   }
@@ -3286,26 +3303,8 @@ function setupPdfPagesModal() {
      loops. */
   const pdfBtn  = document.getElementById('pdf-pages-confirm');
   const jpegBtn = document.getElementById('pdf-pages-jpeg');
-  if (pdfBtn) pdfBtn.addEventListener('click', () => {
-    const sel = _readPdfPagesSelection();
-    if (!sel) return;
-    closePdfPagesModal();
-    /* Host-HTML downloadReport(...) implementation lives inline (see
-       _captureReportToPdf etc.); we pass the picked pages + regions
-       through so the host can route to prebuilt-cache / live render /
-       multi-region as appropriate. */
-    if (typeof window.runReportDownload === 'function') {
-      window.runReportDownload({ kind: 'pdf',  pageIds: sel.pageIds, regions: sel.regions, allPages: sel.allPages });
-    }
-  });
-  if (jpegBtn) jpegBtn.addEventListener('click', () => {
-    const sel = _readPdfPagesSelection();
-    if (!sel) return;
-    closePdfPagesModal();
-    if (typeof window.runReportDownload === 'function') {
-      window.runReportDownload({ kind: 'jpeg', pageIds: sel.pageIds, regions: sel.regions, allPages: sel.allPages });
-    }
-  });
+  if (pdfBtn)  pdfBtn.addEventListener('click',  () => { const sel = _readPdfPagesSelection(); if (sel) _dispatchReportDownload('pdf',  sel); });
+  if (jpegBtn) jpegBtn.addEventListener('click', () => { const sel = _readPdfPagesSelection(); if (sel) _dispatchReportDownload('jpeg', sel); });
 
   document.addEventListener('keydown', ev => {
     if (ev.key === 'Escape' && bg.classList.contains('open')) closePdfPagesModal();
@@ -3322,6 +3321,74 @@ function _readPdfPagesSelection() {
   ).map(cb => cb.dataset.slug);
   if (!pageIds.length || !regions.length) return null;
   return { pageIds, regions, allPages: wantAllPages };
+}
+
+/* Route a download. Selections in the CURRENT report's family go to the
+   tool's own renderer (window.runReportDownload — honours page subsets + JPEG,
+   live render / prebuilt cache). Selections from the OTHER family (e.g. a
+   regional report picked from the National report) download as the cached full
+   PDF via _downloadCachedReportPdfs (Increment 1: full PDF only — cross-family
+   JPEG / page-subset is a later increment). */
+function _dispatchReportDownload(kind, sel) {
+  closePdfPagesModal();
+  const activeSlug = (typeof _rs_active === 'function') ? _rs_active() : null;
+  const activeIsResearch = !!(activeSlug && RESEARCH_REGIONS[activeSlug]);
+  const cur = [], other = [];
+  (sel.regions || []).forEach(s => {
+    const isResearch = !!RESEARCH_REGIONS[s];
+    (isResearch === activeIsResearch ? cur : other).push(s);
+  });
+  if (cur.length && typeof window.runReportDownload === 'function') {
+    window.runReportDownload({ kind: kind, pageIds: sel.pageIds, regions: cur, allPages: sel.allPages });
+  }
+  if (other.length) {
+    if (kind !== 'pdf' || !sel.allPages) {
+      alert('The ' + (activeIsResearch ? 'regional' : 'National / Commercial') + ' report(s) you also picked '
+        + 'export as the complete PDF for now (JPEG / specific-page export for the other report type is coming '
+        + 'in the next step).');
+    }
+    _downloadCachedReportPdfs(other);
+  }
+}
+
+/* Fetch the prebuilt monthly PDF for each slug straight from Storage and save
+   it — the renderer publishes every report (35 regionals + national +
+   commercial) to online-reports/<YYYY-MM>/<slug>.pdf. Tries this month, then
+   last month (in case the 12th-of-month render hasn't run yet). Bucket is
+   private → short-lived signed URLs. */
+async function _downloadCachedReportPdfs(slugs) {
+  if (!window.sb || !window.sb.storage) { alert('Cached downloads need a signed-in session.'); return; }
+  const mk = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  const now = new Date();
+  const months = [mk(now), mk(new Date(now.getFullYear(), now.getMonth() - 1, 1))];
+  const nameOf = (s) => ((RESEARCH_REGIONS[s] || REGIONAL_REGIONS[s] || {}).name || s);
+  const miss = [];
+  for (const slug of slugs) {
+    let done = false;
+    for (const m of months) {
+      try {
+        const { data, error } = await window.sb.storage.from('online-reports').createSignedUrl(m + '/' + slug + '.pdf', 60);
+        if (error || !data || !data.signedUrl) continue;
+        const resp = await fetch(data.signedUrl, { cache: 'no-store' });
+        if (!resp.ok) continue;
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'PPA-' + nameOf(slug).replace(/[^\w]+/g, '-') + '.pdf';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        done = true;
+        await new Promise(r => setTimeout(r, 350));   // space out so the browser asks once
+        break;
+      } catch (_) { /* try previous month */ }
+    }
+    if (!done) miss.push(slug);
+  }
+  if (miss.length) {
+    alert('No cached PDF found yet for: ' + miss.map(nameOf).join(', ')
+      + '.\n\nThe monthly PDFs build on the 12th. Open that report directly and use its own Download for a live export in the meantime.');
+  }
 }
 
 /* ─── Bands button — chart reference-band UI is a future extension
