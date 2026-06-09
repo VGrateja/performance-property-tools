@@ -145,6 +145,7 @@ function doGet(e) {
         pageH: pres.getPageHeight(),
         slideCount: ss.length,
         snapshot: true,
+        revisionId: SL_revisionId(id),   // lets the tool re-sync only when the deck actually changed
       },
       slides: ss.map(function () { return {}; }),
     });
@@ -508,6 +509,18 @@ function SL_fetchImageBytes(url) {
 /* Render ONE slide to a PNG via the Slides REST thumbnail endpoint and return
    its bytes (base64 data URL). LARGE ≈ 1600px on the long edge — crisp for a
    1280-wide slide. Used by snapshot import (pixel-perfect, non-editable). */
+/* The deck's current revisionId (cheap REST call, existing presentations
+   scope) — the tool stores it and only re-pulls slide images when it changes. */
+function SL_revisionId(id) {
+  try {
+    var res = UrlFetchApp.fetch('https://slides.googleapis.com/v1/presentations/' + encodeURIComponent(id) + '?fields=revisionId',
+      { method: 'get', muteHttpExceptions: true, headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() } });
+    if (res.getResponseCode() !== 200) return '';
+    var j = JSON.parse(res.getContentText());
+    return (j && j.revisionId) ? j.revisionId : '';
+  } catch (e) { return ''; }
+}
+
 function SL_slideThumb(presId, pageId) {
   var url = 'https://slides.googleapis.com/v1/presentations/' + encodeURIComponent(presId) +
             '/pages/' + encodeURIComponent(pageId) +

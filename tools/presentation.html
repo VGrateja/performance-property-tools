@@ -2721,6 +2721,10 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><polyline points="21 4 21 10 15 10"/></svg>
     Refresh data
   </button>
+  <button class="pres-edit-btn" id="pres-sync-slides" type="button" style="display:none" title="Re-pull this deck's slides from its Google Slides source (snapshot decks only)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><polyline points="21 4 21 10 15 10"/><rect x="3" y="3" width="7" height="7" rx="1"/></svg>
+    Sync slides
+  </button>
   <button class="pres-edit-btn" id="pres-theme-btn" type="button" title="Theme picker — pick a saved slide as the default for new pages, or right-click any slide thumbnail to set it as a Theme">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="9"/>
@@ -4048,6 +4052,9 @@ async function importGoogleSlidesSnapshot() {
     icon: '🖼',
     slides: Array.from({ length: n }, () => ({ fn: 'blank', custom: true })),
     lastUpdated: now,
+    /* Remember the source so the deck can be re-synced when the Google deck
+       changes (manual "Sync slides" button + auto-on-open when revision differs). */
+    snapshotSource: { id: id, revisionId: meta.revisionId || '' },
   };
   _customDecks.push(deck);
   saveCustomDecks();
@@ -4065,7 +4072,7 @@ async function importGoogleSlidesSnapshot() {
       try { if (typeof _getSignedImageUrl === 'function') await _getSignedImageUrl(path); } catch (_) {}
       _overlays[deckId + '/' + i] = [{
         id: overlayId, type: 'image', x: 0, y: 0, w: 1280, h: 720,
-        storage: path, locked: true, protected: true,
+        storage: path, locked: true, protected: true, snapshotBg: true,
       }];
       ok++;
     } catch (e) {
@@ -4081,6 +4088,88 @@ async function importGoogleSlidesSnapshot() {
   if (fail) summary += ' (' + fail + ' failed)';
   showPresToast(summary, { duration: 8000, warn: !!fail });
   openDeck(deckId);
+}
+
+/* Re-sync a snapshot deck from its Google Slides source: re-render each slide
+   to a PNG and replace the locked background image IN PLACE (keeping any
+   editable overlays the user layered on top), handling the source gaining or
+   losing trailing slides. Re-pulling images uploads to Storage → WRITER-only
+   (advisors just view whatever a writer last synced). opts.auto = silent + only
+   when the source's revisionId changed (cheap check; needs the reader's
+   revisionId, else auto is skipped). opts.toast = always run + report. Decks
+   imported before this feature have no snapshotSource → skipped (re-import). */
+async function refreshSnapshotDeck(deck, opts) {
+  opts = opts || {};
+  const src = deck && deck.snapshotSource;
+  if (!src || !src.id || !SLIDES_IMPORT_URL) {
+    if (opts.toast) showPresToast('This deck has no Google Slides source — re-import it to enable syncing.', { duration: 6000, warn: true });
+    return;
+  }
+  let doc;
+  try {
+    if (opts.toast) showPresToast('Checking Google Slides for updates…', { duration: 60000 });
+    doc = await _slidesFetch('id=' + encodeURIComponent(src.id) + '&mode=snapshot', 60000);
+  } catch (e) {
+    if (opts.toast) showPresToast('Could not reach the source deck: ' + ((e && e.message) || 'fetch failed'), { duration: 7000, warn: true });
+    return;
+  }
+  const meta = doc._meta || {};
+  const n = meta.slideCount || (Array.isArray(doc.slides) ? doc.slides.length : 0);
+  if (!n) { if (opts.toast) showPresToast('Source deck has no slides (or could not be read).', { duration: 6000, warn: true }); return; }
+
+  /* Auto path only re-pulls when the source actually changed — needs a
+     revisionId from the reader (redeploy). No revisionId → skip auto so we
+     don't re-download images on every open; the manual button still works. */
+  const newRev = meta.revisionId || '';
+  if (opts.auto && (!newRev || newRev === src.revisionId)) return;
+
+  const deckId = deck.id;
+  let ok = 0, fail = 0, removed = 0;
+  for (let i = 0; i < n; i++) {
+    if (opts.toast) showPresToast('Syncing slide images… ' + (i + 1) + '/' + n, { duration: 60000 });
+    if (i >= deck.slides.length) deck.slides.push({ fn: 'blank', custom: true });
+    const key = deckId + '/' + i;
+    if (!Array.isArray(_overlays[key])) _overlays[key] = [];
+    try {
+      const got = await _slidesFetch('id=' + encodeURIComponent(src.id) + '&thumb=' + i, 90000);
+      if (!got || !got.dataUrl) throw new Error('no image');
+      const blob = await (await fetch(got.dataUrl)).blob();
+      /* Unique path each sync so the new image isn't served from a stale
+         signed-URL / CDN cache. */
+      const path = await _uploadImageToStorage(blob, deckId, 'snap-' + i + '-' + Date.now());
+      try { if (typeof _getSignedImageUrl === 'function') await _getSignedImageUrl(path); } catch (_) {}
+      const arr = _overlays[key];
+      const bg = arr.find(o => o.snapshotBg);
+      if (bg) { bg.storage = path; delete bg.src; }
+      else arr.unshift({ id: 'i' + Date.now() + '-bg-' + i, type: 'image', x: 0, y: 0, w: 1280, h: 720, storage: path, locked: true, protected: true, snapshotBg: true });
+      ok++;
+    } catch (e) { console.warn('Snapshot sync: slide', i, 'failed', e); fail++; }
+    saveOverlays();
+  }
+  /* Source shrank: drop trailing slides that are ONLY a snapshot (never the
+     user's own added content). */
+  while (deck.slides.length > n) {
+    const idx = deck.slides.length - 1;
+    const arr = _overlays[deckId + '/' + idx] || [];
+    if (arr.length && !arr.every(o => o.snapshotBg)) break;
+    delete _overlays[deckId + '/' + idx];
+    deck.slides.pop();
+    removed++;
+  }
+
+  deck.snapshotSource.revisionId = newRev;
+  deck.lastUpdated = new Date().toISOString();
+  saveCustomDecks();
+  saveOverlays();
+  if (_activeDeck && _activeDeck.id === deckId) {
+    buildThumbnails();
+    renderSlide(Math.min(_slideIdx, deck.slides.length - 1));
+  }
+  if (opts.toast) {
+    showPresToast('Synced from Google Slides — ' + ok + ' slide' + (ok === 1 ? '' : 's') + ' updated'
+      + (removed ? ', ' + removed + ' removed' : '') + (fail ? ', ' + fail + ' failed' : '') + '.',
+      { duration: 8000, warn: !!fail });
+  }
 }
 
 /* Duplicate any deck (built-in or custom) into a fresh custom copy.
@@ -4271,6 +4360,15 @@ function openDeck(id) {
      Runs after the first render so the deck appears instantly; charts whose
      numbers changed re-render a beat later. No-op when nothing changed. */
   if (typeof refreshReportCharts === 'function') { refreshReportCharts().catch(() => {}); }
+  /* Snapshot decks: reveal the "Sync slides" button, and auto-resync from the
+     Google source if its revision changed. Writer-only (re-pulling images
+     uploads to Storage); advisors just view whatever a writer last synced. */
+  const _syncBtn = document.getElementById('pres-sync-slides');
+  const _isSnap = !!(deck.snapshotSource && deck.snapshotSource.id);
+  if (_syncBtn) _syncBtn.style.display = _isSnap ? '' : 'none';
+  if (_isSnap && _canWritePresCloud && typeof refreshSnapshotDeck === 'function') {
+    refreshSnapshotDeck(deck, { auto: true }).catch(() => {});
+  }
 }
 
 /* ─── Thumbnail rail ─── render every slide of the active deck as a
@@ -9838,6 +9936,8 @@ const addTableBtn = document.getElementById('pres-add-table');
 if (addTableBtn) addTableBtn.addEventListener('click', ovAddTable);
 const refreshChartsBtn = document.getElementById('pres-refresh-charts');
 if (refreshChartsBtn) refreshChartsBtn.addEventListener('click', () => refreshReportCharts({ toast: true }));
+const syncSlidesBtn = document.getElementById('pres-sync-slides');
+if (syncSlidesBtn) syncSlidesBtn.addEventListener('click', () => refreshSnapshotDeck(_activeDeck, { toast: true }));
 
 /* + Embed opens a small picker positioned beneath the button.
    Clicking an option spawns a draggable / resizable embed overlay
