@@ -3139,10 +3139,10 @@ function applyArenaVisibility() {
 
 /* ─── Arena live feed ───
    Replaces the at-a-glance tiles with a vertical activity list.
-   Pulls from four sources in parallel:
+   Pulls from three sources in parallel — finishes/results are NOT shown
+   here (they live in Highlights); Live Now is only what's happening now:
      • my incoming challenges (chess + scrabble) — top priority
      • active games (chess + scrabble) — anyone can spectate
-     • recent finishes (chess + scrabble matches)
      • recent typing PBs (re-uses _arenaNewsItems built by loadArenaNews)
    Items are bucketed by priority and within each bucket sorted by
    time desc. Top 10 are rendered into #arenaLiveFeed. */
@@ -3186,17 +3186,9 @@ async function loadArenaLiveFeed() {
       window.sb.from('arena_scrabble_games')
         .select('id, player1_name, player1_email, player2_name, player2_email, ranked, time_control, started_at')
         .eq('status', 'active').order('started_at', { ascending: false }).limit(5),
-      /* Recent chess finishes. */
-      window.sb.from('arena_chess_matches')
-        .select('id, white_name, white_email, black_name, black_email, result, ranked, ended_at')
-        .order('ended_at', { ascending: false }).limit(5),
-      /* Recent scrabble finishes. */
-      window.sb.from('arena_scrabble_matches')
-        .select('id, player1_name, player1_email, player2_name, player2_email, result, player1_score, player2_score, ranked, ended_at')
-        .order('ended_at', { ascending: false }).limit(5),
     ];
     const settled = await Promise.allSettled(queries);
-    const [chessChIn, scrChIn, chessAct, scrAct, chessFin, scrFin] = settled.map(s => (s.status === 'fulfilled' && s.value && s.value.data) || []);
+    const [chessChIn, scrChIn, chessAct, scrAct] = settled.map(s => (s.status === 'fulfilled' && s.value && s.value.data) || []);
 
     /* Build feed items. priority: 0=incoming challenge, 1=active game,
        2=recent finish, 3=typing PB. */
@@ -3236,18 +3228,8 @@ async function loadArenaLiveFeed() {
       meta: _arenaFriendly(g.started_at) + ' · live',
       action: { label: 'Watch', href: 'tools/arena-scrabble.html', title: 'Scrabble' },
     }));
-    chessFin.forEach(m => items.push({
-      priority: 2, type: 'finish', icon: '🏁',
-      time: new Date(m.ended_at).getTime(),
-      html: _arenaChessFinishText(m),
-      meta: _arenaFriendly(m.ended_at),
-    }));
-    scrFin.forEach(m => items.push({
-      priority: 2, type: 'finish', icon: '🏁',
-      time: new Date(m.ended_at).getTime(),
-      html: _arenaScrabbleFinishText(m),
-      meta: _arenaFriendly(m.ended_at),
-    }));
+    /* Recent finishes are intentionally NOT added here — they moved to
+       Highlights. Live Now shows only active games + open challenges. */
     /* Re-use typing PB highlights already loaded by loadArenaNews(). */
     if (typeof _arenaNewsItems !== 'undefined' && Array.isArray(_arenaNewsItems)) {
       _arenaNewsItems.slice(0, 5).forEach(n => items.push({
@@ -3312,7 +3294,8 @@ async function loadArenaHighlights() {
         .select('white_email, white_name, black_email, black_name, result, ranked, white_pts_before, black_pts_before, ended_at')
         .order('ended_at', { ascending: false }).limit(60),
       window.sb.from('arena_scrabble_matches')
-        .select('id, ranked, ended_at, players:arena_scrabble_match_players(email, name, finish_rank, pts_before)')
+        .select('id, ranked, termination, ended_at, players:arena_scrabble_match_players(email, name, finish_rank, pts_before)')
+        .neq('termination', 'void')   /* voided games give EVERY player finish_rank=1 — never a real win */
         .order('ended_at', { ascending: false }).limit(60),
     ]);
     const chessMatches = (settled[0].status === 'fulfilled' && settled[0].value.data) || [];
@@ -3505,9 +3488,40 @@ async function loadArenaHighlights() {
         html: '<strong>' + _escapeHtml(m.name) + '</strong> crossed <strong>' + m.threshold + ' WPM</strong> for the first time (' + m.wpm + ')',
       }));
 
+    /* ── 7. Recent finishes — moved here from Live Now (which now shows
+       only active games + open challenges). Voided scrabble games are
+       already excluded by the query (.neq termination void); chess has no
+       void. Lowest priority so streaks/upsets/PBs lead, then results. */
+    const finishes = [];
+    chessMatches.forEach(m => {
+      if (!m.ended_at) return;
+      finishes.push({ time: new Date(m.ended_at).getTime(), html: _arenaChessFinishText(m) });
+    });
+    scrabMatches.forEach(m => {
+      if (!m.ended_at) return;
+      const players = (m.players || []);
+      const winners = players.filter(p => p.finish_rank === 1);
+      if (winners.length !== 1) return;   /* skip multi-way ties / malformed */
+      const w = winners[0];
+      const wName = w.name || (w.email || '').split('@')[0];
+      let html;
+      if (players.length === 2) {
+        const other = players.find(p => p !== w);
+        const oName = other ? (other.name || (other.email || '').split('@')[0]) : '';
+        html = '<strong>' + _escapeHtml(wName) + '</strong> beat <strong>' + _escapeHtml(oName) + '</strong> · Scrabble';
+      } else {
+        html = '<strong>' + _escapeHtml(wName) + '</strong> won · Scrabble (' + players.length + ' players)';
+      }
+      finishes.push({ time: new Date(m.ended_at).getTime(), html: html });
+    });
+    finishes.sort((a, b) => b.time - a.time).slice(0, 8).forEach(f => items.push({
+      priority: 3, icon: '🏁', time: f.time, html: f.html,
+    }));
+
     /* Sort by priority then recency. Priority -1 pins the current
        user's own items (PB + milestone crossing) at the very top,
-       followed by streaks (0), upsets + milestones (1), PBs (2). */
+       followed by streaks (0), upsets + milestones (1), PBs (2),
+       recent finishes (3). */
     items.sort((a, b) => (a.priority - b.priority) || (b.time - a.time));
     const top = items.slice(0, 40);
     if (!top.length) {
