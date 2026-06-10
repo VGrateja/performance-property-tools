@@ -3182,9 +3182,12 @@ async function loadArenaLiveFeed() {
       window.sb.from('arena_chess_games')
         .select('id, white_name, white_email, black_name, black_email, ranked, time_control, started_at')
         .eq('status', 'active').order('started_at', { ascending: false }).limit(5),
-      /* Active scrabble games. */
+      /* Active scrabble games. Players live in arena_scrabble_game_players
+         since the 2-4 player refactor — the games table has no player
+         columns, so the old player1_name/time_control select silently failed
+         and active scrabble games never appeared here. */
       window.sb.from('arena_scrabble_games')
-        .select('id, player1_name, player1_email, player2_name, player2_email, ranked, time_control, started_at')
+        .select('id, ranked, started_at, players:arena_scrabble_game_players(name, email, seat)')
         .eq('status', 'active').order('started_at', { ascending: false }).limit(5),
     ];
     const settled = await Promise.allSettled(queries);
@@ -3220,14 +3223,19 @@ async function loadArenaLiveFeed() {
       meta: _arenaFriendly(g.started_at) + ' · live',
       action: { label: 'Watch', href: 'tools/arena-chess.html', title: 'Chess' },
     }));
-    scrAct.forEach(g => items.push({
-      priority: 1, type: 'active', icon: '🔤',
-      time: new Date(g.started_at).getTime(),
-      html: '<strong>' + _escapeHtml(_arenaName(g.player1_name, g.player1_email)) + '</strong> vs '
-          + '<strong>' + _escapeHtml(_arenaName(g.player2_name, g.player2_email)) + '</strong> · Scrabble',
-      meta: _arenaFriendly(g.started_at) + ' · live',
-      action: { label: 'Watch', href: 'tools/arena-scrabble.html', title: 'Scrabble' },
-    }));
+    scrAct.forEach(g => {
+      const names = (g.players || [])
+        .slice().sort((a, b) => (a.seat || 0) - (b.seat || 0))
+        .map(p => '<strong>' + _escapeHtml(_arenaName(p.name, p.email)) + '</strong>');
+      if (!names.length) return;
+      items.push({
+        priority: 1, type: 'active', icon: '🔤',
+        time: new Date(g.started_at).getTime(),
+        html: names.join(' vs ') + ' · Scrabble',
+        meta: _arenaFriendly(g.started_at) + ' · live',
+        action: { label: 'Watch', href: 'tools/arena-scrabble.html', title: 'Scrabble' },
+      });
+    });
     /* Recent finishes are intentionally NOT added here — they moved to
        Highlights. Live Now shows only active games + open challenges. */
     /* Re-use typing PB highlights already loaded by loadArenaNews(). */
