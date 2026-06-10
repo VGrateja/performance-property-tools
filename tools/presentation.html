@@ -2725,6 +2725,10 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><polyline points="21 4 21 10 15 10"/><rect x="3" y="3" width="7" height="7" rx="1"/></svg>
     Sync slides
   </button>
+  <button class="pres-edit-btn" id="pres-visibility-btn" type="button" style="display:none" title="Publish to Performance Property Presentations (everyone) / move to My Presentations (only you)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>
+    <span id="pres-visibility-label">Publish</span>
+  </button>
   <button class="pres-edit-btn" id="pres-theme-btn" type="button" title="Theme picker — pick a saved slide as the default for new pages, or right-click any slide thumbnail to set it as a Theme">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="9"/>
@@ -3349,6 +3353,11 @@ try {
   if (!Array.isArray(_customDecks)) _customDecks = [];
 } catch (_) { _customDecks = []; }
 
+/* Picker filter from the hub cards: ?view=mine → only My Presentations,
+   ?view=company → only Performance Property Presentations, unset → both. */
+let _pickerView = '';
+try { _pickerView = (new URLSearchParams(location.search).get('view') || '').toLowerCase(); } catch (_) {}
+
 /* Migration: older user decks were created with hardcoded placeholder
    strings ("Custom" badge, "User-created presentation." description,
    "Empty deck" / "Add slides via the rail" cardMeta). They clutter
@@ -3377,14 +3386,17 @@ function scrubLegacyDeckPlaceholders() {
 }
 scrubLegacyDeckPlaceholders();
 function saveCustomDecks() {
-  _safeLsSet(CUSTOM_DECKS_KEY, JSON.stringify(_customDecks));
-  /* Structural changes (add/remove/reorder pages + decks) save to the cloud
-     IMMEDIATELY rather than on the 800ms debounce — these are deliberate,
+  /* Local mirror (all deck-related keys) for the instant pre-hydrate render. */
+  if (typeof _mirrorDecksLocal === 'function') _mirrorDecksLocal();
+  else _safeLsSet(CUSTOM_DECKS_KEY, JSON.stringify(_customDecks));
+  /* Structural changes to the ACTIVE deck (add/remove/reorder pages) save its
+     row IMMEDIATELY rather than on the 800ms debounce — these are deliberate,
      infrequent actions and users often reload right after, so the debounce
      (and an exit-flush that may not finish) was the "hit or miss" that
      dropped freshly-added pages. Content tweaks keep the debounce. Guarded
      with typeof so this stays safe to call before the cloud-sync block
-     has executed. */
+     has executed. (Create/duplicate/delete persist their specific row
+     directly — they don't rely on this active-deck save.) */
   if (typeof _savePresCloudNow === 'function') _savePresCloudNow();
   else if (typeof _schedulePresCloudSave === 'function') _schedulePresCloudSave();
 }
@@ -3607,10 +3619,9 @@ function _renderDeckThumb(deck, container) {
    spawns a fresh empty deck. In edit mode, title + last-updated
    date become inline-editable on custom decks (built-in DECKS is
    currently empty, so in practice every card is editable). */
-function buildPicker() {
-  pickerGrid.innerHTML = '';
-  const all = getAllDecks();
-  all.forEach((deck, i) => {
+/* Build one deck card (thumb + inline-edit wiring + duplicate/delete).
+   Returned detached; buildPicker places it into the right section. */
+function _buildDeckCard(deck) {
     const card = document.createElement('button');
     card.className = 'pres-deck-card';
     card.type = 'button';
@@ -3695,7 +3706,10 @@ function buildPicker() {
 
     /* User-created decks get a delete button — built-in ones can't
        be removed (they're metadata-only and harmless to leave). */
-    if (deck.custom) {
+    /* Delete is only offered for decks this user can edit (own private decks,
+       or — for writers — company decks). Advisors get Duplicate, not Delete,
+       on company decks. RLS would reject an unauthorised delete anyway. */
+    if (deck.custom && _deckIsEditable(deck)) {
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'pres-deck-delete';
@@ -3704,27 +3718,61 @@ function buildPicker() {
       del.addEventListener('click', (ev) => {
         ev.stopPropagation();
         if (!confirm('Delete "' + deck.title + '"? This can\'t be undone.')) return;
+        /* Delete the cloud row first (by _rowId), then drop it locally. */
+        _deleteDeckRow(deck);
         /* Mutate _customDecks in place so any closure that captured
            the array reference still sees the truncated list. */
         const keep = _customDecks.filter(d => d.id !== deck.id);
         _customDecks.length = 0;
         keep.forEach(d => _customDecks.push(d));
-        saveCustomDecks();
-        /* Sweep any overlay / bg entries tied to the deleted deck —
-           in-memory first, then persist. Doing this in-memory matters
-           because subsequent saveOverlays() / saveSlideBgs() calls (or
-           the cloud-sync push) would otherwise re-write the orphans. */
+        /* Sweep overlay / bg entries tied to the deleted deck (in-memory +
+           local mirror). The cloud row is already gone, so nothing re-writes
+           the orphans. */
         Object.keys(_overlays).filter(k => k.startsWith(deck.id + '/')).forEach(k => delete _overlays[k]);
         Object.keys(_slideBgs).filter(k => k.startsWith(deck.id + '/')).forEach(k => delete _slideBgs[k]);
-        saveOverlays();
-        saveSlideBgs();
+        if (_deckActiveTheme) delete _deckActiveTheme[deck.id];
+        _mirrorDecksLocal();
         buildPicker();
       });
       card.appendChild(del);
     }
-    pickerGrid.appendChild(card);
-  });
-  /* "+ New Presentation" tile — last card in the grid. */
+    return card;
+}
+
+/* Full-width section header inside the picker grid. */
+function _pickerSectionHeader(text) {
+  const h = document.createElement('div');
+  h.className = 'pres-picker-section';
+  h.textContent = text;
+  h.style.cssText = 'grid-column:1/-1;margin:10px 2px 2px;font:600 12px/1.4 system-ui,-apple-system,sans-serif;letter-spacing:.07em;text-transform:uppercase;opacity:.6;';
+  return h;
+}
+
+/* Render the deck picker, grouped into My Presentations (private / own decks)
+   and Performance Property Presentations (company decks). The create/import
+   tiles sit under My Presentations since new decks start private. */
+function buildPicker() {
+  pickerGrid.innerHTML = '';
+  const myDecks      = _customDecks.filter(d => d._visibility !== 'company');
+  const companyDecks = _customDecks.filter(d => d._visibility === 'company');
+  /* ?view from the hub cards makes each a distinct destination; unset = both. */
+  const showMine    = _pickerView !== 'company';
+  const showCompany = _pickerView !== 'mine';
+
+  if (showMine) {
+    pickerGrid.appendChild(_pickerSectionHeader('My Presentations'));
+    myDecks.forEach(d => pickerGrid.appendChild(_buildDeckCard(d)));
+    _appendPickerNewTiles();   /* create/import tiles live under My Presentations */
+  }
+  if (showCompany && (companyDecks.length || _pickerView === 'company')) {
+    pickerGrid.appendChild(_pickerSectionHeader('Performance Property Presentations'));
+    companyDecks.forEach(d => pickerGrid.appendChild(_buildDeckCard(d)));
+  }
+}
+
+/* The "+ New" / Import action tiles (placed under My Presentations). */
+function _appendPickerNewTiles() {
+  /* "+ New Presentation" tile. */
   const newCard = document.createElement('button');
   newCard.className = 'pres-deck-card pres-deck-new';
   newCard.type = 'button';
@@ -3781,8 +3829,13 @@ function createNewDeck() {
     slides: [],
     lastUpdated: now,
   };
+  /* New decks are PRIVATE ("My Presentations") by default. Dev/admin can
+     publish to "Performance Property Presentations" via the visibility
+     toggle once the deck is open. */
+  deck._visibility = 'private';
   _customDecks.push(deck);
-  saveCustomDecks();
+  _mirrorDecksLocal();
+  if (typeof _saveDeckNow === 'function') _saveDeckNow(deck);   /* inserts the row */
   openDeck(deck.id);
 }
 
@@ -4236,6 +4289,13 @@ function duplicateDeck(sourceDeck) {
      (e.g., "Template", "Locked"). */
   delete copy.badge;
   delete copy.cardMeta;
+  /* The deep copy carried the source's runtime row fields — clear them so the
+     copy inserts as a NEW row owned by me, PRIVATE ("My Presentations").
+     This is also the "Duplicate to mine" path for company decks. */
+  delete copy._rowId;
+  delete copy._ownerId;
+  delete copy._updatedAt;
+  copy._visibility = 'private';
 
   const sourcePrefix = sourceDeck.id + '/';
   const destPrefix   = newId + '/';
@@ -4254,10 +4314,8 @@ function duplicateDeck(sourceDeck) {
   }
 
   _customDecks.push(copy);
-  saveCustomDecks();
-  if (typeof saveOverlays === 'function') saveOverlays();
-  if (typeof saveSlideBgs === 'function') saveSlideBgs();
-  if (typeof saveDeckActiveTheme === 'function') saveDeckActiveTheme();
+  _mirrorDecksLocal();
+  if (typeof _saveDeckNow === 'function') _saveDeckNow(copy);   /* inserts the copy as a new private row */
   buildPicker();
 
   /* Auto-enter rename mode on the new card so the user can drop
@@ -4290,7 +4348,7 @@ function _formatDeckUpdated(iso) {
 /* Swap the title <h3> into contenteditable mode, focus it, and
    commit on blur / Enter. Escape cancels. */
 function _pickerEditTitle(el, deck) {
-  if (!deck.custom) return;
+  if (!deck.custom || !_deckIsEditable(deck)) return;
   el.setAttribute('contenteditable', 'true');
   el.focus();
   /* Select all the existing text so a keystroke replaces it. */
@@ -4311,7 +4369,8 @@ function _pickerEditTitle(el, deck) {
     deck.title = next;
     deck.titleHtml = next;
     deck.lastUpdated = new Date().toISOString();
-    saveCustomDecks();
+    _mirrorDecksLocal();
+    if (typeof _saveDeckNow === 'function') _saveDeckNow(deck);
     buildPicker();
   };
   const onKey = (ev) => {
@@ -4326,7 +4385,7 @@ function _pickerEditTitle(el, deck) {
    current lastUpdated. On blur / Enter, persist the new date (as ISO
    at midnight UTC so the formatter shows a stable day-month-year). */
 function _pickerEditDate(el, deck) {
-  if (!deck.custom) return;
+  if (!deck.custom || !_deckIsEditable(deck)) return;
   const current = deck.lastUpdated ? new Date(deck.lastUpdated) : new Date();
   const yyyy = current.getFullYear();
   const mm   = String(current.getMonth() + 1).padStart(2, '0');
@@ -4349,7 +4408,8 @@ function _pickerEditDate(el, deck) {
     const next = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0);
     if (isNaN(next.getTime())) { buildPicker(); return; }
     deck.lastUpdated = next.toISOString();
-    saveCustomDecks();
+    _mirrorDecksLocal();
+    if (typeof _saveDeckNow === 'function') _saveDeckNow(deck);
     buildPicker();
   };
   const onKey = (ev) => {
@@ -4404,9 +4464,12 @@ function openDeck(id) {
   const _syncBtn = document.getElementById('pres-sync-slides');
   const _isSnap = !!(deck.snapshotSource && deck.snapshotSource.id);
   if (_syncBtn) _syncBtn.style.display = _isSnap ? '' : 'none';
-  if (_isSnap && _canWritePresCloud && typeof refreshSnapshotDeck === 'function') {
+  if (_isSnap && _iAmWriter && typeof refreshSnapshotDeck === 'function') {
     refreshSnapshotDeck(deck, { auto: true }).catch(() => {});
   }
+  /* Editing chrome is per-deck: my own decks are editable; company decks are
+     editable only by writers (advisors view + duplicate). */
+  _applyPresReadonly();
 }
 
 /* ─── Thumbnail rail ─── render every slide of the active deck as a
@@ -5236,6 +5299,10 @@ function backToPicker() {
   /* Re-render the picker so any newly-created or just-deleted user
      decks show up immediately when the user backs out. */
   buildPicker();
+  /* Recompute read-only for the PICKER context now that no deck is open —
+     otherwise the read-only state from the last-opened deck (e.g. a company
+     deck an advisor can't edit) sticks and hides the View/Edit button. */
+  if (typeof _applyPresReadonly === 'function') _applyPresReadonly();
 }
 btnDecks.addEventListener('click', backToPicker);
 
@@ -5935,7 +6002,10 @@ function loadOverlays() {
 
 function saveThemes() {
   _safeLsSet(THEMES_KEY, JSON.stringify(_themes));
-  if (typeof _schedulePresCloudSave === 'function') _schedulePresCloudSave();
+  /* Themes are a SHARED org-wide library kept in presentation_state — saved
+     by writers (dev/admin) only. Advisors apply existing themes (the per-deck
+     active theme rides in the deck's own row via saveDeckActiveTheme). */
+  if (typeof _scheduleThemesSave === 'function') _scheduleThemesSave();
 }
 function saveDeckActiveTheme() {
   _safeLsSet(DECK_ACTIVE_THEME_KEY, JSON.stringify(_deckActiveTheme));
@@ -9977,6 +10047,44 @@ if (refreshChartsBtn) refreshChartsBtn.addEventListener('click', () => refreshRe
 const syncSlidesBtn = document.getElementById('pres-sync-slides');
 if (syncSlidesBtn) syncSlidesBtn.addEventListener('click', () => refreshSnapshotDeck(_activeDeck, { toast: true }));
 
+/* Visibility toggle — publish MY deck to Performance Property Presentations
+   (company, everyone) or move it back to My Presentations (private). Writers
+   (dev/admin) only, and only for decks I own (so the publish/unpublish UPDATE
+   passes RLS). Editing the CONTENT of a company deck doesn't use this. */
+const visibilityBtn = document.getElementById('pres-visibility-btn');
+if (visibilityBtn) visibilityBtn.addEventListener('click', _toggleDeckVisibility);
+
+function _updateVisibilityBtn() {
+  const btn = document.getElementById('pres-visibility-btn');
+  if (!btn) return;
+  const d = _activeDeck;
+  const owned = !!(d && _iAmWriter && (d._ownerId == null || d._ownerId === _myUserId));
+  btn.style.display = owned ? '' : 'none';
+  if (!owned) return;
+  const isCompany = d._visibility === 'company';
+  const label = document.getElementById('pres-visibility-label');
+  if (label) label.textContent = isCompany ? 'Company ✓' : 'Publish';
+  btn.classList.toggle('is-active', isCompany);
+  btn.title = isCompany
+    ? 'In Performance Property Presentations (everyone). Click to move back to My Presentations.'
+    : 'In My Presentations (only you). Click to publish to Performance Property Presentations (everyone).';
+}
+
+function _toggleDeckVisibility() {
+  const d = _activeDeck;
+  if (!d || !_iAmWriter || !(d._ownerId == null || d._ownerId === _myUserId)) return;
+  const next = d._visibility === 'company' ? 'private' : 'company';
+  const human = next === 'company'
+    ? 'Performance Property Presentations (visible to everyone)'
+    : 'My Presentations (only you)';
+  if (!confirm('Move "' + (d.title || 'this presentation') + '" to ' + human + '?')) return;
+  d._visibility = next;
+  _updateVisibilityBtn();
+  if (typeof _mirrorDecksLocal === 'function') _mirrorDecksLocal();
+  if (typeof _saveDeckNow === 'function') _saveDeckNow(d);
+  if (typeof buildPicker === 'function') buildPicker();
+}
+
 /* + Embed opens a small picker positioned beneath the button.
    Clicking an option spawns a draggable / resizable embed overlay
    on the current slide. Picker closes when the user clicks any
@@ -11097,26 +11205,36 @@ document.addEventListener('pointerdown', (ev) => {
   _deselectOverlay();
 });
 
-/* ═══ CLOUD SYNC ═══
-   Backed by public.presentation_state in Supabase (singleton row id=1,
-   payload jsonb). Schema mirrors the legacy bin:
-       { customDecks: [...], overlays: {...}, slideBgs: {...} }
-   - GET on boot to hydrate over the local cache so users see the
-     same decks/overlays the admin built.
-   - PUT (debounced) on every saveCustomDecks / saveOverlays /
-     saveSlideBgs so admin edits propagate to everyone.
-   Auth boundary is RLS (only dev/admin can write) AND the page-level
-   tier gate (_canWritePresCloud) so non-writers never even attempt the
-   PUT. */
+/* ═══ CLOUD SYNC (per-deck) ═══
+   Decks persist ONE ROW PER DECK in public.presentation_decks
+   (owner_id + visibility 'private'|'company' + RLS). The shared theme
+   library still lives in public.presentation_state (id=1) payload.themes.
+     - 'private' deck → owner-only ("My Presentations").
+     - 'company' deck → all authenticated ("Performance Property
+       Presentations"); editable only by writers (dev/admin) — advisors
+       view + duplicate-to-mine.
+   The in-memory model is UNCHANGED (_customDecks + _overlays/_slideBgs
+   keyed by deckId/slideIdx + _deckActiveTheme); only persistence changed.
+   Each deck's row payload is self-contained:
+       { deck, overlays, slideBgs, activeTheme }
+   Read-only is now PER-DECK (see _applyPresReadonly), not tier-wide, so
+   company-tier advisors can edit their own decks but not company ones.
+   Auth boundary is RLS first; the page gates (_canWritePresCloud /
+   _deckIsEditable) just avoid attempting writes RLS would reject. */
 const PRES_SAVE_DEBOUNCE_MS   = 800;
+const PRES_MAX_SAVE_RETRIES   = 4;    /* stop auto-retrying a failing save after this many tries */
 
-let _canWritePresCloud   = false;   /* tier 0/1 → true */
+let _saveRetryCount      = 0;       /* consecutive failed save attempts */
+let _canWritePresCloud   = false;   /* dev/admin/company → can save SOME deck */
+let _iAmWriter           = false;   /* dev/admin → can publish/edit company decks + themes */
+let _myUserId            = null;    /* auth.uid() — owner_id for my decks */
 let _presCloudSaveTimer  = null;
 let _presSavePending     = false;   /* an edit is waiting for the debounce to fire */
 let _presSaveInFlight    = false;   /* a save request is currently running */
 let _presSaveStatEl      = null;
 let _presSaveStatTimer   = null;
-let _presCloudLoadedAt   = null;    /* row updated_at this tab is working from (concurrent-edit guard) */
+const _dirtyDeckIds      = new Set();  /* deck.id values queued for a per-row save */
+let _presStatePayload    = {};      /* cached presentation_state payload (themes + legacy blob + decksMigratedAt) */
 
 /* Bottom-right "Saving…/Saved" pill so a writer can see their change
    reached the cloud before reloading. Only shown to writers. */
@@ -11145,119 +11263,184 @@ function _setPresSaveStatus(state) {
   }
 }
 
-function _presCloudPayload() {
+/* current auth user id (= profiles.id = owner_id). Resolved once. */
+async function _ensurePresIdentity() {
+  if (_myUserId) return _myUserId;
+  try {
+    const { data } = await window.sb.auth.getUser();
+    _myUserId = (data && data.user && data.user.id) || null;
+  } catch (_) {}
+  return _myUserId;
+}
+
+/* Can the current user edit (and therefore save) this deck?
+     - client/guest (can't save at all): never
+     - company deck: writers (dev/admin) only
+     - private deck: its owner (or a not-yet-persisted local deck, _ownerId
+       null — only a saver would be holding one) */
+function _deckIsEditable(deck) {
+  if (!deck) return false;
+  if (!_canWritePresCloud) return false;
+  if (deck._visibility === 'company') return _iAmWriter;
+  if (deck._ownerId == null) return true;
+  return deck._ownerId === _myUserId;
+}
+
+/* Read-only is PER-DECK: editing chrome shows only when the OPEN deck is
+   editable. In the picker (no deck open) editing is allowed for anyone who
+   can save (so create/duplicate work); client/guest stay locked. */
+function _applyPresReadonly() {
+  const editable = _activeDeck ? _deckIsEditable(_activeDeck) : _canWritePresCloud;
+  document.body.classList.toggle('pres-readonly', !editable);
+  if (!editable && _editMode && typeof setEditMode === 'function') setEditMode(false);
+  if (typeof _updateVisibilityBtn === 'function') _updateVisibilityBtn();
+}
+
+/* Strip runtime-only (underscore-prefixed) fields before persisting a deck. */
+function _cleanDeck(deck) {
+  const c = {};
+  Object.keys(deck).forEach(k => { if (k.charAt(0) !== '_') c[k] = deck[k]; });
+  return c;
+}
+
+/* Self-contained row payload for one deck: its slice of overlays/slideBgs
+   (keys are 'deckId/slideIdx') plus its active theme. */
+function _deckRowPayload(deck) {
+  const prefix = deck.id + '/';
+  const overlays = {}, slideBgs = {};
+  Object.keys(_overlays).forEach(k => { if (k.indexOf(prefix) === 0) overlays[k] = _overlays[k]; });
+  Object.keys(_slideBgs).forEach(k => { if (k.indexOf(prefix) === 0) slideBgs[k] = _slideBgs[k]; });
   return {
-    customDecks:     _customDecks      || [],
-    overlays:        _overlays         || {},
-    slideBgs:        _slideBgs         || {},
-    themes:          _themes           || [],
-    deckActiveTheme: _deckActiveTheme  || {},
+    deck:        _cleanDeck(deck),
+    overlays:    overlays,
+    slideBgs:    slideBgs,
+    activeTheme: (_deckActiveTheme && _deckActiveTheme[deck.id]) || null,
   };
 }
 
-/* The actual cloud write. Cancels any pending debounce and persists the
-   full payload, updating the status pill and the concurrent-edit baseline.
-   opts.skipConflict bypasses the guard (used on unload flush, where we
-   can't prompt and prioritise saving the user's own change). */
-async function _doPresCloudSave(opts) {
-  opts = opts || {};
+/* Upsert one deck's row. Insert (no _rowId yet) sets owner_id = me. */
+async function _persistDeckRow(deck) {
+  const payload    = _deckRowPayload(deck);
+  const visibility = deck._visibility === 'company' ? 'company' : 'private';
+  const title      = (deck.title || 'Untitled presentation').toString().slice(0, 300);
+  if (deck._rowId) {
+    const { error } = await window.sb.from('presentation_decks')
+      .update({ title: title, payload: payload, visibility: visibility })
+      .eq('id', deck._rowId);
+    if (error) throw error;
+  } else {
+    if (!_myUserId) await _ensurePresIdentity();
+    const { data, error } = await window.sb.from('presentation_decks')
+      .insert({ owner_id: _myUserId, title: title, payload: payload, visibility: visibility })
+      .select('id, owner_id, updated_at').single();
+    if (error) throw error;
+    deck._rowId   = data.id;
+    deck._ownerId = data.owner_id;
+    if (deck._visibility == null) deck._visibility = visibility;
+  }
+}
+
+async function _deleteDeckRow(deck) {
+  if (!deck || !deck._rowId || !window.sb) return;
+  try {
+    const { error } = await window.sb.from('presentation_decks').delete().eq('id', deck._rowId);
+    if (error) console.warn('Deck delete (cloud):', error);
+  } catch (e) { console.warn('Deck delete failed:', e); }
+}
+
+function _markDeckDirty(deck) {
+  if (!deck || !deck.id) return;
+  if (!_deckIsEditable(deck)) return;   /* skip writes RLS would reject */
+  _dirtyDeckIds.add(deck.id);
+}
+
+/* Mirror deck state to localStorage for the instant pre-hydrate render. */
+function _mirrorDecksLocal() {
+  _safeLsSet(CUSTOM_DECKS_KEY,      JSON.stringify(_customDecks));
+  _safeLsSet(OVERLAYS_KEY,          JSON.stringify(_overlays));
+  _safeLsSet(SLIDE_BG_KEY,          JSON.stringify(_slideBgs));
+  _safeLsSet(DECK_ACTIVE_THEME_KEY, JSON.stringify(_deckActiveTheme));
+}
+
+/* The actual cloud write: upsert every queued (dirty) deck row. Per-deck
+   rows mean two users editing different decks never clobber each other, so
+   there's no shared-row conflict guard any more (a deck is single-owner, or
+   a company deck only writers touch). A row that fails (e.g. RLS, network)
+   is re-queued and retried on the next tick. */
+async function _doPresCloudSave() {
   if (!_canWritePresCloud || !window.sb) return;
   clearTimeout(_presCloudSaveTimer);
   _presCloudSaveTimer = null;
   _presSavePending  = false;
   _presSaveInFlight = true;
   _setPresSaveStatus('saving');
+  let failedAny = false;
   try {
-    /* Concurrent-edit guard: the row carries an updated_at that a trigger
-       bumps on every write. If the cloud is newer than the version this tab
-       loaded, someone else (another tab / admin) saved in the meantime —
-       don't silently overwrite their whole deck set. */
-    if (!opts.skipConflict && _presCloudLoadedAt) {
+    const ids = Array.from(_dirtyDeckIds);
+    _dirtyDeckIds.clear();
+    for (let i = 0; i < ids.length; i++) {
+      const deck = findDeck(ids[i]);
+      if (!deck || !_deckIsEditable(deck)) continue;
       try {
-        const { data: cur, error: rErr } = await window.sb
-          .from('presentation_state')
-          .select('updated_at')
-          .eq('id', 1)
-          .single();
-        if (!rErr && cur && cur.updated_at &&
-            Date.parse(cur.updated_at) > Date.parse(_presCloudLoadedAt)) {
-          _setPresSaveStatus('conflict');
-          const reload = window.confirm(
-            'The shared presentations were changed somewhere else (another tab, '
-            + 'or another editor) since you opened this page.\n\n'
-            + 'OK  —  Reload and load their latest version. Any unsaved edits in '
-            + 'THIS tab will be lost.\n\n'
-            + 'Cancel  —  Keep your version; your next save overwrites theirs.'
-          );
-          if (reload) {
-            /* Discard the pending change so the pagehide flush can't write
-               our stale payload over theirs before the reload reads it. */
-            _presSavePending = false;
-            _presSaveInFlight = false;
-            location.reload();
-            return;
-          }
-          /* Overwrite chosen — adopt the current server version as our new
-             baseline so we don't immediately re-trigger the guard. */
-          _presCloudLoadedAt = cur.updated_at;
-          _setPresSaveStatus('saving');
-        }
-      } catch (_) { /* read failed — proceed with the save rather than block the user */ }
+        await _persistDeckRow(deck);
+      } catch (err) {
+        failedAny = true;
+        _dirtyDeckIds.add(ids[i]);   /* requeue for retry */
+        console.warn('Deck save failed for', ids[i], (err && (err.message || err.code)) || err);
+      }
     }
-
-    const { data: saved, error } = await window.sb
-      .from('presentation_state')
-      .update({ payload: _presCloudPayload() })
-      .eq('id', 1)
-      .select('updated_at')
-      .single();
-    if (error) {
-      console.warn('Presentation cloud save:', error);
-      const detail = (error && (error.message || error.code)) || 'see console';
+    if (failedAny) {
       _setPresSaveStatus('error');
       showPresToast(
-        'Cloud save failed (' + detail + '). Your changes may not survive a reload — try removing some content or contact admin.',
-        { duration: 8000, warn: true }
+        'Cloud save failed — your changes may not survive a reload. Check the network connection.',
+        { duration: 7000, warn: true }
       );
     } else {
-      /* Advance our baseline to the version we just wrote, so our own save
-         isn't mistaken for someone else's edit on the next save. */
-      if (saved && saved.updated_at) _presCloudLoadedAt = saved.updated_at;
       _setPresSaveStatus('saved');
     }
   } catch (e) {
     console.warn('Presentation cloud save failed:', e);
     _setPresSaveStatus('error');
-    showPresToast(
-      'Cloud save failed — your changes may not survive a reload. Check the network connection.',
-      { duration: 7000, warn: true }
-    );
   } finally {
     _presSaveInFlight = false;
-    /* Edits that arrived while this save was in flight (pending still set)
-       are persisted in a short follow-up so nothing is left only in memory
-       / localStorage. */
-    if (_presSavePending && _canWritePresCloud && !_presCloudSaveTimer) {
-      _presCloudSaveTimer = setTimeout(_doPresCloudSave, 150);
+    /* Track consecutive failures so a PERMANENT error (e.g. a schema/RLS
+       problem) doesn't hammer the API forever on the 2s retry. After
+       PRES_MAX_SAVE_RETRIES we stop auto-retrying and leave the work queued;
+       the next genuine user edit re-arms the loop (the schedulers reset the
+       counter). Successful saves reset it. */
+    if (failedAny) _saveRetryCount++; else _saveRetryCount = 0;
+    const pending = _presSavePending || _dirtyDeckIds.size;
+    if (pending && _canWritePresCloud && !_presCloudSaveTimer) {
+      if (!failedAny) {
+        _presCloudSaveTimer = setTimeout(_doPresCloudSave, 150);
+      } else if (_saveRetryCount <= PRES_MAX_SAVE_RETRIES) {
+        _presCloudSaveTimer = setTimeout(_doPresCloudSave, 2000);
+      }
+      /* else: give up auto-retry until the user edits again */
     }
   }
 }
 
+/* Debounced save of the ACTIVE deck (the common edit case). */
 function _schedulePresCloudSave() {
   if (!_canWritePresCloud) return;
+  _saveRetryCount = 0;   /* a fresh user edit re-arms the retry budget */
+  _markDeckDirty(_activeDeck);
+  if (!_dirtyDeckIds.size) return;
   _presSavePending = true;
   _setPresSaveStatus('saving');
   clearTimeout(_presCloudSaveTimer);
   _presCloudSaveTimer = setTimeout(_doPresCloudSave, PRES_SAVE_DEBOUNCE_MS);
 }
 
-/* Immediate (non-debounced) save for STRUCTURAL changes — adding, removing,
-   reordering or duplicating pages and decks. Skips the 800ms wait so a
-   freshly-added page reaches the cloud in a few hundred ms, well before a
-   quick refresh. If a save is already running, the change is marked pending
-   and the in-flight save's finally re-fires to capture it. */
+/* Immediate (non-debounced) save of the ACTIVE deck for STRUCTURAL changes —
+   adding/removing/reordering pages — so a freshly-added page reaches the
+   cloud well before a quick refresh. */
 function _savePresCloudNow() {
   if (!_canWritePresCloud) return;
+  _saveRetryCount = 0;
+  _markDeckDirty(_activeDeck);
+  if (!_dirtyDeckIds.size) return;
   _presSavePending = true;
   _setPresSaveStatus('saving');
   clearTimeout(_presCloudSaveTimer);
@@ -11265,13 +11448,44 @@ function _savePresCloudNow() {
   if (!_presSaveInFlight) _doPresCloudSave();
 }
 
-/* Flush a pending debounced save immediately — used when the page is about
-   to be hidden/closed/reloaded so a page added <800ms earlier still reaches
-   the cloud. This is the fix for the debounce race that silently dropped
-   newly-added pages when a writer reloaded right after adding one. */
+/* Immediate save of a SPECIFIC deck (picker rename / visibility change of a
+   deck that isn't the open one). */
+function _saveDeckNow(deck) {
+  if (!_canWritePresCloud) return;
+  _saveRetryCount = 0;
+  _markDeckDirty(deck);
+  if (!_dirtyDeckIds.size) return;
+  _presSavePending = true;
+  _setPresSaveStatus('saving');
+  clearTimeout(_presCloudSaveTimer);
+  _presCloudSaveTimer = null;
+  if (!_presSaveInFlight) _doPresCloudSave();
+}
+
+/* Flush pending saves immediately on page hide/close so an edit made <800ms
+   earlier still reaches the cloud. */
 function _flushPresCloudSave() {
   if (!_canWritePresCloud) return;
-  if (_presSavePending && !_presSaveInFlight) _doPresCloudSave({ skipConflict: true });
+  _markDeckDirty(_activeDeck);
+  if ((_presSavePending || _dirtyDeckIds.size) && !_presSaveInFlight) _doPresCloudSave();
+}
+
+/* ─── Shared theme library (writer-only, in presentation_state) ─── */
+let _themesSaveTimer = null;
+function _scheduleThemesSave() {
+  if (!_iAmWriter || !window.sb) return;
+  clearTimeout(_themesSaveTimer);
+  _themesSaveTimer = setTimeout(_doThemesSave, PRES_SAVE_DEBOUNCE_MS);
+}
+async function _doThemesSave() {
+  if (!_iAmWriter || !window.sb) return;
+  try {
+    _presStatePayload = _presStatePayload || {};
+    _presStatePayload.themes = _themes || [];
+    const { error } = await window.sb.from('presentation_state')
+      .update({ payload: _presStatePayload }).eq('id', 1);
+    if (error) console.warn('Themes save:', error);
+  } catch (e) { console.warn('Themes save failed:', e); }
 }
 
 /* visibilitychange→hidden fires on tab switch / minimise and as the first
@@ -11293,97 +11507,122 @@ window.addEventListener('pagehide', _flushPresCloudSave);
    finish. */
 window.addEventListener('beforeunload', (e) => {
   if (!_canWritePresCloud) return;
-  if (_presSavePending || _presSaveInFlight) {
+  if (_presSavePending || _presSaveInFlight || _dirtyDeckIds.size) {
     e.preventDefault();
     e.returnValue = '';
   }
 });
 
+/* ONE-TIME migration: split the legacy shared blob
+   (presentation_state.payload.customDecks + overlays/slideBgs/deckActiveTheme)
+   into per-deck presentation_decks rows as visibility='company'. Runs only for
+   writers (dev/admin), only once (guarded by payload.decksMigratedAt). The old
+   blob is LEFT INTACT for rollback — we only add the flag. Aborts without
+   stamping if any insert fails, so it retries on the next writer load. */
+async function _migrateLegacyDecksIfNeeded() {
+  try {
+    const p = _presStatePayload || {};
+    if (p.decksMigratedAt) return;
+    const legacy = Array.isArray(p.customDecks) ? p.customDecks : [];
+    if (legacy.length) {
+      const ov = (p.overlays && typeof p.overlays === 'object') ? p.overlays : {};
+      const bg = (p.slideBgs && typeof p.slideBgs === 'object') ? p.slideBgs : {};
+      const at = (p.deckActiveTheme && typeof p.deckActiveTheme === 'object') ? p.deckActiveTheme : {};
+      if (!_myUserId) await _ensurePresIdentity();
+      if (!_myUserId) return;   /* no identity yet — retry next load */
+      for (let i = 0; i < legacy.length; i++) {
+        const d = legacy[i];
+        if (!d || !d.id) continue;
+        const prefix = d.id + '/';
+        const o = {}, b = {};
+        Object.keys(ov).forEach(k => { if (k.indexOf(prefix) === 0) o[k] = ov[k]; });
+        Object.keys(bg).forEach(k => { if (k.indexOf(prefix) === 0) b[k] = bg[k]; });
+        const rowPayload = { deck: d, overlays: o, slideBgs: b, activeTheme: at[d.id] || null };
+        const { error } = await window.sb.from('presentation_decks').insert({
+          owner_id:   _myUserId,
+          title:      (d.title || 'Untitled presentation').toString().slice(0, 300),
+          payload:    rowPayload,
+          visibility: 'company',
+        });
+        if (error) { console.warn('Legacy deck migrate failed for', d.id, error); return; }
+      }
+      console.info('[presentation] migrated', legacy.length, 'legacy decks → company rows');
+    }
+    /* Stamp so we never re-migrate (and so an empty legacy blob is settled). */
+    p.decksMigratedAt = new Date().toISOString();
+    _presStatePayload = p;
+    await window.sb.from('presentation_state').update({ payload: p }).eq('id', 1);
+  } catch (e) { console.warn('Legacy deck migration failed:', e); }
+}
+
 async function _hydratePresFromCloud() {
   try {
     if (!window.sb) return;
-    const { data, error } = await window.sb
-      .from('presentation_state')
-      .select('payload, updated_at')
-      .eq('id', 1)
-      .single();
-    if (error) return;
-    /* Baseline for the concurrent-edit guard: the row version this tab is
-       working from. Any later save compares against this to avoid silently
-       clobbering edits made in another tab / by another admin. */
-    _presCloudLoadedAt = (data && data.updated_at) || _presCloudLoadedAt;
-    const cloud = data && data.payload;
-    if (!cloud || typeof cloud !== 'object') return;
+    await _ensurePresIdentity();
+    /* Refresh the tier gate so _iAmWriter is current for the one-time
+       migration below — auth may have resolved after the initial synchronous
+       gate call at boot. */
+    if (typeof applyPresTierGate === 'function') applyPresTierGate();
 
-    const cloudHasData =
-      (Array.isArray(cloud.customDecks) && cloud.customDecks.length) ||
-      (cloud.overlays && typeof cloud.overlays === 'object' && Object.keys(cloud.overlays).length) ||
-      (cloud.slideBgs && typeof cloud.slideBgs === 'object' && Object.keys(cloud.slideBgs).length) ||
-      (Array.isArray(cloud.themes) && cloud.themes.length) ||
-      (cloud.deckActiveTheme && typeof cloud.deckActiveTheme === 'object' && Object.keys(cloud.deckActiveTheme).length);
+    /* 1) Shared theme library + cache the state payload (used by the themes
+          save and the one-time migration). */
+    try {
+      const { data: st } = await window.sb
+        .from('presentation_state')
+        .select('payload')
+        .eq('id', 1)
+        .single();
+      _presStatePayload = (st && st.payload && typeof st.payload === 'object') ? st.payload : {};
+      if (Array.isArray(_presStatePayload.themes)) {
+        _themes = _presStatePayload.themes;
+        _safeLsSet(THEMES_KEY, JSON.stringify(_themes));
+      }
+    } catch (_) {}
 
-    if (!cloudHasData) {
-      /* Cloud is empty (fresh bin). If we have local data and we can
-         write, push it up so others see it — one-time bootstrap. */
-      const localHasData =
-        (_customDecks && _customDecks.length) ||
-        (_overlays && Object.keys(_overlays).length) ||
-        (_slideBgs && Object.keys(_slideBgs).length) ||
-        (_themes && _themes.length) ||
-        (_deckActiveTheme && Object.keys(_deckActiveTheme).length);
-      if (_canWritePresCloud && localHasData) _schedulePresCloudSave();
-      return;
-    }
+    /* 2) One-time legacy → per-deck migration (writers only). */
+    if (_iAmWriter) await _migrateLegacyDecksIfNeeded();
 
-    /* Mutate _customDecks in place so any existing closures still
-       see the same array reference. _overlays and _slideBgs are
-       reassigned because they're plain objects re-read by every
-       saveOverlays / saveSlideBgs call. */
-    if (Array.isArray(cloud.customDecks)) {
-      _customDecks.length = 0;
-      cloud.customDecks.forEach(d => _customDecks.push(d));
-      /* Re-run the placeholder scrub on cloud-loaded decks. If
-         anything changed, schedule a cloud save so the next pull
-         from a different machine sees the clean version. */
-      if (scrubLegacyDeckPlaceholders() && _canWritePresCloud) _schedulePresCloudSave();
-    }
-    if (cloud.overlays && typeof cloud.overlays === 'object') _overlays = cloud.overlays;
-    if (cloud.slideBgs && typeof cloud.slideBgs === 'object') _slideBgs = cloud.slideBgs;
-    if (Array.isArray(cloud.themes))                          _themes   = cloud.themes;
-    if (cloud.deckActiveTheme && typeof cloud.deckActiveTheme === 'object') {
-      _deckActiveTheme = cloud.deckActiveTheme;
-    }
+    /* 3) Per-deck rows. RLS returns my own decks + every company deck. */
+    const { data: rows, error } = await window.sb
+      .from('presentation_decks')
+      .select('id, owner_id, title, payload, visibility, updated_at')
+      .order('updated_at', { ascending: false });
+    if (error) { console.warn('Presentation decks load:', error); return; }
 
-    /* Drop any overlay/bg entries hydrated from cloud that don't
-       correspond to a current deck slide. Past versions of this tool
-       left dangling entries when a slide was deleted but the shift /
-       save flow was interrupted — those orphans piled up in the
-       JSONB payload until cloud saves started silently failing
-       against Supabase's REST body cap. Re-saves the cleaned state
-       up to cloud (writer tier only) so the next pull is clean too. */
-    if (_pruneOrphanOverlays() > 0 && _canWritePresCloud) _schedulePresCloudSave();
+    /* Rebuild in-memory state from the rows. Mutate _customDecks in place so
+       existing closures keep the same array reference; reassign the maps. */
+    _customDecks.length = 0;
+    _overlays = {};
+    _slideBgs = {};
+    _deckActiveTheme = {};
+    (rows || []).forEach(row => {
+      const pl   = (row.payload && typeof row.payload === 'object') ? row.payload : {};
+      const deck = (pl.deck && typeof pl.deck === 'object') ? pl.deck : null;
+      if (!deck || !deck.id) return;
+      deck._rowId      = row.id;
+      deck._ownerId    = row.owner_id;
+      deck._visibility = row.visibility;
+      deck._updatedAt  = row.updated_at;
+      if (pl.overlays && typeof pl.overlays === 'object') Object.assign(_overlays, pl.overlays);
+      if (pl.slideBgs && typeof pl.slideBgs === 'object') Object.assign(_slideBgs, pl.slideBgs);
+      if (pl.activeTheme) _deckActiveTheme[deck.id] = pl.activeTheme;
+      _customDecks.push(deck);
+    });
+    scrubLegacyDeckPlaceholders();
+    if (typeof _pruneOrphanOverlays === 'function') _pruneOrphanOverlays();
 
-    /* Mirror cloud to localStorage so a refresh without network
-       shows the same content. _safeLsSet surfaces QuotaExceededError
-       as a visible toast rather than swallowing it. */
-    _safeLsSet(CUSTOM_DECKS_KEY,       JSON.stringify(_customDecks));
-    _safeLsSet(OVERLAYS_KEY,           JSON.stringify(_overlays));
-    _safeLsSet(SLIDE_BG_KEY,           JSON.stringify(_slideBgs));
-    _safeLsSet(THEMES_KEY,             JSON.stringify(_themes));
-    _safeLsSet(DECK_ACTIVE_THEME_KEY,  JSON.stringify(_deckActiveTheme));
+    /* Mirror to localStorage for the instant pre-hydrate render next time. */
+    _safeLsSet(CUSTOM_DECKS_KEY,      JSON.stringify(_customDecks));
+    _safeLsSet(OVERLAYS_KEY,          JSON.stringify(_overlays));
+    _safeLsSet(SLIDE_BG_KEY,          JSON.stringify(_slideBgs));
+    _safeLsSet(DECK_ACTIVE_THEME_KEY, JSON.stringify(_deckActiveTheme));
 
-    /* Re-render whatever's visible. The picker rebuilds always; the
-       active slide's overlays re-render only if a deck is open;
-       the theme panel re-renders only if it's currently open. */
+    /* Re-render. The picker rebuilds always; the active slide's overlays
+       re-render only if a deck is open; the theme panel only if it's open. */
     buildPicker();
-    /* CRITICAL: we just replaced every deck OBJECT in _customDecks with the
-       cloud copies, but _activeDeck may still point at the pre-hydrate object
-       (e.g. a ?deck= deep-link opened the deck before this async load
-       resolved). That old object is no longer in _customDecks, so slide
-       inserts on it mutate a detached deck and never get serialized on save —
-       the new page shows and says "Saved", then vanishes on refresh. Rebind
-       _activeDeck to the freshly-loaded deck of the same id and re-render so
-       all later edits + saves operate on the array that actually persists. */
+    /* Rebind _activeDeck to the freshly-loaded object of the same id (a ?deck=
+       deep-link may have opened the pre-hydrate copy, which is no longer in
+       _customDecks — edits on it would never persist). */
     if (_activeDeck) {
       const live = findDeck(_activeDeck.id);
       if (live && live !== _activeDeck) {
@@ -11394,6 +11633,7 @@ async function _hydratePresFromCloud() {
           renderSlide(Math.min(_slideIdx, Math.max(0, n - 1)));
         }
       }
+      _applyPresReadonly();
     }
     if (_activeDeck && typeof renderOverlays === 'function') renderOverlays();
     if (document.body.classList.contains('pres-theme-panel-open')) renderThemePanel();
@@ -11402,15 +11642,15 @@ async function _hydratePresFromCloud() {
   }
 }
 
-/* Tier 0/1 (dev/admin) write to cloud and see Edit; everyone else
-   sees the View/Edit toggle hidden and never PUTs. */
+/* Per-deck read-only: dev/admin/company can all SAVE (their own decks);
+   client/guest can't. Which OPEN deck is editable is decided per-deck in
+   _applyPresReadonly (company decks → writers only). */
 function applyPresTierGate() {
   let level = '';
   try { if (typeof getAccessLevel === 'function') level = getAccessLevel(); } catch (_) {}
-  const canEdit = (level === 'dev' || level === 'admin');
-  _canWritePresCloud = canEdit;
-  document.body.classList.toggle('pres-readonly', !canEdit);
-  if (!canEdit && _editMode) setEditMode(false);
+  _iAmWriter         = (level === 'dev' || level === 'admin');
+  _canWritePresCloud = (level === 'dev' || level === 'admin' || level === 'company');
+  _applyPresReadonly();
 }
 applyPresTierGate();
 setTimeout(applyPresTierGate, 200);
@@ -11429,6 +11669,19 @@ _hydratePresFromCloud();
 const initialDeck = new URLSearchParams(location.search).get('deck');
 if (initialDeck && findDeck(initialDeck)) {
   openDeck(initialDeck);
+}
+
+/* ?new=1 — the hub's "Create a Presentation" card jumps straight into a new
+   deck. Wait for the writer gate to resolve first so the row insert isn't
+   skipped; if the user can't save (client/guest) we just leave them in the
+   picker rather than popping a prompt that can't persist. */
+if (new URLSearchParams(location.search).get('new') === '1') {
+  let _newTries = 0;
+  const _autoNewDeck = () => {
+    if (_canWritePresCloud && typeof createNewDeck === 'function') { createNewDeck(); return; }
+    if (++_newTries < 20) setTimeout(_autoNewDeck, 150);
+  };
+  setTimeout(_autoNewDeck, 200);
 }
 </script>
 </body>
