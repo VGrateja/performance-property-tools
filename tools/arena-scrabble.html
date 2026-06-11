@@ -24,7 +24,11 @@
   }
   @keyframes pp-page-fade-in {
     from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
+    /* End on `none`, not translateY(0): with fill-mode "both" the final
+       keyframe persists, and any lingering transform on <body> makes it the
+       containing block for position:fixed children (the back-to-hub/arena
+       pills + drag ghost), so they'd drift on scroll. `none` = no transform. */
+    to   { opacity: 1; transform: none; }
   }
   #scrabbleView{
     display:flex; flex-direction:column; min-height:100vh;
@@ -1359,6 +1363,107 @@
   }
   body.scrabble-spectating .scrabble-rack-slot .scrabble-tile-val { display: none; }
 
+  /* ═══ Seated "table" layout — board centred, a seat on each side ═══
+     Bottom seat = you (your real rack + tools). Top/left/right = the other
+     players in turn order, each showing a face-down rack. The active seat
+     glows and carries the live countdown. paintSeats() fills them in. */
+  .scrabble-board-toolbar {
+    width: 100%; max-width: 760px; margin: 0 auto 8px;
+    display: flex; justify-content: flex-end;
+  }
+  .scrabble-table {
+    display: grid;
+    grid-template-columns: minmax(0,auto) auto minmax(0,auto);
+    grid-template-areas:
+      ".         seat-top    ."
+      "seat-left board       seat-right"
+      ".         seat-bottom .";
+    justify-content: center;
+    align-items: center;
+    column-gap: 10px; row-gap: 10px;
+    width: 100%;
+  }
+  .scrabble-seat-top    { grid-area: seat-top; }
+  .scrabble-seat-left   { grid-area: seat-left; }
+  .scrabble-seat-right  { grid-area: seat-right; }
+  .scrabble-seat-bottom { grid-area: seat-bottom; }
+  .scrabble-table > .scrabble-board { grid-area: board; }
+
+  .scrabble-seat {
+    display: flex; flex-direction: column; align-items: center; gap: 7px;
+    padding: 7px 9px; border-radius: 12px;
+    border: 1.5px solid transparent;
+    transition: box-shadow .25s ease, border-color .25s ease, background .25s ease;
+  }
+  /* Active player's seat: a steady violet glow so whose-turn-it-is reads at a
+     glance (replaces the old "X to move" banner). */
+  .scrabble-seat.is-active {
+    border-color: rgba(139,92,246,0.65);
+    background: rgba(139,92,246,0.10);
+    animation: scrabbleSeatGlow 1.8s ease-in-out infinite;
+  }
+  @keyframes scrabbleSeatGlow {
+    0%,100% { box-shadow: 0 0 0 2px rgba(139,92,246,0.30), 0 0 16px 2px rgba(139,92,246,0.35); }
+    50%     { box-shadow: 0 0 0 2px rgba(139,92,246,0.55), 0 0 26px 5px rgba(139,92,246,0.60); }
+  }
+  .scrabble-seat.is-resigned { opacity: 0.45; filter: grayscale(0.7); }
+  .scrabble-seat:empty { padding: 0; border: none; }
+
+  .scrabble-seat-head {
+    display: flex; align-items: center; gap: 8px;
+    font-family:'Montserrat',sans-serif; font-size: 12.5px; white-space: nowrap;
+  }
+  .scrabble-seat-name  { font-weight: 700; }
+  .scrabble-seat-score { font-weight: 800; color: #a78bfa; font-size: 17px; line-height: 1; }
+  .scrabble-seat-you {
+    color:#a78bfa; font-size:9px; letter-spacing:1.5px; text-transform:uppercase; font-weight:700;
+  }
+  .scrabble-seat-resigned {
+    color:#f87171; font-size:9px; letter-spacing:1.5px; text-transform:uppercase; font-weight:800;
+  }
+  .scrabble-seat-clock {
+    font-variant-numeric: tabular-nums; font-weight:700; font-size: 12.5px;
+    background: rgba(139,92,246,0.18); border-radius:5px; padding:2px 8px;
+  }
+  .scrabble-seat-clock.is-urgent {
+    background: rgba(239,68,68,0.22); color:#f87171;
+    animation: scrabbleClockPulse 1s ease-in-out infinite;
+  }
+
+  /* Face-down opponent rack — featureless wooden backs (we never reveal their
+     letters). Horizontal for the top seat, a vertical column for the side
+     seats so they read like players sitting around the table. */
+  .scrabble-seat-rack { display:flex; gap:4px; }
+  .scrabble-seat-rack.is-vertical { flex-direction: column; }
+  .scrabble-facedown {
+    --fd: clamp(15px, 1.9vw, 22px);
+    width: var(--fd); height: calc(var(--fd) * 1.2);
+    border-radius: 3px;
+    background: linear-gradient(160deg, #a08e6f 0%, #8d7a5e 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 1px 2px rgba(0,0,0,0.28);
+  }
+
+  /* Bottom seat holds your real rack — keep it ~board width so the tiles stay
+     their natural size rather than stretching across the grid column. */
+  .scrabble-seat-bottom { width: 100%; max-width: 420px; }
+  .scrabble-seat-bottom .scrabble-rack { width: 100%; }
+  .scrabble-seat-bottom .scrabble-rack-tools { display:flex; gap:8px; }
+
+  /* Narrow screens: stack the seats so the board keeps its width. */
+  @media (max-width: 760px){
+    .scrabble-table {
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "seat-top"
+        "board"
+        "seat-left"
+        "seat-right"
+        "seat-bottom";
+      justify-items: center;
+    }
+    .scrabble-seat-rack.is-vertical { flex-direction: row; }
+  }
+
   /* ── Interactive placement (S6) ── */
 
   /* Pending tile (the tiles YOU'RE placing this turn, not yet submitted).
@@ -1415,7 +1520,60 @@
      rack slot or board square under the cursor gets a dashed accent ring. */
   .scrabble-rack-slot.is-dragging { opacity: 0.4; }
   .scrabble-rack-slot.is-drop-target { outline: 2px dashed #a78bfa; outline-offset: -2px; }
-  .scrabble-square.is-drop-hover { outline: 2px dashed #a78bfa; outline-offset: -2px; }
+  .scrabble-square.is-drop-hover { outline: 2px dashed #a78bfa; outline-offset: -2px; background: rgba(167,139,250,0.30); }
+
+  /* ── Pointer-drag (Phase 2): pick-lift, floating ghost, slide-to-open-gap ──
+     The rack tiles slide on a transform transition; the dragged tile is hidden
+     in place (leaving a gap) while a fixed-position ghost follows the cursor. */
+  .scrabble-rack-slot .scrabble-tile {
+    cursor: grab;
+    touch-action: none;                       /* pointer-drag on touch w/o scrolling */
+    transition: transform .16s cubic-bezier(.2,.7,.3,1);
+  }
+  .scrabble-rack-slot .scrabble-tile.is-grabbing {
+    transform: translateY(-8px) scale(1.06);  /* lift on pick */
+    box-shadow: 0 8px 18px rgba(0,0,0,0.40), inset 0 1px 0 rgba(255,255,255,0.30);
+    z-index: 3;
+  }
+  .scrabble-rack-slot .scrabble-tile.is-dragging-src { opacity: 0; }   /* now in the ghost */
+  body.scrabble-dragging { cursor: grabbing; user-select: none; }
+  /* Don't let the rest-state :hover lift fight the slide while dragging. */
+  body.scrabble-dragging .scrabble-rack-slot:hover .scrabble-tile { transform: none; }
+  .scrabble-drag-ghost {
+    position: fixed !important;
+    /* The base .scrabble-tile sets inset:1px. We must NOT !important the
+       left/top here — JS sets them inline every frame to follow the cursor,
+       and an !important rule would beat the inline style (the bug that made
+       the dragged tile look invisible/off-screen). Just clear the far edges. */
+    right: auto !important; bottom: auto !important; margin: 0 !important;
+    z-index: 9999; pointer-events: none;
+    border-radius: 4px;
+    transform: scale(1.08) rotate(-3deg);
+    box-shadow: 0 12px 26px rgba(0,0,0,0.5), 0 0 0 2px rgba(167,139,250,0.55);
+  }
+
+  /* ── (Phase 3) Live in-progress sync visuals ──
+     Another player's TENTATIVE tile: face-down (letter hidden until committed),
+     gently pulsing so it reads as "being placed" rather than final. */
+  .scrabble-square.is-live-pending { overflow: visible; }
+  .scrabble-live-facedown {
+    position: absolute; inset: 1px;
+    border-radius: 3px;
+    background: linear-gradient(160deg, #a08e6f 0%, #8d7a5e 100%);
+    box-shadow: 0 0 0 2px rgba(167,139,250,0.55), 0 2px 6px rgba(0,0,0,0.30);
+    animation: scrabbleLivePulse 1.1s ease-in-out infinite;
+  }
+  @keyframes scrabbleLivePulse {
+    0%,100% { opacity: 0.62; }
+    50%     { opacity: 0.92; }
+  }
+  /* A face-down opponent rack wiggles briefly when that player moves tiles. */
+  .scrabble-seat-rack.is-shuffling { animation: scrabbleRackShuffle 0.5s ease; }
+  @keyframes scrabbleRackShuffle {
+    0%,100% { transform: translateX(0) rotate(0); }
+    25%     { transform: translateX(-3px) rotate(-1.5deg); }
+    75%     { transform: translateX(3px) rotate(1.5deg); }
+  }
 
   /* Rack toolbar — shuffle + recall buttons sit above the rack. */
   .scrabble-rack-tools {
@@ -1888,13 +2046,31 @@
         <span>👀 Spectating — read-only view of a live game.</span>
         <button class="scrabble-game-leave" type="button" id="scrabbleSpectateLeaveBtn">Back to lobby</button>
       </div>
-      <div class="scrabble-turn-row">
-        <div class="scrabble-turn-indicator" id="scrabbleTurnIndicator">
-          <strong>Player 1</strong> to move
-        </div>
+      <div class="scrabble-board-toolbar">
         <button class="scrabble-rules-btn" type="button" id="scrabbleRulesBtn" title="How to play — rules for placing words, scoring, and swapping tiles">📖 Rule Guide</button>
       </div>
-      <div class="scrabble-board" id="scrabbleBoard"></div>
+      <!-- Legacy turn banner, kept hidden so the turn-timer's refs/guards stay
+           valid; the live "whose turn" cue is now the glowing seat below. -->
+      <div class="scrabble-turn-indicator" id="scrabbleTurnIndicator" style="display:none;"></div>
+
+      <!-- Seated "table": board in the centre, a seat on each side. Bottom =
+           you (your real rack + tools); top/left/right = the other players in
+           turn order with face-down racks. The active seat glows + carries the
+           countdown. Slot assignment + fill happen in paintSeats(). -->
+      <div class="scrabble-table">
+        <div class="scrabble-seat scrabble-seat-top"    id="scrabbleSeatTop"></div>
+        <div class="scrabble-seat scrabble-seat-left"   id="scrabbleSeatLeft"></div>
+        <div class="scrabble-board" id="scrabbleBoard"></div>
+        <div class="scrabble-seat scrabble-seat-right"  id="scrabbleSeatRight"></div>
+        <div class="scrabble-seat scrabble-seat-bottom" id="scrabbleSeatBottom">
+          <div class="scrabble-seat-head" id="scrabbleSeatBottomHead"></div>
+          <div class="scrabble-rack-tools">
+            <button class="scrabble-rack-tool" type="button" id="scrabbleShuffleBtn" title="Shuffle the visual order of your rack">⇄ Shuffle</button>
+            <button class="scrabble-rack-tool" type="button" id="scrabbleRecallBtn" title="Pull every pending tile back to the rack">↺ Recall</button>
+          </div>
+          <div class="scrabble-rack" id="scrabbleRack"></div>
+        </div>
+      </div>
     </div>
 
     <aside class="scrabble-game-sidebar">
@@ -1905,20 +2081,13 @@
       </button>
 
       <div class="scrabble-game-block">
-        <div class="scrabble-game-block-title">Players</div>
-        <div id="scrabbleGamePlayers"></div>
+        <div class="scrabble-game-block-title">Bag</div>
+        <!-- Player names/scores moved onto the seats around the board; this
+             element is kept (hidden) only so legacy refs/guards stay valid. -->
+        <div id="scrabbleGamePlayers" style="display:none;"></div>
         <div class="scrabble-bag-row">
           🎒 Bag: <strong id="scrabbleBagCount">86</strong>&nbsp;tiles remaining
         </div>
-      </div>
-
-      <div class="scrabble-game-block">
-        <div class="scrabble-game-block-title">Your rack</div>
-        <div class="scrabble-rack-tools">
-          <button class="scrabble-rack-tool" type="button" id="scrabbleShuffleBtn" title="Shuffle the visual order of your rack">⇄ Shuffle</button>
-          <button class="scrabble-rack-tool" type="button" id="scrabbleRecallBtn" title="Pull every pending tile back to the rack">↺ Recall</button>
-        </div>
-        <div class="scrabble-rack" id="scrabbleRack"></div>
       </div>
 
       <div class="scrabble-game-block" id="scrabbleActionsBlock">
@@ -2060,7 +2229,7 @@
 
       <div class="scrabble-rule">
         <h4><span class="rg-num">8</span> Free swap — keep your turn</h4>
-        <p>Stuck with duplicates? If you hold <strong>3 or more</strong> of a letter you can swap them and <strong>keep your turn</strong>. You may mix any letters you hold 3+ of — e.g. two I's and one O when you have 3+ of each.</p>
+        <p>Stuck with duplicates? If you hold <strong>3 or more</strong> of a letter you can swap them and <strong>keep your turn</strong>. You may mix any letters you hold 3+ of — e.g. two I's and one O when you have 3+ of each. Because it costs no turn, you can even free-swap <strong>when it isn't your turn</strong>.</p>
         <div class="rg-row">
           <span class="rg-tile is-new">I<i>1</i></span><span class="rg-tile is-new">I<i>1</i></span><span class="rg-tile">I<i>1</i></span>
           <span class="rg-tile is-new">O<i>1</i></span><span class="rg-tile">O<i>1</i></span><span class="rg-tile">O<i>1</i></span>
@@ -3006,6 +3175,9 @@ let _movesChannel     = null;
 let _rackChannel      = null;
 let _playersChannel   = null;  // arena_scrabble_game_players updates (score changes)
 let _chatChannel      = null;  // ephemeral broadcast chat (#3) — players + spectators
+let _liveChannel      = null;  // (Phase 3) ephemeral broadcast: in-progress placements + rack moves
+let _livePending      = {};    // { [seat]: [{r,c}] } — other players' tentative board tiles (positions only)
+let _lastPendingSig   = '';    // signature of my last-broadcast pending squares (dedupes sends)
 let _prevToMove       = null;  // last-seen to_move, so we can chime on turn handoff (#4)
 
 /* Turn timer state — tracked client-side; the server is authoritative.
@@ -3022,6 +3194,16 @@ const $players      = document.getElementById('scrabbleGamePlayers');
 const $bagCount     = document.getElementById('scrabbleBagCount');
 const $spectateBanner = document.getElementById('scrabbleSpectateBanner');
 const $spectateLeave  = document.getElementById('scrabbleSpectateLeaveBtn');
+
+/* Seated layout: the four seat areas around the board (paintSeats fills them).
+   _seatClock carries the live countdown for the active seat, set by the
+   turn ticker and rendered into whichever seat is to move. */
+const $seatTop        = document.getElementById('scrabbleSeatTop');
+const $seatLeft       = document.getElementById('scrabbleSeatLeft');
+const $seatRight      = document.getElementById('scrabbleSeatRight');
+const $seatBottom     = document.getElementById('scrabbleSeatBottom');
+const $seatBottomHead = document.getElementById('scrabbleSeatBottomHead');
+let   _seatClock      = null;   // { text:'1:23', urgent:bool } | null
 
 /* ─── Entry points (called by the lobby) ─── */
 async function openGameAsPlayer(gameId) {
@@ -3141,6 +3323,9 @@ function subscribeToGame(gameId) {
             soundTurn();
           }
           if (payload.new && payload.new.to_move != null) _prevToMove = payload.new.to_move;
+          /* (Phase 3) On turn handoff the previous mover's tentative tiles are
+             gone (committed or passed) — clear everyone's live placeholders. */
+          if (payload.new && payload.new.to_move !== prevMover) _livePending = {};
           paintAll();
         })
     .subscribe();
@@ -3151,6 +3336,10 @@ function subscribeToGame(gameId) {
         (payload) => {
           _lastMoveSquares = lastMoveSquares_(payload.new);
           appendMoveToLog(payload.new);   // #4: live-append to the words panel
+          /* (Phase 3) This player's tentative tiles are now real — drop their
+             live placeholders right away (don't wait for the turn handoff). */
+          const _mp = _gamePlayers.find(p => p.user_id === payload.new.player_user_id);
+          if (_mp) delete _livePending[_mp.seat];
           /* Re-paint highlight; the game row UPDATE handler will paint
              the new tiles + scores once it arrives. */
           paintBoard();
@@ -3178,6 +3367,14 @@ function subscribeToGame(gameId) {
     .on('broadcast', { event: 'msg' }, ({ payload }) => appendChatMessage(payload))
     .subscribe();
 
+  /* (Phase 3) In-progress sync — ephemeral broadcast of the current mover's
+     TENTATIVE board placements (positions only, rendered face-down so letters
+     stay hidden until committed) + rack-move pings. self:false — I render my
+     own placements locally; everyone else (players + spectators) sees them. */
+  _liveChannel = window.sb.channel('scrabble_live_' + gameId, { config: { broadcast: { self: false } } })
+    .on('broadcast', { event: 'live' }, ({ payload }) => handleLiveEvent(payload))
+    .subscribe();
+
   /* Score updates land on arena_scrabble_game_players (one row per seat
      gets its score column incremented after each successful play). */
   _playersChannel = window.sb.channel('scrabble_players_' + gameId)
@@ -3196,7 +3393,7 @@ function subscribeToGame(gameId) {
 }
 
 function teardownGameChannels() {
-  [_gameWatchChannel, _movesChannel, _rackChannel, _playersChannel, _chatChannel].forEach(ch => {
+  [_gameWatchChannel, _movesChannel, _rackChannel, _playersChannel, _chatChannel, _liveChannel].forEach(ch => {
     if (ch) { try { window.sb.removeChannel(ch); } catch (_) {} }
   });
   _gameWatchChannel = null;
@@ -3204,6 +3401,64 @@ function teardownGameChannels() {
   _rackChannel      = null;
   _playersChannel   = null;
   _chatChannel      = null;
+  _liveChannel      = null;
+  _livePending      = {};
+  _lastPendingSig   = '';
+}
+
+/* ─── (Phase 3) Live in-progress sync ───
+   Players (and spectators) see the current mover building their word in real
+   time. We broadcast only POSITIONS (never letters): others render face-down
+   placeholders, so the move stays hidden until it's committed. Rack-move pings
+   let everyone see a player shuffling/reordering their (face-down) rack. */
+
+/* Broadcast my tentative placement. Deduped by a position signature and called
+   from the paintBoard hook, so each pending change ships exactly once and
+   ordinary repaints (realtime updates, etc.) don't re-send. */
+function syncPendingLive() {
+  if (!_liveChannel || _isSpectating || !_mySeat) return;
+  const sig = _pendingTiles.map(t => t.row + ',' + t.col).sort().join(';');
+  if (sig === _lastPendingSig) return;
+  _lastPendingSig = sig;
+  try {
+    _liveChannel.send({ type: 'broadcast', event: 'live', payload: {
+      kind: 'pending', seat: _mySeat,
+      squares: _pendingTiles.map(t => ({ r: t.row, c: t.col })),
+    } });
+  } catch (_) {}
+}
+
+/* Tell everyone I rearranged my rack so they can animate my face-down rack. */
+function broadcastLiveRack() {
+  if (!_liveChannel || _isSpectating || !_mySeat) return;
+  try {
+    _liveChannel.send({ type: 'broadcast', event: 'live', payload: { kind: 'rack', seat: _mySeat } });
+  } catch (_) {}
+}
+
+/* Inbound live events from other players. */
+function handleLiveEvent(p) {
+  if (!p || !p.seat || p.seat === _mySeat) return;   // never echo my own seat
+  if (p.kind === 'pending') {
+    if (p.squares && p.squares.length) _livePending[p.seat] = p.squares;
+    else delete _livePending[p.seat];
+    paintBoard();
+  } else if (p.kind === 'rack') {
+    pingSeatRack(p.seat);
+  }
+}
+
+/* Briefly animate a seat's face-down rack when that player moves their tiles. */
+function pingSeatRack(seat) {
+  const slot = seatSlotMap()[seat];
+  const el = ({ top: $seatTop, left: $seatLeft, right: $seatRight, bottom: $seatBottom })[slot];
+  if (!el) return;
+  const rack = el.querySelector('.scrabble-seat-rack');
+  if (!rack) return;
+  rack.classList.remove('is-shuffling');
+  void rack.offsetWidth;              // reflow so the animation restarts
+  rack.classList.add('is-shuffling');
+  setTimeout(() => rack.classList.remove('is-shuffling'), 520);
 }
 
 /* ─── Painters ─── */
@@ -3261,18 +3516,16 @@ function paintBoard() {
 }
 
 function paintTurn() {
-  if (!$turn || !_gameRow) return;
-  /* For untimed games we just write the static "X to move" string; for
-     timed games the live tick handles it via updateTurnCountdown(). */
+  if (!_gameRow) return;
+  /* Whose-turn is now shown by the glowing seat (paintSeats). Timed games
+     get a live clock in that seat via the ticker; untimed games just glow. */
   if (_gameRow.turn_time_seconds && _gameRow.turn_started_at) {
     if (!_turnTicker) startTurnTicker();
     updateTurnCountdown();
   } else {
     stopTurnTicker();
-    const mover = _gamePlayers.find(p => p.seat === _gameRow.to_move);
-    const moverName = mover ? (mover.name || (mover.email || '').split('@')[0]) : '—';
-    const yourTurn  = (_mySeat === _gameRow.to_move);
-    $turn.innerHTML = '<strong>' + escapeHtml(moverName) + '</strong> to move' + (yourTurn ? ' · your move' : '');
+    _seatClock = null;
+    paintSeats();
   }
 }
 
@@ -3291,10 +3544,10 @@ function stopTurnTicker() {
   if (_turnTicker) { clearInterval(_turnTicker); _turnTicker = null; }
 }
 function updateTurnCountdown() {
-  if (!$turn || !_gameRow) return;
-  if (_gameRow.status !== 'active') { stopTurnTicker(); return; }
+  if (!_gameRow) return;
+  if (_gameRow.status !== 'active') { stopTurnTicker(); _seatClock = null; paintSeats(); return; }
   if (!_gameRow.turn_time_seconds || !_gameRow.turn_started_at) {
-    stopTurnTicker(); return;
+    stopTurnTicker(); _seatClock = null; paintSeats(); return;
   }
 
   /* Reset the "expire already fired" guard when we detect a fresh turn. */
@@ -3307,17 +3560,12 @@ function updateTurnCountdown() {
   const deadlineMs = startMs + _gameRow.turn_time_seconds * 1000;
   const remainingMs = Math.max(0, deadlineMs - Date.now());
 
-  const mover = _gamePlayers.find(p => p.seat === _gameRow.to_move);
-  const moverName = mover ? (mover.name || (mover.email || '').split('@')[0]) : '—';
-  const yourTurn  = (_mySeat === _gameRow.to_move);
   const secs = Math.ceil(remainingMs / 1000);
   const mm = Math.floor(secs / 60);
   const ss = secs % 60;
-  const clockText = mm + ':' + (ss < 10 ? '0' + ss : ss);
-  const urgent = remainingMs < 10000;
-  $turn.innerHTML = '<strong>' + escapeHtml(moverName) + '</strong> to move' +
-    (yourTurn ? ' · your move' : '') +
-    ' · <span class="scrabble-turn-clock' + (urgent ? ' is-urgent' : '') + '">' + clockText + '</span>';
+  /* Hand the live clock to the active seat; paintSeats renders it there. */
+  _seatClock = { text: mm + ':' + (ss < 10 ? '0' + ss : ss), urgent: remainingMs < 10000 };
+  paintSeats();
 
   if (remainingMs <= 0 && !_turnExpireFired) {
     _turnExpireFired = true;
@@ -3335,26 +3583,87 @@ async function fireExpireTurn() {
   } catch (_) { /* lost the race or server-side deadline not hit yet — ignore */ }
 }
 
-function paintPlayers() {
-  if (!$players || !_gameRow) return;
-  if (!_gamePlayers.length) { $players.innerHTML = ''; return; }
-  const ranked  = _gameRow.ranked ? 'Ranked' : 'Casual';
-  const tc      = formatTurnTime(_gameRow.turn_time_seconds);
-  const meTag   = '<span style="color:#a78bfa;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;font-weight:700;margin-left:6px;">You</span>';
-  $players.innerHTML = _gamePlayers.map(p => {
-    const name  = (p.name && p.name.trim()) ? p.name : ((p.email || '').split('@')[0] || '—');
-    const isMe  = p.seat === _mySeat;
-    const resigned = !!p.resigned;
-    const turn  = !resigned && p.seat === _gameRow.to_move;   // resigned seats are skipped, never "to move"
-    const resignedTag = resigned ? '<span class="scrabble-player-resigned-tag">Resigned</span>' : '';
-    return '<div class="scrabble-player' + (turn ? ' is-to-move' : '') + (resigned ? ' is-resigned' : '') + '">' +
-      '<div class="scrabble-player-info">' +
-        '<div class="scrabble-player-name">' + escapeHtml(name) + (isMe ? meTag : '') + resignedTag + '</div>' +
-        '<div class="scrabble-player-meta">Player ' + p.seat + ' · ' + ranked + ' · ' + escapeHtml(tc) + '</div>' +
-      '</div>' +
-      '<div class="scrabble-player-score">' + (p.score || 0) + '</div>' +
-    '</div>';
-  }).join('');
+/* Player names, scores, the turn-glow and the timer now live on the SEATS
+   around the board (paintSeats). paintPlayers is kept as the entry point that
+   the rest of the code already calls (paintAll, the players Realtime channel);
+   it just delegates so score/resign updates refresh the seats. */
+function paintPlayers() { paintSeats(); }
+
+/* Map each seat number → a screen slot. Bottom is me (for spectators, seat 1).
+   The other players fill, in turn order after me, the slots:
+     2 players → [top]        (a lone opponent sits across the table)
+     3 players → [left, top]
+     4 players → [left, top, right]
+   i.e. the next to move sits to my left and play runs counter-clockwise. */
+function seatSlotMap() {
+  const count  = (_gameRow && _gameRow.player_count) || _gamePlayers.length || 0;
+  const anchor = _mySeat || 1;
+  const SLOTS  = { 2: ['top'], 3: ['left', 'top'], 4: ['left', 'top', 'right'] };
+  const slots  = SLOTS[count] || SLOTS[4];
+  const map = {};
+  map[anchor] = 'bottom';
+  for (let k = 1; k < count; k++) {
+    const seat = ((anchor - 1 + k) % count) + 1;   // relative turn order, wrapping
+    map[seat] = slots[k - 1] || 'top';
+  }
+  return map;
+}
+
+function _seatPlayerName(p) {
+  return (p.name && p.name.trim()) ? p.name : ((p.email || '').split('@')[0] || '—');
+}
+/* The header line shown at every seat: name · You/Resigned · score · clock
+   (the clock only on the active seat, when the game is timed). */
+function _seatHeadHtml(p, isMe, isActive) {
+  const clk = (isActive && _seatClock && _seatClock.text)
+    ? '<span class="scrabble-seat-clock' + (_seatClock.urgent ? ' is-urgent' : '') + '">' + _seatClock.text + '</span>'
+    : '';
+  return '<span class="scrabble-seat-name">' + escapeHtml(_seatPlayerName(p)) + '</span>' +
+    (isMe ? '<span class="scrabble-seat-you">You</span>' : '') +
+    (p.resigned ? '<span class="scrabble-seat-resigned">Resigned</span>' : '') +
+    '<span class="scrabble-seat-score">' + (p.score || 0) + '</span>' + clk;
+}
+/* A face-down rack of n wooden backs — opponents' letters are never revealed.
+   NOTE: n is fixed at 7 for now; exact per-player counts need a count-only
+   backend view (TODO) so the tail-end of a game shows the right number. */
+function _facedownRackHtml(n, vertical) {
+  let s = '<div class="scrabble-seat-rack' + (vertical ? ' is-vertical' : '') + '">';
+  for (let i = 0; i < n; i++) s += '<span class="scrabble-facedown"></span>';
+  return s + '</div>';
+}
+
+/* Render the four seats around the board. */
+function paintSeats() {
+  if (!_gameRow) return;
+  const slotMap = seatSlotMap();
+  const bySlot  = {};
+  _gamePlayers.forEach(p => { const s = slotMap[p.seat]; if (s) bySlot[s] = p; });
+  const toMove = _gameRow.to_move;
+
+  /* Opponent seats — face-down racks, horizontal on top, vertical at the sides. */
+  [['top', $seatTop, false], ['left', $seatLeft, true], ['right', $seatRight, true]].forEach(function(spec) {
+    const slot = spec[0], el = spec[1], vertical = spec[2];
+    if (!el) return;
+    const p = bySlot[slot];
+    if (!p) { el.innerHTML = ''; el.classList.remove('is-active', 'is-resigned'); el.style.visibility = 'hidden'; return; }
+    el.style.visibility = '';
+    const isActive = !p.resigned && p.seat === toMove;
+    el.classList.toggle('is-active', isActive);
+    el.classList.toggle('is-resigned', !!p.resigned);
+    el.innerHTML = '<div class="scrabble-seat-head">' + _seatHeadHtml(p, false, isActive) + '</div>' +
+                   _facedownRackHtml(7, vertical);
+  });
+
+  /* My seat (bottom). The real rack + tools are static children of
+     #scrabbleSeatBottom — paintRack handles the tiles; here we only (re)write
+     the header line and toggle the active glow. */
+  const me = bySlot['bottom'];
+  if ($seatBottom && me) {
+    const isActive = !me.resigned && me.seat === toMove;
+    $seatBottom.classList.toggle('is-active', isActive);
+    $seatBottom.classList.toggle('is-resigned', !!me.resigned);
+    if ($seatBottomHead) $seatBottomHead.innerHTML = _seatHeadHtml(me, me.seat === _mySeat, isActive);
+  }
 }
 
 function paintBag() {
@@ -3594,6 +3903,10 @@ function closeGameView() {
   if ($board) $board.innerHTML = '';
   if ($rack)  $rack.innerHTML  = '';
   if ($players) $players.innerHTML = '';
+  [$seatTop, $seatLeft, $seatRight].forEach(function(el){ if (el){ el.innerHTML = ''; el.classList.remove('is-active', 'is-resigned'); el.style.visibility = ''; } });
+  if ($seatBottom) $seatBottom.classList.remove('is-active', 'is-resigned');
+  if ($seatBottomHead) $seatBottomHead.innerHTML = '';
+  _seatClock = null;
   if ($bagCount) $bagCount.textContent = '0';
   document.body.classList.remove('scrabble-in-game', 'scrabble-spectating');
   if ($spectateBanner) $spectateBanner.style.display = 'none';
@@ -3692,7 +4005,7 @@ paintRack = function() {
         const letter  = isBlank ? '?' : ch.toUpperCase();
         const tile = document.createElement('div');
         tile.className = 'scrabble-tile' + (isBlank ? ' is-blank' : '');
-        tile.draggable = true;   // drag to reorder the rack (#1) or onto a board square (#2)
+        tile.draggable = false;  // native DnD replaced by the pointer-drag system below
         tile.textContent = letter;
         if (!isBlank) {
           const val = document.createElement('span');
@@ -3749,6 +4062,26 @@ paintBoard = function() {
     }
     cell.appendChild(tile);
   });
+
+  /* (Phase 3) Other players' tentative placements — face-down, POSITION ONLY
+     (their letters stay hidden until they commit). Skip squares already showing
+     a committed tile or one of my own pending tiles. */
+  Object.keys(_livePending).forEach(seatKey => {
+    const seat = parseInt(seatKey, 10);
+    if (seat === _mySeat) return;
+    (_livePending[seat] || []).forEach(sq => {
+      const idx = sq.r * DIM + sq.c;
+      const cell = $board.children[idx];
+      if (!cell || cell.querySelector('.scrabble-tile') || cell.querySelector('.scrabble-live-facedown')) return;
+      cell.classList.add('is-live-pending');
+      const fd = document.createElement('div');
+      fd.className = 'scrabble-live-facedown';
+      cell.appendChild(fd);
+    });
+  });
+
+  /* Ship my own pending state to everyone (deduped by signature inside). */
+  syncPendingLive();
 };
 
 /* Override paintAll's downstream call to also refresh action state. */
@@ -3907,6 +4240,7 @@ if ($shuffleBtn) {
       const tmp = _rackOrder[i]; _rackOrder[i] = _rackOrder[j]; _rackOrder[j] = tmp;
     }
     paintRack();
+    broadcastLiveRack();   // (Phase 3) others see my rack shuffle
     updateActionButtons();
   });
 }
@@ -3923,10 +4257,13 @@ if ($recallBtn) {
   });
 }
 
-/* ─── Drag & drop ───  (#1 reorder rack by dragging, #2 drag a tile onto
-   a board square). Native HTML5 DnD. Click-to-select-then-click still works
-   as a fallback (and on touch, where native drag isn't reliable). */
-let _dragSlot = null;   // _rackOrder index currently being dragged
+/* ─── Pointer drag (#1 reorder the rack, #2 drag a tile onto the board) ───
+   Custom pointer drag (not native HTML5 DnD) so the tile lifts on pick, a
+   ghost follows the cursor, and the other rack tiles slide to open a gap.
+   Click-to-place still works for taps and as a fallback. Reordering is
+   allowed any time; placing on the board still requires it to be your turn. */
+const RACK_GAP = 6;   // px — matches .scrabble-rack { gap } (the slide distance)
+let _drag = null;     // active drag state, or null
 
 /* Move the rack tile at index `from` to index `to`, keeping any pending
    (already-placed) tiles pointing at their underlying rack letter. */
@@ -3942,69 +4279,180 @@ function reorderRack(from, to) {
   document.body.classList.remove('scrabble-placing');
   paintRack();
   paintBoard();
+  broadcastLiveRack();   // (Phase 3) others see my rack reorder
+}
+
+function _rackSlotEls() { return $rack ? Array.from($rack.querySelectorAll('.scrabble-rack-slot')) : []; }
+
+/* Slide the tiles between the source slot and the hover slot one step toward
+   the source, opening a gap where the dragged tile will land. Pure transform
+   + CSS transition; the rack DOM stays put until the drop commits. */
+function _applyRackShift() {
+  if (!_drag) return;
+  const from = _drag.fromSlot, to = _drag.toSlot;
+  _rackSlotEls().forEach((slot, i) => {
+    const tile = slot.querySelector('.scrabble-tile');
+    if (!tile || i === from) return;
+    let dir = 0;
+    if (from < to && i > from && i <= to) dir = -1;
+    else if (from > to && i >= to && i < from) dir = 1;
+    tile.style.transform = dir ? 'translateX(calc(' + dir + ' * (100% + ' + RACK_GAP + 'px)))' : '';
+  });
+}
+function _clearBoardHover() {
+  if ($board) $board.querySelectorAll('.is-drop-hover').forEach(c => c.classList.remove('is-drop-hover'));
+}
+/* Empty on the server board AND not already holding a pending tile? */
+function _squareDroppable(sq) {
+  const idx = parseInt(sq.dataset.idx, 10);
+  if (isNaN(idx)) return false;
+  if (_pendingTiles.find(t => (t.row * DIM + t.col) === idx)) return false;
+  if (!_gameRow || !_gameRow.board) return false;
+  const onBoard = _gameRow.board.charAt(idx);
+  return !(onBoard && onBoard !== '.');
+}
+/* Swallow the click that fires right after a drag (so it doesn't also
+   select/place). */
+function _suppressNextClick() {
+  const h = (e) => { e.stopPropagation(); e.preventDefault(); };
+  document.addEventListener('click', h, { capture: true, once: true });
+  setTimeout(() => { document.removeEventListener('click', h, { capture: true }); }, 350);
+}
+/* Free-floating ghost tile that follows the cursor. Built fresh with inline
+   sizing so it doesn't depend on the rack/board CSS vars once detached. */
+function _buildGhost(letter, isBlank, w, h) {
+  const g = document.createElement('div');
+  g.className = 'scrabble-tile scrabble-drag-ghost' + (isBlank ? ' is-blank' : '');
+  g.textContent = isBlank ? (letter || '?') : letter;
+  g.style.width = w + 'px';
+  g.style.height = h + 'px';
+  g.style.fontSize = (h * 0.5) + 'px';
+  if (!isBlank) {
+    const v = document.createElement('span');
+    v.className = 'scrabble-tile-val';
+    v.style.position = 'absolute'; v.style.bottom = '3px'; v.style.right = '4px';
+    v.style.fontSize = (h * 0.22) + 'px';
+    v.textContent = String(LETTER_VALUES[letter] || 0);
+    g.appendChild(v);
+  }
+  return g;
 }
 
 if ($rack) {
-  $rack.addEventListener('dragstart', (ev) => {
-    const slot = ev.target.closest('.scrabble-rack-slot');
-    if (!slot || slot.classList.contains('is-used')) { ev.preventDefault(); return; }
-    const v = parseInt(slot.dataset.slot, 10);
-    if (isNaN(v) || v >= _rackOrder.length) { ev.preventDefault(); return; }
-    _dragSlot = v;
-    try { ev.dataTransfer.setData('text/plain', String(v)); ev.dataTransfer.effectAllowed = 'move'; } catch (_) {}
-    slot.classList.add('is-dragging');
+  /* Press: remember the tile + lift it. The real drag begins once the pointer
+     moves past a small threshold (so a tap still falls through to select). */
+  $rack.addEventListener('pointerdown', (ev) => {
+    if (ev.button != null && ev.button !== 0) return;
+    if (_isSpectating) return;
+    const slotEl = ev.target.closest('.scrabble-rack-slot');
+    if (!slotEl || !$rack.contains(slotEl) || slotEl.classList.contains('is-used')) return;
+    const from = parseInt(slotEl.dataset.slot, 10);
+    if (isNaN(from) || from >= _rackOrder.length) return;
+    const tile = slotEl.querySelector('.scrabble-tile');
+    if (!tile) return;
+    const rect = tile.getBoundingClientRect();
+    const ridx = _rackOrder[from];
+    const ch   = (_myRack || '').charAt(ridx) || '';
+    _drag = {
+      fromSlot: from, toSlot: from, mode: 'none', boardIdx: null, active: false,
+      startX: ev.clientX, startY: ev.clientY,
+      grabX: ev.clientX - rect.left, grabY: ev.clientY - rect.top,
+      w: rect.width, h: rect.height,
+      letter: (ch === '?') ? '?' : ch.toUpperCase(), isBlank: (ch === '?'),
+      srcTile: tile, ghost: null,
+    };
+    tile.classList.add('is-grabbing');
+    /* Do NOT capture the pointer here. Capturing on every press makes the
+       follow-up `click` target the capture element ($rack) instead of the
+       tile, so tap-to-select (which finds the slot from the click target)
+       silently fails. We capture only once a real drag starts (below). */
   });
-  $rack.addEventListener('dragend', () => {
-    _dragSlot = null;
-    document.querySelectorAll('.scrabble-rack-slot.is-dragging, .scrabble-rack-slot.is-drop-target, .scrabble-square.is-drop-hover')
-      .forEach(el => el.classList.remove('is-dragging', 'is-drop-target', 'is-drop-hover'));
-  });
-  $rack.addEventListener('dragover', (ev) => {
-    if (_dragSlot === null) return;
-    ev.preventDefault();
-    try { ev.dataTransfer.dropEffect = 'move'; } catch (_) {}
-    const slot = ev.target.closest('.scrabble-rack-slot');
-    $rack.querySelectorAll('.is-drop-target').forEach(el => el.classList.remove('is-drop-target'));
-    if (slot) slot.classList.add('is-drop-target');
-  });
-  $rack.addEventListener('drop', (ev) => {
-    if (_dragSlot === null) return;
-    ev.preventDefault();
-    const slot = ev.target.closest('.scrabble-rack-slot');
-    if (!slot) return;
-    const to = parseInt(slot.dataset.slot, 10);
-    if (!isNaN(to)) reorderRack(_dragSlot, to);
-  });
-}
 
-if ($board) {
-  $board.addEventListener('dragover', (ev) => {
-    if (_dragSlot === null) return;
+  $rack.addEventListener('pointermove', (ev) => {
+    if (!_drag) return;
+    if (!_drag.active) {
+      if (Math.abs(ev.clientX - _drag.startX) + Math.abs(ev.clientY - _drag.startY) < 6) return;
+      _drag.active = true;                                   // threshold crossed → real drag
+      /* Capture now (not on pointerdown) so a tap keeps its real click target;
+         capture also keeps pointermove/up flowing to $rack even over the board. */
+      try { $rack.setPointerCapture(ev.pointerId); } catch (_) {}
+      document.body.classList.add('scrabble-dragging');
+      _drag.srcTile.classList.remove('is-grabbing');
+      _drag.srcTile.classList.add('is-dragging-src');        // hide the source → leaves a gap
+      _drag.ghost = _buildGhost(_drag.letter, _drag.isBlank, _drag.w, _drag.h);
+      /* Append to <html>, NOT <body>: body has a page-load fade that leaves a
+         lingering transform:translateY(0) on it (animation fill-mode "both"),
+         which makes this fixed ghost body/scroll-relative — the "ghost is far
+         from the cursor" bug. <html> has no transform → viewport-relative. */
+      document.documentElement.appendChild(_drag.ghost);
+    }
     ev.preventDefault();
-    try { ev.dataTransfer.dropEffect = 'move'; } catch (_) {}
-    const cell = ev.target.closest('.scrabble-square');
-    $board.querySelectorAll('.is-drop-hover').forEach(el => el.classList.remove('is-drop-hover'));
-    if (cell) cell.classList.add('is-drop-hover');
+    const cx = ev.clientX, cy = ev.clientY;
+    if (_drag.ghost) {
+      _drag.ghost.style.left = (cx - _drag.grabX) + 'px';
+      _drag.ghost.style.top  = (cy - _drag.grabY) + 'px';
+    }
+    const el = document.elementFromPoint(cx, cy);
+    const overSquare = (el && el.closest) ? el.closest('.scrabble-square') : null;
+    const overSlot   = (el && el.closest) ? el.closest('.scrabble-rack-slot') : null;
+    _clearBoardHover();
+    if (overSquare && $board && $board.contains(overSquare) && canPlaceTiles() && _squareDroppable(overSquare)) {
+      _drag.mode = 'board';
+      _drag.boardIdx = parseInt(overSquare.dataset.idx, 10);
+      overSquare.classList.add('is-drop-hover');
+      if (_drag.toSlot !== _drag.fromSlot) { _drag.toSlot = _drag.fromSlot; _applyRackShift(); }   // close the rack gap
+    } else {
+      _drag.mode = 'rack';
+      _drag.boardIdx = null;
+      let to = _drag.fromSlot;
+      if (overSlot && $rack.contains(overSlot)) {
+        const s = parseInt(overSlot.dataset.slot, 10);
+        if (!isNaN(s)) to = Math.max(0, Math.min(_rackOrder.length - 1, s));
+      }
+      if (to !== _drag.toSlot) { _drag.toSlot = to; _applyRackShift(); }
+    }
   });
-  $board.addEventListener('drop', (ev) => {
-    if (_dragSlot === null) return;
+
+  const _endDrag = (ev) => {
+    if (!_drag) return;
+    try { $rack.releasePointerCapture(ev.pointerId); } catch (_) {}
+    const d = _drag;
+    if (!d.active) {                         // a tap, not a drag — let the click select
+      if (d.srcTile) d.srcTile.classList.remove('is-grabbing');
+      _drag = null;
+      return;
+    }
     ev.preventDefault();
-    const cell = ev.target.closest('.scrabble-square');
-    if (!cell || !$board.contains(cell)) return;
-    const idx = parseInt(cell.dataset.idx, 10);
-    if (isNaN(idx)) return;
-    const row = Math.floor(idx / DIM), col = idx % DIM;
-    /* Same placement rules as the click handler. */
-    if (!canPlaceTiles()) return;
-    if (_pendingTiles.find(t => t.row === row && t.col === col)) return;   // a pending tile already here
-    if (!_gameRow || !_gameRow.board) return;
-    const onBoard = _gameRow.board.charAt(idx);
-    if (onBoard && onBoard !== '.') return;                                // occupied on the server board
-    const ridx = _rackOrder[_dragSlot];
-    const ch   = (_myRack || '').charAt(ridx);
-    if (!ch) return;
-    if (ch === '?') { openBlankPicker(_dragSlot, row, col); return; }      // blank → letter picker
-    placePending(_dragSlot, row, col, ch.toUpperCase(), false);
+    _drag = null;
+    document.body.classList.remove('scrabble-dragging');
+    _clearBoardHover();
+    if (d.ghost && d.ghost.parentNode) d.ghost.parentNode.removeChild(d.ghost);
+    _suppressNextClick();
+    if (d.mode === 'board' && d.boardIdx != null && canPlaceTiles()) {
+      const row = Math.floor(d.boardIdx / DIM), col = d.boardIdx % DIM;
+      const ridx = _rackOrder[d.fromSlot];
+      const ch   = (_myRack || '').charAt(ridx);
+      if (ch === '?') { paintRack(); openBlankPicker(d.fromSlot, row, col); return; }   // pick the blank's letter
+      if (ch)        { placePending(d.fromSlot, row, col, ch.toUpperCase(), false); return; }
+      paintRack(); return;
+    }
+    if (d.mode === 'rack' && d.toSlot !== d.fromSlot) {
+      reorderRack(d.fromSlot, d.toSlot);     // commits + repaints (clears transforms/gap)
+    } else {
+      paintRack();                            // no-op drop — restore the rack
+    }
+  };
+  $rack.addEventListener('pointerup', _endDrag);
+
+  /* Interruption (browser/system steals the pointer): restore, no placement. */
+  $rack.addEventListener('pointercancel', (ev) => {
+    if (!_drag) return;
+    try { $rack.releasePointerCapture(ev.pointerId); } catch (_) {}
+    _drag = null;
+    document.body.classList.remove('scrabble-dragging');
+    _clearBoardHover();
+    document.querySelectorAll('.scrabble-drag-ghost').forEach(g => { if (g.parentNode) g.parentNode.removeChild(g); });
+    paintRack();
   });
 }
 
@@ -4083,9 +4531,12 @@ if ($exchangeBtn) {
       /* Surface the specific blocker. A swap of some kind is possible when
          the bag holds 7+ (standard) OR you hold 3-of-a-kind with tiles left
          to draw (free swap). */
-      const bag = (_gameRow && _gameRow.tiles_in_bag) || 0;
+      const bag    = (_gameRow && _gameRow.tiles_in_bag) || 0;
+      const myTurn = !!(_gameRow && _gameRow.to_move === _mySeat);
       if (bag < 1) {
         showGameError('The bag is empty — nothing left to swap.');
+      } else if (!myTurn) {
+        showGameError('Not your turn. Off-turn you can only free-swap 3 of the same letter — you don\'t hold a trio right now.');
       } else if (bag < 7 && !hasThreeIdenticalLetters()) {
         showGameError('A standard swap needs 7+ tiles in the bag. A free swap needs 3 of the same letter on your rack.');
       } else {
@@ -4181,7 +4632,14 @@ function updateExchangeStatus() {
     }
     $exchangeConfirm.textContent = 'Free swap';
   } else {
-    if (bag < 7) {
+    const myTurn = !!(_gameRow && _gameRow.to_move === _mySeat);
+    if (!myTurn) {
+      /* Off-turn the only legal swap is a free one. A standard (non-trio)
+         selection would cost a turn that isn't yours — block it. */
+      $exchangeStatus.classList.add('is-cost');
+      $exchangeStatus.textContent = 'Not your turn — off-turn you can only free-swap. Pick only letters you hold 3+ of.';
+      $exchangeConfirm.disabled = true;
+    } else if (bag < 7) {
       $exchangeStatus.classList.add('is-cost');
       $exchangeStatus.textContent = 'A standard swap needs 7+ tiles in the bag (or pick only letters you hold 3+ of for a free swap).';
       $exchangeConfirm.disabled = true;
@@ -4242,11 +4700,21 @@ function canPlaceTiles() {
       && _mySeat && _gameRow.to_move === _mySeat && !amIResigned();
 }
 function canExchange() {
-  if (!canPlaceTiles() || _pendingTiles.length) return false;
-  const bag = (_gameRow.tiles_in_bag || 0);
-  /* Standard swap needs 7+ in the bag; a free swap (3-of-a-kind) just
-     needs at least one tile to draw. Either path enables the button. */
-  return bag >= 7 || (bag >= 1 && hasThreeIdenticalLetters());
+  /* Base eligibility: active game, I hold a seat, not spectating, not resigned,
+     and no half-placed move sitting on the board. */
+  if (!_gameRow || _isSpectating || _gameRow.status !== 'active') return false;
+  if (!_mySeat || amIResigned() || _pendingTiles.length) return false;
+  const bag    = (_gameRow.tiles_in_bag || 0);
+  const myTurn = _gameRow.to_move === _mySeat;
+  if (myTurn) {
+    /* On your turn: a standard swap (7+ in the bag) OR a free swap
+       (3-of-a-kind, just needs a tile to draw). */
+    return bag >= 7 || (bag >= 1 && hasThreeIdenticalLetters());
+  }
+  /* Off-turn: ONLY a free swap is allowed — it costs no turn, so duplicates
+     (3+ of a letter) can be swapped any time. A standard swap would cost a
+     turn that isn't yours, so it stays turn-only. */
+  return bag >= 1 && hasThreeIdenticalLetters();
 }
 /* Free-swap helper: true when the rack holds at least three of the same
    A-Z letter. Blanks ('?') don't count. */
