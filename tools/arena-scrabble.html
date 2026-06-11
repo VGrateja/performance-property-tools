@@ -23,12 +23,14 @@
     animation: pp-page-fade-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
   @keyframes pp-page-fade-in {
-    from { opacity: 0; transform: translateY(6px); }
-    /* End on `none`, not translateY(0): with fill-mode "both" the final
-       keyframe persists, and any lingering transform on <body> makes it the
-       containing block for position:fixed children (the back-to-hub/arena
-       pills + drag ghost), so they'd drift on scroll. `none` = no transform. */
-    to   { opacity: 1; transform: none; }
+    /* Opacity ONLY — no transform in any keyframe. A filled animation
+       (fill-mode: both) that touches `transform` keeps <body> promoted as the
+       containing block for position:fixed children even after it ends (a final
+       value of `none` does NOT release it), so the back-to-hub/arena pills (and
+       the drag ghost) drifted on scroll. Fading opacity alone leaves <body>
+       transform-free, so fixed children pin to the viewport as intended. */
+    from { opacity: 0; }
+    to   { opacity: 1; }
   }
   #scrabbleView{
     display:flex; flex-direction:column; min-height:100vh;
@@ -1445,9 +1447,52 @@
 
   /* Bottom seat holds your real rack — keep it ~board width so the tiles stay
      their natural size rather than stretching across the grid column. */
-  .scrabble-seat-bottom { width: 100%; max-width: 420px; }
+  .scrabble-seat-bottom { width: 100%; max-width: 420px; justify-self: center; }
   .scrabble-seat-bottom .scrabble-rack { width: 100%; }
   .scrabble-seat-bottom .scrabble-rack-tools { display:flex; gap:8px; }
+
+  /* ── Wooden tile holders (the rack "seater") ──
+     A wood tray behind each rack so tiles sit in a holder like a real board.
+     Bottom (you): face-up tiles seated in the tray. Top (across the table):
+     seen from behind, so only the tile tops show above the wood. Left/right:
+     a slim vertical tray with the tile edges stacked. Counts stay visible;
+     letters never do. */
+  .scrabble-rack-holder {
+    position: relative;
+    display: inline-flex; align-items: flex-end; justify-content: center;
+    padding: 7px 12px 11px;
+    border-radius: 7px 7px 6px 6px;
+    background: linear-gradient(180deg, #875c35 0%, #5e3f22 58%, #472d16 100%);
+    box-shadow: 0 6px 14px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.20),
+                inset 0 -2px 5px rgba(0,0,0,0.40);
+  }
+  /* Front lip the tiles rest against. */
+  .scrabble-rack-holder::after {
+    content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 8px;
+    background: linear-gradient(180deg, #6e4928, #38230f);
+    border-radius: 0 0 6px 6px;
+    box-shadow: inset 0 2px 3px rgba(0,0,0,0.45);
+  }
+  /* Your holder — full width under the face-up rack; recess the slots into the
+     wood so tiles look seated (a gap still shows when you lift one to drag). */
+  .scrabble-rack-holder-self { width: 100%; box-sizing: border-box; }
+  .scrabble-rack-holder-self .scrabble-rack { width: 100%; }
+  .scrabble-rack-holder-self .scrabble-rack-slot {
+    background: rgba(0,0,0,0.22); border-color: rgba(0,0,0,0.30);
+  }
+  /* Top opponent: holder seen from behind — shrink the backs to just their tops
+     so they peek above the wood (you can still count them). */
+  .scrabble-rack-holder.is-top { padding: 6px 10px 9px; }
+  .scrabble-rack-holder.is-top .scrabble-facedown { height: 11px; border-radius: 2px 2px 0 0; }
+  /* Side opponents (left/right): a slim vertical tray, tile edges stacked. */
+  .scrabble-rack-holder.is-side { padding: 10px 7px; }
+  .scrabble-rack-holder.is-side::after {
+    left: 0; top: 0; bottom: 0; right: auto; width: 7px; height: auto;
+    border-radius: 6px 0 0 6px;
+  }
+  .scrabble-rack-holder.is-side .scrabble-facedown {
+    width: calc(var(--fd) * 1.4); height: 9px; border-radius: 2px;
+  }
 
   /* Narrow screens: stack the seats so the board keeps its width. */
   @media (max-width: 760px){
@@ -2063,12 +2108,15 @@
         <div class="scrabble-board" id="scrabbleBoard"></div>
         <div class="scrabble-seat scrabble-seat-right"  id="scrabbleSeatRight"></div>
         <div class="scrabble-seat scrabble-seat-bottom" id="scrabbleSeatBottom">
-          <div class="scrabble-seat-head" id="scrabbleSeatBottomHead"></div>
+          <!-- Order: tiles (in a wooden holder) → actions → name/score. -->
+          <div class="scrabble-rack-holder scrabble-rack-holder-self">
+            <div class="scrabble-rack" id="scrabbleRack"></div>
+          </div>
           <div class="scrabble-rack-tools">
             <button class="scrabble-rack-tool" type="button" id="scrabbleShuffleBtn" title="Shuffle the visual order of your rack">⇄ Shuffle</button>
             <button class="scrabble-rack-tool" type="button" id="scrabbleRecallBtn" title="Pull every pending tile back to the rack">↺ Recall</button>
           </div>
-          <div class="scrabble-rack" id="scrabbleRack"></div>
+          <div class="scrabble-seat-head" id="scrabbleSeatBottomHead"></div>
         </div>
       </div>
     </div>
@@ -3178,6 +3226,7 @@ let _chatChannel      = null;  // ephemeral broadcast chat (#3) — players + sp
 let _liveChannel      = null;  // (Phase 3) ephemeral broadcast: in-progress placements + rack moves
 let _livePending      = {};    // { [seat]: [{r,c}] } — other players' tentative board tiles (positions only)
 let _lastPendingSig   = '';    // signature of my last-broadcast pending squares (dedupes sends)
+let _rackCounts       = {};    // { [seat]: n } — opponents' real tile counts for the face-down racks
 let _prevToMove       = null;  // last-seen to_move, so we can chime on turn handoff (#4)
 
 /* Turn timer state — tracked client-side; the server is authoritative.
@@ -3258,6 +3307,7 @@ async function openGameInternal(gameId) {
   paintAll();
   fetchWordsLog(gameId);          // #4: load the played-words panel
   subscribeToGame(gameId);
+  refreshRackCounts();            // opponents' real tile counts for the face-down racks
 }
 
 /* Core highlight geometry: given the tiles placed in a move (array of
@@ -3343,6 +3393,7 @@ function subscribeToGame(gameId) {
           /* Re-paint highlight; the game row UPDATE handler will paint
              the new tiles + scores once it arrives. */
           paintBoard();
+          refreshRackCounts();   // a play/exchange redrew a rack — refresh the face-down counts
         })
     .subscribe();
 
@@ -3404,6 +3455,7 @@ function teardownGameChannels() {
   _liveChannel      = null;
   _livePending      = {};
   _lastPendingSig   = '';
+  _rackCounts       = {};
 }
 
 /* ─── (Phase 3) Live in-progress sync ───
@@ -3459,6 +3511,21 @@ function pingSeatRack(seat) {
   void rack.offsetWidth;              // reflow so the animation restarts
   rack.classList.add('is-shuffling');
   setTimeout(() => rack.classList.remove('is-shuffling'), 520);
+}
+
+/* Fetch opponents' real rack sizes (count only — never letters) and repaint the
+   seats. Called on game load and after every committed move (a play/exchange
+   redraws a rack). */
+async function refreshRackCounts() {
+  if (!_gameRow || !window.sb) return;
+  try {
+    const { data, error } = await window.sb.rpc('get_scrabble_rack_counts', { p_game_id: _gameRow.id });
+    if (error || !data) return;
+    const m = {};
+    data.forEach(r => { m[r.seat] = r.n; });
+    _rackCounts = m;
+    paintSeats();
+  } catch (_) {}
 }
 
 /* ─── Painters ─── */
@@ -3626,10 +3693,22 @@ function _seatHeadHtml(p, isMe, isActive) {
 /* A face-down rack of n wooden backs — opponents' letters are never revealed.
    NOTE: n is fixed at 7 for now; exact per-player counts need a count-only
    backend view (TODO) so the tail-end of a game shows the right number. */
+/* Opponent rack tile count for the face-down rack — defaults to 7 until the
+   count RPC resolves, clamped 0..7. */
+function _seatTileCount(seat) {
+  const n = _rackCounts[seat];
+  return (n == null) ? 7 : Math.max(0, Math.min(7, n));
+}
 function _facedownRackHtml(n, vertical) {
-  let s = '<div class="scrabble-seat-rack' + (vertical ? ' is-vertical' : '') + '">';
-  for (let i = 0; i < n; i++) s += '<span class="scrabble-facedown"></span>';
-  return s + '</div>';
+  let tiles = '';
+  for (let i = 0; i < n; i++) tiles += '<span class="scrabble-facedown"></span>';
+  /* Wrap the face-down tiles in a wooden holder, oriented by seat: side seats
+     (left/right) get a vertical tray showing the tile edges; the top seat is
+     seen from behind, so only the tile tops poke above the wood. Either way the
+     COUNT is visible (you can see how many they hold) but never the letters. */
+  return '<div class="scrabble-rack-holder scrabble-rack-holder-opp ' + (vertical ? 'is-side' : 'is-top') + '">' +
+         '<div class="scrabble-seat-rack' + (vertical ? ' is-vertical' : '') + '">' + tiles + '</div>' +
+         '</div>';
 }
 
 /* Render the four seats around the board. */
@@ -3651,7 +3730,7 @@ function paintSeats() {
     el.classList.toggle('is-active', isActive);
     el.classList.toggle('is-resigned', !!p.resigned);
     el.innerHTML = '<div class="scrabble-seat-head">' + _seatHeadHtml(p, false, isActive) + '</div>' +
-                   _facedownRackHtml(7, vertical);
+                   _facedownRackHtml(_seatTileCount(p.seat), vertical);
   });
 
   /* My seat (bottom). The real rack + tools are static children of
