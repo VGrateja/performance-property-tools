@@ -330,9 +330,14 @@ function _ctRestoreSnapshot(snapshot) {
     ctRenderAll();
     shRenderAll();
     imgRenderAll();
-    /* Re-init charts so any pages that came back through the undo
-       repaint their ECharts canvases. */
-    if (typeof renderAllCharts === 'function' && typeof REPORT_DATA !== 'undefined' && REPORT_DATA) {
+    /* Re-init charts so pages that came back through the undo (their HTML was
+       just replaced, wiping the ECharts canvases) repaint. Prefer the host's
+       registered re-render hook — the regional tool renders via ACTIVE_REGION
+       + PpaCharts, NOT renderAllCharts/REPORT_DATA, so without this hook undo
+       left regional charts blank until a hard refresh. */
+    if (typeof window !== 'undefined' && typeof window.PPA_RERENDER_CHARTS === 'function') {
+      try { window.PPA_RERENDER_CHARTS(); } catch (_) {}
+    } else if (typeof renderAllCharts === 'function' && typeof REPORT_DATA !== 'undefined' && REPORT_DATA) {
       try { renderAllCharts(REPORT_DATA); } catch (_) {}
     }
     ctDeselectAll();
@@ -394,6 +399,334 @@ function ctRender(t) {
     .replace(/\{year\}/g,  new Date().getFullYear());
 }
 
+/* ─── Shared Source Library (public.report_sources) ─────────────────────
+   A "Source: …" overlay can carry a `sourceId` pointing at a shared row in
+   report_sources. When set, the overlay renders the LIBRARY text (so editing
+   a source once updates every region/report that references it) while keeping
+   its own per-region position + styling. Unlinked overlays (no sourceId) are
+   completely unaffected — this layer is additive. */
+let _srcLib = Object.create(null);     // sourceId -> { label, text }
+let _srcLibLoaded = false;
+
+/* The text an overlay should display: shared library text when linked + the
+   source is loaded, else the overlay's own cached text. */
+function ctResolveText(entry) {
+  if (entry && entry.sourceId && _srcLib[entry.sourceId]) return _srcLib[entry.sourceId].text;
+  return entry ? entry.text : '';
+}
+
+async function loadReportSourceLib(opts) {
+  opts = opts || {};
+  if (typeof window === 'undefined' || !window.sb) {
+    /* Supabase client not ready yet — retry briefly. Linked overlays fall
+       back to their cached entry.text until the library arrives, so this is
+       never blocking. */
+    if ((opts._tries || 0) < 12) setTimeout(() => loadReportSourceLib({ _tries: (opts._tries || 0) + 1 }), 400);
+    return;
+  }
+  try {
+    const { data, error } = await window.sb.from('report_sources').select('id, label, text');
+    if (error) { console.warn('report_sources load:', error.message || error); return; }
+    const next = Object.create(null);
+    (data || []).forEach(r => { next[r.id] = { label: r.label || '', text: r.text || '' }; });
+    _srcLib = next;
+    _srcLibLoaded = true;
+    if (typeof ctRenderAll === 'function') ctRenderAll();   // re-render with shared text now available
+  } catch (e) { console.warn('report_sources load failed:', e); }
+}
+
+/* Edit write-back: when a LINKED overlay's text is edited, persist it to the
+   shared source row, update the cache, and re-render every overlay that
+   references it (propagation). dev/admin only via RLS — the editor itself is
+   already writer-gated. The re-render is deferred so it doesn't yank the
+   element the caller is mid-commit on. */
+async function ctSaveSourceText(sourceId, text) {
+  if (!sourceId) return;
+  if (_srcLib[sourceId]) _srcLib[sourceId].text = text;
+  else _srcLib[sourceId] = { label: '', text: text };
+  setTimeout(() => { if (typeof ctRenderAll === 'function') ctRenderAll(); }, 0);
+  if (typeof window === 'undefined' || !window.sb) return;
+  try {
+    const { error } = await window.sb.from('report_sources').update({ text: text }).eq('id', sourceId);
+    if (error) console.warn('report_sources save:', error.message || error);
+  } catch (e) { console.warn('report_sources save failed:', e); }
+}
+
+/* ─── Chunk 3: Source Library UI (manage + link) ──────────────────────
+   All built dynamically (no host HTML/CSS), so it works for all three
+   report tools. Writes hit report_sources (RLS = dev/admin); the editor is
+   already writer-gated, so a non-writer can't reach these. */
+const _SRC_BTN = 'cursor:pointer;border:1px solid rgba(92,200,224,0.35);background:rgba(92,200,224,0.12);color:#cdeaf3;border-radius:6px;padding:6px 10px;font-size:12px;';
+
+async function _srcCreate(label, text) {
+  if (!window.sb) { alert('Sign-in required to create a shared source.'); return null; }
+  try {
+    const { data, error } = await window.sb.from('report_sources')
+      .insert({ label: label || '', text: text || '' }).select('id, label, text').single();
+    if (error) { console.warn('source create:', error.message || error); alert('Could not create source (dev/admin only).'); return null; }
+    _srcLib[data.id] = { label: data.label || '', text: data.text || '' };
+    return data.id;
+  } catch (e) { console.warn('source create failed', e); return null; }
+}
+async function _srcUpdate(id, fields) {
+  if (!id) return;
+  if (_srcLib[id]) Object.assign(_srcLib[id], fields);
+  if (typeof ctRenderAll === 'function') ctRenderAll();
+  if (!window.sb) return;
+  try { const { error } = await window.sb.from('report_sources').update(fields).eq('id', id);
+    if (error) console.warn('source update:', error.message || error); }
+  catch (e) { console.warn('source update failed', e); }
+}
+async function _srcDelete(id) {
+  if (!id) return;
+  delete _srcLib[id];
+  /* Unlink any overlays in THIS region that referenced it — they keep their
+     own cached text. (Other regions revert on their next load.) */
+  _ctEntries.forEach(e => { if (e.sourceId === id) delete e.sourceId; });
+  ctSave(_ctEntries);
+  if (typeof ctRenderAll === 'function') ctRenderAll();
+  if (!window.sb) return;
+  try { const { error } = await window.sb.from('report_sources').delete().eq('id', id);
+    if (error) console.warn('source delete:', error.message || error); }
+  catch (e) { console.warn('source delete failed', e); }
+}
+function _ctSelectedEntry() {
+  const el = (typeof ctGetSelectedEl === 'function') ? ctGetSelectedEl() : null;
+  return el ? _ctEntries.find(e => e.id === el.dataset.id) : null;
+}
+function _ctLinkSelected(sourceId) {
+  const entry = _srcModalEntry || _ctSelectedEntry();
+  if (!entry) { alert('Select a source text overlay first.'); return; }
+  entry.sourceId = sourceId;
+  if (_srcLib[sourceId]) entry.text = _srcLib[sourceId].text;   /* cache for offline render */
+  ctSave(_ctEntries);
+  if (typeof ctRenderAll === 'function') ctRenderAll();
+}
+async function _ctMakeSelectedShared(label) {
+  const entry = _srcModalEntry || _ctSelectedEntry();
+  if (!entry) { alert('Select a source text overlay first.'); return; }
+  const id = await _srcCreate(label, entry.text || '');
+  if (!id) return;
+  entry.sourceId = id;
+  ctSave(_ctEntries);
+  if (typeof ctRenderAll === 'function') ctRenderAll();
+}
+/* Current-region helper: group this region's UNLINKED, source-looking text
+   overlays ("Source…") by identical text, create one shared source per group
+   + link them. Then use "Apply to other regions" to carry the links across. */
+/* Link the source overlays in ONE overlay array (a region's `texts` bucket)
+   to the shared library: group UNLINKED, "Source…" overlays by text, reuse an
+   existing library source when the text matches (else create one), set
+   sourceId. Mutates the array entries in place. ONLY touches source overlays —
+   every other overlay (incl. p3/p4 major-happenings annotations) is untouched.
+   Returns { created, linked, changed }. Used by both the current-region link
+   button and the all-regions source sync. */
+async function _srcLinkOverlayArray(texts) {
+  let created = 0, linked = 0, changed = false;
+  if (!Array.isArray(texts)) return { created, linked, changed };
+  const groups = Object.create(null);
+  texts.forEach(e => {
+    if (!e || e.sourceId) return;
+    const plain = (e.text || '').replace(/<[^>]*>/g, '').trim();
+    if (!/^source/i.test(plain)) return;
+    const key = (e.text || '').trim();
+    (groups[key] = groups[key] || []).push(e);
+  });
+  for (const key of Object.keys(groups)) {
+    const target = key.trim();
+    let id = Object.keys(_srcLib).find(sid => (_srcLib[sid].text || '').trim() === target);
+    if (!id) { id = await _srcCreate(key.replace(/<[^>]*>/g, '').slice(0, 60), key); if (id) created++; }
+    if (id) { groups[key].forEach(e => { e.sourceId = id; }); linked += groups[key].length; changed = true; }
+  }
+  return { created, linked, changed };
+}
+
+/* Current-region helper. */
+async function ctLinkExistingTexts() {
+  const candidates = _ctEntries.filter(e => e && !e.sourceId && /^source/i.test((e.text || '').replace(/<[^>]*>/g, '').trim()));
+  if (!candidates.length) { alert('No unlinked "Source…" texts found in this region.'); return; }
+  if (!confirm('Link this region’s ' + candidates.length + ' "Source…" overlay(s) to the shared library — reusing existing sources where the text matches, creating new ones otherwise? Other overlays are not touched.')) return;
+  const r = await _srcLinkOverlayArray(_ctEntries);
+  ctSave(_ctEntries);
+  if (typeof ctRenderAll === 'function') ctRenderAll();
+  alert('Linked ' + r.linked + ' overlay(s) — ' + r.created + ' new shared source(s) created.');
+}
+
+/* All-regions source sync. For every regional report: read its OWN `texts`
+   bucket from reports_state, link only its "Source…" overlays to the shared
+   library (merge — sets sourceId; never adds/removes/moves any overlay), and
+   write the bucket back. Major-happenings annotations live in the same bucket
+   but are read + written back unchanged, so they're never clobbered. */
+async function syncSourcesAllRegions() {
+  if (typeof window === 'undefined' || !window.sb) { alert('Sign-in required.'); return; }
+  if (typeof REGIONAL_REGIONS === 'undefined' || !REGIONAL_REGIONS) { alert('Region list unavailable.'); return; }
+  const slugs = Object.keys(REGIONAL_REGIONS);
+  if (!confirm('Link the "Source…" overlays in ALL ' + slugs.length + ' regional reports to the shared library?\n\nThis is a MERGE — it only sets source links and never adds, removes, or moves any other overlay, so each region keeps its own major-happenings annotations. New shared sources are created for any source text not already in the library.')) return;
+  const active = _rs_active();
+  let okCount = 0, totalLinked = 0, totalCreated = 0; const errors = [];
+  for (const slug of slugs) {
+    try {
+      if (slug === active) {
+        const r = await _srcLinkOverlayArray(_ctEntries);
+        if (r.changed) { ctSave(_ctEntries); if (typeof ctRenderAll === 'function') ctRenderAll(); }
+        okCount++; totalLinked += r.linked; totalCreated += r.created;
+        continue;
+      }
+      const { data, error } = await window.sb.from('reports_state').select('payload').eq('region', slug).maybeSingle();
+      if (error) throw error;
+      const payload = (data && data.payload && typeof data.payload === 'object') ? data.payload : null;
+      if (!payload || !Array.isArray(payload.texts) || !payload.texts.length) { okCount++; continue; }
+      const r = await _srcLinkOverlayArray(payload.texts);
+      if (r.changed) {
+        const { error: wErr } = await window.sb.from('reports_state').upsert({ region: slug, payload: payload }, { onConflict: 'region' });
+        if (wErr) throw wErr;
+      }
+      okCount++; totalLinked += r.linked; totalCreated += r.created;
+    } catch (e) { errors.push(slug + ': ' + (e && (e.message || e.code) || e)); }
+  }
+  alert('Source sync complete.\nRegions processed: ' + okCount + '/' + slugs.length +
+        '\nOverlays linked: ' + totalLinked + '\nNew shared sources created: ' + totalCreated +
+        (errors.length ? '\n\nErrors:\n' + errors.slice(0, 8).join('\n') : ''));
+}
+
+let _srcModalEl = null;
+let _srcModalEntry = null;
+function closeSourcesModal() { if (_srcModalEl) _srcModalEl.style.display = 'none'; }
+function openSourcesModal() {
+  /* Capture the selected overlay NOW — clicking inside the modal (it's
+     appended to <body>) fires the editor's document deselect handler, so by
+     the time a modal button is clicked the overlay is no longer `.selected`. */
+  _srcModalEntry = _ctSelectedEntry();
+  if (!_srcModalEl) {
+    _srcModalEl = document.createElement('div');
+    _srcModalEl.id = 'src-lib-modal';
+    _srcModalEl.style.cssText = 'position:fixed;inset:0;z-index:12000;display:none;align-items:center;justify-content:center;background:rgba(5,12,18,0.55);';
+    _srcModalEl.addEventListener('click', ev => { if (ev.target === _srcModalEl) closeSourcesModal(); });
+    const panel = document.createElement('div');
+    panel.id = 'src-lib-panel';
+    panel.style.cssText = 'background:#101c26;color:#e6eef5;border:1px solid rgba(92,200,224,0.3);border-radius:14px;max-width:640px;width:92%;max-height:84vh;overflow:auto;padding:20px 22px;font:14px/1.5 Roboto,system-ui,sans-serif;box-shadow:0 20px 60px rgba(0,0,0,.5);';
+    _srcModalEl.appendChild(panel);
+    document.body.appendChild(_srcModalEl);
+  }
+  _renderSourcesModal();
+  _srcModalEl.style.display = 'flex';
+}
+function _renderSourcesModal() {
+  const panel = _srcModalEl && _srcModalEl.querySelector('#src-lib-panel');
+  if (!panel) return;
+  const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const selEntry = _srcModalEntry;
+  const ids = Object.keys(_srcLib);
+  let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'
+    + '<h2 style="margin:0;font-size:18px;">Shared Sources</h2>'
+    + '<button data-act="close" style="background:none;border:none;color:#9fb3c2;font-size:22px;cursor:pointer;line-height:1;">×</button></div>'
+    + '<p style="margin:0 0 14px;color:#9fb3c2;font-size:12px;">A source’s text is shared by every region linked to it. Edit it once — here, or on any linked overlay — and all reports update.</p>';
+  html += '<div style="border:1px solid rgba(92,200,224,0.2);border-radius:10px;padding:12px;margin-bottom:14px;">';
+  if (selEntry) {
+    const preview = esc((selEntry.text || '').replace(/<[^>]*>/g, '').slice(0, 80)) || '(empty)';
+    html += '<div style="font-size:12px;color:#9fb3c2;margin-bottom:6px;">Selected overlay</div><div style="margin-bottom:8px;">“' + preview + '”</div>';
+    if (selEntry.sourceId && _srcLib[selEntry.sourceId]) {
+      html += '<div style="color:#5cc8e0;">🔗 Linked to <strong>' + esc(_srcLib[selEntry.sourceId].label || '(unlabeled)') + '</strong> '
+        + '<button data-act="unlink" style="' + _SRC_BTN + 'margin-left:8px;">Unlink</button></div>';
+    } else {
+      html += '<button data-act="make-shared" style="' + _SRC_BTN + '">Make this a shared source</button> ';
+      if (ids.length) {
+        html += '<select data-act="link-existing" style="margin-left:8px;background:#0b141c;border:1px solid rgba(255,255,255,0.18);color:#e6eef5;border-radius:6px;padding:6px 8px;font-size:12px;">'
+          + '<option value="">Link to existing…</option>'
+          + ids.map(id => '<option value="' + esc(id) + '">' + esc(_srcLib[id].label || '(unlabeled)') + '</option>').join('') + '</select>';
+      }
+    }
+  } else {
+    html += '<div style="color:#9fb3c2;font-size:12px;">Select a source text overlay to link it. You can still manage the library below.</div>';
+  }
+  html += '</div><div style="font-size:12px;color:#9fb3c2;margin-bottom:6px;">Library</div>';
+  if (!ids.length) html += '<div style="color:#9fb3c2;margin-bottom:10px;">No shared sources yet.</div>';
+  ids.forEach(id => {
+    const s = _srcLib[id];
+    html += '<div data-src="' + esc(id) + '" style="border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px;margin-bottom:8px;">'
+      + '<input data-f="label" value="' + esc(s.label) + '" placeholder="Label" style="width:100%;box-sizing:border-box;margin-bottom:6px;background:#0b141c;border:1px solid rgba(255,255,255,0.15);color:#e6eef5;border-radius:6px;padding:6px 8px;">'
+      + '<textarea data-f="text" rows="2" placeholder="Source text" style="width:100%;box-sizing:border-box;background:#0b141c;border:1px solid rgba(255,255,255,0.15);color:#e6eef5;border-radius:6px;padding:6px 8px;">' + esc(s.text) + '</textarea>'
+      + '<div style="margin-top:6px;display:flex;gap:8px;"><button data-act="save-src" style="' + _SRC_BTN + '">Save</button>'
+      + '<button data-act="del-src" style="cursor:pointer;border:1px solid rgba(248,113,113,0.4);background:rgba(248,113,113,0.12);color:#fca5a5;border-radius:6px;padding:6px 10px;font-size:12px;">Delete</button></div></div>';
+  });
+  html += '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">'
+    + '<button data-act="new-src" style="' + _SRC_BTN + '">+ New source</button>'
+    + '<button data-act="link-existing-bulk" style="' + _SRC_BTN + '">Link this region’s source texts</button>'
+    + '<button data-act="sync-all-sources" style="' + _SRC_BTN + '" title="Link the Source… overlays in every regional report to the shared library — merge only, never touches other overlays">Sync sources → all regions</button></div>';
+  panel.innerHTML = html;
+  panel.onclick = async (ev) => {
+    const t = ev.target.closest('[data-act]'); if (!t) return;
+    const act = t.dataset.act;
+    if (act === 'close') return closeSourcesModal();
+    if (act === 'unlink') { const e = _srcModalEntry; if (e) { delete e.sourceId; ctSave(_ctEntries); if (typeof ctRenderAll === 'function') ctRenderAll(); _renderSourcesModal(); } return; }
+    if (act === 'make-shared') { const e = _srcModalEntry; if (!e) { alert('Select a source text overlay first.'); return; } const label = prompt('Label for this shared source:', (e.text || '').replace(/<[^>]*>/g, '').slice(0, 60)); if (label === null) return; await _ctMakeSelectedShared(label); _renderSourcesModal(); return; }
+    if (act === 'new-src') { const id = await _srcCreate('New source', ''); if (id) _renderSourcesModal(); return; }
+    if (act === 'link-existing-bulk') { await ctLinkExistingTexts(); _renderSourcesModal(); return; }
+    if (act === 'sync-all-sources') { await syncSourcesAllRegions(); _renderSourcesModal(); return; }
+    const row = t.closest('[data-src]');
+    if (act === 'save-src' && row) { await _srcUpdate(row.dataset.src, { label: row.querySelector('[data-f="label"]').value, text: row.querySelector('[data-f="text"]').value }); return; }
+    if (act === 'del-src' && row) { if (confirm('Delete this shared source? Linked overlays revert to their own text.')) { await _srcDelete(row.dataset.src); _renderSourcesModal(); } return; }
+  };
+  panel.onchange = (ev) => {
+    const sel = ev.target.closest('select[data-act="link-existing"]');
+    if (sel && sel.value) { _ctLinkSelected(sel.value); _renderSourcesModal(); }
+  };
+}
+
+/* Pin/unpin the selected text overlay(s) to a fixed RIGHT edge. Pinning locks
+   the overlay's CURRENT right edge (no jump) so text grows leftward and it
+   stays aligned regardless of length; unpinning restores left-anchoring at the
+   current position. Then drag it to the box margin once and it stays there. */
+function _ctTogglePinRight() {
+  const els = Array.from(document.querySelectorAll('.custom-text.selected'));
+  if (!els.length) { alert('Select a text overlay first.'); return; }
+  els.forEach(el => {
+    const entry = _ctEntries.find(e => e.id === el.dataset.id);
+    if (!entry) return;
+    if (entry.anchorRight) {
+      const rx = (entry.rightX != null ? entry.rightX : entry.x) || 0;
+      entry.x = Math.round(rx - el.offsetWidth);   /* restore left at current pos */
+      delete entry.anchorRight; delete entry.rightX;
+    } else {
+      entry.rightX = Math.round((entry.x || 0) + el.offsetWidth);   /* lock current right edge */
+      entry.anchorRight = true;
+    }
+  });
+  ctSave(_ctEntries);
+  if (typeof ctRenderAll === 'function') ctRenderAll();
+}
+
+/* Inject the "Sources" + "Pin right" triggers beside the text-format toolbar
+   (visible when a text overlay is selected, i.e. edit mode). Graceful if the
+   toolbar's absent in a given host. */
+function setupSourcesUI() {
+  try {
+    const anchor = document.getElementById('ct-bold');
+    if (!anchor || !anchor.parentNode) return;
+    if (!document.getElementById('ct-sources-btn')) {
+      const btn = document.createElement('button');
+      btn.id = 'ct-sources-btn';
+      btn.type = 'button';
+      btn.title = 'Shared sources — link this overlay to a source shared across all regions';
+      btn.textContent = '🔗 Sources';
+      btn.style.cssText = 'margin-left:6px;' + _SRC_BTN;
+      btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openSourcesModal(); });
+      anchor.parentNode.insertBefore(btn, anchor.nextSibling);
+    }
+    if (!document.getElementById('ct-pinright-btn')) {
+      const pin = document.createElement('button');
+      pin.id = 'ct-pinright-btn';
+      pin.type = 'button';
+      pin.title = 'Pin the selected text to a fixed RIGHT edge so it stays aligned no matter the length (click again to unpin)';
+      pin.textContent = '⇥ Pin right';
+      pin.style.cssText = 'margin-left:6px;' + _SRC_BTN;
+      pin.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); _ctTogglePinRight(); });
+      const ref = document.getElementById('ct-sources-btn') || anchor;
+      anchor.parentNode.insertBefore(pin, ref.nextSibling);
+    }
+  } catch (_) {}
+}
+
 function ctApplyStyle(el, entry) {
   if (entry.fontSize)   el.style.fontSize   = entry.fontSize + 'px';
   if (entry.fontWeight) el.style.fontWeight = entry.fontWeight;
@@ -419,16 +752,26 @@ function _ctRgbToHex(rgb) {
   ).join('');
 }
 
+const CT_PAGE_W = 1200;   /* design page width (px) — basis for right-edge anchoring */
 function ctMakeEl(entry) {
   const page = document.getElementById(entry.pageId);
   if (!page) return null;
   const el = document.createElement('div');
   el.className = 'custom-text' + (entry.cls ? ' ' + entry.cls : '');
   el.dataset.id = entry.id;
-  el.style.left = entry.x + 'px';
+  /* Right-edge anchoring: a "pinned" overlay locks its RIGHT edge to a fixed
+     page-x (entry.rightX) so text grows leftward and it stays aligned with the
+     box edge no matter the length. Default overlays anchor by their left (x). */
+  if (entry.anchorRight) {
+    el.style.left  = 'auto';
+    el.style.right = (CT_PAGE_W - (entry.rightX != null ? entry.rightX : entry.x)) + 'px';
+  } else {
+    el.style.left  = entry.x + 'px';
+    el.style.right = '';
+  }
   el.style.top  = entry.y + 'px';
   ctApplyStyle(el, entry);
-  el.innerHTML = ctRender(entry.text);
+  el.innerHTML = ctRender(ctResolveText(entry));
   ctAttachHandlers(el, entry);
   page.appendChild(el);
   return el;
@@ -551,7 +894,8 @@ function ctAttachHandlers(el, entry) {
       el.classList.remove('editing');
       el.contentEditable = 'false';
       entry.text = _ctReadEditableHtml(el).trim();
-      el.innerHTML = ctRender(entry.text);
+      if (entry.sourceId) ctSaveSourceText(entry.sourceId, entry.text);   /* shared source: write-back + propagate */
+      el.innerHTML = ctRender(ctResolveText(entry));
       ctSave(_ctEntries);
       _ctClearSavedSel();
     }, 0);
@@ -641,6 +985,10 @@ function _ctReadEditableHtml(root) {
 }
 
 function ctRenderAll() {
+  /* Idempotent: remove any previously-rendered text overlays first, so a
+     re-render on an already-populated page (e.g. after the shared source
+     library loads, or a source edit propagates) doesn't duplicate them. */
+  document.querySelectorAll('.custom-text').forEach(el => el.remove());
   _ctEntries.forEach(ctMakeEl);
 }
 
@@ -659,6 +1007,8 @@ function _captureGroupDragItems() {
       kind: 'text', el, entry,
       startX: parseFloat(el.style.left) || 0,
       startY: parseFloat(el.style.top) || 0,
+      anchorRight: !!entry.anchorRight,
+      startRightX: (entry.rightX != null ? entry.rightX : (entry.x || 0)),
     });
   });
   document.querySelectorAll('.shape.selected').forEach(el => {
@@ -690,7 +1040,12 @@ function _captureGroupDragItems() {
 function _applyGroupDragDelta(items, dx, dy) {
   items.forEach(item => {
     if (item.kind === 'text') {
-      item.el.style.left = (item.startX + dx) + 'px';
+      if (item.anchorRight) {
+        item.el.style.left  = 'auto';
+        item.el.style.right = (CT_PAGE_W - (item.startRightX + dx)) + 'px';
+      } else {
+        item.el.style.left = (item.startX + dx) + 'px';
+      }
       item.el.style.top  = (item.startY + dy) + 'px';
     } else if (item.kind === 'image') {
       item.entry.x = Math.round(item.startX + dx);
@@ -719,12 +1074,21 @@ function _commitGroupDrag(items) {
   let textChanged = false, shapeChanged = false, imageChanged = false;
   items.forEach(item => {
     if (item.kind === 'text') {
-      const x = parseFloat(item.el.style.left) || 0;
       const y = parseFloat(item.el.style.top) || 0;
-      if (x !== item.startX || y !== item.startY) {
-        item.entry.x = x;
-        item.entry.y = y;
-        textChanged = true;
+      if (item.anchorRight) {
+        const rx = CT_PAGE_W - (parseFloat(item.el.style.right) || 0);
+        if (rx !== item.startRightX || y !== item.startY) {
+          item.entry.rightX = Math.round(rx);
+          item.entry.y = y;
+          textChanged = true;
+        }
+      } else {
+        const x = parseFloat(item.el.style.left) || 0;
+        if (x !== item.startX || y !== item.startY) {
+          item.entry.x = x;
+          item.entry.y = y;
+          textChanged = true;
+        }
       }
     } else if (item.kind === 'image') {
       if (item.entry.x !== item.startX || item.entry.y !== item.startY) imageChanged = true;
@@ -984,7 +1348,8 @@ function ctInit() {
       const entry = _ctEntries.find(e => e.id === editing.dataset.id);
       if (entry) {
         entry.text = _ctReadEditableHtml(editing).trim();
-        editing.innerHTML = ctRender(entry.text);
+        if (entry.sourceId) ctSaveSourceText(entry.sourceId, entry.text);   /* shared source: write-back + propagate */
+        editing.innerHTML = ctRender(ctResolveText(entry));
         ctSave(_ctEntries);
       }
       _ctClearSavedSel();
@@ -5240,8 +5605,15 @@ function ppSetupArrowKeyNudge() {
     ctSel.forEach(el => {
       const entry = _ctEntries.find(e => e.id === el.dataset.id);
       if (!entry) return;
-      entry.x = (entry.x || 0) + dx; entry.y = (entry.y || 0) + dy;
-      el.style.left = entry.x + 'px'; el.style.top = entry.y + 'px';
+      entry.y = (entry.y || 0) + dy;
+      if (entry.anchorRight) {
+        entry.rightX = (entry.rightX != null ? entry.rightX : (entry.x || 0)) + dx;
+        el.style.left = 'auto'; el.style.right = (CT_PAGE_W - entry.rightX) + 'px';
+      } else {
+        entry.x = (entry.x || 0) + dx;
+        el.style.left = entry.x + 'px';
+      }
+      el.style.top = entry.y + 'px';
       textChanged = true;
     });
     shSel.forEach(el => {
@@ -5919,6 +6291,8 @@ function initReportEdit() {
   _shEntries  = shLoad();
   _imgEntries = imgLoad();
   ctInit();
+  if (typeof loadReportSourceLib === 'function') loadReportSourceLib();   // shared Source Library (chunk 1)
+  if (typeof setupSourcesUI === 'function') setupSourcesUI();             // shared Source Library UI (chunk 3)
   setupShapes();
   setupImages();
   setupPageBgEditor();
