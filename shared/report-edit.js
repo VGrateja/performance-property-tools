@@ -703,15 +703,26 @@ function setupSourcesUI() {
   try {
     const anchor = document.getElementById('ct-bold');
     if (!anchor || !anchor.parentNode) return;
+    const styleRow = anchor.parentNode;            // the B / I / U .style-row
+    /* Put the Sources + Pin-right triggers on their OWN row directly beneath
+       B/I/U — NOT inside the style row, which is a no-wrap flexbox and was
+       overflowing (squashing italic + clipping the underline button). */
+    let featRow = document.getElementById('ct-feat-row');
+    if (!featRow) {
+      featRow = document.createElement('div');
+      featRow.id = 'ct-feat-row';
+      featRow.style.cssText = 'display:flex;gap:6px;margin-top:6px;';
+      styleRow.parentNode.insertBefore(featRow, styleRow.nextSibling);
+    }
     if (!document.getElementById('ct-sources-btn')) {
       const btn = document.createElement('button');
       btn.id = 'ct-sources-btn';
       btn.type = 'button';
       btn.title = 'Shared sources — link this overlay to a source shared across all regions';
       btn.textContent = '🔗 Sources';
-      btn.style.cssText = 'margin-left:6px;' + _SRC_BTN;
+      btn.style.cssText = 'flex:1;' + _SRC_BTN;
       btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openSourcesModal(); });
-      anchor.parentNode.insertBefore(btn, anchor.nextSibling);
+      featRow.appendChild(btn);
     }
     if (!document.getElementById('ct-pinright-btn')) {
       const pin = document.createElement('button');
@@ -719,10 +730,9 @@ function setupSourcesUI() {
       pin.type = 'button';
       pin.title = 'Pin the selected text to a fixed RIGHT edge so it stays aligned no matter the length (click again to unpin)';
       pin.textContent = '⇥ Pin right';
-      pin.style.cssText = 'margin-left:6px;' + _SRC_BTN;
+      pin.style.cssText = 'flex:1;' + _SRC_BTN;
       pin.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); _ctTogglePinRight(); });
-      const ref = document.getElementById('ct-sources-btn') || anchor;
-      anchor.parentNode.insertBefore(pin, ref.nextSibling);
+      featRow.appendChild(pin);
     }
   } catch (_) {}
 }
