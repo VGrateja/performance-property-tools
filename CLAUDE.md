@@ -53,7 +53,7 @@ that alone, not the site.
 Hub (`index.html`) is 4 swipeable pages: **analytics** (default), **pm**,
 **arena**, **vault**. Tools:
 
-- `online-reports.html` — the big one (~710KB). 35 regional property reports
+- `online-reports.html` — the big one (~710KB). 36 regional property reports
   + an in-browser **edit system** (text/shape/image overlays, page-bg editor,
   side-TOC reorder/rename, undo/redo, backup/sync/audit). Per-region state in
   `reports_state`. Most edit logic now lives in **`shared/report-edit.{js,css}`**
