@@ -94,7 +94,12 @@
       var ok = false, reason = '';
       for (var attempt = 1; attempt <= 2 && !ok; attempt++) {
         try {
-          var json = await fetchLive(source, 45000);
+          /* Pause before the retry so a cold-started / momentarily-slow feed
+             can recover, and give the retry a longer window. The heavy feeds
+             (qld/nsw) assemble a lot server-side and can take >45s, so the
+             first window is 60s and the retry 90s. */
+          if (attempt > 1) await new Promise(function (r) { setTimeout(r, 2000); });
+          var json = await fetchLive(source, attempt === 1 ? 60000 : 90000);
           if (!json) throw new Error('empty feed');
           await writeSnapshot(source, json);
           updated.push(source);
