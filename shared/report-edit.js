@@ -3573,6 +3573,8 @@ function openPdfPagesModal() {
   regionList.innerHTML = _regHtml;
 
   if (allPagesCb) allPagesCb.checked = true;
+  const liteCb = document.getElementById('pdf-lite');
+  if (liteCb) liteCb.checked = false;   // Lite is opt-in per open
   if (allRegionsCb) {
     const allLbl = allRegionsCb.closest('label');
     const st = allLbl && allLbl.querySelector('strong');
@@ -3761,8 +3763,10 @@ function _readPdfPagesSelection() {
   const regions = Array.from(
     document.querySelectorAll('#pdf-regions-list input[type="checkbox"]:checked')
   ).map(cb => cb.dataset.slug);
-  if (!pageIds.length || !regions.length) return null;
-  return { pageIds, regions, allPages: wantAllPages };
+  const lite = !!((document.getElementById('pdf-lite') || {}).checked);
+  if (!regions.length) return null;
+  if (!lite && !pageIds.length) return null;   // page selection only matters for the full (non-lite) export
+  return { pageIds, regions, allPages: wantAllPages, lite };
 }
 
 /* Route a download. Selections in the CURRENT report's family go to the
@@ -3773,6 +3777,19 @@ function _readPdfPagesSelection() {
    JPEG / page-subset is a later increment). */
 function _dispatchReportDownload(kind, sel) {
   closePdfPagesModal();
+  /* Lite = the pre-rendered Lite PDFs. Regional-only, PDF-only, and
+     page-agnostic (a fixed pre-rendered file). */
+  if (sel.lite) {
+    if (kind !== 'pdf') { alert('Lite reports are pre-rendered PDFs — JPEG export isn\'t available for Lite.'); return; }
+    const liteRegionals = (sel.regions || []).filter(s => !RESEARCH_REGIONS[s]);
+    const research      = (sel.regions || []).filter(s => RESEARCH_REGIONS[s]);
+    if (!liteRegionals.length) { alert('Lite versions exist for the regional reports only — pick one or more regional reports.'); return; }
+    if (research.length) alert('Note: National / Commercial have no Lite version, so only the regional reports will download as Lite.');
+    if (typeof window.runReportDownload === 'function') {
+      window.runReportDownload({ kind: 'pdf', pageIds: sel.pageIds, regions: liteRegionals, allPages: true, lite: true });
+    }
+    return;
+  }
   const activeSlug = (typeof _rs_active === 'function') ? _rs_active() : null;
   const activeIsResearch = !!(activeSlug && RESEARCH_REGIONS[activeSlug]);
   const cur = [], other = [];

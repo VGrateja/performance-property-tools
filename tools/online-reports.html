@@ -4032,6 +4032,11 @@
       <!-- "1 page · 1 region" / "All pages · 5 regions" — populated in JS -->
     </div>
 
+    <label class="copy-pages-all-row" id="pdf-lite-row" style="margin-top:2px;">
+      <input type="checkbox" id="pdf-lite" />
+      <span><strong>Lite versions</strong> — download the pre-rendered Lite PDFs (regional reports only; the page selection above doesn't apply to Lite).</span>
+    </label>
+
     <div class="bands-actions right">
       <button class="bands-btn ghost" id="pdf-pages-cancel">Cancel</button>
       <button class="bands-btn" id="pdf-pages-jpeg">Download JPEG</button>
@@ -7925,13 +7930,14 @@ async function ppDownloadPrebuiltOrFallback(regionSlug, lite, filename, fallback
    rendered live in one batch at the end, so a partial cache (e.g.
    a region added mid-month) still produces a complete download.
    Browser may prompt "Allow multiple downloads?" the first time. */
-async function ppDownloadMultiRegionPrebuiltOrFallback(regionSlugs, pageIds, wantAllPages) {
-  /* Partial-page selections aren't cached — go straight to live. */
-  if (!wantAllPages) {
+async function ppDownloadMultiRegionPrebuiltOrFallback(regionSlugs, pageIds, wantAllPages, lite) {
+  /* Partial-page selections aren't cached — go straight to live. (Lite is
+     always the whole pre-rendered file, so a page subset doesn't apply.) */
+  if (!wantAllPages && !lite) {
     return exportMultiRegionPdf({ regionSlugs, pageIds, allPages: false });
   }
 
-  const isLite  = (typeof PP_LITE_MODE !== 'undefined' && PP_LITE_MODE);
+  const isLite  = !!lite || (typeof PP_LITE_MODE !== 'undefined' && PP_LITE_MODE);
   const overlay = document.getElementById('pdf-overlay');
   const msgEl   = overlay && overlay.querySelector('.pdf-msg');
   const setMsg  = (t) => { if (msgEl) msgEl.textContent = t; };
@@ -7991,6 +7997,14 @@ async function ppDownloadMultiRegionPrebuiltOrFallback(regionSlugs, pageIds, wan
   /* Anything the cache didn't serve goes through the existing live
      iframe loop. If nothing's left, we're done. */
   if (misses.length) {
+    /* Lite has no live-render equivalent (the live exporter renders the FULL
+       report, not the Lite variant), so a missing Lite cache is reported
+       rather than silently faked as a full report. */
+    if (isLite) {
+      alert('No cached Lite PDF found for: ' + misses.join(', ') +
+            '.\n\nRun the monthly render (GitHub → Actions → "Render Online Reports PDFs") to generate them, then try again.');
+      return;
+    }
     /* Tiny gap before kicking off the live render so the user sees
        the cache-batch finish in the toast/spinner before the next
        overlay opens. */
@@ -8813,14 +8827,19 @@ async function exportMultiRegionJpeg(opts) {
    only the regional slugs here; cross-family research reports are fetched as
    cached PDFs by its dispatcher.) */
 window.runReportDownload = async function (opts) {
-  const { kind, pageIds, regions, allPages } = opts || {};
+  const { kind, pageIds, regions, allPages, lite } = opts || {};
   if (!regions || !regions.length) return;
   if (kind === 'jpeg') {
     return exportMultiRegionJpeg({ regionSlugs: regions, pageIds: pageIds, allPages: allPages });
   }
+  if (lite) {
+    /* Lite versions — the pre-rendered Lite PDFs. Cache only (the page subset
+       doesn't apply to a fixed pre-rendered file; no live-render equivalent). */
+    return ppDownloadMultiRegionPrebuiltOrFallback(regions, pageIds, true, true);
+  }
   if (allPages) {
     /* Cache-first (prebuilt monthly PDFs), live render for any misses. */
-    return ppDownloadMultiRegionPrebuiltOrFallback(regions, pageIds, true);
+    return ppDownloadMultiRegionPrebuiltOrFallback(regions, pageIds, true, false);
   }
   return exportMultiRegionPdf({ regionSlugs: regions, pageIds: pageIds, allPages: false });
 };
