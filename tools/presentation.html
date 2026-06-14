@@ -4104,6 +4104,19 @@ function _pickerSectionHeader(text) {
    tiles sit under My Presentations since new decks start private. */
 function buildPicker() {
   pickerGrid.innerHTML = '';
+  /* A ?view=users deep-link is dev-only AND its mine-vs-others split needs the
+     auth id (_myUserId). Until BOTH the tier gate resolves and identity is
+     known, show a neutral loading state — otherwise we'd flash "My
+     Presentations" (tier unresolved) or briefly list every non-company deck
+     under Users (identity unresolved → nothing counts as "mine"), then refresh.
+     applyPresTierGate re-renders once tier + identity land. */
+  if (_pickerView === 'users' && (!_presTierResolved || (_iAmDev && !_myUserId))) {
+    const loading = document.createElement('p');
+    loading.style.cssText = 'grid-column:1/-1;margin:18px 4px;opacity:.55;font-size:13px;';
+    loading.textContent = 'Loading…';
+    pickerGrid.appendChild(loading);
+    return;
+  }
   /* With the dev's read-all RLS (mig 044), _customDecks also holds decks owned
      by OTHER users, so "My" must filter on ownership (not just visibility) and
      a dev-only "Users Presentations" group catches the rest. For non-dev users
@@ -11645,6 +11658,7 @@ let _saveRetryCount      = 0;       /* consecutive failed save attempts */
 let _canWritePresCloud   = false;   /* dev/admin/company → can save SOME deck */
 let _iAmWriter           = false;   /* dev/admin → can publish/edit company decks + themes */
 let _iAmDev              = false;   /* dev only → "Users Presentations" admin view + assign decks */
+let _presTierResolved    = false;   /* true once the tier gate sees a real auth level (not the boot '') */
 let _myUserId            = null;    /* auth.uid() — owner_id for my decks */
 let _presProfiles        = {};      /* dev only: user id → { name, email, tier } (owner tags) */
 let _presProfilesList    = [];      /* dev only: active users for the Assign picker */
@@ -12112,10 +12126,23 @@ async function _hydratePresFromCloud() {
 function applyPresTierGate() {
   let level = '';
   try { if (typeof getAccessLevel === 'function') level = getAccessLevel(); } catch (_) {}
+  const prevState = _iAmDev + '|' + _presTierResolved;
   _iAmWriter         = (level === 'dev' || level === 'admin');
   _iAmDev            = (level === 'dev');
   _canWritePresCloud = (level === 'dev' || level === 'admin' || level === 'company');
+  if (level) _presTierResolved = true;   /* a real level resolved (boot starts '') */
   _applyPresReadonly();
+  /* The gate runs again ~200/800ms after boot (auth may resolve late). If
+     dev-ness or resolved-ness just changed, re-render the picker so a dev-only
+     ?view=users deep-link leaves its "Loading…" state for the right view —
+     without the earlier flash of "My Presentations". */
+  if ((_iAmDev + '|' + _presTierResolved) !== prevState && typeof buildPicker === 'function') buildPicker();
+  /* The dev's Users view needs the auth id to split mine-vs-others. Resolve it
+     promptly (don't wait on full cloud hydration) + re-render, so the view
+     doesn't sit on "Loading…" or briefly show decks that shouldn't be there. */
+  if (_iAmDev && !_myUserId && _pickerView === 'users' && typeof _ensurePresIdentity === 'function') {
+    _ensurePresIdentity().then(() => { if (_myUserId && typeof buildPicker === 'function') buildPicker(); });
+  }
 }
 applyPresTierGate();
 setTimeout(applyPresTierGate, 200);
