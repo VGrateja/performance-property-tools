@@ -4,12 +4,18 @@
 # The presentation builder uploads image overlays to Storage but never deletes
 # them when a deck (or an image inside a deck) is removed, so orphans pile up
 # against the 1 GB free-tier ceiling. This job reference-counts every object
-# against the presentation payloads and removes the ones no deck points to.
+# against the LIVE presentation payloads (presentation_decks rows + the Library)
+# and removes only the ones no live deck points to — so ACTIVE presentations
+# are never touched. A 24h grace period also spares brand-new uploads, and the
+# script aborts if the deck table reads back empty (transient-failure guard).
 #
-# Manual only (Actions tab → "GC Presentation Images" → Run workflow):
-#   • Leave "apply" unchecked for a DRY RUN — it just reports what it would
-#     delete (run this first).
-#   • Tick "apply" to actually delete the orphans.
+# Triggers:
+#   • Cron — runs near the end of every month. GitHub cron can't express "last
+#     day of month", so it fires on days 28-31 and the `gate` job below only
+#     lets the GC proceed when tomorrow (UTC) is the 1st = the true last day.
+#     Scheduled runs APPLY (actually delete).
+#   • Manual — Actions tab → "GC Presentation Images" → Run workflow. Leave
+#     "apply" unchecked for a DRY RUN (report only); tick it to delete.
 #
 # Required GitHub Secrets:
 #   SUPABASE_URL                supabase project URL
@@ -19,6 +25,8 @@
 name: GC Presentation Images
 
 on:
+  schedule:
+    - cron: '0 16 28-31 * *'   # 16:00 UTC on days 28-31; gate runs it only on the last day
   workflow_dispatch:
     inputs:
       apply:
@@ -34,8 +42,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Scheduled runs fire on days 28-31; only proceed when today is the LAST day
+  # of the month (i.e. tomorrow, UTC, is the 1st). Manual runs always proceed.
+  gate:
+    name: Gate (last day of month?)
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "Manual run — proceeding."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$(date -u -d 'tomorrow' +%d)" = "01" ]; then
+            echo "Last day of the month — proceeding."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Not the last day of the month — skipping scheduled GC."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   gc:
     name: Garbage-collect orphaned images
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -50,8 +81,10 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      # Scheduled runs always delete; a manual run deletes only if "apply" was
+      # ticked (otherwise it's a dry run).
       - name: Garbage-collect
         env:
           SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: node scripts/gc-presentation-images.mjs ${{ inputs.apply && '--apply' || '' }}
+        run: node scripts/gc-presentation-images.mjs ${{ (github.event_name == 'schedule' || inputs.apply) && '--apply' || '' }}

@@ -93,15 +93,25 @@ async function collectReferencedText() {
     const { data } = await sb.from('presentations_state').select('payload');
     for (const row of (data || [])) text += JSON.stringify(row.payload || {});
   } catch (_) { /* table may not exist — ignore */ }
-  return text;
+  return { text, deckCount: (decks || []).length };
 }
 
 async function main() {
   console.log('GC ' + BUCKET + (APPLY ? '  (APPLY — will delete)' : '  (dry run)'));
   console.log('Grace period: skip objects newer than ' + GRACE_HOURS + 'h\n');
 
-  const [objects, refText] = await Promise.all([listAll(), collectReferencedText()]);
-  const cutoff = Date.now() - GRACE_HOURS * 3600 * 1000;
+  const [objects, refs] = await Promise.all([listAll(), collectReferencedText()]);
+  /* Safety guard (matters most for the unattended monthly run): if the deck
+     table comes back EMPTY while the bucket has images, that's almost certainly
+     a transient read problem, not a real "no presentations exist" — refuse to
+     delete, otherwise every image would look unreferenced and get wiped. */
+  if (refs.deckCount === 0 && objects.length > 0) {
+    console.error('Aborting: presentation_decks returned 0 rows but the bucket has ' +
+      objects.length + ' object(s). Refusing to delete (safety guard).');
+    process.exit(1);
+  }
+  const refText = refs.text;
+  const cutoff  = Date.now() - GRACE_HOURS * 3600 * 1000;
 
   const orphans = [];
   let tooNew = 0;
