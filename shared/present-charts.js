@@ -571,33 +571,81 @@
     return revealBySeries(chart, baseOption, fullSeries, []);
   }
 
-  /* ═══ BIG NUMBER (pure DOM, count-up) ═══ */
+  /* ═══ BIG NUMBER (pure-DOM card: title + value + bottom sparkline) ═══
+     Left-aligned card — title top-left, the count-up value below it, and a
+     small area sparkline pinned to the bottom. Optional style overrides (from
+     the builder's panel): spec.font, spec.bg (card background), spec.titleColor
+     (label), spec.valueColor (number). spec.spark = numeric series for the
+     sparkline; spec.decimals = fixed decimals for a 'num' value. */
+  var _bnSparkSeq = 0;
+  function _bnSparkSvg(vals, color) {
+    var W = 500, H = 90, pad = 6, topRoom = 10;
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    var range = (max - min) || 1, n = vals.length;
+    var pts = vals.map(function (v, i) {
+      var x = (n === 1) ? W / 2 : pad + (i / (n - 1)) * (W - pad * 2);
+      var y = H - pad - ((v - min) / range) * (H - pad - topRoom);
+      return [x, y];
+    });
+    var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' ');
+    var area = line + ' L' + pts[n - 1][0].toFixed(1) + ' ' + H + ' L' + pts[0][0].toFixed(1) + ' ' + H + ' Z';
+    /* Unique id per render — url(#id) resolves to the FIRST match in the whole
+       document, so a shared id would paint from a stale copy elsewhere. */
+    var gid = 'bn-spark-' + (++_bnSparkSeq);
+    var last = pts[n - 1];
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="width:100%;height:100%;display:block;overflow:visible;">' +
+      '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="' + color + '" stop-opacity="0.32"/>' +
+      '<stop offset="100%" stop-color="' + color + '" stop-opacity="0"/>' +
+      '</linearGradient></defs>' +
+      '<path class="bn-spark-area" d="' + area + '" fill="url(#' + gid + ')"/>' +
+      '<path class="bn-spark-line" d="' + line + '" fill="none" stroke="' + color + '" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' +
+      '<circle class="bn-spark-dot" cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="3.4" fill="' + color + '"/>' +
+      '</svg>';
+  }
   function createBigNumber(host, spec) {
+    var titleColor = spec.titleColor || 'rgba(175,216,232,0.92)';
+    var valueColor = spec.valueColor || '#ffffff';
+    var sparkColor = spec.sparkColor || THEME.palette[0];
+    var font       = spec.font || THEME.font;
+
     var wrap = document.createElement('div');
-    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;font-family:' + THEME.font + ';text-align:center;padding:24px;';
+    wrap.style.cssText = 'display:flex;flex-direction:column;justify-content:space-between;height:100%;' +
+      'box-sizing:border-box;padding:24px 28px;border-radius:14px;overflow:hidden;text-align:left;font-family:' + font + ';';
+    /* Card background — subtle dark gradient unless overridden. */
+    wrap.style.background = spec.bg || 'linear-gradient(155deg, rgba(22,44,60,0.92) 0%, rgba(11,23,34,0.96) 100%)';
+    wrap.style.border = '1px solid rgba(255,255,255,0.08)';
+
+    var top = document.createElement('div');
+    top.style.cssText = 'flex:0 0 auto;';
     if (spec.title) {
       var t = document.createElement('div');
       t.textContent = spec.title;
-      t.style.cssText = 'font-size:22px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:' + THEME.inkDim + ';';
-      wrap.appendChild(t);
+      t.style.cssText = 'font-size:28px;font-weight:700;letter-spacing:0.3px;color:' + titleColor + ';margin:0 0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      top.appendChild(t);
     }
     var big = document.createElement('div');
-    big.style.cssText = 'font-size:120px;font-weight:800;line-height:1.05;color:' + THEME.palette[0] + ';margin:10px 0;font-variant-numeric:tabular-nums;';
+    big.style.cssText = 'font-size:78px;font-weight:800;line-height:1;color:' + valueColor + ';font-variant-numeric:tabular-nums;white-space:nowrap;';
     big.textContent = '—';
-    wrap.appendChild(big);
-    var cap = document.createElement('div');
-    cap.textContent = spec.subtitle || '';
-    cap.style.cssText = 'font-size:20px;font-weight:600;color:' + THEME.ink + ';opacity:0;transition:opacity .6s ease;';
-    wrap.appendChild(cap);
+    top.appendChild(big);
+    wrap.appendChild(top);
+
+    var sparkHost = document.createElement('div');
+    sparkHost.style.cssText = 'position:relative;flex:0 0 auto;width:100%;height:84px;margin-top:14px;opacity:0;transition:opacity .6s ease;';
+    var sparkVals = (Array.isArray(spec.spark) && spec.spark.length >= 2) ? spec.spark : null;
+    if (sparkVals) sparkHost.innerHTML = _bnSparkSvg(sparkVals, sparkColor);
+    wrap.appendChild(sparkHost);
+
     host.appendChild(wrap);
 
     var target = Number(spec.value) || 0;
     var unit = spec.unit || 'num';
+    var decimals = (typeof spec.decimals === 'number') ? spec.decimals : 0;
     var raf = null;
 
-    /* Format the counting value in the TARGET's FIXED scale, so it never
-       jumps units mid-count (e.g. $k → $M). With tabular-nums on the
-       element, the digits change without the number jittering. */
+    /* Format the counting value. pct → 2dp + %; aud → $ (abbreviated, legacy);
+       num → FULL comma-separated number with `decimals` fixed decimals (no k/M
+       abbreviation — the at-a-glance cards show the complete figure). */
     function fixedFmt(t, u) {
       var a = Math.abs(t);
       if (u === 'pct') return function (v) { return v.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'; };
@@ -606,9 +654,7 @@
         if (a >= 1e3) return function (v) { return '$' + Math.round(v / 1e3).toLocaleString('en-AU') + 'k'; };
         return function (v) { return '$' + Math.round(v).toLocaleString('en-AU'); };
       }
-      if (a >= 1e6) return function (v) { return (v / 1e6).toLocaleString('en-AU', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + 'M'; };
-      if (a >= 1e3) return function (v) { return Math.round(v / 1e3).toLocaleString('en-AU') + 'k'; };
-      return function (v) { return Math.round(v).toLocaleString('en-AU'); };
+      return function (v) { return v.toLocaleString('en-AU', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }); };
     }
     var countFmt = fixedFmt(target, unit);
     function countUp() {
@@ -625,12 +671,66 @@
       raf = requestAnimationFrame(tick);
     }
 
+    /* Hover tooltip + marker — interactive in view / present mode (the chart
+       host is pointer-events:none in edit). Maps the cursor X to the nearest
+       data point and shows the formatted value. */
+    if (sparkVals) {
+      var smin = Math.min.apply(null, sparkVals), smax = Math.max.apply(null, sparkVals);
+      var srange = (smax - smin) || 1;
+      var SH = 90, sPad = 6, sTop = 10;
+      var tip = document.createElement('div');
+      tip.style.cssText = 'position:absolute;transform:translate(-50%,-118%);background:rgba(8,16,26,0.92);color:#fff;' +
+        'padding:5px 9px;border-radius:6px;font-size:24px;font-weight:600;white-space:nowrap;pointer-events:none;' +
+        'opacity:0;transition:opacity .12s;z-index:3;box-shadow:0 4px 12px rgba(0,0,0,0.4);';
+      var dot = document.createElement('div');
+      dot.style.cssText = 'position:absolute;width:14px;height:14px;border-radius:50%;background:' + sparkColor + ';' +
+        'box-shadow:0 0 0 3px rgba(255,255,255,0.22);transform:translate(-50%,-50%);pointer-events:none;opacity:0;transition:opacity .12s;z-index:3;';
+      sparkHost.appendChild(tip);
+      sparkHost.appendChild(dot);
+      var moveTip = function (e) {
+        var r = sparkHost.getBoundingClientRect();
+        if (!r.width) return;
+        var frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+        var idx = Math.round(frac * (sparkVals.length - 1));
+        var val = sparkVals[idx];
+        /* Position the dot/tooltip in the host's UNSCALED local box
+           (offsetWidth/Height): the chart host is CSS transform:scale'd, so
+           using the scaled getBoundingClientRect size here would double-apply
+           the scale and place them in the wrong spot. The mouse fraction above
+           still uses the scaled rect (that's correct for the cursor). */
+        var ow = sparkHost.offsetWidth || r.width, oh = sparkHost.offsetHeight || r.height;
+        var px = (sparkVals.length === 1) ? ow / 2 : (idx / (sparkVals.length - 1)) * ow;
+        var vy = SH - sPad - ((val - smin) / srange) * (SH - sPad - sTop);
+        var py = (vy / SH) * oh;
+        dot.style.left = px + 'px'; dot.style.top = py + 'px'; dot.style.opacity = '1';
+        tip.style.left = px + 'px'; tip.style.top = py + 'px';
+        tip.textContent = countFmt(val);
+        tip.style.opacity = '1';
+      };
+      sparkHost.addEventListener('pointermove', moveTip);
+      sparkHost.addEventListener('pointerleave', function () { tip.style.opacity = '0'; dot.style.opacity = '0'; });
+    }
+
+    /* Reveal: wipe the whole sparkline in left→right — the line AND the
+       gradient "shadow" area AND the end dot together — via an animated
+       clip-path on the <svg>. (The hover tooltip/dot live OUTSIDE the svg, so
+       they're never clipped.) */
+    function revealSpark() {
+      sparkHost.style.opacity = '1';
+      var svg = sparkHost.querySelector('svg');
+      if (!svg) return;
+      svg.style.webkitClipPath = svg.style.clipPath = 'inset(0 100% 0 0)';
+      svg.getBoundingClientRect();                 // force reflow so the transition runs
+      svg.style.transition = 'clip-path 1.05s ease, -webkit-clip-path 1.05s ease';
+      svg.style.webkitClipPath = svg.style.clipPath = 'inset(0 0 0 0)';
+    }
+
     var builds = [
       function () { countUp(); },
-      function () { cap.style.opacity = '1'; },
+      function () { revealSpark(); },
     ];
     return stepController(builds, {
-      reset: function () { cancelAnimationFrame(raf); big.textContent = '—'; cap.style.opacity = '0'; },
+      reset: function () { cancelAnimationFrame(raf); big.textContent = '—'; sparkHost.style.opacity = '0'; },
       resize: function () {},
       dispose: function () { cancelAnimationFrame(raf); },
     });
