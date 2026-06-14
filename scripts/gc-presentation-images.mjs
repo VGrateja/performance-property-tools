@@ -72,23 +72,27 @@ async function listAll(prefix = '') {
   return out;
 }
 
-/* Concatenate every presentation payload into one big string so a simple
+/* Concatenate every LIVE presentation payload into one big string so a simple
    substring check covers overlay.storage, signed URLs in o.src, slide
-   backgrounds, etc. Pulls from the live per-deck table plus the legacy blob
-   (kept for rollback) and the library — being over-inclusive only ever KEEPS
-   more, never deletes something in use. */
+   backgrounds, etc.
+
+   Sources: the live per-deck table (presentation_decks) + the Library
+   (presentations_state, mig 002). We deliberately do NOT count the legacy
+   presentation_state blob (mig 001) — it's a dead pre-migration rollback copy
+   of ALL decks, so counting it would pin images for decks that were deleted
+   long ago and never let the GC free them. The per-deck rows are the source of
+   truth; if a live deck needs an image, its own row references it. */
 async function collectReferencedText() {
   let text = '';
   const { data: decks, error } = await sb.from('presentation_decks').select('payload');
   if (error) throw new Error('read presentation_decks: ' + error.message);
   for (const row of (decks || [])) text += JSON.stringify(row.payload || {});
 
-  for (const tbl of ['presentation_state', 'presentations_state']) {
-    try {
-      const { data } = await sb.from(tbl).select('payload');
-      for (const row of (data || [])) text += JSON.stringify(row.payload || {});
-    } catch (_) { /* table may not exist — ignore */ }
-  }
+  /* Library tool state (separate from the dead legacy blob). Best-effort. */
+  try {
+    const { data } = await sb.from('presentations_state').select('payload');
+    for (const row of (data || [])) text += JSON.stringify(row.payload || {});
+  } catch (_) { /* table may not exist — ignore */ }
   return text;
 }
 
