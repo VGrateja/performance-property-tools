@@ -8653,6 +8653,7 @@ function _applyImageCrop(el, img, o) {
   img.style.maxHeight = 'none';
 }
 
+let _psGradSeq = 0;   /* bumped per shapeSVG render so gradient def ids are globally unique */
 function shapeSVG(o) {
   const w = Math.max(2, +o.w || 2);
   const h = Math.max(2, +o.h || 2);
@@ -8663,10 +8664,17 @@ function shapeSVG(o) {
      'url(#grad-id)' — gradient defs accumulate into `defs` and get
      emitted in a single <defs> block at the top of the SVG. Lines
      and arrows are always fill="none" regardless of the stored
-     fill setting (the panel hides their fill row to match). */
+     fill setting (the panel hides their fill row to match).
+     The gradient id is made UNIQUE PER RENDER (not just per shape id):
+     the same shape is drawn in several places at once (editor stage +
+     thumbnail rail + present view), and SVG resolves fill="url(#id)" to
+     the FIRST matching def in the document — so a shared id made the
+     editor paint from a stale thumbnail copy and colour edits looked
+     like they didn't apply. */
   const defs = [];
-  const fillStr   = isLineish ? 'none' : _psResolvePaint(o.fill,   'fill',   o.id, defs);
-  const strokeStr =                       _psResolvePaint(o.stroke, 'stroke', o.id, defs);
+  const gid = o.id + '-' + (++_psGradSeq);
+  const fillStr   = isLineish ? 'none' : _psResolvePaint(o.fill,   'fill',   gid, defs);
+  const strokeStr =                       _psResolvePaint(o.stroke, 'stroke', gid, defs);
   const fa = _psEscapeAttr(fillStr);
   const sa = _psEscapeAttr(strokeStr);
   const baseAttrs = 'fill="' + fa + '" stroke="' + sa + '" stroke-width="' + sw + '" vector-effect="non-scaling-stroke"';
@@ -10321,6 +10329,11 @@ function _shWireColorRole(role) {
       _shCommitSelected(o => mut(_psNormColor(o[role]), col.value, o));
     });
     col.addEventListener('change', () => pushHistory());
+    /* Select-all on focus so typing or pasting a new hex REPLACES the
+       current value. Without this, pasting #RRGGBB into a field already
+       showing one appends past maxlength=7 → truncated back to the old
+       value → the new colour "doesn't stick". */
+    hex.addEventListener('focus', () => { try { hex.select(); } catch (_) {} });
     hex.addEventListener('input', () => {
       let v = hex.value.trim();
       if (v && !v.startsWith('#')) v = '#' + v;
