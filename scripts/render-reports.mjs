@@ -14,10 +14,12 @@
 //   5. Upload to Supabase Storage (bucket `online-reports`) using the
 //      service-role key (bypasses RLS for write).
 //
-// Retention: at the tail of every successful run, prune anything outside
-// the current calendar month so the bucket never exceeds one month's
-// worth of files (~750 MB at current sizes — keeps us under Supabase's
-// 1 GB free-tier ceiling). The admin keeps off-site backups elsewhere.
+// Retention: prune anything outside the current calendar month so the bucket
+// never exceeds one month's worth of files (~750 MB at current sizes — keeps
+// us under Supabase's 1 GB free-tier ceiling). The prune fires EARLY — as soon
+// as the first new file of the run is safely uploaded — so a month-rollover
+// run never briefly holds two full months at once (~1.1 GB, over the cap). A
+// second prune at the tail is the backstop. The admin keeps off-site backups.
 //
 // Required env vars (set as GitHub Secrets):
 //   SUPABASE_URL                  https://<project-ref>.supabase.co
@@ -431,7 +433,10 @@ async function renderAndUploadWithRetry(browser, sb, slug, lite, session, label)
    the rendered lite PDFs run ~10 MB each and even a single month of
    the cache pushes against Supabase's 1 GB free-tier ceiling. The
    admin keeps off-site backups (Drive / Slack channel) if a prior
-   month is ever needed. */
+   month is ever needed. Called EARLY (after the first successful upload,
+   so a replacement exists) to avoid the two-months-at-once peak, plus
+   once more at the tail as a backstop. Idempotent — a no-op once the
+   only remaining folder is the current month. */
 async function cleanupOldMonths(sb) {
   const { data: top, error } = await sb.storage.from(BUCKET).list('', { limit: 100 });
   if (error || !Array.isArray(top)) return { deleted: 0 };
@@ -550,6 +555,7 @@ async function main() {
      ones that get linked from Research Links. (Lite PDFs are rendered
      and stored but not surfaced in the Documents page.) */
   const successfulFullSlugs = [];
+  let   earlyPruned = false;   /* prune prior months once, right after the first upload */
 
   console.log('Rendering ' + total + ' PDFs into ' + BUCKET + '/' + MONTH_KEY + '/…\n');
 
@@ -575,6 +581,21 @@ async function main() {
         console.log(label + ' → ' + path + '  (' + dt + 's, ' + Math.round(buf.length / 1024) + ' KB)');
         ok++;
         if (!lite) successfulFullSlugs.push(slug);
+        /* Prune prior months as soon as the FIRST new file is safely up. On a
+           month rollover this stops the bucket from briefly holding two full
+           months (~1.1 GB — over the 1 GB free cap) at the tail of the run.
+           Safe because a replacement now exists, and the tools fall back to
+           live render for anything not yet re-uploaded. The post-loop prune
+           is the backstop if this attempt fails. */
+        if (!earlyPruned) {
+          earlyPruned = true;
+          try {
+            const pr = await cleanupOldMonths(sb);
+            if (pr.deleted) console.log('  early-pruned ' + pr.deleted + ' file(s) from prior month(s); kept ' + (pr.kept || []).join(', '));
+          } catch (e) {
+            console.warn('  early prune skipped (' + (e && e.message || e) + ') — will retry at end');
+          }
+        }
       } catch (err) {
         console.error(label + ' FAILED after 2 attempts: ' + (err && err.message || err));
         failed.push(slug + (lite ? ' (lite)' : ' (full)'));
@@ -584,7 +605,7 @@ async function main() {
     console.log('\nUploaded ' + ok + ' of ' + total + ' files.');
 
     if (ok > 0) {
-      console.log('Pruning old months…');
+      console.log('Pruning old months (backstop)…');
       const r = await cleanupOldMonths(sb);
       if (r.deleted) console.log('  pruned ' + r.deleted + ' file(s)');
       if (r.kept)    console.log('  kept months: ' + r.kept.join(', '));
