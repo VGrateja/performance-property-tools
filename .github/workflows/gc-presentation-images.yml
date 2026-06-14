@@ -1,0 +1,57 @@
+# =============================================================================
+# Garbage-collect orphaned images in the `presentation-images` Storage bucket.
+#
+# The presentation builder uploads image overlays to Storage but never deletes
+# them when a deck (or an image inside a deck) is removed, so orphans pile up
+# against the 1 GB free-tier ceiling. This job reference-counts every object
+# against the presentation payloads and removes the ones no deck points to.
+#
+# Manual only (Actions tab → "GC Presentation Images" → Run workflow):
+#   • Leave "apply" unchecked for a DRY RUN — it just reports what it would
+#     delete (run this first).
+#   • Tick "apply" to actually delete the orphans.
+#
+# Required GitHub Secrets:
+#   SUPABASE_URL                supabase project URL
+#   SUPABASE_SERVICE_ROLE_KEY   storage read + delete (bucket: presentation-images)
+# =============================================================================
+
+name: GC Presentation Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Actually delete orphans? (unchecked = dry run / report only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gc-presentation-images
+  cancel-in-progress: false
+
+jobs:
+  gc:
+    name: Garbage-collect orphaned images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Garbage-collect
+        env:
+          SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/gc-presentation-images.mjs ${{ inputs.apply && '--apply' || '' }}
