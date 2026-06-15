@@ -542,8 +542,8 @@
   .pres-deck-card .pres-deck-assign:hover{ background:rgba(0,182,203,0.32) }
   [data-theme="light"] .pres-deck-card .pres-deck-assign{ color:#1f7a93 }
 
-  /* Owner tag — DEV ONLY, on "Users Presentations" cards (decks owned by
-     someone else). Always visible so the dev sees who each deck belongs to. */
+  /* Owner tag — DEV/ADMIN ONLY, on "Users Presentations" cards (decks owned by
+     someone else). Always visible so they see who each deck belongs to. */
   .pres-deck-card .pres-deck-owner{
     display:flex; width:fit-content; max-width:100%;
     align-items:center; gap:5px;
@@ -3936,7 +3936,7 @@ function _buildDeckCard(deck) {
     /* DEV: tag a deck owned by someone else with the owner's name ("Users
        Presentations"). Always visible — it's how the dev tells whose deck it
        is. Placed right under the title. */
-    if (_iAmDev && deck._ownerId && deck._ownerId !== _myUserId) {
+    if (_iAmDeckAdmin && deck._ownerId && deck._ownerId !== _myUserId) {
       const owner = document.createElement('div');
       owner.className = 'pres-deck-owner';
       owner.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">' +
@@ -4005,7 +4005,7 @@ function _buildDeckCard(deck) {
     /* DEV: Assign — transfer this deck to a user. Offered on non-company decks
        (My + Users); follows the same hover-in-edit-mode reveal as Duplicate.
        Covers both "assign a deck I created" and "reassign a user's deck". */
-    if (_iAmDev && deck._visibility !== 'company') {
+    if (_iAmDeckAdmin && deck._visibility !== 'company') {
       const asg = document.createElement('button');
       asg.type = 'button';
       asg.className = 'pres-deck-assign';
@@ -4026,13 +4026,13 @@ function _buildDeckCard(deck) {
     /* User-created decks get a delete button — built-in ones can't
        be removed (they're metadata-only and harmless to leave). */
     /* Delete is offered for decks this user can edit (own private decks, or —
-       for writers — company decks). The DEV additionally gets Delete on a
+       for writers — company decks). A DEV/ADMIN additionally gets Delete on a
        "Users Presentations" deck ONLY if they CREATED it (created_by === me) —
        e.g. a deck they built then assigned to a teammate. A deck the user
-       created themselves shows NO Delete to the dev. RLS (mig 045) enforces it. */
+       created themselves shows NO Delete to them. RLS (mig 045/046) enforces it. */
     const _canDeleteDeck = deck.custom && (
       _deckIsEditable(deck) ||
-      (_iAmDev && deck._createdBy && deck._createdBy === _myUserId)
+      (_iAmDeckAdmin && deck._createdBy && deck._createdBy === _myUserId)
     );
     if (_canDeleteDeck) {
       const del = document.createElement('button');
@@ -4064,13 +4064,13 @@ function _buildDeckCard(deck) {
     return card;
 }
 
-/* ─── Assign a presentation to a user (DEV only) ───
+/* ─── Assign a presentation to a user (DEV/ADMIN only) ───
    Transfers deck ownership: the deck then appears in that user's "My
-   Presentations" and in the dev's "Users Presentations" (tagged with the new
-   owner). Backed by mig 044's dev-update policy (the per-owner policy forbids
+   Presentations" and in the deck admin's "Users Presentations" (tagged with the
+   new owner). Backed by mig 044/046's update policy (the per-owner policy forbids
    reassigning owner_id). */
 function openAssignModal(deck) {
-  if (!_iAmDev || !deck) return;
+  if (!_iAmDeckAdmin || !deck) return;
   /* A brand-new deck may still be mid-save (no cloud row yet) — persist it
      first so we have a row id to reassign, then open the dialog. */
   if (!deck._rowId) {
@@ -4197,7 +4197,7 @@ async function _renderAssignModal(deck) {
    Presentations"). Updates the cloud row + local state, then re-renders the
    picker. Returns true on success. */
 async function assignDeckToUser(deck, userId) {
-  if (!_iAmDev || !deck || !userId || !window.sb) return false;
+  if (!_iAmDeckAdmin || !deck || !userId || !window.sb) return false;
   try {
     if (!deck._rowId) await _persistDeckRow(deck);
     if (!deck._rowId) return false;
@@ -4243,36 +4243,36 @@ function buildPicker() {
      Presentations" (tier unresolved) or briefly list every non-company deck
      under Users (identity unresolved → nothing counts as "mine"), then refresh.
      applyPresTierGate re-renders once tier + identity land. */
-  if (_pickerView === 'users' && (!_presTierResolved || (_iAmDev && !_myUserId))) {
+  if (_pickerView === 'users' && (!_presTierResolved || (_iAmDeckAdmin && !_myUserId))) {
     const loading = document.createElement('p');
     loading.style.cssText = 'grid-column:1/-1;margin:18px 4px;opacity:.55;font-size:13px;';
     loading.textContent = 'Loading…';
     pickerGrid.appendChild(loading);
     return;
   }
-  /* With the dev's read-all RLS (mig 044), _customDecks also holds decks owned
-     by OTHER users, so "My" must filter on ownership (not just visibility) and
-     a dev-only "Users Presentations" group catches the rest. For non-dev users
-     RLS only ever returns their own + company decks, so these filters are
+  /* With the dev/admin read-all RLS (mig 044/046), _customDecks also holds decks
+     owned by OTHER users, so "My" must filter on ownership (not just visibility)
+     and a dev/admin-only "Users Presentations" group catches the rest. For other
+     users RLS only ever returns their own + company decks, so these filters are
      no-ops for them. */
-  /* The ownership split only matters for the dev (the only one who receives
-     other users' decks). For everyone else — and during the dev's pre-hydrate
-     render before identity resolves (_myUserId still null) — keep the original
-     "all non-company decks are mine" behaviour so nothing flickers out. */
-  const myDecks      = _customDecks.filter(d => d._visibility !== 'company' && (!_iAmDev || _isMineDeck(d)));
+  /* The ownership split only matters for a deck admin (dev/admin — the only ones
+     who receive other users' decks). For everyone else — and during the admin's
+     pre-hydrate render before identity resolves (_myUserId still null) — keep the
+     original "all non-company decks are mine" behaviour so nothing flickers out. */
+  const myDecks      = _customDecks.filter(d => d._visibility !== 'company' && (!_iAmDeckAdmin || _isMineDeck(d)));
   const companyDecks = _customDecks.filter(d => d._visibility === 'company');
-  const userDecks    = _iAmDev ? _customDecks.filter(d => d._visibility !== 'company' && !_isMineDeck(d)) : [];
+  const userDecks    = _iAmDeckAdmin ? _customDecks.filter(d => d._visibility !== 'company' && !_isMineDeck(d)) : [];
 
   /* ?view from the hub cards makes each a distinct destination; unset = all the
-     sections the user is allowed to see. The dev-only 'users' view falls back
-     to the default for a non-dev (e.g. a stale link), so they never land on an
-     all-empty picker. */
-  const view = (_pickerView === 'users' && !_iAmDev) ? '' : _pickerView;
+     sections the user is allowed to see. The dev/admin-only 'users' view falls
+     back to the default for everyone else (e.g. a stale link), so they never land
+     on an all-empty picker. */
+  const view = (_pickerView === 'users' && !_iAmDeckAdmin) ? '' : _pickerView;
   const showMine    = view !== 'company' && view !== 'users';
   const showCompany = view !== 'mine'    && view !== 'users';
-  /* Users Presentations: dev only. On its own via ?view=users, and also
+  /* Users Presentations: dev + admin. On its own via ?view=users, and also
      appended under the default view so it's discoverable without the card. */
-  const showUsers   = _iAmDev && view !== 'mine' && view !== 'company';
+  const showUsers   = _iAmDeckAdmin && view !== 'mine' && view !== 'company';
 
   if (showMine) {
     pickerGrid.appendChild(_pickerSectionHeader('My Presentations'));
@@ -12262,10 +12262,10 @@ const PRES_MAX_SAVE_RETRIES   = 4;    /* stop auto-retrying a failing save after
 let _saveRetryCount      = 0;       /* consecutive failed save attempts */
 let _canWritePresCloud   = false;   /* dev/admin/company → can save SOME deck */
 let _iAmWriter           = false;   /* dev/admin → can publish/edit company decks + themes */
-let _iAmDev              = false;   /* dev only → "Users Presentations" admin view + assign decks */
+let _iAmDeckAdmin        = false;   /* dev OR admin → "Users Presentations" admin view + assign decks */
 let _presTierResolved    = false;   /* true once the tier gate sees a real auth level (not the boot '') */
 let _myUserId            = null;    /* auth.uid() — owner_id for my decks */
-let _presProfiles        = {};      /* dev only: user id → { name, email, tier } (owner tags) */
+let _presProfiles        = {};      /* dev/admin: user id → { name, email, tier } (owner tags) */
 let _presProfilesList    = [];      /* dev only: active users for the Assign picker */
 let _presCloudSaveTimer  = null;
 let _presSavePending     = false;   /* an edit is waiting for the debounce to fire */
@@ -12312,12 +12312,12 @@ async function _ensurePresIdentity() {
   return _myUserId;
 }
 
-/* Dev-only: load the profile directory (writers can read all profiles per
+/* Dev/admin only: load the profile directory (writers can read all profiles per
    RLS) so the picker can TAG "Users Presentations" decks with their owner and
    the Assign dialog can list users. Cached in _presProfiles (id→info) +
    _presProfilesList (active users, for the picker). Best-effort. */
 async function _loadPresProfiles() {
-  if (!_iAmDev || !window.sb) return;
+  if (!_iAmDeckAdmin || !window.sb) return;
   try {
     const { data, error } = await window.sb
       .from('profiles')
@@ -12642,9 +12642,9 @@ async function _hydratePresFromCloud() {
        gate call at boot. */
     if (typeof applyPresTierGate === 'function') applyPresTierGate();
 
-    /* 0) Dev: load the profile directory so "Users Presentations" cards can be
-          tagged with their owner and the Assign dialog has a user list. */
-    if (_iAmDev) await _loadPresProfiles();
+    /* 0) Dev/admin: load the profile directory so "Users Presentations" cards can
+          be tagged with their owner and the Assign dialog has a user list. */
+    if (_iAmDeckAdmin) await _loadPresProfiles();
 
     /* 1) Shared theme library + cache the state payload (used by the themes
           save and the one-time migration). */
@@ -12731,21 +12731,21 @@ async function _hydratePresFromCloud() {
 function applyPresTierGate() {
   let level = '';
   try { if (typeof getAccessLevel === 'function') level = getAccessLevel(); } catch (_) {}
-  const prevState = _iAmDev + '|' + _presTierResolved;
+  const prevState = _iAmDeckAdmin + '|' + _presTierResolved;
   _iAmWriter         = (level === 'dev' || level === 'admin');
-  _iAmDev            = (level === 'dev');
+  _iAmDeckAdmin      = (level === 'dev' || level === 'admin');   /* Users Presentations: dev + admin */
   _canWritePresCloud = (level === 'dev' || level === 'admin' || level === 'company');
   if (level) _presTierResolved = true;   /* a real level resolved (boot starts '') */
   _applyPresReadonly();
   /* The gate runs again ~200/800ms after boot (auth may resolve late). If
-     dev-ness or resolved-ness just changed, re-render the picker so a dev-only
-     ?view=users deep-link leaves its "Loading…" state for the right view —
-     without the earlier flash of "My Presentations". */
-  if ((_iAmDev + '|' + _presTierResolved) !== prevState && typeof buildPicker === 'function') buildPicker();
-  /* The dev's Users view needs the auth id to split mine-vs-others. Resolve it
+     deck-admin-ness or resolved-ness just changed, re-render the picker so a
+     dev/admin-only ?view=users deep-link leaves its "Loading…" state for the
+     right view — without the earlier flash of "My Presentations". */
+  if ((_iAmDeckAdmin + '|' + _presTierResolved) !== prevState && typeof buildPicker === 'function') buildPicker();
+  /* The Users view needs the auth id to split mine-vs-others. Resolve it
      promptly (don't wait on full cloud hydration) + re-render, so the view
      doesn't sit on "Loading…" or briefly show decks that shouldn't be there. */
-  if (_iAmDev && !_myUserId && _pickerView === 'users' && typeof _ensurePresIdentity === 'function') {
+  if (_iAmDeckAdmin && !_myUserId && _pickerView === 'users' && typeof _ensurePresIdentity === 'function') {
     _ensurePresIdentity().then(() => { if (_myUserId && typeof buildPicker === 'function') buildPicker(); });
   }
 }
