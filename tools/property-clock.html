@@ -2915,6 +2915,19 @@ if(!window.__clockLogoBakeScheduled){
   }
 }
 
+/* Shared export filename — keeps the JPEG download in sync with the PDF
+   naming convention. Fresh date + random suffix per call (so repeat
+   downloads don't collide); the caller appends the extension. */
+function _clockExportBaseName(){
+  const now = new Date();
+  const ver = now.getMonth() + 1, yr = now.getFullYear();
+  const letters = 'abcdefghijklmnopqrstuvwxyz';
+  let rand = '';
+  for(let i=0;i<5;i++) rand += letters[Math.floor(Math.random()*26)];
+  for(let i=0;i<2;i++) rand += Math.floor(Math.random()*10);
+  return 'Clock_diagram_Smooth&Workforce_Edition_' + ver + '_' + yr + '-' + rand;
+}
+
 /* ═══ PDF EXPORT — captures only #clock-capture ═══
    Tier 0/1 (dev/admin)   — HD render (scale:4, lossless PNG).
    Tier 2 (company)       — standard render (scale:2, JPEG).
@@ -2946,13 +2959,7 @@ async function exportPDF(){
     const sc=Math.min(aW/iW,aH/iH,1);
     const dataUrl = canvas.toDataURL('image/jpeg', hd ? 0.95 : 0.9);
     pdf.addImage(dataUrl, 'JPEG', margin+(aW-iW*sc)/2, margin+(aH-iH*sc)/2, iW*sc, iH*sc, undefined, hd ? 'SLOW' : 'FAST');
-    const now = new Date();
-    const ver = now.getMonth() + 1, yr = now.getFullYear();
-    const letters = 'abcdefghijklmnopqrstuvwxyz';
-    let rand = '';
-    for(let i=0;i<5;i++) rand += letters[Math.floor(Math.random()*26)];
-    for(let i=0;i<2;i++) rand += Math.floor(Math.random()*10);
-    pdf.save('Clock_diagram_Smooth&Workforce_Edition_' + ver + '_' + yr + '-' + rand + '.pdf');
+    pdf.save(_clockExportBaseName() + '.pdf');
     toast(hd ? 'HD PDF downloaded!' : 'PDF downloaded!');
   }catch(err){console.error(err);alert('PDF failed - try Ctrl+P instead.');}
   finally{
@@ -2981,7 +2988,7 @@ async function exportClockJPEG(){
     const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
     const link = document.createElement('a');
     link.href = dataUrl;
-    link.download = 'National-Property-Clock-Ed3-2026-HD.jpg';
+    link.download = _clockExportBaseName() + '.jpg';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -3197,11 +3204,26 @@ async function saveState(){
     btn.classList.add('saved');
     setTimeout(()=>btn.classList.remove('saved'),2000);
     toast('Saved! Everyone will see your changes on next refresh.');
+    _notifyClockSaved();
   }catch(e){
     ind.textContent='Save failed';
     toast('Save failed — check your connection and try again.');
     console.error('Clock save error:',e);
   }
+}
+
+/* Fire-and-forget email notification on a successful CLOUD save. The
+   notify-clock Edge Function emails the owner ONLY when the editor isn't
+   them (it decides from the caller's JWT, not this body), so it's safe to
+   call on every save. Never blocks or fails the save — purely best-effort.
+   Offline saves don't call this (they're per-browser and invisible to others). */
+function _notifyClockSaved(){
+  try{
+    if(!window.sb || !window.sb.functions) return;
+    const editorName = (typeof getCurrentUserDisplay === 'function') ? getCurrentUserDisplay() : '';
+    window.sb.functions.invoke('notify-clock', { body: { editorName } })
+      .catch(err => console.warn('[clock] notify failed', err));
+  }catch(e){ console.warn('[clock] notify threw', e); }
 }
 
 async function loadState(){
