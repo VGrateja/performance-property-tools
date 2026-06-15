@@ -801,8 +801,12 @@
       }
       raf = requestAnimationFrame(tick);
     }
-    /* One build step: count the values up AND wipe the sparklines in together. */
-    var builds = [ function () { countUpAll(); sparks.forEach(function (sh) { _bnRevealSpark(sh); }); } ];
+    /* Two build steps, matching the big number: count the values up first,
+       then wipe the sparklines in (separate presenter advance / autoplay step). */
+    var builds = [
+      function () { countUpAll(); },
+      function () { sparks.forEach(function (sh) { _bnRevealSpark(sh); }); },
+    ];
     return stepController(builds, {
       reset: function () {
         cancelAnimationFrame(raf);
