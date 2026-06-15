@@ -603,6 +603,59 @@
       '<circle class="bn-spark-dot" cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="3.4" fill="' + color + '"/>' +
       '</svg>';
   }
+  /* Shared value formatter: pct → 2dp + %; aud → $ + full commas; num → full
+     commas. `decimals` = fixed decimals (default 0). No k/M abbreviation. */
+  function _bnFmt(unit, decimals) {
+    decimals = decimals || 0;
+    if (unit === 'pct') return function (v) { return v.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'; };
+    var pre = (unit === 'aud') ? '$' : '';
+    return function (v) { return pre + v.toLocaleString('en-AU', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }); };
+  }
+  /* Hover tooltip + marker for a sparkline host (interactive in view / present
+     — the chart host is pointer-events:none in edit). fmtFn formats the value. */
+  function _attachSparkTooltip(sparkHost, vals, fmtFn, color) {
+    var smin = Math.min.apply(null, vals), smax = Math.max.apply(null, vals);
+    var srange = (smax - smin) || 1;
+    var SH = 90, sPad = 6, sTop = 10;
+    var tip = document.createElement('div');
+    tip.style.cssText = 'position:absolute;transform:translate(-50%,-118%);background:rgba(8,16,26,0.92);color:#fff;' +
+      'padding:5px 9px;border-radius:6px;font-size:24px;font-weight:600;white-space:nowrap;pointer-events:none;' +
+      'opacity:0;transition:opacity .12s;z-index:3;box-shadow:0 4px 12px rgba(0,0,0,0.4);';
+    var dot = document.createElement('div');
+    dot.style.cssText = 'position:absolute;width:14px;height:14px;border-radius:50%;background:' + color + ';' +
+      'box-shadow:0 0 0 3px rgba(255,255,255,0.22);transform:translate(-50%,-50%);pointer-events:none;opacity:0;transition:opacity .12s;z-index:3;';
+    sparkHost.appendChild(tip);
+    sparkHost.appendChild(dot);
+    sparkHost.addEventListener('pointermove', function (e) {
+      var r = sparkHost.getBoundingClientRect();
+      if (!r.width) return;
+      var frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      var idx = Math.round(frac * (vals.length - 1));
+      var val = vals[idx];
+      /* Position in the host's UNSCALED local box — the chart host is CSS
+         transform:scale'd, so the scaled rect size would double-apply it. */
+      var ow = sparkHost.offsetWidth || r.width, oh = sparkHost.offsetHeight || r.height;
+      var px = (vals.length === 1) ? ow / 2 : (idx / (vals.length - 1)) * ow;
+      var vy = SH - sPad - ((val - smin) / srange) * (SH - sPad - sTop);
+      var py = (vy / SH) * oh;
+      dot.style.left = px + 'px'; dot.style.top = py + 'px'; dot.style.opacity = '1';
+      tip.style.left = px + 'px'; tip.style.top = py + 'px';
+      tip.textContent = fmtFn(val);
+      tip.style.opacity = '1';
+    });
+    sparkHost.addEventListener('pointerleave', function () { tip.style.opacity = '0'; dot.style.opacity = '0'; });
+  }
+  /* Reveal: wipe a sparkline host's <svg> in left→right (line + shadow area +
+     dot together) via an animated clip-path. */
+  function _bnRevealSpark(sparkHost) {
+    sparkHost.style.opacity = '1';
+    var svg = sparkHost.querySelector('svg');
+    if (!svg) return;
+    svg.style.webkitClipPath = svg.style.clipPath = 'inset(0 100% 0 0)';
+    svg.getBoundingClientRect();                 // force reflow so the transition runs
+    svg.style.transition = 'clip-path 1.05s ease, -webkit-clip-path 1.05s ease';
+    svg.style.webkitClipPath = svg.style.clipPath = 'inset(0 0 0 0)';
+  }
   function createBigNumber(host, spec) {
     var titleColor = spec.titleColor || 'rgba(175,216,232,0.92)';
     var valueColor = spec.valueColor || '#ffffff';
@@ -639,24 +692,8 @@
     host.appendChild(wrap);
 
     var target = Number(spec.value) || 0;
-    var unit = spec.unit || 'num';
-    var decimals = (typeof spec.decimals === 'number') ? spec.decimals : 0;
+    var fmt = _bnFmt(spec.unit || 'num', (typeof spec.decimals === 'number') ? spec.decimals : 0);
     var raf = null;
-
-    /* Format the counting value. pct → 2dp + %; aud → $ (abbreviated, legacy);
-       num → FULL comma-separated number with `decimals` fixed decimals (no k/M
-       abbreviation — the at-a-glance cards show the complete figure). */
-    function fixedFmt(t, u) {
-      var a = Math.abs(t);
-      if (u === 'pct') return function (v) { return v.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'; };
-      if (u === 'aud') {
-        if (a >= 1e6) return function (v) { return '$' + (v / 1e6).toLocaleString('en-AU', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + 'M'; };
-        if (a >= 1e3) return function (v) { return '$' + Math.round(v / 1e3).toLocaleString('en-AU') + 'k'; };
-        return function (v) { return '$' + Math.round(v).toLocaleString('en-AU'); };
-      }
-      return function (v) { return v.toLocaleString('en-AU', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }); };
-    }
-    var countFmt = fixedFmt(target, unit);
     function countUp() {
       var startT = null, dur = 1200;
       cancelAnimationFrame(raf);
@@ -664,75 +701,86 @@
         if (startT == null) startT = ts;
         var p = Math.min(1, (ts - startT) / dur);
         var eased = 1 - Math.pow(1 - p, 3);   // cubicOut
-        big.textContent = countFmt(target * eased);
+        big.textContent = fmt(target * eased);
         if (p < 1) raf = requestAnimationFrame(tick);
-        else big.textContent = countFmt(target);
+        else big.textContent = fmt(target);
       }
       raf = requestAnimationFrame(tick);
     }
-
-    /* Hover tooltip + marker — interactive in view / present mode (the chart
-       host is pointer-events:none in edit). Maps the cursor X to the nearest
-       data point and shows the formatted value. */
-    if (sparkVals) {
-      var smin = Math.min.apply(null, sparkVals), smax = Math.max.apply(null, sparkVals);
-      var srange = (smax - smin) || 1;
-      var SH = 90, sPad = 6, sTop = 10;
-      var tip = document.createElement('div');
-      tip.style.cssText = 'position:absolute;transform:translate(-50%,-118%);background:rgba(8,16,26,0.92);color:#fff;' +
-        'padding:5px 9px;border-radius:6px;font-size:24px;font-weight:600;white-space:nowrap;pointer-events:none;' +
-        'opacity:0;transition:opacity .12s;z-index:3;box-shadow:0 4px 12px rgba(0,0,0,0.4);';
-      var dot = document.createElement('div');
-      dot.style.cssText = 'position:absolute;width:14px;height:14px;border-radius:50%;background:' + sparkColor + ';' +
-        'box-shadow:0 0 0 3px rgba(255,255,255,0.22);transform:translate(-50%,-50%);pointer-events:none;opacity:0;transition:opacity .12s;z-index:3;';
-      sparkHost.appendChild(tip);
-      sparkHost.appendChild(dot);
-      var moveTip = function (e) {
-        var r = sparkHost.getBoundingClientRect();
-        if (!r.width) return;
-        var frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-        var idx = Math.round(frac * (sparkVals.length - 1));
-        var val = sparkVals[idx];
-        /* Position the dot/tooltip in the host's UNSCALED local box
-           (offsetWidth/Height): the chart host is CSS transform:scale'd, so
-           using the scaled getBoundingClientRect size here would double-apply
-           the scale and place them in the wrong spot. The mouse fraction above
-           still uses the scaled rect (that's correct for the cursor). */
-        var ow = sparkHost.offsetWidth || r.width, oh = sparkHost.offsetHeight || r.height;
-        var px = (sparkVals.length === 1) ? ow / 2 : (idx / (sparkVals.length - 1)) * ow;
-        var vy = SH - sPad - ((val - smin) / srange) * (SH - sPad - sTop);
-        var py = (vy / SH) * oh;
-        dot.style.left = px + 'px'; dot.style.top = py + 'px'; dot.style.opacity = '1';
-        tip.style.left = px + 'px'; tip.style.top = py + 'px';
-        tip.textContent = countFmt(val);
-        tip.style.opacity = '1';
-      };
-      sparkHost.addEventListener('pointermove', moveTip);
-      sparkHost.addEventListener('pointerleave', function () { tip.style.opacity = '0'; dot.style.opacity = '0'; });
-    }
-
-    /* Reveal: wipe the whole sparkline in left→right — the line AND the
-       gradient "shadow" area AND the end dot together — via an animated
-       clip-path on the <svg>. (The hover tooltip/dot live OUTSIDE the svg, so
-       they're never clipped.) */
-    function revealSpark() {
-      sparkHost.style.opacity = '1';
-      var svg = sparkHost.querySelector('svg');
-      if (!svg) return;
-      svg.style.webkitClipPath = svg.style.clipPath = 'inset(0 100% 0 0)';
-      svg.getBoundingClientRect();                 // force reflow so the transition runs
-      svg.style.transition = 'clip-path 1.05s ease, -webkit-clip-path 1.05s ease';
-      svg.style.webkitClipPath = svg.style.clipPath = 'inset(0 0 0 0)';
-    }
+    if (sparkVals) _attachSparkTooltip(sparkHost, sparkVals, fmt, sparkColor);
 
     var builds = [
       function () { countUp(); },
-      function () { revealSpark(); },
+      function () { _bnRevealSpark(sparkHost); },
     ];
     return stepController(builds, {
       reset: function () { cancelAnimationFrame(raf); big.textContent = '—'; sparkHost.style.opacity = '0'; },
       resize: function () {},
       dispose: function () { cancelAnimationFrame(raf); },
+    });
+  }
+
+  /* ═══ STAT LIST (Houses / Units card: title + rows of label/value/spark) ═══
+     spec.rows = [{ label, value (display string), spark (numeric array), unit,
+     decimals }]. Style overrides: titleColor (heading), labelColor (row
+     labels), valueColor (row values), font, bg (card). Row backgrounds are the
+     light cards; only the sparklines animate (wipe in). */
+  function createStatList(host, spec) {
+    var titleColor = spec.titleColor || '#ffffff';
+    var labelColor = spec.labelColor || '#5a6b7b';
+    var valueColor = spec.valueColor || '#0a1520';
+    var sparkColor = spec.sparkColor || THEME.palette[0];
+    var font       = spec.font || THEME.font;
+
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;height:100%;box-sizing:border-box;padding:22px;' +
+      'border-radius:16px;overflow:hidden;font-family:' + font + ';';
+    wrap.style.background = spec.bg || 'linear-gradient(160deg, rgba(20,40,56,0.95) 0%, rgba(9,18,28,0.97) 100%)';
+    wrap.style.border = '1px solid rgba(255,255,255,0.10)';
+
+    var h = document.createElement('div');
+    h.textContent = spec.title || '';
+    h.style.cssText = 'flex:0 0 auto;font-size:44px;font-weight:800;letter-spacing:0.3px;color:' + titleColor + ';' +
+      'margin:0 0 14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    wrap.appendChild(h);
+
+    var list = document.createElement('div');
+    list.style.cssText = 'display:flex;flex-direction:column;gap:10px;flex:1 1 auto;min-height:0;';
+    wrap.appendChild(list);
+
+    var sparks = [];
+    (spec.rows || []).forEach(function (row) {
+      var r = document.createElement('div');
+      r.style.cssText = 'display:flex;align-items:center;gap:14px;flex:1 1 0;min-height:0;padding:8px 16px;border-radius:10px;' +
+        'background:linear-gradient(120deg, rgba(233,245,251,0.97) 0%, rgba(206,233,244,0.93) 100%);';
+      var left = document.createElement('div');
+      left.style.cssText = 'flex:0 0 40%;min-width:0;';
+      var lbl = document.createElement('div');
+      lbl.textContent = row.label || '';
+      lbl.style.cssText = 'font-size:17px;font-weight:700;color:' + labelColor + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      var val = document.createElement('div');
+      val.textContent = (row.value != null) ? row.value : '—';
+      val.style.cssText = 'font-size:34px;font-weight:800;color:' + valueColor + ';line-height:1.05;white-space:nowrap;';
+      left.appendChild(lbl); left.appendChild(val);
+      r.appendChild(left);
+      var sh = document.createElement('div');
+      sh.style.cssText = 'position:relative;flex:1 1 auto;height:100%;min-height:0;opacity:0;transition:opacity .6s ease;';
+      var svals = (Array.isArray(row.spark) && row.spark.length >= 2) ? row.spark : null;
+      if (svals) {
+        sh.innerHTML = _bnSparkSvg(svals, sparkColor);
+        _attachSparkTooltip(sh, svals, _bnFmt(row.unit, row.decimals || 0), sparkColor);
+        sparks.push(sh);
+      }
+      r.appendChild(sh);
+      list.appendChild(r);
+    });
+    host.appendChild(wrap);
+
+    var builds = [ function () { sparks.forEach(function (sh) { _bnRevealSpark(sh); }); } ];
+    return stepController(builds, {
+      reset: function () { sparks.forEach(function (sh) { sh.style.opacity = '0'; }); },
+      resize: function () {},
+      dispose: function () {},
     });
   }
 
@@ -793,6 +841,7 @@
       case 'dualBarLine': return createDualBarLine(container, spec);
       case 'pyramid':   return createPyramid(container, spec);
       case 'bigNumber': return createBigNumber(container, spec);
+      case 'statList':  return createStatList(container, spec);
       default:
         container.textContent = 'Unsupported chart type: ' + spec.type;
         return nullController();
