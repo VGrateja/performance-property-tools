@@ -6745,12 +6745,48 @@ const OR_CRISES = [
   { year: 2008, label: 'GFC' },
   { year: 2020, label: 'Covid-19' },
 ];
+/* Fallback bands (used only when a region has no saved bands) — the same
+   region-agnostic DEFAULT online-reports ships. Most regions have their OWN
+   edited bands (with the clear year gap between phases) in reports_state, which
+   _orRegionBands fetches and overrides this with — see buildReportChartSpec. */
 const OR_BANDS = [
   { from: 1982, to: 1985, type: 'correct' }, { from: 1985, to: 1991, type: 'growth' },
   { from: 1991, to: 1996, type: 'correct' }, { from: 1996, to: 2004, type: 'growth' },
   { from: 2004, to: 2009, type: 'correct' }, { from: 2009, to: 2020, type: 'growth' },
   { from: 2020, to: 2022, type: 'correct' }, { from: 2022, to: 2026, type: 'growth' },
 ];
+/* Pull the calendar year out of a 'YYYY-MM-DD' / 'YYYY' / number (mirrors the
+   report's bandToYear). */
+function _orBandYear(d) {
+  if (typeof d === 'number') return d;
+  const m = String(d == null ? '' : d).match(/^(\d{4})/);
+  return m ? parseInt(m[1], 10) : null;
+}
+/* The region's OWN growth/correction bands from reports_state.payload.bands
+   (the per-region set the user edits in the report's Bands modal — which keeps
+   the 1-year gap between phases). Returns the {from,to,type} year shape the
+   chart modules expect, or null to fall back to OR_BANDS. Memoised via snapCache
+   so a deck-wide refresh reads each region's row once. */
+async function _orRegionBands(slug, snapCache) {
+  const ck = 'bands:' + slug;
+  if (snapCache && Object.prototype.hasOwnProperty.call(snapCache, ck)) return snapCache[ck];
+  let out = null;
+  try {
+    if (window.sb) {
+      const { data } = await window.sb.from('reports_state').select('payload').eq('region', slug).maybeSingle();
+      const raw = (data && data.payload && Array.isArray(data.payload.bands)) ? data.payload.bands : null;
+      if (raw && raw.length) {
+        out = raw.map(b => {
+          const fy = _orBandYear(b.from), ty = _orBandYear(b.to);
+          return (fy != null && ty != null) ? { from: fy, to: ty, type: b.type } : null;
+        }).filter(Boolean);
+        if (!out.length) out = null;
+      }
+    }
+  } catch (_) { out = null; }
+  if (snapCache) snapCache[ck] = out;
+  return out;
+}
 /* Per-page recipes: raw region feed → a slide chart spec { module, data }.
    `module` is the online-report chart module (assets/Reports/charts/
    chart-<module>.js); `data` is that module's OWN data shape — so the slide
@@ -7434,6 +7470,13 @@ async function buildReportChartSpec(slug, pageId, snapCache) {
       : recipe(raw, region.name, region);
   }
   if (!spec) return { error: 'That chart has no data for this region / page.' };
+  /* Regional band charts (Median Price / YoY): replace the generic default
+     bands with the REGION's own saved bands so the slide matches the report —
+     including the clear 1-year gap between Growth and Correction phases. */
+  if (region.cluster !== 'Research Reports' && spec.data && Array.isArray(spec.data.bands)) {
+    const rb = await _orRegionBands(slug, snapCache);
+    if (rb && rb.length) spec.data.bands = rb;
+  }
   return { spec: spec };
 }
 
