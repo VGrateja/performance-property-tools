@@ -749,6 +749,7 @@
     wrap.appendChild(list);
 
     var sparks = [];
+    var counters = [];
     (spec.rows || []).forEach(function (row) {
       var r = document.createElement('div');
       r.style.cssText = 'display:flex;align-items:center;gap:14px;flex:1 1 0;min-height:0;padding:8px 16px;border-radius:10px;' +
@@ -759,8 +760,18 @@
       lbl.textContent = row.label || '';
       lbl.style.cssText = 'font-size:17px;font-weight:700;color:' + labelColor + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
       var val = document.createElement('div');
-      val.textContent = (row.value != null) ? row.value : '—';
-      val.style.cssText = 'font-size:34px;font-weight:800;color:' + valueColor + ';line-height:1.05;white-space:nowrap;';
+      val.style.cssText = 'font-size:34px;font-weight:800;color:' + valueColor + ';line-height:1.05;white-space:nowrap;font-variant-numeric:tabular-nums;';
+      /* Count-up target: the numeric `num` when present, else parse it back out
+         of the formatted value string (so cards inserted before `num` existed
+         still animate). */
+      var rTarget = (typeof row.num === 'number') ? row.num
+        : (function () { var n = parseFloat(String(row.value == null ? '' : row.value).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : null; })();
+      if (rTarget != null) {
+        val.textContent = '—';
+        counters.push({ el: val, target: rTarget, fmt: _bnFmt(row.unit, row.decimals || 0) });
+      } else {
+        val.textContent = (row.value != null) ? row.value : '—';
+      }
       left.appendChild(lbl); left.appendChild(val);
       r.appendChild(left);
       var sh = document.createElement('div');
@@ -776,11 +787,30 @@
     });
     host.appendChild(wrap);
 
-    var builds = [ function () { sparks.forEach(function (sh) { _bnRevealSpark(sh); }); } ];
+    var raf = null;
+    function countUpAll() {
+      var startT = null, dur = 1200;
+      cancelAnimationFrame(raf);
+      function tick(ts) {
+        if (startT == null) startT = ts;
+        var p = Math.min(1, (ts - startT) / dur);
+        var eased = 1 - Math.pow(1 - p, 3);   // cubicOut
+        counters.forEach(function (c) { c.el.textContent = c.fmt(c.target * eased); });
+        if (p < 1) raf = requestAnimationFrame(tick);
+        else counters.forEach(function (c) { c.el.textContent = c.fmt(c.target); });
+      }
+      raf = requestAnimationFrame(tick);
+    }
+    /* One build step: count the values up AND wipe the sparklines in together. */
+    var builds = [ function () { countUpAll(); sparks.forEach(function (sh) { _bnRevealSpark(sh); }); } ];
     return stepController(builds, {
-      reset: function () { sparks.forEach(function (sh) { sh.style.opacity = '0'; }); },
+      reset: function () {
+        cancelAnimationFrame(raf);
+        counters.forEach(function (c) { c.el.textContent = '—'; });
+        sparks.forEach(function (sh) { sh.style.opacity = '0'; });
+      },
       resize: function () {},
-      dispose: function () {},
+      dispose: function () { cancelAnimationFrame(raf); },
     });
   }
 

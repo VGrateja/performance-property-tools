@@ -5929,28 +5929,24 @@ document.addEventListener('keydown', (ev) => {
   const isArrow = (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight' ||
                    ev.key === 'ArrowUp'   || ev.key === 'ArrowDown');
   if (_editMode && _selectedId && isArrow) {
-    const o = currentOverlays().find(x => x.id === _selectedId);
-    if (o) {
-      ev.preventDefault();
-      const step = ev.shiftKey ? 10 : 1;
+    /* Nudge EVERY selected (unlocked) overlay by the same step. */
+    const ids = _selIds();
+    const step = ev.shiftKey ? 10 : 1;
+    let moved = false;
+    ids.forEach(id => {
+      const o = currentOverlays().find(x => x.id === id);
+      if (!o || o.locked) return;
       if (ev.key === 'ArrowLeft')  o.x -= step;
       if (ev.key === 'ArrowRight') o.x += step;
       if (ev.key === 'ArrowUp')    o.y -= step;
       if (ev.key === 'ArrowDown')  o.y += step;
-      o.x = Math.round(o.x);
-      o.y = Math.round(o.y);
-      saveOverlays();
-      /* Update only the live overlay element instead of a full
-         re-render — keeps the selection state + any in-progress
-         interactions intact. */
+      o.x = Math.round(o.x); o.y = Math.round(o.y);
+      /* Update the live element only — keeps selection + in-progress edits. */
       const el = slot.querySelector('.pres-overlay[data-id="' + o.id + '"]');
-      if (el) {
-        el.style.left = o.x + 'px';
-        el.style.top  = o.y + 'px';
-      }
-      scheduleNudgeHistory();
-      return;
-    }
+      if (el) { el.style.left = o.x + 'px'; el.style.top = o.y + 'px'; }
+      moved = true;
+    });
+    if (moved) { ev.preventDefault(); saveOverlays(); scheduleNudgeHistory(); return; }
   }
 
   /* Slide-nav advance keys:
@@ -6514,6 +6510,7 @@ let _themes           = [];   /* [{ id, name, slide:{fn,overlays,bg}, createdBy,
 let _deckActiveTheme  = {};   /* { deckId: themeId } */
 let _editMode    = false;
 let _selectedId  = null;
+let _selectedIds = new Set();   /* multi-select set (includes the primary _selectedId) */
 
 function loadOverlays() {
   try { _overlays = JSON.parse(localStorage.getItem(OVERLAYS_KEY) || '{}') || {}; }
@@ -7367,7 +7364,7 @@ function _orBuildGlanceTableSpec(kind, raw) {
         .filter(x => x != null && isFinite(x));
       if (nums.length >= 2) spark = nums.slice(-12);
     }
-    rows.push({ label: rd.label, value: _glanceFmt(tf(v), rd.unit, dec), spark: spark, unit: rd.unit, decimals: dec });
+    rows.push({ label: rd.label, value: _glanceFmt(tf(v), rd.unit, dec), num: tf(v), spark: spark, unit: rd.unit, decimals: dec });
   });
   if (!rows.length) return null;
   return { type: 'statList', title: def.title, rows: rows };
@@ -7455,7 +7452,7 @@ async function ovAddReportChart(slug, pageId) {
      ~landscape panel, so a wide-ish base keeps the proportions report-like. */
   let w = 880, h = 520;
   if (spec.type === 'bigNumber') { w = 560; h = 360; }
-  else if (spec.type === 'statList') { w = 600; h = 640; }   /* Houses / Units card */
+  else if (spec.type === 'statList') { w = 720; h = 620; }   /* Houses / Units card (a bit wider) */
   else if (spec.box) { w = spec.box.w; h = spec.box.h; }
   else if (spec.module === 'population-pyramid' || spec.module === 'national-p9' || spec.module === 'commercial-p20') { w = 720; h = 560; }
   currentOverlays().push({
@@ -8071,10 +8068,8 @@ function buildTableEl(o) {
            shows the panel in cell mode without a flicker (the
            browser's focus event fires shortly after pointerdown). */
         _focusedCellCtx = { overlayId: o.id, row: r, col: c, td };
-        if (_selectedId !== o.id) {
-          _selectedId = o.id;
-          slot.querySelectorAll('.pres-overlay').forEach(n => n.classList.toggle('selected', n.dataset.id === o.id));
-          syncShapePanel();
+        if (_selectedId !== o.id || _selIds().size > 1) {
+          _selectOnly(o.id);
         }
         syncTextPanel();
         if (ev.shiftKey && _tableCellSelection && _tableCellSelection.overlayId === o.id) {
@@ -9057,7 +9052,7 @@ function _clearDragGuides() {
 function buildOverlayEl(o) {
   const el = document.createElement('div');
   el.className = 'pres-overlay pres-overlay-' + o.type;
-  if (o.id === _selectedId) el.classList.add('selected');
+  if (_selIds().has(o.id)) el.classList.add('selected');
   el.dataset.id = o.id;
   el.style.left   = o.x + 'px';
   el.style.top    = o.y + 'px';
@@ -9375,8 +9370,7 @@ function buildOverlayEl(o) {
       if (!_editMode) return;
       ev.stopPropagation();
       ev.preventDefault();
-      _selectedId = o.id;
-      slot.querySelectorAll('.pres-overlay').forEach(n => n.classList.toggle('selected', n.dataset.id === o.id));
+      _selectOnly(o.id);
       const slideRect = slot.getBoundingClientRect();
       const scale = slideRect.width / 1280;
       const startX = ev.clientX, startY = ev.clientY;
@@ -9509,8 +9503,7 @@ function buildOverlayEl(o) {
         if (!_editMode) return;
         ev.stopPropagation();
         ev.preventDefault();
-        _selectedId = o.id;
-        slot.querySelectorAll('.pres-overlay').forEach(n => n.classList.toggle('selected', n.dataset.id === o.id));
+        _selectOnly(o.id);
         const slideRect = slot.getBoundingClientRect();
         const scale = slideRect.width / 1280;
         const startX = ev.clientX, startY = ev.clientY;
@@ -9583,8 +9576,7 @@ function buildOverlayEl(o) {
          right-clicks the table border / padding, not inside a cell. */
       ev.preventDefault();
       ev.stopPropagation();
-      _selectedId = o.id;
-      slot.querySelectorAll('.pres-overlay').forEach(n => n.classList.toggle('selected', n.dataset.id === o.id));
+      _selectOnly(o.id);
       const items = [];
       if (!o.protected) {
         items.push({ label: 'Copy',      action: () => copyOverlay(o.id) });
@@ -9611,26 +9603,34 @@ function buildOverlayEl(o) {
     if (ev.target.classList.contains('pres-overlay-del')) return;
     if (ev.target.classList.contains('pres-overlay-resize')) return;
     ev.preventDefault();
-    _selectedId = o.id;
-    /* Re-paint just selection state without rebuilding (preserves any
-       in-progress text edit on a sibling). */
-    slot.querySelectorAll('.pres-overlay').forEach(n => n.classList.toggle('selected', n.dataset.id === o.id));
-    syncTextPanel();
-    syncShapePanel();
+    /* Shift / Ctrl / Cmd-click toggles this overlay in the multi-selection
+       (and does NOT start a drag). */
+    if (ev.shiftKey || ev.ctrlKey || ev.metaKey) { _toggleSelected(o.id); return; }
+    /* Plain click: if this overlay is already part of a multi-selection, keep
+       the group (so the whole group drags); otherwise select just this one. */
+    if (_selIds().has(o.id)) { _paintSelection(); syncTextPanel(); syncShapePanel(); }
+    else _selectOnly(o.id);
 
     const slideRect = slot.getBoundingClientRect();
     const scale     = slideRect.width / 1280;
     const startX = ev.clientX, startY = ev.clientY;
-    const origX = o.x, origY = o.y;
+    /* Move EVERY selected (unlocked) overlay by the same delta. */
+    const movers = Array.from(_selIds())
+      .map(id => currentOverlays().find(x => x.id === id))
+      .filter(m => m && !m.locked)
+      .map(m => ({ m: m, x0: m.x, y0: m.y }));
+    const single = (movers.length === 1);
     const onMove = (e) => {
-      o.x = Math.round(origX + (e.clientX - startX) / scale);
-      o.y = Math.round(origY + (e.clientY - startY) / scale);
-      /* Smart-guide snap: nudges o.x / o.y onto an alignment line
-         (slide centre, slide edge, or another overlay's edge / centre)
-         when within SNAP_TOLERANCE, and draws a magenta guide there. */
-      _snapAndShowGuides(o);
-      el.style.left = o.x + 'px';
-      el.style.top  = o.y + 'px';
+      const dx = Math.round((e.clientX - startX) / scale);
+      const dy = Math.round((e.clientY - startY) / scale);
+      movers.forEach(({ m, x0, y0 }) => { m.x = x0 + dx; m.y = y0 + dy; });
+      /* Smart-guide snapping only for a single-overlay drag (a group has no one
+         box to snap). */
+      if (single && movers[0]) _snapAndShowGuides(movers[0].m);
+      movers.forEach(({ m }) => {
+        const node = slot.querySelector('.pres-overlay[data-id="' + m.id + '"]');
+        if (node) { node.style.left = m.x + 'px'; node.style.top = m.y + 'px'; }
+      });
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
@@ -9650,7 +9650,45 @@ function buildOverlayEl(o) {
    controls from the selected text overlay's record. */
 function getSelectedOverlay() {
   if (!_selectedId) return null;
+  if (_selIds().size > 1) return null;   /* multi-select → no single-element panel / editing */
   return currentOverlays().find(o => o.id === _selectedId) || null;
+}
+
+/* ─── Multi-select ─── _selectedId is the PRIMARY; _selectedIds holds the full
+   set when an explicit multi-selection (shift/ctrl-click or marquee) is active.
+   _selIds() is the EFFECTIVE selection: the multi-set only when it still
+   contains the primary and >1 live members — so a normal click / create (which
+   sets _selectedId to an id NOT in the old set) automatically collapses to a
+   single selection without touching every assignment site. */
+function _selIds() {
+  if (_selectedId && _selectedIds.size > 1 && _selectedIds.has(_selectedId)) {
+    const live = currentOverlays();
+    const ids = new Set();
+    _selectedIds.forEach(id => { if (live.some(o => o.id === id)) ids.add(id); });
+    if (ids.size > 1) return ids;
+  }
+  return new Set(_selectedId ? [_selectedId] : []);
+}
+function _paintSelection() {
+  if (!slot) return;
+  const ids = _selIds();
+  slot.querySelectorAll('.pres-overlay').forEach(n => n.classList.toggle('selected', ids.has(n.dataset.id)));
+}
+/* Select exactly one overlay (collapses any multi-selection). */
+function _selectOnly(id) {
+  _selectedId = id;
+  _selectedIds = new Set(id ? [id] : []);
+  _paintSelection();
+  syncTextPanel(); syncShapePanel();
+}
+/* Shift/Ctrl-click toggle: add/remove an overlay from the selection. */
+function _toggleSelected(id) {
+  const ids = _selIds();
+  if (ids.has(id)) { ids.delete(id); if (_selectedId === id) _selectedId = ids.values().next().value || null; }
+  else { ids.add(id); _selectedId = id; }
+  _selectedIds = ids;
+  _paintSelection();
+  syncTextPanel(); syncShapePanel();
 }
 function syncTextPanel() {
   const o = getSelectedOverlay();
@@ -12012,7 +12050,7 @@ document.addEventListener('keydown', (ev) => {
   if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
   if (_editMode && _selectedId) {
     ev.preventDefault();
-    ovDelete(_selectedId);
+    Array.from(_selIds()).forEach(id => ovDelete(id));   /* delete the whole selection */
     return;
   }
   /* Slide deletion is also an edit action — only allow in Edit mode.
@@ -12031,6 +12069,7 @@ document.addEventListener('keydown', (ev) => {
    their trigger. */
 function _deselectOverlay() {
   _selectedId = null;
+  _selectedIds = new Set();
   _tableCellSelection = null;
   _focusedCellCtx = null;
   slot.querySelectorAll('.pres-overlay.selected').forEach(n => n.classList.remove('selected'));
@@ -12042,8 +12081,45 @@ function _deselectOverlay() {
 }
 slot.addEventListener('pointerdown', (ev) => {
   if (!_editMode) return;
-  if (ev.target.closest('.pres-overlay')) return; /* clicked an overlay — leave selection alone */
-  _deselectOverlay();
+  if (ev.target.closest('.pres-overlay')) return; /* clicked an overlay — its own handler runs */
+  if (ev.button !== 0) return;
+  /* Marquee (rubber-band) select: drag a box on empty canvas to select every
+     overlay it touches. A click without dragging just deselects. */
+  const slideRect = slot.getBoundingClientRect();
+  const scale = slideRect.width / 1280;
+  const x0 = (ev.clientX - slideRect.left) / scale;
+  const y0 = (ev.clientY - slideRect.top)  / scale;
+  const box = document.createElement('div');
+  box.className = 'pres-marquee';
+  box.style.cssText = 'position:absolute;left:' + x0 + 'px;top:' + y0 + 'px;width:0;height:0;' +
+    'border:1px solid var(--accent);background:rgba(0,182,203,0.12);z-index:60;pointer-events:none;';
+  let dragging = false;
+  const onMove = (e) => {
+    const x1 = (e.clientX - slideRect.left) / scale;
+    const y1 = (e.clientY - slideRect.top)  / scale;
+    if (!dragging && (Math.abs(x1 - x0) > 3 || Math.abs(y1 - y0) > 3)) { dragging = true; slot.appendChild(box); }
+    if (!dragging) return;
+    const left = Math.min(x0, x1), top = Math.min(y0, y1), w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+    box.style.left = left + 'px'; box.style.top = top + 'px'; box.style.width = w + 'px'; box.style.height = h + 'px';
+    /* Select every unlocked overlay whose box intersects the marquee. */
+    const ids = new Set();
+    currentOverlays().forEach(o => {
+      if (o.locked) return;
+      if (o.x < left + w && (o.x + o.w) > left && o.y < top + h && (o.y + o.h) > top) ids.add(o.id);
+    });
+    _selectedIds = ids;
+    _selectedId = ids.size ? (ids.has(_selectedId) ? _selectedId : ids.values().next().value) : null;
+    _paintSelection();
+  };
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup',   onUp);
+    box.remove();
+    if (!dragging) _deselectOverlay();          /* plain click on empty canvas */
+    else { syncTextPanel(); syncShapePanel(); } /* finalise marquee selection */
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup',   onUp);
 });
 /* Clicks outside the slide stage entirely (chrome, nav, thumbnails)
    should also deselect, otherwise the overlay's resize handle and
