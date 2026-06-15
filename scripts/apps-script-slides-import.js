@@ -94,8 +94,18 @@ function doGet(e) {
   try {
     pres = SlidesApp.openById(id);
   } catch (err) {
-    return SL_json({ error: 'Could not open deck (' + id + '): ' + (err && err.message ? err.message : err) +
-      '. Check the URL/id and that this account can open it.' });
+    /* SlidesApp.openById throws a runtime error LOCALIZED to this account's
+       language (e.g. Tagalog "Hindi sinusuportahan ang pagpapatakbong ito para
+       sa dokumentong ito" = "This operation is not supported for this document"),
+       so we DON'T surface err.message — return a clear, always-English message.
+       The overwhelmingly common cause is the file being a PowerPoint (.pptx)
+       opened in Google Slides' Office compatibility mode rather than a NATIVE
+       Google Slides deck; the Slides API can't open those. */
+    return SL_json({ error: 'Could not open deck (' + id + '). The most common cause is that the ' +
+      'file is a PowerPoint (.pptx) opened in Google Slides’ Office compatibility mode, not a ' +
+      'native Google Slides deck — the Slides importer cannot read those. Fix: open it in Google ' +
+      'Slides and use File → Save as Google Slides, then import the converted copy. (If it is a ' +
+      'native deck, make sure this importer account has access to it.)' });
   }
 
   // Mode 2 — return ONE image's bytes by its deck-wide index. Keeps the
