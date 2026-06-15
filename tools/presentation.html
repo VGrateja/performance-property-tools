@@ -4718,51 +4718,73 @@ async function refreshSnapshotDeck(deck, opts) {
     else arr.unshift({ id: 'i' + Date.now() + '-bg-' + j, type: 'image', x: 0, y: 0, w: 1280, h: 720, storage: path, locked: true, protected: true, snapshotBg: true });
   };
 
-  /* Map by SOURCE PAGE ID when available so EVERY overlay (text, shape, image,
-     embed, chart, …) follows its slide across inserts / deletes / reorders — and
-     a deleted source page takes its slide AND all its overlays with it. Falls
-     back to positional only for decks imported before per-slide ids existed. */
+  /* Map by SOURCE PAGE ID when available so each source slide's overlays (text,
+     shape, image, chart, …) follow it across inserts / deletes / reorders — and
+     a deleted source page takes its slide with it. EXCEPTION: a page holding a
+     Runway v Demand embed is PINNED (kept as a standalone user page at its page
+     number — see below), since the source whole-page-replace destroys its id.
+     Falls back to positional only for decks imported before per-slide ids existed. */
   const haveIds = srcSlides.some(s => s && s.id) && (deck.slides || []).some(s => s && s.srcPageId);
   let ok = 0, fail = 0, removed = 0, kept = 0;
 
   if (haveIds) {
+    /* PINNED pages: a slide carrying the Runway v Demand embed is a USER page —
+       it must NEVER be rebuilt from, moved by, or destroyed by the source sync.
+       Pull these out (with their page number + overlays), rebuild the Google
+       Slides pages WITHOUT them, then splice each back at its original page
+       number. So a 54-page source deck with one embed page = 55 pages here, and
+       new/removed source pages flow around the pinned page (which keeps its
+       number). Deliberately ONLY the runway-demand embed makes a page pinned —
+       every other page syncs normally, so nothing else gets complicated. */
+    const pinned = [];
+    (deck.slides || []).forEach((sl, i) => {
+      const ovs = _overlays[deckId + '/' + i] || [];
+      if (ovs.some(o => o && o.type === 'embed' && /runway-demand/.test(o.src || ''))) {
+        pinned.push({ idx: i, slide: sl, overlays: ovs });
+      }
+    });
+    const pinnedIdx = new Set(pinned.map(p => p.idx));
+
+    /* Map source pages by id — from the NON-pinned deck slides only. */
     const oldByPage = {};
     (deck.slides || []).forEach((sl, i) => {
+      if (pinnedIdx.has(i)) return;
       const pid = sl && sl.srcPageId;
       if (pid && !(pid in oldByPage)) oldByPage[pid] = { slide: sl, overlays: _overlays[deckId + '/' + i] || [] };
     });
-    const newSlides = [], newOverlays = {};
+
+    /* Rebuild the n source slides (snapshot bg refreshed; non-embed overlays
+       carried by page id; a source page deleted upstream drops out — normal
+       mirroring). */
+    const srcSlidesOut = [], srcOverlaysOut = [];
     for (let j = 0; j < n; j++) {
       if (opts.toast) showPresToast('Syncing slide images… ' + (j + 1) + '/' + n, { duration: 60000 });
       const pid = (srcSlides[j] && srcSlides[j].id) || ('__new_' + j);
       const prev = oldByPage[pid];
       const slide = prev ? prev.slide : { fn: 'blank', custom: true };
       slide.srcPageId = pid;
-      const arr = prev ? prev.overlays : [];   // carry ALL this source slide's overlays
-      if (prev) delete oldByPage[pid];          // matched → survives (not removed)
+      const arr = prev ? prev.overlays : [];
+      if (prev) delete oldByPage[pid];
       try { await pullInto(j, arr); ok++; } catch (e) { console.warn('Snapshot sync: slide', j, 'failed', e); fail++; }
-      newSlides[j] = slide;
-      newOverlays[deckId + '/' + j] = arr;
+      srcSlidesOut.push(slide);
+      srcOverlaysOut.push(arr);
     }
-    /* Leftover oldByPage entries = source pages REMOVED/REPLACED upstream
-       (e.g. you re-created a slide in Google Slides, which changes its page id).
-       A PURE MIRROR slide (only its snapshot bg) is dropped. But a slide you
-       AUGMENTED with your own overlays — a Runway embed, text, shapes, a chart —
-       is KEPT, so a re-sync never silently deletes hand-added content. Kept
-       slides are appended after the synced ones (their source position is gone)
-       and retain their srcPageId so they survive subsequent syncs the same way. */
-    Object.keys(oldByPage).forEach(pid => {
-      const entry = oldByPage[pid];
-      const ovs = (entry && entry.overlays) || [];
-      if (!ovs.some(o => o && !o.snapshotBg)) { removed++; return; }   /* pure mirror → drop */
-      const j = newSlides.length;
-      newSlides[j] = entry.slide || { fn: 'blank', custom: true, srcPageId: pid };
-      newOverlays[deckId + '/' + j] = ovs;
+    removed = Object.keys(oldByPage).length;   // source pages deleted upstream
+
+    /* Splice the pinned embed pages back at their page number (ascending, clamped
+       to the deck length). */
+    const finalSlides = srcSlidesOut, finalOverlays = srcOverlaysOut;
+    pinned.sort((a, b) => a.idx - b.idx).forEach(p => {
+      const at = Math.min(p.idx, finalSlides.length);
+      finalSlides.splice(at, 0, p.slide);
+      finalOverlays.splice(at, 0, p.overlays);
       kept++;
     });
+
+    /* Write back, re-keying overlays by final slide index. */
     Object.keys(_overlays).forEach(k => { if (k.indexOf(deckId + '/') === 0) delete _overlays[k]; });
-    Object.keys(newOverlays).forEach(k => { _overlays[k] = newOverlays[k]; });
-    deck.slides = newSlides;
+    finalSlides.forEach((sl, idx) => { _overlays[deckId + '/' + idx] = finalOverlays[idx] || []; });
+    deck.slides = finalSlides;
   } else {
     /* Positional fallback (deck imported before per-slide ids — re-import to
        get identity-based overlay tracking). */
