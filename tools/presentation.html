@@ -4723,7 +4723,7 @@ async function refreshSnapshotDeck(deck, opts) {
      a deleted source page takes its slide AND all its overlays with it. Falls
      back to positional only for decks imported before per-slide ids existed. */
   const haveIds = srcSlides.some(s => s && s.id) && (deck.slides || []).some(s => s && s.srcPageId);
-  let ok = 0, fail = 0, removed = 0;
+  let ok = 0, fail = 0, removed = 0, kept = 0;
 
   if (haveIds) {
     const oldByPage = {};
@@ -4744,9 +4744,22 @@ async function refreshSnapshotDeck(deck, opts) {
       newSlides[j] = slide;
       newOverlays[deckId + '/' + j] = arr;
     }
-    /* Whatever's left in oldByPage = source pages that were DELETED → their
-       slides + every overlay on them are dropped (not carried forward). */
-    removed = Object.keys(oldByPage).length;
+    /* Leftover oldByPage entries = source pages REMOVED/REPLACED upstream
+       (e.g. you re-created a slide in Google Slides, which changes its page id).
+       A PURE MIRROR slide (only its snapshot bg) is dropped. But a slide you
+       AUGMENTED with your own overlays — a Runway embed, text, shapes, a chart —
+       is KEPT, so a re-sync never silently deletes hand-added content. Kept
+       slides are appended after the synced ones (their source position is gone)
+       and retain their srcPageId so they survive subsequent syncs the same way. */
+    Object.keys(oldByPage).forEach(pid => {
+      const entry = oldByPage[pid];
+      const ovs = (entry && entry.overlays) || [];
+      if (!ovs.some(o => o && !o.snapshotBg)) { removed++; return; }   /* pure mirror → drop */
+      const j = newSlides.length;
+      newSlides[j] = entry.slide || { fn: 'blank', custom: true, srcPageId: pid };
+      newOverlays[deckId + '/' + j] = ovs;
+      kept++;
+    });
     Object.keys(_overlays).forEach(k => { if (k.indexOf(deckId + '/') === 0) delete _overlays[k]; });
     Object.keys(newOverlays).forEach(k => { _overlays[k] = newOverlays[k]; });
     deck.slides = newSlides;
@@ -4781,6 +4794,7 @@ async function refreshSnapshotDeck(deck, opts) {
   }
   if (opts.toast) {
     showPresToast('Synced from Google Slides — ' + ok + ' slide' + (ok === 1 ? '' : 's') + ' updated'
+      + (kept ? ', ' + kept + ' kept (your added content)' : '')
       + (removed ? ', ' + removed + ' removed' : '') + (fail ? ', ' + fail + ' failed' : '') + '.',
       { duration: 8000, warn: !!fail });
   }
@@ -12358,6 +12372,10 @@ function _isMineDeck(deck) {
 function _deckIsEditable(deck) {
   if (!deck) return false;
   if (!_canWritePresCloud) return false;
+  /* Dev/admin manage every deck — including other users' "Users Presentations"
+     decks — matching the read/update-all RLS (mig 044/046). Without this, a
+     re-sync / edit of someone else's deck silently failed to persist. */
+  if (_iAmDeckAdmin) return true;
   if (deck._visibility === 'company') return _iAmWriter;
   if (deck._ownerId == null) return true;
   return deck._ownerId === _myUserId;
