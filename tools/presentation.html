@@ -10456,82 +10456,101 @@ function _newOverlayId(src) {
   return _clipPrefix(src.type, src.kind) + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
 }
 
+/* The overlay clipboard holds the WHOLE selection (multi-select aware) plus the
+   slide it was copied FROM, so cross-deck / cross-slide pastes keep the original
+   positions while a same-slide paste nudges (so the copy is visibly distinct).
+   It's a module-level var, so copy in one deck + open another deck + paste works.
+   Shape: { srcKey:'<deckId>/<idx>', items:[overlay snapshots without id] }. */
+function _clipFromOverlays(ovs) {
+  return {
+    srcKey: (typeof slideKey === 'function') ? slideKey() : null,
+    items: ovs.map(o => { const s = JSON.parse(JSON.stringify(o)); delete s.id; delete s.protected; return s; }),
+  };
+}
+
+/* The overlays in _selIds() (multi-select) plus any explicitly-passed id
+   (right-click target), in slide stacking order. */
+function _selectionOverlays(extraId) {
+  const ids = _selIds();
+  if (extraId) ids.add(extraId);
+  return currentOverlays().filter(o => ids.has(o.id));
+}
+
+/* Drop a set of overlay snapshots onto the CURRENT slide as a group: fresh ids,
+   a uniform offset (only when landing on the same slide they came from, else
+   keep their original spot), clamped so the whole group stays on-slide. The new
+   overlays become the selection so they can be moved together immediately. */
+function _placeOverlayItems(items, sameSlide) {
+  if (!items || !items.length) return [];
+  const OFF = sameSlide ? 40 : 0;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  items.forEach(s => {
+    const w = s.w || 20, h = s.h || 20, x = s.x || 0, y = s.y || 0;
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w); maxY = Math.max(maxY, y + h);
+  });
+  let dx = OFF, dy = OFF;                                  // one offset for the whole group…
+  if (maxX + dx > 1280) dx = 1280 - maxX;                 // …clamped to keep it on-slide
+  if (maxY + dy > 720)  dy = 720 - maxY;
+  if (minX + dx < 0) dx = -minX;
+  if (minY + dy < 0) dy = -minY;
+  const arr = currentOverlays(), newIds = [];
+  items.forEach(s => {
+    const clone = JSON.parse(JSON.stringify(s));
+    clone.id = _newOverlayId(clone);
+    clone.x = (clone.x || 0) + dx;
+    clone.y = (clone.y || 0) + dy;
+    arr.push(clone);
+    newIds.push(clone.id);
+  });
+  saveOverlays();
+  _selectedId = newIds[newIds.length - 1] || null;
+  _selectedIds.clear(); newIds.forEach(id => _selectedIds.add(id));   // select the pasted group
+  renderOverlays();
+  pushHistory();
+  return newIds;
+}
+
 function copyOverlay(id) {
-  const o = currentOverlays().find(x => x.id === id);
-  if (!o) return false;
-  const snap = JSON.parse(JSON.stringify(o));
-  delete snap.id;
-  delete snap.protected;
-  _overlayClipboard = snap;
-  showPresToast('Copied ' + (o.type || 'overlay'));
+  const ovs = _selectionOverlays(id);
+  if (!ovs.length) return false;
+  _overlayClipboard = _clipFromOverlays(ovs);
+  showPresToast(ovs.length > 1 ? ('Copied ' + ovs.length + ' items') : ('Copied ' + (ovs[0].type || 'overlay')));
   return true;
 }
 
 function cutOverlay(id) {
-  const o = currentOverlays().find(x => x.id === id);
-  if (!o) return false;
-  /* Protected embeds belong to the slide template — don't let cut
-     remove them. Copy is still useful (user can paste a duplicate
-     elsewhere) so we fall back to plain copy. */
-  if (o.protected) { copyOverlay(id); return true; }
-  const snap = JSON.parse(JSON.stringify(o));
-  delete snap.id;
-  delete snap.protected;
-  _overlayClipboard = snap;
-  ovDelete(id);
-  showPresToast('Cut ' + (o.type || 'overlay'));
+  const ovs = _selectionOverlays(id);
+  if (!ovs.length) return false;
+  /* Copy ALL (so they can be pasted), but only DELETE non-protected ones —
+     protected embeds belong to the slide template. */
+  _overlayClipboard = _clipFromOverlays(ovs);
+  const deletable = ovs.filter(o => !o.protected);
+  deletable.forEach(o => ovDelete(o.id));
+  if (!deletable.length)              showPresToast('Copied ' + ovs.length + ' (protected — not cut)');
+  else if (deletable.length < ovs.length) showPresToast('Cut ' + deletable.length + ' (protected kept)');
+  else                                showPresToast(ovs.length > 1 ? ('Cut ' + ovs.length + ' items') : ('Cut ' + (ovs[0].type || 'overlay')));
   return true;
 }
 
 function pasteOverlay() {
-  if (!_overlayClipboard || !_activeDeck) {
-    if (!_overlayClipboard) showPresToast('Clipboard empty');
+  const clip = _overlayClipboard;
+  if (!clip || !clip.items || !clip.items.length || !_activeDeck) {
+    if (!clip || !clip.items || !clip.items.length) showPresToast('Clipboard empty');
     return false;
   }
-  const clone = JSON.parse(JSON.stringify(_overlayClipboard));
-  clone.id = _newOverlayId(clone);
-  /* Offset so a same-slide paste is visually distinct from the
-     source. 40px in slide space ≈ 28px on a typical scaled slide,
-     enough that the user immediately spots the new copy instead of
-     thinking nothing happened. Clamped so the paste lands on-slide
-     even when the source was near an edge. */
-  const OFF = 40;
-  const w = clone.w || 20;
-  const h = clone.h || 20;
-  clone.x = Math.max(0, Math.min(1280 - w, (clone.x || 0) + OFF));
-  clone.y = Math.max(0, Math.min(720  - h, (clone.y || 0) + OFF));
-  currentOverlays().push(clone);
-  saveOverlays();
-  _selectedId = clone.id;
-  renderOverlays();
-  pushHistory();
-  showPresToast('Pasted ' + (clone.type || 'overlay'));
-  return true;
+  const newIds = _placeOverlayItems(clip.items, clip.srcKey === (typeof slideKey === 'function' ? slideKey() : null));
+  showPresToast(newIds.length > 1 ? ('Pasted ' + newIds.length + ' items') : ('Pasted ' + ((clip.items[0] && clip.items[0].type) || 'overlay')));
+  return newIds.length > 0;
 }
 
 function duplicateOverlay(id) {
-  const o = currentOverlays().find(x => x.id === id);
-  if (!o) return false;
-  /* Build the clone in-line so we don't trigger the copy/paste
-     toasts twice — duplicate emits its own single toast. */
-  const snap = JSON.parse(JSON.stringify(o));
-  delete snap.id;
-  delete snap.protected;
-  _overlayClipboard = snap;
-  const clone = JSON.parse(JSON.stringify(snap));
-  clone.id = _newOverlayId(clone);
-  const OFF = 40;
-  const w = clone.w || 20;
-  const h = clone.h || 20;
-  clone.x = Math.max(0, Math.min(1280 - w, (clone.x || 0) + OFF));
-  clone.y = Math.max(0, Math.min(720  - h, (clone.y || 0) + OFF));
-  currentOverlays().push(clone);
-  saveOverlays();
-  _selectedId = clone.id;
-  renderOverlays();
-  pushHistory();
-  showPresToast('Duplicated ' + (clone.type || 'overlay'));
-  return true;
+  const ovs = _selectionOverlays(id);
+  if (!ovs.length) return false;
+  _overlayClipboard = _clipFromOverlays(ovs);   // so a follow-up Ctrl+V repeats the group
+  const newIds = _placeOverlayItems(_overlayClipboard.items, true);   // always nudge — same slide
+  showPresToast(newIds.length > 1 ? ('Duplicated ' + newIds.length + ' items') : ('Duplicated ' + (ovs[0].type || 'overlay')));
+  return newIds.length > 0;
 }
 
 /* ─── Right-click menu (image / shape) ─── single shared element
