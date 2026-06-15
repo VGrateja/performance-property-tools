@@ -3833,6 +3833,9 @@ function _buildThumbOverlay(o) {
       tbl.appendChild(tr);
     });
     el.appendChild(tbl);
+  } else if (o.type === 'chart') {
+    /* Native billboard chart — static, fully-built render (see _thumbChartHost). */
+    if (o.spec) el.appendChild(_thumbChartHost(o));
   }
   /* embed type intentionally skipped — iframes in 36 thumbnails on
      the picker would be slow + flaky. */
@@ -3848,6 +3851,7 @@ function _buildThumbOverlay(o) {
    first paint. Empty decks get a "Cover" placeholder. */
 function _renderDeckThumb(deck, container) {
   if (!container) return;
+  _disposeThumbCharts(container);
   container.innerHTML = '';
   const slide0 = deck.slides && deck.slides[0];
   const fn = slide0 ? SLIDES[slide0.fn] : null;
@@ -4998,6 +5002,49 @@ function openDeck(id) {
    left-side panel). For iframe-bearing slides (Clock / Runway), the
    slide renderer's `thumbnail:true` flag swaps the iframe for a
    static placeholder so we don't trigger N parallel iframe loads. */
+/* Static chart render for thumbnails / deck cards. Same fixed-base-size +
+   CSS-scale approach as the live stage (buildOverlayEl's chart branch), but
+   always built straight to completion (no animation) and NEVER registered in
+   _chartControllers (that map is the interactive stage's). The controller is
+   stashed on the host as _thumbCtrl so the canvas can dispose it before a
+   re-render — otherwise ECharts module charts leak an instance every time the
+   thumbnail's innerHTML is cleared. bigNumber / statList carry their style
+   overrides in o.bigStyle (kept off o.spec); merge them in like the stage does,
+   and force the region-name subtitle off for big numbers. */
+function _thumbChartHost(o) {
+  const baseW = (o.baseW != null ? o.baseW : o.w);
+  const baseH = (o.baseH != null ? o.baseH : o.h);
+  const cont = document.createElement('div');
+  cont.className = 'pres-chart-host';
+  cont.style.cssText =
+    'position:absolute;top:0;left:0;width:' + baseW + 'px;height:' + baseH + 'px;' +
+    'transform-origin:top left;transform:scale(' + (o.w / baseW) + ');pointer-events:none;';
+  /* Defer to next frame: PresentChart.create → echarts.init needs the host
+     connected, and buildThumbOverlayEl runs before the el is appended. */
+  requestAnimationFrame(() => {
+    if (!cont.isConnected || !window.PresentChart || !o.spec) return;
+    let _spec = o.spec;
+    if (o.spec.type === 'bigNumber') _spec = Object.assign({}, o.spec, { subtitle: '' }, o.bigStyle || {});
+    else if (o.spec.type === 'statList') _spec = Object.assign({}, o.spec, o.bigStyle || {});
+    try {
+      const ctrl = window.PresentChart.create(cont, _spec);
+      cont._thumbCtrl = ctrl;
+      while (!ctrl.isComplete()) ctrl.next();
+    } catch (_) { /* a bad spec shouldn't blank the whole thumbnail */ }
+  });
+  return cont;
+}
+
+/* Dispose every thumbnail chart controller under a root before its DOM is
+   wiped, so ECharts instances created by _thumbChartHost don't leak. Safe to
+   call on any container (no-op when it holds no chart hosts). */
+function _disposeThumbCharts(root) {
+  if (!root || !root.querySelectorAll) return;
+  root.querySelectorAll('.pres-chart-host').forEach(h => {
+    if (h._thumbCtrl) { try { h._thumbCtrl.dispose(); } catch (_) {} h._thumbCtrl = null; }
+  });
+}
+
 /* Minimal, non-interactive renderer for an overlay inside a
    thumbnail canvas. Mirrors the visual output of buildOverlayEl
    without any handlers, contenteditable, or live iframes. Used
@@ -5098,6 +5145,11 @@ function buildThumbOverlayEl(o) {
     });
     table.appendChild(tbody);
     el.appendChild(table);
+  } else if (o.type === 'chart') {
+    /* Native billboard chart (band charts, At-a-Glance, etc.) — render it
+       fully built and statically, the same way the live stage does, so the
+       rail thumbnail actually shows the graph instead of an empty box. */
+    if (o.spec) el.appendChild(_thumbChartHost(o));
   }
   return el;
 }
@@ -5108,6 +5160,7 @@ function buildThumbOverlayEl(o) {
    thumb update on overlay change). */
 function _renderThumbCanvas(canvas, idx) {
   if (!_activeDeck || !canvas) return;
+  _disposeThumbCharts(canvas);   // tear down prior chart instances before wiping
   canvas.innerHTML = '';
   const entry = _activeDeck.slides[idx];
   if (!entry) return;
@@ -5562,6 +5615,7 @@ function setActiveThemeForCurrentDeck(themeId) {
    can show themes that aren't in any active deck. */
 function _renderThemeThumb(canvas, theme) {
   if (!canvas || !theme || !theme.slide) return;
+  _disposeThumbCharts(canvas);
   canvas.innerHTML = '';
   const fn = SLIDES[theme.slide.fn || 'blank'];
   if (fn && _activeDeck) fn(canvas, _activeDeck, { thumbnail: true });
