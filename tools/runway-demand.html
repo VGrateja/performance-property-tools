@@ -525,7 +525,7 @@ body.embed-mode html { overflow: hidden; }
       });
     }
     const view = qs.get('view');
-    if (view === 'unit' || view === 'house') {
+    if (view === 'unit' || view === 'house' || view === 'combined') {
       /* Wait for the tab handler to register, then synth-click
          the tab. The tabs receive their click listeners later in
          page setup; scheduling on the next tick after DOMContent-
@@ -604,6 +604,7 @@ body.embed-mode html { overflow: hidden; }
 <div class="tabs">
   <button class="tab active" data-type="house">House</button>
   <button class="tab" data-type="unit">Unit</button>
+  <button class="tab" data-type="combined">Combined</button>
   <button type="button" id="runwayPdfBtn" class="rwpdf-btn" onclick="exportRunwayPDF()" title="Download HD PDF of current chart">
     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download HD PDF
   </button>
@@ -1056,13 +1057,17 @@ function _buildV2Lookup(sheetRegions){
    for a given data point. V1 → d.rw unchanged. V2 → sheet override
    when the region matches, falling back to d.rw if the sheet is
    missing that region. */
-function getRunwayValue(d){
+function getRunwayValue(d, kind){
   if(runwayDataMode !== 'v2' || !runwayV2ByName) return d.rw;
   // Live Sheet override only applies to the most recent month —
   // scrubbing back into archived months should preserve their
   // historical runway values regardless of the dropdown setting.
   if(!isLatestMonth()) return d.rw;
-  const tabKey = (typeof activeType !== 'undefined' && activeType === 'unit') ? 'unit' : 'house';
+  // `kind` lets the Combined view resolve each point against its OWN tab
+  // (house point → house sheet, unit point → unit sheet). Falls back to the
+  // active tab for the single-tab views.
+  const resolved = kind || (typeof activeType !== 'undefined' ? activeType : 'house');
+  const tabKey = (resolved === 'unit') ? 'unit' : 'house';
   const lookup = runwayV2ByName[tabKey];
   if(lookup && Object.prototype.hasOwnProperty.call(lookup, d.city)){
     return lookup[d.city];
@@ -1188,8 +1193,15 @@ g.append('text').attr('x',iW+68).attr('y',yScale(30)).attr('transform',`rotate(-
 
 // Layers
 const trailLayer=g.append('g');
+const connectorLayer=g.append('g');   // House↔Unit links in the Combined view (beneath the dots)
 const dotLayer=g.append('g');
 const labelLayer=g.append('g');
+// Empty-state prompt for the Combined view (shown until a region is picked).
+const combinedNote=g.append('text').attr('x',iW/2).attr('y',iH/2)
+  .attr('text-anchor','middle').attr('fill','rgba(0,0,0,.45)')
+  .attr('font-family','Roboto,sans-serif').attr('font-size','15px').attr('font-weight','600')
+  .attr('pointer-events','none').style('display','none')
+  .text('Choose one or more regions to compare House vs Unit');
 
 // ── STATE ──
 let activeType='house';
@@ -1341,7 +1353,10 @@ buildTimeline();
 // ── TOOLTIP ──
 const tooltip=document.getElementById('tooltip');
 function showTip(event,d){
-  tooltip.innerHTML=`<strong>${d.city}</strong>Runway: ${getRunwayValue(d).toFixed(2)}%<br>Demand Score: ${d.ds}<br>Type: ${d.type==='workforce'?'Workforce Market':'Smooth Market'}`;
+  /* In the Combined view, say which point this is (House = solid, Unit = hollow). */
+  const kindLabel = (typeof activeType!=='undefined' && activeType==='combined')
+    ? (d._kind==='unit' ? ' · Unit' : ' · House') : '';
+  tooltip.innerHTML=`<strong>${d.city}${kindLabel}</strong>Runway: ${getRunwayValue(d,d._kind).toFixed(2)}%<br>Demand Score: ${d.ds}<br>Type: ${d.type==='workforce'?'Workforce Market':'Smooth Market'}`;
   tooltip.style.opacity='1'; moveTip(event);
 }
 function moveTip(event){
@@ -1365,7 +1380,25 @@ function getTrailData(city,upToIdx,trailLen){
 // ── RENDER ──
 function render(animate=false){
   const month=months[currentIdx];
-  const data=getData(activeType,month);
+  const combined=(activeType==='combined');
+  /* Each plotted point carries _kind ('house'|'unit') + a stable _key. In the
+     single-tab views that's just the active tab. In the Combined view we show
+     only the SELECTED regions, each as TWO points — a House point (solid dot)
+     and a Unit point (hollow ring) — joined by a connector. It starts empty
+     (showing every region's pair at once is too noisy) and prompts for a pick. */
+  let data;
+  if(combined){
+    data=[];
+    [...selectedCities].forEach(city=>{
+      const h=getData('house',month).find(r=>r.city===city);
+      const u=getData('unit', month).find(r=>r.city===city);
+      if(h) data.push(Object.assign({},h,{_kind:'house',_key:city+'|house'}));
+      if(u) data.push(Object.assign({},u,{_kind:'unit', _key:city+'|unit'}));
+    });
+  } else {
+    data=getData(activeType,month).map(d=>Object.assign({},d,{_kind:activeType,_key:d.city}));
+  }
+  if(combinedNote) combinedNote.style('display',(combined && !data.length)?null:'none');
   const trailLen=parseInt(document.getElementById('trailSelect').value);
   document.getElementById('monthDisplay').textContent=month;
   // Sync the in-chart month label to the currently-viewed data month
@@ -1382,8 +1415,9 @@ function render(animate=false){
 
   const trans=d3.transition().duration(animate?750:0).ease(d3.easeCubicInOut);
 
-  // Trails — last point follows the dot in real-time during transition
-  if(showTrail){
+  // Trails — last point follows the dot in real-time during transition.
+  // Skipped in the Combined view (the House↔Unit connector replaces them).
+  if(showTrail && !combined){
     const line=d3.line().x(d=>dataX(getRunwayValue(d))).y(d=>dataY(d.ds)).curve(d3.curveCatmullRom.alpha(0.5));
 
     const trailData=focusCities.map(city=>{
@@ -1427,15 +1461,50 @@ function render(animate=false){
     trailLayer.selectAll('path.trail-path').transition(trans).attr('opacity',0).remove();
   }
 
+  /* Visual encoders. Colour ALWAYS = Smooth/Workforce. In the Combined view,
+     House = solid dot, Unit = hollow ring (fill:none + coloured stroke), and
+     every shown point is a selected region. */
+  const typeColor=d=>d.type==='workforce'?'var(--workforce)':'var(--smooth)';
+  const dotCX=d=>dataX(getRunwayValue(d,d._kind));
+  const dotFill=d=>(combined && d._kind==='unit')?'none':typeColor(d);
+  const dotStroke=d=>combined
+    ? (d._kind==='unit'?typeColor(d):'none')
+    : (highlight&&selectedCities.has(d.city)?'white':'none');
+  const dotStrokeW=d=>(combined && d._kind==='unit')?2.2:1.5;
+  const dotR=d=>highlight&&selectedCities.has(d.city)?7:5;
+  const dotOp=d=>combined?0.95:(highlight&&!selectedCities.has(d.city)?0.12:0.88);
+
+  // Connector lines (Combined view) — join each region's House↔Unit point.
+  if(combined){
+    const pairs=[...selectedCities].map(city=>{
+      const h=data.find(d=>d.city===city&&d._kind==='house');
+      const u=data.find(d=>d.city===city&&d._kind==='unit');
+      return (h&&u)?{city,h,u}:null;
+    }).filter(Boolean);
+    const conns=connectorLayer.selectAll('line.rw-conn').data(pairs,d=>d.city);
+    const connEnter=conns.enter().append('line').attr('class','rw-conn')
+      .attr('stroke','rgba(0,0,0,.30)').attr('stroke-width',1.4)
+      .attr('stroke-dasharray','4 3').attr('pointer-events','none')
+      .attr('x1',d=>dataX(getRunwayValue(d.h,'house'))).attr('y1',d=>dataY(d.h.ds))
+      .attr('x2',d=>dataX(getRunwayValue(d.u,'unit'))).attr('y2',d=>dataY(d.u.ds));
+    conns.merge(connEnter).transition(trans)
+      .attr('x1',d=>dataX(getRunwayValue(d.h,'house'))).attr('y1',d=>dataY(d.h.ds))
+      .attr('x2',d=>dataX(getRunwayValue(d.u,'unit'))).attr('y2',d=>dataY(d.u.ds));
+    conns.exit().remove();
+  } else {
+    connectorLayer.selectAll('line.rw-conn').remove();
+  }
+
   // Dots
-  const dots=dotLayer.selectAll('.city-dot').data(data,d=>d.city);
+  const dots=dotLayer.selectAll('.city-dot').data(data,d=>d._key);
   const enterDots=dots.enter().append('circle').attr('class','city-dot')
-    .attr('cx',d=>dataX(getRunwayValue(d))).attr('cy',d=>dataY(d.ds))
-    .attr('r',d=>highlight&&selectedCities.has(d.city)?7:5)
-    .attr('fill',d=>d.type==='workforce'?'var(--workforce)':'var(--smooth)')
-    .attr('opacity',d=>highlight&&!selectedCities.has(d.city)?0.12:0.88)
-    .attr('stroke',d=>highlight&&selectedCities.has(d.city)?'white':'none')
-    .attr('stroke-width',1.5)
+    .attr('cx',dotCX).attr('cy',d=>dataY(d.ds))
+    .attr('r',dotR).attr('fill',dotFill).attr('opacity',dotOp)
+    .attr('stroke',dotStroke).attr('stroke-width',dotStrokeW)
+    /* Hollow Unit dots (fill:none) only capture pointer events on the thin ring
+       by default — set pointer-events:all so the whole disc (incl. the hollow
+       interior) triggers the tooltip / click. Solid dots keep the default. */
+    .attr('pointer-events',d=>(combined && d._kind==='unit')?'all':null)
     .on('mouseover',(e,d)=>showTip(e,d)).on('mousemove',e=>moveTip(e)).on('mouseout',()=>hideTip())
     .on('click',(e,d)=>{
       if(selectedCities.has(d.city)) selectedCities.delete(d.city); else selectedCities.add(d.city);
@@ -1446,22 +1515,21 @@ function render(animate=false){
       updateRegionBtn(); render();
     });
   dots.merge(enterDots).transition(trans)
-    .attr('cx',d=>dataX(getRunwayValue(d))).attr('cy',d=>dataY(d.ds))
-    .attr('r',d=>highlight&&selectedCities.has(d.city)?7:5)
-    .attr('fill',d=>d.type==='workforce'?'var(--workforce)':'var(--smooth)')
-    .attr('opacity',d=>highlight&&!selectedCities.has(d.city)?0.12:0.88)
-    .attr('stroke',d=>highlight&&selectedCities.has(d.city)?'white':'none');
+    .attr('cx',dotCX).attr('cy',d=>dataY(d.ds))
+    .attr('r',dotR).attr('fill',dotFill).attr('opacity',dotOp)
+    .attr('stroke',dotStroke).attr('stroke-width',dotStrokeW);
   dots.exit().remove();
 
   // ── ANIMATED LABELS (feature #2) ──
-  const visibleData=highlight ? data.filter(d=>selectedCities.has(d.city)) : data;
+  let visibleData=highlight ? data.filter(d=>selectedCities.has(d.city)) : data;
+  if(combined) visibleData=visibleData.filter(d=>d._kind==='house');   // one label per region (on the House point)
   const charW=5.8, lh=11;
   const candidates=[[8,-8],[8,16],[-8,-8],[-8,16],[8,-20],[8,28],[-8,-20],[-8,28],[18,-8],[-18,-8],[0,-20],[0,20]];
   const placed=[];
 
   // Pre-populate placed with all dot positions so labels won't render on top of dots
   data.forEach(d=>{
-    const cx=dataX(getRunwayValue(d)), cy=dataY(d.ds);
+    const cx=dotCX(d), cy=dataY(d.ds);
     const r=highlight&&selectedCities.has(d.city)?8:6;
     placed.push({x:cx-r,y:cy+r,w:r*2,h:r*2});
   });
@@ -1469,7 +1537,7 @@ function render(animate=false){
   // Compute target positions for all visible labels
   const labelTargets=[];
   visibleData.forEach(d=>{
-    const cx=dataX(getRunwayValue(d)), cy=dataY(d.ds);
+    const cx=dotCX(d), cy=dataY(d.ds);
     const tw=d.city.length*charW;
     let best=null, bestScore=Infinity;
     candidates.forEach(([dx,dy])=>{
@@ -1543,7 +1611,7 @@ document.querySelectorAll('.tab').forEach(btn=>{
 // ── CONTROLS ──
 document.getElementById('selectSmoothBtn').addEventListener('click',()=>{
   const month=months[currentIdx];
-  const key=`${activeType}_${month}`;
+  const key=`${activeType==='combined'?'house':activeType}_${month}`;   // combined classifies off the house tab
   const data=RAW[key]||[];
   selectedCities.clear();
   data.filter(d=>d.type==='smooth').forEach(d=>selectedCities.add(d.city));
@@ -1552,7 +1620,7 @@ document.getElementById('selectSmoothBtn').addEventListener('click',()=>{
 });
 document.getElementById('selectWorkforceBtn').addEventListener('click',()=>{
   const month=months[currentIdx];
-  const key=`${activeType}_${month}`;
+  const key=`${activeType==='combined'?'house':activeType}_${month}`;   // combined classifies off the house tab
   const data=RAW[key]||[];
   selectedCities.clear();
   data.filter(d=>d.type==='workforce').forEach(d=>selectedCities.add(d.city));
