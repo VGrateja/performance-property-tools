@@ -11310,6 +11310,17 @@ const _FMT_TITLES_REGIONAL = {
   p29: 'Yield vs Cash Rate (Unit)',             p30: 'Sydney vs Melbourne House Median',
   p32: 'Iron Ore Price',                        p33: 'Mineral Exploration Expenditure',
 };
+/* National / Commercial: use the reports' OWN built-in page labels (OR_PAGES_*)
+   for now — they're mostly accurate. These maps only OVERRIDE the obvious
+   builder placeholders; every other page falls back to its built-in label.
+   The exact on-page headings are set from the live data feed (not in code), so
+   correct/extend these here once they're confirmed. */
+const _FMT_TITLES_NATIONAL = {
+  p4: 'Median House Price (cont.)',   // built-in label is the placeholder "Median House Price 2"
+};
+const _FMT_TITLES_COMMERCIAL = {
+  /* No obvious placeholders — all use the built-in labels for now. */
+};
 let _fmtSeq = 0;
 function _fmtId(p) { return p + Date.now().toString(36) + '-' + (_fmtSeq++).toString(36); }
 function _fmtEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -11327,6 +11338,34 @@ function _fmtChrome(title) {
   ];
 }
 
+/* Region HEADER (cover) slide — replays the user's Test Slides header sample
+   verbatim: dark navy bg, a faint full-bleed watermark, a cyan rule, the region
+   name in big white text (the only per-region variable), and the logo top-right.
+   The two images live in the Test Slides deck's storage folder and render via
+   signed URLs (same as any storage-backed image overlay). */
+const _FMT_HDR_BG        = '#1f283f';
+const _FMT_HDR_WATERMARK = 'user-mqhfejy6-49x3/i1781661782669.png';
+const _FMT_HDR_LOGO      = 'user-mqhfejy6-49x3/i1781662007925.png';
+function _fmtHeaderOverlays(regionName) {
+  const title = String(regionName || '').replace(/\s*research report$/i, '').toUpperCase();
+  return [
+    { id: _fmtId('i'), type: 'image', x: 551, y: -109, w: 1091, h: 1091, opacity: 0.05, storage: _FMT_HDR_WATERMARK },
+    { id: _fmtId('s'), type: 'shape', kind: 'line', x: 72, y: 450, w: 1094, h: 20, fill: '#00b6cb', stroke: '#00b6cb', strokeWidth: 1 },
+    { id: _fmtId('t'), type: 'text', x: 63, y: 364, w: 900, h: 96, html: _fmtEsc(title), bold: true, italic: false, align: 'left', color: '#ffffff', fontSize: 64, fontFamily: 'Montserrat' },
+    { id: _fmtId('i'), type: 'image', x: 908, y: 16, w: 360, h: 72, storage: _FMT_HDR_LOGO },
+  ];
+}
+
+/* Append a blank slide (with overlays + optional per-slide bg) to the END of
+   the active deck. Returns its index. */
+function _fmtAppendSlide(overlays, bg) {
+  const at = _activeDeck.slides.length;
+  _activeDeck.slides.push({ fn: 'blank', custom: true });
+  _overlays[_activeDeck.id + '/' + at] = overlays;
+  if (bg) _slideBgs[_activeDeck.id + '/' + at] = bg;
+  return at;
+}
+
 /* Graphs available for a report — mirrors the embed chooser's filter (a page is
    listed only if it has a chart recipe and isn't dropped from that report). */
 function _fmtGraphsFor(slug) {
@@ -11337,9 +11376,13 @@ function _fmtGraphsFor(slug) {
     : (slug === 'national'   && typeof NR_CHART_RECIPES !== 'undefined') ? NR_CHART_RECIPES
     : (slug === 'commercial' && typeof CR_CHART_RECIPES !== 'undefined') ? CR_CHART_RECIPES
     : {};
+  const titles = r.region ? _FMT_TITLES_REGIONAL
+    : slug === 'national'   ? _FMT_TITLES_NATIONAL
+    : slug === 'commercial' ? _FMT_TITLES_COMMERCIAL
+    : null;
   return r.pages
     .filter(([id]) => !drops.has(id) && recipes[id])
-    .map(([id, label]) => ({ pageId: id, label: (r.region && _FMT_TITLES_REGIONAL[id]) || label }));
+    .map(([id, label]) => ({ pageId: id, label: (titles && titles[id]) || label }));
 }
 
 /* ─── Cart ─── { slug, region, pageId, label }, in pick order. */
@@ -11450,34 +11493,50 @@ async function _fmtConfirmCart() {
   if (!_fmtCart.length) { showPresToast('Pick at least one slide first.'); return; }
   const items = _fmtCart.slice();
   closeFmtPicker();
-  _fmtSetLoading(true, 'Preparing ' + items.length + ' slide' + (items.length === 1 ? '' : 's') + '…');
+  /* Group by region, preserving first-pick order of regions + pick order within,
+     so each region's picks insert as a PACKAGE: its header slide first, then its
+     graphs. */
+  const order = [], groups = {};
+  items.forEach(it => {
+    if (!groups[it.slug]) { groups[it.slug] = { region: it.region, items: [] }; order.push(it.slug); }
+    groups[it.slug].items.push(it);
+  });
+  _fmtSetLoading(true, 'Preparing ' + items.length + ' graph' + (items.length === 1 ? '' : 's') + '…');
   const snapCache = {};
   const firstNew = _activeDeck.slides.length;   // first appended slide lands here
-  let added = 0, failed = 0;
+  let added = 0, headers = 0, failed = 0, done = 0;
   try {
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      _fmtSetLoading(true, 'Building slide ' + (i + 1) + ' of ' + items.length + '…');
-      await new Promise(r => requestAnimationFrame(() => r()));   // let the overlay text repaint
-      let built;
-      try { built = await buildReportChartSpec(it.slug, it.pageId, snapCache); }
-      catch (e) { built = null; }
-      if (!built || built.error || !built.spec) { failed++; continue; }
-      const overlays = _fmtChrome(String(it.label).toUpperCase());
-      overlays.push({
-        id: _fmtId('c'), type: 'chart',
-        x: 179, y: 104, w: 920, h: 544, baseW: 880, baseH: 520,
-        spec: built.spec, source: { slug: it.slug, pageId: it.pageId },
-        autoplay: true,   // formatted-slide graphs auto-build their animation in Present mode
-      });
-      const at = _activeDeck.slides.length;
-      _activeDeck.slides.push({ fn: 'blank', custom: true });
-      _overlays[_activeDeck.id + '/' + at] = overlays;
-      added++;
+    for (const slug of order) {
+      const grp = groups[slug];
+      /* Build this region's graph slides first; only add its header if at least
+         one graph actually built (so a no-data region doesn't leave a lone header). */
+      const graphSlides = [];
+      for (const it of grp.items) {
+        done++;
+        _fmtSetLoading(true, 'Building ' + grp.region + ' — ' + it.label + ' (' + done + '/' + items.length + ')…');
+        await new Promise(r => requestAnimationFrame(() => r()));   // let the overlay text repaint
+        let built;
+        try { built = await buildReportChartSpec(it.slug, it.pageId, snapCache); }
+        catch (e) { built = null; }
+        if (!built || built.error || !built.spec) { failed++; continue; }
+        const ov = _fmtChrome(String(it.label).toUpperCase());
+        ov.push({
+          id: _fmtId('c'), type: 'chart',
+          x: 179, y: 104, w: 920, h: 544, baseW: 880, baseH: 520,
+          spec: built.spec, source: { slug: it.slug, pageId: it.pageId },
+          autoplay: true,   // formatted-slide graphs auto-build their animation in Present mode
+        });
+        graphSlides.push(ov);
+      }
+      if (!graphSlides.length) continue;
+      _fmtAppendSlide(_fmtHeaderOverlays(grp.region), _FMT_HDR_BG);   // region header — first
+      headers++;
+      graphSlides.forEach(ov => { _fmtAppendSlide(ov, null); added++; });
     }
     _fmtCart = [];
     _fmtSetLoading(true, 'Finishing…');
     saveOverlays();
+    if (typeof saveSlideBgs === 'function') saveSlideBgs();
     if (typeof saveActiveDeckIfCustom === 'function') saveActiveDeckIfCustom();
     else if (typeof saveCustomDecks === 'function') saveCustomDecks();
     if (typeof buildThumbnails === 'function') buildThumbnails();
@@ -11486,7 +11545,7 @@ async function _fmtConfirmCart() {
   } finally {
     _fmtSetLoading(false);
   }
-  showPresToast(added + ' formatted slide' + (added === 1 ? '' : 's') + ' added' + (failed ? (', ' + failed + ' skipped (no data)') : '') + '.', { duration: 6000, warn: !!failed });
+  showPresToast(added + ' graph' + (added === 1 ? '' : 's') + ' + ' + headers + ' header' + (headers === 1 ? '' : 's') + ' added' + (failed ? (', ' + failed + ' skipped (no data)') : '') + '.', { duration: 6000, warn: !!failed });
 }
 
 function openFmtPicker() {
