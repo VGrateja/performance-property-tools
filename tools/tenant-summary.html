@@ -290,17 +290,18 @@ async function importPdf(file){
    the staffer typed). Add the next field's rule here as we work through them. */
 function prefill(page1, allText){
   if (!state.appId){ const id = extractAppId(page1); if (id) state.appId = id; }
-  const names = extractApplicantNames(page1);
-  if (names.length) applyApplicantNames(names);
+  const people = extractApplicants(page1);
+  if (people.length) applyApplicants(people);
 }
 
-// Fill applicant names without ever clobbering a name the staffer typed.
-// Adds applicant slots as needed; only the name is auto-filled (other fields
-// stay blank for now — they're being wired up one at a time).
-function applyApplicantNames(names){
-  names.forEach((nm, i) => {
+// Fill applicant name + age without ever clobbering a value the staffer typed.
+// Adds applicant slots as needed; remaining per-applicant fields stay blank for
+// now (they're being wired up one at a time).
+function applyApplicants(people){
+  people.forEach((p, i) => {
     if (!state.applicants[i]) state.applicants.push(blankApplicant());
-    if (!state.applicants[i].name) state.applicants[i].name = nm;
+    if (p.name && !state.applicants[i].name) state.applicants[i].name = p.name;
+    if (p.age  && !state.applicants[i].age)  state.applicants[i].age  = p.age;
   });
 }
 
@@ -330,7 +331,7 @@ function extractAppId(t){
 const NAME_STOP = new Set(['Property','Properties','Address','Rent','Lease','Term','Age',
   'Income','Date','Dates','Commencement','Commence','Children','Child','Pet','Pets',
   'Occupants','Occupant','Phone','Mobile','Email','Reason','Rental','History','Employment',
-  'Employer','Current','Previous','Weekly','Move','Moving','Number','Total','Application',
+  'Employer','Current','Previous','Weekly','Move','Moving','Number','Total','Application','Applied',
   'Applicant','Applicants','Years','Year','Months','Month','Notes','Reference','References',
   'Bond','Tenant','Tenants','Yes','No','Signature','Signed','Page',
   'The','This','That','These','Those','Please','If','All','Each','Any','Both']);
@@ -352,14 +353,24 @@ function takeName(str){
   return { name: out.join(' ').trim(), len };
 }
 
-// Walk a numbered applicant list ("1. … 2. … 3. …"). Each entry's name is read
-// right after its number; we then SEARCH FORWARD for the next sequential number,
-// because per-applicant detail or column text can sit between the names once the
-// PDF is flattened to one line. Stop when the next number is missing, yields no
-// name, or sits too far past the previous name to still belong to the list.
+// Age — appears in parentheses right after the applicant's name, e.g.
+// "Tom Brady (30)". `str` is the text immediately after the name, so the age
+// paren sits at the very start (only whitespace may precede it). Returns '' if
+// there's no parenthesised number there (so a later "(matched)" etc. is ignored).
+function takeAge(str){
+  const m = /^\s*\(\s*(\d{1,3})\s*\)/.exec(str);
+  return m ? m[1] : '';
+}
+
+// Walk a numbered applicant list ("1. … 2. … 3. …"). For each entry we read the
+// name right after its number, then the "(nn)" age right after the name; we then
+// SEARCH FORWARD for the next sequential number, because per-applicant detail or
+// column text can sit between the names once the PDF is flattened to one line.
+// Stop when the next number is missing, yields no name, or sits too far past the
+// previous name to still belong to the list.
 const NAME_GAP = 400;   // max chars of in-between text before we treat the list as ended
 function collectNumbered(block){
-  const names = [];
+  const people = [];
   let pos = 0, expected = 1;
   while (true){
     const re = new RegExp('(?:^|[^\\d])' + expected + '\\s*[.)]\\s*', 'g');
@@ -370,14 +381,14 @@ function collectNumbered(block){
     const afterIdx = mark.index + mark[0].length;
     const r = takeName(block.slice(afterIdx));
     if (!r.name) break;
-    names.push(r.name);
+    people.push({ name: r.name, age: takeAge(block.slice(afterIdx + r.len)) });
     pos = afterIdx + r.len;
     expected++;
   }
-  return names;
+  return people;
 }
 
-function extractApplicantNames(t){
+function extractApplicants(t){
   if (!t) return [];
   const s = t.replace(/\s+/g, ' ').trim();
 
@@ -386,8 +397,8 @@ function extractApplicantNames(t){
   while ((h = head.exec(s))){
     const block = s.slice(h.index + h[0].length).replace(/^\s*:?\s*/, '');
     if (!/^1\s*[.)]/.test(block)) continue;                    // this heading isn't the list
-    const names = collectNumbered(block);
-    if (names.length) return names;
+    const people = collectNumbered(block);
+    if (people.length) return people;
   }
 
   // Lone applicant: heading directly followed by a bare (unnumbered) name.
@@ -396,7 +407,7 @@ function extractApplicantNames(t){
     const after = s.slice(so.index + so[0].length).replace(/^\s*:?\s*/, '');
     if (/^\d/.test(after)) continue;
     const r = takeName(after);
-    if (r.name) return [r.name];
+    if (r.name) return [{ name: r.name, age: takeAge(after.slice(r.len)) }];
   }
   return [];
 }
