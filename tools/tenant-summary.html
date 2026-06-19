@@ -140,11 +140,11 @@
     <div class="ts-editor">
       <div class="ts-drop" id="tsDrop">
         <input type="file" id="tsFile" accept="application/pdf" hidden/>
-        📄 <strong>Import application PDF</strong><br/>drop here or click — we pre-fill what we can; you review.
+        📄 <strong>Import application PDF</strong><br/>drop here or click — auto-fills <strong>App ID</strong>; type the rest for now (more fields being wired up).
       </div>
       <div id="editor"></div>
       <details class="ts-raw" id="tsRawWrap" style="display:none;">
-        <summary>Show extracted PDF text (for manual copy)</summary>
+        <summary>Extracted PDF text — copy the values you need into the fields</summary>
         <pre id="tsRaw"></pre>
       </details>
     </div>
@@ -270,29 +270,42 @@ async function importPdf(file){
   try {
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    let text = '';
+    let text = '', page1 = '';
     for (let p=1; p<=pdf.numPages; p++){
       const page = await pdf.getPage(p);
       const tc = await page.getTextContent();
-      text += tc.items.map(it => it.str).join(' ') + '\n';
+      const pageText = tc.items.map(it => it.str).join(' ');
+      if (p === 1) page1 = pageText;          // App ID lives on page 1
+      text += pageText + '\n';
     }
     document.getElementById('tsRaw').textContent = text;
-    document.getElementById('tsRawWrap').style.display = '';
-    prefill(text);
+    const wrap = document.getElementById('tsRawWrap');
+    wrap.style.display = ''; wrap.open = true;
+    prefill(page1, text);                      // currently fills App ID only — more fields added one by one
     renderEditor(); renderPreview();
   } catch(err){ console.warn('pdf import failed', err); alert('Could not read that PDF.'); }
 }
-// Generic best-effort extraction — tuned to the standard PP form in a later pass.
-function prefill(t){
-  const grab = re => { const m = t.match(re); return m ? m[1].trim() : ''; };
-  state.appliedRent  = state.appliedRent  || grab(/rent[^$\d]{0,24}\$?\s*([\d,]+(?:\.\d{1,2})?)/i);
-  state.commencement = state.commencement || grab(/(?:commencement|lease start|move[\s-]?in|start date)[^\d]{0,24}(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})/i);
-  state.children     = state.children     || grab(/(?:children|dependants?)[^\d]{0,16}(\d+)/i);
-  state.pet          = state.pet          || grab(/pets?\b[:\s]{0,4}([A-Za-z0-9 ,/]{0,40})/i);
-  const name = grab(/applicant(?:\s*name)?[:\s]{1,4}([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})/);
-  const income = grab(/(?:income|salary|gross)[^$\d]{0,24}\$?\s*([\d,]+)/i);
-  const age = grab(/\bage[^\d]{0,8}(\d{1,2})/i);
-  if (name || income || age){ const a = state.applicants[0]; a.name = a.name||name; a.income = a.income||income; a.age = a.age||age; }
+/* ─── Auto-fill, tuned to the PP form and enabled FIELD BY FIELD ───
+   Each function only fills a field if it's still empty (never clobbers what
+   the staffer typed). Add the next field's rule here as we work through them. */
+function prefill(page1, allText){
+  if (!state.appId){ const id = extractAppId(page1); if (id) state.appId = id; }
+}
+
+// App ID — a standalone 5-digit number on page 1. Takes the FIRST one,
+// skipping $-amounts, comma/decimal-formatted numbers, and longer digit runs.
+function extractAppId(t){
+  if (!t) return '';
+  const re = /\b(\d{5})\b/g;
+  let m;
+  while ((m = re.exec(t))){
+    const before = t[m.index - 1] || '';
+    const after  = t[m.index + m[0].length] || '';
+    if (before === '$' || before === ',' || before === '.' || /\d/.test(before)) continue; // money / longer number
+    if (after  === ',' || after  === '.' || /\d/.test(after))  continue;                    // decimal / thousands / longer number
+    return m[1];
+  }
+  return '';
 }
 
 /* ─── Toolbar ─── */
