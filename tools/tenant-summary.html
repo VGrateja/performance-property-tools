@@ -140,7 +140,7 @@
     <div class="ts-editor">
       <div class="ts-drop" id="tsDrop">
         <input type="file" id="tsFile" accept="application/pdf" hidden/>
-        📄 <strong>Import application PDF</strong><br/>drop here or click — auto-fills <strong>App ID</strong>; type the rest for now (more fields being wired up).
+        📄 <strong>Import application PDF</strong><br/>drop here or click — auto-fills <strong>App ID</strong> + <strong>applicant name(s)</strong>; type the rest for now (more fields being wired up).
       </div>
       <div id="editor"></div>
       <details class="ts-raw" id="tsRawWrap" style="display:none;">
@@ -290,6 +290,18 @@ async function importPdf(file){
    the staffer typed). Add the next field's rule here as we work through them. */
 function prefill(page1, allText){
   if (!state.appId){ const id = extractAppId(page1); if (id) state.appId = id; }
+  const names = extractApplicantNames(page1);
+  if (names.length) applyApplicantNames(names);
+}
+
+// Fill applicant names without ever clobbering a name the staffer typed.
+// Adds applicant slots as needed; only the name is auto-filled (other fields
+// stay blank for now — they're being wired up one at a time).
+function applyApplicantNames(names){
+  names.forEach((nm, i) => {
+    if (!state.applicants[i]) state.applicants.push(blankApplicant());
+    if (!state.applicants[i].name) state.applicants[i].name = nm;
+  });
 }
 
 // App ID — a standalone 5-digit number on page 1. Takes the FIRST one,
@@ -306,6 +318,87 @@ function extractAppId(t){
     return m[1];
   }
   return '';
+}
+
+// Applicant name(s) — listed under the "Applicants" heading on page 1. When
+// there are 2+ they're numbered ("1. Jane Citizen  2. John Doe"); a lone
+// applicant may appear unnumbered. pdf.js flattens the page to one space-joined
+// line, so we anchor on the heading and read the numbered list in sequence.
+// We capture ONLY names (Title-Case / ALL-CAPS word runs) and stop at the next
+// number, a non-name token, or a known form keyword — so the next section can't
+// bleed into the last name. Build/verify against the "Extracted PDF text" panel.
+const NAME_STOP = new Set(['Property','Properties','Address','Rent','Lease','Term','Age',
+  'Income','Date','Dates','Commencement','Commence','Children','Child','Pet','Pets',
+  'Occupants','Occupant','Phone','Mobile','Email','Reason','Rental','History','Employment',
+  'Employer','Current','Previous','Weekly','Move','Moving','Number','Total','Application',
+  'Applicant','Applicants','Years','Year','Months','Month','Notes','Reference','References',
+  'Bond','Tenant','Tenants','Yes','No','Signature','Signed','Page',
+  'The','This','That','These','Those','Please','If','All','Each','Any','Both']);
+
+// Read up to 4 leading name tokens from `str`; returns {name, len} where len is
+// how many chars of `str` the name occupied (so the caller can advance).
+function takeName(str){
+  const tokens = str.split(' ');
+  const out = []; let len = 0;
+  for (let i=0; i<tokens.length; i++){
+    if (out.length >= 4) break;
+    const tk = tokens[i];
+    const core = tk.replace(/[.,;:]+$/, '');                   // drop trailing punctuation
+    if (!/^[A-Z][A-Za-z'’.\-]*$/.test(core)) break;       // not a name token (allows O'Brien / O’Brien)
+    if (NAME_STOP.has(core)) break;                            // next section / field label
+    out.push(core);
+    len += (i === 0 ? 0 : 1) + tk.length;                      // +1 for the joining space
+  }
+  return { name: out.join(' ').trim(), len };
+}
+
+// Walk a numbered applicant list ("1. … 2. … 3. …"). Each entry's name is read
+// right after its number; we then SEARCH FORWARD for the next sequential number,
+// because per-applicant detail or column text can sit between the names once the
+// PDF is flattened to one line. Stop when the next number is missing, yields no
+// name, or sits too far past the previous name to still belong to the list.
+const NAME_GAP = 400;   // max chars of in-between text before we treat the list as ended
+function collectNumbered(block){
+  const names = [];
+  let pos = 0, expected = 1;
+  while (true){
+    const re = new RegExp('(?:^|[^\\d])' + expected + '\\s*[.)]\\s*', 'g');
+    re.lastIndex = pos;
+    const mark = re.exec(block);
+    if (!mark) break;
+    if (expected > 1 && mark.index - pos > NAME_GAP) break;     // next number too far → list ended
+    const afterIdx = mark.index + mark[0].length;
+    const r = takeName(block.slice(afterIdx));
+    if (!r.name) break;
+    names.push(r.name);
+    pos = afterIdx + r.len;
+    expected++;
+  }
+  return names;
+}
+
+function extractApplicantNames(t){
+  if (!t) return [];
+  const s = t.replace(/\s+/g, ' ').trim();
+
+  // Numbered list: an "Applicants" heading whose first item is "1.".
+  const head = /\bApplicants\b/gi; let h;
+  while ((h = head.exec(s))){
+    const block = s.slice(h.index + h[0].length).replace(/^\s*:?\s*/, '');
+    if (!/^1\s*[.)]/.test(block)) continue;                    // this heading isn't the list
+    const names = collectNumbered(block);
+    if (names.length) return names;
+  }
+
+  // Lone applicant: heading directly followed by a bare (unnumbered) name.
+  const solo = /\bApplicants\b/gi; let so;
+  while ((so = solo.exec(s))){
+    const after = s.slice(so.index + so[0].length).replace(/^\s*:?\s*/, '');
+    if (/^\d/.test(after)) continue;
+    const r = takeName(after);
+    if (r.name) return [r.name];
+  }
+  return [];
 }
 
 /* ─── Toolbar ─── */
