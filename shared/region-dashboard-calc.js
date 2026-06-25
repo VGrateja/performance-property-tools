@@ -31,8 +31,15 @@
 
   const U = s => String(s == null ? '' : s).trim().toUpperCase();
   const isNum = v => typeof v === 'number' && isFinite(v);
+  // Normalise an LGA name for cross-source matching: drop the parenthetical code
+  // "(C)/(A)/(DC)…", connectors (& / and), and the LGA-type words CoreLogic's
+  // national file omits (Shire, Council, City…) — so workbook "Greater Hume
+  // Shire (A)" and national "Greater Hume" both reduce to "greater hume".
   const normLga = s => String(s == null ? '' : s).toLowerCase()
-    .replace(/\([^)]*\)/g, ' ').replace(/&/g, ' ').replace(/\band\b/g, ' ').replace(/\s+/g, ' ').trim();
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[-/&]/g, ' ')
+    .replace(/\b(and|the|of|shire|council|regional|municipality|borough|rural|city|town|district)\b/g, ' ')
+    .replace(/\s+/g, ' ').trim();
 
   const annualPmt = (pv, rate, term) => pv * rate / (1 - Math.pow(1 + rate, -term)); // positive annual P&I
   function clockPos(x, O, P) { let i = -1; for (let k = 0; k < O.length; k++) { if (isNum(O[k]) && O[k] <= x) i = k; else break; } if (i < 0) i = 0; if (x > O[O.length - 1]) i = O.length - 1; return P[i]; }

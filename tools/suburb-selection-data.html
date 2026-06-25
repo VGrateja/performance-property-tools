@@ -59,6 +59,11 @@
   .df-table .rd-sticky{ position:sticky; left:0; background:var(--panel2); text-align:left; z-index:2; }
   .rd-dash td.region{ text-align:left; font-weight:700; color:var(--text); }
 
+  /* Loading spinner */
+  .rd-loading{ display:flex; align-items:center; gap:13px; color:var(--muted); font-size:.85rem; font-weight:600; padding:40px 4px; }
+  .rd-spinner{ width:24px; height:24px; flex:none; border:3px solid var(--border); border-top-color:var(--pp-cyan); border-radius:50%; animation:rd-spin .8s linear infinite; }
+  @keyframes rd-spin{ to{ transform:rotate(360deg); } }
+
   /* Floating nav — same pill vocabulary as the other tools. */
   .pp-toolnav{ position:fixed; top:16px; left:16px; z-index:1000; display:flex; gap:8px; align-items:center; }
   #pp-back-to-hub, #pp-back-to-vault{ display:inline-flex; align-items:center; gap:8px; padding:9px 14px 9px 10px; background:rgba(15,23,42,.85); border:1px solid rgba(71,85,105,.5); border-radius:10px; color:#e2e8f0; font-family:'Montserrat',sans-serif; font-size:13px; font-weight:600; text-decoration:none; cursor:pointer; white-space:nowrap; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); transition:all .15s ease; }
@@ -107,6 +112,7 @@
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const card = (title, body) => '<div class="df-card"><h2>' + title + '</h2>' + body + '</div>';
+const loadingHtml = msg => '<div class="rd-loading"><div class="rd-spinner"></div><div>' + esc(msg) + '</div></div>';
 const num = v => { if (typeof v==='number') return isFinite(v)?v:null; if (v==null||v==='') return null; const n=Number(String(v).replace(/[$,%\s]/g,'')); return isFinite(n)?n:null; };
 const U   = s => String(s==null?'':s).trim().toUpperCase();
 function colToIdx(letter){ let n=0; for (const ch of letter.toUpperCase()) n = n*26 + (ch.charCodeAt(0)-64); return n-1; }
@@ -182,12 +188,14 @@ async function computeRegion(file){
   if (!slug){ rdOut.innerHTML = card('Pick a region', '<div class="df-empty">Choose a region first.</div>'); return; }
   if (!window.sb){ rdOut.innerHTML = card('Not connected', '<div class="df-empty">Sign in to load region data.</div>'); return; }
   rdSave.disabled = true; rdLast = null;
-  rdOut.innerHTML = '<div class="df-note">Reading ' + esc(file.name) + ' and computing …</div>';
+  rdOut.innerHTML = loadingHtml('Reading “' + file.name + '” and computing …');
   try {
     const { data, error } = await window.sb.from('region_dashboard_reference').select('reference,label').eq('region', slug).maybeSingle();
     if (error || !data){ rdOut.innerHTML = card('Error', '<div class="df-empty">Could not load reference for ' + esc(slug) + '.</div>'); return; }
     const ref = data.reference;
-    const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type:'array' });
+    const buf = new Uint8Array(await file.arrayBuffer());
+    await new Promise(r => setTimeout(r, 20));   // let the spinner paint before the parse blocks the main thread
+    const wb = XLSX.read(buf, { type:'array' });
     const { lgaCurrent, suburbCurrent } = buildCurrentFromNational(wb, regionStateOf(slug));
     const result = RegionDashboardCalc.computeRegionDashboard({
       config: ref.config, lgaThresh: ref.lgaThresh, selection: ref.selection, price: ref.price,
@@ -252,7 +260,7 @@ function renderDashboard(result, label, qc){
 async function loadSaved(slug){
   rdSave.disabled = true; rdLast = null;
   if (!slug || !window.sb){ rdOut.innerHTML = ''; return; }
-  rdOut.innerHTML = '<div class="df-note">Loading saved dashboard …</div>';
+  rdOut.innerHTML = loadingHtml('Loading saved dashboard …');
   const { data, error } = await window.sb.from('region_dashboard').select('data,label,source_month,computed_at').eq('region', slug).maybeSingle();
   if (error){ rdOut.innerHTML = card('Error', '<div class="df-empty">' + esc(error.message) + '</div>'); return; }
   if (!data){ rdOut.innerHTML = '<div class="df-note">No saved dashboard for this region yet — drop the national CoreLogic file to compute it.</div>'; return; }

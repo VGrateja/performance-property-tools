@@ -42,30 +42,49 @@ if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY — put it in a loc
 const wb = XLSX.readFile(file);
 const sName = f => wb.SheetNames.find(n => n.toLowerCase().includes(f));
 const grid = f => XLSX.utils.sheet_to_json(wb.Sheets[sName(f)], { header: 1, raw: true, defval: '' });
-const ci = l => { let n = 0; for (const c of l) n = n * 26 + (c.charCodeAt(0) - 64); return n - 1; };
 const num = v => { if (typeof v === 'number') return isFinite(v) ? v : null; if (v == null || v === '') return null; const n = Number(String(v).replace(/[$,%\s]/g, '')); return isFinite(n) ? n : null; };
 
-// ---- Variables: config + selection + per-LGA thresholds ----
-const V = wb.Sheets[sName('variable')];
-const vc = a => { const c = V[a]; return c == null ? '' : c.v; };
-const clockO = [], clockP = [];
-for (let r = 2; r <= 14; r++) { clockO.push(num(vc('O' + r))); clockP.push(num(vc('P' + r))); }
-const config = {
-  rate: num(vc('L2')), term: num(vc('M2')), lvr: num(vc('N2')),
-  bottomYear: num(vc('H2')), floor: num(vc('Q2')), ceiling: num(vc('R2')),
-  clockO, clockP,
+// ---- Variables: read columns BY HEADER NAME. The per-region workbooks use
+// slightly different column layouts (e.g. Adelaide has extra %-columns that shift
+// everything right), but the header labels are consistent — so match on those. ----
+const vrows = grid('variable');
+const vhdr = (vrows[0] || []).map(h => String(h).trim().toLowerCase());
+const findCol = pred => vhdr.findIndex(pred);
+const colEq = name => findCol(h => h === name);
+const colInc = sub => findCol(h => h.includes(sub));
+const C = {
+  suburbs: colEq('suburbs'), lga: colEq('lga name'),
+  thr3: findCol(h => h.includes('3') && h.includes('median') && h.includes('threshold')),
+  thr6: findCol(h => h.includes('6') && h.includes('median') && h.includes('threshold')),
+  rate: colInc('interest rate'), term: colInc('loan term'), lvr: colEq('lvr'),
+  bottom: colInc('bottom of market'), floor: colInc('floor'), ceiling: colInc('ceiling'),
+  clockX: colInc('growth since'), clockY: colInc('clock position'),
 };
-const lgas = [], suburbs = [], lgaThresh = {};
-for (let r = 2; ; r++) { const v = vc('D' + r); if (v === '' || v == null) break; const nm = String(v).trim(); lgas.push(nm); lgaThresh[nm.toUpperCase()] = { ti: num(vc('I' + r)) || 0, tj: num(vc('J' + r)) || 0 }; }
-for (let r = 2; ; r++) { const v = vc('B' + r); if (v === '' || v == null) break; suburbs.push(String(v).trim()); }
+const required = ['suburbs','lga','rate','term','lvr','bottom','floor','ceiling','clockX','clockY'];
+const missing = required.filter(k => C[k] < 0);
+if (missing.length) { console.error('Variables tab missing expected columns: ' + missing.join(', ') + '\nHeaders found: ' + vhdr.join(' | ')); process.exit(1); }
+const cell = (r, c) => (c < 0 || !vrows[r]) ? '' : vrows[r][c];
 
-// ---- Price Data: slim {geo, year, median, growth} ----
-const pr = grid('price data');
+const config = {
+  rate: num(cell(1, C.rate)), term: num(cell(1, C.term)), lvr: num(cell(1, C.lvr)),
+  bottomYear: num(cell(1, C.bottom)), floor: num(cell(1, C.floor)), ceiling: num(cell(1, C.ceiling)),
+  clockO: [], clockP: [],
+};
+for (let r = 1; r <= 13; r++) { config.clockO.push(num(cell(r, C.clockX))); config.clockP.push(num(cell(r, C.clockY))); } // rows 2-14
+
+const suburbs = [], lgas = [], lgaThresh = {};
+for (let r = 1; r < vrows.length; r++) { const v = cell(r, C.suburbs); if (v === '' || v == null) break; suburbs.push(String(v).trim()); }
+for (let r = 1; r < vrows.length; r++) { const v = cell(r, C.lga); if (v === '' || v == null) break; const nm = String(v).trim(); lgas.push(nm); lgaThresh[nm.toUpperCase()] = { ti: num(cell(r, C.thr3)) || 0, tj: num(cell(r, C.thr6)) || 0 }; }
+
+// ---- Price Data: slim {geo, year, median, growth} (columns by header) ----
+const prows = grid('price data');
+const phdr = (prows[0] || []).map(h => String(h).trim().toLowerCase());
+const pGeo = Math.max(0, phdr.indexOf('suburb')), pYear = phdr.indexOf('year'), pMed = phdr.indexOf('median'), pGrow = phdr.indexOf('growth');
 const price = [];
-for (let i = 1; i < pr.length; i++) {
-  const row = pr[i]; const geo = String(row[ci('A')] || '').trim(); const year = num(row[ci('B')]);
+for (let i = 1; i < prows.length; i++) {
+  const row = prows[i]; const geo = String(row[pGeo] || '').trim(); const year = num(row[pYear]);
   if (!geo || year == null) continue;
-  price.push({ geo, year, median: num(row[ci('D')]), growth: num(row[ci('E')]) });
+  price.push({ geo, year, median: num(row[pMed]), growth: num(row[pGrow]) });
 }
 
 const reference = { region: slug, label: label || slug, config, lgaThresh, selection: { lgas, suburbs }, price };
