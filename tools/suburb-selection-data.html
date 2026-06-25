@@ -131,6 +131,7 @@ rdDrop.addEventListener('dragleave', () => rdDrop.classList.remove('over'));
 rdDrop.addEventListener('drop', e => { e.preventDefault(); rdDrop.classList.remove('over'); if (e.dataTransfer.files[0]) computeRegion(e.dataTransfer.files[0]); });
 rdFile.addEventListener('change', () => { if (rdFile.files[0]) computeRegion(rdFile.files[0]); });
 rdSave.addEventListener('click', saveDashboard);
+rdRegion.addEventListener('change', () => loadSaved(rdRegion.value));
 
 async function loadRegions(){
   if (!window.sb){ rdRegion.innerHTML = '<option value="">Not connected</option>'; return; }
@@ -227,20 +228,41 @@ function dashTable(rows, nameLabel){
   const body = rows.map(r => '<tr><td class="rd-sticky region">' + esc(r.name) + '</td>' + RD_COLS.map(c => '<td class="num">' + fmtCell(r[c.k], c.f) + '</td>').join('') + '</tr>').join('');
   return '<div class="df-tablewrap"><table class="df-table rd-dash"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
 }
-function renderDashboard(result, label, qc){
+function renderTables(result, label, bannerHtml){
   const lgaRows = result.lgaRows.map(r => ({ name:r.lga, ...r }));
   const subRows = result.suburbRows.map(r => ({ name:r.suburb, ...r }));
-  const missing = qc.subTotal - qc.subFound;
-  let html = card(esc(label) + ' — Dashboard',
-    '<div class="df-qc">'
-    + '<span class="df-pill ok">' + lgaRows.length + ' LGA benchmarks</span>'
-    + '<span class="df-pill ok">' + subRows.length + ' suburbs</span>'
-    + '<span class="df-pill ' + (missing ? 'warn' : 'ok') + '">' + qc.subFound + ' / ' + qc.subTotal + ' suburbs found in file</span>'
-    + '<span class="df-pill">source: ' + esc(qc.source) + '</span></div>'
-    + (missing ? '<div class="df-miss"><b>' + missing + '</b> selected suburbs were not in this file (shown as “Low Sales”).</div>' : ''));
+  let html = card(esc(label) + ' — Dashboard', bannerHtml);
   html += card('LGA Benchmarks', dashTable(lgaRows, 'LGA'));
   html += card('Suburbs <span class="count">' + subRows.length + '</span>', dashTable(subRows, 'Suburb'));
   rdOut.innerHTML = html;
+}
+function renderDashboard(result, label, qc){
+  const missing = qc.subTotal - qc.subFound;
+  const banner = '<div class="df-qc">'
+    + '<span class="df-pill ok">' + result.lgaRows.length + ' LGA benchmarks</span>'
+    + '<span class="df-pill ok">' + result.suburbRows.length + ' suburbs</span>'
+    + '<span class="df-pill ' + (missing ? 'warn' : 'ok') + '">' + qc.subFound + ' / ' + qc.subTotal + ' suburbs found in file</span>'
+    + '<span class="df-pill">source: ' + esc(qc.source) + '</span></div>'
+    + '<div class="df-note" style="margin-top:8px">Freshly computed — click <b>Save dashboard</b> to store this result.</div>'
+    + (missing ? '<div class="df-miss"><b>' + missing + '</b> selected suburbs were not in this file (shown as “Low Sales”).</div>' : '');
+  renderTables(result, label, banner);
+}
+
+// Load the last SAVED dashboard for a region (no file needed). Dropping a file recomputes.
+async function loadSaved(slug){
+  rdSave.disabled = true; rdLast = null;
+  if (!slug || !window.sb){ rdOut.innerHTML = ''; return; }
+  rdOut.innerHTML = '<div class="df-note">Loading saved dashboard …</div>';
+  const { data, error } = await window.sb.from('region_dashboard').select('data,label,source_month,computed_at').eq('region', slug).maybeSingle();
+  if (error){ rdOut.innerHTML = card('Error', '<div class="df-empty">' + esc(error.message) + '</div>'); return; }
+  if (!data){ rdOut.innerHTML = '<div class="df-note">No saved dashboard for this region yet — drop the national CoreLogic file to compute it.</div>'; return; }
+  const when = data.computed_at ? new Date(data.computed_at).toLocaleString('en-AU') : '—';
+  const banner = '<div class="df-qc">'
+    + '<span class="df-pill ok">Saved dashboard</span>'
+    + '<span class="df-pill">computed: ' + esc(when) + '</span>'
+    + '<span class="df-pill">source: ' + esc(data.source_month || '—') + '</span></div>'
+    + '<div class="df-note" style="margin-top:8px">Showing the last saved result. Drop the national CoreLogic file to recompute from this month’s data.</div>';
+  renderTables(data.data, data.label || slug, banner);
 }
 
 async function saveDashboard(){
@@ -257,7 +279,7 @@ async function saveDashboard(){
   } catch(err){ console.warn('save failed', err); alert('Save failed: ' + (err.message || err)); rdSave.textContent = orig; rdSave.disabled = false; }
 }
 
-(function boot(){ let n=0; const t=setInterval(() => { if (window.sb){ clearInterval(t); loadRegions(); } if (++n>50) clearInterval(t); }, 100); })();
+(function boot(){ let n=0; const t=setInterval(async () => { if (window.sb){ clearInterval(t); await loadRegions(); loadSaved(rdRegion.value); } if (++n>50) clearInterval(t); }, 100); })();
 </script>
 </body>
 </html>
