@@ -90,6 +90,15 @@
     padding:3px 8px; border-radius:20px; }
   .node .more{ position:absolute; right:13px; bottom:12px; font-size:.66rem; color:var(--muted); opacity:0; transition:.18s; }
   .node:hover .more{ opacity:1; }
+  /* build-status pills (target view) */
+  .status{ position:absolute; top:12px; right:12px; font-size:.55rem; font-weight:800; letter-spacing:.05em; text-transform:uppercase; padding:3px 7px; border-radius:20px; }
+  .s-built{ color:#34d399; background:rgba(52,211,153,.12); border:1px solid rgba(52,211,153,.45); }
+  .s-ingesting{ color:#22d3ee; background:rgba(34,211,238,.12); border:1px solid rgba(34,211,238,.45); }
+  .s-partial{ color:#f59e0b; background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.45); }
+  .s-planned{ color:#94a3b8; background:rgba(148,163,184,.10); border:1px solid rgba(148,163,184,.35); }
+  .prog{ margin-top:6px; }
+  .pdot{ width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .pd-built{ background:#34d399; } .pd-ingesting{ background:#22d3ee; } .pd-partial{ background:#f59e0b; } .pd-planned{ background:#94a3b8; }
 
   /* highlight states */
   .diagram.hot .node:not(.on){ opacity:.32; }
@@ -151,7 +160,7 @@
 <header>
   <div class="eyebrow">Performance Property · Research Data</div>
   <h1>Data Architecture Map</h1>
-  <p class="lede">How research data flows — from external feeds, through the Data Dump, into the reports and slides. Toggle to the target central database. <b>Click any node</b> for detail; hover to trace its connections.</p>
+  <p class="lede">How research data flows — from external feeds, through the Data Dump, into the reports and slides. Toggle to the target central database, which shows <b>live build progress</b>. <b>Click any node</b> for detail; hover to trace its connections.</p>
   <div class="tabs">
     <button class="tab active" data-view="current">① Current Pipeline</button>
     <button class="tab t2" data-view="target">② Target · Central Database</button>
@@ -159,6 +168,13 @@
 </header>
 
 <div class="legend" id="legend"></div>
+<div class="legend prog">
+  <span class="lg"><span class="pdot pd-built"></span>Built</span>
+  <span class="lg"><span class="pdot pd-ingesting"></span>Ingesting</span>
+  <span class="lg"><span class="pdot pd-partial"></span>In progress</span>
+  <span class="lg"><span class="pdot pd-planned"></span>Planned</span>
+  <span class="lg" style="color:#7dd3fc">build status — shown on the Central Database view</span>
+</div>
 
 <div class="stage">
   <section class="view active" id="view-current"><div class="diagram"><svg class="links"><defs>
@@ -184,6 +200,15 @@ const TYPES = {
   forge:   {label:'Orchestrator',    color:'#e879f9'},
   raw:     {label:'Raw layer',       color:'#60a5fa'},
   mart:    {label:'Derived mart',    color:'#a78bfa'},
+};
+
+// build-status per node (target view) — reflects real progress
+const STATUS = { built:{label:'Built'}, ingesting:{label:'Ingesting'}, partial:{label:'In progress'}, planned:{label:'Planned'} };
+const STATUS_BY = {
+  t_sources:'built', t_regions:'built', t_metrics:'built', t_runs:'built', t_suburb:'built',
+  t_raw:'ingesting', t_forge:'partial',
+  t_reportfeed:'built', t_vr:'built', t_runway:'partial', t_demand:'planned', t_civ:'built',
+  t_reports:'planned', t_slides:'planned', t_tools:'planned',
 };
 
 const NODES = {
@@ -233,19 +258,30 @@ const NODES = {
   t_sources:{type:'raw',icon:'🌐',title:'L0 · Sources registry',sub:'external feeds + last-ingested',
     detail:`<p>A registry of every external feed (CoreLogic, SQM, ABS, RBA, Oxford, realestate) and when each was last ingested.</p>`},
   t_forge:{type:'forge',icon:'⚗️',title:'Data Forge',sub:'orchestrator',
-    detail:`<p>The engine that replaces the manual copy-paste SOP:</p><ul><li>ingest raw (drop files / pull sources)</li><li>run the versioned calculators</li><li>write the derived marts</li><li>log a run</li></ul>`},
-  t_raw:{type:'raw',icon:'🧱',title:'raw_series',sub:'canonical long-format',
-    detail:`<p>The single ingestion target — <b>"put all the data here first."</b></p><p><code>(source, region, metric, period, value)</code> absorbs CLPF / CLRent / SQM / Population / Approvals and every other matrix in one shape.</p>`},
+    detail:`<p>The engine that replaces the manual copy-paste SOP:</p><ul><li>ingest raw (drop files / pull sources)</li><li>run the versioned calculators</li><li>write the derived marts</li><li>log a run</li></ul>
+      <p><b>In progress:</b> the P1 ingestion script <code>scripts/ingest-data-dump.mjs</code> loads the Data Dump's raw sheets into <code>rdp_raw_series</code> and logs to <code>rdp_runs</code>. Full orchestrator + the mart calculators come next.</p>`},
+  t_raw:{type:'raw',icon:'🧱',title:'rdp_raw_series',sub:'canonical long-format',
+    detail:`<p>The single ingestion target — <b>"put all the data here first."</b></p><p><code>(source, region, metric, freq, period, value)</code> absorbs CLPF / CLRent / SQM / Population / Approvals and every other matrix in one shape.</p>
+      <p><b>P1 ingested & live in the DB — 20,536 rows, 45 regions (cities + states + national), 1975–2026, verified.</b> Sources: CoreLogic (CLPF price/sales/ADOM + CLRent vacancy/rent), SQM (vacancy/SOM/rent), ABS (population +components, approvals +commencements, unemployment), RBA (cash/bank rate, inflation, median income). National report figures are computed aggregates (not raw). <b>Deferred:</b> PopPyramid, Dwellings, Industry/Arrears/JCI/Mining/Iron, and the monthly macro section.</p>`},
   t_regions:{type:'raw',icon:'🗺️',title:'regions',sub:'canonical dimension',
     detail:`<p>One canonical region key + a <b>per-source alias map</b> — fixes the <code>SYDNEY (NSW)</code> / <code>SYDNEY, NSW</code> / <code>Sydney</code> mismatch once, centrally.</p>`},
   t_metrics:{type:'raw',icon:'🏷️',title:'metrics',sub:'controlled vocabulary',
     detail:`<p>Code · label · unit for every series, so nothing is named ambiguously.</p>`},
-  t_reportfeed:{type:'mart',icon:'📑',title:'report_feed',sub:'one table + cluster views',
-    detail:`<p>Reproduces the 81-column cluster output, regenerated from raw.</p><ul><li>One table keyed <code>(region, year)</code> + a <code>cluster</code> column</li><li>Per-cluster <b>compatibility views</b> keep the existing Apps Script feeds working unchanged</li></ul>`},
-  t_vr:{type:'mart',icon:'📐',title:'vr_forecast',sub:'regenerated',detail:`<p>The VR projections, regenerated in code from raw + commencements.</p>`},
-  t_runway:{type:'mart',icon:'📒',title:'runway_data',sub:'regenerated',detail:`<p>Wage growth + price-forecast scenarios, regenerated from raw + rates.</p>`},
+  t_reportfeed:{type:'mart',icon:'📑',title:'rdp_report_feed',sub:'built + verified',
+    detail:`<p>Reproduces the cluster sheets' report columns, regenerated from raw by <code>ReportFeedCalc</code>.</p>
+      <p><b>Built & verified:</b> matches the "Adelaide, SA" cluster tab <b>527/528 cells</b> (the 1 diff is a stale hardcoded cell in the sheet). Live for <b>36 city regions</b>, ~50 annual columns (price/sales/CAGR/affordability/yield/rent/population/approvals…).</p>
+      <p>Per-region jsonb payload; cluster-compat views expose the capital/qld/nsw/vicwatas splits. <b>Deferred:</b> the national aggregate + the monthly / JCI / arrears / pyramid columns (await their raw).</p>`},
+  t_vr:{type:'mart',icon:'📐',title:'rdp_vr_forecast',sub:'built + verified',
+    detail:`<p>The vacancy-rate forecast per region, via <code>VrForecastCalc</code> (VR = vacant ÷ total; add next-year households &amp; dwellings).</p>
+      <p><b>Built &amp; verified:</b> reproduces the VR Projections workbook <b>74/74</b> checks; Adelaide = 1.06% → 1.96% (5,577 new households, 11,155 new dwellings) — matches the deck's VR slide. Live for 37 regions; feeds reports + the Buying/Selling VR slide.</p>
+      <p>OE commencements (Oxford Economics) + HH-size sourced from the VR workbook (held static until updated); population/VR/migration also exist in central raw for a future full-raw wiring.</p>`},
+  t_runway:{type:'mart',icon:'📒',title:'rdp_runway',sub:'extracted (recompute later)',
+    detail:`<p>Per-region runway analytic: current AI, ceiling price, runway % (distance below ceiling), and the rate-scenario forecast (AI / median / %).</p>
+      <p><b>Extracted</b> from the Runway Workbook's Report tabs into the mart (34 regions; Adelaide house = AI 0.62, ceiling $835.9k, 14.7% runway, forecast at 2.69% cash). The runway <i>computation</i> (PMT ceiling + scenarios) is the Runway tool's domain — reproducing it in code is a later step.</p>`},
   t_demand:{type:'mart',icon:'📊',title:'demand_score',sub:'regenerated',detail:`<p>The demand score, regenerated from raw + vr_forecast + runway_data + listings.</p>`},
-  t_civ:{type:'mart',icon:'💰',title:'civ',sub:'current investment value',detail:`<p>Current median price / rent / yield per region — with "current" = latest period (no hardcoded row).</p>`},
+  t_civ:{type:'mart',icon:'💰',title:'rdp_civ',sub:'built',
+    detail:`<p>Current investment value — latest-year median price, rent &amp; gross yield (H/U) per region, derived from <code>report_feed</code>'s most recent row.</p>
+      <p><b>Built</b> for 36 regions. "Current" = the true latest year (Adelaide $980k), which fixes the Data Dump CIV tab's stale hardcoded <code>row 53</code> (a year behind) — exactly the fragility we set out to remove.</p>`},
   t_runs:{type:'mart',icon:'🧾',title:'data_runs',sub:'lineage / audit log',
     detail:`<p>Every regeneration logged automatically (dataset, source month, rows, who, when) — the auto replacement for the manual <b>Update Log</b>.</p>`},
   t_reports:{type:'consumer',icon:'📰',title:'Online Reports',sub:'read report_feed',detail:`<p>Read <code>report_feed</code> through the cluster-compatible views — zero front-end change.</p>`},
@@ -298,7 +334,9 @@ document.getElementById('legend').innerHTML = Object.values(TYPES)
 
 function card(id){
   const n=NODES[id]; const c=TYPES[n.type].color;
-  return `<button class="node" id="${id}" data-id="${id}" style="--c:${c}">
+  const st=STATUS_BY[id];
+  const stPill = st ? `<span class="status s-${st}">${STATUS[st].label}</span>` : '';
+  return `<button class="node" id="${id}" data-id="${id}" style="--c:${c}">${stPill}
     <div class="top"><div class="ic">${n.icon}</div><div><div class="ttl">${n.title}</div><span class="sub">${n.sub}</span></div></div>
     <span class="tag">${TYPES[n.type].label}</span><span class="more">details ›</span></button>`;
 }
