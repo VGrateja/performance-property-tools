@@ -53,7 +53,8 @@ that alone, not the site.
 Hub (`index.html`) is 4 swipeable pages: **analytics** (default), **pm**,
 **arena**, **vault**. Tools:
 
-- `online-reports.html` — the big one (~710KB). 36 regional property reports
+- `online-reports.html` — ~474KB; the most complex tool at runtime (and 2nd
+  largest file, after `presentation.html`). 36 regional property reports
   + an in-browser **edit system** (text/shape/image overlays, page-bg editor,
   side-TOC reorder/rename, undo/redo, backup/sync/audit). Per-region state in
   `reports_state`. Most edit logic now lives in **`shared/report-edit.{js,css}`**
@@ -63,7 +64,8 @@ Hub (`index.html`) is 4 swipeable pages: **analytics** (default), **pm**,
 - `property-clock.html`, `runway-demand.html`, `demand-score.html` — live
   market-data analytics.
 - `runway-workbook.html` — scenario modelling (Vault).
-- `presentation.html` (builder) + `presentations-library.html` (deck library).
+- `presentation.html` (builder, ~607KB — the largest tool file)
+  + `presentations-library.html` (deck library).
 - `whitepapers-strategies.html` — Documents.
 - `cadence.html` — team workflow board (Supabase-backed, realtime + notify).
 - `arena.html`, `arena-typing.html`, `arena-chess.html`, `arena-scrabble.html` —
