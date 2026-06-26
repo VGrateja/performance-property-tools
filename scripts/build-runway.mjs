@@ -1,75 +1,86 @@
 // =============================================================================
-// build-runway.mjs  —  L2 mart builder for rdp_runway.
+// build-runway.mjs  —  L2 mart builder for rdp_runway (RECOMPUTED).
 //
-// EXTRACTS the per-region runway analytic output from the Runway Workbook's
-// "Runway Data Report-House" / "-Unit" tabs (AI, ceiling price, runway %,
-// forecast AI / median / %). The runway computation itself is the Runway tool's
-// domain (PMT-based ceiling + scenario forecasting) — reproducing it in code is
-// a later step; for now we snapshot the workbook's computed output so the mart
-// is populated and consumers can read the DB.
+// 1) Extracts per-region CONFIG from the Runway Workbook (Houses/Units Runway-IC):
+//    AI Ceiling (col F) + current/forecast variable rates (P10/R10).
+// 2) VERIFIES RunwayCalc reproduces the workbook (its D/E/F inputs -> G/H/J/N/O/Q).
+// 3) RECOMPUTES the mart from the central DB (median + state income from
+//    rdp_report_feed's latest row) + that config -> rdp_runway.
 //
-// Dry-run by DEFAULT; --write upserts + logs rdp_runs.
-//   node scripts/build-runway.mjs ["<runway.xlsx>"]            # dry run
-//   node scripts/build-runway.mjs ["<runway.xlsx>"] --write     # upsert
+// AI Ceiling + rates are config held static until the workbook is updated (like
+// OE commencements). Dry-run by DEFAULT; --write upserts + logs rdp_runs.
 // =============================================================================
 import XLSX from 'xlsx';
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import './../shared/runway-calc.js';
 
 try { if (existsSync('.env')) for (const ln of readFileSync('.env', 'utf8').split(/\r?\n/)) { const m = ln.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/); if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, ''); } } catch {}
-
-const ST = 'act|nsw|nt|qld|sa|tas|vic|wa';
-const SLUGS = new Set(['australia','sydney','melbourne','brisbane','perth','adelaide','canberra','hobart','darwin','mackay','bundaberg','ipswich','rockhampton','gladstone','cairns','townsville','sunshine-coast','toowoomba','gold-coast','albury','central-coast','coffs-harbour','newcastle','orange','port-macquarie','tamworth','wagga-wagga','wollongong','dubbo','ballarat','bendigo','geelong','wodonga','mildura','mandurah','rockingham','bunbury','launceston']);
-function resolveCity(label) {
-  if (label == null) return null; let s = String(label).trim();
-  if (s === '' || /^year$/i.test(s)) return null; if (/^national$/i.test(s)) return 'australia';
-  s = s.replace(/\([^)]*\)/g, ' ').replace(new RegExp(',\\s*(' + ST + ')\\b', 'ig'), ' ').replace(/\b\d{3,4}\b/g, ' ').replace(/\bgreater\b/ig, ' ').replace(/\s+/g, ' ').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  return SLUGS.has(s) ? s : null;
-}
-const numv = v => (typeof v === 'number' && isFinite(v)) ? v : null;
-
-const argv = process.argv.slice(2);
-const WRITE = argv.includes('--write');
-const FILE = argv.find(a => !a.startsWith('--')) || join(homedir(), 'Downloads', 'Runway Workbook - Encrypted (updated_ 11Mar2025).xlsx');
-if (!existsSync(FILE)) { console.error('File not found:', FILE); process.exit(1); }
-const wb = XLSX.readFile(FILE, { cellFormula: false });
-
-// extract one report tab: find the "State"/"Area" header row, then read data
-// column maps differ: the House report has a Population col (C), the Unit one doesn't (shifted left by 1)
-function extract(sheet, c) {
-  const ws = wb.Sheets[sheet]; if (!ws) return { rows: [], rates: {} };
-  const g = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
-  // rates from the legend (col B label -> col D value)
-  const rates = {};
-  for (let i = 0; i < 16; i++) { const b = String((g[i] || [])[1] || '').toLowerCase(); const d = numv((g[i] || [])[3]);
-    if (/forecasted rate/.test(b)) rates.forecast = d; else if (/variable|interest/.test(b)) rates.variable = d; else if (/cash rate/.test(b)) rates.cash = d; }
-  const hdr = g.findIndex(r => String(r[0]).trim() === 'State' && /area/i.test(String(r[1])));
-  const out = [];
-  if (hdr >= 0) for (let r = hdr + 1; r < g.length; r++) {
-    const row = g[r]; const area = String(row[1] || '').trim(); if (!area) break;
-    const slug = resolveCity(area); if (!slug) continue;
-    out.push({ slug, current_ai: numv(row[c.ai]), ceiling: numv(row[c.ceiling]), runway_pct: numv(row[c.runway]), forecast_ai: numv(row[c.fc_ai]), forecast_median: numv(row[c.fc_median]), forecast_pct: numv(row[c.fc_pct]) });
-  }
-  return { rows: out, rates };
-}
-
-const house = extract('Runway Data Report-House', { ai: 3, ceiling: 5, runway: 6, fc_ai: 8, fc_median: 9, fc_pct: 10 });
-const unit = extract('Runway Data Report-Unit', { ai: 2, ceiling: 4, runway: 5, fc_ai: 7, fc_median: 8, fc_pct: 9 });
-const uBy = Object.fromEntries(unit.rows.map(r => [r.slug, r]));
-const merged = {};
-for (const h of house.rows) merged[h.slug] = { region_slug: h.slug, payload: { house: h, unit: uBy[h.slug] || null, rates: house.rates } };
-const list = Object.values(merged);
-console.log('runway regions:', list.length, '| house rates:', JSON.stringify(house.rates));
-const a = merged['adelaide'];
-if (a) console.log('adelaide runway:', JSON.stringify(a.payload));
-
-if (!WRITE) { console.log('\nDry run complete. Re-run with --write to upsert into rdp_runway.'); process.exit(0); }
 const URL = process.env.SUPABASE_URL || 'https://cannojsxduvlewimwoxa.supabase.co';
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY; if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY in .env'); process.exit(1); }
 const sb = createClient(URL, KEY, { auth: { persistSession: false } });
+const WRITE = process.argv.includes('--write');
+
+const ST = 'act|nsw|nt|qld|sa|tas|vic|wa';
+const SLUGS = new Set(['australia','sydney','melbourne','brisbane','perth','adelaide','canberra','hobart','darwin','mackay','bundaberg','ipswich','rockhampton','gladstone','cairns','townsville','sunshine-coast','toowoomba','gold-coast','albury','central-coast','coffs-harbour','newcastle','orange','port-macquarie','tamworth','wagga-wagga','wollongong','dubbo','ballarat','bendigo','geelong','wodonga','mildura','mandurah','rockingham','bunbury','launceston']);
+const resolveCity = l => { if (l == null) return null; let s = String(l).trim(); if (!s || /^year$/i.test(s)) return null; if (/^national$/i.test(s)) return 'australia'; s = s.replace(/\([^)]*\)/g, ' ').replace(new RegExp(',\\s*(' + ST + ')\\b', 'ig'), ' ').replace(/\b\d{3,4}\b/g, ' ').replace(/\bgreater\b/ig, ' ').replace(/\s+/g, ' ').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); return SLUGS.has(s) ? s : null; };
+const numv = v => (typeof v === 'number' && isFinite(v)) ? v : null;
+
+// ── extract config + verify inputs/outputs from a Runway IC tab ──
+const FILE = process.argv.slice(2).find(a => !a.startsWith('--')) || join(homedir(), 'Downloads', 'Runway Workbook - Encrypted (updated_ 11Mar2025).xlsx');
+const wb = XLSX.readFile(FILE);
+// Houses IC has a Population col; Units IC doesn't (shifted left 1) and its rate
+// cells are G10/I10, not P10/R10.
+function readIC(sheet, c, rc) {
+  const ws = wb.Sheets[sheet]; const g = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+  const rate = numv(ws[rc.cur] && ws[rc.cur].v), frate = numv(ws[rc.fc] && ws[rc.fc].v);
+  const rows = [];
+  for (let r = 16; r <= 51; r++) {
+    const a = g[r - 1]; if (!a) continue; const slug = resolveCity(a[1]); if (!slug) continue;
+    rows.push({ slug, median: numv(a[c.median]), income: numv(a[c.income]), aiCeiling: numv(a[c.aiCeiling]), wb_ai: numv(a[c.ai]), wb_ceiling: numv(a[c.ceiling]), wb_runway: numv(a[c.runway]), wb_fc_ai: numv(a[c.fc_ai]), wb_fc_ceiling: numv(a[c.fc_ceiling]), wb_fc_pct: numv(a[c.fc_pct]) });
+  }
+  return { rate, frate, rows };
+}
+const H = readIC('Houses Runway - IC', { median: 3, income: 4, aiCeiling: 5, ai: 6, ceiling: 7, runway: 9, fc_ai: 13, fc_ceiling: 14, fc_pct: 16 }, { cur: 'P10', fc: 'R10' });
+const U = readIC('Units Runway - IC', { median: 2, income: 3, aiCeiling: 4, ai: 5, ceiling: 6, runway: 8, fc_ai: 12, fc_ceiling: 13, fc_pct: 15 }, { cur: 'G10', fc: 'I10' });
+console.log('rates: house current=' + H.rate + ' forecast=' + H.frate + ' | unit current=' + U.rate + ' forecast=' + U.frate);
+
+// verify calc reproduces the workbook
+const close = (a, b, rel = 2e-3) => (a == null || b == null) ? false : Math.abs(a - b) <= 1e-6 + rel * Math.abs(b) || Math.abs(a - b) <= 2;
+let checks = 0, pass = 0; const fails = [];
+for (const [tab, T] of [['H', H], ['U', U]]) for (const row of T.rows) {
+  const c = globalThis.RunwayCalc.computeRunway({ median: row.median, income: row.income, aiCeiling: row.aiCeiling, currentRate: T.rate, forecastRate: T.frate });
+  for (const [k, mine, theirs] of [['ai', c.ai, row.wb_ai], ['ceiling', c.ceiling, row.wb_ceiling], ['runway', c.runway_pct, row.wb_runway], ['fc_ai', c.forecast_ai, row.wb_fc_ai], ['fc_ceiling', c.forecast_ceiling, row.wb_fc_ceiling], ['fc_pct', c.forecast_pct, row.wb_fc_pct]]) {
+    if (theirs == null) continue; checks++; if (close(mine, theirs)) pass++; else fails.push(`${tab}:${row.slug}.${k} calc=${mine} wb=${theirs}`);
+  }
+}
+console.log(`VERIFY calc vs workbook: ${pass}/${checks} match`);
+if (fails.length) for (const f of fails.slice(0, 12)) console.log('  ' + f);
+
+// config per region
+const cfgH = Object.fromEntries(H.rows.map(r => [r.slug, r.aiCeiling]));
+const cfgU = Object.fromEntries(U.rows.map(r => [r.slug, r.aiCeiling]));
+
+// ── recompute mart from rdp_report_feed (latest median + state income) ──
+const { data: feeds } = await sb.from('rdp_report_feed').select('region_slug,payload');
+const list = [];
+for (const f of feeds || []) {
+  const slug = f.region_slug; if (cfgH[slug] == null && cfgU[slug] == null) continue;
+  const years = (f.payload && f.payload.years) || [];
+  const latest = [...years].reverse().find(r => r.mp_h != null || r.mp_u != null); if (!latest) continue;
+  const income = latest.median_income;
+  const house = cfgH[slug] != null ? globalThis.RunwayCalc.computeRunway({ median: latest.mp_h, income, aiCeiling: cfgH[slug], currentRate: H.rate, forecastRate: H.frate }) : null;
+  const unit = cfgU[slug] != null ? globalThis.RunwayCalc.computeRunway({ median: latest.mp_u, income, aiCeiling: cfgU[slug], currentRate: U.rate, forecastRate: U.frate }) : null;
+  list.push({ region_slug: slug, payload: { house, unit, rates: { house: { current: H.rate, forecast: H.frate }, unit: { current: U.rate, forecast: U.frate } }, ai_ceiling: { house: cfgH[slug] ?? null, unit: cfgU[slug] ?? null }, year: latest.year } });
+}
+const a = list.find(x => x.region_slug === 'adelaide');
+if (a) console.log('adelaide RECOMPUTED (from report_feed):', JSON.stringify({ ai: a.payload.house.ai, ceiling: Math.round(a.payload.house.ceiling), runway: a.payload.house.runway_pct, clock: a.payload.house.clock }));
+console.log('regions:', list.length);
+
+if (!WRITE) { console.log('\nDry run complete. Re-run with --write to upsert into rdp_runway.'); process.exit(0); }
 const stamp = new Date().toISOString(); let n = 0;
-for (const r of list) { const { error } = await sb.from('rdp_runway').upsert({ region_slug: r.region_slug, payload: r.payload, source_month: 'Runway Workbook 2025-03', computed_at: stamp }, { onConflict: 'region_slug' }); if (error) { console.error(r.region_slug, error.message); process.exit(1); } n++; }
-await sb.from('rdp_runs').insert({ dataset: 'runway', source_month: 'Runway Workbook 2025-03', row_count: n, status: 'ok', notes: `${n} regions; extracted from Runway Workbook report tabs` });
-console.log(`✓ Built rdp_runway for ${n} regions.`);
+for (const r of list) { const { error } = await sb.from('rdp_runway').upsert({ region_slug: r.region_slug, payload: r.payload, source_month: 'Runway recompute 2026-06', computed_at: stamp }, { onConflict: 'region_slug' }); if (error) { console.error(r.region_slug, error.message); process.exit(1); } n++; }
+await sb.from('rdp_runs').insert({ dataset: 'runway', source_month: 'Runway recompute 2026-06', row_count: n, status: 'ok', notes: `${n} regions; RunwayCalc recompute (verified ${pass}/${checks})` });
+console.log(`✓ Recomputed rdp_runway for ${n} regions.`);
