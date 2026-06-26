@@ -67,6 +67,33 @@ monthly('Arrears', 'apra', 'arrears');
 monthly('JCI', 'jci', 'jci');
 annualNational('Mining', 'marketindex', h => /gold/i.test(h) ? 'mining_gold' : /iron/i.test(h) ? 'mining_iron_ore' : /oil/i.test(h) ? 'mining_crude_oil' : /silver/i.test(h) ? 'mining_silver' : /copper/i.test(h) ? 'mining_copper' : /mineral exploration/i.test(h) ? 'mineral_exploration' : null);
 
+// ── MONTHLY block dated by a specific column (National&State monthly section uses Date(Monthly) = col N, idx 13) ──
+function monthlyBlock(name, source, dateCol, mapHeader) {
+  const g = grid(name); if (!g) return; const r1 = g[0] || [];
+  const cols = []; for (let c = 0; c < r1.length; c++) { if (c === dateCol) continue; const mp = mapHeader(String(r1[c] || '').replace(/\s+/g, ' ').trim()); if (mp) cols.push({ c, ...mp }); }
+  let rows = 0; const regions = new Set();
+  for (let r = 1; r < g.length; r++) { const s = g[r][dateCol]; if (typeof s !== 'number' || s < 20000 || s > 60000) continue; const period = serialToMonth(s);
+    for (const col of cols) { const v = numv(g[r][col.c]); if (v != null) { all.push({ source, region_slug: col.region_slug, metric: col.metric, freq: 'M', period, value: v }); rows++; regions.add(col.region_slug); } } }
+  reports.push({ name: name + ' monthly-block', source, rows, regions: regions.size, kind: 'monthly' });
+}
+// ── Perth-Iron: Ref Year + Month name + Iron Ore Price (monthly) ──
+function perthIron() {
+  const g = grid('Perth - Iron'); if (!g) return; const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+  let rows = 0;
+  for (let r = 1; r < g.length; r++) { const y = g[r][0], mo = MON[String(g[r][1] || '').slice(0, 3).toLowerCase()], v = numv(g[r][2]); if (typeof y !== 'number' || !mo || v == null) continue;
+    all.push({ source: 'marketindex', region_slug: 'perth', metric: 'iron_ore_price', freq: 'M', period: Math.round(y) + '-' + String(mo).padStart(2, '0') + '-01', value: v }); rows++; }
+  reports.push({ name: 'Perth - Iron', source: 'marketindex', rows, regions: 1, kind: 'monthly' });
+}
+
+monthlyBlock('National&State Data', 'abs', 13, h => {
+  let region = null; if (/^national/i.test(h)) region = 'australia'; else { const m = h.match(new RegExp('^(' + ST + ')', 'i')); if (m) region = 'st-' + m[1].toLowerCase(); }
+  if (!region) return null;
+  const metric = /owner occupier/i.test(h) ? 'owner_occupier' : /investor/i.test(h) ? 'investor' : /retail turnover/i.test(h) ? 'retail_turnover' : /bus.*investment/i.test(h) ? 'bus_investment' : /fhb/i.test(h) ? 'fhb' : null;
+  return metric ? { region_slug: region, metric } : null;
+});
+annualNational('Dwellings', 'abs', h => /national - approvals/i.test(h) ? 'dwelling_approvals' : /national - commenced/i.test(h) ? 'dwelling_commenced' : /national - completions/i.test(h) ? 'dwelling_completions' : null);
+perthIron();
+
 for (const r of reports) console.log(`[${r.name} · ${r.source}] ${r.kind}: rows=${r.rows} regions=${r.regions}`);
 const pick = (slug, metric, freq) => { const xs = all.filter(x => x.region_slug === slug && x.metric === metric && x.freq === freq).sort((a, b) => b.period.localeCompare(a.period)); return xs[0]; };
 const s1 = pick('adelaide', 'pyr_0_04', 'A'), s2 = pick('adelaide', 'arrears', 'M'), s3 = pick('australia', 'mining_iron_ore', 'A'), s4 = pick('adelaide', 'ind_mining', 'A');
