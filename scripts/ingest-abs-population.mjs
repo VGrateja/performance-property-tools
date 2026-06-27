@@ -1,6 +1,6 @@
 // =============================================================================
-// ingest-abs-population.mjs — Data Forge path: POPULATION (National + Capitals)
-// straight from the ABS Data API (https://data.api.abs.gov.au). No API key.
+// ingest-abs-population.mjs — Data Forge path: POPULATION (National + Capitals
+// + Regional cities) straight from the ABS Data API (https://data.api.abs.gov.au). No API key.
 //
 // This is the verified data-gathering "path" for the population data point:
 //
@@ -18,6 +18,11 @@
 //       sum SA2 -> SUA via scripts/data/sa2-sua-2021.json (ASGS Ed3 correspondence)
 //     Verified: 2025 reproduces the existing DB EXACTLY for all 8 capitals.
 //     (Canberra SUA = "Canberra - Queanbeyan", includes the NSW side.)
+//
+//   REGIONAL CITIES (28: newcastle, geelong, cairns, ... wollongong)
+//     Each city = exactly one ABS Local Government Area (LGA). Pulled from the
+//     latest ERP_LGA{year} flow (auto-discovered), MEASURE=ERP, by LGA code.
+//     Verified: 2025 reproduces the existing DB EXACTLY for all 28 (by value).
 //
 // ISOLATED: writes ONLY to rdp_raw_series (source='abs', metric='population',
 // freq='A', period 'YYYY-01-01') + logs rdp_runs. Same shape as the existing
@@ -49,6 +54,16 @@ const CAPITALS = { sydney: 'Sydney', melbourne: 'Melbourne', brisbane: 'Brisbane
 const corr = JSON.parse(readFileSync(join(__dir, 'data', 'sa2-sua-2021.json'), 'utf8'));
 const capSua = {}; // slug -> sua code
 for (const [slug, name] of Object.entries(CAPITALS)) { const code = Object.keys(corr.sua_names).find(c => corr.sua_names[c] === name); if (!code) throw new Error(`SUA not found for ${slug} (${name})`); capSua[slug] = code; }
+
+// ── regional cities -> ABS LGA code (each city = exactly one LGA; verified 28/28 by value at 2025) ──
+const REGIONAL = {
+  albury: '10050', ballarat: '20570', bendigo: '22620', bunbury: '51190', bundaberg: '31820',
+  cairns: '32080', 'central-coast': '11650', 'coffs-harbour': '11800', geelong: '22750', gladstone: '33360',
+  'gold-coast': '33430', ipswich: '33960', launceston: '64010', mackay: '34770', mandurah: '55110',
+  mildura: '24780', newcastle: '15900', orange: '16150', 'port-macquarie': '16380', rockhampton: '36370',
+  rockingham: '57490', 'sunshine-coast': '36720', tamworth: '17310', toowoomba: '36910', townsville: '37010',
+  'wagga-wagga': '17750', wodonga: '27170', wollongong: '18450',
+};
 
 const rows = [];
 
@@ -83,6 +98,26 @@ const rows = [];
   }
 }
 
+// ── REGIONAL CITIES: LGA ERP straight from the latest ERP_LGA flow (one LGA per city) ──
+let lgaFlowUsed = '';
+{
+  const dj = await (await fetch(`${API}/dataflow/ABS?detail=allstubs`, { headers: { Accept: 'application/vnd.sdmx.structure+json' } })).json();
+  lgaFlowUsed = (dj.data.dataflows || []).map(f => f.id).filter(id => /^ERP_LGA\d{4}$/.test(id)).sort().pop();
+  if (!lgaFlowUsed) throw new Error('No ERP_LGA dataflow found');
+  const codeToSlug = Object.fromEntries(Object.entries(REGIONAL).map(([s, c]) => [c, s]));
+  const j = await getJson(`${API}/data/${lgaFlowUsed}/all?startPeriod=${FROM}&format=jsondata&dimensionAtObservation=AllDimensions`);
+  const od = (j.data.structure || j.data.structures[0]).dimensions.observation;
+  const mI = od.findIndex(d => d.id === 'MEASURE'), rI = od.findIndex(d => d.id === 'REGION'), tI = od.findIndex(d => d.id === 'TIME_PERIOD');
+  const seen = new Set();
+  for (const [k, v] of Object.entries(j.data.dataSets[0].observations)) {
+    const ix = k.split(':').map(Number);
+    if (od[mI].values[ix[mI]].id !== 'ERP') continue;
+    const slug = codeToSlug[od[rI].values[ix[rI]].id]; if (!slug) continue;     // only our 28 LGAs
+    const yr = od[tI].values[ix[tI]].id; const dk = `${slug}|${yr}`; if (seen.has(dk)) continue; seen.add(dk);
+    rows.push({ source: 'abs', region_slug: slug, metric: 'population', freq: 'A', period: `${yr}-01-01`, value: v[0] });
+  }
+}
+
 // ── connect (dry-run still reads the DB to show a comparison) ──
 const URL = process.env.SUPABASE_URL || 'https://cannojsxduvlewimwoxa.supabase.co';
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -90,7 +125,7 @@ if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY in .env'); process.
 const sb = createClient(URL, KEY, { auth: { persistSession: false } });
 
 // existing values for comparison
-const slugs = ['australia', ...Object.keys(CAPITALS)];
+const slugs = ['australia', ...Object.keys(CAPITALS), ...Object.keys(REGIONAL)];
 const { data: cur } = await sb.from('rdp_raw_series').select('region_slug,period,value').eq('source', 'abs').eq('metric', 'population').in('region_slug', slugs);
 const curMap = Object.fromEntries((cur || []).map(r => [`${r.region_slug}|${r.period.slice(0, 10)}`, +r.value]));
 
@@ -116,5 +151,5 @@ for (let i = 0; i < rows.length; i += 500) {
   if (error) { console.error('\n', error.message); process.exit(1); }
   written += chunk.length; process.stdout.write(`\r  upserted ${written}/${rows.length}`);
 }
-await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS population ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `ABS API: national ERP_Q (Dec qtr) + ${Object.keys(CAPITALS).length} capital SUAs (SA2 sum), ${FROM}..${latest}` });
+await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS population ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `ABS API: national ERP_Q (Dec qtr) + ${Object.keys(CAPITALS).length} capital SUAs (SA2 sum) + ${Object.keys(REGIONAL).length} regional LGAs (${lgaFlowUsed}), ${FROM}..${latest}` });
 console.log(`\n✓ Upserted ${written} ABS population rows into rdp_raw_series.`);
