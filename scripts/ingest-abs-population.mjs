@@ -26,8 +26,16 @@
 //     Verified: 2025 reproduces the existing DB EXACTLY for all 28 (by value).
 //
 // ISOLATED: writes ONLY to rdp_raw_series (source='abs', metric='population',
-// freq='A', period 'YYYY-01-01') + logs rdp_runs. Same shape as the existing
-// rows, so it UPDATES them in place (no duplicates).
+// freq='A', period 'YYYY-01-01') + logs rdp_runs + records health in
+// forge_data_status (data_key='population'). Same row shape as the existing
+// data, so it UPDATES in place (no duplicates).
+//
+// COMPLETENESS GUARD: after fetching, asserts every one of the 45 regions
+// resolved a value for the latest year. If any are missing (e.g. ABS renamed a
+// flow or dropped an LGA code), it logs status='error' + the offending regions,
+// prints loudly, and exits 1 — so a silent partial failure becomes visible
+// (and feeds the Data Forge red-warning + alert). A hard fetch failure is
+// likewise recorded as status='error'.
 //
 // Dry-run by DEFAULT (prints a comparison vs the current DB). Pass --write to
 // upsert. --from=YYYY limits the start year (default 2001, the ASGS2021 floor).
@@ -69,7 +77,24 @@ const REGIONAL = {
 // ── national + states -> ERP_Q REGION code (state codes 1..8); Dec quarter ──
 const NATSTATE = { AUS: 'australia', '1': 'st-nsw', '2': 'st-vic', '3': 'st-qld', '4': 'st-sa', '5': 'st-wa', '6': 'st-tas', '7': 'st-nt', '8': 'st-act' };
 
+// ── connect first so run health (incl. a hard fetch failure) can be recorded ──
+const URL = process.env.SUPABASE_URL || 'https://cannojsxduvlewimwoxa.supabase.co';
+const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY in .env'); process.exit(1); }
+const sb = createClient(URL, KEY, { auth: { persistSession: false } });
+const FK = 'population', FLABEL = 'Population Data', FSOURCE = 'ABS Data API (ERP_Q / ASGS2021 / ERP_LGA)';
+async function recordStatus(status, message, extra = {}) {
+  if (!WRITE) return;                                  // dry-run is read-only
+  const now = new Date().toISOString();
+  const row = { data_key: FK, label: FLABEL, source: FSOURCE, status, message, last_run_at: now, updated_at: now, ...extra };
+  if (status === 'ok') row.last_ok_at = now;
+  const { error } = await sb.from('forge_data_status').upsert(row, { onConflict: 'data_key' });
+  if (error) console.warn('  (forge_data_status not updated — apply migration 053? ' + error.message + ')');
+}
+
 const rows = [];
+let lgaFlowUsed = '';
+try {
 
 // ── NATIONAL + STATES: ERP_Q, December quarter ──
 {
@@ -105,7 +130,6 @@ const rows = [];
 }
 
 // ── REGIONAL CITIES: LGA ERP straight from the latest ERP_LGA flow (one LGA per city) ──
-let lgaFlowUsed = '';
 {
   const dj = await (await fetch(`${API}/dataflow/ABS?detail=allstubs`, { headers: { Accept: 'application/vnd.sdmx.structure+json' } })).json();
   lgaFlowUsed = (dj.data.dataflows || []).map(f => f.id).filter(id => /^ERP_LGA\d{4}$/.test(id)).sort().pop();
@@ -124,13 +148,13 @@ let lgaFlowUsed = '';
   }
 }
 
-// ── connect (dry-run still reads the DB to show a comparison) ──
-const URL = process.env.SUPABASE_URL || 'https://cannojsxduvlewimwoxa.supabase.co';
-const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY in .env'); process.exit(1); }
-const sb = createClient(URL, KEY, { auth: { persistSession: false } });
+} catch (e) {
+  console.error('\n✗ ABS fetch failed:', e.message);
+  await recordStatus('error', `ABS fetch failed: ${e.message}`);
+  process.exit(1);
+}
 
-// existing values for comparison
+// ── compare vs current DB (dry-run still reads to show the comparison) ──
 const slugs = [...Object.values(NATSTATE), ...Object.keys(CAPITALS), ...Object.keys(REGIONAL)];
 const latest = Math.max(...rows.map(r => +r.period.slice(0, 4)));
 const { data: cur } = await sb.from('rdp_raw_series').select('region_slug,value').eq('source', 'abs').eq('metric', 'population').eq('period', `${latest}-01-01`).in('region_slug', slugs);
@@ -148,7 +172,12 @@ for (const slug of slugs) {
 }
 console.log(`\n${exact}/${compared} exact at ${latest} (older-year diffs = ABS revisions since last manual pull).`);
 
-if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert into rdp_raw_series.'); process.exit(0); }
+// ── completeness guard: every region must resolve a value for the latest year ──
+const missing = slugs.filter(s => !rows.some(r => r.region_slug === s && +r.period.slice(0, 4) === latest));
+if (missing.length) console.error(`\n✗ COMPLETENESS FAIL: ${missing.length}/${slugs.length} region(s) have no ${latest} value → ${missing.join(', ')}`);
+else console.log(`✓ Completeness: all ${slugs.length} regions resolved a ${latest} value.`);
+
+if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert into rdp_raw_series.'); process.exit(missing.length ? 1 : 0); }
 
 let written = 0;
 for (let i = 0; i < rows.length; i += 500) {
@@ -157,5 +186,9 @@ for (let i = 0; i < rows.length; i += 500) {
   if (error) { console.error('\n', error.message); process.exit(1); }
   written += chunk.length; process.stdout.write(`\r  upserted ${written}/${rows.length}`);
 }
-await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS population ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `ABS API: national + 8 states ERP_Q (Dec qtr) + ${Object.keys(CAPITALS).length} capital SUAs (SA2 sum) + ${Object.keys(REGIONAL).length} regional LGAs (${lgaFlowUsed}), ${FROM}..${latest}` });
-console.log(`\n✓ Upserted ${written} ABS population rows into rdp_raw_series.`);
+await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS population ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: missing.length ? 'partial' : 'ok', notes: `ABS API: national + 8 states ERP_Q (Dec qtr) + ${Object.keys(CAPITALS).length} capital SUAs (SA2 sum) + ${Object.keys(REGIONAL).length} regional LGAs (${lgaFlowUsed}), ${FROM}..${latest}${missing.length ? `; MISSING ${latest}: ${missing.join(', ')}` : ''}` });
+await recordStatus(missing.length ? 'error' : 'ok',
+  missing.length ? `${missing.length} region(s) missing a ${latest} value: ${missing.join(', ')}` : `All ${slugs.length} regions current through ${latest}.`,
+  { row_count: written, region_count: slugs.length - missing.length, latest_year: latest });
+console.log(`\n✓ Upserted ${written} ABS population rows into rdp_raw_series.${missing.length ? ' (with completeness warnings — see above)' : ''}`);
+process.exit(missing.length ? 1 : 0);

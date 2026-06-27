@@ -13,12 +13,39 @@
 <script src="../shared/fit-screen.js"></script>
 <!-- SheetJS: in-browser .xlsx parsing — the CoreLogic file never leaves the browser -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Supabase: read the data-point health + the gathered population data -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../shared/supabase-client.js"></script>
 <style>
   :root{ --pp-cyan:#00b6cb; }
   #dfApp{ max-width:1280px; margin:0 auto; padding:64px 22px 60px; }
   .df-head h1{ font-family:'Montserrat',sans-serif; font-size:1.5rem; font-weight:800; margin:0; color:var(--text); letter-spacing:-.01em; }
   .df-head .sub{ font-size:.82rem; color:var(--muted); margin-top:3px; }
   .df-stage{ display:inline-block; margin-top:8px; font-size:.64rem; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--pp-cyan); border:1px solid var(--border); border-radius:20px; padding:3px 11px; }
+
+  /* ── cluster cards (the Data Forge landing) ── */
+  .df-clusters{ display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px; margin-top:22px; }
+  .df-cluster{ position:relative; text-align:left; display:flex; gap:14px; align-items:flex-start; background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px; cursor:pointer; font:inherit; color:var(--text); transition:all .15s; }
+  .df-cluster:hover{ border-color:var(--pp-cyan); transform:translateY(-2px); box-shadow:0 8px 22px rgba(0,0,0,.18); }
+  .df-cluster.err{ border-color:#ef4444; }
+  .df-cluster .ico{ font-size:1.7rem; line-height:1; flex:none; }
+  .df-cluster .ct{ flex:1; min-width:0; display:flex; flex-direction:column; }
+  .df-cluster .title{ display:block; font-family:'Montserrat',sans-serif; font-weight:800; font-size:1rem; color:var(--text); }
+  .df-cluster .desc{ display:block; font-size:.78rem; color:var(--muted); margin-top:5px; line-height:1.4; }
+  .df-cluster .meta{ display:block; font-size:.72rem; color:var(--muted); margin-top:8px; font-variant-numeric:tabular-nums; }
+  .df-cluster .warnmark{ position:absolute; top:12px; right:12px; font-size:1.05rem; }
+  .df-badge{ display:inline-flex; align-items:center; gap:5px; font-size:.64rem; font-weight:800; letter-spacing:.04em; text-transform:uppercase; border-radius:20px; padding:3px 9px; margin-left:8px; vertical-align:middle; border:1px solid var(--border); }
+  .df-badge::before{ content:""; width:7px; height:7px; border-radius:50%; background:var(--muted); }
+  .df-badge.ok{ color:#16a34a; border-color:rgba(34,197,94,.45); } .df-badge.ok::before{ background:#22c55e; }
+  .df-badge.err{ color:#ef4444; border-color:rgba(239,68,68,.5); } .df-badge.err::before{ background:#ef4444; }
+  .df-badge.stale{ color:#d97706; border-color:rgba(217,119,6,.45); } .df-badge.stale::before{ background:#f59e0b; }
+  .df-badge.manual{ color:var(--muted); } .df-badge.manual::before{ background:var(--muted); }
+
+  .df-back{ display:inline-flex; align-items:center; gap:6px; font-size:.8rem; font-weight:700; color:var(--pp-cyan); background:none; border:0; cursor:pointer; padding:0; margin-bottom:14px; font-family:inherit; }
+  .df-banner{ border:1px solid var(--border); border-radius:10px; padding:11px 14px; font-size:.8rem; margin-bottom:16px; background:var(--panel); color:var(--text); }
+  .df-banner.err{ border-color:#ef4444; color:#ef4444; background:rgba(239,68,68,.06); }
+  .df-banner.ok{ border-color:rgba(34,197,94,.4); }
+  .df-banner b{ color:var(--text); }
 
   .df-drop{ border:1.5px dashed var(--border); border-radius:12px; padding:26px; text-align:center; color:var(--muted); font-size:.85rem; cursor:pointer; transition:all .16s; margin:18px 0; background:var(--panel); }
   .df-drop:hover, .df-drop.over{ border-color:var(--pp-cyan); color:var(--pp-cyan); background:rgba(0,182,203,.05); }
@@ -34,13 +61,15 @@
   .df-map .m .lbl{ font-size:.8rem; font-weight:700; color:var(--text); }
   .df-map .m .hdr{ font-size:.68rem; color:var(--muted); margin-top:2px; }
 
-  .df-tablewrap{ overflow-x:auto; border:1px solid var(--border); border-radius:10px; }
+  .df-tablewrap{ overflow-x:auto; border:1px solid var(--border); border-radius:10px; max-height:70vh; }
   table.df-table{ border-collapse:collapse; width:100%; font-size:.8rem; }
   .df-table th, .df-table td{ padding:7px 12px; border-bottom:1px solid var(--border); white-space:nowrap; text-align:center; }
-  .df-table thead th{ position:sticky; top:0; background:var(--panel2); color:var(--text); font-weight:800; font-size:.7rem; letter-spacing:.04em; text-transform:uppercase; }
+  .df-table thead th{ position:sticky; top:0; background:var(--panel2); color:var(--text); font-weight:800; font-size:.7rem; letter-spacing:.04em; text-transform:uppercase; z-index:1; }
   .df-table tbody tr:hover{ background:var(--panel2); }
   .df-table td.num{ font-variant-numeric:tabular-nums; }
-  .df-table td.region{ font-weight:700; color:var(--text); }
+  .df-table td.region{ font-weight:700; color:var(--text); text-align:left; position:sticky; left:0; background:var(--panel); }
+  .df-table tbody tr:hover td.region{ background:var(--panel2); }
+  .df-table tr.grp td{ background:var(--panel2); color:var(--muted); font-weight:800; font-size:.66rem; letter-spacing:.08em; text-transform:uppercase; text-align:left; }
   .df-table .type-H{ color:var(--accent); font-weight:700; }
   .df-table .type-U{ color:var(--muted); font-weight:700; }
 
@@ -76,33 +105,139 @@
 <div id="dfApp">
   <div class="df-head">
     <h1>Data Forge</h1>
-    <div class="sub">Gather &amp; filter source data for the online reports. The file is parsed in your browser — nothing is uploaded.</div>
-    <div class="df-stage">Stage 1 · Import &amp; filter (CoreLogic)</div>
+    <div class="sub">The data behind the online reports — each card is one data point. Click in to view the data; a red mark means its last fetch had an issue.</div>
   </div>
 
-  <div class="df-drop" id="dfDrop">
-    <input type="file" id="dfFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
-    📊 <strong>Drop the CoreLogic .xlsx here</strong> (or click)<br/>
-    keeps only columns A, B, C, H, Q, AK, AO — all capital cities + the 28 LGA regions.
-  </div>
+  <!-- ── LANDING: cluster cards ── -->
+  <section id="dfHome">
+    <div class="df-clusters" id="dfClusters"><div class="df-note">Loading data points…</div></div>
+  </section>
 
-  <div id="dfOut"></div>
+  <!-- ── COTALITY view (the CoreLogic column filter) ── -->
+  <section id="dfCotality" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div class="df-card" style="margin-bottom:14px"><h2>Cotality Data <span class="count">CoreLogic / Cotality .xlsx — parsed in your browser, nothing uploaded</span></h2>
+      <div class="df-stage">Import &amp; filter</div>
+      <div class="df-drop" id="dfDrop">
+        <input type="file" id="dfFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
+        📊 <strong>Drop the CoreLogic .xlsx here</strong> (or click)<br/>
+        keeps only columns A, B, C, H, Q, AK, AO — all capital cities + the 28 LGA regions.
+      </div>
+    </div>
+    <div id="dfOut"></div>
+  </section>
+
+  <!-- ── POPULATION view (from the central DB) ── -->
+  <section id="dfPopulation" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="popBanner"></div>
+    <div id="popOut"></div>
+  </section>
 </div>
 
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtInt = n => (n == null || isNaN(n)) ? '—' : Math.round(n).toLocaleString();
+const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDateString('en-AU', { day:'numeric', month:'short', year:'numeric' }); } catch { return s; } };
 
+/* ───────────────────────── view routing ───────────────────────── */
+function showView(name){
+  for (const id of ['dfHome','dfCotality','dfPopulation']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  document.getElementById('dfHome').hidden = (name !== 'home');
+  if (name === 'population') loadPopulation();
+  window.scrollTo(0, 0);
+}
+document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
+
+/* ───────────────────────── data-point health (cluster cards) ───────────────────────── */
+const CLUSTERS = [
+  { key:'cotality',   icon:'📊', label:'Cotality Data',   desc:'CoreLogic / Cotality .xlsx — capital cities + 28 LGA regions. Manual upload, filtered in-browser.', view:'cotality' },
+  { key:'population', icon:'👥', label:'Population Data',  desc:'ABS Data API — national, 8 states, 8 capital SUAs, 28 regional LGAs (45 regions).', view:'population' },
+];
+
+function badge(status){
+  const s = status === 'error' ? 'err' : status === 'stale' ? 'stale' : status === 'manual' ? 'manual' : 'ok';
+  const txt = status === 'error' ? 'Fetch issue' : status === 'stale' ? 'Stale' : status === 'manual' ? 'Manual' : 'OK';
+  return '<span class="df-badge ' + s + '">' + txt + '</span>';
+}
+
+async function loadStatus(){
+  const el = document.getElementById('dfClusters');
+  let statusMap = {};
+  try {
+    const { data } = await window.sb.from('forge_data_status').select('*');
+    statusMap = Object.fromEntries((data || []).map(r => [r.data_key, r]));
+  } catch (e) { /* show cards anyway */ }
+  el.innerHTML = CLUSTERS.map(c => {
+    const st = statusMap[c.key] || {};
+    const status = c.key === 'cotality' ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
+    const isErr = status === 'error';
+    const meta = c.key === 'population'
+      ? (st.last_ok_at ? 'Updated ' + fmtDate(st.last_ok_at) + (st.region_count ? ' · ' + st.region_count + ' regions' : '') : 'Not yet run via the monitored path')
+      : (st.updated_at ? 'Last activity ' + fmtDate(st.updated_at) : 'Manual upload');
+    return '<button class="df-cluster ' + (isErr ? 'err' : '') + '" data-view="' + c.view + '">'
+      + (isErr ? '<span class="warnmark">⚠️</span>' : '')
+      + '<span class="ico">' + c.icon + '</span>'
+      + '<span class="ct"><span class="title">' + esc(c.label) + badge(status) + '</span>'
+      + '<span class="desc">' + esc(c.desc) + '</span>'
+      + (isErr && st.message ? '<span class="meta" style="color:#ef4444">' + esc(st.message) + '</span>' : '')
+      + '<span class="meta">' + esc(meta) + '</span></span></button>';
+  }).join('');
+  el.querySelectorAll('.df-cluster').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
+}
+
+/* ───────────────────────── Population view (read from rdp_raw_series) ───────────────────────── */
+const ST_ABBR = { 'st-nsw':'NSW','st-vic':'VIC','st-qld':'QLD','st-sa':'SA','st-wa':'WA','st-tas':'TAS','st-nt':'NT','st-act':'ACT' };
+const CAP_SET = new Set(['sydney','melbourne','brisbane','perth','adelaide','canberra','hobart','darwin']);
+function labelOf(slug){
+  if (slug === 'australia') return 'Australia';
+  if (ST_ABBR[slug]) return ST_ABBR[slug];
+  return slug.split('-').map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+}
+function groupOf(slug){ return slug === 'australia' ? 0 : ST_ABBR[slug] ? 1 : CAP_SET.has(slug) ? 2 : 3; }
+const GROUP_NAME = ['National','States & Territories','Capital cities (Significant Urban Areas)','Regional cities (LGAs)'];
+
+async function loadPopulation(){
+  const banner = document.getElementById('popBanner'), out = document.getElementById('popOut');
+  out.innerHTML = '<div class="df-note">Loading population data…</div>'; banner.innerHTML = '';
+  let st = {};
+  try { const { data } = await window.sb.from('forge_data_status').select('*').eq('data_key','population').maybeSingle(); st = data || {}; } catch {}
+  const isErr = st.status === 'error';
+  banner.innerHTML = '<div class="df-banner ' + (isErr ? 'err' : 'ok') + '">'
+    + (isErr ? '⚠️ <b>Fetch issue:</b> ' : '✓ ')
+    + esc(st.message || 'ABS Data API — national, states, capitals, regional.')
+    + ' <span style="color:var(--muted)">· source: ' + esc(st.source || 'ABS Data API') + ' · updated ' + fmtDate(st.last_ok_at || st.updated_at) + '</span></div>';
+
+  let data, error;
+  try { ({ data, error } = await window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('source','abs').eq('metric','population').gte('period','2019-01-01')); }
+  catch (e) { error = e; }
+  if (error || !data){ out.innerHTML = '<div class="df-card"><div class="df-empty">Couldn\'t load population data' + (error ? ': ' + esc(error.message || error) : '') + '. (Sign in required — the research data is read behind RLS.)</div></div>'; return; }
+
+  const byRegion = {}, years = new Set();
+  for (const r of data){ const y = r.period.slice(0,4); years.add(y); (byRegion[r.region_slug] ||= {})[y] = +r.value; }
+  const yrs = [...years].sort();
+  const regions = Object.keys(byRegion).sort((a,b) => groupOf(a) - groupOf(b) || (byRegion[b][yrs[yrs.length-1]]||0) - (byRegion[a][yrs[yrs.length-1]]||0));
+
+  let lastGroup = -1, body = '';
+  for (const slug of regions){
+    const g = groupOf(slug);
+    if (g !== lastGroup){ body += '<tr class="grp"><td colspan="' + (yrs.length+1) + '">' + esc(GROUP_NAME[g]) + '</td></tr>'; lastGroup = g; }
+    body += '<tr><td class="region">' + esc(labelOf(slug)) + '</td>' + yrs.map(y => '<td class="num">' + fmtInt(byRegion[slug][y]) + '</td>').join('') + '</tr>';
+  }
+  const head = '<tr><th style="text-align:left">Region</th>' + yrs.map(y => '<th>' + y + '</th>').join('') + '</tr>';
+  out.innerHTML = '<div class="df-card"><h2>Population (ERP) <span class="count">' + regions.length + ' regions · ' + yrs[0] + '–' + yrs[yrs.length-1] + '</span></h2>'
+    + '<div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + '<div class="df-note">Estimated Resident Population. National &amp; states = ABS quarterly ERP (December quarter); capitals = Significant Urban Areas; regional cities = Local Government Areas.</div></div>';
+}
+
+/* ═══════════════════════ COTALITY view (CoreLogic column filter — unchanged logic) ═══════════════════════ */
 // 'A'->0, 'H'->7, 'Q'->16, 'AK'->36, 'AO'->40
 function colToIdx(letter){ let n=0; for (const ch of letter.toUpperCase()) n = n*26 + (ch.charCodeAt(0)-64); return n-1; }
 function normalizeName(s){ return String(s).toLowerCase().replace(/\(.*?\)/g,'').replace(/[-/]/g,' ').replace(/\s+/g,' ').trim(); }
 
-// State codes, tolerant of "Tas." / "Vic." / full names.
 const STATE_CANON = { NEWSOUTHWALES:'NSW', VICTORIA:'VIC', QUEENSLAND:'QLD', WESTERNAUSTRALIA:'WA', TASMANIA:'TAS', SOUTHAUSTRALIA:'SA', NORTHERNTERRITORY:'NT', AUSTRALIANCAPITALTERRITORY:'ACT' };
 function normState(s){ const u = String(s).toUpperCase().replace(/[^A-Z]/g,''); return STATE_CANON[u] || u; }
 function nameTokens(s){ return normalizeName(s).split(' ').filter(Boolean); }
-// True if the target name appears as a consecutive run in the file name — so the
-// file's full LGA name ("Greater Bendigo", "Port Macquarie-Hastings") matches our
-// short target ("Bendigo", "Port Macquarie") without hardcoding each spelling.
 function nameMatches(fileName, targetName){
   const f = nameTokens(fileName), t = nameTokens(targetName);
   if (!t.length || f.length < t.length) return false;
@@ -112,15 +247,11 @@ function nameMatches(fileName, targetName){
   }
   return false;
 }
-// Match a file row (state from col A, name from col B) to one of the 28 targets.
-// State must agree, so Central Coast (NSW) is kept but Central Coast (Tas.) isn't.
 function matchTarget(stateCell, nameCell){
   const st = normState(stateCell);
   return LGA_TARGETS.find(([n,s]) => normState(s)===st && nameMatches(nameCell, n)) || null;
 }
 
-// The 7 kept columns + the friendly label we show. The file's own header text is
-// displayed alongside (read from the header row) so the mapping is verifiable.
 const KEEP = [
   { l:'A',  label:'State',                 num:false },
   { l:'B',  label:'Region / City',         num:false, region:true },
@@ -131,7 +262,6 @@ const KEEP = [
   { l:'AO', label:'Median days on mkt',    num:true },
 ];
 
-// 28 LGA regions to keep (capitals come through their own tab, unfiltered).
 const LGA_TARGETS = [
   ['Mackay','QLD'],['Bundaberg','QLD'],['Ipswich','QLD'],['Rockhampton','QLD'],['Gladstone','QLD'],
   ['Cairns','QLD'],['Townsville','QLD'],['Sunshine Coast','QLD'],['Toowoomba','QLD'],['Gold Coast','QLD'],
@@ -150,7 +280,6 @@ fileInput.addEventListener('change', () => { if (fileInput.files[0]) importXlsx(
 
 function findSheet(wb, terms){ return wb.SheetNames.find(n => { const ln = n.toLowerCase(); return terms.every(t => ln.includes(t)); }); }
 
-// Locate the header row (CoreLogic exports sometimes carry a title row or two above it).
 function findHeaderRow(rows){
   for (let i=0; i<Math.min(rows.length,12); i++){
     const cells = (rows[i]||[]).map(c => String(c).trim().toLowerCase());
@@ -159,7 +288,6 @@ function findHeaderRow(rows){
   return 0;
 }
 
-// Extract kept columns + filtered rows from one tab.
 function processTab(ws, mode){
   const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' });
   const hr = findHeaderRow(rows);
@@ -168,9 +296,9 @@ function processTab(ws, mode){
   for (let i=hr+1; i<rows.length; i++){
     const r = rows[i] || [];
     const name = String(r[colToIdx('B')] || '').trim();
-    if (!name) continue;                                   // skip blank/spacer rows
+    if (!name) continue;
     if (mode === 'lga'){
-      const tgt = matchTarget(r[colToIdx('A')], name);     // name + state; tolerant of full "Greater …" LGA names
+      const tgt = matchTarget(r[colToIdx('A')], name);
       if (!tgt) continue;
       matched.add(normalizeName(tgt[0]) + '|' + normState(tgt[1]));
     }
@@ -240,6 +368,9 @@ function tableHtml(rows){
   }).join('') + '</tr>').join('');
   return '<div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
 }
+
+/* ───────────────────────── boot ───────────────────────── */
+(function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); } else if (++n > 60){ clearInterval(t); loadStatus(); } }, 100); })();
 </script>
 </body>
 </html>
