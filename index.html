@@ -1224,7 +1224,7 @@
              files in-browser and filters them to the columns/regions the
              reports track; built source-by-source. Deliberately isolated —
              it does NOT write to report_data_cache or affect live reports yet. -->
-        <button class="hub-tool-card nav-pill" onclick="navigateToTool('tools/data-forge.html', 'Data Forge')">
+        <button class="hub-tool-card nav-pill" onclick="openDataForge()">
           <div class="hub-tool-icon">⚗️</div>
           <div class="hub-tool-badge">Internal · WIP</div>
           <h2 class="hub-tool-title nav-pill-title">Data Forge <span id="forgeWarn" hidden title="A data point's last fetch had an issue" style="color:#ef4444;font-size:.95em">⚠️</span></h2>
@@ -1440,6 +1440,43 @@
     </div>
   </div>
 </div>
+
+<!-- ═══ Data Forge cluster picker — same floating modal + rcm-* animation
+     vocabulary as Online Reports / Presentation. One tile per data point;
+     a red mark on a tile means its last fetch failed. ═══ -->
+<div id="dataForgeModal" class="reports-cluster-modal" aria-hidden="true" onclick="if(event.target===this)closeDataForge()">
+  <div class="rcm-inner" role="dialog" aria-labelledby="dataforge-modal-title">
+    <button class="rcm-close" onclick="closeDataForge()" aria-label="Close">×</button>
+    <div class="rcm-view">
+      <div class="rcm-eyebrow">Data Forge</div>
+      <h2 class="rcm-title" id="dataforge-modal-title">Which data point?</h2>
+      <p class="rcm-sub">The data behind the online reports — one card per data point. Open it to view the data; a red mark means its last fetch had an issue.</p>
+      <div class="rcm-grid">
+        <button class="rcm-tile" id="dfTileCotality" type="button" onclick="closeDataForge(); navigateToTool('tools/data-forge.html?view=cotality', 'Data Forge');">
+          <span class="df-tile-warn" hidden>⚠️</span>
+          <div class="rcm-icon">📊</div>
+          <h3>Cotality Data</h3>
+          <div class="rcm-count">CoreLogic / Cotality</div>
+          <p>Capital cities + the 28 LGA regions — drop a CoreLogic export to trim it to the columns we track. Parsed in your browser.</p>
+        </button>
+        <button class="rcm-tile" id="dfTilePopulation" type="button" onclick="closeDataForge(); navigateToTool('tools/data-forge.html?view=population', 'Data Forge');">
+          <span class="df-tile-warn" hidden>⚠️</span>
+          <div class="rcm-icon">👥</div>
+          <h3>Population Data</h3>
+          <div class="rcm-count">ABS Data API</div>
+          <p>National, 8 states, 8 capital SUAs and 28 regional LGAs (45 regions), straight from the ABS Data API.</p>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* Data Forge tile red-warning mark (uses the shared rcm-tile look). */
+  #dataForgeModal .rcm-tile{ position:relative; }
+  #dataForgeModal .rcm-tile.df-err{ border-color:#ef4444 !important; }
+  #dataForgeModal .df-tile-warn{ position:absolute; top:10px; right:12px; font-size:1.05rem; line-height:1; }
+</style>
 
 <style>
   /* ─── Cluster picker modal styling — translucent + blurred to
@@ -4152,9 +4189,43 @@ function openPresentations() {
   if (!m) return;
   m.classList.add('show');
   m.setAttribute('aria-hidden', 'false');
+  /* Re-trigger the staggered tile reveal (same as the Online Reports modal) —
+     without this the tiles render statically with no entrance animation. */
+  activateRcmView(m.querySelector('.rcm-view'));
 }
 function closePresentations() {
   const m = document.getElementById('presentationsModal');
+  if (!m) return;
+  m.classList.remove('show');
+  m.setAttribute('aria-hidden', 'true');
+}
+
+/* Data Forge cluster picker — opens from the hub card. Same animated modal as
+   Online Reports / Presentation, plus it flags any data point whose last
+   fetch failed (red border + ⚠ on the tile), read from forge_data_status. */
+function openDataForge() {
+  const m = document.getElementById('dataForgeModal');
+  if (!m) return;
+  m.classList.add('show');
+  m.setAttribute('aria-hidden', 'false');
+  activateRcmView(m.querySelector('.rcm-view'));
+  (async () => {
+    try {
+      const { data } = await window.sb.from('forge_data_status').select('data_key,status');
+      const byKey = Object.fromEntries((data || []).map(r => [r.data_key, r.status]));
+      const mark = (id, key) => {
+        const t = document.getElementById(id); if (!t) return;
+        const bad = byKey[key] === 'error';
+        t.classList.toggle('df-err', bad);
+        const w = t.querySelector('.df-tile-warn'); if (w) w.hidden = !bad;
+      };
+      mark('dfTileCotality', 'cotality');
+      mark('dfTilePopulation', 'population');
+    } catch (_) { /* status table not present — show tiles plainly */ }
+  })();
+}
+function closeDataForge() {
+  const m = document.getElementById('dataForgeModal');
   if (!m) return;
   m.classList.remove('show');
   m.setAttribute('aria-hidden', 'true');
@@ -4234,6 +4305,11 @@ document.addEventListener('keydown', (ev) => {
   if (ev.key !== 'Escape') return;
   const m = document.getElementById('presentationsModal');
   if (m && m.classList.contains('show')) closePresentations();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Escape') return;
+  const m = document.getElementById('dataForgeModal');
+  if (m && m.classList.contains('show')) closeDataForge();
 });
 
 /* ── Auto-open Online Reports modal when arriving from the report
