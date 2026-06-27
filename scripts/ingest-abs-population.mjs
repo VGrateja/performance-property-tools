@@ -1,14 +1,15 @@
 // =============================================================================
-// ingest-abs-population.mjs — Data Forge path: POPULATION (National + Capitals
-// + Regional cities) straight from the ABS Data API (https://data.api.abs.gov.au). No API key.
+// ingest-abs-population.mjs — Data Forge path: POPULATION (National + States +
+// Capitals + Regional cities) straight from the ABS Data API (https://data.api.abs.gov.au). No API key.
 //
 // This is the verified data-gathering "path" for the population data point:
 //
-//   NATIONAL ('australia')
-//     dataflow ERP_Q  (Quarterly ERP),  key  1.3.TOT.AUS.Q
+//   NATIONAL ('australia') + STATES (st-nsw..st-act)
+//     dataflow ERP_Q (Quarterly ERP), MEASURE=1 SEX=3 AGE=TOT, REGION = AUS / 1..8
 //     -> take the DECEMBER quarter (YYYY-Q4) as the value for year YYYY.
-//     Verified: 2016-2023 reproduce the existing DB to the person; 2024/25
-//     differ only by ABS revisions to preliminary figures.
+//     Verified: national 2016-2023 + states 2016-2020 reproduce the DB to the
+//     person; later years differ only because the DB is behind ABS's post-2021
+//     Census revisions (the API is the more-current source).
 //
 //   CAPITAL CITIES (sydney/melbourne/brisbane/perth/adelaide/canberra/hobart/darwin)
 //     The DB capitals are ABS Significant Urban Areas (SUA), NOT Greater
@@ -65,17 +66,22 @@ const REGIONAL = {
   'wagga-wagga': '17750', wodonga: '27170', wollongong: '18450',
 };
 
+// ── national + states -> ERP_Q REGION code (state codes 1..8); Dec quarter ──
+const NATSTATE = { AUS: 'australia', '1': 'st-nsw', '2': 'st-vic', '3': 'st-qld', '4': 'st-sa', '5': 'st-wa', '6': 'st-tas', '7': 'st-nt', '8': 'st-act' };
+
 const rows = [];
 
-// ── NATIONAL: ERP_Q, December quarter ──
+// ── NATIONAL + STATES: ERP_Q, December quarter ──
 {
-  const j = await getJson(`${API}/data/ERP_Q/1.3.TOT.AUS.Q?startPeriod=${FROM}-Q1&format=jsondata&dimensionAtObservation=AllDimensions`);
+  const j = await getJson(`${API}/data/ERP_Q/all?startPeriod=${FROM}-Q1&format=jsondata&dimensionAtObservation=AllDimensions`);
   const od = (j.data.structure || j.data.structures[0]).dimensions.observation;
-  const tI = od.findIndex(d => d.id === 'TIME_PERIOD');
+  const mI = od.findIndex(d => d.id === 'MEASURE'), sI = od.findIndex(d => d.id === 'SEX'), aI = od.findIndex(d => d.id === 'AGE'), rI = od.findIndex(d => d.id === 'REGION'), tI = od.findIndex(d => d.id === 'TIME_PERIOD');
   for (const [k, v] of Object.entries(j.data.dataSets[0].observations)) {
-    const t = od[tI].values[k.split(':').map(Number)[tI]].id;
-    if (!t.endsWith('-Q4')) continue;
-    rows.push({ source: 'abs', region_slug: 'australia', metric: 'population', freq: 'A', period: `${t.slice(0, 4)}-01-01`, value: v[0] });
+    const ix = k.split(':').map(Number);
+    if (od[mI].values[ix[mI]].id !== '1' || od[sI].values[ix[sI]].id !== '3' || od[aI].values[ix[aI]].id !== 'TOT') continue; // ERP, persons, all ages
+    const slug = NATSTATE[od[rI].values[ix[rI]].id]; if (!slug) continue;
+    const t = od[tI].values[ix[tI]].id; if (!t.endsWith('-Q4')) continue; // December quarter
+    rows.push({ source: 'abs', region_slug: slug, metric: 'population', freq: 'A', period: `${t.slice(0, 4)}-01-01`, value: v[0] });
   }
 }
 
@@ -125,18 +131,18 @@ if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY in .env'); process.
 const sb = createClient(URL, KEY, { auth: { persistSession: false } });
 
 // existing values for comparison
-const slugs = ['australia', ...Object.keys(CAPITALS), ...Object.keys(REGIONAL)];
-const { data: cur } = await sb.from('rdp_raw_series').select('region_slug,period,value').eq('source', 'abs').eq('metric', 'population').in('region_slug', slugs);
-const curMap = Object.fromEntries((cur || []).map(r => [`${r.region_slug}|${r.period.slice(0, 10)}`, +r.value]));
-
+const slugs = [...Object.values(NATSTATE), ...Object.keys(CAPITALS), ...Object.keys(REGIONAL)];
 const latest = Math.max(...rows.map(r => +r.period.slice(0, 4)));
+const { data: cur } = await sb.from('rdp_raw_series').select('region_slug,value').eq('source', 'abs').eq('metric', 'population').eq('period', `${latest}-01-01`).in('region_slug', slugs);
+const curMap = Object.fromEntries((cur || []).map(r => [r.region_slug, +r.value]));
+
 console.log(`ABS population — ${rows.length} rows (${FROM}..${latest}) for ${slugs.length} regions\n`);
 console.log(`Latest year (${latest}) — reconstructed vs current DB:`);
 console.log('region        reconstructed   DB              diff');
 let exact = 0, compared = 0;
 for (const slug of slugs) {
   const r = rows.find(x => x.region_slug === slug && +x.period.slice(0, 4) === latest); if (!r) continue;
-  const db = curMap[`${slug}|${r.period.slice(0, 10)}`];
+  const db = curMap[slug];
   const diff = db == null ? null : r.value - db; if (diff != null) { compared++; if (diff === 0) exact++; }
   console.log(slug.padEnd(13), String(Math.round(r.value)).padStart(13), String(db ?? '—').padStart(15), (diff == null ? '—' : String(diff)).padStart(9), diff === 0 ? '  EXACT' : '');
 }
@@ -151,5 +157,5 @@ for (let i = 0; i < rows.length; i += 500) {
   if (error) { console.error('\n', error.message); process.exit(1); }
   written += chunk.length; process.stdout.write(`\r  upserted ${written}/${rows.length}`);
 }
-await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS population ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `ABS API: national ERP_Q (Dec qtr) + ${Object.keys(CAPITALS).length} capital SUAs (SA2 sum) + ${Object.keys(REGIONAL).length} regional LGAs (${lgaFlowUsed}), ${FROM}..${latest}` });
+await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS population ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `ABS API: national + 8 states ERP_Q (Dec qtr) + ${Object.keys(CAPITALS).length} capital SUAs (SA2 sum) + ${Object.keys(REGIONAL).length} regional LGAs (${lgaFlowUsed}), ${FROM}..${latest}` });
 console.log(`\n✓ Upserted ${written} ABS population rows into rdp_raw_series.`);
