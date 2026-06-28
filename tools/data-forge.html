@@ -173,6 +173,13 @@
     <div id="busBanner"></div>
     <div id="busOut"></div>
   </section>
+
+  <!-- ── FHB DWELLINGS FINANCED view (from the central DB) ── -->
+  <section id="dfFhb" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="fhbBanner"></div>
+    <div id="fhbOut"></div>
+  </section>
 </div>
 
 <script>
@@ -183,7 +190,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -192,6 +199,7 @@ function showView(name){
   if (name === 'investor') loadInvestor();
   if (name === 'retail') loadRetail();
   if (name === 'business') loadBusiness();
+  if (name === 'fhb') loadFhb();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -208,6 +216,7 @@ const CLUSTERS = [
   { key:'investor',   icon:'🏘️', ingest:'api',    label:'Lending — Investors', desc:'ABS new investor loan commitments ($m) — national + 8 states. Quarterly, stored monthly.', view:'investor' },
   { key:'retail',     icon:'🛍️', ingest:'file',   label:'Retail Turnover', desc:'ABS retail turnover (MHSI Table 19, $m) — national (monthly avg) + 8 states (annual total).', view:'retail' },
   { key:'business',   icon:'🏗️', ingest:'api',    label:'Business Investment', desc:'ABS private new capital expenditure ($m) — national + 8 states. Quarterly → annual 4-qtr sum.', view:'business' },
+  { key:'fhb',        icon:'🔑', ingest:'api',    label:'FHB Dwellings Financed', desc:'ABS Lending Indicators — first home buyer loan commitments (no.), 8 states. Quarterly → annual 4-qtr sum.', view:'fhb' },
 ];
 
 function badge(status){
@@ -376,6 +385,7 @@ async function loadAnnualMoney(o){
   catch (e) { error = e; }
   if (error || !data){ out.innerHTML = '<div class="df-card"><div class="df-empty">Couldn\'t load data' + (error ? ': ' + esc(error.message || error) : '') + '. (Sign in required — read behind RLS.)</div></div>'; return; }
 
+  const fmt = o.fmt || fmtMoney1, unit = o.unit || '$m';
   const byRegion = {}, years = new Set();
   for (const r of data){ const y = r.period.slice(0,4); years.add(y); (byRegion[r.region_slug] ||= {})[y] = +r.value; }
   const cols = [...years].sort().slice(-8);
@@ -384,10 +394,10 @@ async function loadAnnualMoney(o){
   for (const slug of regions){
     const g = groupOf(slug);
     if (g !== lastGroup){ body += '<tr class="grp"><td colspan="' + (cols.length+1) + '">' + esc(GROUP_NAME[g]) + '</td></tr>'; lastGroup = g; }
-    body += '<tr><td class="region">' + esc(labelOf(slug)) + '</td>' + cols.map(y => '<td class="num">' + fmtMoney1(byRegion[slug][y]) + '</td>').join('') + '</tr>';
+    body += '<tr><td class="region">' + esc(labelOf(slug)) + '</td>' + cols.map(y => '<td class="num">' + fmt(byRegion[slug][y]) + '</td>').join('') + '</tr>';
   }
   const head = '<tr><th style="text-align:left">Region</th>' + cols.map(y => '<th>' + y + '</th>').join('') + '</tr>';
-  out.innerHTML = '<div class="df-card"><h2>' + esc(o.title) + ' <span class="count">' + regions.length + ' regions · ' + cols[0] + '–' + cols[cols.length-1] + ' · $m</span></h2>'
+  out.innerHTML = '<div class="df-card"><h2>' + esc(o.title) + ' <span class="count">' + regions.length + ' regions · ' + cols[0] + '–' + cols[cols.length-1] + ' · ' + unit + '</span></h2>'
     + '<div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
     + '<div class="df-note">' + o.note + '</div></div>';
 }
@@ -397,6 +407,9 @@ const loadRetail = () => loadAnnualMoney({ key:'retail', metric:'retail_turnover
 const loadBusiness = () => loadAnnualMoney({ key:'business', metric:'bus_investment', bannerId:'busBanner', outId:'busOut', title:'Business investment',
   defaultMsg:'ABS private new capital expenditure (CAPEX).',
   note:'ABS Private New Capital Expenditure ($m). Each year = sum of its 4 quarters; the current (latest) year = sum of the most recent 4 quarters (rolling).' });
+const loadFhb = () => loadAnnualMoney({ key:'fhb', metric:'fhb', freqFrom:'2016-01-01', bannerId:'fhbBanner', outId:'fhbOut', title:'FHB dwellings financed', fmt:fmtInt, unit:'no.',
+  defaultMsg:'ABS Lending Indicators — first home buyer loan commitments.',
+  note:'ABS Lending Indicators (LEND_HOUSING), owner-occupier first home buyers, number of new loan commitments. Each year = sum of its 4 quarters; the current (latest) year = sum of the most recent 4 quarters (rolling). <b>States only</b> — the national figure is built from a different (monthly) method in the national report.' });
 
 /* ═══════════════════════ COTALITY view (CoreLogic column filter — unchanged logic) ═══════════════════════ */
 // 'A'->0, 'H'->7, 'Q'->16, 'AK'->36, 'AO'->40
@@ -564,7 +577,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
