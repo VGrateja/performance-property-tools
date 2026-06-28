@@ -147,6 +147,13 @@
     <div id="lendBanner"></div>
     <div id="lendOut"></div>
   </section>
+
+  <!-- ── INVESTOR LENDING view (from the central DB) ── -->
+  <section id="dfInvestor" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="invlBanner"></div>
+    <div id="invlOut"></div>
+  </section>
 </div>
 
 <script>
@@ -157,11 +164,12 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'population') loadPopulation();
   if (name === 'income') loadIncome();
   if (name === 'lending') loadLending();
+  if (name === 'investor') loadInvestor();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -172,6 +180,7 @@ const CLUSTERS = [
   { key:'population', icon:'👥', label:'Population Data',  desc:'ABS Data API — national, 8 states, 8 capital SUAs, 28 regional LGAs (45 regions).', view:'population' },
   { key:'income',     icon:'💵', label:'Income Data',     desc:'ABS Average Weekly Earnings — national + 8 states (each region uses its state’s income).', view:'income' },
   { key:'lending',    icon:'🏦', label:'Lending — Owner Occupier', desc:'ABS new owner-occupier loan commitments ($m) — national + 8 states. Quarterly, stored monthly.', view:'lending' },
+  { key:'investor',   icon:'🏘️', label:'Lending — Investors', desc:'ABS new investor loan commitments ($m) — national + 8 states. Quarterly, stored monthly.', view:'investor' },
 ];
 
 function badge(status){
@@ -281,25 +290,26 @@ async function loadIncome(){
     + '<div class="df-note">ABS Average Weekly Earnings (full-time adult ordinary-time, persons). State-level — each region uses its state’s figure. Re-based to the latest release half (May / November); the current year carries the latest forward.</div></div>';
 }
 
-async function loadLending(){
-  const banner = document.getElementById('lendBanner'), out = document.getElementById('lendOut');
-  out.innerHTML = '<div class="df-note">Loading lending data…</div>'; banner.innerHTML = '';
+// generic monthly-lending view (owner-occupier + investor share this exactly)
+async function loadMonthlyLending(o){
+  const banner = document.getElementById(o.bannerId), out = document.getElementById(o.outId);
+  out.innerHTML = '<div class="df-note">Loading data…</div>'; banner.innerHTML = '';
   let st = {};
-  try { const { data } = await window.sb.from('forge_data_status').select('*').eq('data_key','lending').maybeSingle(); st = data || {}; } catch {}
+  try { const { data } = await window.sb.from('forge_data_status').select('*').eq('data_key', o.key).maybeSingle(); st = data || {}; } catch {}
   const isErr = st.status === 'error';
   banner.innerHTML = '<div class="df-banner ' + (isErr ? 'err' : 'ok') + '">'
     + (isErr ? '⚠️ <b>Fetch issue:</b> ' : '✓ ')
-    + esc(st.message || 'ABS new owner-occupier loan commitments.')
+    + esc(st.message || o.defaultMsg)
     + ' <span style="color:var(--muted)">· source: ' + esc(st.source || 'ABS LEND_HOUSING') + ' · updated ' + fmtDate(st.last_ok_at || st.updated_at) + '</span></div>';
 
   let data, error;
-  try { ({ data, error } = await window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('source','abs').eq('metric','owner_occupier').gte('period','2024-07-01')); }
+  try { ({ data, error } = await window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('source','abs').eq('metric', o.metric).gte('period','2024-07-01')); }
   catch (e) { error = e; }
-  if (error || !data){ out.innerHTML = '<div class="df-card"><div class="df-empty">Couldn\'t load lending data' + (error ? ': ' + esc(error.message || error) : '') + '. (Sign in required — read behind RLS.)</div></div>'; return; }
+  if (error || !data){ out.innerHTML = '<div class="df-card"><div class="df-empty">Couldn\'t load data' + (error ? ': ' + esc(error.message || error) : '') + '. (Sign in required — read behind RLS.)</div></div>'; return; }
 
   const byRegion = {}, months = new Set();
   for (const r of data){ const ym = r.period.slice(0,7); months.add(ym); (byRegion[r.region_slug] ||= {})[ym] = +r.value; }
-  const cols = [...months].sort().slice(-12);   // last 12 months
+  const cols = [...months].sort().slice(-12);
   const regions = Object.keys(byRegion).sort((a,b) => groupOf(a) - groupOf(b) || labelOf(a).localeCompare(labelOf(b)));
   let lastGroup = -1, body = '';
   for (const slug of regions){
@@ -308,10 +318,12 @@ async function loadLending(){
     body += '<tr><td class="region">' + esc(labelOf(slug)) + '</td>' + cols.map(ym => '<td class="num">' + fmtMoney1(byRegion[slug][ym]) + '</td>').join('') + '</tr>';
   }
   const head = '<tr><th style="text-align:left">Region</th>' + cols.map(ym => '<th>' + ym + '</th>').join('') + '</tr>';
-  out.innerHTML = '<div class="df-card"><h2>Lending — owner occupier <span class="count">' + regions.length + ' regions · ' + cols[0] + ' – ' + cols[cols.length-1] + ' · $m</span></h2>'
+  out.innerHTML = '<div class="df-card"><h2>' + esc(o.title) + ' <span class="count">' + regions.length + ' regions · ' + cols[0] + ' – ' + cols[cols.length-1] + ' · $m</span></h2>'
     + '<div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
-    + '<div class="df-note">Value of new owner-occupier loan commitments ($m). ABS publishes this <b>quarterly</b>; stored monthly — each quarter-end month = ABS quarterly ÷ 3, the other two = trailing 3-month averages.</div></div>';
+    + '<div class="df-note">Value of new ' + esc(o.kind) + ' loan commitments ($m). ABS publishes this <b>quarterly</b>; stored monthly — each quarter-end month = ABS quarterly ÷ 3, the other two = trailing 3-month averages.</div></div>';
 }
+const loadLending  = () => loadMonthlyLending({ key:'lending',  metric:'owner_occupier', bannerId:'lendBanner', outId:'lendOut', title:'Lending — owner occupier', kind:'owner-occupier', defaultMsg:'ABS new owner-occupier loan commitments.' });
+const loadInvestor = () => loadMonthlyLending({ key:'investor', metric:'investor',       bannerId:'invlBanner', outId:'invlOut', title:'Lending — investors',     kind:'investor',       defaultMsg:'ABS new investor loan commitments.' });
 
 /* ═══════════════════════ COTALITY view (CoreLogic column filter — unchanged logic) ═══════════════════════ */
 // 'A'->0, 'H'->7, 'Q'->16, 'AK'->36, 'AO'->40
@@ -455,7 +467,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
