@@ -59,6 +59,9 @@
   .df-card{ background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; margin-bottom:18px; }
   .df-card h2{ font-family:'Montserrat',sans-serif; font-size:.78rem; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:var(--pp-cyan); margin:0 0 12px; }
   .df-card h2 .count{ color:var(--muted); font-weight:700; letter-spacing:0; text-transform:none; margin-left:8px; }
+  .df-subcard{ border:1px solid var(--border); border-radius:12px; padding:14px 16px; margin-top:14px; background:var(--panel2); }
+  .df-substep{ display:inline-block; margin-bottom:4px; font-size:.64rem; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--pp-cyan); border:1px solid var(--border); border-radius:20px; padding:3px 11px; }
+  .df-subcard .df-card{ background:var(--panel); }
 
   .df-map{ display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:8px; }
   .df-map .m{ border:1px solid var(--border); border-radius:8px; padding:8px 10px; background:var(--panel2); }
@@ -121,15 +124,28 @@
   <!-- ── COTALITY view (the CoreLogic column filter) ── -->
   <section id="dfCotality" hidden>
     <button class="df-back" data-home>← All data points</button>
-    <div class="df-card" style="margin-bottom:14px"><h2>Cotality <span class="count">CoreLogic / Cotality .xlsx — parsed in your browser; the filtered result is saved so it stays viewable</span></h2>
-      <div class="df-stage">Import &amp; filter</div>
-      <div class="df-drop" id="dfDrop">
-        <input type="file" id="dfFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
-        📊 <strong>Drop the CoreLogic .xlsx here</strong> (or click)<br/>
-        keeps only columns A, B, C, H, Q, AK, AO — all capital cities + the 28 LGA regions.
+    <div class="df-card" style="margin-bottom:14px"><h2>Cotality <span class="count">CoreLogic / Cotality — parsed in your browser; filtered results are saved so they stay viewable</span></h2>
+
+      <div class="df-subcard">
+        <div class="df-substep">① Market Trends · .xlsx</div>
+        <div class="df-drop" id="dfDrop">
+          <input type="file" id="dfFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
+          📊 <strong>Drop the CoreLogic Market Trends .xlsx here</strong> (or click)<br/>
+          keeps columns A, B, C, H, Q, AK, AO — all capital cities + the 28 LGA regions.
+        </div>
+        <div id="dfOut"></div>
+      </div>
+
+      <div class="df-subcard">
+        <div class="df-substep">② Vacancy Rate &amp; Asking Rent · .csv</div>
+        <div class="df-drop" id="dfRvDrop">
+          <input type="file" id="dfRvFile" accept=".csv,text/csv" multiple hidden/>
+          🏠 <strong>Drop the two CoreLogic .csv files here</strong> (or click — you can select both)<br/>
+          the Capital Cities + LGA exports — keeps vacancy rate (house) &amp; median asking rent (house + unit), same capitals + 28 regions.
+        </div>
+        <div id="dfRvOut"></div>
       </div>
     </div>
-    <div id="dfOut"></div>
   </section>
 
   <!-- ── POPULATION view (from the central DB) ── -->
@@ -542,15 +558,113 @@ async function saveCotality(result){
   } catch (_) { /* non-writer or table missing — they still see this session's data */ }
 }
 
-// on opening the Cotality view, show the last saved drop (no file needed)
+// on opening the Cotality view, show the last saved drops for BOTH data sets (no file needed)
 async function loadCotality(){
-  const out = document.getElementById('dfOut');
+  const out = document.getElementById('dfOut'), rvOut = document.getElementById('dfRvOut');
   out.innerHTML = '<div class="df-note">Loading last upload…</div>';
+  rvOut.innerHTML = '<div class="df-note">Loading last upload…</div>';
+  let rows = [];
+  try { const { data } = await window.sb.from('forge_cotality').select('*').in('id', ['latest', 'rentvacancy']); rows = data || []; } catch (_) {}
+  const xlsx = rows.find(r => r.id === 'latest'), rv = rows.find(r => r.id === 'rentvacancy');
+  if (xlsx && xlsx.data) renderCotality(xlsx.data, xlsx);
+  else out.innerHTML = '<div class="df-empty" style="padding:10px 2px">No Market Trends file saved yet — drop the CoreLogic .xlsx above to import it.</div>';
+  RV_STATE = (rv && rv.data) ? rv.data : null;
+  renderRentVacancy(RV_STATE, rv);
+}
+
+/* ── Cotality data set ②: Vacancy Rate (house) + Median Asking Rent (house & unit), from the two CoreLogic .csv exports ── */
+let RV_STATE = null;   // { monthEnd, capitals:[{state,name,vacHouse,rentHouse,rentUnit}], regions:[…], capFile, lgaFile, lgaMatched, lgaMissing }
+const rvDrop = document.getElementById('dfRvDrop'), rvFile = document.getElementById('dfRvFile');
+rvDrop.addEventListener('click', () => rvFile.click());
+rvDrop.addEventListener('dragover', e => { e.preventDefault(); rvDrop.classList.add('over'); });
+rvDrop.addEventListener('dragleave', () => rvDrop.classList.remove('over'));
+rvDrop.addEventListener('drop', e => { e.preventDefault(); rvDrop.classList.remove('over'); if (e.dataTransfer.files.length) importRentVacancy([...e.dataTransfer.files]); });
+rvFile.addEventListener('change', () => { if (rvFile.files.length) importRentVacancy([...rvFile.files]); });
+
+const rvPct = v => { const s = String(v == null ? '' : v).trim(); if (!s) return null; const n = parseFloat(s.replace('%', '')); return isNaN(n) ? null : n; };
+const rvNum = v => { const s = String(v == null ? '' : v).trim().replace(/[$,]/g, ''); if (!s) return null; const n = parseFloat(s); return isNaN(n) ? null : n; };
+
+// parse one CoreLogic CSV → { isCap, monthEnd, list:[{state,name,vacHouse,rentHouse,rentUnit}] }
+function parseRvCsv(text){
+  const wb = XLSX.read(text, { type: 'string' });
+  const grid = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+  if (!grid.length) throw new Error('empty file');
+  const hdr = grid[0].map(c => String(c).trim().toLowerCase());
+  const ci = lbl => hdr.findIndex(h => h.includes(lbl));
+  const cState = ci('state'), cType = ci('property type'), cMonth = ci('month end'), cVac = ci('vacancy rate'), cRent = ci('median asking rent');
+  const cCap = ci('capital city'), cLga = ci('council name'), isCap = cCap >= 0, cName = isCap ? cCap : cLga;
+  if (cName < 0 || cState < 0 || cType < 0 || cVac < 0 || cRent < 0) throw new Error('unexpected CSV columns — expected State, Capital City/Council Name, Property Type, Vacancy Rate, Median Asking Rent');
+  const by = new Map(); let monthEnd = '';
+  for (let i = 1; i < grid.length; i++){
+    const r = grid[i] || []; const name = String(r[cName] || '').trim(); if (!name) continue;
+    if (!monthEnd) monthEnd = String(r[cMonth] || '').trim();
+    const type = String(r[cType] || '').trim().toUpperCase();
+    let key, disp, state;
+    if (isCap){ state = normState(r[cState]); key = normalizeName(name) + '|' + state; disp = name; }
+    else { const tgt = matchTarget(r[cState], name); if (!tgt) continue; state = normState(tgt[1]); key = normalizeName(tgt[0]) + '|' + state; disp = tgt[0]; }
+    const e = by.get(key) || { state, name: disp };
+    if (type === 'H'){ e.vacHouse = rvPct(r[cVac]); e.rentHouse = rvNum(r[cRent]); }   // ignore Unit vacancy — house only
+    else if (type === 'U'){ e.rentUnit = rvNum(r[cRent]); }
+    by.set(key, e);
+  }
+  return { isCap, monthEnd, list: [...by.values()] };
+}
+
+async function importRentVacancy(files){
+  const out = document.getElementById('dfRvOut');
+  out.innerHTML = '<div class="df-note">Reading ' + files.map(f => esc(f.name)).join(', ') + ' …</div>';
   try {
-    const { data } = await window.sb.from('forge_cotality').select('*').eq('id', 'latest').maybeSingle();
-    if (data && data.data){ renderCotality(data.data, data); return; }
-  } catch (_) {}
-  out.innerHTML = '<div class="df-empty" style="padding:10px 2px">No Cotality file saved yet — drop the CoreLogic .xlsx above to import it.</div>';
+    const state = RV_STATE ? { ...RV_STATE } : { capitals: [], regions: [] };   // merge — dropping one file keeps the other
+    for (const f of files){
+      const p = parseRvCsv(await f.text());
+      if (p.monthEnd) state.monthEnd = p.monthEnd;
+      if (p.isCap){ state.capitals = p.list; state.capFile = f.name; }
+      else {
+        state.regions = p.list; state.lgaFile = f.name;
+        const matched = new Set(p.list.map(e => normalizeName(e.name) + '|' + normState(e.state)));
+        state.lgaMissing = LGA_TARGETS.filter(([n, s]) => !matched.has(normalizeName(n) + '|' + normState(s)));
+        state.lgaMatched = p.list.length;
+      }
+    }
+    RV_STATE = state;
+    renderRentVacancy(state);
+    saveRentVacancy(state);
+  } catch (err){ console.warn('csv import failed', err); out.innerHTML = '<div class="df-empty">Could not read that file: ' + esc(err.message || err) + '</div>'; }
+}
+
+function rvTable(list){
+  if (!list || !list.length) return '<div class="df-empty">No data yet.</div>';
+  const head = '<tr><th style="text-align:left">Region</th><th>Vacancy Rate (House)</th><th>Asking Rent — House</th><th>Asking Rent — Unit</th></tr>';
+  const body = list.map(e => '<tr><td class="region">' + esc(e.name) + '</td>'
+    + '<td class="num">' + (e.vacHouse != null ? e.vacHouse.toFixed(2) + '%' : '—') + '</td>'
+    + '<td class="num">' + (e.rentHouse != null ? '$' + e.rentHouse.toLocaleString() : '—') + '</td>'
+    + '<td class="num">' + (e.rentUnit != null ? '$' + e.rentUnit.toLocaleString() : '—') + '</td></tr>').join('');
+  return '<div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+}
+
+function renderRentVacancy(result, meta){
+  const out = document.getElementById('dfRvOut');
+  if (!result || (!(result.capitals || []).length && !(result.regions || []).length)){
+    out.innerHTML = '<div class="df-empty" style="padding:10px 2px">No vacancy/rent files saved yet — drop the two CoreLogic .csv files above (Capital Cities + LGA).</div>'; return;
+  }
+  let html = '';
+  if (meta){ const fn = [result.capFile, result.lgaFile].filter(Boolean).join(' + '); html += '<div class="df-banner ok">📄 Showing <b>' + esc(fn || 'last upload') + '</b> · uploaded ' + fmtDate(meta.uploaded_at) + (meta.uploaded_by ? ' by ' + esc(meta.uploaded_by) : '') + ' · drop new file(s) above to replace</div>'; }
+  const period = result.monthEnd ? ' <span class="count">month end ' + esc(result.monthEnd) + '</span>' : '';
+  html += card('Capital Cities <span class="count">' + (result.capitals || []).length + ' cities</span>' + period, rvTable(result.capitals));
+  const missing = result.lgaMissing || [];
+  let qc = '<div class="df-qc"><span class="df-pill ' + (missing.length ? 'warn' : 'ok') + '">' + (result.lgaMatched || (result.regions || []).length) + ' / ' + LGA_TARGETS.length + ' regions matched</span></div>';
+  if (missing.length) qc += '<div class="df-miss"><b>Not found in file:</b> ' + missing.map(([n, s]) => esc(n + ' (' + s + ')')).join(', ') + '</div>';
+  html += card('Regional LGAs <span class="count">filtered to the 28 target regions</span>', qc + '<div style="height:12px"></div>' + rvTable(result.regions));
+  out.innerHTML = html;
+}
+
+async function saveRentVacancy(result){
+  try {
+    let email = null;
+    try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch {}
+    const fname = [result.capFile, result.lgaFile].filter(Boolean).join(' + ');
+    await window.sb.from('forge_cotality').upsert({ id: 'rentvacancy', data: result, file_name: fname, uploaded_at: new Date().toISOString(), updated_at: new Date().toISOString(), uploaded_by: email }, { onConflict: 'id' });
+  } catch (_) { /* non-writer or table missing — they still see this session's data */ }
 }
 
 function card(title, body){ return '<div class="df-card"><h2>' + title + '</h2>' + body + '</div>'; }
