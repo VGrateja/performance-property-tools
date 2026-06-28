@@ -85,7 +85,7 @@ try {
   if (hdr < 0) throw new Error('no "Series ID" header row');
   const col = {}; g[hdr].forEach((v, i) => { const s = String(v).trim(); if (/^A\d+[A-Z]$/.test(s)) col[s] = i; });
   const idToSlug = Object.fromEntries(Object.entries(SERIES).map(([s, o]) => [o.id, s]));
-  const yearOf = serial => new Date(Date.UTC(1899, 11, 30) + serial * 86400000).getUTCFullYear();
+  const yearOf = serial => new Date(Date.UTC(1899, 11, 30) + Math.round(serial) * 86400000).getUTCFullYear();   // Date.UTC + round → timezone-safe & absorbs any Excel float underflow (see JSA date gotcha)
   for (const slug of Object.keys(SERIES)) monthly[slug] = {};
   for (let r = hdr + 1; r < g.length; r++) {
     const dc = g[r][0]; if (typeof dc !== 'number') continue;

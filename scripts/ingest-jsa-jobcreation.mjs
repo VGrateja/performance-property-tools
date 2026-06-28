@@ -64,7 +64,11 @@ async function recordStatus(key, label, status, message, extra = {}) {
   const { error } = await sb.from('forge_data_status').upsert(row, { onConflict: 'data_key' });
   if (error) console.warn('  (forge_data_status not updated? ' + error.message + ')');
 }
-const period = d => (d instanceof Date ? d.toISOString().slice(0, 7) : String(d).slice(0, 7)) + '-01';
+// JSA stores each month column as the 1st-of-month, but with a tiny float
+// underflow (Excel serial X.9997 → reads as the prior day 23:59:35). So
+// cellDates + toISOString lands a month early (e.g. May → "2026-04"). Round the
+// raw serial to the nearest day, then take the UTC month — recovers the true month.
+const serialMonth = serial => new Date(Date.UTC(1899, 11, 30) + Math.round(serial) * 86400000).toISOString().slice(0, 7) + '-01';
 
 // ── locate + download the two IVI .xlsx files ──
 let iviBuf, stBuf, iviSrc, stSrc;
@@ -90,8 +94,8 @@ console.log('States/Terr:', stSrc.split('/').pop());
 const rows = [];
 let latestM = '';
 try {
-  const g = XLSX.utils.sheet_to_json(XLSX.read(iviBuf, { type: 'buffer', cellDates: true }).Sheets['Indexed'], { header: 1, raw: true, defval: '' });
-  const hdr = g[0]; const dateCols = []; for (let c = 5; c < hdr.length; c++) if (hdr[c] instanceof Date) dateCols.push([c, period(hdr[c])]);
+  const g = XLSX.utils.sheet_to_json(XLSX.read(iviBuf, { type: 'buffer' }).Sheets['Indexed'], { header: 1, raw: true, defval: '' });
+  const hdr = g[0]; const dateCols = []; for (let c = 5; c < hdr.length; c++) if (typeof hdr[c] === 'number') dateCols.push([c, serialMonth(hdr[c])]);
   latestM = dateCols[dateCols.length - 1][1];
   const regionSeries = {};   // region name -> { period -> index }
   for (let r = 1; r < g.length; r++) { if (g[r][0] !== 1) continue; const name = String(g[r][2]).trim(); const s = regionSeries[name] ||= {}; for (const [c, p] of dateCols) { const v = g[r][c]; if (typeof v === 'number') s[p] = v; } }
@@ -105,10 +109,10 @@ try {
 // ── 2) National Internet Job Vacancies — Seasonally Adjusted count + index ──
 const natRows = [];
 try {
-  const wb = XLSX.read(stBuf, { type: 'buffer', cellDates: true });
+  const wb = XLSX.read(stBuf, { type: 'buffer' });
   const pull = (sheet, metric) => {
     const g = XLSX.utils.sheet_to_json(wb.Sheets[sheet], { header: 1, raw: true, defval: '' });
-    const hdr = g[0]; const dateCols = []; for (let c = 4; c < hdr.length; c++) if (hdr[c] instanceof Date) dateCols.push([c, period(hdr[c])]);
+    const hdr = g[0]; const dateCols = []; for (let c = 4; c < hdr.length; c++) if (typeof hdr[c] === 'number') dateCols.push([c, serialMonth(hdr[c])]);
     for (let r = 1; r < g.length; r++) { if (String(g[r][3]).trim() === 'AUST' && (g[r][1] === 0 || g[r][1] === '0')) { for (const [c, p] of dateCols) { const v = g[r][c]; if (typeof v === 'number') natRows.push({ source: 'jsa', region_slug: 'australia', metric, freq: 'M', period: p, value: metric === 'internet_vacancies' ? Math.round(v) : v }); } return true; } }
     return false;
   };
