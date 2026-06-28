@@ -121,7 +121,7 @@
   <!-- ── COTALITY view (the CoreLogic column filter) ── -->
   <section id="dfCotality" hidden>
     <button class="df-back" data-home>← All data points</button>
-    <div class="df-card" style="margin-bottom:14px"><h2>Cotality Data <span class="count">CoreLogic / Cotality .xlsx — parsed in your browser, nothing uploaded</span></h2>
+    <div class="df-card" style="margin-bottom:14px"><h2>Cotality <span class="count">CoreLogic / Cotality .xlsx — parsed in your browser; the filtered result is saved so it stays viewable</span></h2>
       <div class="df-stage">Import &amp; filter</div>
       <div class="df-drop" id="dfDrop">
         <input type="file" id="dfFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
@@ -185,6 +185,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 function showView(name){
   for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
+  if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
   if (name === 'income') loadIncome();
   if (name === 'lending') loadLending();
@@ -200,9 +201,9 @@ document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click'
 //         'file' = downloaded/parsed spreadsheet (no API yet — recheck later) ·
 //         'manual' = hand-uploaded by a person.
 const CLUSTERS = [
-  { key:'cotality',   icon:'📊', ingest:'manual', label:'Cotality Data',   desc:'CoreLogic / Cotality .xlsx — capital cities + 28 LGA regions. Manual upload, filtered in-browser.', view:'cotality' },
-  { key:'population', icon:'👥', ingest:'api',    label:'Population Data',  desc:'ABS Data API — national, 8 states, 8 capital SUAs, 28 regional LGAs (45 regions).', view:'population' },
-  { key:'income',     icon:'💵', ingest:'api',    label:'Income Data',     desc:'ABS Average Weekly Earnings — national + 8 states (each region uses its state’s income).', view:'income' },
+  { key:'cotality',   icon:'📊', ingest:'manual', label:'Cotality',   desc:'CoreLogic / Cotality .xlsx — capital cities + 28 LGA regions. Manual upload, filtered in-browser.', view:'cotality' },
+  { key:'population', icon:'👥', ingest:'api',    label:'Population',  desc:'ABS Data API — national, 8 states, 8 capital SUAs, 28 regional LGAs (45 regions).', view:'population' },
+  { key:'income',     icon:'💵', ingest:'api',    label:'Income',     desc:'ABS Average Weekly Earnings — national + 8 states (each region uses its state’s income).', view:'income' },
   { key:'lending',    icon:'🏦', ingest:'api',    label:'Lending — Owner Occupier', desc:'ABS new owner-occupier loan commitments ($m) — national + 8 states. Quarterly, stored monthly.', view:'lending' },
   { key:'investor',   icon:'🏘️', ingest:'api',    label:'Lending — Investors', desc:'ABS new investor loan commitments ($m) — national + 8 states. Quarterly, stored monthly.', view:'investor' },
   { key:'retail',     icon:'🛍️', ingest:'file',   label:'Retail Turnover', desc:'ABS retail turnover (MHSI Table 19, $m) — national (monthly avg) + 8 states (annual total).', view:'retail' },
@@ -483,36 +484,60 @@ async function importXlsx(file){
     const wb = XLSX.read(buf, { type:'array' });
     const capName = findSheet(wb, ['market trends','capital']);
     const lgaName = findSheet(wb, ['market trends','lga']);
-
-    let html = '';
-    const tabsNote = 'Tabs found: ' + wb.SheetNames.map(esc).join(', ');
-    html += card('Workbook', '<div class="df-note" style="margin-top:0">' + tabsNote + '</div>' + mappingHtml(capName ? processTab(wb.Sheets[capName],'cap').headers : (lgaName ? processTab(wb.Sheets[lgaName],'lga').headers : KEEP.map(()=>''))));
-
-    if (capName){
-      const cap = processTab(wb.Sheets[capName], 'cap');
-      const cities = new Set(cap.rows.map(r => r[1].toLowerCase())).size;
-      html += card('Capital Cities <span class="count">' + cap.rows.length + ' rows · ' + cities + ' cities (House + Unit)</span>', tableHtml(cap.rows));
-    } else {
-      html += card('Capital Cities', '<div class="df-empty">No “Market Trends (CapitalCities)” tab found.</div>');
-    }
-
-    if (lgaName){
-      const lga = processTab(wb.Sheets[lgaName], 'lga');
-      const missing = LGA_TARGETS.filter(([n,s]) => !lga.matched.has(normalizeName(n) + '|' + normState(s)));
-      let qc = '<div class="df-qc">'
-        + '<span class="df-pill ' + (missing.length ? 'warn' : 'ok') + '">' + lga.matched.size + ' / ' + LGA_TARGETS.length + ' regions matched</span>'
-        + '<span class="df-pill">' + lga.rows.length + ' rows kept</span></div>';
-      if (missing.length) qc += '<div class="df-miss"><b>Not found in file:</b> ' + missing.map(([n,s]) => esc(n + ' (' + s + ')')).join(', ') + '</div>';
-      html += card('Regional LGAs <span class="count">filtered to the 28 target regions</span>', qc + '<div style="height:12px"></div>' + tableHtml(lga.rows));
-    } else {
-      html += card('Regional LGAs', '<div class="df-empty">No “Market Trends (LGA)” tab found.</div>');
-    }
-
-    out.innerHTML = html;
+    const cap = capName ? processTab(wb.Sheets[capName], 'cap') : null;
+    const lga = lgaName ? processTab(wb.Sheets[lgaName], 'lga') : null;
+    // compact, serialisable result — what we render AND persist
+    const result = {
+      fileName: file.name,
+      tabs: wb.SheetNames,
+      headers: (cap || lga) ? (cap || lga).headers : KEEP.map(() => ''),
+      cap: cap ? { rows: cap.rows, cities: new Set(cap.rows.map(r => r[1].toLowerCase())).size } : null,
+      lga: lga ? { rows: lga.rows, matched: lga.matched.size, missing: LGA_TARGETS.filter(([n,s]) => !lga.matched.has(normalizeName(n) + '|' + normState(s))) } : null,
+    };
+    renderCotality(result);
+    saveCotality(result);
   } catch(err){
     console.warn('xlsx import failed', err);
     out.innerHTML = card('Error', '<div class="df-empty">Could not read that file: ' + esc(err.message || err) + '</div>');
   }
+}
+
+// render the filtered Cotality result (from a fresh drop or the saved snapshot)
+function renderCotality(result, meta){
+  const out = document.getElementById('dfOut');
+  let html = '';
+  if (meta) html += '<div class="df-banner ok">📄 Showing <b>' + esc(meta.file_name || result.fileName || 'last upload') + '</b> · uploaded ' + fmtDate(meta.uploaded_at) + (meta.uploaded_by ? ' by ' + esc(meta.uploaded_by) : '') + ' · drop a new file above to replace it</div>';
+  html += card('Workbook', '<div class="df-note" style="margin-top:0">Tabs found: ' + (result.tabs || []).map(esc).join(', ') + '</div>' + mappingHtml(result.headers || KEEP.map(() => '')));
+  if (result.cap) html += card('Capital Cities <span class="count">' + result.cap.rows.length + ' rows · ' + result.cap.cities + ' cities (House + Unit)</span>', tableHtml(result.cap.rows));
+  else html += card('Capital Cities', '<div class="df-empty">No “Market Trends (CapitalCities)” tab found.</div>');
+  if (result.lga){
+    const missing = result.lga.missing || [];
+    let qc = '<div class="df-qc"><span class="df-pill ' + (missing.length ? 'warn' : 'ok') + '">' + result.lga.matched + ' / ' + LGA_TARGETS.length + ' regions matched</span>'
+      + '<span class="df-pill">' + result.lga.rows.length + ' rows kept</span></div>';
+    if (missing.length) qc += '<div class="df-miss"><b>Not found in file:</b> ' + missing.map(([n,s]) => esc(n + ' (' + s + ')')).join(', ') + '</div>';
+    html += card('Regional LGAs <span class="count">filtered to the 28 target regions</span>', qc + '<div style="height:12px"></div>' + tableHtml(result.lga.rows));
+  } else html += card('Regional LGAs', '<div class="df-empty">No “Market Trends (LGA)” tab found.</div>');
+  out.innerHTML = html;
+}
+
+// persist the latest drop (writers only — RLS blocks others, harmlessly)
+async function saveCotality(result){
+  try {
+    let email = null;
+    try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch {}
+    await window.sb.from('forge_cotality').upsert({ id: 'latest', data: result, file_name: result.fileName, uploaded_at: new Date().toISOString(), updated_at: new Date().toISOString(), uploaded_by: email }, { onConflict: 'id' });
+  } catch (_) { /* non-writer or table missing — they still see this session's data */ }
+}
+
+// on opening the Cotality view, show the last saved drop (no file needed)
+async function loadCotality(){
+  const out = document.getElementById('dfOut');
+  out.innerHTML = '<div class="df-note">Loading last upload…</div>';
+  try {
+    const { data } = await window.sb.from('forge_cotality').select('*').eq('id', 'latest').maybeSingle();
+    if (data && data.data){ renderCotality(data.data, data); return; }
+  } catch (_) {}
+  out.innerHTML = '<div class="df-empty" style="padding:10px 2px">No Cotality file saved yet — drop the CoreLogic .xlsx above to import it.</div>';
 }
 
 function card(title, body){ return '<div class="df-card"><h2>' + title + '</h2>' + body + '</div>'; }
