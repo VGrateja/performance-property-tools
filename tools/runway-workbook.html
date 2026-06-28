@@ -165,7 +165,7 @@
   <div id="rwBody"><div class="msg" id="rwMsg">Loading…</div></div>
 
   <p class="note" id="rwNote" style="display:none">
-    <b>Method:</b> AI (affordability index) = annual P&amp;I repayment (80% LVR, 30-yr) ÷ annual income. Ceiling price = the most a buyer can borrow at the region's <i>AI ceiling</i> ÷ 0.8. Runway % = how far the current median sits below that ceiling. Editing the assumptions recomputes everything in your browser; <b>Save</b> writes them back to <code>rdp_runway_config</code> (writers only). Inputs from <code>rdp_runway</code>.
+    <b>Method:</b> AI (affordability index) = annual P&amp;I repayment (80% LVR, 30-yr) ÷ annual income. Ceiling price = the most a buyer can borrow at the region's <i>AI ceiling</i> ÷ 0.8. Runway % = how far the current median sits below that ceiling. Editing the assumptions recomputes everything in your browser; <b>Save</b> writes them back to <code>rdp_runway_config</code> (writers only). Median &amp; ceilings from <code>rdp_runway</code>; weekly income is read live from the Income data point (<code>rdp_raw_series</code>, each region uses its state's figure).
   </p>
 </div>
 
@@ -178,8 +178,11 @@ const fmtMoney = v => v == null ? '—' : '$' + Math.round(v).toLocaleString();
 const fmtPct = v => v == null ? '—' : (v * 100).toFixed(2) + '%';
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-let REGIONS = {}, RUNWAY = {}, CFG = null;
+let REGIONS = {}, RUNWAY = {}, CFG = null, INCOME = {};
 let cur = { slug: null, type: 'h', wg: true, rate: null, scenario: 'forecast', cfg: null };
+// live weekly income for a region = its STATE's latest income (the income data point);
+// null falls back to the mart snapshot baked into rdp_runway.
+const stateIncome = slug => { const st = ((REGIONS[slug] && REGIONS[slug].state) || '').toUpperCase(); return INCOME[st] != null ? INCOME[st] : null; };
 const currentRate = () => cur.cfg.varCur + cur.cfg.apra;
 const forecastRate = () => cur.cfg.cashFc + cur.cfg.margin + cur.cfg.apraFc;
 // the rate implied by the active scenario; 'custom' keeps whatever the slider/steppers set
@@ -191,10 +194,11 @@ function boot() { let n = 0; const t = setInterval(() => { if (window.sb) { clea
 
 async function load() {
   try {
-    const [reg, rw, cfg] = await Promise.all([
+    const [reg, rw, cfg, inc] = await Promise.all([
       window.sb.from('rdp_regions').select('slug,name,state,cluster'),
       window.sb.from('rdp_runway').select('region_slug,payload'),
       window.sb.from('rdp_runway_config').select('key,value'),
+      window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('source', 'abs').eq('metric', 'median_income'),
     ]);
     if (reg.error || rw.error || cfg.error) {
       const e = reg.error || rw.error || cfg.error;
@@ -206,6 +210,8 @@ async function load() {
     REGIONS = Object.fromEntries((reg.data || []).map(r => [r.slug, r]));
     RUNWAY = Object.fromEntries((rw.data || []).filter(r => r.payload && r.payload.inputs).map(r => [r.region_slug, r.payload]));
     CFG = Object.fromEntries((cfg.data || []).map(r => [r.key, r.value]));
+    // live weekly income per state (latest period) → connects the runway to the income data point
+    { const latest = {}; for (const row of (inc && inc.data) || []) { const m = /^st-(\w+)$/.exec(row.region_slug); if (!m) continue; const st = m[1].toUpperCase(); if (!latest[st] || row.period > latest[st]) { latest[st] = row.period; INCOME[st] = +row.value; } } }
     if (!Object.keys(RUNWAY).length || !CFG.rates) { $('#rwMsg').innerHTML = 'No runway inputs/config yet.'; return; }
     const rc = CFG.rates.current || {}, rf = CFG.rates.forecast || {}, wgc = CFG.wage_growth || {};
     cur.cfg = {
@@ -223,7 +229,7 @@ const regionsList = () => Object.keys(RUNWAY).map(slug => ({ slug, name: (REGION
 function calc(slug, type, rate, wg = cur.wg) {
   const r = RUNWAY[slug]; if (!r) return null;
   const median = type === 'h' ? r.inputs.median_h : r.inputs.median_u;
-  let income = r.inputs.income;
+  let income = stateIncome(slug) ?? r.inputs.income;   // live from the income data point; fall back to the mart snapshot
   if (wg) { const cap = (REGIONS[slug] && REGIONS[slug].cluster) === 'capital'; const wr = cap ? cur.cfg.wgCapital : cur.cfg.wgRegional; income = income * Math.pow(1 + (wr || 0), cur.cfg.wgYears || 1); }
   const aiCeiling = type === 'h' ? r.ai_ceiling.h : r.ai_ceiling.u;
   if (median == null || aiCeiling == null || income == null) return null;
@@ -334,6 +340,7 @@ function updateDynamic() {
   const reg = REGIONS[cur.slug] || {};
   const median = cur.type === 'h' ? r.inputs.median_h : r.inputs.median_u;
   const aiCeil = cur.type === 'h' ? r.ai_ceiling.h : r.ai_ceiling.u;
+  const baseIncome = stateIncome(cur.slug) ?? r.inputs.income;   // state weekly income feeding the calc
   const pos = c.runway_pct >= 0;
   const barMax = Math.max(median, c.ceiling) || 1;
   const fillW = Math.max(4, (median / barMax) * 100);
@@ -341,7 +348,7 @@ function updateDynamic() {
   const col = pos ? 'var(--green)' : 'var(--red)';
   $('#rwHero').innerHTML = `
     <div class="heroTop">
-      <div><div class="region-name">${esc(reg.name || cur.slug)}</div><div class="region-sub">${esc(reg.state || '')} · ${cur.type === 'h' ? 'Houses' : 'Units'}${cur.wg ? ' · wage-growth applied' : ''}</div></div>
+      <div><div class="region-name">${esc(reg.name || cur.slug)}</div><div class="region-sub">${esc(reg.state || '')} · ${cur.type === 'h' ? 'Houses' : 'Units'} · income ${fmtMoney(baseIncome)}/wk${cur.wg ? ' · wage-growth applied' : ''}</div></div>
       <div class="clockchip"><div class="t">${esc(c.clock || '—')}</div><div class="l">clock</div></div>
     </div>
     <div class="stats">
