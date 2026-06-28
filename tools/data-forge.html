@@ -250,17 +250,29 @@
     <div id="nomBanner"></div>
     <div id="nomOut"></div>
   </section>
+
+  <!-- ── JOB CREATION INDEX (JSA IVI) + NATIONAL JOB VACANCIES ── -->
+  <section id="dfJobcreation" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="jciBanner"></div>
+    <div id="jciOut"></div>
+  </section>
+  <section id="dfNatvac" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="natvacOut"></div>
+  </section>
 </div>
 
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmtInt = n => (n == null || isNaN(n)) ? '—' : Math.round(n).toLocaleString();
 const fmtMoney1 = v => (v == null || isNaN(v)) ? '—' : '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const fmtIdx = v => (v == null || isNaN(v)) ? '—' : Number(v).toFixed(1);
 const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDateString('en-AU', { day:'numeric', month:'short', year:'numeric' }); } catch { return s; } };
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -273,6 +285,8 @@ function showView(name){
   if (name === 'natinc') loadNatinc();
   if (name === 'nim') loadNim();
   if (name === 'nom') loadNom();
+  if (name === 'jobcreation') loadJobCreation();
+  if (name === 'natvac') loadNationalVacancies();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -293,6 +307,8 @@ const CLUSTERS = [
   { key:'natural_increase', icon:'👶', ingest:'api', label:'Natural Increase', desc:'ABS components of population change (births − deaths) — national + 8 states. Quarterly → annual 4-qtr sum.', view:'natinc' },
   { key:'nim',        icon:'🔁', ingest:'api',    label:'Net Internal Migration', desc:'ABS net interstate migration — 8 states. Quarterly → annual 4-qtr sum.', view:'nim' },
   { key:'nom',        icon:'🌏', ingest:'api',    label:'Net Overseas Migration', desc:'ABS net overseas migration — national + 8 states. Quarterly → annual 4-qtr sum.', view:'nom' },
+  { key:'job_creation_index', icon:'📈', ingest:'file', label:'Job Creation Index', desc:'JSA Internet Vacancy Index — 8 capitals + 28 regional cities. Monthly index (spreadsheet — no API).', view:'jobcreation' },
+  { key:'national_vacancies', icon:'💼', ingest:'api', label:'National Job Vacancies', desc:'JSA national internet vacancies (SA) + ABS Job Vacancies survey (private/public). Monthly + quarterly.', view:'natvac' },
 ];
 
 function badge(status){
@@ -373,11 +389,21 @@ async function renderSeriesView(o){
   try { const { data } = await window.sb.from('forge_data_status').select('*').eq('data_key', o.key).maybeSingle(); st = data || {}; } catch {}
   const isErr = st.status === 'error';
 
-  let q = window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('source', 'abs').eq('metric', o.metric).gte('period', o.from);
-  if (o.freq) q = q.eq('freq', o.freq);
-  let data, error;
-  try { ({ data, error } = await q); } catch (e) { error = e; }
-  if (error || !data || !data.length){
+  // paginate — Supabase caps a query at 1000 rows by default; metrics like
+  // job_creation_index (37 cities × ~190 months) exceed that, which silently
+  // truncated the view to ~10 regions.
+  let data = [], error = null;
+  try {
+    for (let pg = 0; pg < 30; pg++) {
+      let q = window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('source', o.dbSource || 'abs').eq('metric', o.metric).gte('period', o.from).order('period').range(pg * 1000, pg * 1000 + 999);
+      if (o.freq) q = q.eq('freq', o.freq);
+      const { data: chunk, error: e } = await q;
+      if (e) { error = e; break; }
+      data = data.concat(chunk || []);
+      if (!chunk || chunk.length < 1000) break;
+    }
+  } catch (e) { error = e; }
+  if (error || !data.length){
     out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">' + esc(o.title) + '</div>'
       + '<div class="df-sub"><span class="df-statuspill err">Unavailable</span> <span>Couldn’t load the data' + (error ? ': ' + esc(error.message || error) : '') + '. (Sign in required — read behind RLS.)</span></div></div>';
     return;
@@ -461,6 +487,48 @@ const loadNim = () => renderSeriesView({ outId:'nimOut', bannerId:'nimBanner', k
 const loadNom = () => renderSeriesView({ outId:'nomOut', bannerId:'nomBanner', key:'nom', metric:'nom', freq:'A', from:'2010-01-01', period:'year', fmt:fmtInt, unit:'persons', sortBy:'group',
   title:'Net overseas migration', eyebrow:'ABS · Components of population change', source:'ABS ERP_COMP_Q', defaultMsg:'ABS net overseas migration.',
   note:popcompNote('net overseas migration, national + 8 states.') });
+
+const loadJobCreation = () => renderSeriesView({ outId:'jciOut', bannerId:'jciBanner', key:'job_creation_index', metric:'job_creation_index', dbSource:'jsa', from:'2018-01-01', period:'month', colN:13, fmt:fmtIdx, unit:'index', sortBy:'group',
+  title:'Job Creation Index', eyebrow:'JSA · Internet Vacancy Index', source:'Jobs & Skills Australia (IVI)', defaultMsg:'JSA Internet Vacancy Index — capitals + regional cities.',
+  note:'Jobs &amp; Skills Australia Internet Vacancy Index (IVI), all-occupations index per IVI region (the "Indexed" sheet). Each capital is its own IVI region; each regional city maps to its broader IVI region (e.g. Mackay → Central Queensland). Monthly; no API — auto-downloaded spreadsheet.' });
+
+// custom national view: a small "series as rows" table builder
+function natSeriesTable(title, sub, defs, by, colN){
+  const periods = new Set(); for (const d of defs) for (const p of Object.keys(by[d.metric] || {})) periods.add(p);
+  const cols = [...periods].sort().slice(-colN);
+  if (!cols.length) return card(title, '<div class="df-empty">No data yet.</div>');
+  const head = '<tr><th class="th-l">Series</th><th class="th-l">Trend</th>' + cols.map((c, i) => '<th' + (i === cols.length - 1 ? ' class="last"' : '') + '>' + esc(c.slice(0, 7)) + '</th>').join('') + '</tr>';
+  let body = '';
+  for (const d of defs){ const s = by[d.metric] || {};
+    body += '<tr><td class="region">' + esc(d.label) + '</td><td class="spark">' + sparkline(cols.map(c => s[c])) + '</td>'
+      + cols.map((c, i) => '<td class="num' + (i === cols.length - 1 ? ' last' : '') + '">' + d.fmt(s[c]) + '</td>').join('') + '</tr>'; }
+  return '<div class="df-card df-tablecard"><h2>' + esc(title) + ' <span class="count">' + esc(sub) + '</span></h2><div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div></div>';
+}
+async function loadNationalVacancies(){
+  const out = document.getElementById('natvacOut');
+  out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">JSA + ABS · Job vacancies</div><div class="df-title">National Job Vacancies</div><div class="df-sub">Loading…</div></div>';
+  let st = {}; try { const { data } = await window.sb.from('forge_data_status').select('*').eq('data_key', 'national_vacancies').maybeSingle(); st = data || {}; } catch {}
+  const by = {};
+  try { const { data } = await window.sb.from('rdp_raw_series').select('metric,period,value').eq('region_slug', 'australia').in('metric', ['internet_vacancies', 'internet_vacancies_index', 'job_vacancies_total', 'job_vacancies_private', 'job_vacancies_public']).gte('period', '2016-01-01');
+    for (const r of (data || [])) (by[r.metric] ||= {})[r.period] = +r.value; }
+  catch (e) { out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">JSA + ABS · Job vacancies</div><div class="df-title">National Job Vacancies</div><div class="df-sub"><span class="df-statuspill err">Unavailable</span> <span>Couldn’t load (sign in required — read behind RLS).</span></div></div>'; return; }
+  const latest = m => { const s = by[m] || {}; const ks = Object.keys(s).sort(); return ks.length ? { p: ks[ks.length - 1], v: s[ks[ks.length - 1]], pv: s[ks[ks.length - 2]] } : null; };
+  const delta = o => { if (!o || o.pv == null || o.pv === 0) return ''; const pc = (o.v - o.pv) / o.pv * 100, up = pc >= 0; return ' <span class="df-delta ' + (up ? 'up' : 'dn') + '">' + (up ? '▲' : '▼') + Math.abs(pc).toFixed(1) + '%</span>'; };
+  const ivc = latest('internet_vacancies'), ivi = latest('internet_vacancies_index'), jvt = latest('job_vacancies_total');
+  const isErr = st.status === 'error';
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">JSA + ABS · Job vacancies</div><div class="df-title">National Job Vacancies</div>'
+    + '<div class="df-sub">' + (isErr ? '<span class="df-statuspill err">Fetch issue</span>' : '<span class="df-statuspill ok">Up to date</span>') + ' <span>' + esc(st.message || 'JSA internet vacancies (seasonally adjusted) + ABS Job Vacancies survey.') + '</span></div></div></div>'
+    + '<div class="df-stats">'
+    + dfStat('Internet vacancies · ' + (ivc ? esc(ivc.p.slice(0, 7)) : '—'), (ivc ? fmtInt(ivc.v) : '—') + delta(ivc) + ' <small>SA</small>', true)
+    + dfStat('Internet vacancies index', ivi ? fmtIdx(ivi.v) : '—')
+    + dfStat('ABS total vacancies · ' + (jvt ? esc(jvt.p.slice(0, 7)) : '—'), (jvt ? fmtIdx(jvt.v) : '—') + ' <small>’000</small>' + delta(jvt))
+    + dfStat('Source', '<span class="sm">JSA IVI + ABS 6354.0</span><div class="df-stat-foot">' + ingestChip('file') + ' updated ' + fmtDate(st.last_ok_at || st.updated_at) + '</div>')
+    + '</div></div>';
+  const t1 = natSeriesTable('Internet job vacancies (national)', 'seasonally adjusted · monthly', [{ metric:'internet_vacancies', label:'Vacancies (SA count)', fmt:fmtInt }, { metric:'internet_vacancies_index', label:'Index', fmt:fmtIdx }], by, 13);
+  const t2 = natSeriesTable('ABS job vacancies (national)', 'original · quarterly · ’000', [{ metric:'job_vacancies_total', label:'Total', fmt:fmtIdx }, { metric:'job_vacancies_private', label:'Private', fmt:fmtIdx }, { metric:'job_vacancies_public', label:'Public', fmt:fmtIdx }], by, 9);
+  out.innerHTML = hero + t1 + t2 + '<div class="df-note">JSA Internet Vacancy Index — states &amp; territories, AUSTRALIAN TOTAL, seasonally adjusted (count + index), monthly. ABS Job Vacancies (cat 6354.0), original, in thousands, quarterly.</div>';
+}
 
 /* ═══════════════════════ COTALITY view (CoreLogic column filter — unchanged logic) ═══════════════════════ */
 // 'A'->0, 'H'->7, 'Q'->16, 'AK'->36, 'AO'->40
@@ -726,7 +794,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
