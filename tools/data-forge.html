@@ -154,6 +154,13 @@
     <div id="invlBanner"></div>
     <div id="invlOut"></div>
   </section>
+
+  <!-- ── RETAIL TURNOVER view (from the central DB) ── -->
+  <section id="dfRetail" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="retBanner"></div>
+    <div id="retOut"></div>
+  </section>
 </div>
 
 <script>
@@ -164,12 +171,13 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'population') loadPopulation();
   if (name === 'income') loadIncome();
   if (name === 'lending') loadLending();
   if (name === 'investor') loadInvestor();
+  if (name === 'retail') loadRetail();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -181,6 +189,7 @@ const CLUSTERS = [
   { key:'income',     icon:'💵', label:'Income Data',     desc:'ABS Average Weekly Earnings — national + 8 states (each region uses its state’s income).', view:'income' },
   { key:'lending',    icon:'🏦', label:'Lending — Owner Occupier', desc:'ABS new owner-occupier loan commitments ($m) — national + 8 states. Quarterly, stored monthly.', view:'lending' },
   { key:'investor',   icon:'🏘️', label:'Lending — Investors', desc:'ABS new investor loan commitments ($m) — national + 8 states. Quarterly, stored monthly.', view:'investor' },
+  { key:'retail',     icon:'🛍️', label:'Retail Turnover', desc:'ABS retail turnover (MHSI Table 19, $m) — national (monthly avg) + 8 states (annual total).', view:'retail' },
 ];
 
 function badge(status){
@@ -325,6 +334,38 @@ async function loadMonthlyLending(o){
 const loadLending  = () => loadMonthlyLending({ key:'lending',  metric:'owner_occupier', bannerId:'lendBanner', outId:'lendOut', title:'Lending — owner occupier', kind:'owner-occupier', defaultMsg:'ABS new owner-occupier loan commitments.' });
 const loadInvestor = () => loadMonthlyLending({ key:'investor', metric:'investor',       bannerId:'invlBanner', outId:'invlOut', title:'Lending — investors',     kind:'investor',       defaultMsg:'ABS new investor loan commitments.' });
 
+async function loadRetail(){
+  const banner = document.getElementById('retBanner'), out = document.getElementById('retOut');
+  out.innerHTML = '<div class="df-note">Loading retail data…</div>'; banner.innerHTML = '';
+  let st = {};
+  try { const { data } = await window.sb.from('forge_data_status').select('*').eq('data_key','retail').maybeSingle(); st = data || {}; } catch {}
+  const isErr = st.status === 'error';
+  banner.innerHTML = '<div class="df-banner ' + (isErr ? 'err' : 'ok') + '">'
+    + (isErr ? '⚠️ <b>Fetch issue:</b> ' : '✓ ')
+    + esc(st.message || 'ABS retail turnover (MHSI Table 19).')
+    + ' <span style="color:var(--muted)">· source: ' + esc(st.source || 'ABS MHSI Table 19') + ' · updated ' + fmtDate(st.last_ok_at || st.updated_at) + '</span></div>';
+
+  let data, error;
+  try { ({ data, error } = await window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('source','abs').eq('metric','retail_turnover').eq('freq','A').gte('period','2016-01-01')); }
+  catch (e) { error = e; }
+  if (error || !data){ out.innerHTML = '<div class="df-card"><div class="df-empty">Couldn\'t load retail data' + (error ? ': ' + esc(error.message || error) : '') + '. (Sign in required — read behind RLS.)</div></div>'; return; }
+
+  const byRegion = {}, years = new Set();
+  for (const r of data){ const y = r.period.slice(0,4); years.add(y); (byRegion[r.region_slug] ||= {})[y] = +r.value; }
+  const cols = [...years].sort().slice(-8);
+  const regions = Object.keys(byRegion).sort((a,b) => groupOf(a) - groupOf(b) || labelOf(a).localeCompare(labelOf(b)));
+  let lastGroup = -1, body = '';
+  for (const slug of regions){
+    const g = groupOf(slug);
+    if (g !== lastGroup){ body += '<tr class="grp"><td colspan="' + (cols.length+1) + '">' + esc(GROUP_NAME[g]) + '</td></tr>'; lastGroup = g; }
+    body += '<tr><td class="region">' + esc(labelOf(slug)) + '</td>' + cols.map(y => '<td class="num">' + fmtMoney1(byRegion[slug][y]) + '</td>').join('') + '</tr>';
+  }
+  const head = '<tr><th style="text-align:left">Region</th>' + cols.map(y => '<th>' + y + '</th>').join('') + '</tr>';
+  out.innerHTML = '<div class="df-card"><h2>Retail turnover <span class="count">' + regions.length + ' regions · ' + cols[0] + '–' + cols[cols.length-1] + ' · $m</span></h2>'
+    + '<div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + '<div class="df-note">ABS Monthly Household Spending Indicator, Table 19 ($m). <b>National</b> = average monthly turnover; <b>states</b> = annualised total (monthly avg × 12). The current (latest) year is the average of the months available so far.</div></div>';
+}
+
 /* ═══════════════════════ COTALITY view (CoreLogic column filter — unchanged logic) ═══════════════════════ */
 // 'A'->0, 'H'->7, 'Q'->16, 'AK'->36, 'AO'->40
 function colToIdx(letter){ let n=0; for (const ch of letter.toUpperCase()) n = n*26 + (ch.charCodeAt(0)-64); return n-1; }
@@ -467,7 +508,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
