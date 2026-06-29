@@ -137,6 +137,24 @@
   .ind-row.total .ind-dol, .ind-row.total .ind-lbl{ color:var(--text); }
   @media (max-width:640px){ .ind-lbl{ flex-basis:150px; } }
 
+  /* Population pyramid — per-region grouped horizontal bars (region vs comparator) */
+  .pyr-legend{ display:flex; gap:18px; align-items:center; margin:2px 0 12px; font-size:.78rem; font-weight:700; color:var(--text); flex-wrap:wrap; }
+  .pyr-legend .k{ display:inline-flex; align-items:center; gap:7px; }
+  .pyr-legend .sw{ width:14px; height:14px; border-radius:3px; display:inline-block; }
+  .pyr-list{ display:flex; flex-direction:column; }
+  .pyr-row{ display:flex; align-items:center; gap:12px; padding:7px 4px; border-bottom:1px solid var(--border); }
+  .pyr-row:hover{ background:var(--panel2); }
+  .pyr-age{ flex:0 0 86px; font-weight:700; font-size:.8rem; color:var(--text); font-variant-numeric:tabular-nums; }
+  .pyr-bars{ flex:1; display:flex; flex-direction:column; gap:4px; min-width:80px; }
+  .pyr-bar{ display:flex; align-items:center; gap:9px; }
+  .pyr-track{ flex:1; height:11px; background:var(--panel2); border-radius:4px; overflow:hidden; }
+  .pyr-fill{ height:100%; border-radius:4px; min-width:1px; }
+  .pyr-fill.region{ background:linear-gradient(90deg,var(--pp-cyan,#00b6cb),#5fd0e0); }
+  .pyr-fill.cmp{ background:linear-gradient(90deg,#7a8aa8,#9aa7c0); }
+  .pyr-val{ flex:0 0 46px; text-align:right; font-size:.74rem; font-variant-numeric:tabular-nums; color:var(--muted); }
+  .pyr-val.region{ color:var(--text); font-weight:700; }
+  @media (max-width:640px){ .pyr-age{ flex-basis:62px; font-size:.72rem; } }
+
   .df-qc{ display:flex; flex-wrap:wrap; gap:10px; }
   .df-pill{ font-size:.74rem; font-weight:700; border:1px solid var(--border); border-radius:8px; padding:7px 12px; background:var(--panel2); color:var(--text); }
   .df-pill.ok{ border-color:rgba(34,197,94,.5); }
@@ -325,6 +343,20 @@
       <div id="indMsg"></div>
     </div>
   </section>
+
+  <!-- ── POPULATION PYRAMID (hybrid: ABS API nat/states/capitals + manual regional upload) ── -->
+  <section id="dfPopPyramid" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="pyrOut"></div>
+    <div class="df-card" style="margin-top:14px"><h2>Update regional cities <span class="count">upload the Data Dump “PopPyramid” sheet — only the 28 regional LGA columns are imported</span></h2>
+      <div class="df-drop" id="pyrDrop">
+        <input type="file" id="pyrFile" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden/>
+        🔺 <strong>Drop the PopPyramid .xlsx here</strong> (or click)<br/>
+        Age groups down column A, region columns across the top (population counts). Only the 28 <em>regional-city</em> columns are imported — National, states &amp; capital cities are pulled automatically from the ABS API (current vintage) and won’t be overwritten.
+      </div>
+      <div id="pyrMsg"></div>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -337,7 +369,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -358,6 +390,7 @@ function showView(name){
   if (name === 'unemployment') loadUnemployment();
   if (name === 'approvals') loadApprovals();
   if (name === 'industry') loadIndustry();
+  if (name === 'popPyramid') loadPopPyramid();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -383,6 +416,7 @@ const CLUSTERS = [
   { key:'unemployment', icon:'👷', ingest:'api', label:'Unemployment & Underemployment', desc:'ABS Labour Force (Original) — unemployment for national, 8 states, 7 capitals & 28 regions; underemployment national. API (national/states) + ABS data cubes (capitals/regionals).', view:'unemployment' },
   { key:'approvals', icon:'🏠', ingest:'api', label:'Building Approvals', desc:'ABS Building Approvals (8731.0, Original) — new house + unit dwelling approvals. National + 8 capitals (BA_GCCSA) + 28 LGA regions (BA_LGA). Annual counts.', view:'approvals' },
   { key:'industry', icon:'🏭', ingest:'manual', label:'Industry Value Added', desc:'Industry composition (% by ANZSIC division) per region. No API — gathered from REMPLAN economy profiles (and economy.id where available); uploaded as a spreadsheet.', view:'industry' },
+  { key:'population_pyramid', icon:'🔺', ingest:'api', label:'Population Pyramid', desc:'Population by 5-year age group per region. National, 8 states & 8 capital cities (GCCSA) auto-pulled from the ABS API (ERP_ASGS2021, age×sex); the 28 regional cities uploaded from the Data Dump PopPyramid sheet.', view:'popPyramid' },
   { key:'inflation', icon:'📉', ingest:'file', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
   { key:'cash_rate', icon:'🏦', ingest:'file', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'file', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
@@ -412,7 +446,7 @@ async function loadStatus(){
     const st = statusMap[c.key] || {};
     const status = (c.key === 'cotality' || c.key === 'industry') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
     const isErr = status === 'error';
-    const meta = c.key === 'population'
+    const meta = (c.key === 'population' || c.key === 'population_pyramid')
       ? (st.last_ok_at ? 'Updated ' + fmtDate(st.last_ok_at) + (st.region_count ? ' · ' + st.region_count + ' regions' : '') : 'Not yet run via the monitored path')
       : (st.updated_at ? 'Last activity ' + fmtDate(st.updated_at) : 'Manual upload');
     return '<button class="df-cluster ' + (isErr ? 'err' : '') + '" data-view="' + c.view + '">'
@@ -777,6 +811,135 @@ function renderIndustryRegion(){
   drop.addEventListener('dragleave', () => drop.classList.remove('over'));
   drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) importIndustryFiles([...e.dataTransfer.files]); });
   file.addEventListener('change', () => { if (file.files.length) importIndustryFiles([...file.files]); });
+})();
+
+/* ── Population Pyramid (HYBRID — ABS API for national/states/capitals, manual
+   upload for the 28 regional cities). Stored in forge_population_pyramid (jsonb):
+     { ageGroups:[18], regions:{ <slug>:{ label, src:'api'|'upload', total:[18], year } } }
+   The view shows each region's age distribution as a % of its population vs its
+   comparator (capitals → National, regional cities → State). ─────────────── */
+const PYR_AGE_GROUPS = ['0-04','05-09','10-14','15-19','20-24','25-29','30-34','35-39','40-44','45-49','50-54','55-59','60-64','65-69','70-74','75-79','80-84','85 and over'];
+// the 28 regional cities (upload-only) → their State (the pyramid's comparator)
+const PYR_REG_STATE = { mackay:'st-qld', bundaberg:'st-qld', ipswich:'st-qld', rockhampton:'st-qld', gladstone:'st-qld', cairns:'st-qld', townsville:'st-qld', 'sunshine-coast':'st-qld', toowoomba:'st-qld', 'gold-coast':'st-qld', albury:'st-nsw', 'central-coast':'st-nsw', 'coffs-harbour':'st-nsw', orange:'st-nsw', 'port-macquarie':'st-nsw', newcastle:'st-nsw', tamworth:'st-nsw', 'wagga-wagga':'st-nsw', wollongong:'st-nsw', ballarat:'st-vic', bendigo:'st-vic', geelong:'st-vic', wodonga:'st-vic', mildura:'st-vic', mandurah:'st-wa', rockingham:'st-wa', bunbury:'st-wa', launceston:'st-tas' };
+const PYR_REGIONALS = new Set(Object.keys(PYR_REG_STATE));
+function pyrComparator(slug){ if (slug === 'australia') return null; if (CAP_SET.has(slug) || ST_ABBR[slug]) return 'australia'; return PYR_REG_STATE[slug] || null; }
+function pyrSlug(name){ const s = String(name == null ? '' : name).split(',')[0].trim().toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); return s === 'national' ? 'australia' : s; }
+function normPyrAge(v){ if (v == null) return null; const s = String(v).trim().toLowerCase().replace(/\s+/g, ' '); for (const g of PYR_AGE_GROUPS) if (g.toLowerCase() === s) return g; if (/85/.test(s) && /(over|\+|plus|and)/.test(s)) return '85 and over'; const m = s.match(/^(\d{1,2})\s*[-–]\s*(\d{1,2})$/); if (m) for (const cand of [m[1].padStart(2, '0') + '-' + m[2].padStart(2, '0'), m[1] + '-' + m[2].padStart(2, '0')]) if (PYR_AGE_GROUPS.includes(cand)) return cand; return null; }
+// parse the Data Dump "PopPyramid" sheet, importing ONLY the 28 regional-city columns
+function parsePyramidSheet(wb){
+  for (const sn of wb.SheetNames){
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, blankrows: false });
+    if (rows.length < 6) continue;
+    let hi = rows.findIndex(r => /pyramid|^\s*age\b/i.test(String((r || [])[0] || '')));
+    if (hi < 0){ const a0 = rows.findIndex(r => normPyrAge((r || [])[0])); if (a0 > 0) hi = a0 - 1; else continue; }
+    const header = rows[hi] || [];
+    const ageRows = [];
+    for (let r = hi + 1; r < rows.length && ageRows.length < PYR_AGE_GROUPS.length; r++){ const lbl = normPyrAge((rows[r] || [])[0]); if (lbl) ageRows.push([r, PYR_AGE_GROUPS.indexOf(lbl)]); }
+    if (ageRows.length < PYR_AGE_GROUPS.length) continue;
+    const regions = {};
+    for (let c = 1; c < header.length; c++){
+      const slug = pyrSlug(header[c]); if (!PYR_REGIONALS.has(slug)) continue;   // regionals only
+      const total = Array(PYR_AGE_GROUPS.length).fill(null); let any = false;
+      for (const [r, idx] of ageRows){ if (idx < 0) continue; const cell = rows[r][c]; const v = Number(cell); if (cell != null && cell !== '' && !isNaN(v)){ total[idx] = Math.round(v); any = true; } }
+      if (any) regions[slug] = { label: labelOf(slug), src: 'upload', total };
+    }
+    if (Object.keys(regions).length) return { regions };
+  }
+  return null;
+}
+async function importPyramidFiles(files){
+  const msg = document.getElementById('pyrMsg');
+  if (!window.XLSX){ msg.innerHTML = '<div class="df-empty">Spreadsheet reader failed to load — reload the page.</div>'; return; }
+  msg.innerHTML = '<div class="df-note">Reading ' + files.length + ' file(s)…</div>';
+  let cur = null; try { const { data } = await window.sb.from('forge_population_pyramid').select('data').eq('id', 'latest').maybeSingle(); cur = data && data.data; } catch {}
+  const store = { ageGroups: PYR_AGE_GROUPS, regions: Object.assign({}, cur ? cur.regions : {}) };   // preserves API regions
+  const report = [];
+  for (const f of files){
+    try {
+      const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' });
+      const parsed = parsePyramidSheet(wb);
+      if (parsed && parsed.regions && Object.keys(parsed.regions).length){
+        Object.assign(store.regions, parsed.regions);
+        const n = Object.keys(parsed.regions).length;
+        report.push('✓ <b>' + esc(f.name) + '</b> — ' + n + ' regional cit' + (n === 1 ? 'y' : 'ies') + ' imported');
+      } else report.push('⚠ <b>' + esc(f.name) + '</b> — no PopPyramid matrix recognised (need age groups down column A and regional-city columns across the top)');
+    } catch (err){ report.push('✗ <b>' + esc(f.name) + '</b> — ' + esc(err.message || err)); }
+  }
+  await savePyramid(store);
+  const upN = Object.values(store.regions).filter(r => r.src === 'upload').length;
+  msg.innerHTML = '<div class="df-banner ok">Saved · ' + upN + ' regional cit' + (upN === 1 ? 'y' : 'ies') + ' stored (' + Object.keys(store.regions).length + ' regions total).</div><div class="df-note" style="margin-top:6px;text-align:left">' + report.join('<br/>') + '</div>';
+  renderPyramid(store, { uploaded_at: new Date().toISOString() });
+}
+async function savePyramid(data){
+  try { let email = null; try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch {}
+    await window.sb.from('forge_population_pyramid').upsert({ id: 'latest', data, uploaded_at: new Date().toISOString(), updated_at: new Date().toISOString(), uploaded_by: email }, { onConflict: 'id' }); } catch (_) {}
+}
+async function loadPopPyramid(){
+  const out = document.getElementById('pyrOut'); out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">ABS ERP_ASGS2021 · Population by age group</div><div class="df-title">Population Pyramid</div><div class="df-sub">Loading…</div></div>';
+  let row = null; try { const { data } = await window.sb.from('forge_population_pyramid').select('*').eq('id', 'latest').maybeSingle(); row = data; } catch {}
+  renderPyramid(row && row.data, row);
+}
+let PYR_DATA = null, PYR_SEL = null;
+function renderPyramid(data, meta){
+  const out = document.getElementById('pyrOut');
+  const eyebrow = 'ABS ERP_ASGS2021 · Population by age group';
+  if (!data || !data.regions || !Object.keys(data.regions).length){ PYR_DATA = null;
+    out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Population Pyramid</div><div class="df-sub"><span class="df-statuspill">Hybrid</span> <span>No data yet — run <code>node scripts/ingest-abs-pop-pyramid.mjs --write</code> for national/states/capitals, then upload the PopPyramid sheet below for the 28 regional cities.</span></div></div>'; return; }
+  PYR_DATA = data;
+  const ageGroups = data.ageGroups || PYR_AGE_GROUPS;
+  const regions = Object.keys(data.regions).sort((a, b) => groupOf(a) - groupOf(b) || labelOf(a).localeCompare(labelOf(b)));
+  if (!PYR_SEL || !data.regions[PYR_SEL]) PYR_SEL = regions.find(s => CAP_SET.has(s)) || regions[0];
+  const apiN = regions.filter(s => data.regions[s].src === 'api').length, upN = regions.filter(s => data.regions[s].src === 'upload').length;
+  const updated = meta ? fmtDate(meta.uploaded_at || meta.updated_at) : '—';
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Population Pyramid</div>'
+    + '<div class="df-sub"><span class="df-statuspill">Hybrid</span> <span>Population by 5-year age group. National, states &amp; capitals from the ABS API; regional cities uploaded.</span></div></div></div>'
+    + '<div class="df-stats">'
+    + dfStat('Regions', String(regions.length), true)
+    + dfStat('From API', String(apiN))
+    + dfStat('Uploaded', String(upN))
+    + dfStat('Age groups', String(ageGroups.length))
+    + dfStat('Updated', '<span class="sm">' + esc(updated) + '</span><div class="df-stat-foot">' + ingestChip('api') + '</div>')
+    + '</div></div>';
+  const opts = regions.map(s => '<option value="' + esc(s) + '"' + (s === PYR_SEL ? ' selected' : '') + '>' + esc(labelOf(s)) + '</option>').join('');
+  out.innerHTML = hero
+    + '<div class="df-card df-tablecard">'
+    + '<div class="ind-controls"><label for="pyrRegion">Region</label><select id="pyrRegion" class="ind-select">' + opts + '</select></div>'
+    + '<div id="pyrBreakdown"></div>'
+    + '<div class="df-note">Bars show each age group as a <b>% of the region’s population</b>, compared with its benchmark (capital cities vs National, regional cities vs their State). Hover a bar for the count. National / states / capitals refresh from the ABS API; regional cities come from the uploaded PopPyramid sheet.</div></div>';
+  const sel = document.getElementById('pyrRegion'); if (sel) sel.addEventListener('change', e => { PYR_SEL = e.target.value; renderPyramidRegion(); });
+  renderPyramidRegion();
+}
+function renderPyramidRegion(){
+  const box = document.getElementById('pyrBreakdown'); if (!box || !PYR_DATA || !PYR_DATA.regions[PYR_SEL]) return;
+  const ageGroups = PYR_DATA.ageGroups || PYR_AGE_GROUPS;
+  const reg = PYR_DATA.regions[PYR_SEL];
+  const cmpSlug = pyrComparator(PYR_SEL); const cmp = cmpSlug ? PYR_DATA.regions[cmpSlug] : null;
+  const sum = a => (a || []).reduce((s, v) => s + (v || 0), 0);
+  const rSum = sum(reg.total), cSum = cmp ? sum(cmp.total) : 0;
+  const rPct = (reg.total || []).map(v => rSum ? (v || 0) / rSum * 100 : 0);
+  const cPct = cmp ? (cmp.total || []).map(v => cSum ? (v || 0) / cSum * 100 : 0) : null;
+  let maxP = Math.max(...rPct, ...(cPct || [0])); if (!maxP) maxP = 1;
+  const fmtN = n => (n == null || isNaN(n)) ? '—' : Math.round(n).toLocaleString();
+  const cyan = (getComputedStyle(document.documentElement).getPropertyValue('--pp-cyan') || '').trim() || '#00b6cb';
+  let html = '<div class="pyr-legend"><span class="k"><span class="sw" style="background:' + cyan + '"></span>' + esc(labelOf(PYR_SEL)) + (reg.year ? ' · ' + reg.year : '') + ' · pop ' + fmtN(rSum) + '</span>';
+  if (cmp) html += '<span class="k"><span class="sw" style="background:#8d9cb8"></span>' + esc(labelOf(cmpSlug)) + (cmp.year ? ' · ' + cmp.year : '') + '</span>';
+  html += '</div><div class="pyr-list">';
+  for (let i = 0; i < ageGroups.length; i++){
+    html += '<div class="pyr-row"><div class="pyr-age">' + esc(ageGroups[i]) + '</div><div class="pyr-bars">';
+    html += '<div class="pyr-bar" title="' + esc(labelOf(PYR_SEL)) + ': ' + fmtN(reg.total[i]) + '"><div class="pyr-track"><div class="pyr-fill region" style="width:' + (rPct[i] / maxP * 100).toFixed(1) + '%"></div></div><div class="pyr-val region">' + rPct[i].toFixed(1) + '%</div></div>';
+    if (cmp) html += '<div class="pyr-bar" title="' + esc(labelOf(cmpSlug)) + ': ' + fmtN(cmp.total[i]) + '"><div class="pyr-track"><div class="pyr-fill cmp" style="width:' + (cPct[i] / maxP * 100).toFixed(1) + '%"></div></div><div class="pyr-val">' + cPct[i].toFixed(1) + '%</div></div>';
+    html += '</div></div>';
+  }
+  html += '</div>';
+  box.innerHTML = html;
+}
+(function(){ const drop = document.getElementById('pyrDrop'), file = document.getElementById('pyrFile'); if (!drop) return;
+  drop.addEventListener('click', () => file.click());
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) importPyramidFiles([...e.dataTransfer.files]); });
+  file.addEventListener('change', () => { if (file.files.length) importPyramidFiles([...file.files]); });
 })();
 // national dwellings commenced — small 2-row table (houses + units)
 async function renderApprovalsCommenced(outId){
@@ -1184,7 +1347,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
