@@ -155,6 +155,15 @@
   .pyr-val.region{ color:var(--text); font-weight:700; }
   @media (max-width:640px){ .pyr-age{ flex-basis:62px; font-size:.72rem; } }
 
+  /* Mortgage arrears — monthly dual-line chart (region vs National) */
+  .arr-legend{ display:flex; gap:18px; align-items:center; margin:2px 0 10px; font-size:.82rem; font-weight:700; color:var(--text); flex-wrap:wrap; }
+  .arr-legend .k{ display:inline-flex; align-items:center; gap:7px; }
+  .arr-legend .sw{ width:16px; height:3px; border-radius:2px; display:inline-block; }
+  .arr-legend .v{ color:var(--muted); font-weight:600; }
+  .arr-chart{ width:100%; height:auto; display:block; }
+  .arr-chart text{ fill:var(--muted); font-size:11px; font-weight:600; }
+  .arr-chart .grid{ stroke:var(--border); stroke-width:1; }
+
   .df-qc{ display:flex; flex-wrap:wrap; gap:10px; }
   .df-pill{ font-size:.74rem; font-weight:700; border:1px solid var(--border); border-radius:8px; padding:7px 12px; background:var(--panel2); color:var(--text); }
   .df-pill.ok{ border-color:rgba(34,197,94,.5); }
@@ -357,6 +366,20 @@
       <div id="pyrMsg"></div>
     </div>
   </section>
+
+  <!-- ── MORTGAGE ARREARS (S&P Global Ratings RMBS SPIN — manual upload, no API) ── -->
+  <section id="dfArrears" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="arrOut"></div>
+    <div class="df-card" style="margin-top:14px"><h2>Update <span class="count">upload the Data Dump “Arrears” sheet (or the S&amp;P SPIN spreadsheet)</span></h2>
+      <div class="df-drop" id="arrDrop">
+        <input type="file" id="arrFile" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden/>
+        🏚️ <strong>Drop the Arrears .xlsx here</strong> (or click)<br/>
+        Monthly dates down column A, then a <em>National</em> column and the 8 state columns (values as % or decimal). Source: S&amp;P Global Ratings RMBS SPIN — no API, so refresh by re-uploading the latest month.
+      </div>
+      <div id="arrMsg"></div>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -369,7 +392,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -391,6 +414,7 @@ function showView(name){
   if (name === 'approvals') loadApprovals();
   if (name === 'industry') loadIndustry();
   if (name === 'popPyramid') loadPopPyramid();
+  if (name === 'arrears') loadArrears();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -417,6 +441,7 @@ const CLUSTERS = [
   { key:'approvals', icon:'🏠', ingest:'api', label:'Building Approvals', desc:'ABS Building Approvals (8731.0, Original) — new house + unit dwelling approvals. National + 8 capitals (BA_GCCSA) + 28 LGA regions (BA_LGA). Annual counts.', view:'approvals' },
   { key:'industry', icon:'🏭', ingest:'manual', label:'Industry Value Added', desc:'Industry composition (% by ANZSIC division) per region. No API — gathered from REMPLAN economy profiles (and economy.id where available); uploaded as a spreadsheet.', view:'industry' },
   { key:'population_pyramid', icon:'🔺', ingest:'api', label:'Population Pyramid', desc:'Population by 5-year age group per region. National, 8 states & 8 capital cities (GCCSA) auto-pulled from the ABS API (ERP_ASGS2021, age×sex); the 28 regional cities uploaded from the Data Dump PopPyramid sheet.', view:'popPyramid' },
+  { key:'arrears', icon:'🏚️', ingest:'manual', label:'Mortgage Arrears', desc:'S&P Global Ratings RMBS SPIN arrears index — national + 8 states, monthly %. No API (S&P subscription PDF/spreadsheet); upload the Data Dump Arrears sheet.', view:'arrears' },
   { key:'inflation', icon:'📉', ingest:'file', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
   { key:'cash_rate', icon:'🏦', ingest:'file', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'file', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
@@ -444,7 +469,7 @@ async function loadStatus(){
   } catch (e) { /* show cards anyway */ }
   el.innerHTML = CLUSTERS.map(c => {
     const st = statusMap[c.key] || {};
-    const status = (c.key === 'cotality' || c.key === 'industry') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
+    const status = (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
     const isErr = status === 'error';
     const meta = (c.key === 'population' || c.key === 'population_pyramid')
       ? (st.last_ok_at ? 'Updated ' + fmtDate(st.last_ok_at) + (st.region_count ? ' · ' + st.region_count + ' regions' : '') : 'Not yet run via the monitored path')
@@ -941,6 +966,146 @@ function renderPyramidRegion(){
   drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) importPyramidFiles([...e.dataTransfer.files]); });
   file.addEventListener('change', () => { if (file.files.length) importPyramidFiles([...file.files]); });
 })();
+
+/* ── Mortgage Arrears (MANUAL — S&P Global Ratings RMBS SPIN; no API). Monthly
+   arrears %, National + 8 states (the report's chart is State vs National).
+   Stored in forge_arrears (jsonb): { months:[YYYY-MM], regions:{ <slug>:{label,values[]} } }.
+   The Data Dump "Arrears" columns are labelled by capital but are really the
+   8 STATE series; map by the ", <STATE>" suffix. Values may be decimal
+   (0.0083) or percent (0.83) — normalised to percent. ──────────────────── */
+const ARR_STATE = { nsw:'st-nsw', vic:'st-vic', qld:'st-qld', sa:'st-sa', wa:'st-wa', tas:'st-tas', nt:'st-nt', act:'st-act' };
+function arrearsSlug(name){
+  const s = String(name == null ? '' : name).trim();
+  if (/^national$|^aus(tralia)?$/i.test(s)) return 'australia';
+  const m = s.match(/,\s*([A-Za-z]{2,3})\s*$/); if (m && ARR_STATE[m[1].toLowerCase()]) return ARR_STATE[m[1].toLowerCase()];
+  if (ARR_STATE[s.toLowerCase()]) return ARR_STATE[s.toLowerCase()];
+  return null;   // ignores "Date (Monthly)", "Monthly Cash Rate", etc.
+}
+function arrSerialToMonth(s){
+  if (s == null || s === '') return null;
+  if (typeof s === 'number'){ const d = new Date(Date.UTC(1899, 11, 30) + Math.round(s) * 86400000); return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0'); }
+  const str = String(s); const m = str.match(/(\d{4})[-/](\d{1,2})/); if (m) return m[1] + '-' + String(+m[2]).padStart(2, '0');
+  const d = new Date(str); if (!isNaN(d)) return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  return null;
+}
+function monthLabelArr(s){ if (!s) return '—'; const [y, m] = String(s).split('-').map(Number); return new Date(y, (m || 1) - 1, 1).toLocaleDateString('en-AU', { month: 'short', year: 'numeric' }); }
+function parseArrearsSheet(wb){
+  const names = wb.SheetNames.slice().sort((a, b) => (/arrears/i.test(b) ? 1 : 0) - (/arrears/i.test(a) ? 1 : 0));   // prefer an "Arrears" sheet
+  for (const sn of names){
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, blankrows: false });
+    if (rows.length < 12) continue;
+    let hi = rows.findIndex(r => (r || []).some(c => /^national$/i.test(String(c || '').trim())));
+    if (hi < 0) continue;
+    const header = rows[hi] || [];
+    let dateCol = header.findIndex(c => /date/i.test(String(c || ''))); if (dateCol < 0) dateCol = 0;
+    const cols = []; for (let c = 0; c < header.length; c++){ if (c === dateCol) continue; const slug = arrearsSlug(header[c]); if (slug && !cols.some(x => x.slug === slug)) cols.push({ c, slug }); }
+    if (!cols.some(x => x.slug === 'australia') || cols.length < 3) continue;
+    const months = []; const regions = {}; for (const col of cols) regions[col.slug] = { label: labelOf(col.slug), values: [] };
+    for (let r = hi + 1; r < rows.length; r++){
+      const mo = arrSerialToMonth(rows[r][dateCol]); if (!mo) continue;
+      months.push(mo);
+      for (const col of cols){ const cell = rows[r][col.c]; const v = Number(cell); regions[col.slug].values.push((cell == null || cell === '' || isNaN(v)) ? null : +(Math.abs(v) <= 1 ? v * 100 : v).toFixed(2)); }
+    }
+    if (months.length >= 6) return { months, regions };
+  }
+  return null;
+}
+async function importArrearsFiles(files){
+  const msg = document.getElementById('arrMsg');
+  if (!window.XLSX){ msg.innerHTML = '<div class="df-empty">Spreadsheet reader failed to load — reload the page.</div>'; return; }
+  msg.innerHTML = '<div class="df-note">Reading ' + files.length + ' file(s)…</div>';
+  let parsed = null, used = '';
+  for (const f of files){ try { const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' }); const p = parseArrearsSheet(wb); if (p){ parsed = p; used = f.name; break; } } catch (err){ /* try next */ } }
+  if (!parsed){ msg.innerHTML = '<div class="df-banner warn">No Arrears sheet recognised — need a monthly date column plus a “National” column and the state columns.</div>'; return; }
+  await saveArrears(parsed);
+  const nm = parsed.months.length;
+  msg.innerHTML = '<div class="df-banner ok">Saved · ' + Object.keys(parsed.regions).length + ' series × ' + nm + ' months (' + monthLabelArr(parsed.months[0]) + ' → ' + monthLabelArr(parsed.months[nm - 1]) + ') from <b>' + esc(used) + '</b>.</div>';
+  renderArrears(parsed, { uploaded_at: new Date().toISOString() });
+}
+async function saveArrears(data){
+  try { let email = null; try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch {}
+    await window.sb.from('forge_arrears').upsert({ id: 'latest', data, uploaded_at: new Date().toISOString(), updated_at: new Date().toISOString(), uploaded_by: email }, { onConflict: 'id' }); } catch (_) {}
+}
+async function loadArrears(){
+  const out = document.getElementById('arrOut'); out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">S&P Global Ratings · RMBS SPIN arrears</div><div class="df-title">Mortgage Arrears</div><div class="df-sub">Loading…</div></div>';
+  let row = null; try { const { data } = await window.sb.from('forge_arrears').select('*').eq('id', 'latest').maybeSingle(); row = data; } catch {}
+  renderArrears(row && row.data, row);
+}
+let ARR_DATA = null, ARR_SEL = null;
+function renderArrears(data, meta){
+  const out = document.getElementById('arrOut');
+  const eyebrow = 'S&P Global Ratings · RMBS SPIN arrears';
+  if (!data || !data.regions || !Object.keys(data.regions).length){ ARR_DATA = null;
+    out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Mortgage Arrears</div><div class="df-sub"><span class="df-statuspill">Manual</span> <span>No data yet — upload the Data Dump “Arrears” sheet below (S&P SPIN, no API).</span></div></div>'; return; }
+  ARR_DATA = data;
+  const months = data.months || [];
+  const regions = Object.keys(data.regions).sort((a, b) => groupOf(a) - groupOf(b) || labelOf(a).localeCompare(labelOf(b)));
+  if (!ARR_SEL || !data.regions[ARR_SEL]) ARR_SEL = regions.find(s => s !== 'australia') || regions[0];
+  const li = months.length - 1;
+  const natV = (data.regions['australia'] || {}).values || [];
+  const lastNat = (() => { for (let i = natV.length - 1; i >= 0; i--) if (natV[i] != null) return natV[i]; return null; })();
+  const updated = meta ? fmtDate(meta.uploaded_at || meta.updated_at) : '—';
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Mortgage Arrears</div>'
+    + '<div class="df-sub"><span class="df-statuspill">Manual</span> <span>Monthly mortgage-arrears % — each region shows its state vs National. Source: S&P SPIN (no API).</span></div></div></div>'
+    + '<div class="df-stats">'
+    + dfStat('Series', String(regions.length), true)
+    + dfStat('Months', String(months.length))
+    + dfStat('Latest', '<span class="sm">' + esc(monthLabelArr(months[li])) + '</span>')
+    + dfStat('National now', lastNat != null ? lastNat.toFixed(2) + '%' : '—')
+    + dfStat('Source', '<span class="sm">S&P SPIN</span><div class="df-stat-foot">' + ingestChip('manual') + '</div>')
+    + '</div></div>';
+  const opts = regions.map(s => '<option value="' + esc(s) + '"' + (s === ARR_SEL ? ' selected' : '') + '>' + esc(labelOf(s)) + '</option>').join('');
+  out.innerHTML = hero
+    + '<div class="df-card df-tablecard">'
+    + '<div class="ind-controls"><label for="arrRegion">Region (state)</label><select id="arrRegion" class="ind-select">' + opts + '</select></div>'
+    + '<div id="arrChart"></div>'
+    + '<div class="df-note">Monthly mortgage-arrears rate (%), the selected state vs National — the same comparison the reports use. Source: S&P Global Ratings RMBS SPIN (incl. non-capital-market issuance) — no API, refreshed by re-uploading.</div></div>';
+  const sel = document.getElementById('arrRegion'); if (sel) sel.addEventListener('change', e => { ARR_SEL = e.target.value; renderArrearsRegion(); });
+  renderArrearsRegion();
+}
+function renderArrearsRegion(){
+  const box = document.getElementById('arrChart'); if (!box || !ARR_DATA) return;
+  const months = ARR_DATA.months || [];
+  const reg = ARR_DATA.regions[ARR_SEL], nat = ARR_DATA.regions['australia'];
+  const regV = (reg && reg.values) || [], natV = (nat && nat.values) || [];
+  const lastOf = a => { for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return null; };
+  const cyan = (getComputedStyle(document.documentElement).getPropertyValue('--pp-cyan') || '').trim() || '#00b6cb';
+  const rv = lastOf(regV), nv = lastOf(natV);
+  const legend = '<div class="arr-legend">'
+    + '<span class="k"><span class="sw" style="background:' + cyan + '"></span>' + esc(labelOf(ARR_SEL)) + ' <span class="v">' + (rv != null ? rv.toFixed(2) + '%' : '—') + '</span></span>'
+    + (ARR_SEL !== 'australia' ? '<span class="k"><span class="sw" style="background:#8d9cb8"></span>National <span class="v">' + (nv != null ? nv.toFixed(2) + '%' : '—') + '</span></span>' : '')
+    + '<span class="k v">latest: ' + esc(monthLabelArr(months[months.length - 1])) + '</span></div>';
+  box.innerHTML = legend + arrearsChartSvg(months, regV, ARR_SEL !== 'australia' ? natV : [], cyan);
+}
+function arrearsChartSvg(months, regV, natV, cyan){
+  const W = 840, H = 260, padL = 46, padR = 16, padT = 14, padB = 36, n = months.length;
+  if (!n) return '<div class="df-empty">No monthly data.</div>';
+  const all = regV.concat(natV).filter(v => v != null && !isNaN(v));
+  const maxV = all.length ? Math.max(...all) : 1; const yMax = Math.max(0.2, Math.ceil(maxV / 0.2) * 0.2);
+  const X = i => padL + (n <= 1 ? 0 : (i / (n - 1)) * (W - padL - padR));
+  const Y = v => (H - padB) - (v / yMax) * (H - padT - padB);
+  const grey = '#8d9cb8';
+  const pathOf = arr => { let d = '', pen = false; for (let i = 0; i < arr.length; i++){ const v = arr[i]; if (v == null || isNaN(v)){ pen = false; continue; } d += (pen ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1) + ' '; pen = true; } return d.trim(); };
+  let g = ''; for (const gv of [0, yMax / 2, yMax]){ const yy = Y(gv); g += '<line class="grid" x1="' + padL + '" y1="' + yy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + yy.toFixed(1) + '"/><text x="' + (padL - 6) + '" y="' + (yy + 3).toFixed(1) + '" text-anchor="end">' + gv.toFixed(1) + '%</text>'; }
+  let xl = ''; months.forEach((m, i) => { if (/-01$/.test(m)){ const yr = +m.slice(0, 4); if (n < 60 || yr % 5 === 0) xl += '<text x="' + X(i).toFixed(1) + '" y="' + (H - padB + 16) + '" text-anchor="middle">' + yr + '</text>'; } });
+  const lastIdx = arr => { for (let i = arr.length - 1; i >= 0; i--) if (arr[i] != null) return i; return -1; };
+  let dots = ''; const ln = lastIdx(natV), lr = lastIdx(regV);
+  if (ln >= 0) dots += '<circle cx="' + X(ln).toFixed(1) + '" cy="' + Y(natV[ln]).toFixed(1) + '" r="3" fill="' + grey + '"/>';
+  if (lr >= 0) dots += '<circle cx="' + X(lr).toFixed(1) + '" cy="' + Y(regV[lr]).toFixed(1) + '" r="3.5" fill="' + cyan + '"/>';
+  return '<svg class="arr-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Monthly mortgage arrears">'
+    + g + xl
+    + (natV.length ? '<path d="' + pathOf(natV) + '" fill="none" stroke="' + grey + '" stroke-width="1.6"/>' : '')
+    + '<path d="' + pathOf(regV) + '" fill="none" stroke="' + cyan + '" stroke-width="2"/>'
+    + dots + '</svg>';
+}
+(function(){ const drop = document.getElementById('arrDrop'), file = document.getElementById('arrFile'); if (!drop) return;
+  drop.addEventListener('click', () => file.click());
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) importArrearsFiles([...e.dataTransfer.files]); });
+  file.addEventListener('change', () => { if (file.files.length) importArrearsFiles([...file.files]); });
+})();
 // national dwellings commenced — small 2-row table (houses + units)
 async function renderApprovalsCommenced(outId){
   const out = document.getElementById(outId); if (!out) return;
@@ -1347,7 +1512,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
