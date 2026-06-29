@@ -297,11 +297,11 @@
   <section id="dfIndustry" hidden>
     <button class="df-back" data-home>← All data points</button>
     <div id="indOut"></div>
-    <div class="df-card" style="margin-top:14px"><h2>Update <span class="count">upload your Industry Value Added sheet — industries down the first column, regions across the top, $ value added</span></h2>
+    <div class="df-card" style="margin-top:14px"><h2>Update <span class="count">drop one consolidated sheet, or batch-drop REMPLAN / economy.id per-region exports</span></h2>
       <div class="df-drop" id="indDrop">
-        <input type="file" id="indFile" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
-        🏭 <strong>Drop the Industry .xlsx here</strong> (or click)<br/>
-        ANZSIC industries as rows, regions as columns ($ value added). Re-uploading merges/updates whichever regions are in the file.
+        <input type="file" id="indFile" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden/>
+        🏭 <strong>Drop your Industry .xlsx file(s) here</strong> (or click — you can select many)<br/>
+        Either a consolidated sheet (ANZSIC industries down col A, regions across the top) <em>or</em> individual REMPLAN / economy.id profile exports (industry + $ value added — region taken from the file name). Industry labels are auto-matched to the 19 ANZSIC divisions; each drop merges its regions.
       </div>
       <div id="indMsg"></div>
     </div>
@@ -583,50 +583,109 @@ const loadApprovals = () => {
 };
 
 /* ── Industry Value Added (MANUAL — REMPLAN / economy.id; no API) ──
-   Upload a sheet: ANZSIC industries down col A, regions across the top,
-   $ value added in the cells. Stored in forge_industry (jsonb); each upload
-   merges the regions it contains. View shows each region's % composition. */
+   Two upload layouts, batch-droppable:
+     • Consolidated MATRIX  — ANZSIC industries down col A, regions across the top.
+     • Single-region EXPORT — REMPLAN / economy.id per-profile file: an industry
+       column + a $ value-added column; the region is taken from the file name
+       (or a title cell). Industry names are canonicalised to the 19 ANZSIC
+       divisions so labels from different sources line up.
+   Stored in forge_industry (jsonb); each drop MERGES its regions. */
 function indSlug(h){ return String(h || '').split(',')[0].replace(/\(.*?\)/g, '').trim().toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
-// only accept columns that map to a tracked region (drops junk cols like "year", "total…", "…-industry")
+// only accept columns/files that map to a tracked region (drops junk like "year", "total…")
 const IND_REGIONS = new Set(['australia','sydney','melbourne','brisbane','adelaide','perth','hobart','darwin','canberra','st-nsw','st-vic','st-qld','st-sa','st-wa','st-tas','st-nt','st-act','albury','ballarat','bendigo','bunbury','bundaberg','cairns','central-coast','coffs-harbour','geelong','gladstone','gold-coast','ipswich','launceston','mackay','mandurah','mildura','newcastle','orange','port-macquarie','rockhampton','rockingham','sunshine-coast','tamworth','toowoomba','townsville','wagga-wagga','wodonga','wollongong']);
-const ANZSIC_RE = /agricultur|mining|manufactur|electricity|construction|wholesale|retail|accommodation|transport|telecommunication|\bmedia\b|financial|real estate|rental|professional|administrative|public admin|education|health care|\barts\b|recreation|other services/i;
-function parseIndustrySheet(wb){
-  // try an "Industry"-named sheet first, then the rest
+// canonical 19 ANZSIC divisions + keyword matcher (so REMPLAN/economy.id labels map to the same rows)
+const ANZSIC_DIVS = ['Agriculture, Forestry and Fishing','Mining','Manufacturing','Electricity, Gas, Water and Waste Services','Construction','Wholesale Trade','Retail Trade','Accommodation and Food Services','Transport, Postal and Warehousing','Information Media and Telecommunications','Financial and Insurance Services','Rental, Hiring and Real Estate Services','Professional, Scientific and Technical Services','Administrative and Support Services','Public Administration and Safety','Education and Training','Health Care and Social Assistance','Arts and Recreation Services','Other Services'];
+const ANZSIC_KW = [['agricultur',0],['mining',1],['manufactur',2],['electricity',3],['gas, water',3],['construction',4],['wholesale',5],['retail',6],['accommodation',7],['food service',7],['postal',8],['transport',8],['information media',9],['telecommunication',9],['financial',10],['insurance',10],['real estate',11],['rental',11],['professional',12],['scientific',12],['administrative',13],['support service',13],['public admin',14],['safety',14],['education',15],['training',15],['health care',16],['social assist',16],['arts',17],['recreation',17],['other service',18]];
+function canonIndustry(name){
+  if (name == null) return null;
+  const n = String(name).toLowerCase().replace(/&/g, 'and');
+  const flat = n.replace(/[^a-z]/g, ''); if (!flat) return null;
+  for (let i = 0; i < ANZSIC_DIVS.length; i++) if (ANZSIC_DIVS[i].toLowerCase().replace(/&/g, 'and').replace(/[^a-z]/g, '') === flat) return ANZSIC_DIVS[i];
+  for (const [kw, idx] of ANZSIC_KW) if (n.includes(kw)) return ANZSIC_DIVS[idx];
+  return null;
+}
+function regionFromName(fileName){
+  const base = String(fileName || '').replace(/\.[^.]+$/, '');
+  let s = indSlug(base); if (IND_REGIONS.has(s)) return s;
+  s = indSlug(base.replace(/economy|profile|value[\s_-]*add(ed)?|industr\w*|remplan|export|report|region|\bid\b|\d{4}/gi, ' ')); if (IND_REGIONS.has(s)) return s;
+  const fs = indSlug(base); for (const r of IND_REGIONS) if (r.length > 4 && fs.includes(r)) return r;
+  return null;
+}
+function regionFromCells(rows){
+  for (const r of rows.slice(0, 8)) for (const c of (r || [])){ if (typeof c !== 'string') continue; const s = indSlug(c); if (IND_REGIONS.has(s)) return s; for (const reg of IND_REGIONS) if (reg.length > 4 && indSlug(c).includes(reg)) return reg; }
+  return null;
+}
+// consolidated matrix → { regions:{slug:{label,values,total}} }
+function parseIndustryMatrix(wb){
   const names = wb.SheetNames.slice().sort((a, b) => (/industr/i.test(b) ? 1 : 0) - (/industr/i.test(a) ? 1 : 0));
   for (const sn of names){
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, blankrows: false });
     let hi = rows.findIndex(r => /industr/i.test(String((r || [])[0] || ''))); if (hi < 0) hi = 0;
     const header = rows[hi] || [];
-    const cols = []; for (let c = 1; c < header.length; c++){ const h = header[c]; if (h != null && String(h).trim() && IND_REGIONS.has(indSlug(h))) cols.push({ c, label: String(h).trim(), slug: indSlug(h) }); }
-    if (!cols.length) continue;
-    const industries = [], regions = {};
-    for (const col of cols) regions[col.slug] = { label: col.label, values: {}, total: 0 };
-    for (let r = hi + 1; r < rows.length && industries.length < 25; r++){
-      const name = String((rows[r] || [])[0] || '').trim();
-      if (!name || /^total|^grand total|^all indust/i.test(name)) continue;   // skip total rows
-      let any = false;
-      for (const col of cols){ const cell = rows[r][col.c]; const v = Number(cell); if (cell != null && cell !== '' && !isNaN(v)){ regions[col.slug].values[name] = v; regions[col.slug].total += v; any = true; } }
-      if (any && !industries.includes(name)) industries.push(name);
-    }
-    // only accept a sheet that genuinely looks like ANZSIC industry divisions
-    if (industries.filter(n => ANZSIC_RE.test(n)).length >= 6) return { industries, regions };
+    const cols = []; for (let c = 1; c < header.length; c++){ const h = header[c]; if (h != null && String(h).trim() && IND_REGIONS.has(indSlug(h))) cols.push({ c, slug: indSlug(h) }); }
+    if (cols.length < 2) continue;   // a matrix has several region columns
+    const regions = {}; for (const col of cols) regions[col.slug] = { label: labelOf(col.slug), values: {}, total: 0 };
+    let hits = 0;
+    for (let r = hi + 1; r < rows.length; r++){ const ind = canonIndustry((rows[r] || [])[0]); if (!ind) continue; hits++;
+      for (const col of cols){ const cell = rows[r][col.c]; const v = Number(cell); if (cell != null && cell !== '' && !isNaN(v)){ regions[col.slug].values[ind] = (regions[col.slug].values[ind] || 0) + v; regions[col.slug].total += v; } } }
+    if (hits >= 6) return { regions };
   }
   return null;
 }
-async function importIndustryXlsx(file){
+// single-region export → { regions:{slug:{…}} }, or { partial:{slug,count} } for a
+// REMPLAN "Overview" export (region recognised but only the top 1-5 industries).
+function parseSingleRegion(wb, fileName){
+  let partial = null;
+  for (const sn of wb.SheetNames){
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, blankrows: false });
+    const ncols = rows.reduce((m, r) => Math.max(m, r ? r.length : 0), 0);
+    let indCol = -1, best = 0;
+    for (let c = 0; c < ncols; c++){ let h = 0; for (const r of rows) if (r && canonIndustry(r[c])) h++; if (h > best){ best = h; indCol = c; } }
+    if (best < 1) continue;
+    const indRows = []; for (let i = 0; i < rows.length; i++) if (rows[i] && canonIndustry(rows[i][indCol])) indRows.push(i);
+    let valCol = -1;   // first $-magnitude numeric column (skip % columns where everything ≤ 100)
+    for (let c = 0; c < ncols; c++){ if (c === indCol) continue; const vals = indRows.map(i => Number(rows[i][c])).filter(x => !isNaN(x)); if (!vals.length) continue; if (Math.max(...vals.map(Math.abs)) > 100){ valCol = c; break; } }
+    if (valCol < 0) for (let c = 0; c < ncols; c++){ if (c === indCol) continue; if (indRows.some(i => !isNaN(Number(rows[i][c])))){ valCol = c; break; } }
+    if (valCol < 0) continue;
+    const slug = regionFromName(fileName) || regionFromCells(rows); if (!slug) continue;
+    const values = {}; let total = 0;
+    for (const i of indRows){ const ind = canonIndustry(rows[i][indCol]); const v = Number(rows[i][valCol]); if (!ind || isNaN(v)) continue; values[ind] = (values[ind] || 0) + v; total += v; }
+    const cnt = Object.keys(values).length;
+    if (cnt >= 6 && total > 0) return { regions: { [slug]: { label: labelOf(slug), values, total } } };
+    if (cnt >= 1 && !partial) partial = { slug, count: cnt };   // an Overview-style export (too few industries)
+  }
+  return partial ? { partial } : null;
+}
+// REMPLAN exports declare a bogus small range (e.g. A1:I9) that truncates the
+// data — recompute each sheet's !ref from its actual cells before parsing.
+function fixSheetRange(ws){ if (!ws) return; const keys = Object.keys(ws).filter(k => /^[A-Z]+\d+$/.test(k)); if (!keys.length) return; let e = { r: 0, c: 0 }; for (const k of keys){ const cc = XLSX.utils.decode_cell(k); if (cc.r > e.r) e.r = cc.r; if (cc.c > e.c) e.c = cc.c; } ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e }); }
+function parseIndustryWorkbook(wb, fileName){ for (const sn of wb.SheetNames) fixSheetRange(wb.Sheets[sn]); return parseIndustryMatrix(wb) || parseSingleRegion(wb, fileName); }
+
+// batch import — drop one matrix file or many single-region files at once
+async function importIndustryFiles(files){
   const msg = document.getElementById('indMsg');
   if (!window.XLSX){ msg.innerHTML = '<div class="df-empty">Spreadsheet reader failed to load — reload the page.</div>'; return; }
-  msg.innerHTML = '<div class="df-note">Reading ' + esc(file.name) + ' …</div>';
-  try {
-    const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
-    const parsed = parseIndustrySheet(wb);
-    if (!parsed){ msg.innerHTML = '<div class="df-empty">Couldn’t find an industry table — expecting industries in the first column and region names across the top row. Check the sheet.</div>'; return; }
-    let cur = null; try { const { data } = await window.sb.from('forge_industry').select('data').eq('id', 'latest').maybeSingle(); cur = data && data.data; } catch {}
-    const merged = { industries: parsed.industries.length ? parsed.industries : (cur ? cur.industries || [] : []), regions: Object.assign({}, cur ? cur.regions : {}, parsed.regions) };
-    await saveIndustry(merged, file.name);
-    msg.innerHTML = '<div class="df-banner ok">✓ Imported ' + Object.keys(parsed.regions).length + ' region(s) from ' + esc(file.name) + ' · saved.</div>';
-    renderIndustry(merged, { uploaded_at: new Date().toISOString() });
-  } catch (err){ msg.innerHTML = '<div class="df-empty">Could not read that file: ' + esc(err.message || err) + '</div>'; }
+  msg.innerHTML = '<div class="df-note">Reading ' + files.length + ' file(s)…</div>';
+  let cur = null; try { const { data } = await window.sb.from('forge_industry').select('data').eq('id', 'latest').maybeSingle(); cur = data && data.data; } catch {}
+  const store = { industries: ANZSIC_DIVS, regions: Object.assign({}, cur ? cur.regions : {}) };
+  const report = [];
+  for (const f of files){
+    try {
+      const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' });
+      const parsed = parseIndustryWorkbook(wb, f.name);
+      if (parsed && parsed.regions && Object.keys(parsed.regions).length){
+        Object.assign(store.regions, parsed.regions);
+        report.push('✓ <b>' + esc(f.name) + '</b> — ' + Object.keys(parsed.regions).map(s => esc(labelOf(s))).join(', '));
+      } else if (parsed && parsed.partial){
+        report.push('⚠ <b>' + esc(f.name) + '</b> — looks like a REMPLAN “Overview” export (only ' + parsed.partial.count + ' industr' + (parsed.partial.count === 1 ? 'y' : 'ies') + ' for ' + esc(labelOf(parsed.partial.slug)) + '). Export from the “Value added by industry” view for the full 19.');
+      } else {
+        report.push('⚠ <b>' + esc(f.name) + '</b> — no industry table / region recognised');
+      }
+    } catch (err){ report.push('✗ <b>' + esc(f.name) + '</b> — ' + esc(err.message || err)); }
+  }
+  await saveIndustry(store);
+  msg.innerHTML = '<div class="df-banner ok">Saved · ' + Object.keys(store.regions).length + ' region(s) stored.</div><div class="df-note" style="margin-top:6px;text-align:left">' + report.join('<br/>') + '</div>';
+  renderIndustry(store, { uploaded_at: new Date().toISOString() });
 }
 async function saveIndustry(data){
   try { let email = null; try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch {}
@@ -643,8 +702,8 @@ function renderIndustry(data, meta){
   if (!data || !data.regions || !Object.keys(data.regions).length){
     out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Industry Value Added</div><div class="df-sub"><span class="df-statuspill">Manual</span> <span>No data yet — upload your Industry Value Added sheet below.</span></div></div>'; return;
   }
-  const inds = data.industries || [];
   const regions = Object.keys(data.regions).sort((a, b) => groupOf(a) - groupOf(b) || labelOf(a).localeCompare(labelOf(b)));
+  const inds = (data.industries || ANZSIC_DIVS).filter(ind => regions.some(s => data.regions[s].values[ind] != null));
   const updated = meta ? fmtDate(meta.uploaded_at || meta.updated_at) : '—';
   const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
     + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Industry Value Added</div>'
@@ -656,21 +715,20 @@ function renderIndustry(data, meta){
     + dfStat('Source', '<span class="sm">REMPLAN / economy.id</span><div class="df-stat-foot">' + ingestChip('manual') + '</div>')
     + '</div></div>';
   const head = '<tr><th class="th-l">Industry</th>' + regions.map(s => '<th class="last">' + esc(labelOf(s)) + '</th>').join('') + '</tr>';
-  const pctCell = v => v == null ? '<td class="num">—</td>' : '<td class="num">' + v.toFixed(1) + '%</td>';
+  const fmtVA = v => v == null ? '' : (Math.abs(v) >= 1e9 ? '$' + (v / 1e9).toFixed(2) + 'b' : '$' + Math.round(v / 1e6) + 'm');
+  const cell = (s, ind) => { const reg = data.regions[s]; const v = reg.values[ind]; if (v == null) return '<td class="num">—</td>'; const pct = reg.total ? v / reg.total * 100 : null; return '<td class="num">' + (pct != null ? pct.toFixed(1) + '%' : '—') + '<div class="df-stat-foot">' + fmtVA(v) + '</div></td>'; };
   let body = '';
-  for (const ind of inds){
-    body += '<tr><td class="region">' + esc(ind) + '</td>' + regions.map(s => { const reg = data.regions[s]; const v = reg.values[ind]; return pctCell((v != null && reg.total) ? v / reg.total * 100 : null); }).join('') + '</tr>';
-  }
-  body += '<tr class="grp"><td>Total value added ($)</td>' + regions.map(s => '<td class="num">' + fmtMoney1(data.regions[s].total / 1e6) + 'm</td>').join('') + '</tr>';
+  for (const ind of inds) body += '<tr><td class="region">' + esc(ind) + '</td>' + regions.map(s => cell(s, ind)).join('') + '</tr>';
+  body += '<tr class="grp"><td>Total value added</td>' + regions.map(s => '<td class="num">' + fmtVA(data.regions[s].total) + '</td>').join('') + '</tr>';
   out.innerHTML = hero + '<div class="df-card df-tablecard"><div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
-    + '<div class="df-note">Each cell = that industry’s share of the region’s total value added (columns sum to 100%); the last row is total value added ($m). Stored as $ from your upload, shown as % composition. Source: REMPLAN economy profiles (and economy.id where still available) — gathered manually, so refresh by re-uploading.</div></div>';
+    + '<div class="df-note">Each cell shows the industry’s <b>% share</b> of the region’s economy with its <b>$ value added</b> beneath (columns sum to 100%); the last row is total value added. Source: REMPLAN economy profiles (and economy.id where still available) — gathered manually, so refresh by re-uploading.</div></div>';
 }
 (function(){ const drop = document.getElementById('indDrop'), file = document.getElementById('indFile'); if (!drop) return;
   drop.addEventListener('click', () => file.click());
   drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) importIndustryXlsx(e.dataTransfer.files[0]); });
-  file.addEventListener('change', () => { if (file.files.length) importIndustryXlsx(file.files[0]); });
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) importIndustryFiles([...e.dataTransfer.files]); });
+  file.addEventListener('change', () => { if (file.files.length) importIndustryFiles([...file.files]); });
 })();
 // national dwellings commenced — small 2-row table (houses + units)
 async function renderApprovalsCommenced(outId){
