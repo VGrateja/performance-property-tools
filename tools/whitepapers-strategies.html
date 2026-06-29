@@ -560,16 +560,16 @@
     color:#000080;
     border-bottom-color:rgba(0,0,128,0.30);
   }
+  /* Auto-fill so cards stay compact and fill the row, instead of a fixed
+     --cols count stretching 3 cards across the full width (which made them
+     huge once Whitepapers/Strategies became single full-width grids). */
   .ws-square-grid{
     display:grid;
-    grid-template-columns:repeat(var(--cols, 3), minmax(0, 1fr));
-    gap:16px;
-  }
-  @media (max-width:760px){
-    .ws-square-grid{ grid-template-columns:repeat(2, minmax(0, 1fr)) }
+    grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));
+    gap:14px;
   }
   @media (max-width:480px){
-    .ws-square-grid{ grid-template-columns:1fr }
+    .ws-square-grid{ grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)) }
   }
   /* Square card — view mode. Slightly taller than wide so the dual
      button row at the bottom of a strategy card fits without
@@ -688,12 +688,13 @@
     position:relative; z-index:1;
   }
   .ws-square-actions .ws-action{
-    flex:1;
-    padding:6px 8px;
+    flex:1; min-width:0;
+    padding:6px 6px;
     border-radius:6px;
-    font-size:11px; font-weight:700; letter-spacing:0.02em;
+    font-size:10px; font-weight:700; letter-spacing:0;
     text-align:center;
     text-decoration:none;
+    white-space:nowrap;
     border:1px solid transparent;
     transition:all .15s;
   }
@@ -1564,28 +1565,25 @@ const RESEARCH_LINKS_SUBS = [
   { id: 'rl-vicwatas', title: 'VIC/WA/TAS Regions',  kind: null, items: [] },
   { id: 'rl-others',   title: 'Others',              kind: null, items: [] },
 ];
+/* Whitepapers and Strategies are TWO separate document types (one type
+   tile each on the landing picker). Each is a grid-layout section with a
+   single subsection so the existing square-card add/edit/delete plumbing
+   (keyed by secIdx + subIdx) keeps working unchanged. The subsection
+   `kind` picks the card layout:
+     'whitepaper' → single "Open Paper" CTA + status pill
+     'strategy'   → dual "Document" + "Slides" buttons
+   layout:'grid' + gridCols renders them as scannable square tiles
+   (mirrors the Buying/Selling Slides layout in presentations-library);
+   the default column-list layout suits Research Links, not these. */
 const WS_DEFAULTS = {
   sections: [
     { id: 'research-links',        icon: '🔗', title: 'Research Links',             currentEdition: '', subsections: JSON.parse(JSON.stringify(RESEARCH_LINKS_SUBS)) },
     {
-      id: 'whitepapers-strategies',
-      icon: '📚',
-      title: 'Whitepapers and Strategies',
-      /* layout:'grid' renders each subsection (Whitepapers / Strategies)
-         as its own 3-column square-card grid, mirroring the Buying/
-         Selling Slides layout in presentations-library. The default
-         column-list layout used by Research Links isn't ideal here
-         since each subsection lists ~10+ items that read better as
-         scannable square tiles. */
+      id: 'whitepapers',
+      icon: '📄',
+      title: 'Whitepapers',
       layout: 'grid',
       gridCols: 3,
-      /* This folder uses subsections rather than a flat items list.
-         Each subsection has a `kind` that picks the card layout:
-           'whitepaper' → single "Open Paper" CTA
-           'strategy'   → dual "Document" + "Slides" buttons
-         The two subsections are fixed for this folder — users add /
-         edit / delete cards within them but can't rename or remove
-         the sections themselves. */
       subsections: [
         {
           id: 'whitepapers-sub',
@@ -1603,6 +1601,15 @@ const WS_DEFAULTS = {
             { title: 'Foundation v Multiple Trading',     url: '', status: 'in-progress', date: ''           },
           ],
         },
+      ],
+    },
+    {
+      id: 'strategies',
+      icon: '🎯',
+      title: 'Strategies',
+      layout: 'grid',
+      gridCols: 3,
+      subsections: [
         {
           id: 'strategies-sub',
           title: 'Strategies',
@@ -1610,7 +1617,6 @@ const WS_DEFAULTS = {
           items: [
             { title: 'Rentvester',                  url: '', slidesUrl: '', status: 'approved', date: '08/12/2025' },
             { title: 'Debt Reducer',                url: '', slidesUrl: '', status: 'approved', date: '08/12/2025' },
-            { title: 'Debt Reducer — New Build',    url: '', slidesUrl: '', status: 'awaiting', date: '01/05/2026' },
             { title: 'Upgrader',                    url: '', slidesUrl: '', status: 'approved', date: '08/12/2025' },
             { title: 'High-Growth Residential',     url: '', slidesUrl: '', status: 'approved', date: '08/12/2025' },
             { title: 'Strategic Allocation',        url: '', slidesUrl: '', status: 'approved', date: '08/12/2025' },
@@ -1923,6 +1929,32 @@ function saveWsData(data) {
 function _ensureSubsections(data) {
   if (!data || !Array.isArray(data.sections)) return data;
 
+  /* Split the legacy combined "Whitepapers and Strategies" folder into
+     two separate top-level sections — one type tile each (Whitepapers,
+     then Strategies). Idempotent: only fires when a combined section is
+     still present (older saved state in localStorage + documents_state).
+     Items, statuses, dates and slidesUrls are preserved; admins push the
+     split shape back up so it propagates to everyone. */
+  let splitHappened = false;
+  const combIdx = data.sections.findIndex(sec => sec && (
+    sec.id === 'whitepapers-strategies' ||
+    (Array.isArray(sec.subsections) &&
+      sec.subsections.some(x => x && (x.id === 'whitepapers-sub' || x.kind === 'whitepaper')) &&
+      sec.subsections.some(x => x && (x.id === 'strategies-sub'  || x.kind === 'strategy')))
+  ));
+  if (combIdx >= 0) {
+    const comb = data.sections[combIdx];
+    const subs = Array.isArray(comb.subsections) ? comb.subsections : [];
+    const wpSub = subs.find(x => x && (x.id === 'whitepapers-sub' || x.kind === 'whitepaper')) || { items: [] };
+    const stSub = subs.find(x => x && (x.id === 'strategies-sub'  || x.kind === 'strategy'))  || { items: [] };
+    data.sections.splice(combIdx, 1,
+      { id: 'whitepapers', icon: '📄', title: 'Whitepapers', layout: 'grid', gridCols: 3,
+        subsections: [ { id: 'whitepapers-sub', title: 'Whitepapers', kind: 'whitepaper', items: wpSub.items || [] } ] },
+      { id: 'strategies',  icon: '🎯', title: 'Strategies',  layout: 'grid', gridCols: 3,
+        subsections: [ { id: 'strategies-sub',  title: 'Strategies',  kind: 'strategy',   items: stSub.items || [] } ] });
+    splitHappened = true;
+  }
+
   const beforeLen = data.sections.length;
   data.sections = data.sections.filter(sec => sec && sec.id !== 'selling-buying-slides');
   const stripped = data.sections.length !== beforeLen;
@@ -1946,11 +1978,11 @@ function _ensureSubsections(data) {
     }
   });
 
-  if (stripped) {
-    /* Persist locally so the strip survives a hard reload even if
+  if (stripped || splitHappened) {
+    /* Persist locally so the strip / split survives a hard reload even if
        cloud is offline. _scheduleCloudSave silently no-ops when
        _canWriteCloud is false (non-admin users); admins push the
-       stripped shape up to documents_state so it propagates. */
+       reshaped data up to documents_state so it propagates. */
     try { localStorage.setItem(WS_STORAGE_KEY, JSON.stringify(data)); } catch (_) {}
     if (typeof _scheduleCloudSave === 'function') _scheduleCloudSave();
   }
@@ -2773,10 +2805,14 @@ function _renderGridSectionView(secIdx, section) {
   subs.forEach((sub, subIdx) => {
     const block = document.createElement('div');
     block.className = 'ws-grid-sub';
-    const h = document.createElement('div');
-    h.className = 'ws-grid-sub-head';
-    h.textContent = sub.title || 'Untitled';
-    block.appendChild(h);
+    /* Single-subsection sections (Whitepapers, Strategies) already name
+       themselves via the page title — skip the redundant sub-header. */
+    if (subs.length > 1) {
+      const h = document.createElement('div');
+      h.className = 'ws-grid-sub-head';
+      h.textContent = sub.title || 'Untitled';
+      block.appendChild(h);
+    }
     const grid = document.createElement('div');
     grid.className = 'ws-square-grid';
     grid.style.setProperty('--cols', String(cols));
