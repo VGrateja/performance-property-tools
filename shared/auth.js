@@ -495,6 +495,42 @@ async function _completeLogin() {
   showWelcomeAndProceed(name);
 }
 
+/* ── Google OAuth sign-in (added ALONGSIDE the email/OTP flow) ──
+   Supabase runs the handshake. After Google → Supabase callback →
+   redirect back to this page, supabase-client.js's detectSessionInUrl
+   parses the session and _hydrateFromSession (on load) reads the profile
+   and routes by tier — identical to any other sign-in. Tier is assigned
+   by the handle_new_user trigger from the verified email, so PP staff
+   land as company/admin automatically; the Google "Internal" consent
+   screen already restricts this to @performanceproperty.com.au accounts,
+   and any non-active profile is signed out by the existing status gate. */
+async function signInWithGoogle() {
+  const errEl = document.getElementById('loginError');
+  if (errEl) errEl.textContent = '';
+  const btn = document.getElementById('googleLoginBtn');
+  if (!window.sb) { if (errEl) errEl.textContent = 'Still connecting — try again in a moment.'; return; }
+  if (btn) btn.disabled = true;
+  /* Come back to whatever page launched the flow (hub in prod, or the
+     localhost preview) — must be in Supabase's redirect allow-list. */
+  const redirectTo = window.location.origin + window.location.pathname;
+  const { error } = await window.sb.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo,
+      /* hd hints the Workspace domain in Google's account chooser;
+         prompt:select_account avoids silently reusing a personal login. */
+      queryParams: { hd: 'performanceproperty.com.au', prompt: 'select_account' }
+    }
+  });
+  if (error) {
+    if (btn) btn.disabled = false;
+    if (errEl) errEl.textContent = 'Google sign-in could not start: ' + error.message;
+  }
+  /* On success the browser redirects to Google immediately — nothing else
+     to do here; the redirect back is handled on next page load. */
+}
+window.signInWithGoogle = signInWithGoogle;
+
 /* ── Step 1: email + (optional) password ── */
 async function tryLogin() {
   const emailEl = document.getElementById('emailInput');
@@ -965,6 +1001,10 @@ async function _initAuth() {
   const loginBtn = document.getElementById('loginBtn');
   if (loginBtn) {
     loginBtn.addEventListener('click', tryLogin);
+
+    /* Google sign-in button (added alongside email/OTP). */
+    const googleBtn = document.getElementById('googleLoginBtn');
+    if (googleBtn) googleBtn.addEventListener('click', signInWithGoogle);
 
     const emailIn = document.getElementById('emailInput');
     const pwIn    = document.getElementById('pwInput');
