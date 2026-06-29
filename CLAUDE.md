@@ -156,6 +156,15 @@ docs/                   BUG.md, CADENCE.md, ONLINE_REPORTS_RENDERER.md, etc.
 - No build/test step. To verify, open the page in a browser (it needs a real
   HTTP server, not `file://` — sessionStorage/CDN/Supabase break on `file://`).
   `node --check shared/report-edit.js` is the quick JS syntax gate.
+- **Cache-bust shared assets after editing anything in `shared/`.** GitHub Pages
+  + browsers cache `shared/*.css` / `shared/*.js`, so a returning visitor sees
+  the OLD file after a deploy — the live site looks different from the local copy
+  until the cache expires. The user reviews the offline copy and expects online
+  to match it exactly. Fix: every `shared/*` `<link>`/`<script>` carries a
+  `?v=<content-hash>`; **run `node scripts/stamp-shared-assets.mjs` from the repo
+  root whenever you change a shared file, before committing** (it re-hashes and
+  rewrites the query strings in index.html + tools/*.html; idempotent, touches
+  only query strings). Skipping this re-introduces the offline≠online gap.
 - Windows shell: this repo is on Windows; prefer the dedicated file tools.
   Git warns "LF will be replaced by CRLF" — harmless.
 - `reports_state` page IDs (p1, p2, …) overlap between regional and research
