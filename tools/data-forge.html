@@ -284,6 +284,14 @@
     <button class="df-back" data-home>← All data points</button>
     <div id="unempOut"></div>
   </section>
+
+  <!-- ── BUILDING APPROVALS (ABS 8731.0 — houses + units) ── -->
+  <section id="dfApprovals" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="apphOut"></div>
+    <div id="appuOut" style="margin-top:22px"></div>
+    <div id="appcOut" style="margin-top:22px"></div>
+  </section>
 </div>
 
 <script>
@@ -296,7 +304,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -315,6 +323,7 @@ function showView(name){
   if (name === 'cashrate') loadCashRate();
   if (name === 'bankrate') loadBankRate();
   if (name === 'unemployment') loadUnemployment();
+  if (name === 'approvals') loadApprovals();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -338,6 +347,7 @@ const CLUSTERS = [
   { key:'job_creation_index', icon:'📈', ingest:'file', label:'Job Creation Index', desc:'JSA Internet Vacancy Index — 8 capitals + 28 regional cities. Monthly index (spreadsheet — no API).', view:'jobcreation' },
   { key:'national_vacancies', icon:'💼', ingest:'api', label:'National Job Vacancies', desc:'JSA national internet vacancies (SA) + ABS Job Vacancies survey (private/public). Monthly + quarterly.', view:'natvac' },
   { key:'unemployment', icon:'👷', ingest:'api', label:'Unemployment & Underemployment', desc:'ABS Labour Force (Original) — unemployment for national, 8 states, 7 capitals & 28 regions; underemployment national. API (national/states) + ABS data cubes (capitals/regionals).', view:'unemployment' },
+  { key:'approvals', icon:'🏠', ingest:'api', label:'Building Approvals', desc:'ABS Building Approvals (8731.0, Original) — new house + unit dwelling approvals. National + 8 capitals (BA_GCCSA) + 28 LGA regions (BA_LGA). Annual counts.', view:'approvals' },
   { key:'inflation', icon:'📉', ingest:'file', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
   { key:'cash_rate', icon:'🏦', ingest:'file', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'file', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
@@ -543,6 +553,32 @@ const loadNom = () => renderSeriesView({ outId:'nomOut', bannerId:'nomBanner', k
 const loadJobCreation = () => renderSeriesView({ outId:'jciOut', bannerId:'jciBanner', key:'job_creation_index', metric:'job_creation_index', dbSource:'jsa', from:'2018-01-01', period:'month', colN:13, fmt:fmtIdx, unit:'index', sortBy:'group',
   title:'Job Creation Index', eyebrow:'JSA · Internet Vacancy Index', source:'Jobs & Skills Australia (IVI)', defaultMsg:'JSA Internet Vacancy Index — capitals + regional cities.',
   note:'Jobs &amp; Skills Australia Internet Vacancy Index (IVI), all-occupations index per IVI region (the "Indexed" sheet). Each capital is its own IVI region; each regional city maps to its broader IVI region (e.g. Mackay → Central Queensland). Monthly; no API — auto-downloaded spreadsheet.' });
+
+// Building approvals — two metrics (houses + units), each grouped national/capitals/regional;
+// plus national dwellings COMMENCED (ABS Building Activity) as a small national table.
+const loadApprovals = () => {
+  renderSeriesView({ outId:'apphOut', key:'approvals', metric:'approvals_h', freq:'A', from:'2016-01-01', period:'year', fmt:fmtInt, unit:'dwellings', sortBy:'group',
+    title:'Building approvals — houses', eyebrow:'ABS · Building Approvals (8731.0)', source:'ABS Building Approvals', defaultMsg:'ABS new house dwelling approvals — national, capitals, regional.',
+    note:'ABS Building Approvals (cat 8731.0), Original — number of new <b>house</b> dwelling units. National &amp; capitals = BA_GCCSA (Greater Capital City); regional cities = BA_LGA (Local Government Area). Annual: completed years = sum of the year; current year = sum of the trailing 12 months (or average × 12 once ≥6 months are in). Regionals use the current ABS LGA series, which ABS revises over time.' });
+  renderSeriesView({ outId:'appuOut', key:'approvals', metric:'approvals_u', freq:'A', from:'2016-01-01', period:'year', fmt:fmtInt, unit:'dwellings', sortBy:'group',
+    title:'Building approvals — units / other residential', eyebrow:'ABS · Building Approvals (8731.0)', source:'ABS Building Approvals', defaultMsg:'ABS new other-residential dwelling approvals — national, capitals, regional.',
+    note:'ABS Building Approvals (cat 8731.0), Original — number of new <b>other residential</b> (units, apartments, townhouses) dwelling units. Annual: completed years = sum of the year; current year = average of available months × 12.' });
+  renderApprovalsCommenced('appcOut');
+};
+// national dwellings commenced — small 2-row table (houses + units)
+async function renderApprovalsCommenced(outId){
+  const out = document.getElementById(outId); if (!out) return;
+  let data = [];
+  try { const q = await window.sb.from('rdp_raw_series').select('metric,period,value').eq('source','abs').in('metric',['commenced_h','commenced_u']).eq('region_slug','australia').eq('freq','A').gte('period','2016-01-01').order('period'); data = q.data || []; }
+  catch { out.innerHTML = ''; return; }
+  if (!data.length){ out.innerHTML = ''; return; }
+  const by = {}, yrs = new Set();
+  for (const r of data){ const y = r.period.slice(0, 4); yrs.add(y); (by[r.metric] ||= {})[y] = +r.value; }
+  const cols = [...yrs].sort().slice(-12);
+  const head = '<tr><th class="th-l">Series</th><th class="th-l">Trend</th>' + cols.map((c, i) => '<th' + (i === cols.length - 1 ? ' class="last"' : '') + '>' + esc(c) + '</th>').join('') + '</tr>';
+  const rowFor = (metric, label) => { const s = by[metric] || {}; return '<tr><td class="region">' + esc(label) + '</td><td class="spark">' + sparkline(cols.map(c => s[c])) + '</td>' + cols.map((c, i) => '<td class="num' + (i === cols.length - 1 ? ' last' : '') + '">' + fmtInt(s[c]) + '</td>').join('') + '</tr>'; };
+  out.innerHTML = '<div class="df-card df-tablecard"><h2>Dwellings commenced <span class="count">national · annual</span></h2><div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + rowFor('commenced_h', 'Houses') + rowFor('commenced_u', 'Units / other residential') + '</tbody></table></div><div class="df-note">ABS Building Activity (cat 8752.0), Original — new dwelling units <b>commenced</b>, national, quarterly → annual (sum of the year’s quarters; current year annualised). Commencements lag approvals, so the latest year trails the approvals tables above.</div></div>';
+}
 
 const loadUnemployment = () => renderSeriesView({ outId:'unempOut', key:'unemployment', metric:'unemployment', freq:'A', from:'2015-01-01', period:'year', fmt:fmtPct, unit:'', sortBy:'group', deltaPP:true, extraMetric:'underemployment', extraLabel:'Underemployment · national', mainRowLabel:'Australia — Unemployment', extraRowLabel:'Australia — Underemployment',
   title:'Unemployment &amp; underemployment', eyebrow:'ABS · Labour Force (Original)', source:'ABS Labour Force', defaultMsg:'ABS Original — unemployment (national, states, capitals, regional) + national underemployment.',
@@ -935,7 +971,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
