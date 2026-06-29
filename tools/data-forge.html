@@ -51,6 +51,7 @@
   .df-ingest.api{ color:#06b6d4; border-color:#06b6d4; background:rgba(6,182,212,.13); }
   .df-ingest.file{ color:#d97706; border-color:rgba(217,119,6,.55); background:rgba(217,119,6,.10); }
   .df-ingest.manual{ color:var(--muted); }
+  .df-ingest.derived{ color:#8b7bf0; border-color:rgba(139,123,240,.5); background:rgba(139,123,240,.12); }
 
   .df-back{ display:inline-flex; align-items:center; gap:8px; font-size:.95rem; font-weight:800; color:var(--pp-cyan); background:var(--panel2); border:1px solid var(--border); border-radius:11px; cursor:pointer; padding:10px 18px; margin-bottom:18px; font-family:inherit; letter-spacing:.01em; transition:transform .15s, border-color .15s, background .15s; }
   .df-back:hover{ border-color:var(--pp-cyan); background:rgba(0,182,203,.1); transform:translateX(-3px); }
@@ -163,6 +164,14 @@
   .arr-chart{ width:100%; height:auto; display:block; }
   .arr-chart text{ fill:var(--muted); font-size:11px; font-weight:600; }
   .arr-chart .grid{ stroke:var(--border); stroke-width:1; }
+
+  /* CIV — derived gross-yield grouped bars (house vs unit) by capital */
+  .civ-chart{ width:100%; height:auto; display:block; max-width:780px; margin:0 auto; }
+  .civ-chart text{ fill:var(--muted); font-size:11px; }
+  .civ-chart .lbl{ fill:var(--text); font-weight:700; }
+  .civ-chart .city{ fill:var(--text); font-weight:700; font-size:12.5px; }
+  .civ-chart .grid{ stroke:var(--border); }
+  .civ-derived{ display:inline-flex; align-items:center; gap:6px; font-size:.74rem; font-weight:700; color:#8b7bf0; background:rgba(139,123,240,.12); border:1px solid rgba(139,123,240,.4); border-radius:8px; padding:5px 11px; }
 
   .df-qc{ display:flex; flex-wrap:wrap; gap:10px; }
   .df-pill{ font-size:.74rem; font-weight:700; border:1px solid var(--border); border-radius:8px; padding:7px 12px; background:var(--panel2); color:var(--text); }
@@ -380,6 +389,12 @@
       <div id="arrMsg"></div>
     </div>
   </section>
+
+  <!-- ── CURRENT INVESTMENT VALUE (DERIVED from Cotality — no upload) ── -->
+  <section id="dfCiv" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="civOut"></div>
+  </section>
 </div>
 
 <script>
@@ -392,7 +407,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -415,6 +430,7 @@ function showView(name){
   if (name === 'industry') loadIndustry();
   if (name === 'popPyramid') loadPopPyramid();
   if (name === 'arrears') loadArrears();
+  if (name === 'civ') loadCiv();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -442,21 +458,23 @@ const CLUSTERS = [
   { key:'industry', icon:'🏭', ingest:'manual', label:'Industry Value Added', desc:'Industry composition (% by ANZSIC division) per region. No API — gathered from REMPLAN economy profiles (and economy.id where available); uploaded as a spreadsheet.', view:'industry' },
   { key:'population_pyramid', icon:'🔺', ingest:'api', label:'Population Pyramid', desc:'Population by 5-year age group per region. National, 8 states & 8 capital cities (GCCSA) auto-pulled from the ABS API (ERP_ASGS2021, age×sex); the 28 regional cities uploaded from the Data Dump PopPyramid sheet.', view:'popPyramid' },
   { key:'arrears', icon:'🏚️', ingest:'manual', label:'Mortgage Arrears', desc:'S&P Global Ratings RMBS SPIN arrears index — national + 8 states, monthly %. No API (S&P subscription PDF/spreadsheet); upload the Data Dump Arrears sheet.', view:'arrears' },
+  { key:'civ', icon:'💰', ingest:'derived', label:'Current Investment Value', desc:'Gross rental yield (house & unit) for the 5 major capitals — derived live from the Cotality data point: yield = weekly rent × 52 ÷ median price. Updates automatically when Cotality is re-imported.', view:'civ' },
   { key:'inflation', icon:'📉', ingest:'file', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
   { key:'cash_rate', icon:'🏦', ingest:'file', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'file', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
 ];
 
 function badge(status){
-  const s = status === 'error' ? 'err' : status === 'stale' ? 'stale' : status === 'manual' ? 'manual' : 'ok';
-  const txt = status === 'error' ? 'Fetch issue' : status === 'stale' ? 'Stale' : status === 'manual' ? 'Manual' : 'OK';
+  const s = status === 'error' ? 'err' : status === 'stale' ? 'stale' : (status === 'manual' || status === 'derived') ? 'manual' : 'ok';
+  const txt = status === 'error' ? 'Fetch issue' : status === 'stale' ? 'Stale' : status === 'derived' ? 'Derived' : status === 'manual' ? 'Manual' : 'OK';
   return '<span class="df-badge ' + s + '">' + txt + '</span>';
 }
 // how the data is gathered — lets you spot non-API points to recheck for an API later.
 function ingestChip(t){
   const m = { api:['⚡ ABS API', 'Pulled automatically from the ABS Data API'],
               file:['📄 Spreadsheet', 'Downloaded/parsed ABS spreadsheet — no API yet; recheck in future'],
-              manual:['✋ Manual upload', 'Uploaded by hand'] }[t] || ['—',''];
+              manual:['✋ Manual upload', 'Uploaded by hand'],
+              derived:['🔗 Derived', 'Computed live from other data points'] }[t] || ['—',''];
   return '<span class="df-ingest ' + t + '" title="' + esc(m[1]) + '">' + m[0] + '</span>';
 }
 
@@ -469,9 +487,10 @@ async function loadStatus(){
   } catch (e) { /* show cards anyway */ }
   el.innerHTML = CLUSTERS.map(c => {
     const st = statusMap[c.key] || {};
-    const status = (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
+    const status = c.key === 'civ' ? 'derived' : (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
     const isErr = status === 'error';
-    const meta = (c.key === 'population' || c.key === 'population_pyramid')
+    const meta = c.key === 'civ' ? 'Computed live from Cotality'
+      : (c.key === 'population' || c.key === 'population_pyramid')
       ? (st.last_ok_at ? 'Updated ' + fmtDate(st.last_ok_at) + (st.region_count ? ' · ' + st.region_count + ' regions' : '') : 'Not yet run via the monitored path')
       : (st.updated_at ? 'Last activity ' + fmtDate(st.updated_at) : 'Manual upload');
     return '<button class="df-cluster ' + (isErr ? 'err' : '') + '" data-view="' + c.view + '">'
@@ -1060,9 +1079,20 @@ function renderArrears(data, meta){
     + '<div class="df-card df-tablecard">'
     + '<div class="ind-controls"><label for="arrRegion">Region (state)</label><select id="arrRegion" class="ind-select">' + opts + '</select></div>'
     + '<div id="arrChart"></div>'
-    + '<div class="df-note">Monthly mortgage-arrears rate (%), the selected state vs National — the same comparison the reports use. Source: S&P Global Ratings RMBS SPIN (incl. non-capital-market issuance) — no API, refreshed by re-uploading.</div></div>';
+    + arrearsTableHtml(data, regions)
+    + '<div class="df-note">Monthly mortgage-arrears rate (%) — the chart compares the selected state vs National; the table below lists every series and month (latest first). Source: S&P Global Ratings RMBS SPIN (incl. non-capital-market issuance) — no API, refreshed by re-uploading.</div></div>';
   const sel = document.getElementById('arrRegion'); if (sel) sel.addEventListener('change', e => { ARR_SEL = e.target.value; renderArrearsRegion(); });
   renderArrearsRegion();
+}
+function arrearsTableHtml(data, regions){
+  const months = data.months || [];
+  const head = '<tr><th class="th-l">Month</th>' + regions.map(s => '<th' + (s === 'australia' ? ' class="last"' : '') + '>' + esc(labelOf(s)) + '</th>').join('') + '</tr>';
+  let body = '';
+  for (let i = months.length - 1; i >= 0; i--){   // latest month first
+    body += '<tr><td class="region">' + esc(monthLabelArr(months[i])) + '</td>'
+      + regions.map(s => { const v = (data.regions[s].values || [])[i]; return '<td class="num' + (s === 'australia' ? ' last' : '') + '">' + (v == null ? '—' : v.toFixed(2) + '%') + '</td>'; }).join('') + '</tr>';
+  }
+  return '<div class="df-tablewrap" style="margin-top:16px;max-height:440px"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
 }
 function renderArrearsRegion(){
   const box = document.getElementById('arrChart'); if (!box || !ARR_DATA) return;
@@ -1106,6 +1136,91 @@ function arrearsChartSvg(months, regV, natV, cyan){
   drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) importArrearsFiles([...e.dataTransfer.files]); });
   file.addEventListener('change', () => { if (file.files.length) importArrearsFiles([...file.files]); });
 })();
+
+/* ── Current Investment Value (DERIVED — no source/upload of its own). Gross
+   rental yield (house & unit) for the 5 major capitals, computed LIVE from the
+   Cotality data point: median price (cotality 'latest', col Q "Median price
+   3mo", by House/Unit) + weekly rent (cotality 'rentvacancy', rentHouse/rentUnit)
+   → yield = rent × 52 ÷ price. Re-importing CoreLogic auto-updates this. The
+   report's CIV chart compares these 5 capitals' yields. ─────────────────── */
+const CIV_CITIES = ['Sydney', 'Perth', 'Melbourne', 'Brisbane', 'Adelaide'];   // order matches the report chart
+function civNum(s){ const n = Number(String(s == null ? '' : s).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n; }
+function deriveCiv(latest, rv){
+  const capRows = (latest && latest.cap && latest.cap.rows) || [];   // [State,City,Type,#sales,MedianPrice,#listings,days]
+  const rentCaps = (rv && rv.capitals) || [];                        // [{state,name,rentHouse,rentUnit,…}]
+  return CIV_CITIES.map(city => {
+    const ph = capRows.find(r => /^h/i.test(String(r[2])) && nameMatches(String(r[1]), city));
+    const pu = capRows.find(r => /^u/i.test(String(r[2])) && nameMatches(String(r[1]), city));
+    const priceH = ph ? civNum(ph[4]) : null, priceU = pu ? civNum(pu[4]) : null;
+    const rc = rentCaps.find(c => nameMatches(String(c.name), city));
+    const rentH = rc && rc.rentHouse != null ? rc.rentHouse : null, rentU = rc && rc.rentUnit != null ? rc.rentUnit : null;
+    return { city, priceH, priceU, rentH, rentU,
+      yieldH: (priceH && rentH) ? rentH * 52 / priceH * 100 : null,
+      yieldU: (priceU && rentU) ? rentU * 52 / priceU * 100 : null };
+  });
+}
+async function loadCiv(){
+  const out = document.getElementById('civOut'); out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">Derived · gross rental yield</div><div class="df-title">Current Investment Value</div><div class="df-sub">Loading…</div></div>';
+  let rows = []; try { const { data } = await window.sb.from('forge_cotality').select('*').in('id', ['latest', 'rentvacancy']); rows = data || []; } catch {}
+  const latest = rows.find(r => r.id === 'latest'), rv = rows.find(r => r.id === 'rentvacancy');
+  renderCiv(latest && latest.data, rv && rv.data, { latest, rv });
+}
+function renderCiv(latest, rv, meta){
+  const out = document.getElementById('civOut');
+  const eyebrow = 'Derived · gross rental yield';
+  const rowsData = deriveCiv(latest, rv);
+  const anyPrice = rowsData.some(r => r.priceH != null || r.priceU != null);
+  const anyRent = rowsData.some(r => r.rentH != null || r.rentU != null);
+  if (!anyPrice || !anyRent){
+    out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Current Investment Value</div>'
+      + '<div class="df-sub"><span class="df-statuspill">Derived</span> <span>Computed from the <b>Cotality</b> data point. Missing ' + (!anyPrice ? 'median price' : 'rent') + ' — import the CoreLogic ' + (!anyPrice ? 'Market Trends .xlsx' : 'rent/vacancy .csv files') + ' in the Cotality view first.</span></div></div>';
+    return;
+  }
+  const asAt = (rv && rv.monthEnd) ? rv.monthEnd : (meta && meta.latest && meta.latest.uploaded_at ? fmtDate(meta.latest.uploaded_at) : '—');
+  const avgH = (() => { const v = rowsData.map(r => r.yieldH).filter(x => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; })();
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Current Investment Value</div>'
+    + '<div class="df-sub"><span class="df-statuspill">Derived</span> <span>Gross rental yield for the 5 major capitals — computed live from Cotality (no upload of its own).</span></div></div></div>'
+    + '<div class="df-stats">'
+    + dfStat('Capitals', String(rowsData.length), true)
+    + dfStat('Avg house yield', avgH != null ? avgH.toFixed(2) + '%' : '—')
+    + dfStat('As at', '<span class="sm">' + esc(asAt) + '</span>')
+    + dfStat('Source', '<span class="sm">Cotality (price + rent)</span><div class="df-stat-foot">' + ingestChip('derived') + '</div>')
+    + '</div></div>';
+  const cyan = (getComputedStyle(document.documentElement).getPropertyValue('--pp-cyan') || '').trim() || '#00b6cb';
+  const violet = (getComputedStyle(document.documentElement).getPropertyValue('--pp-violet') || '').trim() || '#8b7bf0';
+  const fmtP = v => v == null ? '—' : '$' + Math.round(v).toLocaleString();
+  const fmtR = v => v == null ? '—' : '$' + Math.round(v).toLocaleString();
+  const fmtY = v => v == null ? '—' : v.toFixed(2) + '%';
+  const head = '<tr><th class="th-l">Capital</th><th>Median price · H</th><th>Median price · U</th><th>Rent · H</th><th>Rent · U</th><th class="last">Yield · H</th><th class="last">Yield · U</th></tr>';
+  const body = rowsData.map(r => '<tr><td class="region">' + esc(r.city) + '</td>'
+    + '<td class="num">' + fmtP(r.priceH) + '</td><td class="num">' + fmtP(r.priceU) + '</td>'
+    + '<td class="num">' + fmtR(r.rentH) + '</td><td class="num">' + fmtR(r.rentU) + '</td>'
+    + '<td class="num last">' + fmtY(r.yieldH) + '</td><td class="num last">' + fmtY(r.yieldU) + '</td></tr>').join('');
+  out.innerHTML = hero
+    + '<div class="df-card df-tablecard">'
+    + '<div class="arr-legend"><span class="k"><span class="sw" style="background:' + cyan + ';height:12px;border-radius:3px"></span>House yield</span><span class="k"><span class="sw" style="background:' + violet + ';height:12px;border-radius:3px"></span>Unit yield</span></div>'
+    + civBarsSvg(rowsData, cyan, violet)
+    + '<div class="df-tablewrap" style="margin-top:16px"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + '<div class="df-note">Each yield is computed live: <b>gross yield = weekly rent × 52 ÷ median price</b>. Median price comes from the Cotality CoreLogic “Market Trends” export (3-month median, house/unit); rent from the CoreLogic rent/vacancy CSVs. Re-import either in the Cotality view and this updates automatically.</div></div>';
+}
+function civBarsSvg(rows, cyan, violet){
+  const W = 740, H = 300, padL = 42, padR = 14, padT = 26, padB = 44, n = rows.length;
+  const vals = rows.flatMap(r => [r.yieldH, r.yieldU]).filter(v => v != null);
+  const maxV = vals.length ? Math.max(...vals) : 5; const yMax = Math.ceil(maxV + 0.5);
+  const Y = v => (H - padB) - (v / yMax) * (H - padT - padB);
+  const groupW = (W - padL - padR) / n, barW = groupW * 0.28, gap = groupW * 0.05;
+  let g = ''; for (const gv of [0, yMax / 2, yMax]){ const yy = Y(gv); g += '<line class="grid" x1="' + padL + '" y1="' + yy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + yy.toFixed(1) + '"/><text x="' + (padL - 6) + '" y="' + (yy + 3).toFixed(1) + '" text-anchor="end">' + gv.toFixed(1) + '%</text>'; }
+  let bars = '';
+  rows.forEach((r, i) => {
+    const cx = padL + groupW * i + groupW / 2;
+    const hx = cx - barW - gap / 2, ux = cx + gap / 2;
+    if (r.yieldH != null){ bars += '<rect x="' + hx.toFixed(1) + '" y="' + Y(r.yieldH).toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + ((H - padB) - Y(r.yieldH)).toFixed(1) + '" rx="2" fill="' + cyan + '"/><text class="lbl" x="' + (hx + barW / 2).toFixed(1) + '" y="' + (Y(r.yieldH) - 5).toFixed(1) + '" text-anchor="middle">' + r.yieldH.toFixed(2) + '%</text>'; }
+    if (r.yieldU != null){ bars += '<rect x="' + ux.toFixed(1) + '" y="' + Y(r.yieldU).toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + ((H - padB) - Y(r.yieldU)).toFixed(1) + '" rx="2" fill="' + violet + '"/><text class="lbl" x="' + (ux + barW / 2).toFixed(1) + '" y="' + (Y(r.yieldU) - 5).toFixed(1) + '" text-anchor="middle">' + r.yieldU.toFixed(2) + '%</text>'; }
+    bars += '<text class="city" x="' + cx.toFixed(1) + '" y="' + (H - padB + 18) + '" text-anchor="middle">' + esc(r.city) + '</text>';
+  });
+  return '<svg class="civ-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Gross rental yield by capital">' + g + bars + '</svg>';
+}
 // national dwellings commenced — small 2-row table (houses + units)
 async function renderApprovalsCommenced(outId){
   const out = document.getElementById(outId); if (!out) return;
@@ -1512,7 +1627,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
