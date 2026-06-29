@@ -401,6 +401,12 @@
     <button class="df-back" data-home>← All data points</button>
     <div id="ironOut"></div>
   </section>
+
+  <!-- ── MINING — MINERAL EXPLORATION (ABS MIN_EXP — API, no upload) ── -->
+  <section id="dfMining" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="minOut"></div>
+  </section>
 </div>
 
 <script>
@@ -413,7 +419,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfIron']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfIron','dfMining']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -438,6 +444,7 @@ function showView(name){
   if (name === 'arrears') loadArrears();
   if (name === 'civ') loadCiv();
   if (name === 'iron') loadIron();
+  if (name === 'mining') loadMining();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -467,6 +474,7 @@ const CLUSTERS = [
   { key:'arrears', icon:'🏚️', ingest:'manual', label:'Mortgage Arrears', desc:'S&P Global Ratings RMBS SPIN arrears index — national + 8 states, monthly %. No API (S&P subscription PDF/spreadsheet); upload the Data Dump Arrears sheet.', view:'arrears' },
   { key:'civ', icon:'💰', ingest:'derived', label:'Current Investment Value', desc:'Gross rental yield (house & unit) for the 5 major capitals — derived live from the Cotality data point: yield = weekly rent × 52 ÷ median price. Updates automatically when Cotality is re-imported.', view:'civ' },
   { key:'iron_ore_price', icon:'⛏️', ingest:'api', label:'Iron Ore Price', desc:'IMF “Global price of Iron Ore” (USD/tonne), monthly — via FRED (PIORECRUSDM, the same IMF data IndexMundi republishes). Feeds the Perth report; the chart annualises it.', view:'iron' },
+  { key:'mineral_exploration', icon:'⚒️', ingest:'api', label:'Mineral Exploration', desc:'ABS Mineral &amp; Petroleum Exploration (cat 8412.0, MIN_EXP, Original) — quarterly exploration expenditure ($m). 7 states + national; the Perth report uses WA.', view:'mining' },
   { key:'inflation', icon:'📉', ingest:'file', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
   { key:'cash_rate', icon:'🏦', ingest:'file', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'file', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
@@ -1294,6 +1302,65 @@ function ironChartSvg(months, vals){
     + (li => li >= 0 ? '<circle cx="' + X(li).toFixed(1) + '" cy="' + Y(vals[li]).toFixed(1) + '" r="3.5" fill="' + cyan + '"/>' : '')((() => { for (let i = vals.length - 1; i >= 0; i--) if (vals[i] != null) return i; return -1; })())
     + '</svg>';
 }
+
+/* ── Mining — Mineral Exploration expenditure (API — ABS MIN_EXP). Quarterly
+   $m, per state + national, from rdp_raw_series (metric 'mineral_exploration',
+   freq 'Q'). The Perth report uses WA, so the view defaults to WA. ────────── */
+function quarterLabel(period){ const y = period.slice(0, 4), mo = +period.slice(5, 7); return 'Q' + (Math.floor((mo - 1) / 3) + 1) + ' ' + y; }
+let MIN_DATA = null, MIN_SEL = null;
+async function loadMining(){
+  const out = document.getElementById('minOut');
+  out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">ABS · Mineral &amp; petroleum exploration</div><div class="df-title">Mineral Exploration</div><div class="df-sub">Loading…</div></div>';
+  let st = {}; try { const { data } = await window.sb.from('forge_data_status').select('*').eq('data_key', 'mineral_exploration').maybeSingle(); st = data || {}; } catch {}
+  let series = [];
+  try { const { data } = await window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', 'mineral_exploration').eq('freq', 'Q').order('period'); series = data || []; }
+  catch (e) { out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">ABS · Mineral &amp; petroleum exploration</div><div class="df-title">Mineral Exploration</div><div class="df-sub"><span class="df-statuspill err">Unavailable</span> <span>Couldn’t load (sign in required — read behind RLS).</span></div></div>'; return; }
+  MIN_DATA = {};
+  for (const r of series){ (MIN_DATA[r.region_slug] || (MIN_DATA[r.region_slug] = { periods: [], vals: [] })); MIN_DATA[r.region_slug].periods.push(r.period); MIN_DATA[r.region_slug].vals.push(+r.value); }
+  renderMining(st);
+}
+function renderMining(st){
+  const out = document.getElementById('minOut');
+  const eyebrow = 'ABS · Mineral &amp; petroleum exploration';
+  const regions = Object.keys(MIN_DATA || {}).sort((a, b) => groupOf(a) - groupOf(b) || labelOf(a).localeCompare(labelOf(b)));
+  if (!regions.length){
+    out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Mineral Exploration</div><div class="df-sub"><span class="df-statuspill">⚡ ABS API</span> <span>No data yet — run <code>node scripts/ingest-abs-mineral-exploration.mjs --write</code>.</span></div></div>'; return;
+  }
+  if (!MIN_SEL || !MIN_DATA[MIN_SEL]) MIN_SEL = MIN_DATA['st-wa'] ? 'st-wa' : regions[0];
+  const wa = MIN_DATA['st-wa'] || MIN_DATA[regions[0]];
+  const latestP = wa.periods[wa.periods.length - 1];
+  const fmt$ = v => v == null ? '—' : '$' + v.toFixed(1) + 'm';
+  const updated = fmtDate(st.last_ok_at || st.updated_at);
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Mineral Exploration</div>'
+    + '<div class="df-sub"><span class="df-statuspill ok">Up to date</span> <span>Quarterly exploration expenditure ($m), Original. The Perth report uses WA; all states + national stored.</span></div></div></div>'
+    + '<div class="df-stats">'
+    + dfStat('Regions', String(regions.length), true)
+    + dfStat('WA · ' + esc(quarterLabel(latestP)), fmt$(wa.vals[wa.vals.length - 1]))
+    + dfStat('Coverage', '<span class="sm">' + esc(quarterLabel(wa.periods[0])) + ' – ' + esc(quarterLabel(latestP)) + '</span>')
+    + dfStat('Source', '<span class="sm">ABS 8412.0 (MIN_EXP)</span><div class="df-stat-foot">' + ingestChip('api') + (updated !== '—' ? ' updated ' + updated : '') + '</div>')
+    + '</div></div>';
+  const opts = regions.map(s => '<option value="' + esc(s) + '"' + (s === MIN_SEL ? ' selected' : '') + '>' + esc(labelOf(s)) + '</option>').join('');
+  out.innerHTML = hero
+    + '<div class="df-card df-tablecard">'
+    + '<div class="ind-controls"><label for="minRegion">Region</label><select id="minRegion" class="ind-select">' + opts + '</select></div>'
+    + '<div id="minBody"></div>'
+    + '<div class="df-note">ABS Mineral and Petroleum Exploration (cat 8412.0), Original series, total mineral exploration expenditure on all deposits, quarterly ($m). Source: ABS Data API (MIN_EXP). The Perth report charts <b>WA</b>.</div></div>';
+  const sel = document.getElementById('minRegion'); if (sel) sel.addEventListener('change', e => { MIN_SEL = e.target.value; renderMiningRegion(); });
+  renderMiningRegion();
+}
+function renderMiningRegion(){
+  const box = document.getElementById('minBody'); if (!box || !MIN_DATA || !MIN_DATA[MIN_SEL]) return;
+  const d = MIN_DATA[MIN_SEL];
+  const months = d.periods.map(p => p.slice(0, 7)), vals = d.vals;
+  const cyan = (getComputedStyle(document.documentElement).getPropertyValue('--pp-cyan') || '').trim() || '#00b6cb';
+  const last = (() => { for (let i = vals.length - 1; i >= 0; i--) if (vals[i] != null) return vals[i]; return null; })();
+  const legend = '<div class="arr-legend"><span class="k"><span class="sw" style="background:' + cyan + '"></span>' + esc(labelOf(MIN_SEL)) + ' — exploration ($m, quarterly)</span><span class="k v">latest ' + (last != null ? '$' + last.toFixed(1) + 'm' : '—') + '</span></div>';
+  let body = '';
+  for (let i = d.periods.length - 1; i >= 0; i--) body += '<tr><td class="region">' + esc(quarterLabel(d.periods[i])) + '</td><td class="num last">' + (vals[i] == null ? '—' : '$' + vals[i].toFixed(1) + 'm') + '</td></tr>';
+  box.innerHTML = legend + ironChartSvg(months, vals)
+    + '<div class="df-tablewrap" style="margin-top:16px;max-height:360px"><table class="df-table"><thead><tr><th class="th-l">Quarter</th><th class="last">' + esc(labelOf(MIN_SEL)) + ' ($m)</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+}
 // national dwellings commenced — small 2-row table (houses + units)
 async function renderApprovalsCommenced(outId){
   const out = document.getElementById(outId); if (!out) return;
@@ -1700,7 +1767,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron','mining'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
