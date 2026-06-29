@@ -413,6 +413,12 @@
     <button class="df-back" data-home>← All data points</button>
     <div id="commOut"></div>
   </section>
+
+  <!-- ── NATIONAL ONLY (National report's national-level series — one card) ── -->
+  <section id="dfNatonly" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="natOut"></div>
+  </section>
 </div>
 
 <script>
@@ -425,7 +431,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfIron','dfMining','dfCommodities']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfIron','dfMining','dfCommodities','dfNatonly']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -452,6 +458,7 @@ function showView(name){
   if (name === 'iron') loadIron();
   if (name === 'mining') loadMining();
   if (name === 'commodities') loadCommodities();
+  if (name === 'natonly') loadNatOnly();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -483,6 +490,7 @@ const CLUSTERS = [
   { key:'iron_ore_price', icon:'⛏️', ingest:'api', label:'Iron Ore Price', desc:'IMF “Global price of Iron Ore” (USD/tonne), monthly — via FRED (PIORECRUSDM, the same IMF data IndexMundi republishes). Feeds the Perth report; the chart annualises it.', view:'iron' },
   { key:'mineral_exploration', icon:'⚒️', ingest:'api', label:'Mineral Exploration', desc:'ABS Mineral &amp; Petroleum Exploration (cat 8412.0, MIN_EXP, Original) — quarterly exploration expenditure ($m). 7 states + national; the Perth report uses WA.', view:'mining' },
   { key:'commodity_prices', icon:'🪙', ingest:'file', label:'Commodity Prices', desc:'Gold, iron ore, crude oil, silver &amp; copper — annual prices (Mining sheet, marketindex.com.au). Gold/silver USD/oz · crude USD/barrel · copper/iron USD/tonne. 1980–present.', view:'commodities' },
+  { key:'national_only', icon:'🇦🇺', ingest:'api', label:'National Only', desc:'National Online Report series: work done, federal budget, govt debt-to-GDP, household debt-to-income, GDP &amp; debt by country, cash rate, household composition. 5 API (ABS/IMF/RBA) + 2 seeded (Budget, Census).', view:'natonly' },
   { key:'inflation', icon:'📉', ingest:'file', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
   { key:'cash_rate', icon:'🏦', ingest:'file', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'file', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
@@ -1446,6 +1454,117 @@ function renderCommoditiesSel(){
   box.innerHTML = legend + ironChartSvg(months, vals)
     + '<div class="df-tablewrap" style="margin-top:16px;max-height:360px"><table class="df-table"><thead><tr><th class="th-l">Year</th><th class="last">' + esc(c.label) + ' (' + esc(c.unit) + ')</th></tr></thead><tbody>' + body + '</tbody></table></div>';
 }
+
+/* ── National Only (the National Online Report's national-level series, in one
+   card). forge_national_only jsonb assembled by ingest-national-only.mjs. A
+   series selector switches between 7 sub-views. ─────────────────────────── */
+const NAT_SERIES = [
+  { key: 'workDone', label: 'Value of Work Done' }, { key: 'federalBudget', label: 'Federal Budget' },
+  { key: 'govtDebtGdp', label: 'Govt Debt-to-GDP' }, { key: 'householdDebtIncome', label: 'Household Debt-to-Income' },
+  { key: 'gdpByCountry', label: 'GDP & Debt by Country' }, { key: 'cashRate', label: 'Cash Rate' },
+  { key: 'householdComposition', label: 'Household Composition' },
+];
+const NAT_CYAN = () => (getComputedStyle(document.documentElement).getPropertyValue('--pp-cyan') || '').trim() || '#00b6cb';
+const NAT_VIOLET = () => (getComputedStyle(document.documentElement).getPropertyValue('--pp-violet') || '').trim() || '#8b7bf0';
+let NAT_DATA = null, NAT_SEL = null;
+function natLineSvg(periods, series, yFmt){
+  const W = 840, H = 250, padL = 60, padR = 16, padT = 14, padB = 34, n = periods.length;
+  if (!n) return '<div class="df-empty">No data.</div>';
+  const all = series.flatMap(s => s.vals).filter(v => v != null && !isNaN(v));
+  let maxV = Math.max(...all), minV = Math.min(...all, 0); if (maxV === minV) maxV = minV + 1;
+  const X = i => padL + (n <= 1 ? 0 : (i / (n - 1)) * (W - padL - padR));
+  const Y = v => (H - padB) - ((v - minV) / (maxV - minV)) * (H - padT - padB);
+  const path = vals => { let d = '', pen = false; for (let i = 0; i < n; i++){ const v = vals[i]; if (v == null || isNaN(v)){ pen = false; continue; } d += (pen ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1) + ' '; pen = true; } return d.trim(); };
+  let g = ''; for (const gv of [minV, (minV + maxV) / 2, maxV]){ const yy = Y(gv); g += '<line class="grid" x1="' + padL + '" y1="' + yy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + yy.toFixed(1) + '"/><text x="' + (padL - 6) + '" y="' + (yy + 3).toFixed(1) + '" text-anchor="end">' + yFmt(gv) + '</text>'; }
+  let xl = ''; periods.forEach((m, i) => { if (/-01$/.test(String(m))){ const yr = +String(m).slice(0, 4); if (yr % 5 === 0) xl += '<text x="' + X(i).toFixed(1) + '" y="' + (H - padB + 16) + '" text-anchor="middle">' + yr + '</text>'; } });
+  return '<svg class="arr-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet">' + g + xl + series.map(s => '<path d="' + path(s.vals) + '" fill="none" stroke="' + s.color + '" stroke-width="1.8"/>').join('') + '</svg>';
+}
+function natBarsSvg(labels, vals, yFmt){
+  const W = 840, H = 280, padL = 60, padR = 16, padT = 18, padB = 52, n = labels.length;
+  const fin = vals.filter(v => v != null); let maxV = Math.max(...fin, 0), minV = Math.min(...fin, 0); if (maxV === minV) maxV = minV + 1;
+  const Y = v => (H - padB) - ((v - minV) / (maxV - minV)) * (H - padT - padB); const zero = Y(0);
+  const step = (W - padL - padR) / n, bw = step * 0.6;
+  let g = ''; for (const gv of [minV, 0, maxV]){ const yy = Y(gv); g += '<line class="grid" x1="' + padL + '" y1="' + yy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + yy.toFixed(1) + '"/><text x="' + (padL - 6) + '" y="' + (yy + 3).toFixed(1) + '" text-anchor="end">' + yFmt(gv) + '</text>'; }
+  let bars = ''; labels.forEach((lb, i) => { const v = vals[i]; if (v == null) return; const cx = padL + step * i + step / 2; const y = Y(v); const up = v >= 0; bars += '<rect x="' + (cx - bw / 2).toFixed(1) + '" y="' + (up ? y : zero).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + Math.abs(y - zero).toFixed(1) + '" rx="2" fill="' + (up ? '#22c55e' : '#ef4444') + '"/><text x="' + cx.toFixed(1) + '" y="' + (H - padB + 14) + '" text-anchor="end" transform="rotate(40 ' + cx.toFixed(1) + ' ' + (H - padB + 14) + ')" style="font-size:9px">' + esc(lb) + '</text>'; });
+  return '<svg class="arr-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet">' + g + bars + '</svg>';
+}
+async function loadNatOnly(){
+  const out = document.getElementById('natOut');
+  out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">National Online Report · national series</div><div class="df-title">National Only</div><div class="df-sub">Loading…</div></div>';
+  let st = {}, row = null;
+  try { const s = await window.sb.from('forge_data_status').select('*').eq('data_key', 'national_only').maybeSingle(); st = s.data || {}; } catch {}
+  try { const { data } = await window.sb.from('forge_national_only').select('*').eq('id', 'latest').maybeSingle(); row = data; } catch {}
+  renderNatOnly(row && row.data, row, st);
+}
+function renderNatOnly(d, meta, st){
+  const out = document.getElementById('natOut');
+  const eyebrow = 'National Online Report · national series';
+  if (!d || !d.workDone){
+    out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">National Only</div><div class="df-sub"><span class="df-statuspill">⚡ ABS API</span> <span>No data yet — run <code>node scripts/ingest-national-only.mjs --write</code>.</span></div></div>'; return;
+  }
+  NAT_DATA = d; if (!NAT_SEL || !NAT_SERIES.some(s => s.key === NAT_SEL)) NAT_SEL = 'workDone';
+  const updated = fmtDate((meta && (meta.updated_at || meta.uploaded_at)) || (d.meta && d.meta.updatedAt) || (st && st.last_ok_at));
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">National Only</div>'
+    + '<div class="df-sub"><span class="df-statuspill ok">Up to date</span> <span>The National report’s national-level series, in one card. 5 auto-update via API (ABS / IMF / RBA); Federal Budget &amp; Household composition are seeded.</span></div></div></div>'
+    + '<div class="df-stats">'
+    + dfStat('Series', String(NAT_SERIES.length), true)
+    + dfStat('Updated', '<span class="sm">' + esc(updated) + '</span>')
+    + dfStat('Source', '<span class="sm">ABS · IMF · RBA</span><div class="df-stat-foot">' + ingestChip('api') + '</div>')
+    + '</div></div>';
+  const opts = NAT_SERIES.map(s => '<option value="' + s.key + '"' + (s.key === NAT_SEL ? ' selected' : '') + '>' + esc(s.label) + '</option>').join('');
+  out.innerHTML = hero
+    + '<div class="df-card df-tablecard">'
+    + '<div class="ind-controls"><label for="natSel">Series</label><select id="natSel" class="ind-select" style="min-width:280px">' + opts + '</select></div>'
+    + '<div id="natBody"></div></div>';
+  const sel = document.getElementById('natSel'); if (sel) sel.addEventListener('change', e => { NAT_SEL = e.target.value; renderNatSeries(); });
+  renderNatSeries();
+}
+function renderNatSeries(){
+  const box = document.getElementById('natBody'); if (!box || !NAT_DATA) return;
+  const d = NAT_DATA, cyan = NAT_CYAN(), violet = NAT_VIOLET();
+  const wrap = (legend, chart, headRow, bodyRows, maxH, note) => legend + chart
+    + '<div class="df-tablewrap" style="margin-top:16px;max-height:' + (maxH || 360) + 'px"><table class="df-table"><thead>' + headRow + '</thead><tbody>' + bodyRows + '</tbody></table></div>'
+    + (note ? '<div class="df-note">' + note + '</div>' : '');
+  const lv = a => { for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return null; };
+  if (NAT_SEL === 'workDone'){
+    const w = d.workDone, per = w.periods.map(p => p.slice(0, 7)), $b = v => '$' + (v / 1000).toFixed(0) + 'b';
+    const legend = '<div class="arr-legend"><span class="k"><span class="sw" style="background:' + cyan + '"></span>Public <span class="v">$' + (lv(w.public) / 1000).toFixed(1) + 'b</span></span><span class="k"><span class="sw" style="background:' + violet + '"></span>Private <span class="v">$' + (lv(w.private) / 1000).toFixed(1) + 'b</span></span><span class="k v">value of work done · quarterly</span></div>';
+    let b = ''; for (let i = w.periods.length - 1; i >= 0; i--) b += '<tr><td class="region">' + quarterLabel(w.periods[i]) + '</td><td class="num">$' + (w.public[i] / 1000).toFixed(1) + 'b</td><td class="num last">$' + (w.private[i] / 1000).toFixed(1) + 'b</td></tr>';
+    box.innerHTML = wrap(legend, natLineSvg(per, [{ vals: w.public, color: cyan }, { vals: w.private, color: violet }], $b), '<tr><th class="th-l">Quarter</th><th>Public</th><th class="last">Private</th></tr>', b, 360, 'ABS Construction Work Done (cat 8755.0), value of work done, total construction, current prices, Original, Australia — quarterly. Auto-updates via the ABS API.');
+  } else if (NAT_SEL === 'federalBudget'){
+    const f = d.federalBudget, $b = v => '$' + (v / 1000).toFixed(0) + 'b';
+    const legend = '<div class="arr-legend"><span class="k"><span class="sw" style="background:#22c55e"></span>Surplus</span><span class="k"><span class="sw" style="background:#ef4444"></span>Deficit</span><span class="k v">underlying cash balance · latest ' + esc(f.fy[f.fy.length - 1]) + ' $' + f.values[f.values.length - 1].toLocaleString() + 'm</span></div>';
+    let b = ''; for (let i = f.fy.length - 1; i >= 0; i--) b += '<tr><td class="region">' + esc(f.fy[i]) + '</td><td class="num last" style="color:' + (f.values[i] >= 0 ? '#22c55e' : '#ef4444') + '">$' + f.values[i].toLocaleString() + 'm</td></tr>';
+    box.innerHTML = wrap(legend, natBarsSvg(f.fy, f.values, $b), '<tr><th class="th-l">Financial year</th><th class="last">Underlying cash balance</th></tr>', b, 360, 'Commonwealth underlying cash balance ($m) by financial year — Treasury Budget papers. <b>Seeded</b> (no API); update at each Budget / MYEFO.');
+  } else if (NAT_SEL === 'govtDebtGdp'){
+    const gd = d.govtDebtGdp, per = gd.years.map(y => y + '-01'), pct = v => v.toFixed(0) + '%';
+    const legend = '<div class="arr-legend"><span class="k"><span class="sw" style="background:' + cyan + '"></span>Govt debt-to-GDP <span class="v">' + lv(gd.values).toFixed(1) + '%</span></span><span class="k v">' + esc(gd.note) + '</span></div>';
+    let b = ''; for (let i = gd.years.length - 1; i >= 0; i--) b += '<tr><td class="region">' + esc(String(gd.years[i])) + '</td><td class="num last">' + gd.values[i].toFixed(1) + '%</td></tr>';
+    box.innerHTML = wrap(legend, natLineSvg(per, [{ vals: gd.values, color: cyan }], pct), '<tr><th class="th-l">Year</th><th class="last">Debt-to-GDP</th></tr>', b, 340, 'IMF gross general-government debt, % of GDP (DataMapper GGXWDG_NGDP). Auto-updates each WEO. (Your sheet’s ~36.5% was the Treasury <b>net</b> debt measure.)');
+  } else if (NAT_SEL === 'householdDebtIncome'){
+    const h = d.householdDebtIncome, per = h.periods.map(p => p.slice(0, 7)), pct = v => v.toFixed(0) + '%';
+    const legend = '<div class="arr-legend"><span class="k"><span class="sw" style="background:' + cyan + '"></span>Household debt-to-income <span class="v">' + lv(h.values).toFixed(1) + '%</span></span><span class="k v">quarterly</span></div>';
+    let b = ''; for (let i = h.periods.length - 1; i >= 0; i--) b += '<tr><td class="region">' + quarterLabel(h.periods[i]) + '</td><td class="num last">' + h.values[i].toFixed(1) + '%</td></tr>';
+    box.innerHTML = wrap(legend, natLineSvg(per, [{ vals: h.values, color: cyan }], pct), '<tr><th class="th-l">Quarter</th><th class="last">Debt-to-income</th></tr>', b, 340, 'RBA E2 (Household Finances – Selected Ratios), series BHFDDIT — ratio of household debt to annualised disposable income (%), quarterly. Auto-updates from the RBA.');
+  } else if (NAT_SEL === 'gdpByCountry'){
+    const g = d.gdpByCountry;
+    const legend = '<div class="arr-legend"><span class="k v">Nominal GDP &amp; gross govt debt-to-GDP, ' + esc(String(g.year)) + ' (IMF WEO) · ' + g.rows.length + ' countries</span></div>';
+    let b = ''; g.rows.forEach((r, i) => b += '<tr><td class="region">' + (i + 1) + '. ' + esc(r.country) + '</td><td class="num">$' + r.gdpTn.toFixed(2) + 'tn</td><td class="num last">' + (r.debtPct != null ? r.debtPct.toFixed(0) + '%' : '—') + '</td></tr>');
+    box.innerHTML = wrap(legend, '', '<tr><th class="th-l">Country</th><th>Nominal GDP</th><th class="last">Debt-to-GDP</th></tr>', b, 520, 'IMF World Economic Outlook (DataMapper): nominal GDP in US$ (NGDPD) and gross general-government debt % of GDP (GGXWDG_NGDP), latest reference year. Auto-updates each WEO.');
+  } else if (NAT_SEL === 'cashRate'){
+    const c = d.cashRate, per = c.periods.map(p => p.slice(0, 7)), pct = v => v.toFixed(1) + '%';
+    const legend = '<div class="arr-legend"><span class="k"><span class="sw" style="background:' + cyan + '"></span>Cash rate target <span class="v">' + lv(c.values).toFixed(2) + '%</span></span><span class="k v">monthly</span></div>';
+    let b = ''; for (let i = c.periods.length - 1; i >= 0; i--) b += '<tr><td class="region">' + esc(monthLabelArr(c.periods[i].slice(0, 7))) + '</td><td class="num last">' + c.values[i].toFixed(2) + '%</td></tr>';
+    box.innerHTML = wrap(legend, natLineSvg(per, [{ vals: c.values, color: cyan }], pct), '<tr><th class="th-l">Month</th><th class="last">Cash rate</th></tr>', b, 340, 'RBA cash rate target, monthly (from the Forge Cash Rate data point). Auto-updates from the RBA.');
+  } else if (NAT_SEL === 'householdComposition'){
+    const hc = d.householdComposition, yrs = hc.years;
+    const legend = '<div class="arr-legend"><span class="k v">ABS Census — number of households by type, by census year</span></div>';
+    const head = '<tr><th class="th-l">Household / family type</th>' + yrs.map((y, i) => '<th' + (i === yrs.length - 1 ? ' class="last"' : '') + '>' + y + '</th>').join('') + '</tr>';
+    let b = ''; hc.types.forEach((t, ti) => { b += '<tr><td class="region">' + esc(t) + '</td>' + yrs.map((y, i) => { const v = (hc.data[y] || [])[ti]; return '<td class="num' + (i === yrs.length - 1 ? ' last' : '') + '">' + (v == null ? '—' : Math.round(v).toLocaleString()) + '</td>'; }).join('') + '</tr>'; });
+    box.innerHTML = wrap(legend, '', head, b, 420, 'ABS Census — count of households by family/household composition, each census 1991–2021. <b>Seeded</b> (no annual API); updates at the next census (2026).');
+  }
+}
 // national dwellings commenced — small 2-row table (houses + units)
 async function renderApprovalsCommenced(outId){
   const out = document.getElementById(outId); if (!out) return;
@@ -1852,7 +1971,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron','mining','commodities'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron','mining','commodities','natonly'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
