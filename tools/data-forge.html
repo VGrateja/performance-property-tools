@@ -395,6 +395,12 @@
     <button class="df-back" data-home>← All data points</button>
     <div id="civOut"></div>
   </section>
+
+  <!-- ── IRON ORE PRICE (IMF via FRED — API, no upload) ── -->
+  <section id="dfIron" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="ironOut"></div>
+  </section>
 </div>
 
 <script>
@@ -407,7 +413,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfIron']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -431,6 +437,7 @@ function showView(name){
   if (name === 'popPyramid') loadPopPyramid();
   if (name === 'arrears') loadArrears();
   if (name === 'civ') loadCiv();
+  if (name === 'iron') loadIron();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -459,6 +466,7 @@ const CLUSTERS = [
   { key:'population_pyramid', icon:'🔺', ingest:'api', label:'Population Pyramid', desc:'Population by 5-year age group per region. National, 8 states & 8 capital cities (GCCSA) auto-pulled from the ABS API (ERP_ASGS2021, age×sex); the 28 regional cities uploaded from the Data Dump PopPyramid sheet.', view:'popPyramid' },
   { key:'arrears', icon:'🏚️', ingest:'manual', label:'Mortgage Arrears', desc:'S&P Global Ratings RMBS SPIN arrears index — national + 8 states, monthly %. No API (S&P subscription PDF/spreadsheet); upload the Data Dump Arrears sheet.', view:'arrears' },
   { key:'civ', icon:'💰', ingest:'derived', label:'Current Investment Value', desc:'Gross rental yield (house & unit) for the 5 major capitals — derived live from the Cotality data point: yield = weekly rent × 52 ÷ median price. Updates automatically when Cotality is re-imported.', view:'civ' },
+  { key:'iron_ore_price', icon:'⛏️', ingest:'api', label:'Iron Ore Price', desc:'IMF “Global price of Iron Ore” (USD/tonne), monthly — via FRED (PIORECRUSDM, the same IMF data IndexMundi republishes). Feeds the Perth report; the chart annualises it.', view:'iron' },
   { key:'inflation', icon:'📉', ingest:'file', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
   { key:'cash_rate', icon:'🏦', ingest:'file', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'file', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
@@ -1221,6 +1229,71 @@ function civBarsSvg(rows, cyan, violet){
   });
   return '<svg class="civ-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Gross rental yield by capital">' + g + bars + '</svg>';
 }
+
+/* ── Iron Ore Price (API — IMF via FRED PIORECRUSDM). Monthly USD/tonne, read
+   from rdp_raw_series (region 'global', metric 'iron_ore_price', freq 'M').
+   View: monthly line chart + an annual table showing each year's January value
+   AND its calendar-year average (so it's verifiable against the Data Dump). ── */
+async function loadIron(){
+  const out = document.getElementById('ironOut');
+  out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">IMF / FRED · Iron ore price</div><div class="df-title">Iron Ore Price</div><div class="df-sub">Loading…</div></div>';
+  let st = {}; try { const { data } = await window.sb.from('forge_data_status').select('*').eq('data_key', 'iron_ore_price').maybeSingle(); st = data || {}; } catch {}
+  let series = [];
+  try { const { data } = await window.sb.from('rdp_raw_series').select('period,value').eq('metric', 'iron_ore_price').eq('region_slug', 'global').eq('freq', 'M').order('period'); series = data || []; }
+  catch (e) { out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">IMF / FRED · Iron ore price</div><div class="df-title">Iron Ore Price</div><div class="df-sub"><span class="df-statuspill err">Unavailable</span> <span>Couldn’t load (sign in required — read behind RLS).</span></div></div>'; return; }
+  renderIron(series, st);
+}
+function renderIron(series, st){
+  const out = document.getElementById('ironOut');
+  const eyebrow = 'IMF / FRED · Iron ore price';
+  if (!series.length){
+    out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Iron Ore Price</div><div class="df-sub"><span class="df-statuspill">⚡ ABS API</span> <span>No data yet — run <code>node scripts/ingest-fred-iron-ore.mjs --write</code> to pull the IMF series from FRED.</span></div></div>'; return;
+  }
+  const months = series.map(r => r.period.slice(0, 7)), vals = series.map(r => +r.value);
+  const li = vals.length - 1, latest = vals[li], latestM = months[li];
+  const yoy = (() => { const ym = months[li]; const py = (+ym.slice(0, 4) - 1) + ym.slice(4); const i = months.indexOf(py); return (i >= 0 && vals[i]) ? (latest - vals[i]) / vals[i] * 100 : null; })();
+  const byYear = {}; months.forEach((m, i) => { const y = m.slice(0, 4); (byYear[y] || (byYear[y] = { vals: [] })).vals.push(vals[i]); if (m.slice(5) === '01') byYear[y].jan = vals[i]; });
+  const years = Object.keys(byYear).sort();
+  const fmt$ = v => v == null ? '—' : '$' + v.toFixed(0) + '/t';
+  let delta = '';
+  if (yoy != null){ const up = yoy >= 0; delta = ' <span class="df-delta ' + (up ? 'up' : 'dn') + '">' + (up ? '▲' : '▼') + Math.abs(yoy).toFixed(1) + '% y/y</span>'; }
+  const updated = fmtDate(st.last_ok_at || st.updated_at);
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Iron Ore Price</div>'
+    + '<div class="df-sub"><span class="df-statuspill ok">Up to date</span> <span>IMF “Global price of Iron Ore”, USD per metric tonne, monthly — feeds the Perth report.</span></div></div></div>'
+    + '<div class="df-stats">'
+    + dfStat('Latest · ' + esc(monthLabelArr(latestM)), fmt$(latest) + delta, true)
+    + dfStat('Coverage', '<span class="sm">' + esc(months[0]) + ' – ' + esc(latestM) + '</span>')
+    + dfStat('Months', String(months.length))
+    + dfStat('Source', '<span class="sm">FRED · IMF (PIORECRUSDM)</span><div class="df-stat-foot">' + ingestChip('api') + (updated !== '—' ? ' updated ' + updated : '') + '</div>')
+    + '</div></div>';
+  const head = '<tr><th class="th-l">Year</th><th>January</th><th class="last">Year average</th></tr>';
+  let body = '';
+  for (let i = years.length - 1; i >= 0; i--){ const y = years[i], yr = byYear[y]; const avg = yr.vals.reduce((a, b) => a + b, 0) / yr.vals.length;
+    body += '<tr><td class="region">' + y + '</td><td class="num">' + fmt$(yr.jan) + '</td><td class="num last">' + fmt$(avg) + '</td></tr>'; }
+  out.innerHTML = hero
+    + '<div class="df-card df-tablecard">'
+    + '<div class="arr-legend"><span class="k"><span class="sw" style="background:var(--pp-cyan,#00b6cb)"></span>Iron ore (USD/tonne, monthly)</span></div>'
+    + ironChartSvg(months, vals)
+    + '<div class="df-tablewrap" style="margin-top:16px;max-height:360px"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + '<div class="df-note">IMF “Global price of Iron Ore” (China import, 62% Fe spot; contract before 2009), USD per metric tonne, monthly — via FRED series <b>PIORECRUSDM</b> (the same IMF data IndexMundi republishes). The Perth report’s annual chart uses each year’s <b>January</b> value (matches the Data Dump); the <b>year average</b> is shown alongside for reference. FRED begins 1992; any earlier history in the DB is preserved.</div></div>';
+}
+function ironChartSvg(months, vals){
+  const W = 840, H = 260, padL = 52, padR = 16, padT = 14, padB = 36, n = months.length;
+  if (!n) return '<div class="df-empty">No data.</div>';
+  const fin = vals.filter(v => v != null && !isNaN(v));
+  const maxV = fin.length ? Math.max(...fin) : 1; const yMax = Math.max(25, Math.ceil(maxV / 25) * 25);
+  const X = i => padL + (n <= 1 ? 0 : (i / (n - 1)) * (W - padL - padR));
+  const Y = v => (H - padB) - (v / yMax) * (H - padT - padB);
+  const cyan = (getComputedStyle(document.documentElement).getPropertyValue('--pp-cyan') || '').trim() || '#00b6cb';
+  let d = '', pen = false; for (let i = 0; i < n; i++){ const v = vals[i]; if (v == null || isNaN(v)){ pen = false; continue; } d += (pen ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1) + ' '; pen = true; }
+  let g = ''; for (const gv of [0, yMax / 2, yMax]){ const yy = Y(gv); g += '<line class="grid" x1="' + padL + '" y1="' + yy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + yy.toFixed(1) + '"/><text x="' + (padL - 6) + '" y="' + (yy + 3).toFixed(1) + '" text-anchor="end">$' + gv + '</text>'; }
+  let xl = ''; months.forEach((m, i) => { if (/-01$/.test(m)){ const yr = +m.slice(0, 4); if (yr % 5 === 0) xl += '<text x="' + X(i).toFixed(1) + '" y="' + (H - padB + 16) + '" text-anchor="middle">' + yr + '</text>'; } });
+  return '<svg class="arr-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Iron ore price, monthly">'
+    + g + xl + '<path d="' + d.trim() + '" fill="none" stroke="' + cyan + '" stroke-width="1.8"/>'
+    + (li => li >= 0 ? '<circle cx="' + X(li).toFixed(1) + '" cy="' + Y(vals[li]).toFixed(1) + '" r="3.5" fill="' + cyan + '"/>' : '')((() => { for (let i = vals.length - 1; i >= 0; i--) if (vals[i] != null) return i; return -1; })())
+    + '</svg>';
+}
 // national dwellings commenced — small 2-row table (houses + units)
 async function renderApprovalsCommenced(outId){
   const out = document.getElementById(outId); if (!out) return;
@@ -1627,7 +1700,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
