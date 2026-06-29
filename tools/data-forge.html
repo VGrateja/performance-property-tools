@@ -118,6 +118,25 @@
   .df-table .type-H{ color:var(--accent); font-weight:700; }
   .df-table .type-U{ color:var(--muted); font-weight:700; }
 
+  /* Industry — per-region breakdown */
+  .ind-controls{ display:flex; align-items:center; gap:10px; margin:2px 0 16px; flex-wrap:wrap; }
+  .ind-controls label{ font-size:.7rem; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+  select.ind-select{ padding:9px 14px; border:1px solid var(--border); border-radius:10px; background:#141c30; color:#eef2ff; font:inherit; font-weight:700; font-size:.92rem; min-width:240px; cursor:pointer; }
+  select.ind-select option{ background:#141c30; color:#eef2ff; }
+  [data-theme="light"] select.ind-select{ background:#fff; color:#1f283f; border-color:rgba(31,40,63,.2); }
+  [data-theme="light"] select.ind-select option{ background:#fff; color:#1f283f; }
+  .ind-list{ display:flex; flex-direction:column; }
+  .ind-row{ display:flex; align-items:center; gap:14px; padding:9px 6px; border-bottom:1px solid var(--border); }
+  .ind-row:hover{ background:var(--panel2); }
+  .ind-row.total{ border-bottom:none; margin-top:6px; border-top:2px solid var(--border); font-weight:800; }
+  .ind-lbl{ flex:0 0 290px; font-weight:700; color:var(--text); font-size:.85rem; }
+  .ind-track{ flex:1; min-width:80px; height:16px; background:var(--panel2); border-radius:6px; overflow:hidden; }
+  .ind-fill{ height:100%; background:linear-gradient(90deg,var(--pp-cyan,#00b6cb),#5fd0e0); border-radius:6px; min-width:2px; }
+  .ind-pct{ flex:0 0 58px; text-align:right; font-weight:800; font-variant-numeric:tabular-nums; color:var(--text); }
+  .ind-dol{ flex:0 0 78px; text-align:right; color:var(--muted); font-size:.82rem; font-variant-numeric:tabular-nums; }
+  .ind-row.total .ind-dol, .ind-row.total .ind-lbl{ color:var(--text); }
+  @media (max-width:640px){ .ind-lbl{ flex-basis:150px; } }
+
   .df-qc{ display:flex; flex-wrap:wrap; gap:10px; }
   .df-pill{ font-size:.74rem; font-weight:700; border:1px solid var(--border); border-radius:8px; padding:7px 12px; background:var(--panel2); color:var(--text); }
   .df-pill.ok{ border-color:rgba(34,197,94,.5); }
@@ -696,14 +715,20 @@ async function loadIndustry(){
   let row = null; try { const { data } = await window.sb.from('forge_industry').select('*').eq('id', 'latest').maybeSingle(); row = data; } catch {}
   renderIndustry(row && row.data, row);
 }
+const fmtVA = v => v == null ? '' : (Math.abs(v) >= 1e9 ? '$' + (v / 1e9).toFixed(2) + 'b' : '$' + Math.round(v / 1e6) + 'm');
+let IND_DATA = null, IND_SEL = null;
 function renderIndustry(data, meta){
   const out = document.getElementById('indOut');
   const eyebrow = 'REMPLAN / economy.id · Industry value added';
   if (!data || !data.regions || !Object.keys(data.regions).length){
+    IND_DATA = null;
     out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Industry Value Added</div><div class="df-sub"><span class="df-statuspill">Manual</span> <span>No data yet — upload your Industry Value Added sheet below.</span></div></div>'; return;
   }
+  IND_DATA = data;
   const regions = Object.keys(data.regions).sort((a, b) => groupOf(a) - groupOf(b) || labelOf(a).localeCompare(labelOf(b)));
   const inds = (data.industries || ANZSIC_DIVS).filter(ind => regions.some(s => data.regions[s].values[ind] != null));
+  // keep prior selection if still present, else pick the largest economy
+  if (!IND_SEL || !data.regions[IND_SEL]) IND_SEL = regions.slice().sort((a, b) => (data.regions[b].total || 0) - (data.regions[a].total || 0))[0];
   const updated = meta ? fmtDate(meta.uploaded_at || meta.updated_at) : '—';
   const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
     + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Industry Value Added</div>'
@@ -714,14 +739,37 @@ function renderIndustry(data, meta){
     + dfStat('Updated', '<span class="sm">' + esc(updated) + '</span>')
     + dfStat('Source', '<span class="sm">REMPLAN / economy.id</span><div class="df-stat-foot">' + ingestChip('manual') + '</div>')
     + '</div></div>';
-  const head = '<tr><th class="th-l">Industry</th>' + regions.map(s => '<th class="last">' + esc(labelOf(s)) + '</th>').join('') + '</tr>';
-  const fmtVA = v => v == null ? '' : (Math.abs(v) >= 1e9 ? '$' + (v / 1e9).toFixed(2) + 'b' : '$' + Math.round(v / 1e6) + 'm');
-  const cell = (s, ind) => { const reg = data.regions[s]; const v = reg.values[ind]; if (v == null) return '<td class="num">—</td>'; const pct = reg.total ? v / reg.total * 100 : null; return '<td class="num">' + (pct != null ? pct.toFixed(1) + '%' : '—') + '<div class="df-stat-foot">' + fmtVA(v) + '</div></td>'; };
-  let body = '';
-  for (const ind of inds) body += '<tr><td class="region">' + esc(ind) + '</td>' + regions.map(s => cell(s, ind)).join('') + '</tr>';
-  body += '<tr class="grp"><td>Total value added</td>' + regions.map(s => '<td class="num">' + fmtVA(data.regions[s].total) + '</td>').join('') + '</tr>';
-  out.innerHTML = hero + '<div class="df-card df-tablecard"><div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
-    + '<div class="df-note">Each cell shows the industry’s <b>% share</b> of the region’s economy with its <b>$ value added</b> beneath (columns sum to 100%); the last row is total value added. Source: REMPLAN economy profiles (and economy.id where still available) — gathered manually, so refresh by re-uploading.</div></div>';
+  const opts = regions.map(s => '<option value="' + esc(s) + '"' + (s === IND_SEL ? ' selected' : '') + '>' + esc(labelOf(s)) + '</option>').join('');
+  out.innerHTML = hero
+    + '<div class="df-card df-tablecard">'
+    + '<div class="ind-controls"><label for="indRegion">Region</label><select id="indRegion" class="ind-select">' + opts + '</select></div>'
+    + '<div id="indBreakdown"></div>'
+    + '<div class="df-note">Industries ranked by <b>$ value added</b>, with each industry’s <b>% share</b> of the region’s economy (shares sum to 100%). Source: REMPLAN economy profiles (and economy.id where still available) — gathered manually, so refresh by re-uploading.</div></div>';
+  const sel = document.getElementById('indRegion');
+  if (sel) sel.addEventListener('change', e => { IND_SEL = e.target.value; renderIndustryRegion(); });
+  renderIndustryRegion();
+}
+function renderIndustryRegion(){
+  const box = document.getElementById('indBreakdown');
+  if (!box || !IND_DATA || !IND_DATA.regions[IND_SEL]) return;
+  const reg = IND_DATA.regions[IND_SEL];
+  const rows = Object.entries(reg.values).filter(([, v]) => v != null)
+    .sort((a, b) => (b[1] || 0) - (a[1] || 0));
+  const maxV = rows.length ? Math.max(...rows.map(r => Math.abs(r[1] || 0))) : 0;
+  let html = '<div class="ind-list">';
+  for (const [ind, v] of rows){
+    const pct = reg.total ? v / reg.total * 100 : null;
+    const w = maxV ? Math.max(1, Math.abs(v) / maxV * 100) : 0;
+    html += '<div class="ind-row"><div class="ind-lbl">' + esc(ind) + '</div>'
+      + '<div class="ind-track"><div class="ind-fill" style="width:' + w.toFixed(1) + '%"></div></div>'
+      + '<div class="ind-pct">' + (pct != null ? pct.toFixed(1) + '%' : '—') + '</div>'
+      + '<div class="ind-dol">' + fmtVA(v) + '</div></div>';
+  }
+  html += '<div class="ind-row total"><div class="ind-lbl">Total value added</div>'
+    + '<div class="ind-track"></div><div class="ind-pct">100%</div>'
+    + '<div class="ind-dol">' + fmtVA(reg.total) + '</div></div>';
+  html += '</div>';
+  box.innerHTML = html;
 }
 (function(){ const drop = document.getElementById('indDrop'), file = document.getElementById('indFile'); if (!drop) return;
   drop.addEventListener('click', () => file.click());
