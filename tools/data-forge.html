@@ -292,6 +292,20 @@
     <div id="appuOut" style="margin-top:22px"></div>
     <div id="appcOut" style="margin-top:22px"></div>
   </section>
+
+  <!-- ── INDUSTRY VALUE ADDED (manual upload — REMPLAN / economy.id) ── -->
+  <section id="dfIndustry" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="indOut"></div>
+    <div class="df-card" style="margin-top:14px"><h2>Update <span class="count">upload your Industry Value Added sheet — industries down the first column, regions across the top, $ value added</span></h2>
+      <div class="df-drop" id="indDrop">
+        <input type="file" id="indFile" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
+        🏭 <strong>Drop the Industry .xlsx here</strong> (or click)<br/>
+        ANZSIC industries as rows, regions as columns ($ value added). Re-uploading merges/updates whichever regions are in the file.
+      </div>
+      <div id="indMsg"></div>
+    </div>
+  </section>
 </div>
 
 <script>
@@ -304,7 +318,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -324,6 +338,7 @@ function showView(name){
   if (name === 'bankrate') loadBankRate();
   if (name === 'unemployment') loadUnemployment();
   if (name === 'approvals') loadApprovals();
+  if (name === 'industry') loadIndustry();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -348,6 +363,7 @@ const CLUSTERS = [
   { key:'national_vacancies', icon:'💼', ingest:'api', label:'National Job Vacancies', desc:'JSA national internet vacancies (SA) + ABS Job Vacancies survey (private/public). Monthly + quarterly.', view:'natvac' },
   { key:'unemployment', icon:'👷', ingest:'api', label:'Unemployment & Underemployment', desc:'ABS Labour Force (Original) — unemployment for national, 8 states, 7 capitals & 28 regions; underemployment national. API (national/states) + ABS data cubes (capitals/regionals).', view:'unemployment' },
   { key:'approvals', icon:'🏠', ingest:'api', label:'Building Approvals', desc:'ABS Building Approvals (8731.0, Original) — new house + unit dwelling approvals. National + 8 capitals (BA_GCCSA) + 28 LGA regions (BA_LGA). Annual counts.', view:'approvals' },
+  { key:'industry', icon:'🏭', ingest:'manual', label:'Industry Value Added', desc:'Industry composition (% by ANZSIC division) per region. No API — gathered from REMPLAN economy profiles (and economy.id where available); uploaded as a spreadsheet.', view:'industry' },
   { key:'inflation', icon:'📉', ingest:'file', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
   { key:'cash_rate', icon:'🏦', ingest:'file', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'file', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
@@ -375,7 +391,7 @@ async function loadStatus(){
   } catch (e) { /* show cards anyway */ }
   el.innerHTML = CLUSTERS.map(c => {
     const st = statusMap[c.key] || {};
-    const status = c.key === 'cotality' ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
+    const status = (c.key === 'cotality' || c.key === 'industry') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
     const isErr = status === 'error';
     const meta = c.key === 'population'
       ? (st.last_ok_at ? 'Updated ' + fmtDate(st.last_ok_at) + (st.region_count ? ' · ' + st.region_count + ' regions' : '') : 'Not yet run via the monitored path')
@@ -565,6 +581,97 @@ const loadApprovals = () => {
     note:'ABS Building Approvals (cat 8731.0), Original — number of new <b>other residential</b> (units, apartments, townhouses) dwelling units. Annual: completed years = sum of the year; current year = average of available months × 12.' });
   renderApprovalsCommenced('appcOut');
 };
+
+/* ── Industry Value Added (MANUAL — REMPLAN / economy.id; no API) ──
+   Upload a sheet: ANZSIC industries down col A, regions across the top,
+   $ value added in the cells. Stored in forge_industry (jsonb); each upload
+   merges the regions it contains. View shows each region's % composition. */
+function indSlug(h){ return String(h || '').split(',')[0].replace(/\(.*?\)/g, '').trim().toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
+// only accept columns that map to a tracked region (drops junk cols like "year", "total…", "…-industry")
+const IND_REGIONS = new Set(['australia','sydney','melbourne','brisbane','adelaide','perth','hobart','darwin','canberra','st-nsw','st-vic','st-qld','st-sa','st-wa','st-tas','st-nt','st-act','albury','ballarat','bendigo','bunbury','bundaberg','cairns','central-coast','coffs-harbour','geelong','gladstone','gold-coast','ipswich','launceston','mackay','mandurah','mildura','newcastle','orange','port-macquarie','rockhampton','rockingham','sunshine-coast','tamworth','toowoomba','townsville','wagga-wagga','wodonga','wollongong']);
+const ANZSIC_RE = /agricultur|mining|manufactur|electricity|construction|wholesale|retail|accommodation|transport|telecommunication|\bmedia\b|financial|real estate|rental|professional|administrative|public admin|education|health care|\barts\b|recreation|other services/i;
+function parseIndustrySheet(wb){
+  // try an "Industry"-named sheet first, then the rest
+  const names = wb.SheetNames.slice().sort((a, b) => (/industr/i.test(b) ? 1 : 0) - (/industr/i.test(a) ? 1 : 0));
+  for (const sn of names){
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, blankrows: false });
+    let hi = rows.findIndex(r => /industr/i.test(String((r || [])[0] || ''))); if (hi < 0) hi = 0;
+    const header = rows[hi] || [];
+    const cols = []; for (let c = 1; c < header.length; c++){ const h = header[c]; if (h != null && String(h).trim() && IND_REGIONS.has(indSlug(h))) cols.push({ c, label: String(h).trim(), slug: indSlug(h) }); }
+    if (!cols.length) continue;
+    const industries = [], regions = {};
+    for (const col of cols) regions[col.slug] = { label: col.label, values: {}, total: 0 };
+    for (let r = hi + 1; r < rows.length && industries.length < 25; r++){
+      const name = String((rows[r] || [])[0] || '').trim();
+      if (!name || /^total|^grand total|^all indust/i.test(name)) continue;   // skip total rows
+      let any = false;
+      for (const col of cols){ const cell = rows[r][col.c]; const v = Number(cell); if (cell != null && cell !== '' && !isNaN(v)){ regions[col.slug].values[name] = v; regions[col.slug].total += v; any = true; } }
+      if (any && !industries.includes(name)) industries.push(name);
+    }
+    // only accept a sheet that genuinely looks like ANZSIC industry divisions
+    if (industries.filter(n => ANZSIC_RE.test(n)).length >= 6) return { industries, regions };
+  }
+  return null;
+}
+async function importIndustryXlsx(file){
+  const msg = document.getElementById('indMsg');
+  if (!window.XLSX){ msg.innerHTML = '<div class="df-empty">Spreadsheet reader failed to load — reload the page.</div>'; return; }
+  msg.innerHTML = '<div class="df-note">Reading ' + esc(file.name) + ' …</div>';
+  try {
+    const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
+    const parsed = parseIndustrySheet(wb);
+    if (!parsed){ msg.innerHTML = '<div class="df-empty">Couldn’t find an industry table — expecting industries in the first column and region names across the top row. Check the sheet.</div>'; return; }
+    let cur = null; try { const { data } = await window.sb.from('forge_industry').select('data').eq('id', 'latest').maybeSingle(); cur = data && data.data; } catch {}
+    const merged = { industries: parsed.industries.length ? parsed.industries : (cur ? cur.industries || [] : []), regions: Object.assign({}, cur ? cur.regions : {}, parsed.regions) };
+    await saveIndustry(merged, file.name);
+    msg.innerHTML = '<div class="df-banner ok">✓ Imported ' + Object.keys(parsed.regions).length + ' region(s) from ' + esc(file.name) + ' · saved.</div>';
+    renderIndustry(merged, { uploaded_at: new Date().toISOString() });
+  } catch (err){ msg.innerHTML = '<div class="df-empty">Could not read that file: ' + esc(err.message || err) + '</div>'; }
+}
+async function saveIndustry(data){
+  try { let email = null; try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch {}
+    await window.sb.from('forge_industry').upsert({ id: 'latest', data, uploaded_at: new Date().toISOString(), updated_at: new Date().toISOString(), uploaded_by: email }, { onConflict: 'id' }); } catch (_) {}
+}
+async function loadIndustry(){
+  const out = document.getElementById('indOut'); out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">REMPLAN / economy.id · Industry value added</div><div class="df-title">Industry Value Added</div><div class="df-sub">Loading…</div></div>';
+  let row = null; try { const { data } = await window.sb.from('forge_industry').select('*').eq('id', 'latest').maybeSingle(); row = data; } catch {}
+  renderIndustry(row && row.data, row);
+}
+function renderIndustry(data, meta){
+  const out = document.getElementById('indOut');
+  const eyebrow = 'REMPLAN / economy.id · Industry value added';
+  if (!data || !data.regions || !Object.keys(data.regions).length){
+    out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Industry Value Added</div><div class="df-sub"><span class="df-statuspill">Manual</span> <span>No data yet — upload your Industry Value Added sheet below.</span></div></div>'; return;
+  }
+  const inds = data.industries || [];
+  const regions = Object.keys(data.regions).sort((a, b) => groupOf(a) - groupOf(b) || labelOf(a).localeCompare(labelOf(b)));
+  const updated = meta ? fmtDate(meta.uploaded_at || meta.updated_at) : '—';
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Industry Value Added</div>'
+    + '<div class="df-sub"><span class="df-statuspill">Manual</span> <span>Share of each economy by ANZSIC industry — gathered by hand from REMPLAN / economy.id (no API).</span></div></div></div>'
+    + '<div class="df-stats">'
+    + dfStat('Regions', String(regions.length), true)
+    + dfStat('Industries', String(inds.length))
+    + dfStat('Updated', '<span class="sm">' + esc(updated) + '</span>')
+    + dfStat('Source', '<span class="sm">REMPLAN / economy.id</span><div class="df-stat-foot">' + ingestChip('manual') + '</div>')
+    + '</div></div>';
+  const head = '<tr><th class="th-l">Industry</th>' + regions.map(s => '<th class="last">' + esc(labelOf(s)) + '</th>').join('') + '</tr>';
+  const pctCell = v => v == null ? '<td class="num">—</td>' : '<td class="num">' + v.toFixed(1) + '%</td>';
+  let body = '';
+  for (const ind of inds){
+    body += '<tr><td class="region">' + esc(ind) + '</td>' + regions.map(s => { const reg = data.regions[s]; const v = reg.values[ind]; return pctCell((v != null && reg.total) ? v / reg.total * 100 : null); }).join('') + '</tr>';
+  }
+  body += '<tr class="grp"><td>Total value added ($)</td>' + regions.map(s => '<td class="num">' + fmtMoney1(data.regions[s].total / 1e6) + 'm</td>').join('') + '</tr>';
+  out.innerHTML = hero + '<div class="df-card df-tablecard"><div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + '<div class="df-note">Each cell = that industry’s share of the region’s total value added (columns sum to 100%); the last row is total value added ($m). Stored as $ from your upload, shown as % composition. Source: REMPLAN economy profiles (and economy.id where still available) — gathered manually, so refresh by re-uploading.</div></div>';
+}
+(function(){ const drop = document.getElementById('indDrop'), file = document.getElementById('indFile'); if (!drop) return;
+  drop.addEventListener('click', () => file.click());
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) importIndustryXlsx(e.dataTransfer.files[0]); });
+  file.addEventListener('change', () => { if (file.files.length) importIndustryXlsx(file.files[0]); });
+})();
 // national dwellings commenced — small 2-row table (houses + units)
 async function renderApprovalsCommenced(outId){
   const out = document.getElementById(outId); if (!out) return;
@@ -971,7 +1078,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
