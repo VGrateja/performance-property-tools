@@ -4,8 +4,10 @@
 // exists; two series (Federal Budget, Household composition) are SEEDED here
 // (no annual API) and updated at their natural cadence.
 //
-//   workDone ............ ABS CWD (Value of work done, total construction,
-//                          current price, Original, AUS) — public + private, Q
+//   workDone ............ ABS CWD (Value of work done, ENGINEERING construction
+//                          type 04, current price, Original, AUS) — public +
+//                          private, Q. (Matches the Data Dump basis; total &
+//                          building did not.)
 //   govtDebtGdp ......... IMF DataMapper GGXWDG_NGDP/AUS (gross general-govt
 //                          debt % of GDP) — annual
 //   householdDebtIncome . RBA E2 series BHFDDIT (household debt to income %) — Q
@@ -57,9 +59,11 @@ async function recordStatus(status, message, extra = {}) {
 
 const data = { meta: { updatedAt: new Date().toISOString() } };
 try {
-  // ── Work Done: ABS CWD, M1 (value of work done), current price, total construction, Original, AUS, public(5)+private(1) ──
+  // ── Work Done: ABS CWD, M1 (value of work done), current price, ENGINEERING
+  // construction (type 04 — matches the Data Dump "Value of Work Done" basis,
+  // NOT total/building), Original, AUS, public(5)+private(1) ──
   {
-    const j = await getAbs(`${ABS}/data/CWD/M1.CUR.1+5.TOT.10.AUS.Q?startPeriod=1986&dimensionAtObservation=AllDimensions&format=jsondata`);
+    const j = await getAbs(`${ABS}/data/CWD/M1.CUR.1+5.04.10.AUS.Q?startPeriod=1986&dimensionAtObservation=AllDimensions&format=jsondata`);
     const od = (j.data.structure || j.data.structures[0]).dimensions.observation;
     const sI = od.findIndex(d => d.id === 'SECTOR_OWN'), tI = od.findIndex(d => d.id === 'TIME_PERIOD');
     const pub = {}, priv = {}; const pset = new Set();
