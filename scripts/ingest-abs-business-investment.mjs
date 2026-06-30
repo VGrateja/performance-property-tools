@@ -62,6 +62,10 @@ try {
 const rows = [];
 const slugs = Object.values(REG);
 const sum4 = (map, lastQ) => { let s = 0; for (let q = lastQ - 3; q <= lastQ; q++) { const v = map.get(q); if (v == null) return null; s += v; } return s; };
+// Calendar-year total = sum of the quarters PRESENT in that year. ABS confidentialises
+// some quarters for small states (e.g. SA 2011 Q1 absent → year = Q2+Q3+Q4 = 4704,
+// which is exactly what the report shows). Strict sum4 would drop the whole year.
+const sumCal = (map, y) => { let s = 0, n = 0; for (let q = y * 4; q <= y * 4 + 3; q++) { const v = map.get(q); if (v != null) { s += v; n++; } } return n ? s : null; };
 let latestYear = 0;
 for (const slug of slugs) {
   const map = Q[slug]; if (!map || !map.size) continue;
@@ -71,7 +75,7 @@ for (const slug of slugs) {
   const years = new Set([...map.keys()].map(q => Math.floor(q / 4)));
   for (const y of years) {
     if (y === ly) continue;                                   // latest handled below
-    const s = sum4(map, y * 4 + 3);                            // calendar Q1..Q4
+    const s = sumCal(map, y);                                 // calendar year = sum of present quarters
     if (s != null) rows.push({ source: 'abs', region_slug: slug, metric: 'bus_investment', freq: 'A', period: `${y}-01-01`, value: s });
   }
   // latest/current year = rolling sum of the most recent 4 quarters
@@ -100,7 +104,7 @@ try {
     const lastQ = Math.max(...map.keys()), ly = Math.floor(lastQ / 4);
     for (const y of new Set([...map.keys()].map(q => Math.floor(q / 4)))) {
       if (y === ly) continue;
-      const s = sum4(map, y * 4 + 3); if (s != null) rows.push({ source: 'abs', region_slug: 'australia', metric, freq: 'A', period: `${y}-01-01`, value: s });
+      const s = sumCal(map, y); if (s != null) rows.push({ source: 'abs', region_slug: 'australia', metric, freq: 'A', period: `${y}-01-01`, value: s });
     }
     const roll = sum4(map, lastQ); if (roll != null) rows.push({ source: 'abs', region_slug: 'australia', metric, freq: 'A', period: `${ly}-01-01`, value: roll });
     console.log(`  national ${metric}: latest ${ly} = ${Math.round(roll).toLocaleString()}`);
