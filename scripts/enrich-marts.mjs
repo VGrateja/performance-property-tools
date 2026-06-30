@@ -48,8 +48,21 @@ const feedBySlug = Object.fromEntries((feeds || []).map(f => [f.region_slug, f])
 const latestYearVal = (payload, field) => { const ys = (payload && payload.years) || []; for (let i = ys.length - 1; i >= 0; i--) { const v = ys[i][field]; if (v != null && !isNaN(v)) return +v; } return null; };
 // CIV: the 5/8-capital gross-yield comparison shown in every report (fields 70-72)
 const capcityYields = CAPS.map(s => ({ slug: s, yield_h: feedBySlug[s] ? latestYearVal(feedBySlug[s].payload, 'yield_house') : null, yield_u: feedBySlug[s] ? latestYearVal(feedBySlug[s].payload, 'yield_unit') : null })).filter(x => x.yield_h != null || x.yield_u != null);
-// full-history CAGR of median price (fields 79-80)
-function ltCagr(payload, field) { const ys = (payload && payload.years) || []; const pts = ys.map(y => ({ year: y.year, v: y[field] })).filter(p => p.v != null && !isNaN(p.v) && p.v > 0); if (pts.length < 2) return null; const a = pts[0], b = pts[pts.length - 1], n = b.year - a.year; return n > 0 ? Math.pow(b.v / a.v, 1 / n) - 1 : null; }
+// "Long-Term Trends" block (fields 78-80): CAGR of median price at 3/5/7/10yr +
+// LT. 10/7/5/3 = (cur/cur_minus_n)^(1/n)-1 — verified to match the cluster sheet
+// exactly. LT = CAGR over each region's ACTUAL data history (first data year →
+// latest, n = the span). The cluster sheet hand-picks a base row per region
+// (and the VIC regionals miscount it as ÷46 instead of ÷41); basing LT on real
+// data history is the correct, per-region-history method the user asked for.
+function ltBlock(payload, field) {
+  const ys = (payload && payload.years) || [];
+  const map = {}; for (const y of ys) { const v = y[field]; if (v != null && !isNaN(v) && v > 0) map[y.year] = +v; }
+  const yrs = Object.keys(map).map(Number).sort((a, b) => a - b); if (yrs.length < 2) return null;
+  const Y = yrs[yrs.length - 1], Y0 = yrs[0];
+  const cagr = (base, n) => (base > 0 && n > 0) ? Math.pow(map[Y] / base, 1 / n) - 1 : null;
+  // LT = CAGR over the region's actual data history (first data year → latest)
+  return { y3: cagr(map[Y - 3], 3), y5: cagr(map[Y - 5], 5), y7: cagr(map[Y - 7], 7), y10: cagr(map[Y - 10], 10), lt: cagr(map[Y0], Y - Y0), from: Y0 };
+}
 
 // monthly state-level lending (owner-occupier / investor); a capital/regional uses its state's series (fields 57-58)
 const { data: regDim } = await sb.from('rdp_regions').select('slug,state');
@@ -69,7 +82,7 @@ for (const f of feeds) {
   extras.arrears_national = latest('australia', 'arrears');
   // CIV (capital-city yield comparison) + long-term CAGR (computed from payloads)
   extras.capcity_yields = capcityYields;
-  extras.lt = { cagr_house: ltCagr(f.payload, 'mp_h'), cagr_unit: ltCagr(f.payload, 'mp_u') };
+  extras.lt = { house: ltBlock(f.payload, 'mp_h'), unit: ltBlock(f.payload, 'mp_u') };
   const lend = lendingFor(slug); if (lend) extras.lending = lend;
   if (slug === 'australia') {  // national-only extras
     extras.arrears_by_state = Object.fromEntries(Object.entries(STATECAP).map(([st, cap]) => [st, latest(cap, 'arrears')]));
@@ -83,7 +96,7 @@ for (const f of feeds) {
 const adel = updates.find(u => u.region_slug === 'adelaide');
 const au = updates.find(u => u.region_slug === 'australia');
 console.log('regions enriched:', updates.length);
-if (adel) console.log('adelaide extras: pyramid bands=' + (adel.payload.extras.pyramid || []).length + ', industry sectors=' + (adel.payload.extras.industry || []).length + ', arrears=' + adel.payload.extras.arrears + ', jci=' + adel.payload.extras.jci + ', LT CAGR house=' + (adel.payload.extras.lt.cagr_house * 100).toFixed(2) + '% unit=' + (adel.payload.extras.lt.cagr_unit * 100).toFixed(2) + '%');
+if (adel) console.log('adelaide extras: pyramid bands=' + (adel.payload.extras.pyramid || []).length + ', industry sectors=' + (adel.payload.extras.industry || []).length + ', arrears=' + adel.payload.extras.arrears + ', jci=' + adel.payload.extras.jci + ', CAGR house 3/5/7/10/LT=' + ['y3','y5','y7','y10','lt'].map(k => (adel.payload.extras.lt.house[k] * 100).toFixed(2)).join('/') + '%');
 console.log('capcity yields (CIV): ' + capcityYields.map(c => c.slug + ' H' + (c.yield_h * 100).toFixed(2) + '%/U' + (c.yield_u * 100).toFixed(2) + '%').join(', '));
 if (adel) { const L = adel.payload.extras.lending; console.log('adelaide lending (' + (L && L.state) + '): ' + (L ? L.months.length + ' months, latest OO $' + L.owner_occupier[L.owner_occupier.length - 1] + 'm / INV $' + L.investor[L.investor.length - 1] + 'm' : 'none')); }
 if (au) console.log('australia extras: pyramid=' + (au.payload.extras.pyramid || []).length + ' bands, arrears_by_state.sa=' + au.payload.extras.arrears_by_state?.sa + ', state_migration.nsw=' + JSON.stringify(au.payload.extras.state_migration?.nsw));
