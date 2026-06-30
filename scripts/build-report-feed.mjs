@@ -39,10 +39,19 @@ for (;;) {
 console.log('loaded', rows.length, 'raw rows;', cities.length, 'city regions');
 
 const years = []; for (let y = 1975; y <= 2026; y++) years.push(y);
+// Capital-City-Comparison benchmark: capitals compare to Sydney; regional cities
+// compare to THEIR OWN state capital (Mackay→Brisbane, Ballarat→Melbourne), like
+// the report does — not Sydney.
+const STATECAP = { nsw: 'sydney', vic: 'melbourne', qld: 'brisbane', wa: 'perth', sa: 'adelaide', nt: 'darwin', act: 'canberra', tas: 'hobart' };
 const payloads = [];
 for (const c of cities) {
   const state = c.state ? 'st-' + c.state.toLowerCase() : null;
-  const feed = globalThis.ReportFeedCalc.computeReportFeed({ region: c.slug, state, benchmark: 'sydney', rows, years });
+  // capCityComparison benchmark = the region's PEER capital: Sydney→Melbourne
+  // (it can't compare to itself), every other capital→Sydney, regionals→state capital.
+  const benchmark = (c.slug === 'sydney') ? 'melbourne'
+    : (c.cluster === 'capital') ? 'sydney'
+    : (STATECAP[(c.state || '').toLowerCase()] || 'sydney');
+  const feed = globalThis.ReportFeedCalc.computeReportFeed({ region: c.slug, state, benchmark, rows, years });
   const nonEmpty = feed.filter(r => Object.keys(r).some(k => k !== 'year' && r[k] != null));   // trim only fully-empty leading years (keep national-only early years, e.g. inflation 1975)
   payloads.push({ region_slug: c.slug, cluster: c.cluster, rows: nonEmpty });
 }

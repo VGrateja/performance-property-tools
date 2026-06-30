@@ -55,7 +55,7 @@
     aiHouseStateIncome:'ai_house_state', aiUnitStateIncome:'ai_unit_state', priceToIncomeHouse:'p2i_house', priceToIncomeUnit:'p2i_unit',
     adomHouse:'adom_h', adomUnit:'adom_u', somHouse:'som_h', somUnit:'som_u', vacancyRate:'vacancy_rate', medianRentHouse:'rent_h', medianRentUnit:'rent_u',
     rentToIncomeHouse:'rent2inc_house', rentToIncomeUnit:'rent2inc_unit', grossYieldHouse:'yield_house', grossYieldUnit:'yield_unit',
-    populationMetro:'pop_metro', changeMetro:'pct_change_metro', populationState:'pop_state', populationNational:'pop_national', changeNational:'pct_change_national',
+    populationMetro:'pop_metro', changeMetro:'pct_change_metro', populationState:'pop_state', changeState:'pct_change_state', populationNational:'pop_national', changeNational:'pct_change_national',
     naturalIncrease:'natural_increase', nim:'nim', nom:'nom', unemploymentMetro:'unemp_metro', unemploymentState:'unemp_state', unemploymentNational:'unemp_national',
     buildingApprovalsHouse:'approvals_h', buildingApprovalsUnits:'approvals_u', buildingApprovalsTotal:'approvals_total',
     retailTurnover:'retail_turnover', businessInvestment:'business_investment', annualisedFhb:'annualised_fhb', fhbPctPopulation:'fhb_pct',
@@ -102,6 +102,13 @@
     var maxY = years.length ? years[years.length - 1].year : 2026;
     var yearAxis = []; for (var y = FLOOR; y <= maxY; y++) yearAxis.push(y);
 
+    // Per-region start years (window.ForgeReportStarts, generated from the feeds) so
+    // each region keeps its own chart start year; fall back to the Perth STARTS map,
+    // then FLOOR. Raw fields vary by region (e.g. Melbourne price from 1975); computed
+    // fields are a uniform 2010.
+    var rs = (root.ForgeReportStarts && root.ForgeReportStarts[region]) || {};
+    var startOf = function (ff) { return rs[ff] != null ? rs[ff] : (STARTS[ff] != null ? STARTS[ff] : FLOOR); };
+
     var out = { year: yearAxis.slice() };
     var cell = function (yr, key) { var o = byYear[yr]; return o && has(o[key]) ? o[key] : ''; };
     // clipped passthrough: '' before the field's start year, else the mart value
@@ -109,16 +116,13 @@
 
     // ── direct annual maps ──
     Object.keys(ANNUAL).forEach(function (ff) {
-      var key = ANNUAL[ff], start = STARTS[ff] || FLOOR;
-      out[ff] = series(start, function (yr) { return cell(yr, key); });
+      out[ff] = series(startOf(ff), function (yr) { return cell(yr, ANNUAL[ff]); });
     });
 
     // ── derived annual ──
-    out.changeState = series(STARTS.changeState, function (yr) {
-      var a = byYear[yr], b = byYear[yr - 1];
-      return (a && b && has(a.pop_state) && has(b.pop_state)) ? a.pop_state - b.pop_state : '';
-    });
-    out.unitCapCityDifference = series(STARTS.unitCapCityDifference, function (yr) {
+    // (changeState = pct_change_state is a direct map above — the report's
+    //  "Change in Population" chart wants the state growth %, not absolute persons.)
+    out.unitCapCityDifference = series(startOf('unitCapCityDifference'), function (yr) {
       var o = byYear[yr];
       return (o && has(o.mp_u) && has(o.capcity_benchmark_unit) && o.capcity_benchmark_unit) ? o.mp_u / o.capcity_benchmark_unit : '';
     });
@@ -126,19 +130,29 @@
       var a = byYear[yr], b = byYear[yr - 1];
       return (a && b && has(a[key]) && has(b[key]) && b[key]) ? (a[key] - b[key]) / b[key] : '';
     }); };
-    out.changeVr = deltaPct('vacancy_rate', STARTS.changeVr);
-    out.changeRentH = deltaPct('rent_h', STARTS.changeRentH);
-    out.changeIncome = deltaPct('median_income', STARTS.changeIncome);
-    out.changeMhp = series(STARTS.changeMhp, function (yr) {
+    out.changeVr = deltaPct('vacancy_rate', startOf('changeVr'));
+    out.changeRentH = deltaPct('rent_h', startOf('changeRentH'));
+    out.changeIncome = deltaPct('median_income', startOf('changeIncome'));
+    out.changeMhp = series(startOf('changeMhp'), function (yr) {
       var a = byYear[yr], b = byYear[yr - 1];
       return (a && b && has(a.mp_h) && has(b.mp_h)) ? a.mp_h - b.mp_h : '';
     });
+
+    // ── regional LGA aliases ── the regional reports remap *Metro ← *Lga (the
+    // region's own LGA-level data). A capital's mart row carries its GCCSA data
+    // in *Metro; a regional's carries its LGA data in *Metro — so *Lga = *Metro
+    // works for both (capitals ignore *Lga, regionals use it).
+    out.populationLga = out.populationMetro;
+    out.changeLga = out.changeMetro;
+    out.unemploymentLga = out.unemploymentMetro;
+    out.newPopLga = out.newPopMetro;
 
     // ── long-term CAGR (extras.lt) — feed shape is [LT, 10yr, 7yr, 5yr, 3yr] ──
     if (extras.lt) {
       var ltH = extras.lt.house || {}, ltU = extras.lt.unit || {};
       out.ltCagrHouse = [ltH.lt, ltH.y10, ltH.y7, ltH.y5, ltH.y3];
       out.ltCagrUnit = [ltU.lt, ltU.y10, ltU.y7, ltU.y5, ltU.y3];
+      out.ltTrends = ['LT', '10 Years', ' 7 Years', ' 5 Years', ' 3 Years'];  // category labels for the LT chart
     }
     // ── current JCI (latest index, single value) ──
     if (extras.jci != null) out.currentJobCreation = [extras.jci];
@@ -176,6 +190,11 @@
       out.pyramidPctNational = extras.pyramid.map(function (r) { return r.national_pct; });
       out.pyramidMetro = extras.pyramid.map(function (r) { return r.metro_count != null ? r.metro_count : ''; });
       out.pyramidNational = extras.pyramid.map(function (r) { return r.national_count != null ? r.national_count : ''; });
+      // regional aliases: regionals plot LGA vs STATE (not metro vs national)
+      out.pyramidLga = out.pyramidMetro;
+      out.pyramidPctLga = out.pyramidPctMetro;
+      out.pyramidState = extras.pyramid.map(function (r) { return r.state_count != null ? r.state_count : ''; });
+      out.pyramidPctState = extras.pyramid.map(function (r) { return r.state_pct != null ? r.state_pct : ''; });
     }
 
     // ── monthly section: price / lending / JCI / arrears on one unified date axis ──
