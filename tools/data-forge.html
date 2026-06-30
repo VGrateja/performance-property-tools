@@ -503,7 +503,8 @@ function showView(name){
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
 
 /* ───────────────────────── data-point health (cluster cards) ───────────────────────── */
-// ingest: 'api' = fetched automatically from a public source (ABS/RBA/IMF/FRED/JSA) ·
+// ingest: 'api' = fetched automatically from a public source (ABS/RBA/IMF/FRED) ·
+//         'local' = API-sourced but the source blocks our CI servers → run locally each month (Job Creation / JSA) ·
 //         'file' = seeded once from a spreadsheet, static (Commodity Prices) ·
 //         'manual' = hand-uploaded by a person ·
 //         'derived' = computed from / auto-fed by another Forge point (CIV, Monthly Median Price ← Cotality) ·
@@ -521,7 +522,7 @@ const CLUSTERS = [
   { key:'natural_increase', icon:'👶', ingest:'api', label:'Natural Increase', desc:'ABS components of population change (births − deaths) — national + 8 states. Quarterly → annual 4-qtr sum.', view:'natinc' },
   { key:'nim',        icon:'🔁', ingest:'api',    label:'Net Internal Migration', desc:'ABS net interstate migration — 8 states. Quarterly → annual 4-qtr sum.', view:'nim' },
   { key:'nom',        icon:'🌏', ingest:'api',    label:'Net Overseas Migration', desc:'ABS net overseas migration — national + 8 states. Quarterly → annual 4-qtr sum.', view:'nom' },
-  { key:'job_creation_index', icon:'📈', ingest:'api', label:'Job Creation Index', desc:'JSA Internet Vacancy Index — 8 capitals + 28 regional cities. Monthly index (spreadsheet — no API).', view:'jobcreation' },
+  { key:'job_creation_index', icon:'📈', ingest:'local', label:'Job Creation Index', desc:'JSA Internet Vacancy Index — 8 capitals + 28 regional cities. Monthly index. Auto-downloads, but jobsandskills.gov.au blocks our servers — run locally each month.', view:'jobcreation' },
   { key:'national_vacancies', icon:'💼', ingest:'api', label:'National Job Vacancies', desc:'JSA national internet vacancies (SA) + ABS Job Vacancies survey (private/public). Monthly + quarterly.', view:'natvac' },
   { key:'unemployment', icon:'👷', ingest:'api', label:'Unemployment & Underemployment', desc:'ABS Labour Force (Original) — unemployment for national, 8 states, 7 capitals & 28 regions; underemployment national. API (national/states) + ABS data cubes (capitals/regionals).', view:'unemployment' },
   { key:'approvals', icon:'🏠', ingest:'api', label:'Building Approvals', desc:'ABS Building Approvals (8731.0, Original) — new house + unit dwelling approvals. National + 8 capitals (BA_GCCSA) + 28 LGA regions (BA_LGA). Annual counts.', view:'approvals' },
@@ -547,9 +548,10 @@ function badge(status){
 }
 // how the data is gathered — lets you spot non-API points to recheck for an API later.
 function ingestChip(t){
-  const m = { api:['⚡ Auto', 'Fetched automatically from a public source (ABS / RBA / IMF / FRED / JSA) — no manual step'],
+  const m = { api:['⚡ Auto', 'Fetched automatically from a public source (ABS / RBA / IMF / FRED) — no manual step'],
               file:['📄 Seeded', 'Seeded from a spreadsheet — not on a live API; refresh by re-dropping the file'],
               manual:['✋ Manual upload', 'Uploaded by hand'],
+              local:['🖥️ Local run', 'API-sourced, but the source blocks our automation servers — run the ingest locally each month (node scripts/ingest-jsa-jobcreation.mjs --write)'],
               hybrid:['🔀 Hybrid', 'Part auto-fetched (API), part manual upload'],
               derived:['🔗 Derived', 'Computed or auto-populated from another Forge data point (e.g. fed by the Cotality drop) — no separate source'] }[t] || ['—',''];
   return '<span class="df-ingest ' + t + '" title="' + esc(m[1]) + '">' + m[0] + '</span>';
@@ -559,7 +561,7 @@ function ingestChip(t){
 // file drop vs which refresh themselves. (group ≠ the ingest chip: several
 // 'file' points auto-download their spreadsheet, so they're 'auto' here.)
 const FORGE_GROUPS = [
-  { id:'manual',  dot:'#e0843a', label:'Manual — needs your action', hint:'no API · check the source &amp; drop a file' },
+  { id:'manual',  dot:'#e0843a', label:'Manual — needs your action', hint:'no auto-fetch on our servers · drop a file or run the local ingest' },
   { id:'hybrid',  dot:'#0d9488', label:'Hybrid — part auto, part manual', hint:'mostly automatic, but a couple of pieces need a manual drop' },
   { id:'auto',    dot:'#34b27b', label:'Automated — public API',     hint:'ABS / RBA / IMF / FRED · no action needed' },
   { id:'derived', dot:'#4f8fd0', label:'Derived — from another data point', hint:'computed or auto-fed from another Forge point (e.g. the Cotality drop) · no separate drop' },
@@ -568,11 +570,12 @@ const FORGE_GROUPS = [
 function forgeGroupOf(c){
   if (c.ingest === 'hybrid')  return 'hybrid';
   if (c.ingest === 'manual')  return 'manual';
+  if (c.ingest === 'local')   return 'manual';          // API-sourced but CI-blocked → run locally (Job Creation / JSA)
   if (c.ingest === 'derived') return 'derived';
   if (c.ingest === 'api')     return 'auto';
   // 'file' = downloaded spreadsheet/CSV
   if (c.key === 'commodity_prices') return 'static';   // seeded once, no auto-refresh
-  return 'auto';                                        // retail / inflation / cash_rate / bank_rate / job_creation — auto-downloaded
+  return 'auto';                                        // retail / inflation / cash_rate / bank_rate — auto-downloaded
 }
 
 async function loadStatus(){
@@ -584,7 +587,7 @@ async function loadStatus(){
   } catch (e) { /* show cards anyway */ }
   const cardHtml = (c) => {
     const st = statusMap[c.key] || {};
-    const status = (c.key === 'civ' || c.key === 'monthly_price') ? 'derived' : (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
+    const status = (c.key === 'civ' || c.key === 'monthly_price') ? 'derived' : (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears' || c.key === 'job_creation_index') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
     const isErr = status === 'error';
     const meta = c.key === 'civ' ? 'Computed live from Cotality'
       : c.key === 'monthly_price' ? 'Appends from the Cotality drop'
@@ -732,7 +735,8 @@ async function renderSeriesView(o){
     + cols.map((c, i) => '<th' + (i === cols.length - 1 ? ' class="last"' : '') + '>' + esc(c) + '</th>').join('') + '</tr>';
   out.innerHTML = hero
     + '<div class="df-card df-tablecard"><div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
-    + '<div class="df-note">' + o.note + '</div></div>';
+    + '<div class="df-note">' + o.note + '</div></div>'
+    + (o.guide || '');
 }
 
 const loadPopulation = () => renderSeriesView({ outId:'popOut', bannerId:'popBanner', key:'population', metric:'population', from:'2019-01-01', period:'year', fmt:fmtInt, unit:'people', sortBy:'latest',
@@ -771,7 +775,8 @@ const loadNom = () => renderSeriesView({ outId:'nomOut', bannerId:'nomBanner', k
 
 const loadJobCreation = () => renderSeriesView({ outId:'jciOut', bannerId:'jciBanner', key:'job_creation_index', metric:'job_creation_index', dbSource:'jsa', from:'2018-01-01', period:'month', colN:13, fmt:fmtIdx, unit:'index', sortBy:'group',
   title:'Job Creation Index', eyebrow:'JSA · Internet Vacancy Index', source:'Jobs & Skills Australia (IVI)', defaultMsg:'JSA Internet Vacancy Index — capitals + regional cities.',
-  note:'Jobs &amp; Skills Australia Internet Vacancy Index (IVI), all-occupations index per IVI region (the "Indexed" sheet). Each capital is its own IVI region; each regional city maps to its broader IVI region (e.g. Mackay → Central Queensland). Monthly; no API — auto-downloaded spreadsheet.' });
+  guide: jciUpdateGuide(),
+  note:'Jobs &amp; Skills Australia Internet Vacancy Index (IVI), all-occupations index per IVI region (the "Indexed" sheet). Each capital is its own IVI region; each regional city maps to its broader IVI region (e.g. Mackay → Central Queensland). Monthly; the ingest auto-downloads the IVI spreadsheets, but JSA blocks our automation servers — see below to refresh it.' });
 
 // Building approvals — two metrics (houses + units), each grouped national/capitals/regional;
 // plus national dwellings COMMENCED (ABS Building Activity) as a small national table.
@@ -1216,6 +1221,16 @@ async function loadArrears(){
 }
 let ARR_DATA = null, ARR_SEL = null;
 // self-update guide for Mortgage Arrears (manual — S&P SPIN, no API)
+function jciUpdateGuide(){
+  const lnk = (u, t) => '<a href="' + u + '" target="_blank" rel="noopener" style="color:#06b6d4;font-weight:700">' + t + '</a>';
+  return '<div class="df-card" style="margin-top:14px;border-color:rgba(224,132,58,.55);background:rgba(224,132,58,.05)">'
+    + '<h2 style="color:#e0843a">🖥️ Update this yourself — run it locally</h2>'
+    + '<div class="df-note" style="font-size:.82rem;line-height:1.75;color:var(--text)">'
+    + 'This one is <b>API-sourced</b> (there’s no file to grab), but ' + lnk('https://www.jobsandskills.gov.au/data/internet-vacancy-index', 'jobsandskills.gov.au') + ' <b>blocks our automation servers</b>, so it can’t ride the monthly auto-schedule with the rest. It downloads fine from a normal computer.<br>'
+    + '<b>How:</b> on your machine, in the project folder, run:'
+    + '<code style="display:block;margin:7px 0;padding:7px 11px;background:rgba(127,127,127,.15);border:1px solid rgba(127,127,127,.3);border-radius:6px;font-family:ui-monospace,Consolas,monospace;font-size:.86em">node scripts/ingest-jsa-jobcreation.mjs --write</code>'
+    + 'It pulls the latest IVI spreadsheets itself and upserts the new month — <b>no file to download or drop</b>. Do it once a month, alongside the Cotality drop. This same run also refreshes the JSA national line in <b>National Job Vacancies</b>. <i>(Or just ask Claude Code to run it — it runs on your machine.)</i></div></div>';
+}
 function arrUpdateGuide(){
   const lnk = (u, t) => '<a href="' + u + '" target="_blank" rel="noopener" style="color:#06b6d4;font-weight:700">' + t + '</a>';
   return '<div class="df-card" style="margin-top:14px;border-color:rgba(224,132,58,.55);background:rgba(224,132,58,.05)">'
