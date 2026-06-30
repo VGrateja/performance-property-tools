@@ -419,6 +419,18 @@
     <button class="df-back" data-home>← All data points</button>
     <div id="natOut"></div>
   </section>
+
+  <!-- ── MONTHLY MEDIAN PRICE (seeded from cluster sheets; Cotality appends) ── -->
+  <section id="dfMonthlyprice" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="mpOut"></div>
+  </section>
+
+  <!-- ── COMPUTED METRICS (derived report metrics from the research mart) ── -->
+  <section id="dfComputed" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="cmpOut"></div>
+  </section>
 </div>
 
 <script>
@@ -431,7 +443,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfIron','dfMining','dfCommodities','dfNatonly']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfComputed']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -459,6 +471,8 @@ function showView(name){
   if (name === 'mining') loadMining();
   if (name === 'commodities') loadCommodities();
   if (name === 'natonly') loadNatOnly();
+  if (name === 'monthlyprice') loadMonthlyPrice();
+  if (name === 'computed') loadComputed();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -491,6 +505,8 @@ const CLUSTERS = [
   { key:'mineral_exploration', icon:'⚒️', ingest:'api', label:'Mineral Exploration', desc:'ABS Mineral &amp; Petroleum Exploration (cat 8412.0, MIN_EXP, Original) — quarterly exploration expenditure ($m). 7 states + national; the Perth report uses WA.', view:'mining' },
   { key:'commodity_prices', icon:'🪙', ingest:'file', label:'Commodity Prices', desc:'Gold, iron ore, crude oil, silver &amp; copper — annual prices (Mining sheet, marketindex.com.au). Gold/silver USD/oz · crude USD/barrel · copper/iron USD/tonne. 1980–present.', view:'commodities' },
   { key:'national_only', icon:'🇦🇺', ingest:'api', label:'National Only', desc:'National Online Report series: work done, federal budget, govt debt-to-GDP, household debt-to-income, GDP &amp; debt by country, cash rate, household composition. 5 API (ABS/IMF/RBA) + 2 seeded (Budget, Census).', view:'natonly' },
+  { key:'monthly_price', icon:'📈', ingest:'file', label:'Monthly Median Price', desc:'Monthly median price (house &amp; unit) per region, 2004→present. Seeded from the report cluster sheets; the monthly CoreLogic drop in the Cotality card appends each new month.', view:'monthlyprice' },
+  { key:'computed_metrics', icon:'🧮', ingest:'derived', label:'Computed Metrics', desc:'Calculated report metrics per region — CAGR, price/rent-to-income, affordability index, P&amp;I repayments, gross yields, YoY growth. Derived from the raw data (research mart) — a preview of what the reports compute.', view:'computed' },
   { key:'inflation', icon:'📉', ingest:'file', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
   { key:'cash_rate', icon:'🏦', ingest:'file', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'file', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
@@ -1565,6 +1581,127 @@ function renderNatSeries(){
     box.innerHTML = wrap(legend, '', head, b, 420, 'ABS Census — count of households by family/household composition, each census 1991–2021. <b>Seeded</b> (no annual API); updates at the next census (2026).');
   }
 }
+/* ── Monthly Median Price (house & unit) per region. Seeded from the cluster
+   sheets into forge_monthly_price; the Cotality monthly drop appends new months
+   (see appendMonthlyFromCotality). ──────────────────────────────────────── */
+let MP_DATA = null, MP_SEL = null;
+const mpFmt = v => v == null ? '—' : (Math.abs(v) >= 1e6 ? '$' + (v / 1e6).toFixed(2) + 'm' : '$' + Math.round(v / 1e3) + 'k');
+async function loadMonthlyPrice(){
+  const out = document.getElementById('mpOut');
+  out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">CoreLogic · monthly median price</div><div class="df-title">Monthly Median Price</div><div class="df-sub">Loading…</div></div>';
+  let row = null; try { const { data } = await window.sb.from('forge_monthly_price').select('*').eq('id', 'latest').maybeSingle(); row = data; } catch {}
+  renderMonthlyPrice(row && row.data, row);
+}
+function renderMonthlyPrice(d, meta){
+  const out = document.getElementById('mpOut');
+  const eyebrow = 'CoreLogic · monthly median price';
+  if (!d || !d.regions || !Object.keys(d.regions).length){ MP_DATA = null;
+    out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Monthly Median Price</div><div class="df-sub"><span class="df-statuspill">📄 Spreadsheet</span> <span>No data yet — run <code>node scripts/seed-monthly-price.mjs --write</code> to seed from the cluster sheets.</span></div></div>'; return; }
+  MP_DATA = d;
+  const regions = Object.keys(d.regions).sort((a, b) => groupOf(a) - groupOf(b) || labelOf(a).localeCompare(labelOf(b)));
+  if (!MP_SEL || !d.regions[MP_SEL]) MP_SEL = regions.find(s => CAP_SET.has(s)) || regions[0];
+  const any = d.regions[MP_SEL];
+  const updated = meta ? fmtDate(meta.updated_at || meta.uploaded_at) : '—';
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Monthly Median Price</div>'
+    + '<div class="df-sub"><span class="df-statuspill ok">Loaded</span> <span>Monthly median price (house &amp; unit) per region. Seeded from the report cluster sheets; the Cotality monthly drop appends new months.</span></div></div></div>'
+    + '<div class="df-stats">'
+    + dfStat('Regions', String(regions.length), true)
+    + dfStat('Months', String(any.months.length))
+    + dfStat('Coverage', '<span class="sm">' + esc(any.months[0].slice(0, 7)) + ' – ' + esc(any.months[any.months.length - 1].slice(0, 7)) + '</span>')
+    + dfStat('Source', '<span class="sm">CoreLogic (cluster sheets)</span><div class="df-stat-foot">' + ingestChip('file') + (updated !== '—' ? ' updated ' + updated : '') + '</div>')
+    + '</div></div>';
+  const opts = regions.map(s => '<option value="' + esc(s) + '"' + (s === MP_SEL ? ' selected' : '') + '>' + esc(labelOf(s)) + '</option>').join('');
+  out.innerHTML = hero + '<div class="df-card df-tablecard">'
+    + '<div class="ind-controls"><label for="mpRegion">Region</label><select id="mpRegion" class="ind-select">' + opts + '</select></div>'
+    + '<div id="mpBody"></div>'
+    + '<div class="df-note">Monthly median dwelling price (CoreLogic). Seeded from the “Data - Online Reports” cluster sheets (2004→); each monthly CoreLogic .xlsx dropped in the Cotality card appends that month’s median here.</div></div>';
+  const sel = document.getElementById('mpRegion'); if (sel) sel.addEventListener('change', e => { MP_SEL = e.target.value; renderMonthlyPriceRegion(); });
+  renderMonthlyPriceRegion();
+}
+function renderMonthlyPriceRegion(){
+  const box = document.getElementById('mpBody'); if (!box || !MP_DATA || !MP_DATA.regions[MP_SEL]) return;
+  const r = MP_DATA.regions[MP_SEL], months = r.months.map(m => m.slice(0, 7));
+  const cyan = NAT_CYAN(), violet = NAT_VIOLET();
+  const lv = a => { for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return null; };
+  const legend = '<div class="arr-legend"><span class="k"><span class="sw" style="background:' + cyan + '"></span>House <span class="v">' + mpFmt(lv(r.h)) + '</span></span><span class="k"><span class="sw" style="background:' + violet + '"></span>Unit <span class="v">' + mpFmt(lv(r.u)) + '</span></span><span class="k v">monthly median price</span></div>';
+  let b = ''; for (let i = r.months.length - 1; i >= 0; i--) b += '<tr><td class="region">' + esc(monthLabelArr(months[i])) + '</td><td class="num">' + mpFmt(r.h[i]) + '</td><td class="num last">' + mpFmt(r.u[i]) + '</td></tr>';
+  box.innerHTML = legend + natLineSvg(months, [{ vals: r.h, color: cyan }, { vals: r.u, color: violet }], v => Math.abs(v) >= 1e6 ? '$' + (v / 1e6).toFixed(1) + 'm' : '$' + Math.round(v / 1e3) + 'k')
+    + '<div class="df-tablewrap" style="margin-top:16px;max-height:360px"><table class="df-table"><thead><tr><th class="th-l">Month</th><th>House</th><th class="last">Unit</th></tr></thead><tbody>' + b + '</tbody></table></div>';
+}
+// append the current month's CoreLogic median into forge_monthly_price when the
+// Cotality .xlsx is dropped (non-blocking — never breaks the Cotality import).
+async function appendMonthlyFromCotality(result){
+  try {
+    if (!result || (!result.cap && !result.lga)) return;
+    let mo; const me = (typeof RV_STATE !== 'undefined' && RV_STATE && RV_STATE.monthEnd) ? new Date(RV_STATE.monthEnd) : new Date();
+    if (isNaN(me)) return; mo = me.getUTCFullYear() + '-' + String(me.getUTCMonth() + 1).padStart(2, '0') + '-01';
+    const all = [].concat(result.cap ? result.cap.rows : [], result.lga ? result.lga.rows : []);
+    const by = {};
+    for (const r of all){ const name = String(r[1] || ''); const type = String(r[2] || ''); const price = Number(String(r[4]).replace(/[^0-9.\-]/g, '')); if (!name || !price || isNaN(price)) continue;
+      let sl = indSlug(name).replace(/^greater-/, '');     // "Greater Sydney" → sydney
+      (by[sl] || (by[sl] = {})); if (/^h/i.test(type)) by[sl].h = price; else if (/^u/i.test(type)) by[sl].u = price; }
+    if (!Object.keys(by).length) return;
+    const { data } = await window.sb.from('forge_monthly_price').select('data').eq('id', 'latest').maybeSingle();
+    const store = (data && data.data && data.data.regions) ? data.data : { regions: {} };
+    let touched = 0;
+    for (const [sl, v] of Object.entries(by)){
+      const reg = store.regions[sl]; if (!reg) continue;     // only update regions we already track
+      const idx = reg.months.indexOf(mo);
+      if (idx >= 0){ if (v.h != null) reg.h[idx] = v.h; if (v.u != null) reg.u[idx] = v.u; }
+      else { reg.months.push(mo); reg.h.push(v.h ?? null); reg.u.push(v.u ?? null); }
+      touched++;
+    }
+    if (touched){ let email = null; try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch {}
+      await window.sb.from('forge_monthly_price').upsert({ id: 'latest', data: store, updated_at: new Date().toISOString(), uploaded_by: email }, { onConflict: 'id' }); }
+  } catch (_) { /* never block the Cotality import */ }
+}
+
+/* ── Computed Metrics — the reports' calculated values per region, read from the
+   research mart (rdp_report_feed). Region dropdown → grouped panels (growth,
+   affordability, yield, population). Read-only preview of the report calc. ── */
+let CMP_REGIONS = null, CMP_SEL = null;
+const CMP_PANELS = [
+  { title: 'Capital growth', rows: [['CAGR — House 3yr', 'pct', 'cagr_h_3'], ['CAGR — House 10yr', 'pct', 'cagr_h_10'], ['CAGR — Unit 3yr', 'pct', 'cagr_u_3'], ['CAGR — Unit 10yr', 'pct', 'cagr_u_10'], ['House YoY', 'pct', 'house_yoy'], ['Unit YoY', 'pct', 'unit_yoy'], ['House vs Unit gap', 'pct', 'pct_diff_hu']] },
+  { title: 'Affordability', rows: [['Price-to-income — House', 'x', 'p2i_house'], ['Price-to-income — Unit', 'x', 'p2i_unit'], ['Rent-to-income — House', 'pct', 'rent2inc_house'], ['Rent-to-income — Unit', 'pct', 'rent2inc_unit'], ['P&I repayments — House', 'money', 'pi_house'], ['P&I repayments — Unit', 'money', 'pi_unit'], ['Affordability index — House', 'ratio', 'ai_house_state'], ['Affordability index — Unit', 'ratio', 'ai_unit_state']] },
+  { title: 'Yield', rows: [['Gross yield — House', 'pct', 'yield_house'], ['Gross yield — Unit', 'pct', 'yield_unit']] },
+  { title: 'Population & demand', rows: [['Pop. % change — Metro', 'pct', 'pct_change_metro'], ['Pop. % change — State', 'pct', 'pct_change_state'], ['Pop. % change — National', 'pct', 'pct_change_national'], ['FHB % of population', 'pct', 'fhb_pct'], ['New population (metro)', 'int', 'new_pop_metro']] },
+];
+function cmpVal(type, v){ if (v == null || isNaN(v)) return '—'; if (type === 'pct') return (v * 100).toFixed(2) + '%'; if (type === 'x') return v.toFixed(1) + '×'; if (type === 'ratio') return v.toFixed(2); if (type === 'money') return '$' + Math.round(v).toLocaleString(); if (type === 'int') return Math.round(v).toLocaleString(); return String(v); }
+async function loadComputed(){
+  const out = document.getElementById('cmpOut');
+  out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">Research mart · computed report metrics</div><div class="df-title">Computed Metrics</div><div class="df-sub">Loading…</div></div>';
+  try { const { data } = await window.sb.from('rdp_report_feed').select('region_slug'); CMP_REGIONS = (data || []).map(r => r.region_slug); }
+  catch (e) { out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">Research mart · computed report metrics</div><div class="df-title">Computed Metrics</div><div class="df-sub"><span class="df-statuspill err">Unavailable</span> <span>Couldn’t load the research mart (rdp_report_feed).</span></div></div>'; return; }
+  if (!CMP_REGIONS.length){ out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">Research mart · computed report metrics</div><div class="df-title">Computed Metrics</div><div class="df-sub"><span class="df-statuspill">Derived</span> <span>The research mart is empty — build it with <code>node scripts/enrich-marts.mjs</code>.</span></div></div>'; return; }
+  CMP_REGIONS.sort((a, b) => groupOf(a) - groupOf(b) || labelOf(a).localeCompare(labelOf(b)));
+  if (!CMP_SEL || !CMP_REGIONS.includes(CMP_SEL)) CMP_SEL = CMP_REGIONS.find(s => CAP_SET.has(s)) || CMP_REGIONS[0];
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">Research mart · computed report metrics</div><div class="df-title">Computed Metrics</div>'
+    + '<div class="df-sub"><span class="df-statuspill">🔗 Derived</span> <span>The reports’ calculated values, per region — growth, affordability, yield, population. Derived from the raw data; this previews what the reports compute.</span></div></div></div>'
+    + '<div class="df-stats">' + dfStat('Regions', String(CMP_REGIONS.length), true) + dfStat('Source', '<span class="sm">research mart (rdp_report_feed)</span><div class="df-stat-foot">' + ingestChip('derived') + '</div>') + '</div></div>';
+  const opts = CMP_REGIONS.map(s => '<option value="' + esc(s) + '"' + (s === CMP_SEL ? ' selected' : '') + '>' + esc(labelOf(s)) + '</option>').join('');
+  out.innerHTML = hero + '<div class="df-card df-tablecard"><div class="ind-controls"><label for="cmpRegion">Region</label><select id="cmpRegion" class="ind-select">' + opts + '</select></div><div id="cmpBody"></div>'
+    + '<div class="df-note">Calculated from the raw series with the same formulas the reports use (CoreLogic price/rent, ABS income/population, RBA rates). “Latest” is the most recent year; the trend spark covers the full history.</div></div>';
+  const sel = document.getElementById('cmpRegion'); if (sel) sel.addEventListener('change', e => { CMP_SEL = e.target.value; renderComputedRegion(); });
+  renderComputedRegion();
+}
+async function renderComputedRegion(){
+  const box = document.getElementById('cmpBody'); if (!box) return;
+  box.innerHTML = '<div class="df-note">Loading ' + esc(labelOf(CMP_SEL)) + '…</div>';
+  let p = null; try { const { data } = await window.sb.from('rdp_report_feed').select('payload').eq('region_slug', CMP_SEL).maybeSingle(); p = data && data.payload; } catch {}
+  if (!p || !Array.isArray(p.years) || !p.years.length){ box.innerHTML = '<div class="df-empty">No computed payload for ' + esc(labelOf(CMP_SEL)) + '.</div>'; return; }
+  const years = p.years;
+  const series = f => years.map(y => { const v = y[f]; return (v == null || isNaN(v)) ? null : +v; });
+  const latest = f => { const s = series(f); for (let i = s.length - 1; i >= 0; i--) if (s[i] != null) return s[i]; return null; };
+  let html = '';
+  for (const panel of CMP_PANELS){
+    let rows = '';
+    for (const [label, type, field] of panel.rows){ rows += '<tr><td class="region">' + esc(label) + '</td><td class="num last">' + cmpVal(type, latest(field)) + '</td><td class="spark">' + sparkline(series(field)) + '</td></tr>'; }
+    html += '<div class="df-card df-tablecard" style="margin-top:14px"><h2>' + esc(panel.title) + '</h2><div class="df-tablewrap"><table class="df-table"><thead><tr><th class="th-l">Metric</th><th class="last">Latest</th><th class="th-l">Trend</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+  }
+  box.innerHTML = html;
+}
 // national dwellings commenced — small 2-row table (houses + units)
 async function renderApprovalsCommenced(outId){
   const out = document.getElementById(outId); if (!out) return;
@@ -1805,6 +1942,7 @@ async function importXlsx(file){
     };
     renderCotality(result);
     saveCotality(result);
+    appendMonthlyFromCotality(result);   // append this month's median into forge_monthly_price
   } catch(err){
     console.warn('xlsx import failed', err);
     out.innerHTML = card('Error', '<div class="df-empty">Could not read that file: ' + esc(err.message || err) + '</div>');
@@ -1971,7 +2109,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron','mining','commodities','natonly'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron','mining','commodities','natonly','monthlyprice','computed'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>
