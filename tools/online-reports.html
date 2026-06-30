@@ -20,6 +20,9 @@
      Classic script so it's defined before the inline boot code runs; uses
      window.sb only at call-time, so load order vs supabase-client is fine. -->
 <script src="../shared/report-cache.js?v=5edb9f7b"></script>
+<!-- Data Forge → feed-shape adapter (window.ForgeReportAdapter). Used only when
+     a report is opened with ?src=forge; harmless to load otherwise. -->
+<script src="../shared/forge-report-adapter.js?v=48c339c6"></script>
 <script src="../shared/color-picker.js?v=a7ec7189" defer></script>
 <!-- PPA chart system: theme + helpers + per-chart modules + region data.
      Order matters: theme -> helpers -> chart modules -> data.
@@ -5171,6 +5174,25 @@ const PP_FORCE_FRESH = (function () {
   catch (_) { return false; }
 })();
 
+/* [Forge cutover pilot] ?src=forge reads a region's data from the Data Forge
+   mart (rdp_report_feed) and reshapes it to the live-feed shape via
+   shared/forge-report-adapter.js, instead of the Apps Script cluster feed.
+   Pilot flag — the default path is completely untouched, and this degrades to
+   the static baseline if the mart isn't readable yet (e.g. RLS not applied). */
+const PP_FORGE_SRC = (function () {
+  try { return new URLSearchParams(location.search).get('src') === 'forge'; }
+  catch (_) { return false; }
+})();
+async function forgeClusterJson(slug) {
+  if (!window.sb || !window.ForgeReportAdapter) { console.warn('[forge] supabase client / adapter not loaded'); return null; }
+  try {
+    const { data, error } = await window.sb.from('rdp_report_feed').select('payload').eq('region_slug', slug).maybeSingle();
+    if (error) throw error;
+    if (!data || !data.payload) { console.warn('[forge] no mart row for', slug); return null; }
+    return { _meta: { source: 'forge', slug: slug }, regions: { [slug]: window.ForgeReportAdapter.forgeRegionToFeed(data.payload, slug) } };
+  } catch (e) { console.warn('[forge] mart fetch failed for', slug, (e && e.message) || e); return null; }
+}
+
 /* Records where each cluster's data came from on the last fetch
    (cache/snapshot/live) so liveBoot can log it — used to measure the
    cache win. */
@@ -6650,10 +6672,17 @@ async function liveBoot() {
   const needPeer    = m.kind === 'regional' && peerCluster && peerCluster !== m.cluster;
 
   try {
-    const [json, peerJson] = await Promise.all([
-      liveDataFetch(m.cluster),
-      needPeer ? liveDataFetch(peerCluster) : Promise.resolve(null),
-    ]);
+    let json, peerJson;
+    if (PP_FORGE_SRC) {
+      json = await forgeClusterJson(slug);
+      if (!json) { console.warn('[forge] mart unreadable for', slug, '— keeping static baseline'); scheduleOverlayHide(); return; }
+      peerJson = null;
+    } else {
+      [json, peerJson] = await Promise.all([
+        liveDataFetch(m.cluster),
+        needPeer ? liveDataFetch(peerCluster) : Promise.resolve(null),
+      ]);
+    }
     if (!json || !json.regions) return;
 
   /* Forgiving lookup: tabs may arrive with trailing punctuation

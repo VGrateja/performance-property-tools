@@ -34,7 +34,7 @@ function pyramid(slug, stateSlug) {
   // state comparator (regional reports plot region vs STATE; capitals vs national)
   const sb = (stateSlug && stateSlug !== slug) ? bandsFor(stateSlug) : [];
   const stt = sb.reduce((a, x) => a + x.count, 0) || 1, smap = Object.fromEntries(sb.map(x => [x.age, x.count]));
-  return r.map(x => ({ age: x.age, metro_pct: x.count / rt, national_pct: (nmap[x.age] || 0) / nt, state_pct: sb.length ? (smap[x.age] || 0) / stt : null }));
+  return r.map(x => ({ age: x.age, metro_pct: x.count / rt, national_pct: (nmap[x.age] || 0) / nt, state_pct: sb.length ? (smap[x.age] || 0) / stt : null, metro_count: x.count, national_count: (nmap[x.age] || 0), state_count: sb.length ? (smap[x.age] || 0) : null }));
 }
 function industry(slug) {
   const sectors = Object.keys(idx).filter(k => k.startsWith(slug + '|ind_')).map(k => ({ sector: k.split('|ind_')[1], value: latest(slug, 'ind_' + k.split('|ind_')[1]) })).filter(x => x.value != null);
@@ -57,8 +57,29 @@ const { data: feeds } = await sb.from('rdp_report_feed').select('region_slug,clu
 const CAPS = ['sydney', 'melbourne', 'brisbane', 'perth', 'adelaide', 'canberra', 'hobart', 'darwin'];
 const feedBySlug = Object.fromEntries((feeds || []).map(f => [f.region_slug, f]));
 const latestYearVal = (payload, field) => { const ys = (payload && payload.years) || []; for (let i = ys.length - 1; i >= 0; i--) { const v = ys[i][field]; if (v != null && !isNaN(v)) return +v; } return null; };
-// CIV: the 5/8-capital gross-yield comparison shown in every report (fields 70-72)
-const capcityYields = CAPS.map(s => ({ slug: s, yield_h: feedBySlug[s] ? latestYearVal(feedBySlug[s].payload, 'yield_house') : null, yield_u: feedBySlug[s] ? latestYearVal(feedBySlug[s].payload, 'yield_unit') : null })).filter(x => x.yield_h != null || x.yield_u != null);
+// CIV: the 8-capital gross-yield comparison (report fields 70-72). Computed from
+// the Cotality CURRENT snapshot — replicating the verified Data Forge CIV card
+// (forge_cotality 'latest'.cap.rows median price [col 4] + 'rentvacancy'.capitals
+// rent; yield = rent×52÷price). NOT the report's annual yields, which use a
+// different (SQM/annual) rent reference and so diverge, esp. on units.
+const civNum = s => { const n = Number(String(s == null ? '' : s).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n; };
+const civNorm = s => String(s).toLowerCase().replace(/\(.*?\)/g, '').replace(/[-/]/g, ' ').replace(/\s+/g, ' ').trim();
+const civTok = s => civNorm(s).split(' ').filter(Boolean);
+const civMatch = (fileName, target) => { const f = civTok(fileName), t = civTok(target); if (!t.length || f.length < t.length) return false; for (let i = 0; i + t.length <= f.length; i++) { let all = true; for (let j = 0; j < t.length; j++) if (f[i + j] !== t[j]) { all = false; break; } if (all) return true; } return false; };
+const { data: cotRows } = await sb.from('forge_cotality').select('id,data').in('id', ['latest', 'rentvacancy']);
+const cotLatest = (cotRows || []).find(r => r.id === 'latest'), cotRent = (cotRows || []).find(r => r.id === 'rentvacancy');
+const civCapRows = (cotLatest && cotLatest.data && cotLatest.data.cap && cotLatest.data.cap.rows) || [];
+const civRentCaps = (cotRent && cotRent.data && cotRent.data.capitals) || [];
+const CIV_CAP_NAME = { sydney: 'Sydney', melbourne: 'Melbourne', brisbane: 'Brisbane', perth: 'Perth', adelaide: 'Adelaide', canberra: 'Canberra', hobart: 'Hobart', darwin: 'Darwin' };
+const capcityYields = CAPS.map(s => {
+  const city = CIV_CAP_NAME[s] || s;
+  const ph = civCapRows.find(r => /^h/i.test(String(r[2])) && civMatch(String(r[1]), city));
+  const pu = civCapRows.find(r => /^u/i.test(String(r[2])) && civMatch(String(r[1]), city));
+  const priceH = ph ? civNum(ph[4]) : null, priceU = pu ? civNum(pu[4]) : null;
+  const rc = civRentCaps.find(c => civMatch(String(c.name), city));
+  const rentH = rc && rc.rentHouse != null ? rc.rentHouse : null, rentU = rc && rc.rentUnit != null ? rc.rentUnit : null;
+  return { slug: s, yield_h: (priceH && rentH) ? rentH * 52 / priceH : null, yield_u: (priceU && rentU) ? rentU * 52 / priceU : null };
+}).filter(x => x.yield_h != null || x.yield_u != null);
 // "Long-Term Trends" block (fields 78-80): CAGR of median price at 3/5/7/10yr +
 // LT. 10/7/5/3 = (cur/cur_minus_n)^(1/n)-1 — verified to match the cluster sheet
 // exactly. LT = CAGR over each region's ACTUAL data history (first data year →
@@ -109,12 +130,60 @@ const perthSeries = { iron: {}, mineral: [] };
   perthSeries.mineral = (me || []).map(r => ({ period: r.period, value: Number(r.value) }));
 }
 
+// monthly median price (forge_monthly_price store) + monthly JCI / arrears (rdp_raw_series, freq M)
+const { data: mpRow } = await sb.from('forge_monthly_price').select('data').eq('id', 'latest').maybeSingle();
+const monthlyPrice = (mpRow && mpRow.data && mpRow.data.regions) || {};
+const monthlySeries = (slug, metric) => { const a = idx[slug + '|' + metric]; if (!a) return null; const mm = a.filter(r => r.freq === 'M').slice().sort((x, y) => String(x.period).localeCompare(String(y.period))); if (!mm.length) return null; return { months: mm.map(r => r.period), values: mm.map(r => r.value) }; };
+
+// Industry Value Added — read the CURRENT forge_industry store (the Data Forge
+// Industry data point / latest REMPLAN). rdp_raw_series ind_* is a STALE copy of
+// the ORIGINAL report values (e.g. Perth Mining 30.86% old vs 65.8% current REMPLAN),
+// so prefer the store; fall back to ind_* only for a region the store lacks.
+const { data: indRows } = await sb.from('forge_industry').select('data');
+const indStore = (indRows || []).map(r => r.data).find(d => d && d.regions);
+const indRegions = (indStore && indStore.regions) || {};
+const labelToSlug = lbl => String(lbl).toLowerCase().replace(/,/g, '').replace(/&/g, 'and').replace(/\s+/g, '_');
+function industryForge(slug) {
+  const r = indRegions[slug];
+  if (!r || !r.values) return null;
+  const entries = Object.entries(r.values).filter(([, v]) => v != null && !isNaN(Number(v)));
+  if (!entries.length) return null;
+  const total = (r.total != null && !isNaN(Number(r.total))) ? Number(r.total) : entries.reduce((s, [, v]) => s + Number(v), 0) || 1;
+  return entries.map(([lbl, v]) => ({ sector: labelToSlug(lbl), value: Number(v), pct: Number(v) / total })).sort((a, b) => b.value - a.value);
+}
+
+// Population pyramid — read the CURRENT forge_population_pyramid store (latest 2024
+// ERP). rdp_raw_series pyr_* is again a STALE copy (Perth 0-04: store 135443 vs
+// rdp 129598). Prefer the store; fall back to pyr_* only for a region it lacks.
+const { data: pyrRows } = await sb.from('forge_population_pyramid').select('data');
+const pyrData = (pyrRows || []).map(r => r.data).find(d => d && d.regions);
+const pyrStore = (pyrData && pyrData.regions) || {};
+const pyrAges = (pyrData && pyrData.ageGroups) || [];
+function pyramidForge(slug, stateSlug) {
+  const reg = pyrStore[slug];
+  if (!reg || !Array.isArray(reg.total) || !pyrAges.length) return null;
+  const metro = reg.total;
+  const nat = (pyrStore['australia'] && pyrStore['australia'].total) || [];
+  const st = (stateSlug && stateSlug !== slug && pyrStore[stateSlug]) ? pyrStore[stateSlug].total : null;
+  const sum = a => (a || []).reduce((s, x) => s + (Number(x) || 0), 0) || 1;
+  const mt = sum(metro), nt = sum(nat), stt = st ? sum(st) : 1;
+  return pyrAges.map((age, i) => ({
+    age: age,
+    metro_pct: metro[i] != null ? metro[i] / mt : null,
+    national_pct: nat[i] != null ? nat[i] / nt : null,
+    state_pct: st ? (st[i] != null ? st[i] / stt : null) : null,
+    metro_count: metro[i] != null ? Number(metro[i]) : null,
+    national_count: nat[i] != null ? Number(nat[i]) : null,
+    state_count: st ? (st[i] != null ? Number(st[i]) : null) : null
+  }));
+}
+
 const updates = [];
 for (const f of feeds) {
   const slug = f.region_slug;
   const extras = {};
-  const py = pyramid(slug, stateOf[slug]); if (py) extras.pyramid = py;
-  const ind = industry(slug); if (ind) extras.industry = ind;
+  const py = pyramidForge(slug, stateOf[slug]) || pyramid(slug, stateOf[slug]); if (py) extras.pyramid = py;
+  const ind = industryForge(slug) || industry(slug); if (ind) extras.industry = ind;
   // arrears: region's own (capitals = their state) → fall back to the region's
   // state capital's series for regionals (the chart plots region-state vs national)
   let ar = latest(slug, 'arrears');
@@ -122,6 +191,13 @@ for (const f of feeds) {
   if (ar != null) extras.arrears = ar;
   const jc = latest(slug, 'jci'); if (jc != null) extras.jci = jc;
   extras.arrears_national = latest('australia', 'arrears');
+  // monthly series for the monthly charts (lending already added below)
+  if (monthlyPrice[slug]) extras.monthly_price = { months: monthlyPrice[slug].months, h: monthlyPrice[slug].h, u: monthlyPrice[slug].u };
+  const jm = monthlySeries(slug, 'jci'); if (jm) extras.jci_monthly = jm;
+  let amS = monthlySeries(slug, 'arrears');
+  if (!amS && stateOf[slug]) { const cap = STATECAP[stateOf[slug].slice(3)]; if (cap) amS = monthlySeries(cap, 'arrears'); }
+  if (amS) extras.arrears_monthly = amS;
+  const amN = monthlySeries('australia', 'arrears'); if (amN) extras.arrears_national_monthly = amN;
   // CIV (capital-city yield comparison) + long-term CAGR (computed from payloads)
   extras.capcity_yields = capcityYields;
   extras.lt = { house: ltBlock(f.payload, 'mp_h'), unit: ltBlock(f.payload, 'mp_u') };

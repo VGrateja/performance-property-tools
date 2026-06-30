@@ -32,7 +32,7 @@ const cities = regions.filter(r => r.slug !== 'australia');
 // all annual raw (ordered for stable pagination)
 let rows = [], from = 0;
 for (;;) {
-  const { data, error } = await sb.from('rdp_raw_series').select('region_slug,metric,period,value').eq('freq', 'A').order('region_slug').order('metric').order('period').range(from, from + 999);
+  const { data, error } = await sb.from('rdp_raw_series').select('region_slug,metric,source,period,value').eq('freq', 'A').order('region_slug').order('metric').order('period').range(from, from + 999);
   if (error) { console.error(error.message); process.exit(1); }
   rows.push(...data.map(r => ({ ...r, value: Number(r.value) }))); if (data.length < 1000) break; from += 1000;
 }
@@ -43,7 +43,7 @@ const payloads = [];
 for (const c of cities) {
   const state = c.state ? 'st-' + c.state.toLowerCase() : null;
   const feed = globalThis.ReportFeedCalc.computeReportFeed({ region: c.slug, state, benchmark: 'sydney', rows, years });
-  const nonEmpty = feed.filter(r => r.mp_h != null || r.mp_u != null);   // trim leading empty years
+  const nonEmpty = feed.filter(r => Object.keys(r).some(k => k !== 'year' && r[k] != null));   // trim only fully-empty leading years (keep national-only early years, e.g. inflation 1975)
   payloads.push({ region_slug: c.slug, cluster: c.cluster, rows: nonEmpty });
 }
 

@@ -38,11 +38,30 @@
   function computeReportFeed(input) {
     const { region, state, benchmark = 'sydney', rows, years } = input;
     const idx = Object.create(null);                    // "slug|metric" -> { year: value }
+    // Some metrics carry rows from MULTIPLE sources; the report prefers a
+    // specific one, so pick deterministically (preferred wins; others only fill
+    // a cell the preferred source hasn't). Every other metric is single-source.
+    //   rent_h / rent_u : SQM   (e.g. Perth 2026 = 750 SQM vs 730 CoreLogic)
+    //   retail_turnover : cluster-history (the long ABS Retail Trade series the
+    //                     report uses through 2020; MHSI only fills 2021+)
+    const PREF = { rent_h: 'sqm', rent_u: 'sqm', retail_turnover: 'cluster-history' };
+    const setSrc = Object.create(null);                 // "slug|metric|year" -> source that set it
     for (const r of rows || []) {
       const k = r.region_slug + '|' + r.metric;
-      (idx[k] || (idx[k] = {}))[+String(r.period).slice(0, 4)] = num(r.value);
+      const yr = +String(r.period).slice(0, 4);
+      const pref = PREF[r.metric];
+      if (pref) {
+        const sk = k + '|' + yr;
+        if (setSrc[sk] === pref && r.source !== pref) continue;   // preferred already set this cell
+        (idx[k] || (idx[k] = {}))[yr] = num(r.value);
+        setSrc[sk] = r.source;
+      } else {
+        (idx[k] || (idx[k] = {}))[yr] = num(r.value);
+      }
     }
     const g = (slug, metric, y) => { const m = idx[slug + '|' + metric]; return m && m[y] != null ? m[y] : null; };
+    // commodity index: price / 1980-base × 100 (national mining_* series, like the report's "indexed" column)
+    const cidx = (metric, yy) => { const v = g('australia', metric, yy), b = g('australia', metric, 1980); return (num(v) != null && num(b) && b !== 0) ? v / b * 100 : null; };
 
     const out = [];
     for (const y of years) {
@@ -53,7 +72,7 @@
       const AD = g(region, 'rent_h', y), AE = g(region, 'rent_u', y);
       const AJ = g(region, 'population', y), ALp = g(state, 'population', y), AN = g('australia', 'population', y);
       const AJp = g(region, 'population', y - 1), ALpp = g(state, 'population', y - 1), ANp = g('australia', 'population', y - 1);
-      const BW = g(benchmark, 'mp_h', y);
+      const BW = g(benchmark, 'mp_h', y), BWu = g(benchmark, 'mp_u', y);
       const Qv = annualPI(BankC, num(E) != null ? E * 0.8 : null);   // repayments use the BANK rate (cluster col C), not cash rate
       const Rv = annualPI(BankC, num(F) != null ? F * 0.8 : null);
 
@@ -71,7 +90,7 @@
         nom: g(region, 'nom', y) ?? g(state, 'nom', y),
         unemp_metro: g(region, 'unemployment', y), unemp_state: g(state, 'unemployment', y), unemp_national: g('australia', 'unemployment', y),
         approvals_h: g(region, 'approvals_h', y), approvals_u: g(region, 'approvals_u', y),
-        capcity_benchmark: BW,
+        capcity_benchmark: BW, capcity_benchmark_unit: BWu, inflation_rate: g('australia', 'inflation', y),
         // ── derived ──
         sales_total: (num(sales_h) != null && num(sales_u) != null) ? sales_h + sales_u : null,
         pct_diff_hu: div(F, E),
@@ -95,9 +114,18 @@
         approvals_total: (num(g(region, 'approvals_h', y)) != null && num(g(region, 'approvals_u', y)) != null) ? g(region, 'approvals_h', y) + g(region, 'approvals_u', y) : null,
         capcity_pct_diff: div(E, BW),
         new_pop_metro: (num(AJ) != null && num(AJp) != null) ? AJ - AJp : null,
-        household: (num(AJ) != null && num(AJp) != null) ? (AJ - AJp) / 2.5 : null,
-        // ── deferred (raw not yet ingested) ──
-        retail_turnover: null, business_investment: null, annualised_fhb: null, fhb_pct: null,
+        household: (num(AJ) != null && num(AJp) != null) ? (AJ - AJp) / 2.6 : null,   // new dwellings demand = metro pop growth ÷ avg household size (report uses 2.6)
+        // ── commodities (national mining_* annual: price + YoY change + 1980-indexed) ──
+        gold: g('australia', 'mining_gold', y), gold_chg: pct(g('australia', 'mining_gold', y), g('australia', 'mining_gold', y - 1)), gold_idx: cidx('mining_gold', y),
+        iron_ore: g('australia', 'mining_iron_ore', y), iron_ore_chg: pct(g('australia', 'mining_iron_ore', y), g('australia', 'mining_iron_ore', y - 1)), iron_ore_idx: cidx('mining_iron_ore', y),
+        crude_oil: g('australia', 'mining_crude_oil', y), crude_oil_chg: pct(g('australia', 'mining_crude_oil', y), g('australia', 'mining_crude_oil', y - 1)), crude_oil_idx: cidx('mining_crude_oil', y),
+        silver: g('australia', 'mining_silver', y), silver_chg: pct(g('australia', 'mining_silver', y), g('australia', 'mining_silver', y - 1)), silver_idx: cidx('mining_silver', y),
+        copper: g('australia', 'mining_copper', y), copper_chg: pct(g('australia', 'mining_copper', y), g('australia', 'mining_copper', y - 1)), copper_idx: cidx('mining_copper', y),
+        // ── state-level series the capital/region inherits, like median_income ──
+        retail_turnover: g(state, 'retail_turnover', y),
+        business_investment: g(state, 'bus_investment', y),
+        annualised_fhb: g(state, 'fhb', y),
+        fhb_pct: div(g(state, 'fhb', y), ALp),
       });
     }
     return out;
