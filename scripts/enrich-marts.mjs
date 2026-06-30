@@ -92,6 +92,20 @@ function vacancySnapshot() {
   return CAPS.map(s => { const ys = (feedBySlug[s] && feedBySlug[s].payload.years) || []; const vr = ys.filter(y => y.vacancy_rate != null); const last = vr[vr.length - 1], prev = vr[vr.length - 2]; return { slug: s, current: last ? last.vacancy_rate : null, prior: prev ? prev.vacancy_rate : null, year: last ? last.year : null, prior_year: prev ? prev.year : null }; });
 }
 
+// Perth-only report charts (p32 Iron Ore Price, p33 Mineral Exploration). The
+// report's annual ironOre = each year's ANNUAL AVERAGE of the monthly price
+// (verified vs the Perth tab: 2004 16.39, 2024 108.54 exact, others within ~1%);
+// mineral exploration = WA quarterly ($m). Data in rdp_raw_series.
+const perthSeries = { iron: {}, mineral: [] };
+{
+  const { data: ir } = await sb.from('rdp_raw_series').select('period,value').eq('region_slug', 'perth').eq('metric', 'iron_ore_price').eq('freq', 'M').order('period');
+  const ironM = {};
+  for (const r of (ir || [])) { const y = +String(r.period).slice(0, 4); (ironM[y] || (ironM[y] = [])).push(Number(r.value)); }
+  for (const y in ironM) perthSeries.iron[y] = ironM[y].reduce((a, b) => a + b, 0) / ironM[y].length;
+  const { data: me } = await sb.from('rdp_raw_series').select('period,value').eq('region_slug', 'st-wa').eq('metric', 'mineral_exploration').eq('freq', 'Q').order('period');
+  perthSeries.mineral = (me || []).map(r => ({ period: r.period, value: Number(r.value) }));
+}
+
 const updates = [];
 for (const f of feeds) {
   const slug = f.region_slug;
@@ -113,6 +127,11 @@ for (const f of feeds) {
     extras.internet_vacancies = { periods: (natSeries.internet_vacancies || []).map(x => x.period), values: jvSeries('internet_vacancies') };
     extras.pyramid_capitals = capitalsPyramid();
     extras.vacancy_snapshot = vacancySnapshot();
+  }
+  if (slug === 'perth') {  // Perth-only report charts (p32 Iron Ore Price, p33 Mineral Exploration)
+    const iy = Object.keys(perthSeries.iron).map(Number).sort((a, b) => a - b);
+    if (iy.length) extras.iron_ore = { years: iy, values: iy.map(y => perthSeries.iron[y]) };
+    if (perthSeries.mineral.length) extras.mineral_exploration = { quarters: perthSeries.mineral.map(x => x.period), values: perthSeries.mineral.map(x => x.value) };
   }
   const payload = { ...f.payload, extras };
   updates.push({ region_slug: slug, cluster: f.cluster, payload });
