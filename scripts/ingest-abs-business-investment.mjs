@@ -79,6 +79,34 @@ for (const slug of slugs) {
   if (roll != null) rows.push({ source: 'abs', region_slug: slug, metric: 'bus_investment', freq: 'A', period: `${ly}-01-01`, value: roll });
 }
 
+// ── national INDUSTRY split (Manufacturing P02, Mining P01) for the National
+//    report's "Business Investment by industry" chart (p18). Same CAPEX
+//    dataflow, INDUSTRY dim; AUS only; annual 4-qtr sum (rolling latest).
+//    TOT (= Total incl. Education & Health) is already metric 'bus_investment'. ──
+const IND = { P02: 'bus_inv_manufacturing', P01: 'bus_inv_mining' };
+try {
+  const j = await getJson(`${API}/data/CAPEX/M1.CUR.TOT..10.AUS.Q?startPeriod=${FROM}-Q1&format=jsondata&dimensionAtObservation=AllDimensions`);
+  const od = (j.data.structure || j.data.structures[0]).dimensions.observation;
+  const iI = od.findIndex(d => d.id === 'INDUSTRY'), tI = od.findIndex(d => d.id === 'TIME_PERIOD');
+  const QI = {};
+  for (const [k, v] of Object.entries(j.data.dataSets[0].observations)) {
+    const ix = k.split(':').map(Number);
+    const code = od[iI].values[ix[iI]].id; if (!IND[code]) continue;
+    const m = od[tI].values[ix[tI]].id.match(/^(\d{4})-Q([1-4])$/); if (!m) continue;
+    (QI[code] ||= new Map()).set((+m[1]) * 4 + (+m[2] - 1), v[0]);
+  }
+  for (const [code, metric] of Object.entries(IND)) {
+    const map = QI[code]; if (!map || !map.size) continue;
+    const lastQ = Math.max(...map.keys()), ly = Math.floor(lastQ / 4);
+    for (const y of new Set([...map.keys()].map(q => Math.floor(q / 4)))) {
+      if (y === ly) continue;
+      const s = sum4(map, y * 4 + 3); if (s != null) rows.push({ source: 'abs', region_slug: 'australia', metric, freq: 'A', period: `${y}-01-01`, value: s });
+    }
+    const roll = sum4(map, lastQ); if (roll != null) rows.push({ source: 'abs', region_slug: 'australia', metric, freq: 'A', period: `${ly}-01-01`, value: roll });
+    console.log(`  national ${metric}: latest ${ly} = ${Math.round(roll).toLocaleString()}`);
+  }
+} catch (e) { console.error('\n  (national industry split fetch failed: ' + e.message + ')'); }
+
 // compare vs current DB (latest year)
 const { data: cur } = await sb.from('rdp_raw_series').select('region_slug,value').eq('source', 'abs').eq('metric', 'bus_investment').eq('freq', 'A').eq('period', `${latestYear}-01-01`).in('region_slug', slugs);
 const curMap = Object.fromEntries((cur || []).map(r => [r.region_slug, +r.value]));

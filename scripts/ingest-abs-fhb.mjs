@@ -3,15 +3,19 @@
 // (annual, by STATE) from the ABS Data API. No key.
 //
 // Source: ABS Lending Indicators (dataflow LEND_HOUSING), quarterly.
-//   key  FIN_VAL→FIN_NUM.NEWCOMMITS.DV8368.TOTHOUS.TOT.DV5167_FHB.10.<region>.Q
-//   = number of new loan commitments, Owner-occupier FIRST HOME BUYERS,
-//     Total housing (excl. refinancing), Original.  REGION 1..8 → st-nsw..st-act.
+//   key  FIN_VAL→FIN_NUM.NEWCOMMITS.DV8368.TOTHOUS.TOT.<HOUSING_PURPOSE>.10.<region>.Q
+//   = number of new loan commitments, FIRST HOME BUYERS, Total housing
+//     (excl. refinancing), Original.  REGION 1..8 → st-nsw..st-act, AUS → national.
 //   Series e.g. NSW = A130268073C (Lending Indicators Table 24).
 //
-//   STATES ONLY. National is intentionally EXCLUDED: the national report builds
-//   its FHB figure from a different (monthly) method that the plain state rule
-//   doesn't reproduce (state 4-qtr sum of the AUS series = 120,510 vs the
-//   national report's 171,277.5). All 8 STATES reproduce the report EXACTLY.
+//   STATES + NATIONAL both use OWNER-OCCUPIER FHB (HOUSING_PURPOSE=DV5167_FHB),
+//   region 1..8 + AUS. OO FHB reproduces both the regional reports AND the
+//   National report's FHB chart (p15) EXACTLY for 2003-2023 — confirmed vs the
+//   AUSTRALIA tab's Annualized FHB column (Total FHB = OO+investor runs 3-11k
+//   high across history, so the report is OO, not Total). The cluster sheet's
+//   recent-year national FHB (2025 147,789 / 2026 171,277.5) comes from an
+//   opaque upstream annualization no ABS series reproduces (clean ABS OO is
+//   ~120k); user chose the clean ABS path, so recent years carry the true ABS OO.
 //
 // RULE (user's): the DB stores ANNUAL = a 4-QUARTER SUM.
 //   • complete prior years  → sum of that calendar year's 4 quarters
@@ -62,9 +66,25 @@ try {
   }
 } catch (e) { console.error('\n✗ ABS fetch failed:', e.message); await recordStatus('error', `ABS fetch failed: ${e.message}`); process.exit(1); }
 
+// ── national: OWNER-OCCUPIER FHB (DV5167_FHB), region AUS — same series/method
+//    as the states; reproduces the National report's FHB chart for 2003-2023 ──
+try {
+  const keyN = 'FIN_NUM.NEWCOMMITS.DV8368.TOTHOUS.TOT.DV5167_FHB.10.AUS.Q';
+  const j = await getJson(`${API}/data/LEND_HOUSING/${keyN}?startPeriod=${FROM}-Q1&format=jsondata&dimensionAtObservation=AllDimensions`);
+  const od = (j.data.structure || j.data.structures[0]).dimensions.observation;
+  const tI = od.findIndex(d => d.id === 'TIME_PERIOD');
+  const QN = new Map();
+  for (const [k, v] of Object.entries(j.data.dataSets[0].observations)) {
+    const ix = k.split(':').map(Number);
+    const m = od[tI].values[ix[tI]].id.match(/^(\d{4})-Q([1-4])$/); if (!m) continue;
+    QN.set((+m[1]) * 4 + (+m[2] - 1), v[0]);
+  }
+  if (QN.size) Q.australia = QN;
+} catch (e) { console.error('\n✗ ABS national fetch failed:', e.message); await recordStatus('error', `ABS national fetch failed: ${e.message}`); process.exit(1); }
+
 // ── annual = 4-quarter sum (calendar for complete years; rolling for the latest) ──
 const rows = [];
-const slugs = Object.values(REG);
+const slugs = [...Object.values(REG), 'australia'];
 const sum4 = (map, lastQ) => { let s = 0; for (let q = lastQ - 3; q <= lastQ; q++) { const v = map.get(q); if (v == null) return null; s += v; } return s; };
 let latestYear = 0;
 for (const slug of slugs) {

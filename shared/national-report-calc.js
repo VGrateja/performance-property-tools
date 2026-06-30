@@ -8,9 +8,13 @@
 
    computeNationalReport({ rows, capitals, regionals, years }) -> [ {year, ...} ]
 
-   Covers the columns derivable from current raw. DEFERRED (await their raw):
-   FHB, retail turnover, value-of-work, industry/mining, federal budget,
-   govt debt, job vacancies, owner/investor, arrears, household-type, pyramid.
+   Covers the annual AUSTRALIA-tab columns: national raw + capital/regional
+   median aggregates, plus FHB (owner-occupier), retail turnover, and business
+   investment (total incl. Education & Health + Manufacturing + Mining). The rest
+   of the tab lives outside years[]: work-done / federal budget / govt debt /
+   household-type / GDP-by-country in forge_national_only; job & internet
+   vacancies, owner-occupier/investor lending, arrears, migration and the
+   population pyramid in payload.extras (enrich-marts).
    ============================================================================= */
 (function (root) {
   'use strict';
@@ -34,6 +38,7 @@
       const ah = g('australia', 'approvals_h', y), au = g('australia', 'approvals_u', y);
       const ch = g('australia', 'commenced_h', y), cu = g('australia', 'commenced_u', y);
       const sm = {}; for (const st in STATECAP) sm[st] = g(STATECAP[st], 'mp_h', y);
+      const rt = g('australia', 'retail_turnover', y), fhb = g('australia', 'fhb', y);
       out.push({
         year: y,
         cash_rate: g('australia', 'cash_rate', y), bank_rate: C, inflation: g('australia', 'inflation', y), median_income: E,
@@ -50,6 +55,11 @@
         commenced_h: ch, commenced_u: cu, commenced_total: (num(ch) != null && num(cu) != null) ? ch + cu : null,
         approvals_h: ah, approvals_u: au, approvals_total: (num(ah) != null && num(au) != null) ? ah + au : null,
         bedroom_commencements: (num(ah) != null && num(au) != null) ? ((ah + au) * 0.8) * 2.5 : null,
+        annualised_fhb: fhb, fhb_pct: (num(fhb) != null && num(O) && O !== 0) ? fhb / O : null,
+        retail_turnover: rt, retail_yoy: pct(rt, g('australia', 'retail_turnover', y - 1)),
+        bus_investment: g('australia', 'bus_investment', y),
+        bus_inv_manufacturing: g('australia', 'bus_inv_manufacturing', y),
+        bus_inv_mining: g('australia', 'bus_inv_mining', y),
         state_median_house: sm,
       });
     }

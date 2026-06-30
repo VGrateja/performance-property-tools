@@ -39,6 +39,14 @@ function industry(slug) {
   const total = sectors.reduce((s, x) => s + x.value, 0) || 1;
   return sectors.map(x => ({ sector: x.sector, value: x.value, pct: x.value / total })).sort((a, b) => b.value - a.value);
 }
+// capital-cities population pyramid (aggregate of the 8 capital GCCSAs) — National p9 second series
+const CAPS_PYR = ['sydney', 'melbourne', 'brisbane', 'perth', 'adelaide', 'canberra', 'hobart', 'darwin'];
+function capitalsPyramid() {
+  const sums = {};
+  for (const b of AGE_ORDER) { let s = 0, any = false; for (const c of CAPS_PYR) { const v = latest(c, 'pyr_' + b); if (v != null) { s += v; any = true; } } if (any) sums[b] = s; }
+  const tot = Object.values(sums).reduce((a, x) => a + x, 0) || 1;
+  return AGE_ORDER.filter(b => sums[b] != null).map(b => ({ age: b, count: sums[b], pct: sums[b] / tot }));
+}
 
 const { data: feeds } = await sb.from('rdp_report_feed').select('region_slug,cluster,payload');
 
@@ -71,6 +79,19 @@ const stateMonthly = {};   // 'st-nsw'|'australia' -> { oo:{period:val}, inv:{pe
 for (const r of raw) { if (r.metric !== 'owner_occupier' && r.metric !== 'investor') continue; if (!r.region_slug.startsWith('st-') && r.region_slug !== 'australia') continue; (stateMonthly[r.region_slug] || (stateMonthly[r.region_slug] = { oo: {}, inv: {} }))[r.metric === 'owner_occupier' ? 'oo' : 'inv'][r.period] = r.value; }
 function lendingFor(slug) { const st = (slug === 'australia') ? 'australia' : stateOf[slug]; const sm = st && stateMonthly[st]; if (!sm) return null; const months = [...new Set([...Object.keys(sm.oo), ...Object.keys(sm.inv)])].sort(); if (!months.length) return null; return { state: st, months, owner_occupier: months.map(m => sm.oo[m] ?? null), investor: months.map(m => sm.inv[m] ?? null) }; }
 
+// national quarterly/monthly series for the National report extras: job vacancies
+// (ABS, Q) + internet vacancies (NSC IVI, M). Australia only — small targeted pull.
+const natSeries = {};
+{
+  const { data } = await sb.from('rdp_raw_series').select('metric,period,value').eq('region_slug', 'australia').in('metric', ['job_vacancies_private', 'job_vacancies_public', 'job_vacancies_total', 'internet_vacancies']).order('period');
+  for (const r of (data || [])) (natSeries[r.metric] || (natSeries[r.metric] = [])).push({ period: r.period, value: Number(r.value) });
+}
+const jvSeries = m => (natSeries[m] || []).map(x => x.value);
+// 8-capital current/prior vacancy snapshot (National p5) — annual vacancy_rate from each capital feed
+function vacancySnapshot() {
+  return CAPS.map(s => { const ys = (feedBySlug[s] && feedBySlug[s].payload.years) || []; const vr = ys.filter(y => y.vacancy_rate != null); const last = vr[vr.length - 1], prev = vr[vr.length - 2]; return { slug: s, current: last ? last.vacancy_rate : null, prior: prev ? prev.vacancy_rate : null, year: last ? last.year : null, prior_year: prev ? prev.year : null }; });
+}
+
 const updates = [];
 for (const f of feeds) {
   const slug = f.region_slug;
@@ -87,6 +108,11 @@ for (const f of feeds) {
   if (slug === 'australia') {  // national-only extras
     extras.arrears_by_state = Object.fromEntries(Object.entries(STATECAP).map(([st, cap]) => [st, latest(cap, 'arrears')]));
     extras.state_migration = Object.fromEntries(Object.keys(STATECAP).map(st => [st, { nom: latest('st-' + st, 'nom'), nim: latest('st-' + st, 'nim') }]));
+    // National report charts p19/p20/p9/p5
+    extras.job_vacancies = { periods: (natSeries.job_vacancies_total || []).map(x => x.period), private: jvSeries('job_vacancies_private'), public: jvSeries('job_vacancies_public'), total: jvSeries('job_vacancies_total') };
+    extras.internet_vacancies = { periods: (natSeries.internet_vacancies || []).map(x => x.period), values: jvSeries('internet_vacancies') };
+    extras.pyramid_capitals = capitalsPyramid();
+    extras.vacancy_snapshot = vacancySnapshot();
   }
   const payload = { ...f.payload, extras };
   updates.push({ region_slug: slug, cluster: f.cluster, payload });

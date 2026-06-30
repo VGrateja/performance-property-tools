@@ -101,6 +101,9 @@ const rows = [];
 for (const [slug, o] of Object.entries(SERIES)) {
   for (const [yr, vals] of Object.entries(monthly[slug])) {
     if (!vals.length) continue;
+    // national <=2012 is owned by the legacy backfill (seed-retail-history.mjs);
+    // the HSI series' 2012 is a partial-year artifact (high) that would clobber it.
+    if (slug === 'australia' && +yr <= 2012) continue;
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
     rows.push({ source: 'abs', region_slug: slug, metric: 'retail_turnover', freq: 'A', period: `${yr}-01-01`, value: mean * o.factor, _n: vals.length });
   }
