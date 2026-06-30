@@ -41,6 +41,16 @@ function industry(slug) {
 }
 
 const { data: feeds } = await sb.from('rdp_report_feed').select('region_slug,cluster,payload');
+
+// ── computed-from-payload extras: capital-city yield comparison (CIV) + long-term CAGR ──
+const CAPS = ['sydney', 'melbourne', 'brisbane', 'perth', 'adelaide', 'canberra', 'hobart', 'darwin'];
+const feedBySlug = Object.fromEntries((feeds || []).map(f => [f.region_slug, f]));
+const latestYearVal = (payload, field) => { const ys = (payload && payload.years) || []; for (let i = ys.length - 1; i >= 0; i--) { const v = ys[i][field]; if (v != null && !isNaN(v)) return +v; } return null; };
+// CIV: the 5/8-capital gross-yield comparison shown in every report (fields 70-72)
+const capcityYields = CAPS.map(s => ({ slug: s, yield_h: feedBySlug[s] ? latestYearVal(feedBySlug[s].payload, 'yield_house') : null, yield_u: feedBySlug[s] ? latestYearVal(feedBySlug[s].payload, 'yield_unit') : null })).filter(x => x.yield_h != null || x.yield_u != null);
+// full-history CAGR of median price (fields 79-80)
+function ltCagr(payload, field) { const ys = (payload && payload.years) || []; const pts = ys.map(y => ({ year: y.year, v: y[field] })).filter(p => p.v != null && !isNaN(p.v) && p.v > 0); if (pts.length < 2) return null; const a = pts[0], b = pts[pts.length - 1], n = b.year - a.year; return n > 0 ? Math.pow(b.v / a.v, 1 / n) - 1 : null; }
+
 const updates = [];
 for (const f of feeds) {
   const slug = f.region_slug;
@@ -50,6 +60,9 @@ for (const f of feeds) {
   const ar = latest(slug, 'arrears'); if (ar != null) extras.arrears = ar;
   const jc = latest(slug, 'jci'); if (jc != null) extras.jci = jc;
   extras.arrears_national = latest('australia', 'arrears');
+  // CIV (capital-city yield comparison) + long-term CAGR (computed from payloads)
+  extras.capcity_yields = capcityYields;
+  extras.lt = { cagr_house: ltCagr(f.payload, 'mp_h'), cagr_unit: ltCagr(f.payload, 'mp_u') };
   if (slug === 'australia') {  // national-only extras
     extras.arrears_by_state = Object.fromEntries(Object.entries(STATECAP).map(([st, cap]) => [st, latest(cap, 'arrears')]));
     extras.state_migration = Object.fromEntries(Object.keys(STATECAP).map(st => [st, { nom: latest('st-' + st, 'nom'), nim: latest('st-' + st, 'nim') }]));
@@ -62,11 +75,12 @@ for (const f of feeds) {
 const adel = updates.find(u => u.region_slug === 'adelaide');
 const au = updates.find(u => u.region_slug === 'australia');
 console.log('regions enriched:', updates.length);
-if (adel) console.log('adelaide extras: pyramid bands=' + (adel.payload.extras.pyramid || []).length + ' (metro 0-4=' + ((adel.payload.extras.pyramid || [])[0]?.metro_pct * 100).toFixed(2) + '%), industry sectors=' + (adel.payload.extras.industry || []).length + ' (top=' + (adel.payload.extras.industry || [])[0]?.sector + '), arrears=' + adel.payload.extras.arrears + ', jci=' + adel.payload.extras.jci);
+if (adel) console.log('adelaide extras: pyramid bands=' + (adel.payload.extras.pyramid || []).length + ', industry sectors=' + (adel.payload.extras.industry || []).length + ', arrears=' + adel.payload.extras.arrears + ', jci=' + adel.payload.extras.jci + ', LT CAGR house=' + (adel.payload.extras.lt.cagr_house * 100).toFixed(2) + '% unit=' + (adel.payload.extras.lt.cagr_unit * 100).toFixed(2) + '%');
+console.log('capcity yields (CIV): ' + capcityYields.map(c => c.slug + ' H' + (c.yield_h * 100).toFixed(2) + '%/U' + (c.yield_u * 100).toFixed(2) + '%').join(', '));
 if (au) console.log('australia extras: pyramid=' + (au.payload.extras.pyramid || []).length + ' bands, arrears_by_state.sa=' + au.payload.extras.arrears_by_state?.sa + ', state_migration.nsw=' + JSON.stringify(au.payload.extras.state_migration?.nsw));
 
 if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert.'); process.exit(0); }
 const stamp = new Date().toISOString(); let n = 0;
 for (const u of updates) { const { error } = await sb.from('rdp_report_feed').upsert({ region_slug: u.region_slug, cluster: u.cluster, payload: u.payload, computed_at: stamp }, { onConflict: 'region_slug' }); if (error) { console.error(u.region_slug, error.message); process.exit(1); } n++; }
-await sb.from('rdp_runs').insert({ dataset: 'report_feed', source_month: 'enrich 2026-06', row_count: n, status: 'ok', notes: 'extras: pyramid/industry/arrears/jci (+ national state migration)' });
+await sb.from('rdp_runs').insert({ dataset: 'report_feed', source_month: 'enrich 2026-06', row_count: n, status: 'ok', notes: 'extras: pyramid/industry/arrears/jci + capcity_yields(CIV) + lt CAGR (+ national state migration)' });
 console.log(`✓ Enriched ${n} report_feed payloads with extras.`);
