@@ -10,10 +10,13 @@
 //   • corporate_bond_yield → RBA F3 "f3-data.csv", series FNFYA10M
 //     (Non-financial corporate A-rated bonds – Yield, 10yr). Pinned vs the
 //     "Corporate Bond Data" tab: mean abs diff 0.022% over 256 months.
-//
-// (Govt bonds F2 / term deposits F4 are deliberately NOT here yet — F2 carries
-// no history in the CSV and F4's tab is malformed; they stay on the seed until
-// pinned.)
+//   • govt_bond_yield → RBA F2 "f2-data.csv", series FCMYGBAG10D (Australian
+//     Government 10 year bond, DAILY → month-end). Pinned vs the "Govt Bonds
+//     Data" tab: MAD 0.033% over 157 months. NOTE F2's CSV only goes back to
+//     2013 — pre-2013 (2004-2012) stays on the forge_commercial seed.
+//   • term_deposit_1y → RBA F4 "f4-data.csv", series FRDIRBTD10K1Y (Banks' term
+//     deposit $10k, 1 year). This is the series the report's p11 plots (its
+//     "5 year average (1 year)" column is mislabelled — it's the raw 1-yr rate).
 //
 // ISOLATED: rdp_raw_series (source='rba', region 'australia', freq M & A) +
 // rdp_runs + forge_data_status. Upsert-only. Dry-run by DEFAULT; --write upserts.
@@ -32,7 +35,12 @@ const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY in .env'); process.exit(1); }
 const sb = createClient(URL, KEY, { auth: { persistSession: false } });
 
-// RBA CSV table → { 'YYYY-MM': percent } for a series id
+// RBA CSV date → 'YYYY-MM'. Handles both dd/mm/yyyy (monthly tables) and
+// dd-Mon-yyyy (F2 daily). For daily, last value in a month = month-end.
+const MON3 = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+function ymOf(s) { let m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/); if (m) return `${m[3]}-${m[2]}`; m = s.match(/^(\d{2})-([A-Za-z]{3})-(\d{4})$/); if (m) return `${m[3]}-${MON3[m[2].toLowerCase()]}`; return null; }
+
+// RBA CSV table → { 'YYYY-MM': percent } for a series id (last value per month = month-end)
 async function rbaMonthly(url, sid) {
   const g = parseCsv(await (await fetch(url, { headers: UA })).text());
   const sidRow = g.findIndex(r => r[0] && /Series ID/i.test(r[0]));
@@ -40,12 +48,14 @@ async function rbaMonthly(url, sid) {
   const col = g[sidRow].findIndex(x => x.trim() === sid);
   if (col < 0) throw new Error('series ' + sid + ' not found in ' + url);
   const out = {};
-  for (let r = sidRow + 1; r < g.length; r++) { const m = (g[r][0] || '').match(/^(\d{2})\/(\d{2})\/(\d{4})$/); const v = parseFloat(g[r][col]); if (!m || isNaN(v)) continue; out[`${m[3]}-${m[2]}`] = v; }
+  for (let r = sidRow + 1; r < g.length; r++) { const ym = ymOf(g[r][0] || ''); const v = parseFloat(g[r][col]); if (!ym || isNaN(v)) continue; out[ym] = v; }
   return out;
 }
 
 const SERIES = [
   { metric: 'corporate_bond_yield', url: 'https://www.rba.gov.au/statistics/tables/csv/f3-data.csv', sid: 'FNFYA10M', label: 'Corporate Bond Yield', source: 'RBA F3 (non-financial A-rated 10yr)' },
+  { metric: 'govt_bond_yield', url: 'https://www.rba.gov.au/statistics/tables/csv/f2-data.csv', sid: 'FCMYGBAG10D', label: 'Govt Bond Yield (10yr)', source: 'RBA F2 (Australian Government 10yr bond, daily→month-end; 2013+)' },
+  { metric: 'term_deposit_1y', url: 'https://www.rba.gov.au/statistics/tables/csv/f4-data.csv', sid: 'FRDIRBTD10K1Y', label: 'Term Deposit Rate (1yr)', source: 'RBA F4 (Banks term deposit $10k 1yr)' },
 ];
 
 async function recordStatus(key, label, source, status, message, extra = {}) {
