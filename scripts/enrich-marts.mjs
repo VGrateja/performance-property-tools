@@ -26,12 +26,15 @@ const idx = Object.create(null);
 for (const r of raw) { const k = r.region_slug + '|' + r.metric; (idx[k] || (idx[k] = [])).push(r); }
 const latest = (slug, metric) => { const a = idx[slug + '|' + metric]; if (!a) return null; return a.slice().sort((x, y) => y.period.localeCompare(x.period))[0].value; };
 const bandsFor = slug => AGE_ORDER.map(b => ({ age: b, count: latest(slug, 'pyr_' + b) })).filter(x => x.count != null);
-function pyramid(slug) {
+function pyramid(slug, stateSlug) {
   const r = bandsFor(slug), n = bandsFor('australia');
   if (!r.length) return null;
   const rt = r.reduce((s, x) => s + x.count, 0), nt = n.reduce((s, x) => s + x.count, 0) || 1;
   const nmap = Object.fromEntries(n.map(x => [x.age, x.count]));
-  return r.map(x => ({ age: x.age, metro_pct: x.count / rt, national_pct: (nmap[x.age] || 0) / nt }));
+  // state comparator (regional reports plot region vs STATE; capitals vs national)
+  const sb = (stateSlug && stateSlug !== slug) ? bandsFor(stateSlug) : [];
+  const stt = sb.reduce((a, x) => a + x.count, 0) || 1, smap = Object.fromEntries(sb.map(x => [x.age, x.count]));
+  return r.map(x => ({ age: x.age, metro_pct: x.count / rt, national_pct: (nmap[x.age] || 0) / nt, state_pct: sb.length ? (smap[x.age] || 0) / stt : null }));
 }
 function industry(slug) {
   const sectors = Object.keys(idx).filter(k => k.startsWith(slug + '|ind_')).map(k => ({ sector: k.split('|ind_')[1], value: latest(slug, 'ind_' + k.split('|ind_')[1]) })).filter(x => x.value != null);
@@ -110,9 +113,13 @@ const updates = [];
 for (const f of feeds) {
   const slug = f.region_slug;
   const extras = {};
-  const py = pyramid(slug); if (py) extras.pyramid = py;
+  const py = pyramid(slug, stateOf[slug]); if (py) extras.pyramid = py;
   const ind = industry(slug); if (ind) extras.industry = ind;
-  const ar = latest(slug, 'arrears'); if (ar != null) extras.arrears = ar;
+  // arrears: region's own (capitals = their state) → fall back to the region's
+  // state capital's series for regionals (the chart plots region-state vs national)
+  let ar = latest(slug, 'arrears');
+  if (ar == null && stateOf[slug]) { const cap = STATECAP[stateOf[slug].slice(3)]; if (cap) ar = latest(cap, 'arrears'); }
+  if (ar != null) extras.arrears = ar;
   const jc = latest(slug, 'jci'); if (jc != null) extras.jci = jc;
   extras.arrears_national = latest('australia', 'arrears');
   // CIV (capital-city yield comparison) + long-term CAGR (computed from payloads)
