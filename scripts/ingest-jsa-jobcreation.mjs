@@ -33,6 +33,9 @@ try { if (existsSync('.env')) for (const ln of readFileSync('.env', 'utf8').spli
 const WRITE = process.argv.includes('--write');
 const OVERRIDE = process.argv.slice(2).find(a => !a.startsWith('--'));
 const UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120' };
+// retry transient connection drops — jobsandskills.gov.au can refuse cloud (CI) IPs;
+// a few retries clears a flap, but a hard block will still fail (run this one locally then).
+const fetchRetry = async (url, opts, tries = 3) => { let err; for (let a = 1; a <= tries; a++) { try { return await fetch(url, opts); } catch (e) { err = e; if (a < tries) await new Promise(s => setTimeout(s, 2000 * a)); } } throw err; };
 const IVI_PAGE = 'https://www.jobsandskills.gov.au/data/internet-vacancy-index';
 
 // slug -> exact IVI-region name in the "Indexed"/"region" column (Data Dump JCI tab)
@@ -75,7 +78,7 @@ let iviBuf, stBuf, iviSrc, stSrc;
 try {
   let iviUrl = (OVERRIDE && /ivi_regions/i.test(OVERRIDE)) ? OVERRIDE : null, stUrl = null;
   if (!iviUrl || !stUrl) {
-    const html = await (await fetch(IVI_PAGE, { headers: UA })).text();
+    const html = await (await fetchRetry(IVI_PAGE, { headers: UA })).text();
     const find = re => { const m = html.match(re); return m ? (m[1].startsWith('http') ? m[1] : 'https://www.jobsandskills.gov.au' + m[1]) : null; };
     iviUrl = iviUrl || find(/(\/[^"']*internet_vacancies_anzsco2_occupations_ivi_regions[^"']*\.xlsx)/i);
     stUrl = find(/(\/[^"']*internet_vacancies_anzsco2_occupations_states_and_territories[^"']*\.xlsx)/i);
@@ -84,8 +87,8 @@ try {
   if (!stUrl) throw new Error('could not find the States & Territories .xlsx link on the JSA page');
   iviSrc = iviUrl; stSrc = stUrl;
   if (OVERRIDE && existsSync(OVERRIDE) && /ivi_regions/i.test(OVERRIDE)) iviBuf = readFileSync(OVERRIDE);
-  else iviBuf = Buffer.from(await (await fetch(iviUrl, { headers: UA })).arrayBuffer());
-  stBuf = Buffer.from(await (await fetch(stUrl, { headers: UA })).arrayBuffer());
+  else iviBuf = Buffer.from(await (await fetchRetry(iviUrl, { headers: UA })).arrayBuffer());
+  stBuf = Buffer.from(await (await fetchRetry(stUrl, { headers: UA })).arrayBuffer());
 } catch (e) { console.error('\n✗ download failed:', e.message); await recordStatus('job_creation_index', 'Job Creation Index', 'error', `download failed: ${e.message}`); process.exit(1); }
 console.log('IVI Regions:', iviSrc.split('/').pop());
 console.log('States/Terr:', stSrc.split('/').pop());

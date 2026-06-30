@@ -30,7 +30,18 @@ import { readFileSync, existsSync } from 'node:fs';
 try { if (existsSync('.env')) for (const ln of readFileSync('.env', 'utf8').split(/\r?\n/)) { const m = ln.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/); if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, ''); } } catch {}
 const WRITE = process.argv.includes('--write');
 const ABS = 'https://data.api.abs.gov.au/rest';
-const getAbs = async u => { const r = await fetch(u, { headers: { Accept: 'application/vnd.sdmx.data+json' } }); const t = await r.text(); try { return JSON.parse(t); } catch { throw new Error(`ABS ${r.status}: ${t.slice(0, 80)}`); } };
+const UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120' };
+// JSON fetch with a browser UA + retry — institutional sites (imf.org) sometimes
+// serve a WAF/HTML block page to plain or cloud (CI) requests; UA + retry clears most.
+const fetchJsonRetry = async (url, accept, tries = 3) => {
+  let err;
+  for (let a = 1; a <= tries; a++) {
+    try { const r = await fetch(url, { headers: { ...UA, Accept: accept } }); const t = await r.text(); try { return JSON.parse(t); } catch { throw new Error(`${r.status} non-JSON: ${t.slice(0, 60).replace(/\s+/g, ' ')}`); } }
+    catch (e) { err = e; if (a < tries) await new Promise(s => setTimeout(s, 1500 * a)); }
+  }
+  throw err;
+};
+const getAbs = u => fetchJsonRetry(u, 'application/vnd.sdmx.data+json');
 const Q_MONTH = { Q1: '01', Q2: '04', Q3: '07', Q4: '10' };
 
 // ── SEEDED: Federal Budget — underlying cash balance ($m) by financial year ──
@@ -77,7 +88,7 @@ try {
     data.workDone = { periods, public: periods.map(p => pub[p] ?? null), private: periods.map(p => priv[p] ?? null), unit: '$m', freq: 'Q' };
   }
   // ── Govt Debt to GDP (AUS) + GDP-by-country: IMF DataMapper ──
-  const imf = async ind => { const j = await (await fetch(`https://www.imf.org/external/datamapper/api/v1/${ind}/${COUNTRIES.map(c => c[0]).join(',')}`)).json(); return (j.values && j.values[ind]) || {}; };
+  const imf = async ind => { const j = await fetchJsonRetry(`https://www.imf.org/external/datamapper/api/v1/${ind}/${COUNTRIES.map(c => c[0]).join(',')}`, 'application/json'); return (j.values && j.values[ind]) || {}; };
   const gdpAll = await imf('NGDPD'), debtAll = await imf('GGXWDG_NGDP');
   {
     const aus = debtAll.AUS || {}; const years = Object.keys(aus).filter(y => +y <= new Date().getUTCFullYear()).sort();
@@ -92,7 +103,7 @@ try {
   }
   // ── Household debt-to-income: RBA E2 BHFDDIT (quarterly %) ──
   {
-    const txt = await (await fetch('https://www.rba.gov.au/statistics/tables/csv/e2-data.csv')).text();
+    const txt = await (await fetch('https://www.rba.gov.au/statistics/tables/csv/e2-data.csv', { headers: UA })).text();
     const lines = txt.split(/\r?\n/); const idRow = lines.findIndex(l => l.startsWith('Series ID')); const ci = lines[idRow].split(',').indexOf('BHFDDIT');
     const periods = [], values = [];
     for (let i = idRow + 1; i < lines.length; i++) { const c = lines[i].split(','); const d = (c[0] || '').trim(); const v = Number(c[ci]); if (!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(d) || isNaN(v) || c[ci] === '') continue; const [dd, mm, yy] = d.split('/'); periods.push(`${yy}-${mm.padStart(2, '0')}-01`); values.push(v); }
