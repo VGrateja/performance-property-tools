@@ -21,7 +21,7 @@ const AGE_ORDER = ['0_04','05_09','10_14','15_19','20_24','25_29','30_34','35_39
 
 // load the relevant raw
 let raw = [], from = 0;
-for (;;) { const { data, error } = await sb.from('rdp_raw_series').select('region_slug,metric,freq,period,value').or('metric.like.pyr\\_%,metric.like.ind\\_%,metric.eq.arrears,metric.eq.jci,metric.eq.nom,metric.eq.nim').order('region_slug').order('metric').order('period').range(from, from + 999); if (error) { console.error(error.message); process.exit(1); } raw.push(...data.map(r => ({ ...r, value: Number(r.value) }))); if (data.length < 1000) break; from += 1000; }
+for (;;) { const { data, error } = await sb.from('rdp_raw_series').select('region_slug,metric,freq,period,value').or('metric.like.pyr\\_%,metric.like.ind\\_%,metric.eq.arrears,metric.eq.jci,metric.eq.nom,metric.eq.nim,metric.eq.owner_occupier,metric.eq.investor').order('region_slug').order('metric').order('period').range(from, from + 999); if (error) { console.error(error.message); process.exit(1); } raw.push(...data.map(r => ({ ...r, value: Number(r.value) }))); if (data.length < 1000) break; from += 1000; }
 const idx = Object.create(null);
 for (const r of raw) { const k = r.region_slug + '|' + r.metric; (idx[k] || (idx[k] = [])).push(r); }
 const latest = (slug, metric) => { const a = idx[slug + '|' + metric]; if (!a) return null; return a.slice().sort((x, y) => y.period.localeCompare(x.period))[0].value; };
@@ -51,6 +51,13 @@ const capcityYields = CAPS.map(s => ({ slug: s, yield_h: feedBySlug[s] ? latestY
 // full-history CAGR of median price (fields 79-80)
 function ltCagr(payload, field) { const ys = (payload && payload.years) || []; const pts = ys.map(y => ({ year: y.year, v: y[field] })).filter(p => p.v != null && !isNaN(p.v) && p.v > 0); if (pts.length < 2) return null; const a = pts[0], b = pts[pts.length - 1], n = b.year - a.year; return n > 0 ? Math.pow(b.v / a.v, 1 / n) - 1 : null; }
 
+// monthly state-level lending (owner-occupier / investor); a capital/regional uses its state's series (fields 57-58)
+const { data: regDim } = await sb.from('rdp_regions').select('slug,state');
+const stateOf = Object.fromEntries((regDim || []).map(r => [r.slug, r.state ? 'st-' + r.state.toLowerCase() : null]));
+const stateMonthly = {};   // 'st-nsw'|'australia' -> { oo:{period:val}, inv:{period:val} }
+for (const r of raw) { if (r.metric !== 'owner_occupier' && r.metric !== 'investor') continue; if (!r.region_slug.startsWith('st-') && r.region_slug !== 'australia') continue; (stateMonthly[r.region_slug] || (stateMonthly[r.region_slug] = { oo: {}, inv: {} }))[r.metric === 'owner_occupier' ? 'oo' : 'inv'][r.period] = r.value; }
+function lendingFor(slug) { const st = (slug === 'australia') ? 'australia' : stateOf[slug]; const sm = st && stateMonthly[st]; if (!sm) return null; const months = [...new Set([...Object.keys(sm.oo), ...Object.keys(sm.inv)])].sort(); if (!months.length) return null; return { state: st, months, owner_occupier: months.map(m => sm.oo[m] ?? null), investor: months.map(m => sm.inv[m] ?? null) }; }
+
 const updates = [];
 for (const f of feeds) {
   const slug = f.region_slug;
@@ -63,6 +70,7 @@ for (const f of feeds) {
   // CIV (capital-city yield comparison) + long-term CAGR (computed from payloads)
   extras.capcity_yields = capcityYields;
   extras.lt = { cagr_house: ltCagr(f.payload, 'mp_h'), cagr_unit: ltCagr(f.payload, 'mp_u') };
+  const lend = lendingFor(slug); if (lend) extras.lending = lend;
   if (slug === 'australia') {  // national-only extras
     extras.arrears_by_state = Object.fromEntries(Object.entries(STATECAP).map(([st, cap]) => [st, latest(cap, 'arrears')]));
     extras.state_migration = Object.fromEntries(Object.keys(STATECAP).map(st => [st, { nom: latest('st-' + st, 'nom'), nim: latest('st-' + st, 'nim') }]));
@@ -77,10 +85,11 @@ const au = updates.find(u => u.region_slug === 'australia');
 console.log('regions enriched:', updates.length);
 if (adel) console.log('adelaide extras: pyramid bands=' + (adel.payload.extras.pyramid || []).length + ', industry sectors=' + (adel.payload.extras.industry || []).length + ', arrears=' + adel.payload.extras.arrears + ', jci=' + adel.payload.extras.jci + ', LT CAGR house=' + (adel.payload.extras.lt.cagr_house * 100).toFixed(2) + '% unit=' + (adel.payload.extras.lt.cagr_unit * 100).toFixed(2) + '%');
 console.log('capcity yields (CIV): ' + capcityYields.map(c => c.slug + ' H' + (c.yield_h * 100).toFixed(2) + '%/U' + (c.yield_u * 100).toFixed(2) + '%').join(', '));
+if (adel) { const L = adel.payload.extras.lending; console.log('adelaide lending (' + (L && L.state) + '): ' + (L ? L.months.length + ' months, latest OO $' + L.owner_occupier[L.owner_occupier.length - 1] + 'm / INV $' + L.investor[L.investor.length - 1] + 'm' : 'none')); }
 if (au) console.log('australia extras: pyramid=' + (au.payload.extras.pyramid || []).length + ' bands, arrears_by_state.sa=' + au.payload.extras.arrears_by_state?.sa + ', state_migration.nsw=' + JSON.stringify(au.payload.extras.state_migration?.nsw));
 
 if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert.'); process.exit(0); }
 const stamp = new Date().toISOString(); let n = 0;
 for (const u of updates) { const { error } = await sb.from('rdp_report_feed').upsert({ region_slug: u.region_slug, cluster: u.cluster, payload: u.payload, computed_at: stamp }, { onConflict: 'region_slug' }); if (error) { console.error(u.region_slug, error.message); process.exit(1); } n++; }
-await sb.from('rdp_runs').insert({ dataset: 'report_feed', source_month: 'enrich 2026-06', row_count: n, status: 'ok', notes: 'extras: pyramid/industry/arrears/jci + capcity_yields(CIV) + lt CAGR (+ national state migration)' });
+await sb.from('rdp_runs').insert({ dataset: 'report_feed', source_month: 'enrich 2026-06', row_count: n, status: 'ok', notes: 'extras: pyramid/industry/arrears/jci + capcity_yields(CIV) + lt CAGR + lending (OO/INV monthly) (+ national state migration)' });
 console.log(`✓ Enriched ${n} report_feed payloads with extras.`);
