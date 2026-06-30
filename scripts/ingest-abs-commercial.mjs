@@ -65,11 +65,46 @@ for (const s of SERIES) {
   report.push({ s, count: months.length, last, lastVal: monthly[last] });
 }
 
+// ── Building Approvals (p7): TOTAL dwellings by state + national, annual.
+//    BA_GCCSA key 1.1.9.1.100.10.<REGION>.M (No. dwelling units, Total
+//    Residential, Original). REGION 1..5 = NSW/VIC/QLD/SA/WA, AUS = national.
+//    Annual = calendar-year sum (complete years); latest = rolling 12 months.
+//    Pinned vs the "Building Approvals Data" tab (2025 national 195,684 vs
+//    195,378; states within ABS revisions). NOTE: Forge already has residential
+//    approvals_h/u (national/capitals/regionals) — this adds the STATE totals. ──
+const BA_REG = { AUS: 'australia', '1': 'st-nsw', '2': 'st-vic', '3': 'st-qld', '4': 'st-sa', '5': 'st-wa' };
+try {
+  const j = await getJson(`${API}/data/BA_GCCSA/1.1.9.1.100.10.${Object.keys(BA_REG).join('+')}.M?startPeriod=2004-01&format=jsondata&dimensionAtObservation=AllDimensions`);
+  const od = (j.data.structure || j.data.structures[0]).dimensions.observation;
+  const rI = od.findIndex(d => d.id === 'REGION'), tI = od.findIndex(d => d.id === 'TIME_PERIOD');
+  const M = {};
+  for (const [k, v] of Object.entries(j.data.dataSets[0].observations)) {
+    const ix = k.split(':').map(Number); const slug = BA_REG[od[rI].values[ix[rI]].id]; if (!slug) continue;
+    const m = od[tI].values[ix[tI]].id.match(/^(\d{4})-(\d{2})$/); if (!m) continue;
+    (M[slug] || (M[slug] = {}))[`${m[1]}-${m[2]}`] = v[0];
+  }
+  let baN = 0, baLatest = '';
+  for (const slug of Object.values(BA_REG)) {
+    const mm = M[slug]; if (!mm) continue;
+    const months = Object.keys(mm).sort(); const ly = months[months.length - 1].slice(0, 4); baLatest = ly;
+    const byYear = {}; for (const ym of months) (byYear[ym.slice(0, 4)] = byYear[ym.slice(0, 4)] || []).push(ym);
+    for (const [y, yms] of Object.entries(byYear)) {
+      if (y === ly || yms.length < 12) continue;                       // complete calendar years only
+      rows.push({ source: 'abs', region_slug: slug, metric: 'building_approvals_total', freq: 'A', period: `${y}-01-01`, value: yms.reduce((a, ym) => a + mm[ym], 0) });
+    }
+    const last12 = months.slice(-12);                                  // latest year = rolling 12 months
+    if (last12.length === 12) { const v = last12.reduce((a, ym) => a + mm[ym], 0); rows.push({ source: 'abs', region_slug: slug, metric: 'building_approvals_total', freq: 'A', period: `${ly}-01-01`, value: v }); if (slug === 'australia') baN = v; }
+  }
+  console.log(`building_approvals_total: ${Object.keys(BA_REG).length} regions (national + NSW/VIC/QLD/SA/WA), national ${baLatest} (rolling-12) = ${Math.round(baN).toLocaleString()}`);
+  report.push({ s: { metric: 'building_approvals_total', label: 'Building Approvals (state totals)', source: 'ABS Building Approvals BA_GCCSA (Total Residential, by state)' }, count: 6, last: baLatest, lastVal: baN });
+} catch (e) { console.error('\n✗ building_approvals_total fetch failed:', e.message); }
+
 if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert into rdp_raw_series.'); process.exit(0); }
 
 let written = 0;
 for (let k = 0; k < rows.length; k += 500) { const chunk = rows.slice(k, k + 500); const { error } = await sb.from('rdp_raw_series').upsert(chunk, { onConflict: 'source,region_slug,metric,freq,period' }); if (error) { console.error('\n', error.message); process.exit(1); } written += chunk.length; }
 for (const x of report) await recordStatus(x.s.metric, x.s.label, x.s.source, 'ok', `Current through ${x.last} ($${Math.round(x.lastVal).toLocaleString()}m).`, { row_count: x.count, region_count: 1, latest_year: +x.last.slice(0, 4) });
-await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS commercial ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `ABS commercial series (${SERIES.map(s => s.metric).join(', ')}), monthly` });
-console.log(`\n✓ Upserted ${written} rows (${SERIES.map(s => s.metric).join(', ')}).`);
+const metricList = report.map(r => r.s.metric).join(', ');
+await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS commercial ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `ABS commercial series (${metricList})` });
+console.log(`\n✓ Upserted ${written} rows (${metricList}).`);
 process.exit(0);
