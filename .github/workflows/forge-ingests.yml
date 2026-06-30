@@ -1,0 +1,100 @@
+# =============================================================================
+# Data Forge — monthly API ingests
+#
+# Refreshes every API-sourced Data Forge data point (ABS / RBA / IMF·FRED / JSA)
+# into the isolated research DB (rdp_raw_series + the forge_* stores), then
+# rebuilds the report mart. Manual-only points (Cotality, Mortgage Arrears, the
+# Industry REMPLAN uploads) are NOT here — they need a file drop.
+#
+# SCHEDULE: 10th of each month, 1:00 AM Sydney time.
+#   GitHub runs cron in UTC and does NOT observe daylight saving, and 1 AM
+#   Sydney is the PREVIOUS calendar day in UTC — so the cron reads "the 9th":
+#     0 15 9 * *  =  15:00 UTC on the 9th  =  1:00 AM AEST on the 10th
+#   During daylight saving (Oct–Apr, AEDT = UTC+11) it lands at 2:00 AM on the
+#   10th. Adjust the cron if you want it pinned differently.
+#
+# Secrets (already configured for the other workflows):
+#   SUPABASE_URL                project URL
+#   SUPABASE_SERVICE_ROLE_KEY   server-side write to rdp_* + forge_*
+#
+# Resilience: each ingest runs independently — one failure doesn't stop the
+# others (and each records status='error' to forge_data_status, which the Data
+# Forge UI flags red). The mart still rebuilds, then the job fails at the end if
+# any ingest errored so the run shows red in the Actions tab.
+# =============================================================================
+name: Data Forge — monthly API ingests
+
+on:
+  schedule:
+    - cron: '0 15 9 * *'   # 1:00 AM (AEST) on the 10th — see header note
+  workflow_dispatch:        # manual run from the Actions tab any time
+
+concurrency:
+  group: forge-ingests
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      PUPPETEER_SKIP_DOWNLOAD: 'true'            # ingests don't need Chromium — skip the slow download
+      PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install deps
+        run: npm install --no-audit --no-fund
+
+      - name: Run API ingests (--write)
+        id: ingests
+        run: |
+          set +e
+          fails=""
+          for s in \
+            ingest-abs-population.mjs \
+            ingest-abs-income.mjs \
+            ingest-abs-popcomponents.mjs \
+            ingest-abs-lending.mjs \
+            ingest-abs-fhb.mjs \
+            ingest-abs-jobvacancies.mjs \
+            ingest-jsa-jobcreation.mjs \
+            ingest-abs-inflation.mjs \
+            ingest-rba-rates.mjs \
+            ingest-abs-business-investment.mjs \
+            ingest-abs-retail.mjs \
+            ingest-abs-approvals.mjs \
+            ingest-abs-unemployment.mjs \
+            ingest-abs-mineral-exploration.mjs \
+            ingest-fred-iron-ore.mjs \
+            ingest-abs-pop-pyramid.mjs \
+            ingest-abs-commercial.mjs \
+            ingest-rba-commercial.mjs \
+            ingest-national-only.mjs \
+            ingest-abs-act-industry.mjs ; do
+            echo "::group::$s"
+            node "scripts/$s" --write
+            if [ $? -ne 0 ]; then echo "::warning::$s exited non-zero"; fails="$fails $s"; fi
+            echo "::endgroup::"
+          done
+          echo "fails=$fails" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild report mart
+        run: |
+          set +e
+          echo "::group::build-report-feed";   node scripts/build-report-feed.mjs   --write; echo "::endgroup::"
+          echo "::group::build-national-report"; node scripts/build-national-report.mjs --write; echo "::endgroup::"
+          echo "::group::enrich-marts";        node scripts/enrich-marts.mjs        --write; echo "::endgroup::"
+
+      - name: Fail the run if any ingest errored
+        if: steps.ingests.outputs.fails != ''
+        run: |
+          echo "These ingests failed (see their groups above + the red flags in Data Forge):${{ steps.ingests.outputs.fails }}"
+          exit 1
