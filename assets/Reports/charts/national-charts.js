@@ -232,6 +232,7 @@
   reg('national-p5', function (d) {
     var labels = d.vacancyRate, prior = d.vacancyRateNov2023, curr = d.vacancyRateNov2024;
     if (!Array.isArray(labels) || !labels.length || !prior || !curr) return null;
+    var priorLabel = d.vacancyRatePriorLabel || 'Nov 2023', currLabel = d.vacancyRateCurrLabel || 'Nov 2024';
     var o = baseOption();
     o.tooltip = {
       trigger: 'axis', axisPointer: { type: 'shadow' },
@@ -246,13 +247,13 @@
         return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + lines.join('<br/>');
       },
     };
-    o.legend = Object.assign(o.legend, { data: ['Nov 2023', 'Nov 2024'] });
+    o.legend = Object.assign(o.legend, { data: [priorLabel, currLabel] });
     o.xAxis = Object.assign(o.xAxis, { data: labels,
       axisLabel: { color: '#1a2236', fontSize: 11, interval: 0, rotate: 0, formatter: function (v) { return v; } } });
     o.yAxis = Object.assign(o.yAxis, { axisLabel: { color: '#1a2236', fontSize: 11, formatter: function (v) { return (v * 100).toFixed(1) + '%'; } } });
     o.series = [
-      { name: 'Nov 2023', type: 'bar', data: prior, itemStyle: { color: COLORS[3] }, barGap: '12%' },
-      { name: 'Nov 2024', type: 'bar', data: curr, itemStyle: { color: COLORS[2] }, barGap: '12%',
+      { name: priorLabel, type: 'bar', data: prior, itemStyle: { color: COLORS[3] }, barGap: '12%' },
+      { name: currLabel, type: 'bar', data: curr, itemStyle: { color: COLORS[2] }, barGap: '12%',
         markLine: { silent: true, symbol: 'none', data: [
           { yAxis: 0.025, lineStyle: { color: '#3ecf8e', type: 'dashed' }, label: { formatter: 'Balanced 2.5%', color: '#3ecf8e', position: 'end' } },
           { yAxis: 0.030, lineStyle: { color: '#3ecf8e', type: 'dashed' }, label: { formatter: 'Balanced 3%', color: '#3ecf8e', position: 'end' } },

@@ -15,7 +15,7 @@
    median aggregates, affordability (aiCapCity/aiRegions/priceToIncome*).
    ════════════════════════════════════════════════════════════════════ */
 (function (root) {
-  function assemble(natOnly, rdpNat, martRows, stateRows, arrears, pyramid) {
+  function assemble(natOnly, rdpNat, martRows, stateRows, arrears, pyramid, vacMonthEnd) {
     natOnly = natOnly || {};
     rdpNat = rdpNat || [];
     martRows = martRows || [];
@@ -55,6 +55,8 @@
     data.totalIncludingEducationAndHealth = ser('bus_investment');
     // retail spending YoY % change (from national annual retail turnover)
     data.retailTurnoverChange = ser('retail_turnover').map((v, i, arr) => { const p = arr[i - 1]; return (v != null && p != null && p !== 0) ? (v - p) / p : null; });
+    data.nationalUnemployment = ser('unemployment');
+    data.nationalUnderemployment = ser('underemployment');
     data.nationalJobVacanciesPrivate = ser('job_vacancies_private');
     data.nationalJobVacanciesPublic = ser('job_vacancies_public');
     data.nationalInternetJobVacancies = ser('internet_vacancies');
@@ -91,6 +93,34 @@
       data.ntMedianHousePrice = capSeries('darwin'); data.actMedianHousePrice = capSeries('canberra');
       data.geelongMedianHousePrice = capSeries('geelong'); data.sunshineCoastMedianHousePrice = capSeries('sunshine-coast');
       data.goldCoastMedianHousePrice = capSeries('gold-coast'); data.centralCoastMedianHousePrice = capSeries('central-coast');
+
+      // ── p5 — National & Capital City Vacancy Rate (latest vs 1 year ago) ──
+      // All Cotality basis (regional/capital vacancy_rate is Cotality — the "sqm"
+      // source label is legacy). NATIONAL is computed by replicating SQM's method:
+      // SQM's national rate is a stock-weighted aggregate (Σ vacancies ÷ Σ rental
+      // stock), i.e. a rate weighted by each area's rental stock — approximated
+      // here as a POPULATION-weighted mean of every region's rate. Each region's
+      // weight = its latest known population (pop_metro), applied to both years.
+      const vrPop = {};
+      for (const s in idx) { const m = idx[s].map; let p = null; for (const y of years) if (m[y] && m[y].pop_metro != null) p = m[y].pop_metro; vrPop[s] = p; }
+      const vrAt = (s, y) => { const row = idx[s] && idx[s].map[y]; return (row && row.vacancy_rate != null) ? row.vacancy_rate : null; };
+      const vrYears = years.filter(y => Object.keys(idx).some(s => vrAt(s, y) != null));
+      const CURR = vrYears.length ? vrYears[vrYears.length - 1] : null;
+      const PRIOR = CURR != null ? CURR - 1 : null;
+      if (CURR != null) {
+        const wnat = y => { let vs = 0, ws = 0; for (const s in idx) { const v = vrAt(s, y), w = vrPop[s]; if (v == null || w == null) continue; vs += v * w; ws += w; } return ws ? vs / ws : null; };
+        const capOrder = [['melbourne', 'Melbourne'], ['sydney', 'Sydney'], ['brisbane', 'Brisbane'], ['adelaide', 'Adelaide'], ['darwin', 'Darwin'], ['canberra', 'Canberra'], ['hobart', 'Hobart'], ['perth', 'Perth']];
+        const labels = ['National'], prior = [wnat(PRIOR)], curr = [wnat(CURR)];
+        for (const [s, name] of capOrder) { labels.push(name); prior.push(vrAt(s, PRIOR)); curr.push(vrAt(s, CURR)); }
+        data.vacancyRate = labels;
+        data.vacancyRateNov2023 = prior;   // legacy field names — "prior year" bars
+        data.vacancyRateNov2024 = curr;    // legacy field names — "latest" bars
+        const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const mm = vacMonthEnd ? /^(\d+)\//.exec(String(vacMonthEnd)) : null;
+        const mi = mm ? Math.min(11, Math.max(0, (+mm[1]) - 1)) : null;
+        data.vacancyRatePriorLabel = (mi != null ? MON[mi] + ' ' : '') + PRIOR;
+        data.vacancyRateCurrLabel = (mi != null ? MON[mi] + ' ' : '') + CURR;
+      }
     }
 
     // ── by-state net internal / overseas migration (rdp states, annual) ──
