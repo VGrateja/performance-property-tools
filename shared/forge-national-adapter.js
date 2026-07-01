@@ -40,16 +40,24 @@
     data.cashRate = ser('cash_rate');
     data.inflationRate = ser('inflation');
     data.populationNational = ser('population');
+    // national population change % (YoY of population; identical to the regional
+    // mart's pct_change_national). Drives p6's right y-axis + the pop-change line.
+    data.changeNational = data.populationNational.map((v, i, arr) => { const p = arr[i - 1]; return (v != null && p != null && p !== 0) ? (v - p) / p : null; });
     data.naturalIncrease = ser('natural_increase');
+    data.netOverseasMigrationNom = ser('nom');   // national NOM (p24 bar)
     data.buildingApprovalsHouse = ser('approvals_h');
     data.buildingApprovalUnits = ser('approvals_u');
-    data.buildingApprovalsTotal = ser('building_approvals_total');
+    // rdp building_approvals_total only starts 2004 → fill earlier years (chart
+    // shows from 1990) with house + units so the Total line spans the full range.
+    data.buildingApprovalsTotal = ser('building_approvals_total').map((t, i) => { if (t != null) return t; const h = data.buildingApprovalsHouse[i], u = data.buildingApprovalUnits[i]; return (h != null && u != null) ? h + u : null; });
     data.dwellingCommencedH = ser('commenced_h');
     data.dwellingCommencedOther = ser('commenced_u');
     data.dwellingCommencedTotal = ser('commenced_h').map((h, i) => { const u = data.dwellingCommencedOther[i]; return (h != null && u != null) ? h + u : (h != null ? h : u); });
     data.ownerOccupierAbs = ser('owner_occupier');
     data.investorAbs = ser('investor');
     data.annualizedFhb = ser('fhb');
+    // FHB as a % of population (p15 bar) — FHB count ÷ national population.
+    data.fhbPopulation = data.annualizedFhb.map((v, i) => { const p = data.populationNational[i]; return (v != null && p != null && p !== 0) ? v / p : null; });
     data.manufacturingIndustry = ser('bus_inv_manufacturing');
     data.miningIndustry = ser('bus_inv_mining');
     data.totalIncludingEducationAndHealth = ser('bus_investment');
@@ -65,11 +73,40 @@
     const gdp = (natOnly.gdpByCountry && natOnly.gdpByCountry.rows) || [];
     data.country = gdp.map(r => r.country != null ? r.country : r.code);
     data.nominalGdpInTrillions = gdp.map(r => r.gdpTn != null ? r.gdpTn : r.nominalGdp);
-    data.debtToGdpRatio = gdp.map(r => r.debtPct != null ? r.debtPct : r.debtToGdp);
-    if (natOnly.workDone) { data.valueOfWorkDonePublic = natOnly.workDone.public; data.valueOfWorkDonePrivate = natOnly.workDone.private; data.workDonePeriods = natOnly.workDone.periods; }
+    data.debtToGdpRatio = gdp.map(r => r.debtPct != null ? r.debtPct / 100 : r.debtToGdp);   // debtPct is % → fraction (p28 right axis does v*100)
+    if (natOnly.workDone) {
+      // Store is QUARTERLY in $m; p23 plots against the annual `years` axis in
+      // $'000s (like the original feed, whose axis formatter divides by 1e6→"m").
+      // The original used each year's Q4 (Oct-Dec) quarter as that year's value —
+      // replicate: take period YYYY-10-01 and ×1000 ($m → $'000s). Aligning the
+      // raw quarterly array to an annual axis was the "numbering wrong" bug.
+      const wd = natOnly.workDone, wper = wd.periods || [];
+      const q4 = (arr, y) => { const i = wper.indexOf(y + '-10-01'); return (i >= 0 && arr && arr[i] != null) ? arr[i] * 1000 : null; };
+      data.valueOfWorkDonePrivate = years.map(y => q4(wd.private, y));
+      data.valueOfWorkDonePublic = years.map(y => q4(wd.public, y));
+      data.workDonePeriods = wd.periods;
+    }
     if (natOnly.federalBudget) { data.federalBudgetDates = natOnly.federalBudget.fy; data.federalBudgetInMillions = natOnly.federalBudget.values; }
-    if (natOnly.govtDebtGdp) { data.govtDebtToGdp = natOnly.govtDebtGdp.values; data.govtDebtToGdpYears = natOnly.govtDebtGdp.years; }
-    if (natOnly.householdDebtIncome) { data.householdDebttoincomeRatio = natOnly.householdDebtIncome.values; data.householdDebtPeriods = natOnly.householdDebtIncome.periods; }
+    if (natOnly.govtDebtGdp) {
+      // Store is % of GDP on its OWN year list (1989-2026); p27 slices by the annual
+      // `years` index and expects FRACTIONS (yAxis + formatter ×100). Re-index onto
+      // `years` and ÷100 so the line aligns and is on-scale (was missing: raw % on
+      // its own axis → off-scale + misaligned).
+      const gd = natOnly.govtDebtGdp, gmap = {};
+      (gd.years || []).forEach((y, i) => { if (gd.values[i] != null) gmap[String(y)] = gd.values[i] / 100; });
+      data.govtDebtToGdp = years.map(y => gmap[String(y)] != null ? gmap[String(y)] : null);
+      data.govtDebtToGdpYears = gd.years;
+    }
+    if (natOnly.householdDebtIncome) {
+      const hd = natOnly.householdDebtIncome;
+      data.householdDebttoincomeRatio = hd.values;
+      data.householdDebtPeriods = hd.periods;
+      data.quarterYear = hd.periods;   // p30's x-axis — was unset, so the whole chart returned null
+      // quarterly RBA cash rate aligned to those quarters (from the monthly cash_rate)
+      const cm = {};
+      for (const r of rdpNat) { if (r.metric === 'cash_rate' && r.freq === 'M' && r.value != null) cm[String(r.period).slice(0, 7)] = Number(r.value); }
+      data.quarterlyCashRate = (hd.periods || []).map(p => { const ym = String(p).slice(0, 7); return cm[ym] != null ? cm[ym] : null; });
+    }
 
     // ── aggregates computed from the regional mart (rdp_report_feed) ──
     if (martRows.length) {
@@ -152,14 +189,18 @@
     }
 
     // ── household composition (forge_national_only, 5-yearly census) ──
+    // The store holds RAW COUNTS per type; p10 expects each type as a SHARE and
+    // multiplies by householdByTypeTotal (total count) to recover counts. So emit
+    // share = count / total, and total = sum of every type.
     const hc = natOnly.householdComposition;
     if (hc && hc.years && hc.data) {
       const hrow = y => hc.data[y] || hc.data[String(y)];
-      const hcol = i => hc.years.map(y => { const row = hrow(y); return row ? row[i] : null; });
+      const htot = y => { const row = hrow(y); return row ? row.reduce((a, b) => a + (b || 0), 0) : null; };
+      const hshare = i => hc.years.map(y => { const row = hrow(y); const t = htot(y); return (row && row[i] != null && t) ? row[i] / t : null; });
       data.householdTypeYear = hc.years.map(String);
-      data.coupleWithChildren = hcol(0); data.couplesWithoutChildren = hcol(1); data.oneParentFamilies = hcol(2);
-      data.otherFamilies = hcol(3); data.groupHousehold = hcol(4); data.lonePerson = hcol(5);
-      data.householdByTypeTotal = hc.years.map(y => { const row = hrow(y); return row ? row.reduce((a, b) => a + (b || 0), 0) : null; });
+      data.coupleWithChildren = hshare(0); data.couplesWithoutChildren = hshare(1); data.oneParentFamilies = hshare(2);
+      data.otherFamilies = hshare(3); data.groupHousehold = hshare(4); data.lonePerson = hshare(5);
+      data.householdByTypeTotal = hc.years.map(htot);
     }
     // ── job vacancies: quarterly ABS (private/public) + monthly internet ──
     const QQ = {};

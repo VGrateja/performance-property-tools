@@ -55,6 +55,23 @@ try {
 const latest = rows.reduce((a, r) => r.period > a ? r.period : a, '');
 const byMetric = {};
 for (const r of rows) (byMetric[r.metric] ||= []).push(r);
+
+// The ABS Job Vacancies Survey was SUSPENDED (no collection) between mid-2008 and
+// late-2009, so those quarters come back as null observations and would break the
+// line. The report + the original Data Dump carry the last pre-suspension value
+// forward across the gap. Do the same here (last-observation-carried-forward) so
+// the series stays continuous — INTERIOR gaps only, so a genuinely-missing latest
+// quarter still fails the completeness check below rather than being masked.
+let filled = 0;
+for (const m of Object.values(SECTOR)) {
+  const s = (byMetric[m] || []).slice().sort((a, b) => a.period < b.period ? -1 : 1);
+  let last = null;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i].value != null) { last = s[i].value; continue; }
+    if (last != null && s.slice(i + 1).some(x => x.value != null)) { s[i].value = last; filled++; }
+  }
+}
+if (filled) console.log(`  (carried last value forward across ${filled} suspended/interior null quarter(s))`);
 console.log(`ABS Job Vacancies (JV, Original, $'000s) — ${rows.length} rows, latest ${latest}:`);
 for (const m of Object.values(SECTOR)) { const r = (byMetric[m] || []).find(x => x.period === latest); console.log('  ' + m.padEnd(22), r ? r.value : '—'); }
 const missing = Object.values(SECTOR).filter(m => !(byMetric[m] || []).some(r => r.period === latest));

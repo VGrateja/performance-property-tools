@@ -777,7 +777,7 @@
     o.legend = Object.assign(o.legend, { data: ['Govt Debt to GDP', 'Cash Rate'] });
     o.xAxis = Object.assign(o.xAxis, { data: yrs });
     o.yAxis = Object.assign(o.yAxis, {
-      min: 0, max: 0.45, interval: 0.05,
+      min: 0, max: 0.6, interval: 0.1,
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: function (v) { return (v * 100).toFixed(0) + '%'; } },
     });
     o.series = [
@@ -811,7 +811,13 @@
   reg('national-p29', function (d) {
     var raw = d.lendingDate || [];
     if (!raw.length || (!d.ownerOccupierAbs && !d.investorAbs)) return null;
-    var dates = raw.map(shortDate);
+    // Owner-occupier / investor lending only begins ~2004; the shared lendingDate
+    // axis starts earlier (other monthly series), so trim the leading blank span
+    // and start the chart where the data actually begins — no empty 1990-2003 gap.
+    var oo = d.ownerOccupierAbs || [], inv = d.investorAbs || [];
+    var f = 0; while (f < raw.length && oo[f] == null && inv[f] == null) f++;
+    var sl = function (a) { return Array.isArray(a) ? a.slice(f) : a; };
+    var dates = raw.slice(f).map(shortDate);
     var o = baseOption();
     o.tooltip = {
       trigger: 'axis', axisPointer: { type: 'line', lineStyle: { color: '#6a7a88', type: 'dashed' } },
@@ -832,8 +838,8 @@
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: function (v) { return v >= 1e3 ? (v / 1e3) + 'k' : v; } },
     });
     o.series = [
-      { name: 'Owner Occupier (ABS)', type: 'line', data: d.ownerOccupierAbs || [], showSymbol: false, lineStyle: { width: 2, color: '#000' } },
-      { name: 'Investor (ABS)', type: 'line', data: d.investorAbs || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
+      { name: 'Owner Occupier (ABS)', type: 'line', data: sl(oo), showSymbol: false, lineStyle: { width: 2, color: '#000' } },
+      { name: 'Investor (ABS)', type: 'line', data: sl(inv), showSymbol: false, lineStyle: { width: 2, color: '#f5a623' } },
     ];
     return o;
   });
@@ -861,8 +867,12 @@
   reg('national-p31', function (d) {
     var raw = d.lendingDate || [];
     if (!raw.length || (!d.arrearsNational && !d.monthlyCashRate)) return null;
-    var n = Math.max((d.arrearsNational || []).length, (d.monthlyCashRate || []).length) || raw.length;
-    var dates = raw.slice(0, n).map(shortDate);
+    // Arrears data begins ~2004; the shared lendingDate axis starts 1990, so trim
+    // the leading blank span and start the chart at the arrears start date.
+    var arrN = d.arrearsNational || [], mcr = d.monthlyCashRate || [];
+    var f = arrN.findIndex(function (v) { return v != null; }); if (f < 0) f = 0;
+    var sl = function (a) { return Array.isArray(a) ? a.slice(f) : a; };
+    var dates = raw.slice(f).map(shortDate);
     var o = baseOption();
     o.tooltip = {
       trigger: 'axis', axisPointer: { type: 'line', lineStyle: { color: '#6a7a88', type: 'dashed' } },
@@ -882,8 +892,8 @@
       { type: 'value', name: 'Monthly Cash Rate', nameTextStyle: { color: '#1a2236' }, min: 0, max: 0.08, interval: 0.01, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: '#1a2236', fontSize: 11, formatter: function (v) { return (v * 100).toFixed(0) + '%'; } }, splitLine: { show: false } },
     ];
     o.series = [
-      { name: 'Arrears', type: 'line', yAxisIndex: 0, data: d.arrearsNational || [], showSymbol: false, lineStyle: { width: 2, color: '#f5a623' }, itemStyle: { color: '#f5a623' } },
-      { name: 'Monthly Cash Rate', type: 'line', yAxisIndex: 1, data: d.monthlyCashRate || [], showSymbol: false, lineStyle: { width: 2, color: '#000' }, itemStyle: { color: '#000' } },
+      { name: 'Arrears', type: 'line', yAxisIndex: 0, data: sl(arrN), showSymbol: false, lineStyle: { width: 2, color: '#f5a623' }, itemStyle: { color: '#f5a623' } },
+      { name: 'Monthly Cash Rate', type: 'line', yAxisIndex: 1, data: sl(mcr), showSymbol: false, lineStyle: { width: 2, color: '#000' }, itemStyle: { color: '#000' } },
     ];
     return o;
   });
@@ -896,8 +906,11 @@
       ['WA', d.arrearsWa, '#c2a4d6'], ['SA', d.arrearsSa, '#e8799a'],
     ].filter(function (s) { return Array.isArray(s[1]) && s[1].length; });
     if (!raw.length || !series.length) return null;
-    var n = Math.max.apply(null, series.map(function (s) { return s[1].length; }));
-    var dates = raw.slice(0, n).map(shortDate);
+    // arrears data begins ~2004; the shared lendingDate axis starts 1990, so trim
+    // the leading blank span and start the chart at the arrears start date.
+    var f = 0; while (f < raw.length && series.every(function (s) { return s[1][f] == null; })) f++;
+    var sl = function (a) { return Array.isArray(a) ? a.slice(f) : a; };
+    var dates = raw.slice(f).map(shortDate);
     var o = baseOption();
     o.legend = Object.assign(o.legend, { data: series.map(function (s) { return s[0]; }) });
     o.xAxis = Object.assign(o.xAxis, { data: dates, axisLabel: dateAxisLabel(dates.length) });
@@ -906,7 +919,7 @@
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: function (v) { return (Math.round(v * 10000) / 100) + '%'; } },
     });
     o.series = series.map(function (s) {
-      return { name: s[0], type: 'line', data: s[1], showSymbol: false, lineStyle: { width: 2, color: s[2] }, itemStyle: { color: s[2] } };
+      return { name: s[0], type: 'line', data: sl(s[1]), showSymbol: false, lineStyle: { width: 2, color: s[2] }, itemStyle: { color: s[2] } };
     });
     return o;
   });
