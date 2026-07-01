@@ -40,6 +40,15 @@
   .df-cluster .desc{ display:block; font-size:.77rem; color:var(--muted); margin-top:5px; line-height:1.45; }
   .df-cluster .meta{ display:flex; align-items:center; flex-wrap:wrap; gap:7px; font-size:.7rem; color:var(--muted); margin-top:11px; font-variant-numeric:tabular-nums; }
   .df-cluster .warnmark{ position:absolute; top:12px; right:12px; font-size:1.05rem; }
+  /* freshness chip — how long since this point last refreshed */
+  .df-fresh{ display:inline-flex; align-items:center; gap:4px; font-size:.66rem; font-weight:800; padding:2px 7px; border-radius:20px; letter-spacing:.02em; font-variant-numeric:tabular-nums; }
+  .df-fresh.ok{ background:rgba(22,179,100,.14); color:#16b364; }
+  .df-fresh.aging{ background:rgba(245,166,35,.18); color:#d98a00; }
+  .df-fresh.stale{ background:rgba(239,68,68,.16); color:#ef4444; }
+  .df-fresh.neutral{ background:var(--panel2); color:var(--muted); border:1px solid var(--border); }
+  .df-freshbanner{ display:flex; align-items:center; gap:9px; padding:11px 15px; border-radius:12px; margin-top:22px; font-size:.82rem; font-weight:700; }
+  .df-freshbanner.ok{ background:rgba(22,179,100,.1); color:#16b364; border:1px solid rgba(22,179,100,.3); }
+  .df-freshbanner.warn{ background:rgba(245,166,35,.1); color:#d98a00; border:1px solid rgba(245,166,35,.4); }
   /* gathering-method group headers (span the full grid width) */
   .df-group-head{ grid-column:1/-1; display:flex; align-items:center; gap:11px; margin-top:18px; padding-bottom:10px; border-bottom:1px solid var(--border); }
   .df-group-head:first-child{ margin-top:2px; }
@@ -564,6 +573,23 @@ function ingestChip(t){
               derived:['🔗 Derived', 'Computed or auto-populated from another Forge data point (e.g. fed by the Cotality drop) — no separate source'] }[t] || ['—',''];
   return '<span class="df-ingest ' + t + '" title="' + esc(m[1]) + '">' + m[0] + '</span>';
 }
+// days since an ISO date (null if unparseable)
+function ageDays(iso){ if (!iso) return null; const t = Date.parse(iso); if (isNaN(t)) return null; return Math.floor((Date.now() - t) / 86400000); }
+// freshness of a data point: how long since it last refreshed. Derived/static
+// points have no age of their own; everything else refreshes ~monthly (CI on the
+// 10th, or a manual drop) → current ≤40d, aging ≤75d, stale beyond. Manual stores
+// carry their date on the store row (manualDates), not always in forge_data_status.
+function freshInfo(c, st, manualDates){
+  if (c.key === 'civ' || c.key === 'monthly_price') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Computed live from the Cotality drop — freshness follows Cotality">live</span>' };
+  if (c.key === 'commodity_prices') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Seeded once; static by design">static</span>' };
+  const manual = (c.key === 'cotality' || c.key === 'arrears' || c.key === 'industry' || c.key === 'commercial');
+  const iso = manual ? (manualDates[c.key] || st.updated_at || st.last_ok_at) : (st.last_ok_at || st.updated_at);
+  const d = ageDays(iso);
+  if (d == null) return { cls: 'stale', chip: '<span class="df-fresh stale" title="No refresh date on record — check this source">no date</span>' };
+  const cls = d <= 40 ? 'ok' : d <= 75 ? 'aging' : 'stale';
+  const lab = (cls === 'ok' ? 'current' : cls) + ' · ' + d + 'd';
+  return { cls, chip: '<span class="df-fresh ' + cls + '" title="Last refreshed ' + d + ' days ago' + (manual ? ' (manual upload)' : '') + '">' + lab + '</span>' };
+}
 
 // gathering-method groups for the home grid — at a glance, which need a manual
 // file drop vs which refresh themselves. (group ≠ the ingest chip: several
@@ -594,6 +620,19 @@ async function loadStatus(){
     const { data } = await window.sb.from('forge_data_status').select('*');
     statusMap = Object.fromEntries((data || []).map(r => [r.data_key, r]));
   } catch (e) { /* show cards anyway */ }
+  // manual stores carry their freshness on the store row (not always forge_data_status)
+  const manualDates = {};
+  try {
+    const [ct, ar, co, ind] = await Promise.all([
+      window.sb.from('forge_cotality').select('updated_at').eq('id', 'latest').maybeSingle(),
+      window.sb.from('forge_arrears').select('updated_at').eq('id', 'latest').maybeSingle(),
+      window.sb.from('forge_commercial').select('updated_at').eq('id', 'latest').maybeSingle(),
+      window.sb.from('forge_industry').select('updated_at').eq('id', 'latest').maybeSingle(),
+    ]);
+    manualDates.cotality = ct.data && ct.data.updated_at; manualDates.arrears = ar.data && ar.data.updated_at;
+    manualDates.commercial = co.data && co.data.updated_at; manualDates.industry = ind.data && ind.data.updated_at;
+  } catch (e) {}
+  let nAging = 0, nStale = 0;
   const cardHtml = (c) => {
     const st = statusMap[c.key] || {};
     const status = (c.key === 'civ' || c.key === 'monthly_price') ? 'derived' : (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
@@ -603,15 +642,17 @@ async function loadStatus(){
       : (c.key === 'population' || c.key === 'population_pyramid')
       ? (st.last_ok_at ? 'Updated ' + fmtDate(st.last_ok_at) + (st.region_count ? ' · ' + st.region_count + ' regions' : '') : 'Not yet run via the monitored path')
       : (st.updated_at ? 'Last activity ' + fmtDate(st.updated_at) : 'Manual upload');
+    const fresh = freshInfo(c, st, manualDates);
+    if (fresh.cls === 'aging') nAging++; else if (fresh.cls === 'stale') nStale++;
     return '<button class="df-cluster ' + (isErr ? 'err' : '') + '" data-view="' + c.view + '">'
       + (isErr ? '<span class="warnmark">⚠️</span>' : '')
       + '<span class="ico">' + c.icon + '</span>'
       + '<span class="ct"><span class="title">' + esc(c.label) + badge(status) + '</span>'
       + '<span class="desc">' + esc(c.desc) + '</span>'
       + (isErr && st.message ? '<span class="meta" style="color:#ef4444">' + esc(st.message) + '</span>' : '')
-      + '<span class="meta">' + ingestChip(c.ingest) + esc(meta) + '</span></span></button>';
+      + '<span class="meta">' + ingestChip(c.ingest) + fresh.chip + esc(meta) + '</span></span></button>';
   };
-  el.innerHTML = FORGE_GROUPS.map(g => {
+  const groupsHtml = FORGE_GROUPS.map(g => {
     const cards = CLUSTERS.filter(c => forgeGroupOf(c) === g.id);
     if (!cards.length) return '';
     return '<div class="df-group-head"><span class="gdot" style="background:' + g.dot + '"></span>'
@@ -619,6 +660,10 @@ async function loadStatus(){
       + '<span class="gct">' + cards.length + '</span></div>'
       + cards.map(cardHtml).join('');
   }).join('');
+  const banner = (nStale || nAging)
+    ? '<div class="df-freshbanner warn">⚠️ ' + [nStale ? nStale + ' stale' : '', nAging ? nAging + ' aging' : ''].filter(Boolean).join(' · ') + ' — refresh these before relying on the reports (look for the amber/red chips below).</div>'
+    : '<div class="df-freshbanner ok">✓ All data points current — every source refreshed within ~40 days.</div>';
+  el.innerHTML = banner + groupsHtml;
   el.querySelectorAll('.df-cluster').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
 }
 
