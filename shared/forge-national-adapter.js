@@ -15,11 +15,12 @@
    median aggregates, affordability (aiCapCity/aiRegions/priceToIncome*).
    ════════════════════════════════════════════════════════════════════ */
 (function (root) {
-  function assemble(natOnly, rdpNat, martRows, stateRows) {
+  function assemble(natOnly, rdpNat, martRows, stateRows, arrears) {
     natOnly = natOnly || {};
     rdpNat = rdpNat || [];
     martRows = martRows || [];
     stateRows = stateRows || [];
+    arrears = arrears || {};
     // index national annual series by metric → {year: value}
     const A = {};
     for (const r of rdpNat) {
@@ -99,6 +100,47 @@
       data.nswNim = sser('st-nsw', 'nim'); data.vicNim = sser('st-vic', 'nim'); data.qldNim = sser('st-qld', 'nim'); data.saNim = sser('st-sa', 'nim'); data.waNim = sser('st-wa', 'nim');
       data.nswNom = sser('st-nsw', 'nom'); data.vicNom = sser('st-vic', 'nom'); data.qldNom = sser('st-qld', 'nom'); data.saNom = sser('st-sa', 'nom'); data.waNom = sser('st-wa', 'nom');
     }
+
+    // ── monthly series on one YYYY-MM axis: lending + monthly cash + arrears ──
+    const MM = {};
+    for (const r of rdpNat) { if (r.freq !== 'M') continue; const ym = String(r.period).slice(0, 7); (MM[r.metric] || (MM[r.metric] = {}))[ym] = Number(r.value); }
+    const arrMonths = (arrears.months || []).map(m => String(m).slice(0, 7));
+    const mset = new Set();
+    for (const met of ['owner_occupier', 'investor', 'cash_rate']) for (const ym in (MM[met] || {})) mset.add(ym);
+    arrMonths.forEach(ym => mset.add(ym));
+    const months = [...mset].sort();
+    if (months.length) {
+      const mAlign = metric => months.map(ym => (MM[metric] && MM[metric][ym] != null) ? MM[metric][ym] : null);
+      const arrAlign = slug => { const R = arrears.regions && arrears.regions[slug]; if (!R || !R.values) return months.map(() => null); const map = {}; arrMonths.forEach((ym, i) => { if (R.values[i] != null) map[ym] = R.values[i] / 100; }); return months.map(ym => map[ym] != null ? map[ym] : null); };
+      data.lendingDate = months;
+      data.ownerOccupierAbs = mAlign('owner_occupier');
+      data.investorAbs = mAlign('investor');
+      data.monthlyCashRate = mAlign('cash_rate');
+      data.arrearsNational = arrAlign('australia');
+      data.arrearsNsw = arrAlign('st-nsw'); data.arrearsVic = arrAlign('st-vic'); data.arrearsQld = arrAlign('st-qld'); data.arrearsSa = arrAlign('st-sa'); data.arrearsWa = arrAlign('st-wa');
+    }
+
+    // ── household composition (forge_national_only, 5-yearly census) ──
+    const hc = natOnly.householdComposition;
+    if (hc && hc.years && hc.data) {
+      const hrow = y => hc.data[y] || hc.data[String(y)];
+      const hcol = i => hc.years.map(y => { const row = hrow(y); return row ? row[i] : null; });
+      data.householdTypeYear = hc.years.map(String);
+      data.coupleWithChildren = hcol(0); data.couplesWithoutChildren = hcol(1); data.oneParentFamilies = hcol(2);
+      data.otherFamilies = hcol(3); data.groupHousehold = hcol(4); data.lonePerson = hcol(5);
+      data.householdByTypeTotal = hc.years.map(y => { const row = hrow(y); return row ? row.reduce((a, b) => a + (b || 0), 0) : null; });
+    }
+    // ── job vacancies: quarterly ABS (private/public) + monthly internet ──
+    const QQ = {};
+    for (const r of rdpNat) { if (r.freq !== 'Q') continue; const p = String(r.period).slice(0, 7); (QQ[r.metric] || (QQ[r.metric] = {}))[p] = Number(r.value); }
+    const qP = [...new Set([...Object.keys(QQ.job_vacancies_private || {}), ...Object.keys(QQ.job_vacancies_public || {})])].sort();
+    if (qP.length) {
+      data.dateNationalJobVacancies = qP;
+      data.nationalJobVacanciesPrivate = qP.map(p => (QQ.job_vacancies_private && QQ.job_vacancies_private[p] != null) ? QQ.job_vacancies_private[p] : null);
+      data.nationalJobVacanciesPublic = qP.map(p => (QQ.job_vacancies_public && QQ.job_vacancies_public[p] != null) ? QQ.job_vacancies_public[p] : null);
+    }
+    const ivM = Object.keys(MM.internet_vacancies || {}).sort();
+    if (ivM.length) { data.dateInternetJobVacancies = ivM; data.nationalInternetJobVacancies = ivM.map(ym => MM.internet_vacancies[ym]); }
 
     return { _meta: { source: 'forge_national', generated: (natOnly.meta && natOnly.meta.updatedAt) || null }, data };
   }
