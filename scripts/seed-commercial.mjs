@@ -77,6 +77,28 @@ for (const name of wb.SheetNames) {
   if (Object.keys(columns).length) { tabs[slug(name)] = { name, headers, columns }; tabCount++; }
 }
 
+// ── Building-price fix ── the Looker workbook's building-price sheets stack an
+// index/blank section beside the price section, so each city header repeats
+// (adel, adel_2) and the base column can end up being the index/zero one. For
+// each city keep the PRICE-scale column (largest median magnitude) under the
+// plain city key and drop the duplicates — this matches what the Apps Script
+// feed reads (the price range only). Deterministic (scale-based), so it holds
+// regardless of the exact section order.
+const BP_CITIES = ['adel', 'bris', 'can', 'dwn', 'hob', 'mel', 'per', 'syd'];
+const medMag = arr => { const v = (arr || []).filter(x => typeof x === 'number').map(Math.abs).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : 0; };
+for (const s of Object.keys(tabs)) {
+  if (!/building-price/.test(s)) continue;
+  const cols = tabs[s].columns;
+  for (const city of BP_CITIES) {
+    const cands = Object.keys(cols).filter(k => new RegExp('^' + city + '(_\\d+)?$').test(k));
+    if (cands.length < 2) continue;                                // single column — nothing to consolidate
+    const best = cands.slice().sort((a, b) => medMag(cols[b]) - medMag(cols[a]))[0];
+    if (best !== city) cols[city] = cols[best];
+    for (const k of cands) if (k !== city) delete cols[k];
+  }
+}
+colCount = Object.values(tabs).reduce((n, t) => n + Object.keys(t.columns).length, 0);   // recount after consolidation
+
 const slugs = Object.keys(tabs).sort();
 console.log(`forge_commercial — ${tabCount} data tabs, ${colCount} columns from the Looker workbook\n`);
 for (const s of slugs) { const t = tabs[s]; const cols = Object.keys(t.columns); console.log('  ' + s.padEnd(34) + cols.length + ' cols: ' + cols.slice(0, 6).join(', ') + (cols.length > 6 ? ' …' : '')); }
