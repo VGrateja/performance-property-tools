@@ -445,6 +445,12 @@
     <div id="natOut"></div>
   </section>
 
+  <!-- ── COMMERCIAL REPORT (all Commercial report data tabs) ── -->
+  <section id="dfCommercial" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="commercialOut"></div>
+  </section>
+
   <!-- ── MONTHLY MEDIAN PRICE (seeded from cluster sheets; Cotality appends) ── -->
   <section id="dfMonthlyprice" hidden>
     <button class="df-back" data-home>← All data points</button>
@@ -468,7 +474,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfComputed']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfComputed','dfCommercial']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -498,6 +504,7 @@ function showView(name){
   if (name === 'natonly') loadNatOnly();
   if (name === 'monthlyprice') loadMonthlyPrice();
   if (name === 'computed') loadComputed();
+  if (name === 'commercial') loadCommercial();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -534,6 +541,7 @@ const CLUSTERS = [
   { key:'mineral_exploration', icon:'⚒️', ingest:'api', label:'Mineral Exploration', desc:'ABS Mineral &amp; Petroleum Exploration (cat 8412.0, MIN_EXP, Original) — quarterly exploration expenditure ($m). 7 states + national; the Perth report uses WA.', view:'mining' },
   { key:'commodity_prices', icon:'🪙', ingest:'file', label:'Commodity Prices', desc:'Gold, iron ore, crude oil, silver &amp; copper — annual prices (Mining sheet, marketindex.com.au). Gold/silver USD/oz · crude USD/barrel · copper/iron USD/tonne. 1980–present.', view:'commodities' },
   { key:'national_only', icon:'🇦🇺', ingest:'hybrid', label:'National Only', desc:'National Online Report series: work done, federal budget, govt debt-to-GDP, household debt-to-income, GDP &amp; debt by country, cash rate, household composition. 5 API (ABS/IMF/RBA) + 2 seeded (Budget, Census).', view:'natonly' },
+  { key:'commercial', icon:'🏢', ingest:'file', label:'Commercial Report', desc:'All Commercial report data (23 tabs) — building approvals, retail turnover, population growth, cash rate/inflation, bonds, term deposits, freight, office vacancy, etc. Seeded from the Commercial Report export; the Commercial report reads this in Forge mode (?src=forge).', view:'commercial' },
   { key:'monthly_price', icon:'📈', ingest:'derived', label:'Monthly Median Price', desc:'Monthly median price (house &amp; unit) per region, 2004→present. Seeded from the report cluster sheets; the monthly CoreLogic drop in the Cotality card appends each new month.', view:'monthlyprice' },
   { key:'computed_metrics', icon:'🧮', ingest:'derived', label:'Computed Metrics', desc:'Calculated report metrics per region — CAGR, price/rent-to-income, affordability index, P&amp;I repayments, gross yields, YoY growth. Derived from the raw data (research mart) — a preview of what the reports compute.', view:'computed' },
   { key:'inflation', icon:'📉', ingest:'api', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
@@ -1563,6 +1571,54 @@ const COMMODITIES = [
 ];
 const commFmt = v => v == null ? '—' : '$' + (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : v.toFixed(2));
 let COMM_DATA = null, COMM_SEL = null;
+/* ── Commercial Report (forge_commercial: 23 tabs of commercial/economic data) ── */
+let COMM_REPORT = null, COMM_REPORT_TAB = null;
+async function loadCommercial(){
+  const out = document.getElementById('commercialOut');
+  const eyebrow = 'forge_commercial · Commercial report data';
+  out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Commercial Report</div><div class="df-sub">Loading…</div></div>';
+  let row = null;
+  try { const { data } = await window.sb.from('forge_commercial').select('data,updated_at').limit(1).maybeSingle(); row = data; }
+  catch (e) { out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Commercial Report</div><div class="df-sub"><span class="df-statuspill err">Unavailable</span> <span>Couldn’t load (sign in required — read behind RLS).</span></div></div>'; return; }
+  if (!row || !row.data || !row.data.tabs) { out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Commercial Report</div><div class="df-sub"><span class="df-statuspill">No data</span> <span>The forge_commercial store is empty.</span></div></div>'; return; }
+  COMM_REPORT = row.data; renderCommercial(row.updated_at);
+}
+function renderCommercial(updatedAt){
+  const out = document.getElementById('commercialOut');
+  const eyebrow = 'forge_commercial · Commercial report data';
+  const tabs = COMM_REPORT.tabs, keys = Object.keys(tabs);
+  if (!COMM_REPORT_TAB || !tabs[COMM_REPORT_TAB]) COMM_REPORT_TAB = keys[0];
+  const meta = COMM_REPORT._meta || {};
+  const upd = updatedAt ? String(updatedAt).slice(0, 10) : (meta.seeded ? String(meta.seeded).slice(0, 10) : '—');
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Commercial Report</div>'
+    + '<div class="df-sub"><span class="df-statuspill ok">Loaded</span> <span>All Commercial report data tabs — the source the Commercial report reads in Forge mode (<code>?src=forge</code>).</span></div></div></div>'
+    + '<div class="df-stats">'
+    + dfStat('Tabs', String(keys.length), true)
+    + dfStat('Columns', String(meta.colCount || '—'))
+    + dfStat('Updated', '<span class="sm">' + esc(upd) + '</span>')
+    + dfStat('Source', '<span class="sm">Commercial Report export</span><div class="df-stat-foot">' + ingestChip('file') + '</div>')
+    + '</div></div>';
+  const opts = keys.map(k => '<option value="' + esc(k) + '"' + (k === COMM_REPORT_TAB ? ' selected' : '') + '>' + esc(tabs[k].name || k) + '</option>').join('');
+  out.innerHTML = hero
+    + '<div class="df-card df-tablecard">'
+    + '<div class="ind-controls"><label for="commRepSel">Tab</label><select id="commRepSel" class="ind-select">' + opts + '</select></div>'
+    + '<div id="commRepBody"></div>'
+    + '<div class="df-note">Seeded from the Commercial Report export (23 tabs). Refresh by re-seeding from a current export. The Commercial report reads this store directly when opened with <code>?src=forge</code>.</div></div>';
+  const sel = document.getElementById('commRepSel'); if (sel) sel.addEventListener('change', e => { COMM_REPORT_TAB = e.target.value; renderCommercialTab(); });
+  renderCommercialTab();
+}
+function renderCommercialTab(){
+  const box = document.getElementById('commRepBody'); if (!box || !COMM_REPORT) return;
+  const tab = COMM_REPORT.tabs[COMM_REPORT_TAB]; if (!tab) { box.innerHTML = ''; return; }
+  const cols = Object.keys(tab.columns || {});
+  const n = cols.length ? (tab.columns[cols[0]] || []).length : 0;
+  const head = '<tr>' + cols.map((c, ci) => '<th' + (ci === 0 ? ' class="th-l"' : '') + '>' + esc(c) + '</th>').join('') + '</tr>';
+  let body = '';
+  for (let i = 0; i < n; i++) body += '<tr>' + cols.map((c, ci) => '<td' + (ci === 0 ? ' class="region"' : '') + '>' + esc(String(tab.columns[c][i] == null ? '' : tab.columns[c][i])) + '</td>').join('') + '</tr>';
+  box.innerHTML = '<div class="df-tablewrap" style="margin-top:14px;max-height:480px;overflow:auto"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + '<div class="df-note" style="margin-top:8px">' + esc(String(n)) + ' rows · ' + esc(String(cols.length)) + ' columns</div>';
+}
 async function loadCommodities(){
   const out = document.getElementById('commOut');
   out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">marketindex.com.au · commodity prices</div><div class="df-title">Commodity Prices</div><div class="df-sub">Loading…</div></div>';
@@ -2299,7 +2355,7 @@ function tableHtml(rows){
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
-function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron','mining','commodities','natonly','monthlyprice','computed'].includes(v)) showView(v); }
+function routeInitial(){ const v = new URLSearchParams(location.search).get('view'); if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron','mining','commodities','natonly','monthlyprice','computed','commercial'].includes(v)) showView(v); }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
 </body>

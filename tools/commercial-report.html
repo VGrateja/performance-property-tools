@@ -806,6 +806,8 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=4d16983b"></script>
+<!-- Forge → feed-shape adapter for the Commercial report (used only with ?src=forge). -->
+<script src="../shared/forge-commercial-adapter.js?v=1ff0af1e"></script>
 <!-- Report-data snapshot cache + global "Save data" refresh (window.PPReportCache). -->
 <script src="../shared/report-cache.js?v=5edb9f7b"></script>
 <script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
@@ -2051,6 +2053,21 @@ const PP_FORCE_FRESH = (function () {
   catch (_) { return false; }
 })();
 
+/* ?src=forge — read the Commercial data from the forge_commercial store
+   (reshaped to the feed shape) instead of the Apps Script feed / snapshot. */
+const PP_FORGE_SRC = (function () {
+  try { return new URLSearchParams(location.search).get('src') === 'forge'; }
+  catch (_) { return false; }
+})();
+async function forgeCommercialFeed() {
+  if (!window.sb) throw new Error('Supabase client not loaded');
+  if (!window.ForgeCommercialAdapter) throw new Error('forge-commercial-adapter not loaded');
+  const { data, error } = await window.sb.from('forge_commercial').select('data').limit(1).maybeSingle();
+  if (error) throw error;
+  if (!data || !data.data) throw new Error('forge_commercial is empty');
+  return window.ForgeCommercialAdapter.forgeCommercialToFeed(data.data);
+}
+
 async function liveBoot() {
   if (!REPORT_DATA_URL) {
     console.info('[commercial-report] REPORT_DATA_URL is empty — skipping data fetch (stubbed mode).');
@@ -2060,9 +2077,15 @@ async function liveBoot() {
   }
   try {
     let data = null, src = 'live';
+    /* Forge mode (?src=forge): read the forge_commercial store + reshape it to
+       the feed shape via the adapter — skips the snapshot + Apps Script feed. */
+    if (PP_FORGE_SRC) {
+      try { data = await forgeCommercialFeed(); if (data) src = 'forge'; }
+      catch (e) { console.warn('[commercial-report] forge load failed, falling back:', e && e.message || e); }
+    }
     /* Supabase snapshot first (fast) — unless ?fresh=1 (the PDF renderer,
        which must capture live data before the monthly snapshot refresh). */
-    if (!PP_FORCE_FRESH && window.PPReportCache) {
+    if (!data && !PP_FORCE_FRESH && window.PPReportCache) {
       data = await window.PPReportCache.readSnapshot(REPORT_CACHE_SOURCE);
       if (data) src = 'snapshot';
     }
