@@ -582,6 +582,25 @@
   .pres-deck-card .pres-deck-assign:hover{ background:rgba(0,182,203,0.32) }
   [data-theme="light"] .pres-deck-card .pres-deck-assign{ color:#1f7a93 }
 
+  /* Co-owners button (mig 061) — DEV/ADMIN only, on every deck. Violet accent
+     so it reads apart from Assign (cyan) / Duplicate (blue) / Delete (red).
+     Sits left of the assign slot; same hover-reveal pattern. */
+  .pres-deck-card .pres-deck-coowners{
+    position:absolute; top:10px; right:106px;
+    width:26px; height:26px;
+    background:rgba(156,132,224,0.16);
+    border:1px solid rgba(156,132,224,0.42);
+    border-radius:7px;
+    color:#b9a6ee;
+    cursor:pointer;
+    display:none;
+    align-items:center; justify-content:center;
+    padding:0; line-height:1;
+  }
+  .pres-deck-card:hover .pres-deck-coowners{ display:flex }
+  .pres-deck-card .pres-deck-coowners:hover{ background:rgba(156,132,224,0.32) }
+  [data-theme="light"] .pres-deck-card .pres-deck-coowners{ color:#6b4fc4 }
+
   /* Owner tag — DEV/ADMIN ONLY, on "Users Presentations" cards (decks owned by
      someone else). Always visible so they see who each deck belongs to. */
   .pres-deck-card .pres-deck-owner{
@@ -2745,6 +2764,7 @@
   body:not(.pres-edit-mode) .pres-deck-delete,
   body:not(.pres-edit-mode) .pres-deck-duplicate,
   body:not(.pres-edit-mode) .pres-deck-assign,
+  body:not(.pres-edit-mode) .pres-deck-coowners,
   body:not(.pres-edit-mode) .pres-thumb-add{ display:none !important }
 
   /* ─── Rulers ─── thin strips on the top + left edges of the slide
@@ -4164,6 +4184,27 @@ function _buildDeckCard(deck) {
       card.appendChild(asg);
     }
 
+    /* Co-owners (mig 061) — DEV/ADMIN only, on any USER deck (including published/
+       company decks, which have no assign button). Not on built-in/template
+       placeholders (deck.custom === false). Manages edit-only co-owners via
+       presentation_deck_editors. */
+    if (_iAmDeckAdmin && deck.custom) {
+      const co = document.createElement('button');
+      co.type = 'button';
+      co.className = 'pres-deck-coowners';
+      co.title = 'Manage co-owners (edit access)';
+      co.innerHTML =
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
+          'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<circle cx="8" cy="8" r="3"/>' +
+          '<path d="M2.5 20a5.5 5.5 0 0 1 11 0"/>' +
+          '<path d="M15.5 5.3a3 3 0 0 1 0 5.4"/>' +
+          '<path d="M17.5 13.6a5.5 5.5 0 0 1 4 5.2"/>' +
+        '</svg>';
+      co.addEventListener('click', (ev) => { ev.stopPropagation(); openCoEditorsModal(deck); });
+      card.appendChild(co);
+    }
+
     /* User-created decks get a delete button — built-in ones can't
        be removed (they're metadata-only and harmless to leave). */
     /* Delete is offered for decks this user can edit (own private decks, or —
@@ -4354,6 +4395,90 @@ async function assignDeckToUser(deck, userId) {
   } catch (e) { console.warn('Assign deck failed:', e); return false; }
 }
 
+/* Manage CO-OWNERS (co-editors) of a deck — dev/admin only (mig 061). A co-editor
+   can EDIT the deck's slides at any visibility; nothing else. Reuses the assign
+   modal's .pres-assign-* styling. */
+async function openCoEditorsModal(deck) {
+  if (!_iAmDeckAdmin || !deck || !window.sb) return;
+  if (!_presProfilesList.length) await _loadPresProfiles();
+  if (!deck._rowId) { try { await _persistDeckRow(deck); } catch (_) {} if (!deck._rowId) { showPresToast('Save the deck first, then add co-owners.'); return; } }
+
+  const editorIds = new Set();
+  try { const { data } = await window.sb.from('presentation_deck_editors').select('user_id').eq('deck_id', deck._rowId); (data || []).forEach(r => editorIds.add(r.user_id)); }
+  catch (e) { showPresToast('Could not load co-owners.'); return; }
+
+  const overlay = document.createElement('div'); overlay.className = 'pres-assign-overlay';
+  const panel = document.createElement('div'); panel.className = 'pres-assign-panel';
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const nameOf = id => (id === _myUserId ? 'Me' : (_presOwnerName(id) || id));
+
+  const h = document.createElement('h3'); h.className = 'pres-assign-title'; h.textContent = 'Co-owners';
+  const sub = document.createElement('p'); sub.className = 'pres-assign-sub'; sub.textContent = deck.title || 'Untitled presentation';
+  const curLbl = document.createElement('label'); curLbl.className = 'pres-assign-label'; curLbl.textContent = 'Current co-owners (can edit)';
+  const curList = document.createElement('div'); curList.className = 'pres-assign-list';
+  const addLbl = document.createElement('label'); addLbl.className = 'pres-assign-label'; addLbl.textContent = 'Add a co-owner';
+  const search = document.createElement('input'); search.type = 'text'; search.className = 'pres-assign-search'; search.placeholder = 'Search users…'; search.setAttribute('autocomplete', 'off');
+  const addList = document.createElement('div'); addList.className = 'pres-assign-list';
+
+  const renderCurrent = () => {
+    curList.innerHTML = '';
+    const ids = [...editorIds];
+    if (!ids.length) { const e = document.createElement('div'); e.className = 'pres-assign-empty'; e.textContent = 'No co-owners yet.'; curList.appendChild(e); return; }
+    ids.forEach(id => {
+      const row = document.createElement('div'); row.className = 'pres-assign-user';
+      row.style.cssText = 'flex-direction:row;align-items:center;cursor:default;';
+      const nm = document.createElement('span'); nm.className = 'pres-assign-user-name'; nm.textContent = nameOf(id); row.appendChild(nm);
+      const rm = document.createElement('button'); rm.type = 'button'; rm.className = 'pres-assign-btn pres-assign-cancel'; rm.textContent = 'Remove';
+      rm.style.cssText = 'margin-left:auto;padding:4px 10px;font-size:12px;';
+      rm.addEventListener('click', async () => {
+        rm.disabled = true;
+        const { error } = await window.sb.from('presentation_deck_editors').delete().eq('deck_id', deck._rowId).eq('user_id', id);
+        if (error) { rm.disabled = false; showPresToast('Remove failed.'); return; }
+        editorIds.delete(id); renderCurrent(); renderAdd(search.value);
+      });
+      row.appendChild(rm); curList.appendChild(row);
+    });
+  };
+  const renderAdd = (q) => {
+    addList.innerHTML = '';
+    const needle = (q || '').trim().toLowerCase();
+    const cands = _presProfilesList
+      .filter(u => u.id !== deck._ownerId && !editorIds.has(u.id) && (!needle || (u.name || '').toLowerCase().indexOf(needle) !== -1 || (u.email || '').toLowerCase().indexOf(needle) !== -1))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    if (!cands.length) { const e = document.createElement('div'); e.className = 'pres-assign-empty'; e.textContent = needle ? 'No matching users.' : 'No users to add.'; addList.appendChild(e); return; }
+    cands.forEach(u => {
+      const row = document.createElement('button'); row.type = 'button'; row.className = 'pres-assign-user';
+      const nm = document.createElement('span'); nm.className = 'pres-assign-user-name'; nm.textContent = u.name; row.appendChild(nm);
+      const meta = [u.email, u.tier].filter(Boolean).join(' · ');
+      if (meta) { const m = document.createElement('span'); m.className = 'pres-assign-user-meta'; m.textContent = meta; row.appendChild(m); }
+      row.addEventListener('click', async () => {
+        row.disabled = true;
+        const { error } = await window.sb.from('presentation_deck_editors').insert({ deck_id: deck._rowId, user_id: u.id, added_by: _myUserId });
+        if (error) { row.disabled = false; showPresToast('Add failed.'); return; }
+        editorIds.add(u.id); renderCurrent(); renderAdd(search.value);
+      });
+      addList.appendChild(row);
+    });
+  };
+  renderCurrent(); renderAdd('');
+  search.addEventListener('input', () => renderAdd(search.value));
+
+  const actions = document.createElement('div'); actions.className = 'pres-assign-actions';
+  const doneBtn = document.createElement('button'); doneBtn.type = 'button'; doneBtn.className = 'pres-assign-btn pres-assign-ok'; doneBtn.textContent = 'Done';
+  doneBtn.addEventListener('click', close); actions.appendChild(doneBtn);
+
+  panel.appendChild(h); panel.appendChild(sub);
+  panel.appendChild(curLbl); panel.appendChild(curList);
+  panel.appendChild(addLbl); panel.appendChild(search); panel.appendChild(addList);
+  panel.appendChild(actions);
+  overlay.appendChild(panel);
+  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
+  setTimeout(() => { try { search.focus(); } catch (_) {} }, 30);
+}
+
 /* Full-width section header inside the picker grid: a slightly larger
    uppercase label followed by a thin rule that fills the rest of the row,
    so the two groups (My Presentations / Performance Property Presentations)
@@ -4400,9 +4525,19 @@ function buildPicker() {
      who receive other users' decks). For everyone else — and during the admin's
      pre-hydrate render before identity resolves (_myUserId still null) — keep the
      original "all non-company decks are mine" behaviour so nothing flickers out. */
-  const myDecks      = _customDecks.filter(d => d._visibility !== 'company' && (!_iAmDeckAdmin || _isMineDeck(d)));
+  /* Co-owned decks (mig 061): a private deck owned by someone ELSE that I've been
+     given edit access to. For a non-admin these arrive via the "read decks I
+     co-edit" RLS policy and would otherwise fall into "My Presentations" (whose
+     non-admin filter treats every non-company deck as mine) — so peel them into
+     a dedicated "Shared with me" group. Admins already see all other-user decks
+     under "Users Presentations", so this group is non-admin-only. Company decks
+     I co-edit stay under "Performance Property Presentations" (editable there). */
+  const _coEditedNotMine = d => !!d._rowId && _coEditDeckIds.has(d._rowId)
+    && d._visibility !== 'company' && d._ownerId !== _myUserId;
+  const myDecks      = _customDecks.filter(d => d._visibility !== 'company' && !_coEditedNotMine(d) && (!_iAmDeckAdmin || _isMineDeck(d)));
   const companyDecks = _customDecks.filter(d => d._visibility === 'company');
   const userDecks    = _iAmDeckAdmin ? _customDecks.filter(d => d._visibility !== 'company' && !_isMineDeck(d)) : [];
+  const sharedDecks  = _iAmDeckAdmin ? [] : _customDecks.filter(_coEditedNotMine);
 
   /* ?view from the hub cards makes each a distinct destination; unset = all the
      sections the user is allowed to see. The dev/admin-only 'users' view falls
@@ -4414,11 +4549,17 @@ function buildPicker() {
   /* Users Presentations: dev + admin. On its own via ?view=users, and also
      appended under the default view so it's discoverable without the card. */
   const showUsers   = _iAmDeckAdmin && view !== 'mine' && view !== 'company';
+  /* "Shared with me": non-admin co-owned decks. Shown in the default + mine views. */
+  const showShared  = sharedDecks.length > 0 && view !== 'company' && view !== 'users';
 
   if (showMine) {
     pickerGrid.appendChild(_pickerSectionHeader('My Presentations'));
     myDecks.forEach(d => pickerGrid.appendChild(_buildDeckCard(d)));
     _appendPickerNewTiles();   /* create/import tiles live under My Presentations */
+  }
+  if (showShared) {
+    pickerGrid.appendChild(_pickerSectionHeader('Shared with me'));
+    sharedDecks.forEach(d => pickerGrid.appendChild(_buildDeckCard(d)));
   }
   if (showCompany && (companyDecks.length || view === 'company')) {
     pickerGrid.appendChild(_pickerSectionHeader('Performance Property Presentations'));
@@ -11250,9 +11391,9 @@ function _updateVisibilityBtn() {
   const btn = document.getElementById('pres-visibility-btn');
   if (!btn) return;
   const d = _activeDeck;
-  const owned = !!(d && _iAmWriter && (d._ownerId == null || d._ownerId === _myUserId));
-  btn.style.display = owned ? '' : 'none';
-  if (!owned) return;
+  const canPublish = !!(d && _iAmWriter);   // dev/admin can publish/unpublish ANY deck (incl. a staffer's, from Users Presentations) — mig 061; the owner keeps edit access
+  btn.style.display = canPublish ? '' : 'none';
+  if (!canPublish) return;
   const isCompany = d._visibility === 'company';
   const label = document.getElementById('pres-visibility-label');
   if (label) label.textContent = isCompany ? 'Company ✓' : 'Publish';
@@ -11264,7 +11405,7 @@ function _updateVisibilityBtn() {
 
 function _toggleDeckVisibility() {
   const d = _activeDeck;
-  if (!d || !_iAmWriter || !(d._ownerId == null || d._ownerId === _myUserId)) return;
+  if (!d || !_iAmWriter) return;
   const next = d._visibility === 'company' ? 'private' : 'company';
   const human = next === 'company'
     ? 'Performance Property Presentations (visible to everyone)'
@@ -12755,6 +12896,7 @@ let _iAmWriter           = false;   /* dev/admin → can publish/edit company de
 let _iAmDeckAdmin        = false;   /* dev OR admin → "Users Presentations" admin view + assign decks */
 let _presTierResolved    = false;   /* true once the tier gate sees a real auth level (not the boot '') */
 let _myUserId            = null;    /* auth.uid() — owner_id for my decks */
+let _coEditDeckIds       = new Set();/* deck row-ids I'm a CO-EDITOR of (mig 061 presentation_deck_editors) — I can edit these at any visibility */
 let _presProfiles        = {};      /* dev/admin: user id → { name, email, tier } (owner tags) */
 let _presProfilesList    = [];      /* dev only: active users for the Assign picker */
 let _presCloudSaveTimer  = null;
@@ -12852,9 +12994,11 @@ function _deckIsEditable(deck) {
      decks — matching the read/update-all RLS (mig 044/046). Without this, a
      re-sync / edit of someone else's deck silently failed to persist. */
   if (_iAmDeckAdmin) return true;
-  if (deck._visibility === 'company') return _iAmWriter;
   if (deck._ownerId == null) return true;
-  return deck._ownerId === _myUserId;
+  if (deck._ownerId === _myUserId) return true;                    // owner edits at any visibility, incl. once published (mig 061)
+  if (deck._rowId && _coEditDeckIds.has(deck._rowId)) return true; // co-editor (mig 061 presentation_deck_editors)
+  if (deck._visibility === 'company') return _iAmWriter;           // other people's company decks: writers only
+  return false;
 }
 
 /* Read-only is PER-DECK: editing chrome shows only when the OPEN deck is
@@ -13158,7 +13302,17 @@ async function _hydratePresFromCloud() {
     /* 2) One-time legacy → per-deck migration (writers only). */
     if (_iAmWriter) await _migrateLegacyDecksIfNeeded();
 
-    /* 3) Per-deck rows. RLS returns my own decks + every company deck. */
+    /* 2b) Decks I'm a CO-EDITOR of (mig 061 presentation_deck_editors) — I can
+          edit these at any visibility even though I don't own them. */
+    _coEditDeckIds = new Set();
+    if (_myUserId) {
+      try {
+        const { data: eds } = await window.sb.from('presentation_deck_editors').select('deck_id').eq('user_id', _myUserId);
+        (eds || []).forEach(e => _coEditDeckIds.add(e.deck_id));
+      } catch (_) {}
+    }
+
+    /* 3) Per-deck rows. RLS returns my own decks + every company deck + decks I co-edit. */
     const { data: rows, error } = await window.sb
       .from('presentation_decks')
       .select('id, owner_id, created_by, title, payload, visibility, updated_at')
