@@ -4212,9 +4212,17 @@ function _buildDeckCard(deck) {
        "Users Presentations" deck ONLY if they CREATED it (created_by === me) —
        e.g. a deck they built then assigned to a teammate. A deck the user
        created themselves shows NO Delete to them. RLS (mig 045/046) enforces it. */
+    /* Mirror the DELETE RLS EXACTLY (mig 041 "delete own or company decks" +
+       mig 045 "staff deletes own-created decks") so Delete only shows when the
+       delete will actually succeed. Do NOT use _deckIsEditable here: it returns
+       true for dev/admin on EVERY deck (edit-all), which put a Delete button on
+       other users' private decks where RLS then silently blocks the delete — the
+       deck "reappeared" on refresh. Delete is narrower than edit. */
     const _canDeleteDeck = deck.custom && (
-      _deckIsEditable(deck) ||
-      (_iAmDeckAdmin && deck._createdBy && deck._createdBy === _myUserId)
+      deck._ownerId == null ||                                             // unsaved local (no row yet)
+      deck._ownerId === _myUserId ||                                       // I own it
+      (deck._visibility === 'company' && _iAmWriter) ||                    // company deck (writers)
+      (_iAmDeckAdmin && deck._createdBy && deck._createdBy === _myUserId)  // staff: only decks I created
     );
     if (_canDeleteDeck) {
       const del = document.createElement('button');
@@ -4222,11 +4230,15 @@ function _buildDeckCard(deck) {
       del.className = 'pres-deck-delete';
       del.title = 'Delete this presentation';
       del.textContent = '×';
-      del.addEventListener('click', (ev) => {
+      del.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         if (!confirm('Delete "' + deck.title + '"? This can\'t be undone.')) return;
-        /* Delete the cloud row first (by _rowId), then drop it locally. */
-        _deleteDeckRow(deck);
+        /* Delete the cloud row FIRST and CONFIRM it went — an RLS-blocked delete
+           affects 0 rows with no error, so dropping it locally regardless made
+           the deck "come back" on the next refresh. Only prune locally on real
+           success. */
+        const removed = await _deleteDeckRow(deck);
+        if (!removed) { showPresToast('Could not delete this presentation — you may not have permission.'); return; }
         /* Mutate _customDecks in place so any closure that captured
            the array reference still sees the truncated list. */
         const keep = _customDecks.filter(d => d.id !== deck.id);
@@ -4534,7 +4546,14 @@ function buildPicker() {
      I co-edit stay under "Performance Property Presentations" (editable there). */
   const _coEditedNotMine = d => !!d._rowId && _coEditDeckIds.has(d._rowId)
     && d._visibility !== 'company' && d._ownerId !== _myUserId;
-  const myDecks      = _customDecks.filter(d => d._visibility !== 'company' && !_coEditedNotMine(d) && (!_iAmDeckAdmin || _isMineDeck(d)));
+  /* "My" filters on OWNERSHIP once identity is known (_myUserId set) — for
+     everyone, not just deck admins. Gating on _iAmDeckAdmin was wrong for the
+     dev VIEW-AS switcher: viewing-as-tier-2 flips _iAmDeckAdmin false while the
+     session still holds every deck (fetched with dev RLS), so all non-company
+     decks wrongly landed in "My". Before identity resolves (_myUserId null,
+     pre-hydrate) keep the old no-flicker behaviour: non-admins treat all
+     non-company as mine; a dev sees nothing-as-mine (rows show under Users). */
+  const myDecks      = _customDecks.filter(d => d._visibility !== 'company' && !_coEditedNotMine(d) && (_myUserId ? _isMineDeck(d) : !_iAmDeckAdmin));
   const companyDecks = _customDecks.filter(d => d._visibility === 'company');
   const userDecks    = _iAmDeckAdmin ? _customDecks.filter(d => d._visibility !== 'company' && !_isMineDeck(d)) : [];
   const sharedDecks  = _iAmDeckAdmin ? [] : _customDecks.filter(_coEditedNotMine);
@@ -13056,12 +13075,21 @@ async function _persistDeckRow(deck) {
   }
 }
 
+/* Returns TRUE only if the row was actually removed (or there was no cloud row
+   to begin with — a purely-local deck). An RLS-blocked delete comes back with
+   NO error but an EMPTY data array, so we check the rows returned via .select(),
+   not just `error` — otherwise the caller drops the deck locally and it
+   reappears on the next hydrate. */
 async function _deleteDeckRow(deck) {
-  if (!deck || !deck._rowId || !window.sb) return;
+  if (!deck) return false;
+  if (!deck._rowId) return true;          // never persisted — nothing to delete in the cloud
+  if (!window.sb) return false;
   try {
-    const { error } = await window.sb.from('presentation_decks').delete().eq('id', deck._rowId);
-    if (error) console.warn('Deck delete (cloud):', error);
-  } catch (e) { console.warn('Deck delete failed:', e); }
+    const { data, error } = await window.sb.from('presentation_decks')
+      .delete().eq('id', deck._rowId).select('id');
+    if (error) { console.warn('Deck delete (cloud):', error); return false; }
+    return Array.isArray(data) && data.length > 0;
+  } catch (e) { console.warn('Deck delete failed:', e); return false; }
 }
 
 function _markDeckDirty(deck) {
