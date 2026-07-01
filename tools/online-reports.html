@@ -5176,14 +5176,13 @@ const PP_FORCE_FRESH = (function () {
   catch (_) { return false; }
 })();
 
-/* [Forge cutover pilot] ?src=forge reads a region's data from the Data Forge
-   mart (rdp_report_feed) and reshapes it to the live-feed shape via
-   shared/forge-report-adapter.js, instead of the Apps Script cluster feed.
-   Pilot flag — the default path is completely untouched, and this degrades to
-   the static baseline if the mart isn't readable yet (e.g. RLS not applied). */
+/* [Forge cutover] Data Forge (the rdp_report_feed mart, reshaped to the feed
+   shape via shared/forge-report-adapter.js) is now the DEFAULT data source.
+   The Apps Script cluster feed remains as the fallback (used automatically if
+   Forge is unreadable) and as an explicit escape hatch: ?src=live forces it. */
 const PP_FORGE_SRC = (function () {
-  try { return new URLSearchParams(location.search).get('src') === 'forge'; }
-  catch (_) { return false; }
+  try { const s = new URLSearchParams(location.search).get('src'); return s !== 'live' && s !== 'legacy'; }
+  catch (_) { return true; }
 })();
 async function forgeClusterJson(slug) {
   if (!window.sb || !window.ForgeReportAdapter) { console.warn('[forge] supabase client / adapter not loaded'); return null; }
@@ -6677,10 +6676,11 @@ async function liveBoot() {
     let json, peerJson;
     if (PP_FORGE_SRC) {
       json = await forgeClusterJson(slug);
-      if (!json) { console.warn('[forge] mart unreadable for', slug, '— keeping static baseline'); scheduleOverlayHide(); return; }
       // regionals' Change-in-Population 3rd line is the PEER capital — fetch it from Forge too
-      peerJson = needPeer ? await forgeClusterJson(peerSlug) : null;
-    } else {
+      peerJson = (json && needPeer) ? await forgeClusterJson(peerSlug) : null;
+      if (!json) console.warn('[forge] mart unreadable for', slug, '— falling back to the Apps Script feed');
+    }
+    if (!json) {   // ?src=live, or Forge unavailable → Apps Script cluster feed (then the static baseline)
       [json, peerJson] = await Promise.all([
         liveDataFetch(m.cluster),
         needPeer ? liveDataFetch(peerCluster) : Promise.resolve(null),
