@@ -15,12 +15,13 @@
    median aggregates, affordability (aiCapCity/aiRegions/priceToIncome*).
    ════════════════════════════════════════════════════════════════════ */
 (function (root) {
-  function assemble(natOnly, rdpNat, martRows, stateRows, arrears) {
+  function assemble(natOnly, rdpNat, martRows, stateRows, arrears, pyramid) {
     natOnly = natOnly || {};
     rdpNat = rdpNat || [];
     martRows = martRows || [];
     stateRows = stateRows || [];
     arrears = arrears || {};
+    pyramid = pyramid || {};
     // index national annual series by metric → {year: value}
     const A = {};
     for (const r of rdpNat) {
@@ -141,6 +142,18 @@
     }
     const ivM = Object.keys(MM.internet_vacancies || {}).sort();
     if (ivM.length) { data.dateInternetJobVacancies = ivM; data.nationalInternetJobVacancies = ivM.map(ym => MM.internet_vacancies[ym]); }
+
+    // ── population pyramid: national vs capital cities, population share by age bracket ──
+    if (pyramid.australia && Array.isArray(pyramid.australia.total)) {
+      const AGE = ['0-4', '5-9', '10-14', '15-19', '20-24', '25-29', '30-34', '35-39', '40-44', '45-49', '50-54', '55-59', '60-64', '65-69', '70-74', '75-79', '80-84', '85+'];
+      const nat = pyramid.australia.total;
+      const share = arr => { const s = arr.reduce((a, b) => a + (b || 0), 0); return s ? arr.map(v => (v || 0) / s) : arr.map(() => null); };
+      const caps = ['sydney', 'melbourne', 'brisbane', 'perth', 'adelaide', 'canberra', 'hobart', 'darwin'];
+      const capSum = nat.map((_, i) => caps.reduce((a, c) => { const t = pyramid[c] && pyramid[c].total; return a + ((t && t[i]) || 0); }, 0));
+      data.populationPyramidAge = AGE.slice(0, nat.length);
+      data.national = share(nat);
+      data.capitalCities = share(capSum);
+    }
 
     return { _meta: { source: 'forge_national', generated: (natOnly.meta && natOnly.meta.updatedAt) || null }, data };
   }
