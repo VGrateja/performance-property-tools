@@ -10399,26 +10399,21 @@ document.addEventListener('DOMContentLoaded', () => {
     cacheBtn.addEventListener('click', async () => {
       if (cacheBtn.disabled) return;
       if (!window.PPReportCache) { alert('Cache module not loaded — reload the page and try again.'); return; }
-      if (!confirm('Fetch the latest data from Google and save it to Supabase for ALL reports — every region PLUS the National and Commercial reports?\n\nThis can take up to a minute (it wakes up each Google feed). Once done, every report and presentation loads fast from the stored copy for everyone — you only need to do this once per update.')) return;
+      if (!confirm('Refresh the saved copy of all Region + Capital reports from Data Forge?\n\nPresentations load from this stored copy. (The National + Commercial reports have their own Save-data buttons; the monthly job refreshes all of them.)')) return;
       cacheBtn.disabled = true;
       cacheBtn.textContent = 'Saving…';
       try {
-        const res = await window.PPReportCache.updateAllSnapshots({
-          onProgress: (done, total) => { cacheBtn.textContent = 'Saving ' + done + '/' + total + '…'; }
-        });
-        /* Drop the local cluster caches so this page re-reads the fresh
-           snapshot, then re-render the current region. */
+        /* Assemble every cluster from Data Forge (the rdp_report_feed mart) via the
+           adapter and store it — no longer the Apps Script feed. */
+        const { data: marts, error } = await window.sb.from('rdp_report_feed').select('region_slug,cluster,payload');
+        if (error) throw error;
+        const clusters = { capital: {}, qld: {}, nsw: {}, vicwatas: {} };
+        for (const mrow of (marts || [])) { if (clusters[mrow.cluster]) clusters[mrow.cluster][mrow.region_slug] = window.ForgeReportAdapter.forgeRegionToFeed(mrow.payload, mrow.region_slug); }
+        let n = 0;
+        for (const src of Object.keys(clusters)) { await window.PPReportCache.writeSnapshot(src, { _meta: { source: 'forge', generated: new Date().toISOString() }, regions: clusters[src] }); cacheBtn.textContent = 'Saving ' + (++n) + '/4…'; }
+        /* Drop the local cluster caches so this page re-reads fresh next load. */
         try { Object.keys(REPORTS_DATA_URLS).forEach(c => localStorage.removeItem(REPORTS_DATA_CACHE_KEY(c))); } catch (_) {}
-        await liveBoot();
-        if (res.ok) {
-          cacheBtn.textContent = 'Saved ✓';
-        } else if (res.updated.length) {
-          cacheBtn.textContent = 'Partly saved';
-          alert('Saved: ' + res.updated.join(', ') + '\nFailed: ' + res.failed.join(', ') + '\n\nThe failed feeds may have timed out — try again in a moment.');
-        } else {
-          cacheBtn.textContent = 'Failed';
-          alert('Could not save any data. Check your connection and that you have edit access, then try again.');
-        }
+        cacheBtn.textContent = 'Saved ✓';
       } catch (e) {
         cacheBtn.textContent = 'Failed';
         alert('Save failed: ' + (e && e.message || e));
