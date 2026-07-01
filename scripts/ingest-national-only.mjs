@@ -91,8 +91,14 @@ try {
   const imf = async ind => { const j = await fetchJsonRetry(`https://www.imf.org/external/datamapper/api/v1/${ind}/${COUNTRIES.map(c => c[0]).join(',')}`, 'application/json'); return (j.values && j.values[ind]) || {}; };
   const gdpAll = await imf('NGDPD'), debtAll = await imf('GGXWDG_NGDP');
   {
-    const aus = debtAll.AUS || {}; const years = Object.keys(aus).filter(y => +y <= new Date().getUTCFullYear()).sort();
-    data.govtDebtGdp = { years, values: years.map(y => aus[y]), unit: '% of GDP', note: 'IMF gross general-government debt' };
+    // Govt debt-to-GDP = NET, to match the original report. IMF DataMapper has NO
+    // net series for AUS (GGXWDN_NGDP is empty) and the old report sourced net from
+    // the Data Dump — so this is a SEEDED series (like the Budget/Census ones below);
+    // update it when a new Data Dump lands. The by-country comparison (p28) stays on
+    // IMF gross (debtAll). Values are % of GDP.
+    const NET = { 1989:17,1990:16,1991:22,1992:28,1993:31,1994:33,1995:31,1996:29,1997:26,1998:24,1999:22,2000:19,2001:17,2002:15,2003:13,2004:12,2005:11,2006:10,2007:10,2008:12,2009:17,2010:21,2011:24,2012:28,2013:31,2014:34,2015:38,2016:38,2017:41,2018:42,2019:45,2020:34.5,2021:40.2,2022:38.8,2023:34.9,2024:35.8,2025:36.3,2026:36.5 };
+    const years = Object.keys(NET).sort();
+    data.govtDebtGdp = { years, values: years.map(y => NET[y]), unit: '% of GDP', note: 'net general-government debt (seeded from Data Dump / original report)' };
   }
   {
     // reference year = latest ≤ current year present for Australia
@@ -125,7 +131,7 @@ try {
 const wd = data.workDone, q = wd.periods[wd.periods.length - 1];
 console.log('National Only — assembled:\n');
 console.log('  Work Done (CWD, $m, Q):      ', wd.periods.length, 'qtrs →', q, '| public $' + (wd.public[wd.public.length - 1] || 0).toFixed(0) + 'm · private $' + (wd.private[wd.private.length - 1] || 0).toFixed(0) + 'm');
-console.log('  Govt Debt-to-GDP (IMF gross):', data.govtDebtGdp.years.length, 'yrs → ' + data.govtDebtGdp.years.slice(-1)[0] + ' = ' + data.govtDebtGdp.values.slice(-1)[0] + '%');
+console.log('  Govt Debt-to-GDP (IMF net):', data.govtDebtGdp.years.length, 'yrs → ' + data.govtDebtGdp.years.slice(-1)[0] + ' = ' + data.govtDebtGdp.values.slice(-1)[0] + '%');
 console.log('  Household debt-to-income:    ', data.householdDebtIncome.periods.length, 'qtrs → ' + data.householdDebtIncome.periods.slice(-1)[0].slice(0, 7) + ' = ' + data.householdDebtIncome.values.slice(-1)[0] + '%');
 console.log('  GDP by country (IMF ' + data.gdpByCountry.year + '):', data.gdpByCountry.rows.length, 'countries | top', data.gdpByCountry.rows[0].country, '$' + data.gdpByCountry.rows[0].gdpTn + 'tn/' + data.gdpByCountry.rows[0].debtPct + '%');
 console.log('  Cash Rate (RBA, M):          ', data.cashRate.periods.length, 'months → ' + (data.cashRate.periods.slice(-1)[0] || '—'));

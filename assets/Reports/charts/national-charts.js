@@ -777,7 +777,7 @@
     o.legend = Object.assign(o.legend, { data: ['Govt Debt to GDP', 'Cash Rate'] });
     o.xAxis = Object.assign(o.xAxis, { data: yrs });
     o.yAxis = Object.assign(o.yAxis, {
-      min: 0, max: 0.6, interval: 0.1,
+      min: 0, max: 0.45, interval: 0.05,
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: function (v) { return (v * 100).toFixed(0) + '%'; } },
     });
     o.series = [
