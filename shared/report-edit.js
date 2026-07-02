@@ -4213,10 +4213,38 @@ function setupPagerToolsToggle() {
   /* Research reports use #pp-pager(-toggle); the regional tool uses
      #pager-tools(-toggle). Fall back so the chevron wires up in both. */
   const btn = document.getElementById('pp-pager-toggle') || document.getElementById('pager-tools-toggle');
-  const pager = document.getElementById('pp-pager') || document.getElementById('pager-tools');
-  if (!btn || !pager) return;
+  if (!btn) return;
+
+  /* Research reports (national / commercial): a single #pp-pager carries the
+     collapse state (CSS keys off #pp-pager.tools-collapsed). Not persisted. */
+  const ppPager = document.getElementById('pp-pager');
+  if (ppPager) {
+    btn.addEventListener('click', () => ppPager.classList.toggle('tools-collapsed'));
+    return;
+  }
+
+  /* Regional tool: the tools live in their OWN wrap (#pager-tools, hidden via
+     .collapsed) which is a sibling of the toggle inside .pager; the chevron
+     rotates off .pager.tools-collapsed. Toggling one class (as the research
+     path does) matched neither rule, so the button did nothing — set BOTH.
+     State persisted (the pager bar comes up the same way next visit). */
+  const tools = document.getElementById('pager-tools');
+  const pager = btn.closest('.pager');
+  if (!tools || !pager) return;
+  const KEY = 'or-pager-tools-collapsed';
+  const apply = (collapsed) => {
+    tools.classList.toggle('collapsed', collapsed);
+    pager.classList.toggle('tools-collapsed', collapsed);
+    btn.setAttribute('aria-expanded', String(!collapsed));
+  };
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(KEY) === '1'; } catch (_) {}
+  /* Restore instantly (no slide) so the bar doesn't animate on every load. */
+  if (collapsed) { tools.style.transition = 'none'; apply(true); void tools.offsetWidth; tools.style.transition = ''; }
   btn.addEventListener('click', () => {
-    pager.classList.toggle('tools-collapsed');
+    collapsed = !collapsed;
+    apply(collapsed);
+    try { localStorage.setItem(KEY, collapsed ? '1' : '0'); } catch (_) {}
   });
 }
 
