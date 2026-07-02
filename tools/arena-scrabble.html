@@ -901,8 +901,39 @@
     border-radius: 12px;
     box-shadow: 0 10px 40px rgba(0,0,0,0.35);
     user-select: none;
+    position: relative;   /* hosts the turn-timer ring overlay */
   }
   [data-theme="light"] .scrabble-board { background: #2a3658; }
+
+  /* ── Turn-timer ring ── a line tracing the board perimeter that starts
+     covering the whole board and shrinks as the active player's turn clock
+     runs down; colour shifts by seconds remaining (green → yellow → orange →
+     red) and it pulses faster the less time is left. Geometry/colour driven by
+     _ringFrame (rAF) off the same turn clock as the seat countdown. */
+  .scrabble-timer-ring {
+    position: absolute; inset: 0;
+    pointer-events: none; z-index: 6;
+    overflow: visible;
+    animation: scrabbleRingPulse 2s ease-in-out infinite;
+  }
+  .scrabble-timer-ring rect {
+    fill: none;
+    stroke-width: 5;
+    stroke-linecap: round;
+    transition: stroke 0.5s linear;
+  }
+  .scrabble-timer-ring[data-phase="green"]  rect { stroke: #34d399; filter: drop-shadow(0 0 5px rgba(52,211,153,0.85)); }
+  .scrabble-timer-ring[data-phase="yellow"] rect { stroke: #fbbf24; filter: drop-shadow(0 0 5px rgba(251,191,36,0.85)); }
+  .scrabble-timer-ring[data-phase="orange"] rect { stroke: #fb923c; filter: drop-shadow(0 0 6px rgba(251,146,60,0.90)); }
+  .scrabble-timer-ring[data-phase="red"]    rect { stroke: #f87171; filter: drop-shadow(0 0 7px rgba(248,113,113,0.95)); }
+  .scrabble-timer-ring[data-phase="yellow"] { animation-duration: 1.2s; }
+  .scrabble-timer-ring[data-phase="orange"] { animation-duration: 0.7s; }
+  .scrabble-timer-ring[data-phase="red"]    { animation-duration: 0.38s; }
+  @keyframes scrabbleRingPulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+  }
+  @media (prefers-reduced-motion: reduce) { .scrabble-timer-ring { animation: none; } }
 
   .scrabble-square {
     background: #39414e;           /* default dark-grey square (was tan #d8c89b — too close to the wheat tile colour, letters blended in) */
@@ -1116,6 +1147,9 @@
   .scrabble-chat-log::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.40); border-radius: 3px; }
   .scrabble-chat-form { flex: 0 0 auto; }
   @media (max-width: 900px){ .scrabble-chat-log { max-height: 220px; } }
+  /* Lobby chat lives in a fixed lobby block (not a flex-fill column), so give
+     its log a bounded height instead of stretching. */
+  .scrabble-lobby-chat-log { flex: none; max-height: 240px; }
   .scrabble-chat-empty { font-size: 11.5px; color: rgba(255,255,255,0.4); padding: 6px 2px; }
   [data-theme="light"] .scrabble-chat-empty { color: rgba(31,40,63,0.4); }
   .scrabble-chat-msg { font-size: 12.5px; line-height: 1.35; word-break: break-word; }
@@ -2025,6 +2059,22 @@
         </ul>
       </div>
 
+      <!-- Lobby chat — everyone on the Scrabble lobby screen shares this room
+           (arrange games, banter). Ephemeral realtime broadcast, no DB — same
+           pattern as the in-game chat. -->
+      <div class="scrabble-lobby-block">
+        <div class="scrabble-lobby-block-head">
+          <h3 class="scrabble-lobby-block-title">Lobby chat</h3>
+        </div>
+        <div class="scrabble-chat-log scrabble-lobby-chat-log" id="scrabbleLobbyChatLog">
+          <div class="scrabble-chat-empty" id="scrabbleLobbyChatEmpty">No messages yet — say hi 👋</div>
+        </div>
+        <form class="scrabble-chat-form" id="scrabbleLobbyChatForm" autocomplete="off">
+          <input type="text" id="scrabbleLobbyChatInput" maxlength="240" placeholder="Message the lobby…" aria-label="Lobby chat message">
+          <button type="submit" class="scrabble-rack-tool">Send</button>
+        </form>
+      </div>
+
       <div class="scrabble-lobby-block">
         <div class="scrabble-lobby-block-head">
           <h3 class="scrabble-lobby-block-title">Spectate</h3>
@@ -2478,6 +2528,7 @@ const $gameBackBtn     = document.getElementById('scrabbleGameBackBtn');
     return;
   }
   setupPresence();
+  setupLobbyChat();
   setupLobbiesChannel();
   setupGamesChannel();
   await Promise.all([
@@ -3599,8 +3650,10 @@ function paintTurn() {
   if (_gameRow.turn_time_seconds && _gameRow.turn_started_at) {
     if (!_turnTicker) startTurnTicker();
     updateTurnCountdown();
+    startTurnRing();
   } else {
     stopTurnTicker();
+    stopTurnRing();
     _seatClock = null;
     paintSeats();
   }
@@ -3658,6 +3711,61 @@ async function fireExpireTurn() {
   try {
     await window.sb.rpc('expire_scrabble_turn', { p_game_id: _gameRow.id });
   } catch (_) { /* lost the race or server-side deadline not hit yet — ignore */ }
+}
+
+/* ── Turn-timer ring ── a shrinking / colour-shifting / pulsing line around the
+   board for the active player's turn clock. Runs its own requestAnimationFrame
+   loop (smoother than the 500ms seat ticker) off the same turn_started_at +
+   turn_time_seconds, so both players see the identical countdown. Only present
+   on TIMED, active games; self-stops otherwise. */
+let _ringRaf = null;
+function startTurnRing() { if (_ringRaf == null) _ringRaf = requestAnimationFrame(_ringFrame); }
+function stopTurnRing()  { if (_ringRaf != null) { cancelAnimationFrame(_ringRaf); _ringRaf = null; } _removeTurnRing(); }
+function _removeTurnRing() {
+  const b = document.getElementById('scrabbleBoard');
+  const r = b && b.querySelector('.scrabble-timer-ring');
+  if (r) r.remove();
+}
+function _ringFrame() {
+  const g = _gameRow;
+  if (!g || g.status !== 'active' || !g.turn_time_seconds || !g.turn_started_at) { _ringRaf = null; _removeTurnRing(); return; }
+  const totalMs     = g.turn_time_seconds * 1000;
+  const remainingMs = Math.max(0, new Date(g.turn_started_at).getTime() + totalMs - Date.now());
+  _paintTurnRing(remainingMs, totalMs);
+  _ringRaf = requestAnimationFrame(_ringFrame);
+}
+function _paintTurnRing(remainingMs, totalMs) {
+  const board = document.getElementById('scrabbleBoard');
+  if (!board) return;
+  const W = board.clientWidth, H = board.clientHeight;
+  if (!W || !H) return;
+  let ring = board.querySelector('.scrabble-timer-ring');
+  if (!ring) {
+    ring = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    ring.setAttribute('class', 'scrabble-timer-ring');
+    ring.setAttribute('preserveAspectRatio', 'none');
+    ring.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'rect'));
+    board.appendChild(ring);
+  }
+  const rect = ring.firstChild;
+  const sw = 5, inset = sw / 2, rx = 12;
+  ring.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  rect.setAttribute('x', inset); rect.setAttribute('y', inset);
+  rect.setAttribute('width',  Math.max(0, W - sw));
+  rect.setAttribute('height', Math.max(0, H - sw));
+  rect.setAttribute('rx', rx); rect.setAttribute('ry', rx);
+  let total = 0;
+  try { total = rect.getTotalLength(); } catch (_) {}
+  if (!total) total = 2 * ((W - sw) + (H - sw));
+  const frac = totalMs > 0 ? Math.max(0, Math.min(1, remainingMs / totalMs)) : 0;
+  /* Paint `total*frac` of the perimeter from the start; the rest is a gap, so
+     the line retracts as time runs down. */
+  rect.style.strokeDasharray = (total * frac) + ' ' + (total + 1);
+  /* Colour by ABSOLUTE seconds remaining (per the 2:00 turn spec): green
+     ≥61s, yellow 60–31, orange 30–11, red ≤10. */
+  const secs = Math.ceil(remainingMs / 1000);
+  const phase = secs <= 10 ? 'red' : secs <= 30 ? 'orange' : secs <= 60 ? 'yellow' : 'green';
+  if (ring.getAttribute('data-phase') !== phase) ring.setAttribute('data-phase', phase);
 }
 
 /* Player names, scores, the turn-glow and the timer now live on the SEATS
@@ -5646,6 +5754,51 @@ function sendChat(text) {
     }
   });
 })();
+
+/* ══════════════════════════════════════════════════════════════════
+   LOBBY CHAT — a shared, ephemeral chatroom for everyone on the Scrabble
+   lobby screen (arrange games / banter). Same broadcast pattern as the
+   in-game chat above; no DB persistence, so late arrivals start empty.
+   ══════════════════════════════════════════════════════════════════ */
+let _lobbyChatChannel = null;
+function appendLobbyChatMessage(payload) {
+  if (!payload || !payload.text) return;
+  const log = document.getElementById('scrabbleLobbyChatLog');
+  if (!log) return;
+  const empty = document.getElementById('scrabbleLobbyChatEmpty');
+  if (empty) empty.remove();
+  const mine = !!(_me && payload.uid === _me.userId);
+  const row = document.createElement('div');
+  row.className = 'scrabble-chat-msg' + (mine ? ' is-me' : '');
+  const who = document.createElement('span');
+  who.className = 'scrabble-chat-who';
+  who.textContent = (payload.name || 'Player') + ':';
+  row.appendChild(who);
+  row.appendChild(document.createTextNode(' ' + String(payload.text)));
+  log.appendChild(row);
+  while (log.children.length > 120) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+function sendLobbyChat(text) {
+  text = (text || '').trim();
+  if (!text || !_lobbyChatChannel) return;
+  _lobbyChatChannel.send({
+    type: 'broadcast', event: 'msg',
+    payload: { uid: _me ? _me.userId : null, name: myDisplayName(), text: text.slice(0, 240) },
+  });
+}
+function setupLobbyChat() {
+  const form = document.getElementById('scrabbleLobbyChatForm');
+  const inp  = document.getElementById('scrabbleLobbyChatInput');
+  if (form && inp && !form._wired) {
+    form._wired = true;
+    form.addEventListener('submit', (ev) => { ev.preventDefault(); sendLobbyChat(inp.value); inp.value = ''; });
+  }
+  if (!window.sb || _lobbyChatChannel) return;
+  _lobbyChatChannel = window.sb.channel('arena_scrabble_lobby_chat', { config: { broadcast: { self: true } } })
+    .on('broadcast', { event: 'msg' }, ({ payload }) => appendLobbyChatMessage(payload))
+    .subscribe();
+}
 
 /* ─── Rule Guide modal ─── open/close wiring. Opens over the live board
    (light backdrop) so a player can read while waiting; closes via the ×,
