@@ -1659,6 +1659,51 @@
   }
   body.pres-edit-mode .pres-overlay.selected .pres-overlay-resize{ display:block }
 
+  /* ─── Connectors ─── grey elbow lines between two overlays (org-chart style).
+     Drawn into one SVG layer from the endpoints' coords; a thin visible line
+     plus a fat transparent "hit" path so the line is easy to click + select.
+     The layer is pointer-transparent so it never blocks the boxes; only the
+     hit path re-enables pointer events (edit mode only). */
+  .pres-connector-layer{
+    position:absolute; left:0; top:0;
+    width:1280px; height:720px;
+    overflow:visible;
+    pointer-events:none;
+  }
+  .pres-connector-line{
+    fill:none;
+    stroke:#9299a3; stroke-width:2;
+    stroke-linejoin:round; stroke-linecap:round;
+  }
+  .pres-connector-line.is-selected{ stroke:var(--accent); stroke-width:3; }
+  .pres-connector-hit{
+    fill:none; stroke:transparent; stroke-width:16;
+    pointer-events:stroke; cursor:pointer;
+  }
+  body:not(.pres-edit-mode) .pres-connector-hit{ pointer-events:none; }
+  .pres-connector-del{
+    position:absolute; width:20px; height:20px;
+    margin:-10px 0 0 -10px;   /* centre on the (left,top) point */
+    border-radius:50%;
+    background:#e57b7b; color:#fff;
+    border:2px solid #fff;
+    font-size:13px; line-height:1;
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer; z-index:40;
+    box-shadow:0 3px 8px rgba(0,0,0,0.35);
+  }
+  /* Draggable endpoint handles on a selected connector — drag to a different
+     side of the box to re-route the line. */
+  .pres-connector-handle{
+    position:absolute; width:14px; height:14px;
+    margin:-7px 0 0 -7px;   /* centre on the anchor point */
+    border-radius:50%;
+    background:#fff; border:2px solid var(--accent);
+    cursor:grab; z-index:41;
+    box-shadow:0 2px 6px rgba(0,0,0,0.35);
+  }
+  .pres-connector-handle:active{ cursor:grabbing; }
+
   /* Edge crop handles — only appear on embed overlays. Drag the
      top edge down to cut the top of the embed; bottom edge up to
      cut the bottom; etc. Each edge handle is a thin rounded bar
@@ -3059,6 +3104,10 @@
     </svg>
     + Table
   </button>
+  <button class="pres-edit-btn" id="pres-add-connector" type="button" title="Connect selected objects with grey elbow lines (org-chart style). Click the parent first, shift-click the others, then Connect.">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="8" height="5" rx="1"/><rect x="13" y="16" width="8" height="5" rx="1"/><path d="M7 8v5h10v3"/></svg>
+    + Connect
+  </button>
   <button class="pres-edit-btn" id="pres-add-formatted" type="button" title="Insert a ready-made, formatted graph slide — pick a region, then a graph">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 16l3.5-4 2.5 3 3-4.5"/><line x1="3" y1="20" x2="21" y2="20"/></svg>
     + Slide Library
@@ -3958,6 +4007,7 @@ const tpDelete      = document.getElementById('pres-tp-delete');
    we strip everything down to visuals only: positioned div, styles,
    inner content. No listeners, no handles, no draggable cursor. */
 function _buildThumbOverlay(o) {
+  if (o.type === 'connector') return document.createElement('div');  /* drawn via _drawConnectors */
   const el = document.createElement('div');
   el.className = 'pres-overlay pres-overlay-' + o.type;
   el.style.left   = o.x + 'px';
@@ -4069,9 +4119,11 @@ function _renderDeckThumb(deck, container) {
   /* Layer overlays on top. */
   const overlays = (_overlays && _overlays[deck.id + '/0']) || [];
   overlays.forEach(o => {
+    if (o.type === 'connector') return;
     try { frame.appendChild(_buildThumbOverlay(o)); }
     catch (_) {}
   });
+  try { _drawConnectors(frame, overlays, { selectable: false }); } catch (_) {}
   container.appendChild(frame);
   /* Scale to fit. Container width drives the scale factor. Done in
      rAF so layout has settled when we measure. */
@@ -5418,6 +5470,7 @@ function _disposeThumbCharts(root) {
    / shape edits. Embeds get a placeholder (loading N iframes
    per deck would tank performance for no UX gain). */
 function buildThumbOverlayEl(o) {
+  if (o.type === 'connector') return document.createElement('div');  /* drawn via _drawConnectors */
   const el = document.createElement('div');
   el.className = 'pres-overlay pres-overlay-' + o.type;
   el.style.left   = o.x + 'px';
@@ -5537,7 +5590,8 @@ function _renderThumbCanvas(canvas, idx) {
   if (thumbBg) canvas.style.setProperty('--slide-bg', thumbBg);
   else         canvas.style.removeProperty('--slide-bg');
   const overlays = _overlays[bgKey] || [];
-  overlays.forEach(o => canvas.appendChild(buildThumbOverlayEl(o)));
+  overlays.forEach(o => { if (o.type === 'connector') return; canvas.appendChild(buildThumbOverlayEl(o)); });
+  _drawConnectors(canvas, overlays, { selectable: false });
 }
 
 /* Update just the indexed thumbnail without rebuilding the whole
@@ -6355,7 +6409,7 @@ document.addEventListener('keydown', (ev) => {
     let moved = false;
     ids.forEach(id => {
       const o = currentOverlays().find(x => x.id === id);
-      if (!o || o.locked) return;
+      if (!o || o.locked || o.type === 'connector') return;   /* connectors follow their endpoints — nothing to nudge */
       if (ev.key === 'ArrowLeft')  o.x -= step;
       if (ev.key === 'ArrowRight') o.x += step;
       if (ev.key === 'ArrowUp')    o.y -= step;
@@ -8046,6 +8100,10 @@ function ovDelete(id) {
     return;
   }
   arr.splice(i, 1);
+  /* Cascade: drop any connectors that pointed at the deleted overlay. */
+  for (let j = arr.length - 1; j >= 0; j--) {
+    if (arr[j].type === 'connector' && (arr[j].fromId === id || arr[j].toId === id)) arr.splice(j, 1);
+  }
   saveOverlays();
   _selectedId = null;
   renderOverlays();
@@ -9442,7 +9500,176 @@ function renderOverlays() {
   slot.querySelectorAll('.pres-overlay').forEach(el => el.remove());
   if (!_activeDeck) return;
   const arr = _overlays[slideKey()] || [];
-  arr.forEach(o => slot.appendChild(buildOverlayEl(o)));
+  /* Connectors aren't box overlays — they're drawn from their endpoints into a
+     dedicated SVG layer (see _drawConnectors), so skip them here. */
+  arr.forEach(o => { if (o.type === 'connector') return; slot.appendChild(buildOverlayEl(o)); });
+  _drawConnectors(slot, arr, { selectable: _editMode });
+}
+
+/* ═══ Connectors ═══ grey elbow lines between two overlays (org-chart style).
+   Stored as overlays { type:'connector', fromId, toId, color, width } with dummy
+   x/y/w/h=0 (so snap/marquee/nudge math never sees NaN). Geometry is derived
+   LIVE from the two endpoint overlays' model coords each render/drag/resize, so
+   the line always follows the boxes — no measuring needed. */
+const _CONN_NS = 'http://www.w3.org/2000/svg';
+const _CONN_SIDES = ['top', 'bottom', 'left', 'right'];
+/* Anchor point (centre of a box side) + the axis it exits along ('v' for
+   top/bottom, 'h' for left/right). */
+function _connSideAnchor(b, side) {
+  switch (side) {
+    case 'top':    return { x: b.x + b.w / 2, y: b.y,           axis: 'v' };
+    case 'bottom': return { x: b.x + b.w / 2, y: b.y + b.h,     axis: 'v' };
+    case 'left':   return { x: b.x,           y: b.y + b.h / 2, axis: 'h' };
+    default:       return { x: b.x + b.w,     y: b.y + b.h / 2, axis: 'h' };  /* right */
+  }
+}
+/* The side of `b` that faces box `other` — the default when a side isn't pinned. */
+function _connAutoSide(b, other) {
+  const dx = (other.x + other.w / 2) - (b.x + b.w / 2);
+  const dy = (other.y + other.h / 2) - (b.y + b.h / 2);
+  if (Math.abs(dy) >= Math.abs(dx)) return dy >= 0 ? 'bottom' : 'top';
+  return dx >= 0 ? 'right' : 'left';
+}
+/* Which side of box `b` a point is nearest — used by the drag-to-reanchor handles. */
+function _connNearestSide(b, px, py) {
+  const nx = (px - (b.x + b.w / 2)) / ((b.w / 2) || 1);
+  const ny = (py - (b.y + b.h / 2)) / ((b.h / 2) || 1);
+  if (Math.abs(nx) >= Math.abs(ny)) return nx >= 0 ? 'right' : 'left';
+  return ny >= 0 ? 'bottom' : 'top';
+}
+function _connGeometry(f, t, conn) {
+  /* Anchor each end at its PINNED side (set by dragging the endpoint handle) or,
+     if unset, the auto facing side. Route a clean orthogonal (elbow) path between
+     the two anchors based on which axis each exits along. */
+  conn = conn || {};
+  const fs = (_CONN_SIDES.indexOf(conn.fromSide) >= 0) ? conn.fromSide : _connAutoSide(f, t);
+  const ts = (_CONN_SIDES.indexOf(conn.toSide)   >= 0) ? conn.toSide   : _connAutoSide(t, f);
+  const a = _connSideAnchor(f, fs), b = _connSideAnchor(t, ts);
+  const ax = Math.round(a.x), ay = Math.round(a.y), bx = Math.round(b.x), by = Math.round(b.y);
+  let d;
+  if (a.axis === b.axis) {
+    if (a.axis === 'v') { const my = Math.round((ay + by) / 2); d = 'M ' + ax + ' ' + ay + ' L ' + ax + ' ' + my + ' L ' + bx + ' ' + my + ' L ' + bx + ' ' + by; }
+    else                { const mx = Math.round((ax + bx) / 2); d = 'M ' + ax + ' ' + ay + ' L ' + mx + ' ' + ay + ' L ' + mx + ' ' + by + ' L ' + bx + ' ' + by; }
+  } else if (a.axis === 'v') {
+    d = 'M ' + ax + ' ' + ay + ' L ' + ax + ' ' + by + ' L ' + bx + ' ' + by;   /* vertical stub, then across */
+  } else {
+    d = 'M ' + ax + ' ' + ay + ' L ' + bx + ' ' + ay + ' L ' + bx + ' ' + by;   /* horizontal stub, then down */
+  }
+  return { x1: ax, y1: ay, x2: bx, y2: by, d: d };
+}
+function _drawConnectors(container, overlays, opts) {
+  if (!container) return;
+  opts = opts || {};
+  container.querySelectorAll('.pres-connector-layer, .pres-connector-del, .pres-connector-handle').forEach(n => n.remove());
+  const conns = (overlays || []).filter(o => o && o.type === 'connector');
+  if (!conns.length) return;
+  const byId = {};
+  (overlays || []).forEach(o => { if (o && o.id) byId[o.id] = o; });
+  const selIds = opts.selectable ? _selIds() : new Set();
+  const svg = document.createElementNS(_CONN_NS, 'svg');
+  svg.setAttribute('class', 'pres-connector-layer');
+  svg.setAttribute('viewBox', '0 0 1280 720');
+  let selConn = null, selGeo = null, selF = null, selT = null;
+  conns.forEach(c => {
+    const f = byId[c.fromId], t = byId[c.toId];
+    if (!f || !t) return;   /* an endpoint was deleted or lives on another slide — skip */
+    const g = _connGeometry(f, t, c);
+    if (opts.selectable) {
+      const hit = document.createElementNS(_CONN_NS, 'path');
+      hit.setAttribute('class', 'pres-connector-hit');
+      hit.setAttribute('d', g.d);
+      hit.addEventListener('pointerdown', (ev) => {
+        ev.stopPropagation();
+        _selectOnly(c.id);
+        _drawConnectors(slot, currentOverlays(), { selectable: true });
+      });
+      svg.appendChild(hit);
+    }
+    const line = document.createElementNS(_CONN_NS, 'path');
+    line.setAttribute('class', 'pres-connector-line' + (selIds.has(c.id) ? ' is-selected' : ''));
+    line.setAttribute('d', g.d);
+    if (c.color) line.style.stroke = c.color;
+    if (c.width) line.style.strokeWidth = c.width;
+    svg.appendChild(line);
+    if (selIds.has(c.id)) { selConn = c; selGeo = g; selF = f; selT = t; }
+  });
+  container.appendChild(svg);
+  /* Selected connector (edit mode) → draggable endpoint handles (re-anchor each
+     end to any side of its box) + a delete × near the midpoint. */
+  if (opts.selectable && selConn && selGeo && selF && selT) {
+    /* Drag a handle → re-anchor that end to whichever side of its box the
+       pointer is nearest, redrawing live; commit + history on release. */
+    const mkHandle = (px, py, box, sideKey) => {
+      const h = document.createElement('div');
+      h.className = 'pres-connector-handle';
+      h.style.left = px + 'px';
+      h.style.top  = py + 'px';
+      h.title = 'Drag to another side of the box to re-route';
+      h.addEventListener('pointerdown', (ev) => {
+        ev.stopPropagation(); ev.preventDefault();
+        const rect = slot.getBoundingClientRect();
+        const sc = (rect.width / 1280) || 1;
+        const onMove = (e) => {
+          const mx = (e.clientX - rect.left) / sc;
+          const my = (e.clientY - rect.top)  / sc;
+          selConn[sideKey] = _connNearestSide(box, mx, my);
+          _drawConnectors(slot, currentOverlays(), { selectable: true });
+        };
+        const onUp = () => {
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup',   onUp);
+          saveOverlays();
+          pushHistory();
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup',   onUp);
+      });
+      container.appendChild(h);
+    };
+    mkHandle(selGeo.x1, selGeo.y1, selF, 'fromSide');
+    mkHandle(selGeo.x2, selGeo.y2, selT, 'toSide');
+
+    const del = document.createElement('div');
+    del.className = 'pres-connector-del';
+    del.textContent = '×';
+    del.title = 'Delete connector';
+    del.style.left = Math.round((selGeo.x1 + selGeo.x2) / 2) + 'px';
+    del.style.top  = Math.round((selGeo.y1 + selGeo.y2) / 2) + 'px';
+    del.addEventListener('pointerdown', (ev) => { ev.stopPropagation(); ev.preventDefault(); ovDelete(selConn.id); });
+    container.appendChild(del);
+  }
+}
+
+/* Connect the selected overlays with grey elbow lines. Click the PARENT first,
+   then shift-click the others; the first-selected becomes the source and one
+   connector is drawn from it to each other selected object (org-chart star).
+   Endpoints can be any object (shape / image / text / table / chart). */
+function ovConnectSelected() {
+  if (!_editMode) return;
+  const arr = currentOverlays();
+  const ids = Array.from(_selIds()).filter(id => {
+    const o = arr.find(x => x.id === id);
+    return o && o.type !== 'connector';
+  });
+  if (ids.length < 2) {
+    showPresToast('Select 2+ objects to connect — click one, then shift-click the others.');
+    return;
+  }
+  const parent = ids[0];
+  let added = 0;
+  ids.slice(1).forEach(childId => {
+    const dup = arr.some(o => o.type === 'connector' &&
+      ((o.fromId === parent && o.toId === childId) || (o.fromId === childId && o.toId === parent)));
+    if (dup) return;
+    arr.push({ id: 'conn-' + Date.now() + '-' + added, type: 'connector', fromId: parent, toId: childId,
+               x: 0, y: 0, w: 0, h: 0, color: '#9299a3', width: 2 });
+    added++;
+  });
+  if (!added) { showPresToast('Those objects are already connected.'); return; }
+  saveOverlays();
+  renderOverlays();
+  pushHistory();
+  showPresToast(added === 1 ? 'Connected.' : ('Connected ' + added + ' links.'));
 }
 
 /* ─── Smart guides ─── Google-Slides-style alignment helpers that
@@ -9514,6 +9741,7 @@ function _clearDragGuides() {
 }
 
 function buildOverlayEl(o) {
+  if (o.type === 'connector') return document.createElement('div');  /* connectors are drawn by _drawConnectors, not as box overlays */
   const el = document.createElement('div');
   el.className = 'pres-overlay pres-overlay-' + o.type;
   if (_selIds().has(o.id)) el.classList.add('selected');
@@ -9935,6 +10163,7 @@ function buildOverlayEl(o) {
           const bW = o.baseW || origW;   // FIXED base (set at render / drag start) — never the live o.w
           if (host) host.style.transform = 'scale(' + (o.w / bW) + ')';
         }
+        _drawConnectors(slot, currentOverlays(), { selectable: _editMode });   /* keep connector lines glued to the resizing box */
       };
       const onUp = () => {
         window.removeEventListener('pointermove', onMove);
@@ -10100,6 +10329,7 @@ function buildOverlayEl(o) {
         const node = slot.querySelector('.pres-overlay[data-id="' + m.id + '"]');
         if (node) { node.style.left = m.x + 'px'; node.style.top = m.y + 'px'; }
       });
+      _drawConnectors(slot, currentOverlays(), { selectable: _editMode });   /* keep connector lines glued to moving boxes */
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
@@ -10142,6 +10372,8 @@ function _paintSelection() {
   if (!slot) return;
   const ids = _selIds();
   slot.querySelectorAll('.pres-overlay').forEach(n => n.classList.toggle('selected', ids.has(n.dataset.id)));
+  /* Keep connector highlight + delete-× in sync with the selection. */
+  if (typeof _drawConnectors === 'function') _drawConnectors(slot, currentOverlays(), { selectable: _editMode });
 }
 /* Select exactly one overlay (collapses any multi-selection). */
 function _selectOnly(id) {
@@ -11487,6 +11719,8 @@ imageInput.addEventListener('change', (ev) => {
    rows by dragging cell boundaries. */
 const addTableBtn = document.getElementById('pres-add-table');
 if (addTableBtn) addTableBtn.addEventListener('click', ovAddTable);
+const addConnectorBtn = document.getElementById('pres-add-connector');
+if (addConnectorBtn) addConnectorBtn.addEventListener('click', ovConnectSelected);
 const refreshChartsBtn = document.getElementById('pres-refresh-charts');
 if (refreshChartsBtn) refreshChartsBtn.addEventListener('click', () => refreshReportCharts({ toast: true }));
 const syncSlidesBtn = document.getElementById('pres-sync-slides');
@@ -12931,6 +13165,8 @@ function _deselectOverlay() {
   /* Drop any tinted cell-in-range highlights so they don't linger
      after the table loses selection. */
   slot.querySelectorAll('.pres-table td.cell-in-range').forEach(td => td.classList.remove('cell-in-range'));
+  /* Clear any connector highlight + delete-× too. */
+  if (typeof _drawConnectors === 'function') _drawConnectors(slot, currentOverlays(), { selectable: _editMode });
   syncTextPanel();
   syncShapePanel();
 }
