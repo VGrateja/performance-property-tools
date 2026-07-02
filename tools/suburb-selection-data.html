@@ -24,6 +24,10 @@
   .df-drop:hover, .df-drop.over{ border-color:var(--pp-cyan); color:var(--pp-cyan); background:rgba(0,182,203,.05); }
   .df-drop strong{ color:var(--pp-cyan); }
   .df-drop .sub{ display:block; margin-top:6px; font-size:.76rem; }
+  /* Locked (view-only) drop zone for tier 2 / client / guest — non-interactive. */
+  .df-drop.df-drop-locked{ cursor:default; pointer-events:none; opacity:.75; border-style:solid; }
+  .df-drop.df-drop-locked:hover{ border-color:var(--border); color:var(--muted); background:var(--panel); }
+  .df-drop.df-drop-locked strong{ color:var(--muted); }
 
   .df-card{ background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; margin-bottom:18px; }
   .df-card h2{ font-family:'Montserrat',sans-serif; font-size:.78rem; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:var(--pp-cyan); margin:0 0 12px; }
@@ -139,6 +143,37 @@ rdDrop.addEventListener('drop', e => { e.preventDefault(); rdDrop.classList.remo
 rdFile.addEventListener('change', () => { if (rdFile.files[0]) computeAllRegions(rdFile.files[0]); });
 rdRegion.addEventListener('change', () => loadSaved(rdRegion.value));
 
+/* ── Access gate ── Updating the data (dropping the CoreLogic file) is
+   restricted to dev/admin (tier 0/1). Tier 2 (company) + client/guest can view
+   saved dashboards but not recompute/publish. Defaults to DENY until the tier
+   resolves so a race can't slip through; writes are also RLS-gated server-side. */
+let _ssCanEdit = false;
+function _ssGuard() {
+  if (_ssCanEdit) return true;
+  alert('View only — updating suburb-selection data is restricted to dev / admin.');
+  return false;
+}
+function _ssApplyAccess() {
+  if (_ssCanEdit) return;
+  const d = document.getElementById('rdDrop');
+  if (d) {
+    d.classList.add('df-drop-locked');
+    d.innerHTML = '🔒 <strong>View only</strong><span class="sub">Updating data is restricted to dev / admin.</span>';
+  }
+}
+(function _ssGate() {
+  let n = 0;
+  const t = setInterval(() => {
+    if (window.sb || ++n > 60) {
+      clearInterval(t);
+      (typeof sbCurrentProfile === 'function' ? sbCurrentProfile() : Promise.resolve(null))
+        .then(p => { _ssCanEdit = !!(p && (p.tier === 'dev' || p.tier === 'admin')); })
+        .catch(() => {})
+        .finally(_ssApplyAccess);
+    }
+  }, 100);
+})();
+
 async function loadRegions(){
   if (!window.sb){ rdRegion.innerHTML = '<option value="">Not connected</option>'; return; }
   const { data, error } = await window.sb.from('region_dashboard_reference').select('region,label').order('label');
@@ -206,6 +241,7 @@ function buildCurrentForRegion(nat, regionState, propType){
 
 // Drop the national file once → recompute EVERY region into memory (nothing saved yet).
 async function computeAllRegions(file){
+  if (!_ssGuard()) return;
   if (!window.sb){ rdOut.innerHTML = card('Not connected', '<div class="df-empty">Sign in to update regions.</div>'); return; }
   pendingUpdate = null;
   rdOut.innerHTML = loadingHtml('Reading “' + file.name + '” …');
@@ -243,6 +279,7 @@ async function computeAllRegions(file){
 
 // Publish all computed regions (overwrites last month's data for each).
 async function saveAllRegions(){
+  if (!_ssCanEdit) { _ssGuard(); return; }
   if (!pendingUpdate) return;
   const ok = pendingUpdate.results.filter(r => !r.error);
   const btn = document.getElementById('rdSaveAll'); if (btn){ btn.disabled = true; btn.textContent = 'Saving…'; }

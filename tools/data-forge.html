@@ -103,6 +103,10 @@
   .df-drop{ border:1.5px dashed var(--border); border-radius:12px; padding:24px; text-align:center; color:var(--muted); font-size:.85rem; cursor:pointer; transition:all .16s; margin:14px 0 4px; background:var(--panel); }
   .df-drop:hover, .df-drop.over{ border-color:var(--pp-cyan); color:var(--pp-cyan); background:rgba(0,182,203,.05); }
   .df-drop strong{ color:var(--pp-cyan); }
+  /* Locked (view-only) drop zone for tier 2 / client / guest — non-interactive. */
+  .df-drop.df-drop-locked{ cursor:default; pointer-events:none; opacity:.75; border-style:solid; }
+  .df-drop.df-drop-locked:hover{ border-color:var(--border); color:var(--muted); background:var(--panel); }
+  .df-drop.df-drop-locked strong{ color:var(--muted); }
 
   .df-card{ position:relative; background:linear-gradient(160deg, var(--panel2), var(--panel)); border:1px solid var(--border); border-radius:16px; padding:18px 20px; margin-bottom:18px; }
   .df-card h2{ font-family:'Montserrat',sans-serif; font-size:.76rem; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:var(--pp-cyan); margin:0 0 12px; display:flex; align-items:baseline; flex-wrap:wrap; gap:4px; }
@@ -613,6 +617,38 @@ function forgeGroupOf(c){
   return 'auto';                                        // retail / inflation / cash_rate / bank_rate — auto-downloaded
 }
 
+/* ── Access gate ── Adding data (any file drop / import) is restricted to
+   dev/admin (tier 0/1). Tier 2 (company) + client/guest can view Forge but
+   not upload. Defaults to DENY until the tier resolves, so a drop that races
+   page-load can't slip through. Real writes are also RLS-gated server-side;
+   this stops the UI path + gives clear feedback. */
+let _forgeCanEdit = false;
+function _forgeGuard() {
+  if (_forgeCanEdit) return true;
+  alert('View only — adding data in Data Forge is restricted to dev / admin.');
+  return false;
+}
+function _forgeApplyAccess() {
+  if (_forgeCanEdit) return;
+  document.body.classList.add('df-readonly');
+  document.querySelectorAll('.df-drop').forEach(d => {
+    d.classList.add('df-drop-locked');
+    d.innerHTML = '🔒 <strong>View only</strong><span class="sub" style="display:block;margin-top:6px;font-size:.76rem;">Adding data is restricted to dev / admin.</span>';
+  });
+}
+(function _forgeGate() {
+  let n = 0;
+  const t = setInterval(() => {
+    if (window.sb || ++n > 60) {
+      clearInterval(t);
+      (typeof sbCurrentProfile === 'function' ? sbCurrentProfile() : Promise.resolve(null))
+        .then(p => { _forgeCanEdit = !!(p && (p.tier === 'dev' || p.tier === 'admin')); })
+        .catch(() => {})
+        .finally(_forgeApplyAccess);
+    }
+  }, 100);
+})();
+
 async function loadStatus(){
   const el = document.getElementById('dfClusters');
   let statusMap = {};
@@ -925,6 +961,7 @@ function parseIndustryWorkbook(wb, fileName){ for (const sn of wb.SheetNames) fi
 
 // batch import — drop one matrix file or many single-region files at once
 async function importIndustryFiles(files){
+  if (!_forgeGuard()) return;
   const msg = document.getElementById('indMsg');
   if (!window.XLSX){ msg.innerHTML = '<div class="df-empty">Spreadsheet reader failed to load — reload the page.</div>'; return; }
   msg.innerHTML = '<div class="df-note">Reading ' + files.length + ' file(s)…</div>';
@@ -1115,6 +1152,7 @@ function parsePyramidSheet(wb){
   return null;
 }
 async function importPyramidFiles(files){
+  if (!_forgeGuard()) return;
   const msg = document.getElementById('pyrMsg');
   if (!window.XLSX){ msg.innerHTML = '<div class="df-empty">Spreadsheet reader failed to load — reload the page.</div>'; return; }
   msg.innerHTML = '<div class="df-note">Reading ' + files.length + ' file(s)…</div>';
@@ -1253,6 +1291,7 @@ function parseArrearsSheet(wb){
   return null;
 }
 async function importArrearsFiles(files){
+  if (!_forgeGuard()) return;
   const msg = document.getElementById('arrMsg');
   if (!window.XLSX){ msg.innerHTML = '<div class="df-empty">Spreadsheet reader failed to load — reload the page.</div>'; return; }
   msg.innerHTML = '<div class="df-note">Reading ' + files.length + ' file(s)…</div>';
@@ -2213,6 +2252,7 @@ function processTab(ws, mode){
 }
 
 async function importXlsx(file){
+  if (!_forgeGuard()) return;
   const out = document.getElementById('dfOut');
   if (!window.XLSX){ out.innerHTML = card('Error', '<div class="df-empty">Spreadsheet reader failed to load — check your connection and reload.</div>'); return; }
   out.innerHTML = '<div class="df-note">Reading ' + esc(file.name) + ' …</div>';
@@ -2320,6 +2360,7 @@ function parseRvCsv(text){
 }
 
 async function importRentVacancy(files){
+  if (!_forgeGuard()) return;
   const out = document.getElementById('dfRvOut');
   out.innerHTML = '<div class="df-note">Reading ' + files.map(f => esc(f.name)).join(', ') + ' …</div>';
   try {
