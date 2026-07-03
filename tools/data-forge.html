@@ -226,6 +226,7 @@
   .dsi-table th{ font-size:.68rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:800; position:sticky; top:0; background:var(--panel); z-index:1; }
   .dsi-table tr:last-child td{ border-bottom:0; }
   .dsi-region{ font-weight:700; color:var(--text); }
+  .dsi-table td.dsi-num{ text-align:right; font-variant-numeric:tabular-nums; }
   .dsi-cell{ display:flex; align-items:center; gap:8px; }
   .dsi-in{ font:inherit; width:94px; padding:5px 8px; border-radius:7px; border:1px solid var(--border); background:var(--panel2); color:var(--text); font-variant-numeric:tabular-nums; }
   .dsi-in:focus{ outline:none; border-color:var(--pp-cyan); }
@@ -599,7 +600,7 @@ const CLUSTERS = [
   { key:'inflation', icon:'📉', ingest:'api', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
   { key:'cash_rate', icon:'🏦', ingest:'api', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'api', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
-  { key:'demand_inputs', icon:'🎯', ingest:'manual', label:'Demand Score Dashboard Data', desc:'The Demand Score engine inputs that aren’t elsewhere in Forge: REA listings (house &amp; unit), plus SQM vacancy rate and SQM house &amp; unit rents — per region, monthly. No API (REA is bot-blocked, SQM is subscription), so entered by hand or via the one-click bookmarklet.', view:'demandinputs' },
+  { key:'demand_inputs', icon:'🎯', ingest:'hybrid', label:'Demand Score Dashboard Data', desc:'The Demand Score engine inputs that aren’t elsewhere in Forge: REA listings (house &amp; unit) entered by hand / bookmarklet (REA has no API), plus SQM house &amp; unit rents and SQM vacancy rate auto-fetched from SQM Research — per region.', view:'demandinputs' },
 ];
 
 function badge(status){
@@ -827,31 +828,52 @@ async function loadDemandInputs() {
   dsiApplyIngest();   // if we arrived from the bookmarklet, show the confirm bar
 }
 
+let DSI_TAB = 'listings';
 function renderDemandInputs() {
   const out = document.getElementById('dsiOut');
   const regions = DSI_DATA.regions || {};
-  const filled = DSI_REGIONS.filter(r => regions[r.slug] && (regions[r.slug].listings_h != null || regions[r.slug].listings_u != null)).length;
   const ro = !_forgeCanEdit;
-  const month = DSI_DATA.month || dsiCurMonth();
 
-  let h = '<div class="df-hero"><div class="df-eyebrow">Demand Score · manual inputs</div>'
+  const nList  = DSI_REGIONS.filter(r => regions[r.slug] && (regions[r.slug].listings_h != null || regions[r.slug].listings_u != null)).length;
+  const nRentH = DSI_REGIONS.filter(r => regions[r.slug] && regions[r.slug].rent_h != null).length;
+  const nRentU = DSI_REGIONS.filter(r => regions[r.slug] && regions[r.slug].rent_u != null).length;
+  const N = DSI_REGIONS.length;
+  const pill = DSI_TAB === 'listings' ? (nList ? 'Listings ' + nList + '/' + N : 'No listings yet')
+    : DSI_TAB === 'rent_h' ? (nRentH ? 'House rent ' + nRentH + '/' + N : 'No rent data yet')
+    : DSI_TAB === 'rent_u' ? (nRentU ? 'Unit rent ' + nRentU + '/' + N : 'No rent data yet')
+    : 'Coming next';
+  const pillOk = (DSI_TAB === 'listings' && nList) || (DSI_TAB === 'rent_h' && nRentH) || (DSI_TAB === 'rent_u' && nRentU);
+
+  let h = '<div class="df-hero"><div class="df-eyebrow">Demand Score · engine inputs</div>'
     + '<div class="df-title">Demand Score Dashboard Data</div>'
-    + '<div class="df-sub"><span class="df-statuspill ' + (filled ? 'ok' : '') + '">' + (filled ? 'Listings ' + filled + '/' + DSI_REGIONS.length + ' regions' : 'No listings yet') + '</span> '
-    + '<span>The inputs the Demand Score engine needs that aren’t elsewhere in Forge. Population &amp; DOM come from Forge (Cotality); these four don’t — no API, so they’re entered by hand (or via the bookmarklet).</span></div></div>';
+    + '<div class="df-sub"><span class="df-statuspill ' + (pillOk ? 'ok' : '') + '">' + pill + '</span> '
+    + '<span>The inputs the Demand Score engine needs that aren’t elsewhere in Forge (Population &amp; DOM already are). Listings = manual / bookmarklet (REA has no API); rents = auto-fetched from SQM.</span></div></div>';
 
-  h += '<div class="dsi-tabs">'
-    + '<button class="dsi-tab active" disabled>🏘️ Listings (REA)</button>'
-    + '<button class="dsi-tab soon" disabled title="Coming next">💧 Vacancy Rate — SQM</button>'
-    + '<button class="dsi-tab soon" disabled title="Coming next">🏠 Rent House — SQM</button>'
-    + '<button class="dsi-tab soon" disabled title="Coming next">🏢 Rent Unit — SQM</button>'
-    + '</div>';
+  const tabs = [['listings','🏘️ Listings (REA)'],['rent_h','🏠 Rent House (SQM)'],['rent_u','🏢 Rent Unit (SQM)'],['vr','💧 Vacancy Rate (SQM)']];
+  h += '<div class="dsi-tabs">' + tabs.map(([k, l]) => '<button class="dsi-tab' + (DSI_TAB === k ? ' active' : '') + '" data-tab="' + k + '">' + l + '</button>').join('') + '</div>';
 
-  h += '<div class="df-card"><div class="dsi-controls">'
+  if (DSI_TAB === 'listings') h += dsiListingsBody(ro, regions);
+  else if (DSI_TAB === 'rent_h' || DSI_TAB === 'rent_u') h += dsiRentBody(DSI_TAB === 'rent_u' ? 'u' : 'h', regions);
+  else h += dsiVrBody(regions);
+
+  out.innerHTML = h;
+  out.querySelectorAll('.dsi-tab[data-tab]').forEach(b => b.addEventListener('click', () => { DSI_TAB = b.dataset.tab; renderDemandInputs(); }));
+  if (DSI_TAB === 'listings') {
+    const btn = document.getElementById('dsiSave');
+    if (btn) btn.addEventListener('click', saveDemandInputs);
+    const cp = document.getElementById('dsiBmCopy');
+    if (cp) cp.addEventListener('click', () => { try { navigator.clipboard.writeText(DSI_BOOKMARKLET); cp.textContent = 'Copied ✓'; setTimeout(() => { cp.textContent = 'Copy code'; }, 1500); } catch (e) {} });
+  }
+}
+
+/* Listings tab — manual entry form + one-click bookmarklet. */
+function dsiListingsBody(ro, regions) {
+  const month = DSI_DATA.month || dsiCurMonth();
+  let h = '<div class="df-card"><div class="dsi-controls">'
     + '<label>Month <input type="month" id="dsiMonth" value="' + esc(month) + '"' + (ro ? ' disabled' : '') + '></label>'
     + (ro ? '<span class="df-note">🔒 View only — adding data is restricted to dev / admin.</span>'
           : '<button class="df-btn" id="dsiSave">Save listings</button> <span id="dsiMsg" class="df-note" style="margin-top:0"></span>')
     + '</div>';
-
   h += '<div class="dsi-tablewrap"><table class="dsi-table"><thead><tr>'
     + '<th>Region</th><th>State</th><th>House listings</th><th>Unit listings</th><th>Updated</th></tr></thead><tbody>';
   DSI_REGIONS.forEach(r => {
@@ -859,14 +881,13 @@ function renderDemandInputs() {
     const at = v.listings_h_at || v.listings_u_at;
     h += '<tr><td class="dsi-region">' + esc(r.label) + '</td><td>' + esc(r.state) + '</td>'
       + '<td><div class="dsi-cell"><input type="number" min="0" step="1" class="dsi-in" data-slug="' + r.slug + '" data-f="listings_h" value="' + (v.listings_h != null ? v.listings_h : '') + '"' + (ro ? ' disabled' : '') + '>'
-      + '<a class="dsi-rea" href="' + esc(dsiReaUrl(r, 'h')) + '" target="_blank" rel="noopener" title="Open REA house search (Greater Region)">REA ↗</a></div></td>'
+      + '<a class="dsi-rea" href="' + esc(dsiReaUrl(r, 'h')) + '" target="_blank" rel="noopener" title="Open REA house search">REA ↗</a></div></td>'
       + '<td><div class="dsi-cell"><input type="number" min="0" step="1" class="dsi-in" data-slug="' + r.slug + '" data-f="listings_u" value="' + (v.listings_u != null ? v.listings_u : '') + '"' + (ro ? ' disabled' : '') + '>'
-      + '<a class="dsi-rea" href="' + esc(dsiReaUrl(r, 'u')) + '" target="_blank" rel="noopener" title="Open REA unit search (Greater Region)">REA ↗</a></div></td>'
+      + '<a class="dsi-rea" href="' + esc(dsiReaUrl(r, 'u')) + '" target="_blank" rel="noopener" title="Open REA unit search">REA ↗</a></div></td>'
       + '<td class="dsi-at">' + (at ? fmtDate(at) : '—') + '</td></tr>';
   });
   h += '</tbody></table></div>'
-    + '<div class="df-note">REA has no API and is bot-protected, so listings are recorded by hand. The “REA ↗” links open a best-guess Greater-Region search — refine it if needed; the number you type (Showing 1–25 of <em>N</em>) is what’s saved. Or use the one-click bookmarklet below.</div></div>';
-
+    + '<div class="df-note">REA has no API and is bot-protected, so listings are recorded by hand. The “REA ↗” links open the curated / Greater-Region search; the number you type (Showing 1–25 of <em>N</em>) is what’s saved. Or use the one-click bookmarklet below.</div></div>';
   h += '<div class="df-card"><h2>One-click capture <span class="count">bookmarklet</span></h2>'
     + '<div class="df-note" style="margin-top:0">Drag <b>REA → Forge</b> to your bookmarks bar (or right-click → “Add to bookmarks”). Then on any realestate.com.au results page, click it: it reads the “of N properties” count and the property type, and opens this card with the value pre-filled — just confirm the region and hit <b>Save this</b>. It works because your browser is already signed in past REA’s bot check.</div>'
     + '<div style="margin:12px 0"><a class="dsi-bm" href="' + esc(DSI_BOOKMARKLET) + '" onclick="return false" title="Drag me to your bookmarks bar">📌 REA → Forge</a></div>'
@@ -874,12 +895,56 @@ function renderDemandInputs() {
     + '<textarea class="dsi-bm-code" readonly rows="4" onclick="this.select()">' + esc(DSI_BOOKMARKLET) + '</textarea>'
     + '<div><button class="df-btn" id="dsiBmCopy" style="margin-top:8px">Copy code</button> <span class="df-note" style="margin:0">— then make a new bookmark and paste this as its URL.</span></div>'
     + '</details></div>';
+  return h;
+}
 
-  out.innerHTML = h;
-  const btn = document.getElementById('dsiSave');
-  if (btn) btn.addEventListener('click', saveDemandInputs);
-  const cp = document.getElementById('dsiBmCopy');
-  if (cp) cp.addEventListener('click', () => { try { navigator.clipboard.writeText(DSI_BOOKMARKLET); cp.textContent = 'Copied ✓'; setTimeout(() => { cp.textContent = 'Copy code'; }, 1500); } catch (e) {} });
+/* Rent tab (house/unit) — read-only, auto-fetched from SQM by ingest-sqm-rents.mjs. */
+function dsiRentBody(type, regions) {
+  const label = type === 'u' ? 'Unit' : 'House';
+  const cur = type === 'u' ? 'rent_u' : 'rent_h';
+  const ago = type === 'u' ? 'rent_u_3yr' : 'rent_h_3yr';
+  const wk = DSI_DATA.rent_week_ending;
+  const money = v => (v == null) ? '—' : '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  let h = '<div class="df-card"><div class="dsi-controls">' + ingestChip('api')
+    + '<span class="df-note" style="margin:0">Weekly ' + label.toLowerCase() + ' rents auto-fetched from SQM Research' + (wk ? ' · week ending <b>' + esc(wk) + '</b>' : '') + '. Refresh with <code>node scripts/ingest-sqm-rents.mjs --write</code>.</span></div>';
+  h += '<div class="dsi-tablewrap"><table class="dsi-table"><thead><tr>'
+    + '<th>Region</th><th>State</th><th>Current ' + label.toLowerCase() + ' rent</th><th>Rent 3 yrs ago</th><th>36-mo growth</th><th>Updated</th></tr></thead><tbody>';
+  DSI_REGIONS.forEach(r => {
+    const v = regions[r.slug] || {};
+    const c = v[cur], a = v[ago];
+    const grow = (c != null && a != null && a > 0) ? ((c - a) / a) * 100 : null;
+    h += '<tr><td class="dsi-region">' + esc(r.label) + '</td><td>' + esc(r.state) + '</td>'
+      + '<td class="dsi-num">' + money(c) + '</td>'
+      + '<td class="dsi-num">' + money(a) + '</td>'
+      + '<td class="dsi-num">' + (grow != null ? grow.toFixed(1) + '%' : '—') + '</td>'
+      + '<td class="dsi-at">' + (v.rent_fetched_at ? fmtDate(v.rent_fetched_at) : '—') + '</td></tr>';
+  });
+  h += '</tbody></table></div>'
+    + '<div class="df-note">Source: SQM Research weekly rents (“All ' + label + 's”). 36-month growth = (current − 3-years-ago) ÷ 3-years-ago, where 3-years-ago is derived from SQM’s 3-yr p.a. figure — this is the rental-growth input the Demand Score engine uses.</div></div>';
+  return h;
+}
+
+/* Vacancy Rate tab — read-only, auto-fetched from SQM by ingest-sqm-vacancy.mjs.
+   NOTE: this is the CURRENT SQM vacancy rate; the demand-score sheet historically
+   used an Expected/forecast VR — confirm which feeds the engine when wiring it. */
+function dsiVrBody(regions) {
+  const asOf = DSI_DATA.vr_as_of;
+  const n = DSI_REGIONS.filter(r => regions[r.slug] && regions[r.slug].vr != null).length;
+  let h = '<div class="df-card"><div class="dsi-controls">' + ingestChip('api')
+    + '<span class="df-note" style="margin:0">Current vacancy rate auto-fetched from SQM Research' + (asOf ? ' · as of <b>' + esc(asOf) + '</b>' : '') + '. Refresh with <code>node scripts/ingest-sqm-vacancy.mjs --write</code>.</span></div>';
+  if (!n) h += '<div class="df-note" style="margin-top:0">No vacancy data yet — run the ingest above to populate.</div>';
+  h += '<div class="dsi-tablewrap"><table class="dsi-table"><thead><tr>'
+    + '<th>Region</th><th>State</th><th>Vacancy rate</th><th>As of</th><th>Updated</th></tr></thead><tbody>';
+  DSI_REGIONS.forEach(r => {
+    const v = regions[r.slug] || {};
+    h += '<tr><td class="dsi-region">' + esc(r.label) + '</td><td>' + esc(r.state) + '</td>'
+      + '<td class="dsi-num">' + (v.vr != null ? Number(v.vr).toFixed(2) + '%' : '—') + '</td>'
+      + '<td class="dsi-at">' + (v.vr_as_of ? esc(v.vr_as_of) : '—') + '</td>'
+      + '<td class="dsi-at">' + (v.vr_fetched_at ? fmtDate(v.vr_fetched_at) : '—') + '</td></tr>';
+  });
+  h += '</tbody></table></div>'
+    + '<div class="df-note">Source: SQM Research vacancy rates (latest month) — the <b>raw</b> vacancy rate. The Demand Score engine uses an <b>Adjusted VR</b>, computed from this raw VR in a separate step (to be added); this tab holds the raw input.</div></div>';
+  return h;
 }
 
 async function saveDemandInputs() {
