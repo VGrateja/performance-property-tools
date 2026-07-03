@@ -5119,13 +5119,50 @@ function maybeAutoSettle() {
   }
 }
 
+/* Void requests auto-cancel 60s after void_at (mig 063). We show a live
+   countdown in the banner and, when it reaches zero, ANY watching client calls
+   expire_void_scrabble_game. The server is authoritative (idempotent — first
+   caller wins, the rest no-op), so clock skew or every tab being closed can't
+   leave a request stuck pending. */
+let _voidCountdownTimer = null;
+let _voidExpireFiredFor = null;
+async function _fireVoidExpire() {
+  if (!_gameRow || _gameRow.void_by == null) return;
+  const at = _gameRow.void_at;
+  if (!at) return;
+  if (_voidExpireFiredFor === at) return;          // fire once per request…
+  _voidExpireFiredFor = at;
+  try {
+    const { data } = await window.sb.rpc('expire_void_scrabble_game', { p_game_id: _gameRow.id });
+    if (data && data.expired === false) _voidExpireFiredFor = null;  // …unless our clock ran fast — retry
+  } catch (e) { _voidExpireFiredFor = null; }
+}
+function _renderVoidCountdown() {
+  if (!_gameRow || _gameRow.void_by == null || !_gameRow.void_at) {
+    if (_voidCountdownTimer) { clearInterval(_voidCountdownTimer); _voidCountdownTimer = null; }
+    return;
+  }
+  const remain = Math.max(0, Math.ceil((new Date(_gameRow.void_at).getTime() + 60000 - Date.now()) / 1000));
+  const $cd = document.getElementById('voidCountdown');
+  if ($cd) {
+    $cd.textContent = remain > 0 ? ' · cancels in ' + remain + 's' : ' · cancelling…';
+    $cd.style.color = (remain > 0 && remain <= 10) ? '#f87171' : '';
+  }
+  if (remain <= 0) _fireVoidExpire();
+}
+
 /* Void-request banner (was the draw-offer banner). Shows the pending void,
    the agreement progress, and Agree/Decline buttons to the players who still
    need to respond. */
 function maybeShowDrawOffer() {
   if (!_gameRow || !$drawOfferBanner) return;
   const by = _gameRow.void_by;
-  if (by == null) { $drawOfferBanner.style.display = 'none'; return; }
+  if (by == null) {
+    $drawOfferBanner.style.display = 'none';
+    if (_voidCountdownTimer) { clearInterval(_voidCountdownTimer); _voidCountdownTimer = null; }
+    _voidExpireFiredFor = null;
+    return;
+  }
 
   const agreed = Array.isArray(_gameRow.void_agreed) ? _gameRow.void_agreed : [];
   const active = _gamePlayers.filter(p => !p.resigned).length;
@@ -5152,7 +5189,11 @@ function maybeShowDrawOffer() {
     $drawOfferText.innerHTML = '<strong>' + escapeHtml(reqName) + ' wants to void the game.</strong> Every player must agree.' + countTxt;
     $drawOfferButtons.style.display = 'flex';
   }
+  /* Live "cancels in Xs" countdown (auto-cancel after 1 min — mig 063). */
+  $drawOfferText.innerHTML += ' <span id="voidCountdown" style="opacity:.85;font-weight:600"></span>';
   $drawOfferBanner.style.display = 'block';
+  _renderVoidCountdown();
+  if (!_voidCountdownTimer) _voidCountdownTimer = setInterval(_renderVoidCountdown, 500);
 }
 
 /* Detect status flipping to 'completed' so the OPPOSITE client (the
@@ -5396,7 +5437,7 @@ if ($resignBtn) {
 if ($drawBtn) {
   $drawBtn.addEventListener('click', async () => {
     if (!_gameRow || !_mySeat) return;
-    if (!confirm('Request to void this game? Every other player must agree. If anyone declines, the game continues and you can\'t request again for 5 minutes (others still can). If ranked, no points change.')) return;
+    if (!confirm('Request to void this game? Every other player must agree within 1 minute or the request is cancelled automatically. If anyone declines, the game continues and you can\'t request again for 5 minutes (others still can). If ranked, no points change.')) return;
     clearGameError();
     $drawBtn.disabled = true;
     try {
@@ -5489,6 +5530,8 @@ const _origCloseGameView2 = closeGameView;
 closeGameView = function() {
   if ($resultModal) $resultModal.classList.remove('is-open');
   if ($drawOfferBanner) $drawOfferBanner.style.display = 'none';
+  if (_voidCountdownTimer) { clearInterval(_voidCountdownTimer); _voidCountdownTimer = null; }
+  _voidExpireFiredFor = null;
   _resultShownForGame = null;   // next game starts with a fresh end-window guard
   _origCloseGameView2();
 };
