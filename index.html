@@ -1776,6 +1776,11 @@
      CADENCE_EMAILS and toggles body.cadence-allowed. */
   .cadence-card { display: none !important; }
   body.cadence-allowed .cadence-card { display: flex !important; }
+  /* PM/Cadence is dev/admin only — hide the tile for everyone else even though
+     cadence-allowed stays set for all signed-in users (the class must stay
+     symmetric to avoid the boot freeze; the RESTRICTION is CSS + the nav gate).
+     Higher specificity than the reveal rule above, so it wins. */
+  body:not(.tier-dev):not(.tier-admin) .cadence-card { display: none !important; }
 
   /* Arena is now generally available to the three staff tiers
      (dev / admin / company) — same posture as Cadence. The
@@ -1826,6 +1831,16 @@
   body.hub-pm-active    .hub-pages-track { transform: translateX(-25%); }
   body.hub-arena-active .hub-pages-track { transform: translateX(-50%); }
   body.hub-vault-active .hub-pages-track { transform: translateX(-75%); }
+  /* PM + Vault are dev/admin only. If a stale #pm / #vault hash set the active
+     class for a non-staff user (the pre-paint runs before the tier is known),
+     keep them visually on MAIN — override the slide + un-dim main. Pure CSS
+     keyed on the tier class (set by applyAccessRestrictions); no JS, so it can't
+     touch the boot observer that froze earlier attempts. The nav/redirect JS
+     (setHubPage / _hubCyclePages) already blocks reaching them interactively. */
+  body:not(.tier-dev):not(.tier-admin).hub-pm-active    .hub-pages-track,
+  body:not(.tier-dev):not(.tier-admin).hub-vault-active .hub-pages-track { transform: translateX(0) !important; }
+  body:not(.tier-dev):not(.tier-admin).hub-pm-active    .hub-pages-track > #hubToolsGrid,
+  body:not(.tier-dev):not(.tier-admin).hub-vault-active .hub-pages-track > #hubToolsGrid { opacity: 1 !important; }
   /* When on a non-default page, fade the off-screen pages so a
      screenshot extending past the viewport edge is gentler than a
      hard cut. Each page is opacity:0.55 EXCEPT the active one. */
@@ -3155,39 +3170,28 @@ function applyHubMultiPage() {
   document.body.classList.toggle('hub-multi-page', multi);
 }
 
-/* ─── Cadence visibility allowlist ───
-   Open to every signed-in tier — internal-only tool now, so Tier 3
-   (client) and Tier 4 (guest) see the PM page (and the Cadence
-   tile) the same as Tier 0/1/2. Both are controlled by
-   body.cadence-allowed. The Cadence tool itself still gates write
-   actions via its own isLimitedUser() / RLS checks, so viewers
-   can't mutate boards — only see them. Symmetric tier path also
-   avoids the boot-freeze pattern from the May-2026 incident
-   (asymmetric apply*Visibility wedged the auth chain). */
+/* ─── Cadence / PM allowlist class ───
+   ⚠️ DO NOT tier-gate HERE. This runs inside the body-class MutationObserver
+   (watchHubReveal) AND writes body classes. Making its output depend on the
+   tier (whether by reading a body class OR by removing classes for some tiers)
+   churns against applyAccessRestrictions' unconditional tier-class reset and
+   FREEZES the hub — reproduced twice while trying to hide PM from tier 2/3/4.
+   So this stays SYMMETRIC: cadence-allowed is set for every signed-in user,
+   exactly as before. The PM/Cadence dev/admin-ONLY restriction lives OUTSIDE the
+   observer — in setHubPage() + _hubCyclePages() (nav) and pure CSS
+   (body:not(.tier-dev):not(.tier-admin) hides the tile + keeps them on main). */
 function applyCadenceVisibility() {
   const allowed = !!sessionStorage.getItem('pp_auth');
   document.body.classList.toggle('cadence-allowed', !!allowed);
-  /* Don't strand someone on the PM page if they've just lost
-     access (or never had it). Clears the slider state so the hub
-     defaults back to the main Performance tools view. */
   if (!allowed) document.body.classList.remove('hub-pm-active');
   applyHubMultiPage();
 }
 
-/* ─── Vault visibility ───
-   Open to every signed-in tier — internal tool, symmetric path for
-   all of dev/admin/company/client/guest. Asymmetric gates have a
-   history of causing the sign-in freeze regression on this hub
-   (see feedback_check_user_identity_gates_first.md): when only one
-   user/tier triggers a code path during boot, async timing
-   diverges and the auth flow wedges. Keeping the path identical
-   for every signed-in user closes that footgun for good.
-
-   Vault tile contents stay dev-only via per-tile CSS gates so other
-   staff see the page exists but find no tools there yet. Add tools
-   to #hubToolsGridVault as research workflows materialise, and gate
-   their visibility per-tile (e.g. body:not(.tier-dev) .vault-tool { display:none })
-   if you want them hidden from admin/company. */
+/* ─── Vault allowlist class ───
+   ⚠️ DO NOT tier-gate HERE (same reason as applyCadenceVisibility — doing so
+   froze the hub). Stays SYMMETRIC: vault-allowed set for every signed-in user.
+   The Vault dev/admin-ONLY restriction lives in setHubPage() + _hubCyclePages()
+   (nav) + CSS. (Vault tile CONTENTS were already per-tile dev-gated.) */
 function applyVaultVisibility() {
   const allowed = !!sessionStorage.getItem('pp_auth');
   document.body.classList.toggle('vault-allowed', !!allowed);
@@ -4044,7 +4048,21 @@ function _escapeHtml(s) {
    the .hub-pages-track translateX so the chosen page slides into view.
    Visibility of the pull-tab nav buttons is gated on body.hub-multi-page
    (set when at least one extra page beyond main is accessible). */
+/* PM (Cadence) + Vault pages are DEV/ADMIN only (tier 0/1). We DELIBERATELY do
+   NOT gate this inside the apply*Visibility functions — those run in the
+   body-class MutationObserver, and any per-tier class change there churns
+   against applyAccessRestrictions' tier-class reset and FREEZES the hub (twice
+   reproduced). Instead the gate lives only in these NAV/redirect helpers (called
+   on clicks / keys, never by the observer) + pure CSS. Reads getAccessLevel()
+   from sessionStorage; honours the view-as switcher. */
+function _hubIsStaff() {
+  const l = (typeof getAccessLevel === 'function') ? getAccessLevel() : '';
+  return l === 'dev' || l === 'admin';
+}
 function setHubPage(page) {
+  /* Non-staff can't land on PM / Vault (covers nav + any stale programmatic
+     call). Redirect to main. */
+  if ((page === 'pm' || page === 'vault') && !_hubIsStaff()) page = 'main';
   document.body.classList.toggle('hub-pm-active',    page === 'pm');
   document.body.classList.toggle('hub-arena-active', page === 'arena');
   document.body.classList.toggle('hub-vault-active', page === 'vault');
@@ -4057,13 +4075,15 @@ function setHubPage(page) {
 /* Logical cycle order — pm sits "left of" main, arena/vault sit "right
    of" main. Wraps on overflow in both directions. The DOM track order
    (main, pm, arena, vault) is decoupled from this; translation per page
-   is fixed by the body.hub-*-active CSS rules. */
+   is fixed by the body.hub-*-active CSS rules. PM + Vault are excluded for
+   non-staff so the pull-tabs / arrow keys never reach them. */
 function _hubCyclePages() {
+  const staff = _hubIsStaff();
   const all = ['pm', 'main', 'arena', 'vault'];
   return all.filter(p => {
-    if (p === 'pm')    return document.body.classList.contains('cadence-allowed');
+    if (p === 'pm')    return staff && document.body.classList.contains('cadence-allowed');
     if (p === 'arena') return document.body.classList.contains('arena-allowed');
-    if (p === 'vault') return document.body.classList.contains('vault-allowed');
+    if (p === 'vault') return staff && document.body.classList.contains('vault-allowed');
     return true;   // main is always accessible to signed-in users
   });
 }
