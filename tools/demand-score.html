@@ -777,6 +777,80 @@ function classifyMarket(name, propertyType) {
   return FALLBACK_WORKFORCE[pt].has(key) ? "workforce" : "smooth";
 }
 
+/* ============================================================================
+   DEMAND SCORE ENGINE  ("the machine")
+   Computes the Demand Score locally from 5 raw inputs — population, listings,
+   adjusted vacancy rate, DOM, and 36-month rental growth — reproducing the
+   monthly "Demand Score" spreadsheet's math EXACTLY (verified to the last
+   decimal against the June-2026 House & Unit sheets across all 37 regions).
+   This is what lets the dashboard compute the score itself instead of reading
+   the sheet's pre-computed "Score v Benchmark" column, and it's the piece the
+   Forge data points (SQM VR, SQM House/Unit rent, REA listings) will feed once
+   they land — the formula never changes, only where the 5 inputs come from.
+
+   Per region:
+     F = listings / population * 1000            (listings per 1,000 people)
+     H = VR% * F                                 (Supply Score)
+     L = DOM * (1 - rentalGrowth)                (raw Demand Score)
+     M = L * H                                   (Supply x Demand)
+     N = grade(M)                                (Score Inversion, Grading lookup)
+     O = clamp( ((N - Nbench)/Nbench)*100, -20, 80 )   (Score v Benchmark = Demand Score)
+   Benchmark row uses fixed VR=3, DOM=45, rentalGrowth=0.1, and F = median of F
+   over ALL supplied rows incl. National (matches the sheet's MEDIAN(F4:F40)).
+   Grading table: grade(i) = 100 - 0.5*i; A-thresholds step 1 (0..20), 5 (20..100),
+   10 (100..3740) — generates the sheet's 401-row table exactly.
+   ============================================================================ */
+const PP_DEMAND_ENGINE = (function () {
+  const E1 = 1000;
+  const BENCH = { vr: 3, dom: 45, rentGrowth: 0.1 };
+  // Grading thresholds (column A of the sheet's "Grading" tab). grade = 100 - 0.5*index.
+  const A = (function () {
+    const a = [];
+    for (let v = 0;  v <= 20;   v += 1)  a.push(v);   // idx 0..20
+    for (let v = 25; v <= 100;  v += 5)  a.push(v);   // idx 21..36
+    for (let v = 110; v <= 3740; v += 10) a.push(v);  // idx 37..400
+    return a;
+  })();
+  function grade(M) {
+    if (!(M > A[0])) return 100;                       // M <= 0 -> top grade
+    let lo = 0, hi = A.length - 1, idx = 0;            // approximate VLOOKUP: largest A <= M
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (A[mid] <= M) { idx = mid; lo = mid + 1; } else hi = mid - 1; }
+    return 100 - 0.5 * idx;
+  }
+  function median(arr) {
+    const a = arr.filter(x => typeof x === "number" && isFinite(x)).sort((x, y) => x - y);
+    const n = a.length; if (!n) return 0;
+    return n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2;
+  }
+  /* rows: [{ population, listings, vr, dom, rentGrowth }] with rentGrowth as a
+     decimal. Pass EVERY region incl. National so the benchmark median matches
+     the sheet; drop National for display AFTER. Adds listingsPer1k, supplyScore,
+     rawDS, scoreInversion, demandScore to each row (mutates + returns). */
+  function compute(rows) {
+    rows.forEach(r => {
+      const pop = Number(r.population) || 0, list = Number(r.listings) || 0;
+      r._F = pop > 0 ? (list / pop * E1) : 0;
+      r._H = (Number(r.vr) || 0) * r._F;
+      r._L = (Number(r.dom) || 0) * (1 - (Number(r.rentGrowth) || 0));
+      r._M = r._L * r._H;
+    });
+    const Fb = median(rows.map(r => r._F));
+    const Nb = grade((BENCH.dom * (1 - BENCH.rentGrowth)) * (BENCH.vr * Fb));
+    rows.forEach(r => {
+      const N = grade(r._M);
+      r.listingsPer1k  = Math.round(r._F * 100) / 100;
+      r.supplyScore    = Math.round(r._H * 100) / 100;
+      r.rawDS          = Math.round(r._L * 10) / 10;
+      r.scoreInversion = Math.round(N * 10) / 10;
+      r.demandScore    = Math.round(Math.min(80, Math.max(-20, ((N - Nb) / Nb) * 100)) * 10) / 10;
+      delete r._F; delete r._H; delete r._L; delete r._M;
+    });
+    return rows;
+  }
+  return { compute, grade, median, BENCH, _A: A };
+})();
+try { window.PP_DEMAND_ENGINE = PP_DEMAND_ENGINE; } catch (e) {}
+
 function parseMarkets(sheets, propertyType) {
   const data = sheets["DATA"] || [];
   const rv = sheets["Runway v Demand"] || [];
@@ -784,38 +858,70 @@ function parseMarkets(sheets, propertyType) {
   const median = sheets["Median prices"] || [];
   const rental = sheets["Rental Growth"] || [];
 
-  let dsCol = -1;
-  const hr = data[1] || [];
-  for (let c = 0; c < hr.length; c++) {
-    if (String(hr[c] || "").includes("Score v Benchmark")) { dsCol = c; break; }
-  }
-  if (dsCol < 0) dsCol = 14;
-  const siCol = dsCol - 1;
-
   const g = (row, col) => {
     const v = row?.[col];
     return (v !== null && v !== undefined && v !== "" && !isNaN(Number(v))) ? Number(v) : 0;
   };
 
-  const markets = [];
+  /* THE MACHINE — compute the Demand Score locally from raw model inputs
+     (population, listings, adjusted VR, DOM, 36-mo rental growth) via
+     PP_DEMAND_ENGINE, instead of reading the sheet's pre-computed columns
+     (F/H/L/N/O). Collect EVERY region row incl. National first so the benchmark
+     median matches the sheet's MEDIAN(F4:F40); National is dropped from the
+     displayed markets afterwards. */
+  const rawRows = [];
   for (let i = 3; i < data.length; i++) {
     const row = data[i], name = row?.[0];
-    if (!name || name === "National") continue;
-    markets.push({
+    if (!name) continue;
+    rawRows.push({
+      srcRow: i,
       name: cleanName(name),
       state: String(row?.[1] || "").trim(),
       population: Math.round(g(row, 3)),
       listings: Math.round(g(row, 4)),
-      listingsPer1k: Math.round(g(row, 5) * 100) / 100,
-      adjustedVR: Math.round(g(row, 6) * 100) / 100,
-      supplyScore: Math.round(g(row, 7) * 100) / 100,
+      vr: g(row, 6),                 // adjusted VR (%)
       dom: Math.round(g(row, 8)),
-      rentalGrowth36m: Math.round(g(row, 9) * 1000) / 10,
-      rawDS: Math.round(g(row, 11) * 10) / 10,
-      demandScore: Math.round(g(row, dsCol) * 10) / 10,
-      scoreInversion: Math.round(g(row, siCol) * 10) / 10,
+      rentGrowth: g(row, 9),         // 36-mo rental growth (decimal)
+      isNational: String(name).trim().toLowerCase() === "national",
     });
   }
+  PP_DEMAND_ENGINE.compute(rawRows);
+
+  /* Parity self-check (console only): compare the engine's Demand Score to the
+     sheet's own pre-computed "Score v Benchmark" column so any divergence from
+     the source formula is visible during development. Purely diagnostic — the
+     engine's value is what the dashboard uses. */
+  try {
+    const hdr = data[1] || []; let oCol = 14;
+    for (let c = 0; c < hdr.length; c++) if (String(hdr[c] || "").includes("Score v Benchmark")) { oCol = c; break; }
+    let maxDrift = 0, worst = "";
+    rawRows.forEach(r => {
+      if (r.isNational) return;
+      const d = Math.abs((r.demandScore || 0) - Math.round(g(data[r.srcRow], oCol) * 10) / 10);
+      if (d > maxDrift) { maxDrift = d; worst = r.name; }
+    });
+    console.info(`[Demand Engine] ${propertyType}: computed ${rawRows.length - 1} markets; max Demand Score drift vs sheet = ${maxDrift.toFixed(2)}${worst ? " (" + worst + ")" : ""}`);
+    if (maxDrift > 0.1) console.warn(`[Demand Engine] ${propertyType}: drift ${maxDrift.toFixed(2)} > 0.1 — engine inputs may differ from the sheet.`);
+  } catch (e) {}
+
+  const markets = [];
+  rawRows.forEach(r => {
+    if (r.isNational) return;
+    markets.push({
+      name: r.name,
+      state: r.state,
+      population: r.population,
+      listings: r.listings,
+      listingsPer1k: r.listingsPer1k,
+      adjustedVR: Math.round(r.vr * 100) / 100,
+      supplyScore: r.supplyScore,
+      dom: r.dom,
+      rentalGrowth36m: Math.round(r.rentGrowth * 1000) / 10,
+      rawDS: r.rawDS,
+      demandScore: r.demandScore,
+      scoreInversion: r.scoreInversion,
+    });
+  });
 
   /* Cache the live market count so the hub's "At a glance" →
      Regions Tracked tile can read it without having to refetch the
