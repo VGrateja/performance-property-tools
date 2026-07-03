@@ -3188,6 +3188,7 @@ async function saveState(){
   // entry ships as part of this save.
   _appendAuditEntry('Saved');
   const state = _buildClockState();
+  state.clockImageUpdatedAt = Date.now();   // version stamp read by the Presentation clock-image embed (bumped every save)
   const btn=document.getElementById('save-btn');
   const ind=document.getElementById('save-indicator');
   ind.textContent='Saving…';
@@ -3205,6 +3206,7 @@ async function saveState(){
     setTimeout(()=>btn.classList.remove('saved'),2000);
     toast('Saved! Everyone will see your changes on next refresh.');
     _notifyClockSaved();
+    _uploadClockImage();   // regenerate the shared clock JPG so Presentations embedding it update (best-effort)
   }catch(e){
     ind.textContent='Save failed';
     toast('Save failed — check your connection and try again.');
@@ -3224,6 +3226,31 @@ function _notifyClockSaved(){
     window.sb.functions.invoke('notify-clock', { body: { editorName } })
       .catch(err => console.warn('[clock] notify failed', err));
   }catch(e){ console.warn('[clock] notify threw', e); }
+}
+
+/* Regenerate the shared clock snapshot JPG (the SAME capture as the JPEG
+   download — full #clock-capture at scale 3) and upload it to the PUBLIC
+   'clock-image' bucket at a FIXED path, so every Presentation embedding the
+   Clock image shows the latest clock. Best-effort: never blocks or fails the
+   save. Only reachable from saveState (dev/admin), and writes are RLS-gated to
+   is_writer() (migration 062). */
+async function _uploadClockImage(){
+  try{
+    if(!window.sb || !window.sb.storage) return;
+    await bakeClockLogo();   // html2canvas can't render CSS filters — pre-bake the logo (same as the exporters)
+    const el=document.getElementById('clock-capture');
+    if(!el) return;
+    let canvas;
+    el.classList.add('pdf-export-mode');
+    await new Promise(r=>setTimeout(r,40));
+    try{ canvas=await html2canvas(el,{scale:3,useCORS:true,backgroundColor:'#e8ebef',logging:false}); }
+    finally{ el.classList.remove('pdf-export-mode'); }
+    const blob=await new Promise(res=>canvas.toBlob(res,'image/jpeg',0.95));
+    if(!blob) return;
+    const { error }=await window.sb.storage.from('clock-image')
+      .upload('national-clock.jpg', blob, { upsert:true, contentType:'image/jpeg', cacheControl:'3600' });
+    if(error) console.warn('[clock] image upload failed', error);
+  }catch(e){ console.warn('[clock] image snapshot failed', e); }
 }
 
 async function loadState(){

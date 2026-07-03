@@ -1104,6 +1104,7 @@
   #pres-add-table      { --tc:#a78bfa; }   /* Table — violet     */
   #pres-add-connector  { --tc:#f472b6; }   /* Connect — pink     */
   #pres-add-formatted  { --tc:#2dd4bf; }   /* Slide Library — teal */
+  #pres-add-clock      { --tc:#fb7185; }   /* Clock — rose       */
   #pres-refresh-charts { --tc:#fbbf24; }   /* Refresh — amber    */
   #pres-sync-slides    { --tc:#38bdf8; }   /* Sync — sky         */
   #pres-visibility-btn { --tc:#34d399; }   /* Publish — emerald  */
@@ -1116,6 +1117,7 @@
   [data-theme="light"] #pres-add-table      { --tc:#7c3aed; }
   [data-theme="light"] #pres-add-connector  { --tc:#db2777; }
   [data-theme="light"] #pres-add-formatted  { --tc:#0d9488; }
+  [data-theme="light"] #pres-add-clock      { --tc:#e11d48; }
   [data-theme="light"] #pres-refresh-charts { --tc:#d97706; }
   [data-theme="light"] #pres-sync-slides    { --tc:#0284c7; }
   [data-theme="light"] #pres-visibility-btn { --tc:#059669; }
@@ -3149,6 +3151,10 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 16l3.5-4 2.5 3 3-4.5"/><line x1="3" y1="20" x2="21" y2="20"/></svg>
     + Slide Library
   </button>
+  <button class="pres-edit-btn" id="pres-add-clock" type="button" title="Insert the National Property Clock as an auto-updating image — it refreshes to the latest whenever the Clock tool is saved, and exports cleanly in PDF/JPG.">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></svg>
+    + Clock
+  </button>
   <div class="pres-edit-sep" aria-hidden="true"></div>
   <button class="pres-edit-btn" id="pres-refresh-charts" type="button" title="Refresh all report-chart data on this deck from the latest Online Reports cache">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><polyline points="21 4 21 10 15 10"/></svg>
@@ -3249,10 +3255,9 @@
      which live embed to drop onto the current slide. Each option
      spawns a draggable / resizable / croppable embed overlay. -->
 <div class="pres-shape-picker" id="pres-embed-picker" role="menu" style="width:200px">
-  <button class="pres-shape-pick" data-embed="clock" type="button" title="National Property Clock" style="width:100%;flex-direction:row;justify-content:flex-start;gap:8px;padding:8px 12px">
-    <span style="font-size:18px">🕐</span>
-    <span style="font-size:11px;font-weight:600">Property Clock</span>
-  </button>
+  <!-- Property Clock is now inserted as an auto-updating IMAGE (the "+ Clock"
+       toolbar button), not a live iframe embed — it exports in PDF/JPG and
+       refreshes when the Clock tool is saved. -->
   <button class="pres-shape-pick" data-embed="runway-house" type="button" title="Runway v Demand (Houses + Units tabs)" style="width:100%;flex-direction:row;justify-content:flex-start;gap:8px;padding:8px 12px">
     <span style="font-size:18px">📈</span>
     <span style="font-size:11px;font-weight:600">Runway v Demand</span>
@@ -4070,18 +4075,18 @@ function _buildThumbOverlay(o) {
     }
     el.innerHTML = o.html != null ? o.html : '';
     _applyTextVAlign(el, o);
-  } else if (o.type === 'image' && (o.src || o.storage)) {
+  } else if (o.type === 'image' && (o.src || o.storage || o.clockImage)) {
     const img = document.createElement('img');
     img.draggable = false;
     img.style.opacity = (o.opacity != null ? o.opacity : 1);   // image overlay opacity (0–1)
     img.style.width = '100%';
     img.style.height = '100%';
-    img.style.objectFit = 'cover';
-    /* Storage-backed thumbnails fetch a signed URL the same way the
-       interactive renderer does; cached after the first call so
-       picker-card refreshes don't re-sign. Legacy inlined data URLs
-       remain supported until the one-shot migration runs. */
-    if (o.storage) {
+    img.style.objectFit = o.clockImage ? 'contain' : 'cover';
+    /* clockImage → live National Property Clock JPG (auto-updating); else
+       storage-backed → signed URL; else legacy inlined data URL. */
+    if (o.clockImage) {
+      _getClockImageUrl().then(url => { if (url) img.src = url; });
+    } else if (o.storage) {
       _getSignedImageUrl(o.storage).then(url => { if (url) img.src = url; });
     } else if (o.src) {
       img.src = o.src;
@@ -5540,9 +5545,12 @@ function buildThumbOverlayEl(o) {
     img.style.opacity = (o.opacity != null ? o.opacity : 1);   // image overlay opacity (0–1)
     img.style.width = '100%';
     img.style.height = '100%';
-    /* Same dual-mode handling as the interactive renderer: storage
-       path → signed URL; legacy data URL → use directly. */
-    if (o.storage) {
+    /* clockImage → live clock JPG (contain-fit); else storage → signed URL;
+       else legacy data URL. */
+    if (o.clockImage) {
+      img.style.objectFit = 'contain';
+      _getClockImageUrl().then(url => { if (url) img.src = url; });
+    } else if (o.storage) {
       _getSignedImageUrl(o.storage).then(url => { if (url) img.src = url; });
     } else if (o.src) {
       img.src = o.src;
@@ -9922,10 +9930,13 @@ function buildOverlayEl(o) {
     const img = document.createElement('img');
     img.draggable = false;
     img.style.opacity = (o.opacity != null ? o.opacity : 1);   // image overlay opacity (0–1)
-    /* New (storage-backed) image overlays carry o.storage = bucket
-       path; render fetches a signed URL. Legacy overlays still using
-       inlined o.src (base64 data URL) keep working until migrated. */
-    if (o.storage) {
+    /* clockImage → the live National Property Clock JPG (auto-updating public
+       URL, CONTAIN-fit so the whole clock always shows, never cropped); else
+       storage-backed → signed URL; else legacy inlined o.src (base64 data URL). */
+    if (o.clockImage) {
+      img.style.width = '100%'; img.style.height = '100%'; img.style.objectFit = 'contain';
+      _getClockImageUrl().then(url => { if (url) img.src = url; });
+    } else if (o.storage) {
       _getSignedImageUrl(o.storage).then(url => { if (url) img.src = url; });
     } else if (o.src) {
       img.src = o.src;
@@ -10974,6 +10985,47 @@ async function _getSignedImageUrl(path) {
   }
 }
 
+/* National Property Clock — auto-updating embed. The Clock tool uploads a fresh
+   JPG to the PUBLIC 'clock-image' bucket on every Save (fixed path) and bumps
+   clock_state.payload.clockImageUpdatedAt. Resolve the public URL once per
+   page-load and cache-bust with that version, so a clock-image overlay always
+   shows the latest clock (refreshes when the deck is next opened). */
+const CLOCK_IMAGE_BUCKET = 'clock-image';
+const CLOCK_IMAGE_PATH   = 'national-clock.jpg';
+let _clockImageUrlPromise = null;
+function _getClockImageUrl() {
+  if (_clockImageUrlPromise) return _clockImageUrlPromise;
+  _clockImageUrlPromise = (async () => {
+    if (!window.sb || !window.sb.storage) return '';
+    let v = '';
+    try {
+      const { data } = await window.sb.from('clock_state').select('payload').eq('id', 1).single();
+      if (data && data.payload && data.payload.clockImageUpdatedAt != null) v = String(data.payload.clockImageUpdatedAt);
+    } catch (_) {}
+    let base = '';
+    try { const { data: pub } = window.sb.storage.from(CLOCK_IMAGE_BUCKET).getPublicUrl(CLOCK_IMAGE_PATH); base = (pub && pub.publicUrl) || ''; } catch (_) {}
+    if (!base) return '';
+    return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'v=' + encodeURIComponent(v || '1');
+  })();
+  return _clockImageUrlPromise;
+}
+
+/* Insert the National Property Clock as an auto-updating image overlay. Carries
+   no src/storage — the renderers resolve the live clock JPG via _getClockImageUrl,
+   so it always shows the latest clock and exports cleanly in PDF/JPG. */
+function ovAddClockImage() {
+  if (!_activeDeck) return;
+  const w = 980, h = 620;
+  currentOverlays().push({
+    id: 'clock-' + Date.now(), type: 'image', clockImage: true,
+    x: Math.round((1280 - w) / 2), y: Math.round((720 - h) / 2), w: w, h: h,
+  });
+  saveOverlays();
+  _selectedId = currentOverlays()[currentOverlays().length - 1].id;
+  renderOverlays();
+  pushHistory();
+}
+
 /* Resize + re-encode an image before upload so the bucket file isn't
    needlessly huge. Slides are 1280×720, so any source dimension over
    ~1600px is rendering at downscaled resolution anyway — discarding
@@ -11761,6 +11813,8 @@ const addTableBtn = document.getElementById('pres-add-table');
 if (addTableBtn) addTableBtn.addEventListener('click', ovAddTable);
 const addConnectorBtn = document.getElementById('pres-add-connector');
 if (addConnectorBtn) addConnectorBtn.addEventListener('click', ovConnectSelected);
+const addClockBtn = document.getElementById('pres-add-clock');
+if (addClockBtn) addClockBtn.addEventListener('click', ovAddClockImage);
 const refreshChartsBtn = document.getElementById('pres-refresh-charts');
 if (refreshChartsBtn) refreshChartsBtn.addEventListener('click', () => refreshReportCharts({ toast: true }));
 const syncSlidesBtn = document.getElementById('pres-sync-slides');
