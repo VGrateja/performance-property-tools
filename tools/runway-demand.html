@@ -317,41 +317,6 @@ body.user-d-robbins .month-display{color:#000080}
 .tooltip{position:absolute;pointer-events:none;background:#1a2236;border:1px solid rgba(0,182,203,.4);color:#fff;border-radius:8px;padding:10px 14px;font-size:.8rem;line-height:1.7;box-shadow:0 4px 24px rgba(0,0,0,.55);opacity:0;transition:opacity .15s;white-space:nowrap;z-index:10}
 .tooltip strong{color:var(--accent);font-size:.88rem;display:block;margin-bottom:2px}
 
-/* Chart-level loading overlay — fades in/out when toggling to Live
-   Sheet or hitting the refresh button. Sits above the SVG inside
-   .chart-wrap; backdrop-filter blurs the chart underneath so the
-   "Refreshing…" message is unmissable without obscuring the data
-   completely. Pointer-events:none on the spinner/text wrapper so
-   tooltips on dots still register if the user moves the cursor
-   over them while the overlay is fading. */
-.chart-loading-overlay{
-  position:absolute; inset:0;
-  display:flex; flex-direction:column;
-  align-items:center; justify-content:center;
-  gap:14px;
-  background:rgba(255,255,255,0.55);
-  backdrop-filter:blur(2px); -webkit-backdrop-filter:blur(2px);
-  border-radius:12px;
-  opacity:0; pointer-events:none;
-  transition:opacity .22s ease;
-  z-index:20;
-}
-.chart-loading-overlay.active{ opacity:1; pointer-events:auto; }
-.chart-loading-spinner{
-  width:40px; height:40px;
-  border:3px solid rgba(0,182,203,0.18);
-  border-top-color:#00b6cb;
-  border-radius:50%;
-  animation:rwdSpin .85s linear infinite;
-}
-.chart-loading-text{
-  font-family:'Roboto',sans-serif;
-  font-size:12px; font-weight:600; letter-spacing:.04em;
-  color:#0a8493;
-  text-shadow:0 1px 2px rgba(255,255,255,.6);
-}
-@keyframes rwdSpin{ to{ transform:rotate(360deg); } }
-[data-theme="light"] .chart-loading-overlay{ background:rgba(255,255,255,0.70); }
 .timeline{width:100%;max-width:1120px;margin-top:12px;display:flex;align-items:center;gap:10px}
 .tl-track{flex:1;display:flex;gap:3px}
 .tl-tick{flex:1;height:5px;border-radius:3px;background:rgba(255,255,255,.07);cursor:pointer;transition:background .18s}
@@ -660,20 +625,8 @@ body.embed-mode html { overflow: hidden; }
     </select>
   </div>
   <div class="ctrl-group">
-    <label>Runway Source</label>
+    <label>&nbsp;</label>
     <div style="display:flex;align-items:center;gap:8px;height:38px">
-      <select id="runwayDataSelect" style="height:38px">
-        <option value="v1" selected>Demand Dashboard</option>
-        <option value="v2">Live Sheet</option>
-      </select>
-      <!-- Refresh: clears the in-memory V2 cache + refetches from the
-           Apps Script. Visible only when "Live Sheet" is active —
-           hidden in Demand Dashboard mode since there's nothing to
-           refresh. -->
-      <button id="runwayRefreshBtn" type="button"
-              title="Refresh from Live Sheet"
-              aria-label="Refresh runway data"
-              style="display:none;height:38px;width:38px;padding:0;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);cursor:pointer;font-size:16px;line-height:1;flex-shrink:0">↻</button>
       <!-- Secret: tick to SHOW the runway axis tick labels + bottom
            legend. Unlabelled on purpose so it isn't discoverable to
            non-advisor users. Default unchecked = axis hidden. -->
@@ -700,16 +653,6 @@ body.embed-mode html { overflow: hidden; }
   <div class="chart-month" id="chartMonthLabel">May 2026</div>
   <svg id="chart"></svg>
   <div class="tooltip" id="tooltip"></div>
-  <!-- Chart-level loading overlay shown while the V2 sheet fetch
-       is in flight (toggle to Live Sheet, refresh button click).
-       Sits above the SVG inside chart-wrap so the existing PDF/JPEG
-       export still captures only chart content (overlay is removed
-       from the DOM tree visually before export, since this is just
-       a transient indicator). -->
-  <div class="chart-loading-overlay" id="chartLoadingOverlay" aria-hidden="true">
-    <div class="chart-loading-spinner"></div>
-    <div class="chart-loading-text">Refreshing runway data…</div>
-  </div>
 </div>
 <div class="timeline">
   <span class="tl-label" id="tlStart"></span>
@@ -904,8 +847,7 @@ function setRunwayAxisMid(mid){
 
    Clamps to [0, iW] so dots, trail lines, and labels stay inside
    the chart edges even when the runway value (or the active axis
-   shift) would push them past the runway-axis bounds. Applies to
-   both Demand Dashboard and Live Sheet data. */
+   shift) would push them past the runway-axis bounds. */
 function dataX(rw){
   const px = xScale(rw - (runwayTickMid - RUNWAY_MID_DEFAULT));
   return Math.max(0, Math.min(iW, px));
@@ -914,61 +856,26 @@ function dataX(rw){
 /* Data-y helper: same edge-clamp policy as dataX but for the demand
    score axis. Pins any dot whose ds is above the top tick (82) or
    below the bottom tick (-25) to the chart's top/bottom edge instead
-   of rendering off the plot. Applies to both Demand Dashboard and
-   Live Sheet data. */
+   of rendering off the plot. */
 function dataY(ds){
   const py = yScale(ds);
   return Math.max(0, Math.min(iH, py));
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   V1 / V2 RUNWAY DATA SOURCE
+   RUNWAY DATA SOURCE
    ───────────────────────────────────────────────────────────────────
-   V1 (default): runway values come from RAW (the Demand Dashboard
-   feed). The legend stays "Runway - 5 Year Wage Growth | PP
-   Variable Rate: 4.94%".
-
-   V2: runway values for every region are overridden by a single live
-   value from a Google Sheet (the "Wage growth Prediction" / "Wage
-   (Units)" tabs). The legend year + rate also come from the sheet
-   (cells I9/S10 for houses, O9/J10 for units). Trails go vertical
-   in V2 since the sheet only carries one snapshot per region — the
-   x-position is constant across months and only the demand score
-   (y) animates.
-
-   Region naming: the sheet often suffixes names ("Greater Geelong",
-   "Port Macquarie-Hastings"). We do a fuzzy contains-test against
-   the canonical list this tool already uses (Sydney, Melbourne, ...,
-   Wollongong) — sheet names that contain a canonical name match it.
-   "Mandurah" doesn't match anything and is silently dropped.
-
-   Cache: none — every page reload fetches fresh from the Apps
-   Script. Internal-only tool, low traffic, and edits to the sheet
-   should reflect on next reload. The in-memory runwayV2Data still
-   sticks for the duration of a single session so dropdown / tab
-   flips don't trigger redundant fetches mid-session. To pick up
-   sheet edits without touching the cache: reload the page.
+   Runway values come from RAW (the Demand Dashboard feed / pushed
+   months). The legend reads "Runway - <n> Year Wage Growth | PP
+   Variable Rate: <r>%" off the most-recent push (defaults 5 / 4.94%).
    ═══════════════════════════════════════════════════════════════ */
 
-/* Apps Script Web App URL — exposes the "Wage growth Prediction"
-   (houses) and "Wage (Units)" tabs as JSON. Source script lives at
-   /scripts/apps-script-runway-v2.js. */
-const RUNWAY_V2_URL = 'https://script.google.com/macros/s/AKfycbyjcKNRRrKxNiosaAxNBfrXrPdpnkdyM36kg3YlTRPGcCT7K3Mt1dveEqIxfsrEjIA/exec';
-
-let runwayDataMode = 'v1';   // 'v1' | 'v2'
-let runwayV2Data = null;     // { house:{year,rate,regions}, unit:{...} }
-let runwayV2ByName = null;   // { house:{ "Sydney":65.2, ... }, unit:{...} } — keyed by canonical name
-
-/* Default legend values — preserved verbatim for V1 + as fallbacks
-   if a V2 cell is blank. */
+/* Default legend values — used until a push carries a legend block. */
 const RUNWAY_V1_LEGEND = { year: 5, rate: 4.94 };
 
-/* Sheet percentage cells come back from Apps Script as decimals
-   (0.0635 for 6.35%, 0.652 for 65.2%). V1 stores values in raw
-   percent form (4.94, 65.2). Normalise to V1's format: if the value
-   looks like a decimal share (≤ 2) multiply by 100; otherwise pass
-   through. Threshold 2 (not 1) gives a small safety margin for cells
-   that are typed in as 1.5 etc. without changing the unit. */
+/* The pushed legend's rate comes through as a decimal share (0.0494
+   for 4.94%). Normalise to raw percent: values ≤ 2 are multiplied by
+   100, larger values pass through (threshold 2 gives a safety margin). */
 function _normPercent(v){
   if(typeof v !== 'number' || !Number.isFinite(v)) return v;
   return v <= 2 ? v * 100 : v;
@@ -1006,22 +913,14 @@ function applyRunwayLegend(){
   let rate = RUNWAY_V1_LEGEND.rate;
   const tabKey = (typeof activeType !== 'undefined' && activeType === 'unit') ? 'unit' : 'house';
 
-  if(runwayDataMode === 'v2' && runwayV2Data){
-    const block = runwayV2Data[tabKey];
-    if(block){
-      if(typeof block.year === 'number' && Number.isFinite(block.year)) year = block.year;
-      if(typeof block.rate === 'number' && Number.isFinite(block.rate)) rate = _normPercent(block.rate);
-    }
-  } else if(runwayDataMode === 'v1'){
-    // V1 (Demand Dashboard) reads its legend off the most-recent
-    // push from the Demand Score tool. Falls back to the hardcoded
-    // 5 / 4.94 defaults if no push has carried a legend block yet.
-    const pushed = _readPushedLegend();
-    const block = pushed && pushed[tabKey];
-    if(block){
-      if(typeof block.year === 'number' && Number.isFinite(block.year)) year = block.year;
-      if(typeof block.rate === 'number' && Number.isFinite(block.rate)) rate = _normPercent(block.rate);
-    }
+  // Legend reads off the most-recent push from the Demand Score tool.
+  // Falls back to the hardcoded 5 / 4.94 defaults if no push has
+  // carried a legend block yet.
+  const pushed = _readPushedLegend();
+  const block = pushed && pushed[tabKey];
+  if(block){
+    if(typeof block.year === 'number' && Number.isFinite(block.year)) year = block.year;
+    if(typeof block.rate === 'number' && Number.isFinite(block.rate)) rate = _normPercent(block.rate);
   }
   // Format rate to 2 dp so 6.35 doesn't appear as 6.350000000000001
   // when it comes through as 0.0635 * 100.
@@ -1031,148 +930,16 @@ function applyRunwayLegend(){
   }
 }
 
-/* Build a canonical-name → runway-value lookup from a V2 tab block.
-   sheetRegions is the raw { "Greater Geelong": 53.4, ... } object
-   from the Apps Script. Match rule: sheet entry's normalised name
-   contains the canonical normalised name (case-insensitive). */
-function _buildV2Lookup(sheetRegions){
-  if(!sheetRegions) return {};
-  const out = {};
-  if(typeof allCities === 'undefined') return out;
-  const norm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  const sheetEntries = Object.entries(sheetRegions).map(([name, val]) => ({
-    raw: name, n: norm(name), val: Number(val)
-  }));
-  allCities.forEach(canonical => {
-    const cn = norm(canonical);
-    // Prefer an exact match if the sheet has one
-    let hit = sheetEntries.find(e => e.n === cn);
-    if(!hit) hit = sheetEntries.find(e => e.n.includes(cn));
-    if(hit && Number.isFinite(hit.val)) out[canonical] = _normPercent(hit.val);
-  });
-  return out;
-}
-
-/* Lookup helper used by render(): returns the runway value to plot
-   for a given data point. V1 → d.rw unchanged. V2 → sheet override
-   when the region matches, falling back to d.rw if the sheet is
-   missing that region. */
+/* Lookup helper used by render(): the runway value to plot for a data
+   point — always the point's own value. (`kind` is accepted but unused;
+   kept so the Combined-view call sites don't need touching.) */
 function getRunwayValue(d, kind){
-  if(runwayDataMode !== 'v2' || !runwayV2ByName) return d.rw;
-  // Live Sheet override only applies to the most recent month —
-  // scrubbing back into archived months should preserve their
-  // historical runway values regardless of the dropdown setting.
-  if(!isLatestMonth()) return d.rw;
-  // `kind` lets the Combined view resolve each point against its OWN tab
-  // (house point → house sheet, unit point → unit sheet). Falls back to the
-  // active tab for the single-tab views.
-  const resolved = kind || (typeof activeType !== 'undefined' ? activeType : 'house');
-  const tabKey = (resolved === 'unit') ? 'unit' : 'house';
-  const lookup = runwayV2ByName[tabKey];
-  if(lookup && Object.prototype.hasOwnProperty.call(lookup, d.city)){
-    return lookup[d.city];
-  }
   return d.rw;
 }
 
-async function _fetchRunwayV2(){
-  if(!RUNWAY_V2_URL){
-    console.warn('[runway-v2] no URL configured — V2 will fall back to V1 values');
-    return null;
-  }
-  const res = await fetch(RUNWAY_V2_URL, { cache: 'no-store' });
-  if(!res.ok) throw new Error('runway-v2 fetch ' + res.status);
-  return await res.json();
-}
-
-/* Chart-level loading overlay show/hide. Used by both the Live-Sheet
-   toggle and the refresh button so users get a visible "data is
-   updating" cue regardless of how the fetch was triggered. */
-function showChartLoading(){
-  const el = document.getElementById('chartLoadingOverlay');
-  if(el){ el.classList.add('active'); el.setAttribute('aria-hidden', 'false'); }
-}
-function hideChartLoading(){
-  const el = document.getElementById('chartLoadingOverlay');
-  if(el){ el.classList.remove('active'); el.setAttribute('aria-hidden', 'true'); }
-}
-
-/* Load V2 data on demand. Idempotent — once loaded, subsequent calls
-   return immediately. Errors are swallowed and surfaced as a console
-   warning + a fallback to V1 so the chart never breaks just because
-   the sheet is unreachable. */
-async function ensureRunwayV2Loaded(){
-  if(runwayV2Data) return;
-  try {
-    const data = await _fetchRunwayV2();
-    if(!data) return;
-    runwayV2Data = data;
-    runwayV2ByName = {
-      house: _buildV2Lookup(data.house && data.house.regions),
-      unit:  _buildV2Lookup(data.unit  && data.unit.regions)
-    };
-  } catch(err){
-    console.warn('[runway-v2] load failed:', err);
-  }
-}
-
-/* Toggle handler wired to #runwayDataSelect below.
-   Switching INTO V2 always force-refreshes the sheet — same behaviour
-   as clicking the refresh button — so users get the latest numbers
-   without an extra step. The chart-loading overlay shows during the
-   fetch so the data update is visible. V2→V1 doesn't fetch anything. */
-async function setRunwayDataMode(mode){
-  runwayDataMode = (mode === 'v2') ? 'v2' : 'v1';
-  if(runwayDataMode === 'v2'){
-    runwayV2Data = null;
-    runwayV2ByName = null;
-    showChartLoading();
-    try { await ensureRunwayV2Loaded(); }
-    finally { hideChartLoading(); }
-  }
-  applyRunwayLegend();
-  applyRunwaySrcVisibility();
-  if(typeof render === 'function') render(false);
-}
-
-/* Show/hide the Runway Source dropdown + refresh button based on
-   month + mode. Past months don't get the V2 override (it'd
-   retroactively rewrite history) so the controls disappear; the
-   refresh button is also gated on V2 mode since it's meaningless
-   for V1. The "Runway Source" label hides too — leaving a label
-   with no control reads as an empty UI element. */
-function applyRunwaySrcVisibility(){
-  const latest = isLatestMonth();
-  const sel = document.getElementById('runwayDataSelect');
-  const btn = document.getElementById('runwayRefreshBtn');
-  if(sel) sel.style.display = latest ? '' : 'none';
-  if(btn) btn.style.display = (latest && runwayDataMode === 'v2') ? '' : 'none';
-  if(sel){
-    const grp = sel.closest('.ctrl-group');
-    const lbl = grp ? grp.querySelector(':scope > label') : null;
-    if(lbl) lbl.style.display = latest ? '' : 'none';
-  }
-}
-
-/* Manual cache-bust: drop the in-memory V2 snapshot, refetch, repaint.
-   Called by the refresh button next to the Runway Source dropdown.
-   Wraps the fetch in the chart-loading overlay for the same visual
-   cue as the auto-refresh on V1→V2 toggle. */
-async function refreshRunwayV2(){
-  if(runwayDataMode !== 'v2') return;
-  runwayV2Data = null;
-  runwayV2ByName = null;
-  showChartLoading();
-  try { await ensureRunwayV2Loaded(); }
-  finally { hideChartLoading(); }
-  applyRunwayLegend();
-  if(typeof render === 'function') render(false);
-}
-
 /* Runway axis label — always visible. The content (year + variable
-   rate) is swapped by applyRunwayLegend() when the V1/V2 toggle
-   changes; V1 stays at the hardcoded 5/4.94 default, V2 reads the
-   numbers off the live sheet. */
+   rate) is set by applyRunwayLegend() from the most-recent push,
+   falling back to the hardcoded 5 / 4.94 default. */
 const runwayAxisG=g.append('g').attr('id','runwayAxisGroup');
 const runwayAxisLabel=runwayAxisG.append('text').attr('id','runwayAxisLabel').attr('x',iW/2).attr('y',iH+42).attr('text-anchor','middle').attr('fill','#555').attr('font-size','11px').attr('font-family','Roboto,sans-serif').attr('font-weight','600').text('Runway - 5 Year Wage Growth | PP Variable Rate: 4.94%');
 
@@ -1588,11 +1355,8 @@ function goTo(idx,animate=false){
   currentIdx=Math.max(0,Math.min(months.length-1,idx));
   // Legend swaps between full ("Runway - N Year Wage Growth | PP
   // Variable Rate: X.XX%") and bare ("Runway") depending on whether
-  // the cursor is on the latest month. Same gate hides the Runway
-  // Source dropdown + refresh button on archived months. Repaint
-  // on every move.
+  // the cursor is on the latest month. Repaint on every move.
   applyRunwayLegend();
-  applyRunwaySrcVisibility();
   render(animate);
 }
 
@@ -1601,8 +1365,8 @@ document.querySelectorAll('.tab').forEach(btn=>{
   btn.addEventListener('click',()=>{
     document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active'); activeType=btn.dataset.type;
-    // V2 reads year/rate from per-tab cells, so refresh the legend
-    // whenever House/Unit toggles.
+    // Legend year/rate can differ per tab, so refresh it whenever
+    // House/Unit toggles.
     applyRunwayLegend();
     buildRegionList(); render(false);
   });
@@ -1629,36 +1393,6 @@ document.getElementById('selectWorkforceBtn').addEventListener('click',()=>{
 });
 document.getElementById('trailVisSelect').addEventListener('change',e=>{showTrail=e.target.value==='show';render();});
 document.getElementById('trailSelect').addEventListener('change',()=>render());
-
-// V1/V2 runway-source toggle
-const _runwaySrcSel = document.getElementById('runwayDataSelect');
-if(_runwaySrcSel){
-  // Always start in Demand Dashboard (V1) on tool entry — saved
-  // preferences are intentionally ignored. Mid-session toggling
-  // still works as expected; only the fresh-load default is forced.
-  _runwaySrcSel.value = 'v1';
-  _runwaySrcSel.addEventListener('change', () => setRunwayDataMode(_runwaySrcSel.value));
-}
-
-// Refresh-from-sheet button — disables itself + spins while fetching
-const _refreshBtn = document.getElementById('runwayRefreshBtn');
-if(_refreshBtn){
-  _refreshBtn.addEventListener('click', async () => {
-    if(_refreshBtn.disabled) return;
-    _refreshBtn.disabled = true;
-    const prev = _refreshBtn.style.opacity || '';
-    _refreshBtn.style.opacity = '0.5';
-    _refreshBtn.style.transform = 'rotate(180deg)';
-    _refreshBtn.style.transition = 'transform .35s ease';
-    try { await refreshRunwayV2(); }
-    finally {
-      _refreshBtn.disabled = false;
-      _refreshBtn.style.opacity = prev;
-      // Reset transform on the next frame so it's ready for the next click
-      setTimeout(() => { _refreshBtn.style.transform = ''; _refreshBtn.style.transition = ''; }, 400);
-    }
-  });
-}
 
 // Secret advisor toggle: tick to SHOW the runway axis tick labels +
 // bottom legend (kept off the visible labelling so non-advisor users
@@ -1823,7 +1557,6 @@ render(false);
 // Rate: X.XX%" text in place. (If currentIdx were ever 0 / a past
 // month at boot, the helper would short-circuit to plain "Runway".)
 applyRunwayLegend();
-applyRunwaySrcVisibility();
 
 // ── SYNC MARKET TYPES FROM PROPERTY CLOCK (Supabase) ──
 // Property Clock is the source of truth for smooth/workforce classification.
