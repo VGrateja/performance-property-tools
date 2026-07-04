@@ -717,8 +717,9 @@ let state = {
   sortDir: "desc",
   search: "",
   selected: null,
-  view: "table",        // "table" | "grid" | "map"
+  view: "table",        // "table" | "grid" | "map" | "compare"
   compare: [],          // array of market names (max 10)
+  prevSnapshot: null,   // latest forge_demand_snapshots version = the "prev" baseline for the compare view
   houseData: null,
   unitData: null,
   // Wage-growth + PP variable-rate values per property type. Mirrors
@@ -2222,6 +2223,7 @@ function render() {
       ["table", "Table", "table-2"],
       ["grid",  "Cards", "layout-grid"],
       ["map",   "Map",   "map"],
+      ["compare", "vs Prev", "git-compare"],
     ].forEach(([key, label, icn]) => {
       vd.appendChild(h("button", {
         className: "ds-pill" + (view === key ? " active" : ""),
@@ -2399,6 +2401,8 @@ function render() {
         ));
       });
       body.appendChild(grid);
+    } else if (view === "compare") {
+      body.appendChild(compareView(filtered, tab));
     }
   }
 
@@ -2411,6 +2415,125 @@ function render() {
 
   // activate lucide icons
   if (window.lucide) window.lucide.createIcons();
+}
+
+/* ============================================================================
+   COMPARE vs PREVIOUS SNAPSHOT
+   A manager-approval gate: current (live) Demand Score + Runway vs the last
+   stored snapshot (forge_demand_snapshots), with the diff, before the numbers
+   are pushed to Runway v Demand. Mirrors the workbook's "Prev - Cur" tab.
+   ============================================================================ */
+async function loadPrevSnapshot() {
+  try {
+    for (let i = 0; i < 40 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
+    if (!window.sb) return;
+    const { data } = await window.sb.from("forge_demand_snapshots").select("version,label,data").order("version", { ascending: false }).limit(1).maybeSingle();
+    if (data) { state.prevSnapshot = data; if (state.view === "compare") render(); }
+  } catch (e) { /* table may not exist yet */ }
+}
+
+/* Custom hover tooltip — native title="" doesn't render reliably under the
+   fit-screen CSS `zoom` on <html>, so we draw our own. Positions in CSS px by
+   dividing the (zoomed) client coords by the documentElement zoom factor. */
+let _dsTip = null;
+function _dsTipEl() {
+  if (!_dsTip) {
+    _dsTip = document.createElement("div");
+    _dsTip.style.cssText = "position:fixed;z-index:99999;max-width:340px;padding:10px 13px;border-radius:9px;background:#0f172a;color:#e6edf7;font:600 12px/1.55 system-ui,-apple-system,sans-serif;white-space:pre-line;box-shadow:0 10px 30px rgba(0,0,0,.45);border:1px solid rgba(148,163,184,.28);pointer-events:none;display:none";
+    document.body.appendChild(_dsTip);
+  }
+  return _dsTip;
+}
+const _dsZoom = () => parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+function _showTip(text, e) { const t = _dsTipEl(); t.textContent = text; t.style.display = "block"; _moveTip(e); }
+function _moveTip(e) {
+  const t = _dsTip; if (!t || t.style.display === "none") return;
+  const z = _dsZoom(), cx = e.clientX / z, cy = e.clientY / z, vw = window.innerWidth / z, vh = window.innerHeight / z;
+  let x = cx + 16, y = cy + 16;
+  if (x + t.offsetWidth > vw - 8) x = cx - t.offsetWidth - 16;
+  if (y + t.offsetHeight > vh - 8) y = cy - t.offsetHeight - 16;
+  t.style.left = Math.max(4, x) + "px"; t.style.top = Math.max(4, y) + "px";
+}
+function _hideTip() { if (_dsTip) _dsTip.style.display = "none"; }
+
+const _cmpDS = v => (v == null || isNaN(v)) ? "—" : (+v).toFixed(1);
+const _cmpRW = v => (v == null || isNaN(v)) ? "—" : (+v * 100).toFixed(1) + "%";
+function _cmpDelta(cur, prev, kind) {
+  if (cur == null || prev == null || isNaN(cur) || isNaN(prev)) return { txt: "—", col: "var(--ds-fg-faint)" };
+  const d = cur - prev;
+  const flat = Math.abs(d) < (kind === "rw" ? 0.0005 : 0.05);
+  return { txt: (d >= 0 ? "+" : "") + (kind === "rw" ? (d * 100).toFixed(1) + "pp" : d.toFixed(1)), col: flat ? "var(--ds-fg-faint)" : (d > 0 ? "#16a34a" : "#dc2626") };
+}
+
+function compareView(rowsIn, tab) {
+  const prev = state.prevSnapshot;
+  if (!prev) return h("div", { style: { padding: "48px 20px", textAlign: "center", color: "var(--ds-fg-muted)", fontSize: "13px", lineHeight: "1.6" } },
+    "No previous snapshot stored yet.", h("br"), "Apply migration 065 and seed it — e.g. node scripts/seed-demand-snapshot-from-sheet.mjs --write");
+  const prevMap = (prev.data && prev.data[tab === "Houses" ? "houses" : "units"]) || {};
+  const canWrite = (typeof isAdmin === "function" && isAdmin());
+  const wrap = h("div", {});
+
+  wrap.appendChild(h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px", marginBottom: "12px" } },
+    h("div", {},
+      h("div", { style: { fontSize: "14px", fontWeight: "800", color: "var(--ds-fg-1)" } }, "Current (live) vs " + (prev.label || prev.version) + " — " + tab),
+      h("div", { style: { fontSize: "11px", color: "var(--ds-fg-muted)", marginTop: "3px", maxWidth: "640px", lineHeight: "1.5" } },
+        "Review the change before pushing to Runway v Demand. Δ = current − previous; sorted by biggest Demand-Score move.")),
+    canWrite ? h("button", { style: { padding: "7px 14px", borderRadius: "7px", border: "1px solid var(--ds-selection)", background: "var(--ds-indigo-lav)", color: "var(--ds-indigo-ink)", fontSize: "12px", fontWeight: "700", cursor: "pointer", whiteSpace: "nowrap" }, onClick: captureSnapshot }, "Capture current as snapshot") : null
+  ));
+
+  const _arrow = (pv, cv, fmt) => ((pv == null || isNaN(pv)) ? "—" : fmt(+pv)) + "  →  " + ((cv == null || isNaN(cv)) ? "—" : fmt(+cv));
+  const _int0 = v => Math.round(v).toLocaleString();
+  const rows = (rowsIn || []).map(m => {
+    const p = prevMap[_fSlug(m.name)] || {};
+    const dsTitle = "What changed (prev → now):\n"
+      + "Population: " + _arrow(p.pop, m.population, _int0) + "\n"
+      + "Listings: " + _arrow(p.listings, m.listings, _int0) + "\n"
+      + "Adjusted VR: " + _arrow(p.avr, m.adjustedVR, v => v.toFixed(2)) + "\n"
+      + "Rental Growth: " + _arrow(p.rg, m.rentalGrowth36m, v => v.toFixed(2) + "%");
+    const rwTitle = "What changed (prev → now):\n"
+      + "Median " + (tab === "Houses" ? "house" : "unit") + " price: " + _arrow(p.median, m.medianPrice, fmtPrice);
+    return { name: m.name, st: m.state, dsCur: m.demandScore, dsPrev: (p.ds == null ? null : +p.ds), rwCur: m.runway, rwPrev: (p.rw == null ? null : +p.rw), dsTitle, rwTitle };
+  });
+  const chg = r => (r.dsCur == null || r.dsPrev == null) ? -1 : Math.abs(r.dsCur - r.dsPrev);
+  rows.sort((a, b) => chg(b) - chg(a));
+
+  const th = (t, al) => h("th", { style: { padding: "9px 12px", textAlign: al || "left", fontSize: "10px", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--ds-fg-faint)", fontWeight: "800", borderBottom: "1px solid var(--ds-surface-3)", position: "sticky", top: "0", background: "var(--ds-surface-2)" } }, t);
+  const td = (c, al, extra, tip) => {
+    const el = h("td", { style: Object.assign({ padding: "8px 12px", textAlign: al || "left", borderBottom: "1px solid var(--ds-surface-3)", fontVariantNumeric: "tabular-nums" }, extra || {}) }, c);
+    if (tip) { el.style.cursor = "help"; el.addEventListener("mouseenter", e => _showTip(tip, e)); el.addEventListener("mousemove", _moveTip); el.addEventListener("mouseleave", _hideTip); }
+    return el;
+  };
+  const table = h("table", { style: { width: "100%", fontSize: "13px", borderCollapse: "collapse" } });
+  table.appendChild(h("thead", {}, h("tr", {}, th("Market"), th("St"), th("DS prev", "right"), th("DS now", "right"), th("Δ DS", "right"), th("RW prev", "right"), th("RW now", "right"), th("Δ RW", "right"))));
+  const tb = h("tbody", {});
+  rows.forEach(r => {
+    const dds = _cmpDelta(r.dsCur, r.dsPrev, "ds"), drw = _cmpDelta(r.rwCur, r.rwPrev, "rw");
+    tb.appendChild(h("tr", {},
+      td(r.name, "left", { fontWeight: "700", color: "var(--ds-fg-2)" }),
+      td(r.st, "left", { color: "var(--ds-fg-muted)" }),
+      td(_cmpDS(r.dsPrev), "right", { color: "var(--ds-fg-muted)", cursor: "help" }, r.dsTitle),
+      td(_cmpDS(r.dsCur), "right", { fontWeight: "700", cursor: "help" }, r.dsTitle),
+      td(dds.txt, "right", { color: dds.col, fontWeight: "700", cursor: "help" }, r.dsTitle),
+      td(_cmpRW(r.rwPrev), "right", { color: "var(--ds-fg-muted)", cursor: "help" }, r.rwTitle),
+      td(_cmpRW(r.rwCur), "right", { fontWeight: "700", cursor: "help" }, r.rwTitle),
+      td(drw.txt, "right", { color: drw.col, fontWeight: "700", cursor: "help" }, r.rwTitle)));
+  });
+  table.appendChild(tb);
+  wrap.appendChild(h("div", { style: { overflowX: "auto", borderRadius: "12px", border: "1px solid var(--ds-surface-3)" } }, table));
+  return wrap;
+}
+
+async function captureSnapshot() {
+  if (!(typeof isAdmin === "function" && isAdmin())) { alert("Only dev / admin can capture snapshots."); return; }
+  const ver = (prompt("New snapshot version id (e.g. 2026-07):", "") || "").trim(); if (!ver) return;
+  const label = (prompt("Label (e.g. July 2026):", ver) || ver).trim();
+  const toMap = arr => { const o = {}; (arr || []).forEach(m => { const s = _fSlug(m.name); if (s) o[s] = { ds: m.demandScore, rw: m.runway, pop: m.population, listings: m.listings, avr: m.adjustedVR, rg: m.rentalGrowth36m, median: m.medianPrice }; }); return o; };
+  const data = { houses: toMap(state.houseData), units: toMap(state.unitData) };
+  let email = null; try { const p = await sbCurrentProfile(); email = p && p.email; } catch (e) {}
+  const { error } = await window.sb.from("forge_demand_snapshots").upsert({ version: ver, label, data, captured_at: new Date().toISOString(), captured_by: email }, { onConflict: "version" });
+  if (error) { alert("Save failed (writers only): " + error.message); return; }
+  alert("Captured snapshot “" + label + "” — it's now the previous baseline.");
+  loadPrevSnapshot();
 }
 
 /* ============================================================================
@@ -2961,6 +3084,7 @@ function backToVault(){
 }
 
 loadData().finally(scheduleOverlayHide);
+loadPrevSnapshot();   // fetch the latest stored snapshot for the "vs Prev" compare view
 
 /* Defensive 30 s fallback — hides the overlay even if loadData
    never resolves (network entirely dead etc.). */
