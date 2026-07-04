@@ -73,6 +73,29 @@ for (let r = 3; r < g.length; r++) {
   results.push({ region_slug: slug, payload: { ...calc, oeCommencements: numv(row[C.oe]), hhSize: numv(row[C.hhSize]), population: numv(row[C.population]) } });
 }
 
+// ── PRESENTATION sheet extras: 2yr VR forecast, rents (+1yr forecasts), OO%,
+//    property surplus/deficit, 2yr HH & properties. Merged onto each region's
+//    payload (the existing 1yr fields are untouched). Columns per the sheet:
+//    I(8) surplus · E(4) 2yr HH · H(7) 2yr props · L(11) 2yr VR · M(12) OO% ·
+//    N(13) house rent · P(15) 1yr house rent fc · Q(16) unit rent · S(18) unit fc.
+{
+  const pres = XLSX.utils.sheet_to_json(wb.Sheets['PRESENTATION'] || {}, { header: 1, raw: true, defval: '' });
+  const extras = {};
+  for (let r = 1; r < pres.length; r++) {
+    const row = pres[r]; const label = String(row[0] || '').trim(); if (!label) continue;
+    const slug = resolveCity(label); if (!slug) continue;
+    extras[slug] = {
+      forecastVR2: numv(row[11]), ooPct: numv(row[12]), surplus: numv(row[8]),
+      twoYrHH: numv(row[4]), twoYrProps: numv(row[7]),
+      rentHouse: numv(row[13]), rentHouseFc: numv(row[15]),
+      rentUnit: numv(row[16]), rentUnitFc: numv(row[18]),
+    };
+  }
+  let merged = 0;
+  for (const res of results) { const e = extras[res.region_slug]; if (e) { Object.assign(res.payload, e); merged++; } }
+  console.log(`PRESENTATION extras merged onto ${merged}/${results.length} regions (2yr VR, rents, OO%, surplus).`);
+}
+
 console.log('regions parsed:', results.length, unresolved.length ? '| unresolved: ' + unresolved.join(', ') : '');
 console.log(`VERIFY vs workbook: ${pass}/${checks} match`);
 if (fails.length) for (const f of fails.slice(0, 15)) console.log(`  ${f.slug} ${f.k}: calc=${f.mine} workbook=${f.theirs}`);
