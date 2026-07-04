@@ -2719,6 +2719,110 @@ function hideDashboardSyncOverlay(){
   if(el) el.classList.remove('active');
 }
 
+/* ============================================================================
+   FORGE ADAPTER (?src=forge) — compute the demand scores from Forge instead of
+   the Apps Script, running the SAME PP_DEMAND_ENGINE. Gated behind ?src=forge so
+   the live Apps-Script view stays default while we verify side-by-side.
+     population   ← rdp_raw_series (metric=population)
+     listings h/u ← forge_demand_inputs (Demand Score Dashboard Data card)
+     adjusted VR  ← rdp_vr_forecast.forecastVR × 100  (same for house & unit)
+     DOM h/u      ← forge_cotality (cap+lga rows, last col)
+     36-mo growth ← forge_demand_inputs (rent − rent_3yr)/rent_3yr
+     median+grw   ← forge_monthly_price (monthly h/u arrays)
+     runway       ← rdp_runway.payload.house/unit.runway_pct
+     weekly rent  ← forge_demand_inputs.rent_h/u
+   Month-over-month deltas (prev*) are 0 — no computed-score snapshots in Forge yet.
+   ============================================================================ */
+const DS_USE_FORGE = new URLSearchParams(location.search).get('src') === 'forge';
+if (DS_USE_FORGE) { try { const b = document.createElement('div'); b.textContent = '⚡ Forge mode'; b.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:99999;background:#0891b2;color:#fff;font:700 11px system-ui;padding:6px 11px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.35);letter-spacing:.05em'; const add = () => document.body && document.body.appendChild(b); if (document.body) add(); else document.addEventListener('DOMContentLoaded', add); } catch (e) {} }
+
+function _fSlug(s){
+  s = String(s == null ? '' : s).trim(); if (/^national$/i.test(s)) return 'australia';
+  return s.replace(/\([^)]*\)/g, ' ').replace(/,\s*(act|nsw|nt|qld|sa|tas|vic|wa)\b/ig, ' ')
+    .replace(/\bgreater\b/ig, ' ').replace(/\bregional\b/ig, ' ').replace(/-hastings/ig, ' ')
+    .replace(/\s+/g, ' ').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+const _fNum = v => { const n = +String(v == null ? '' : v).replace(/[$,%\s]/g, ''); return isFinite(n) ? n : null; };
+function _mpStats(arr){
+  const a = Array.isArray(arr) ? arr.filter(v => typeof v === 'number' && isFinite(v) && v > 0) : [];
+  const n = a.length; if (!n) return { median: 0, g12: 0, g3: 0 };
+  const latest = a[n - 1], v12 = n > 12 ? a[n - 13] : null, v3 = n > 3 ? a[n - 4] : null;
+  return { median: Math.round(latest), g12: v12 ? Math.round((latest - v12) / v12 * 1000) / 10 : 0, g3: v3 ? Math.round((latest - v3) / v3 * 1000) / 10 : 0 };
+}
+
+async function loadForgeAll(){
+  for (let i = 0; i < 50 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
+  if (!window.sb) throw new Error('No database connection.');
+  const [reg, di, vr, rw, mp, pop, cot] = await Promise.all([
+    window.sb.from('rdp_regions').select('slug,name,state,cluster'),
+    window.sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle(),
+    window.sb.from('rdp_vr_forecast').select('region_slug,payload'),
+    window.sb.from('rdp_runway').select('region_slug,payload'),
+    window.sb.from('forge_monthly_price').select('data').eq('id', 'latest').maybeSingle(),
+    window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', 'population').gte('period', '2020-01-01'),
+    window.sb.from('forge_cotality').select('data').eq('id', 'latest').maybeSingle(),
+  ]);
+  const err = reg.error || di.error || vr.error || rw.error || pop.error;
+  if (err) throw new Error(err.message || 'Forge read failed');
+
+  const M = { name: {}, state: {}, pop: {}, adjVR: {}, runway: {}, domH: {}, domU: {}, mp: {} };
+  (reg.data || []).forEach(r => { M.name[r.slug] = r.name; M.state[r.slug] = r.state; });
+  { const latest = {}; for (const r of (pop.data || [])) { const s = r.region_slug; if (!latest[s] || r.period > latest[s]) { latest[s] = r.period; M.pop[s] = +r.value; } } }
+  (vr.data || []).forEach(r => { const f = r.payload && r.payload.forecastVR; if (f != null) M.adjVR[r.region_slug] = f * 100; });
+  (rw.data || []).forEach(r => { const p = r.payload || {}; M.runway[r.region_slug] = { h: p.house && p.house.runway_pct, u: p.unit && p.unit.runway_pct }; });
+  const cotData = (cot.data && cot.data.data) || {};   // .select('data').maybeSingle() nests the jsonb at .data.data
+  const cotRows = [...((cotData.cap || {}).rows || []), ...((cotData.lga || {}).rows || [])];
+  for (const row of cotRows) { const slug = _fSlug(row[1]); const dom = _fNum(row[6]); if (!slug || dom == null) continue; if (String(row[2]).toUpperCase() === 'U') M.domU[slug] = dom; else M.domH[slug] = dom; }
+  M.mp = ((mp.data && mp.data.data && mp.data.data.regions)) || {};
+  const DI = ((di.data && di.data.data && di.data.data.regions)) || {};
+  if (!Object.keys(DI).length) throw new Error('No Demand Score Dashboard Data in Forge yet.');
+  return { houses: buildForgeMarkets('houses', DI, M), units: buildForgeMarkets('units', DI, M) };
+}
+
+function buildForgeMarkets(propertyType, DI, M){
+  const isU = propertyType === 'units';
+  const rawRows = Object.keys(DI).map(slug => {
+    const d = DI[slug] || {};
+    const rentNow = isU ? d.rent_u : d.rent_h, rent3 = isU ? d.rent_u_3yr : d.rent_h_3yr;
+    return {
+      slug,
+      name: M.name[slug] || (slug === 'australia' ? 'National' : slug),
+      state: M.state[slug] || '',
+      population: M.pop[slug] || 0,
+      listings: (isU ? d.listings_u : d.listings_h) || 0,
+      vr: M.adjVR[slug] != null ? M.adjVR[slug] : 0,               // adjusted VR (percent)
+      dom: (isU ? M.domU[slug] : M.domH[slug]) || 0,
+      rentGrowth: (rentNow != null && rent3 != null && rent3 > 0) ? (rentNow - rent3) / rent3 : 0,
+      isNational: slug === 'australia',
+    };
+  });
+  PP_DEMAND_ENGINE.compute(rawRows);   // National kept in the set for the benchmark median
+
+  const markets = [];
+  rawRows.forEach(r => {
+    if (r.isNational) return;
+    const d = DI[r.slug] || {};
+    const st = _mpStats((M.mp[r.slug] || {})[isU ? 'u' : 'h']);
+    const rw = M.runway[r.slug] || {};
+    const rent = isU ? d.rent_u : d.rent_h;
+    markets.push({
+      name: r.name, state: r.state, population: r.population, listings: r.listings,
+      listingsPer1k: r.listingsPer1k, adjustedVR: Math.round(r.vr * 100) / 100,
+      supplyScore: r.supplyScore, dom: r.dom, rentalGrowth36m: Math.round(r.rentGrowth * 1000) / 10,
+      rawDS: r.rawDS, demandScore: r.demandScore, scoreInversion: r.scoreInversion,
+      runway: (isU ? rw.u : rw.h) != null ? Math.round((isU ? rw.u : rw.h) * 10000) / 10000 : 0,
+      prevRW: 0, rwDiff: 0, prevDS: 0, dsDiff: 0,
+      medianPrice: st.median, priceGrowth12m: st.g12, priceGrowth3m: st.g3,
+      weeklyRent: rent != null ? Math.round(rent) : 0,
+      marketType: classifyMarket(r.name, propertyType),
+    });
+  });
+  markets.sort((a, b) => b.demandScore - a.demandScore);
+  markets.forEach((m, i) => m.dsRank = i + 1);
+  try { if (markets.length) localStorage.setItem('ppa-demand-markets', String(markets.length)); } catch (e) {}
+  return markets;
+}
+
 async function loadData() {
   // Initial load (no data yet) goes through the loading=true path so
   // the dedicated full-screen loading shell renders. Subsequent
@@ -2738,19 +2842,22 @@ async function loadData() {
     render();
   }
   try {
-    const res = await fetch(API_URL, { cache: "no-store" });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const raw = await res.json();
-    setState({
-      houseData: parseMarkets(raw.houses, "houses"),
-      unitData:  parseMarkets(raw.units,  "units"),
-      legend: {
-        house: _extractLegend(raw, "houses"),
-        unit:  _extractLegend(raw, "units")
-      },
-      lastUpdated: new Date(),
-      loading: false
-    });
+    let houseData, unitData, legend;
+    if (DS_USE_FORGE) {
+      // Forge mode (?src=forge): compute the demand scores from Forge instead of
+      // the Apps Script — same PP_DEMAND_ENGINE, inputs assembled from the DB.
+      const fm = await loadForgeAll();
+      houseData = fm.houses; unitData = fm.units;
+      legend = { house: { year: null, rate: null }, unit: { year: null, rate: null } };
+    } else {
+      const res = await fetch(API_URL, { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const raw = await res.json();
+      houseData = parseMarkets(raw.houses, "houses");
+      unitData  = parseMarkets(raw.units,  "units");
+      legend = { house: _extractLegend(raw, "houses"), unit: _extractLegend(raw, "units") };
+    }
+    setState({ houseData, unitData, legend, lastUpdated: new Date(), loading: false });
     // Refresh clock-sourced types and re-render once they land.
     syncTypesFromClock();
   } catch (err) {

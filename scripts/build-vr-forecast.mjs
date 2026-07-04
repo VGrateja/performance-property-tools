@@ -38,8 +38,9 @@ const argv = process.argv.slice(2);
 const WRITE = argv.includes('--write');
 const FILE = argv.find(a => !a.startsWith('--')) || join(homedir(), 'Downloads', 'UPDATED Vacancy Rate Projections.xlsx');
 if (!existsSync(FILE)) { console.error('File not found:', FILE); process.exit(1); }
-const wb = XLSX.readFile(FILE, { cellFormula: false });
-const g = XLSX.utils.sheet_to_json(wb.Sheets['1 yr Vacancy Rate Forecast'], { header: 1, raw: true, defval: '' });
+const wb = XLSX.readFile(FILE, { cellFormula: true });   // keep cell formulas: column J decides OE vs approvals per region
+const WS1 = wb.Sheets['1 yr Vacancy Rate Forecast'];
+const g = XLSX.utils.sheet_to_json(WS1, { header: 1, raw: true, defval: '' });
 
 // header row (row 3, index 2) -> column index by name
 const hdr = (g[2] || []).map(h => String(h).replace(/\s+/g, ' ').trim().toLowerCase());
@@ -64,6 +65,10 @@ const numv = v => (typeof v === 'number' && isFinite(v)) ? v : null;
 // OE Commencements: store every year (2025-2029); the CURRENT calendar year's
 // column is what feeds the forecast (auto-advances 2026→2027→… on each re-seed).
 const CUR_YEAR = new Date().getFullYear();
+// OE vs approvals is decided PER REGION by the sheet's column-J formula (checked
+// in the loop): vlookup('OE Commencements'…) → use OE; "=I" (discounted approvals)
+// → use approvals. A region can HAVE OE data but still be an approvals region
+// (e.g. Bunbury), so we trust the sheet's formula, not merely "has OE data".
 const oeByYearBySlug = {};
 {
   const oe = XLSX.utils.sheet_to_json(wb.Sheets['OE Commencements'] || {}, { header: 1, raw: true, defval: '' });
@@ -121,9 +126,13 @@ for (let r = 3; r < g.length; r++) {
   // Forge Total Approvals × 0.9 (matches the sheet's 10% approvals discount) →
   // else the workbook's own value.
   const oy = oeByYearBySlug[slug];
+  // Column-J formula is authoritative: OE regions vlookup the OE Commencements
+  // tab; approvals regions use "=I". Fall back to "has OE data" only if no formula.
+  const jCell = WS1[XLSX.utils.encode_cell({ r, c: C.oe })];
+  const useOe = ((jCell && jCell.f) ? /oe commencement/i.test(jCell.f) : !!oy) && oy;
   let oeInput, oeSource, oeYear = null;
-  if (oy && oy[CUR_YEAR] != null) { oeInput = oy[CUR_YEAR]; oeSource = 'oe'; oeYear = CUR_YEAR; }
-  else if (oy && Object.keys(oy).length) { const yy = Object.keys(oy).map(Number).sort((a, b) => b - a)[0]; oeInput = oy[yy]; oeSource = 'oe'; oeYear = yy; }   // past 2029 → latest OE year
+  if (useOe && oy[CUR_YEAR] != null) { oeInput = oy[CUR_YEAR]; oeSource = 'oe'; oeYear = CUR_YEAR; }
+  else if (useOe && Object.keys(oy).length) { const yy = Object.keys(oy).map(Number).sort((a, b) => b - a)[0]; oeInput = oy[yy]; oeSource = 'oe'; oeYear = yy; }   // past 2029 → latest OE year
   else if (forgeAppr[slug] != null) { oeInput = forgeAppr[slug].total * 0.9; oeSource = 'forge_approvals'; oeYear = forgeAppr[slug].year; }
   else { oeInput = wbOe; oeSource = 'workbook'; }
   srcCount[oeSource]++;
