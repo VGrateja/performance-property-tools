@@ -2456,13 +2456,16 @@ function _moveTip(e) {
 }
 function _hideTip() { if (_dsTip) _dsTip.style.display = "none"; }
 
-const _cmpDS = v => (v == null || isNaN(v)) ? "—" : (+v).toFixed(1);
-const _cmpRW = v => (v == null || isNaN(v)) ? "—" : (+v * 100).toFixed(1) + "%";
+const _cmpDS = v => (v == null || isNaN(v)) ? "—" : Math.round(+v).toString();          // DS: no decimals
+const _cmpRW = v => (v == null || isNaN(v)) ? "—" : (+v * 100).toFixed(2) + "%";         // Runway: 2 decimals
 function _cmpDelta(cur, prev, kind) {
   if (cur == null || prev == null || isNaN(cur) || isNaN(prev)) return { txt: "—", col: "var(--ds-fg-faint)" };
   const d = cur - prev;
-  const flat = Math.abs(d) < (kind === "rw" ? 0.0005 : 0.05);
-  return { txt: (d >= 0 ? "+" : "") + (kind === "rw" ? (d * 100).toFixed(1) + "pp" : d.toFixed(1)), col: flat ? "var(--ds-fg-faint)" : (d > 0 ? "#16a34a" : "#dc2626") };
+  const flat = Math.abs(d) < (kind === "rw" ? 0.00005 : 0.5);
+  let txt;
+  if (kind === "rw") txt = (d >= 0 ? "+" : "") + (d * 100).toFixed(2) + "pp";
+  else { const dr = Math.round(d); txt = (dr >= 0 ? "+" : "") + dr; }
+  return { txt, col: flat ? "var(--ds-fg-faint)" : (d > 0 ? "#16a34a" : "#dc2626") };
 }
 
 function compareView(rowsIn, tab) {
@@ -2497,29 +2500,45 @@ function compareView(rowsIn, tab) {
   const chg = r => (r.dsCur == null || r.dsPrev == null) ? -1 : Math.abs(r.dsCur - r.dsPrev);
   rows.sort((a, b) => chg(b) - chg(a));
 
-  const th = (t, al) => h("th", { style: { padding: "9px 12px", textAlign: al || "left", fontSize: "10px", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--ds-fg-faint)", fontWeight: "800", borderBottom: "1px solid var(--ds-surface-3)", position: "sticky", top: "0", background: "var(--ds-surface-2)" } }, t);
-  const td = (c, al, extra, tip) => {
-    const el = h("td", { style: Object.assign({ padding: "8px 12px", textAlign: al || "left", borderBottom: "1px solid var(--ds-surface-3)", fontVariantNumeric: "tabular-nums" }, extra || {}) }, c);
+  const GL = "1px solid var(--ds-surface-4)";        // grid line
+  const DIV = "3px solid var(--ds-fg-faint)";         // bold DS↔RW group divider
+  const th = (t, al, opts) => {
+    opts = opts || {};
+    const s = { padding: "13px 14px", textAlign: al || "left", fontSize: "14px", fontWeight: "800", color: "var(--ds-fg-1)", background: "var(--ds-surface-3)", position: "sticky", top: "0", zIndex: "2", borderBottom: "2px solid var(--ds-fg-faint)", borderRight: GL, whiteSpace: "nowrap" };
+    if (opts.left) { s.left = "0"; s.zIndex = "3"; }
+    if (opts.group) s.borderLeft = DIV;
+    return h("th", { style: s }, t);
+  };
+  const td = (c, al, extra, tip, opts) => {
+    opts = opts || {};
+    const s = Object.assign({ padding: "11px 14px", textAlign: al || "left", borderBottom: GL, borderRight: GL, fontVariantNumeric: "tabular-nums" }, extra || {});
+    if (opts.left) { s.position = "sticky"; s.left = "0"; s.zIndex = "1"; s.background = opts.bg || "var(--ds-surface-1)"; }
+    if (opts.group) s.borderLeft = DIV;
+    const el = h("td", { style: s }, c);
     if (tip) { el.style.cursor = "help"; el.addEventListener("mouseenter", e => _showTip(tip, e)); el.addEventListener("mousemove", _moveTip); el.addEventListener("mouseleave", _hideTip); }
     return el;
   };
-  const table = h("table", { style: { width: "100%", fontSize: "13px", borderCollapse: "collapse" } });
-  table.appendChild(h("thead", {}, h("tr", {}, th("Market"), th("St"), th("DS prev", "right"), th("DS now", "right"), th("Δ DS", "right"), th("RW prev", "right"), th("RW now", "right"), th("Δ RW", "right"))));
+  const table = h("table", { style: { width: "100%", fontSize: "13.5px", borderCollapse: "separate", borderSpacing: "0" } });
+  table.appendChild(h("thead", {}, h("tr", {},
+    th("Market", "left", { left: true }), th("St"),
+    th("DS prev", "right"), th("DS now", "right"), th("Δ DS", "right"),
+    th("RW prev", "right", { group: true }), th("RW now", "right"), th("Δ RW", "right"))));
   const tb = h("tbody", {});
-  rows.forEach(r => {
+  rows.forEach((r, idx) => {
+    const bg = idx % 2 === 0 ? "var(--ds-surface-1)" : "var(--ds-surface-2)";
     const dds = _cmpDelta(r.dsCur, r.dsPrev, "ds"), drw = _cmpDelta(r.rwCur, r.rwPrev, "rw");
     tb.appendChild(h("tr", {},
-      td(r.name, "left", { fontWeight: "700", color: "var(--ds-fg-2)" }),
-      td(r.st, "left", { color: "var(--ds-fg-muted)" }),
-      td(_cmpDS(r.dsPrev), "right", { color: "var(--ds-fg-muted)", cursor: "help" }, r.dsTitle),
-      td(_cmpDS(r.dsCur), "right", { fontWeight: "700", cursor: "help" }, r.dsTitle),
-      td(dds.txt, "right", { color: dds.col, fontWeight: "700", cursor: "help" }, r.dsTitle),
-      td(_cmpRW(r.rwPrev), "right", { color: "var(--ds-fg-muted)", cursor: "help" }, r.rwTitle),
-      td(_cmpRW(r.rwCur), "right", { fontWeight: "700", cursor: "help" }, r.rwTitle),
-      td(drw.txt, "right", { color: drw.col, fontWeight: "700", cursor: "help" }, r.rwTitle)));
+      td(r.name, "left", { fontWeight: "800", color: "var(--ds-fg-1)" }, null, { left: true, bg }),
+      td(r.st, "left", { color: "var(--ds-fg-muted)", background: bg }),
+      td(_cmpDS(r.dsPrev), "right", { color: "var(--ds-fg-muted)", background: bg }, r.dsTitle),
+      td(_cmpDS(r.dsCur), "right", { fontWeight: "700", background: bg }, r.dsTitle),
+      td(dds.txt, "right", { color: dds.col, fontWeight: "800", background: bg }, r.dsTitle),
+      td(_cmpRW(r.rwPrev), "right", { color: "var(--ds-fg-muted)", background: bg }, r.rwTitle, { group: true }),
+      td(_cmpRW(r.rwCur), "right", { fontWeight: "700", background: bg }, r.rwTitle),
+      td(drw.txt, "right", { color: drw.col, fontWeight: "800", background: bg }, r.rwTitle)));
   });
   table.appendChild(tb);
-  wrap.appendChild(h("div", { style: { overflowX: "auto", borderRadius: "12px", border: "1px solid var(--ds-surface-3)" } }, table));
+  wrap.appendChild(h("div", { style: { maxHeight: "72vh", overflow: "auto", borderRadius: "12px", border: GL } }, table));
   return wrap;
 }
 
@@ -2876,7 +2895,7 @@ function _mpStats(arr){
 async function loadForgeAll(){
   for (let i = 0; i < 50 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
   if (!window.sb) throw new Error('No database connection.');
-  const [reg, di, vr, rw, mp, pop, cot] = await Promise.all([
+  const [reg, di, vr, rw, mp, pop, cot, rc] = await Promise.all([
     window.sb.from('rdp_regions').select('slug,name,state,cluster'),
     window.sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle(),
     window.sb.from('rdp_vr_forecast').select('region_slug,payload'),
@@ -2884,6 +2903,7 @@ async function loadForgeAll(){
     window.sb.from('forge_monthly_price').select('data').eq('id', 'latest').maybeSingle(),
     window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', 'population').gte('period', '2020-01-01'),
     window.sb.from('forge_cotality').select('data').eq('id', 'latest').maybeSingle(),
+    window.sb.from('rdp_runway_config').select('key,value').in('key', ['rates', 'wage_growth']),
   ]);
   const err = reg.error || di.error || vr.error || rw.error || pop.error;
   if (err) throw new Error(err.message || 'Forge read failed');
@@ -2899,7 +2919,18 @@ async function loadForgeAll(){
   M.mp = ((mp.data && mp.data.data && mp.data.data.regions)) || {};
   const DI = ((di.data && di.data.data && di.data.data.regions)) || {};
   if (!Object.keys(DI).length) throw new Error('No Demand Score Dashboard Data in Forge yet.');
-  return { houses: buildForgeMarkets('houses', DI, M), units: buildForgeMarkets('units', DI, M) };
+
+  // Wage-growth years + PP variable rate ← rdp_runway_config (Runway Workbook config).
+  // Legend text is "Runway - <year> Year Wage Growth | PP Variable Rate: <rate>%".
+  //   year = wage_growth.years ; rate = rates.forecast.rate (the FORECAST variable
+  //   rate — the affordability assumption, 0.0494 → 4.94%, matches the sheet legend).
+  // Same national assumption for house & unit (config is not split by type).
+  const cfg = {}; (rc.data || []).forEach(r => { cfg[r.key] = r.value; });
+  const wgY = (cfg.wage_growth && typeof cfg.wage_growth.years === 'number') ? cfg.wage_growth.years : null;
+  const ppR = (cfg.rates && cfg.rates.forecast && typeof cfg.rates.forecast.rate === 'number') ? cfg.rates.forecast.rate : null;
+  const legend = { house: { year: wgY, rate: ppR }, unit: { year: wgY, rate: ppR } };
+
+  return { houses: buildForgeMarkets('houses', DI, M), units: buildForgeMarkets('units', DI, M), legend };
 }
 
 function buildForgeMarkets(propertyType, DI, M){
@@ -2971,7 +3002,7 @@ async function loadData() {
       // the Apps Script — same PP_DEMAND_ENGINE, inputs assembled from the DB.
       const fm = await loadForgeAll();
       houseData = fm.houses; unitData = fm.units;
-      legend = { house: { year: null, rate: null }, unit: { year: null, rate: null } };
+      legend = fm.legend || { house: { year: null, rate: null }, unit: { year: null, rate: null } };
     } else {
       const res = await fetch(API_URL, { cache: "no-store" });
       if (!res.ok) throw new Error("HTTP " + res.status);
