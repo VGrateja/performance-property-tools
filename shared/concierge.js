@@ -245,111 +245,146 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
     guest:   "Tier 4 (guest). Self-registered viewers. View everything, no edit, no download.",
   };
 
-  /* Live market data — same Google Apps Script the Demand Score
-     Dashboard fetches. Returns { houses:{DATA, "Runway v Demand",
-     "Median prices", "Rental Growth", …}, units:{…}, legend:{…} }
-     where each property-type value is a multi-sheet object of raw
-     rows (NOT an array of market objects). The dashboard normalises
-     these into per-market objects via parseMarkets(); we replicate a
-     lean version here. Public endpoint (no auth); same exposure as
-     demand-score.html. Parsed result cached 5 min. */
-  const DEMAND_API_URL = 'https://script.google.com/macros/s/AKfycbwDaGx8TcnjZpmMrjgDgKbMD2h4oSMPkAetWVrtDF1rqOE4P9IYw0ef_cjWYV7UtamZ/exec';
+  /* Live market data — computed from Forge (Supabase), the SAME source and
+     engine as demand-score.html (the legacy Apps Script feed was retired
+     2026-07-04). Assembles the model inputs from the DB and runs a local port
+     of PP_DEMAND_ENGINE, returning per-market objects (houses[] / units[]) with
+     the fields getMarketData needs. Cached 5 min.
+     NOTE: the engine + Forge assembly below are a lean copy of demand-score's
+     loadForgeAll/buildForgeMarkets — if the formula or the Forge input shapes
+     change, update BOTH. */
   const MARKET_CACHE_TTL_MS = 5 * 60 * 1000;
   const _marketCache = { fetchedAt: 0, houses: null, units: null, promise: null };
 
-  /* Sheet uses verbose region names ("Greater Sydney", "Port
-     Macquarie-Hastings", …) — map back to the canonical short
-     form so cross-sheet joins + the user's query both match. */
-  const _NAME_CLEAN = {
-    'Greater Bendigo':         'Bendigo',
-    'Greater Geelong':         'Geelong',
-    'Greater Hobart':          'Hobart',
-    'Greater Perth':           'Perth',
-    'Greater Sydney':          'Sydney',
-    'Central Coast (NSW)':     'Central Coast',
-    'Port Macquarie-Hastings': 'Port Macquarie',
-    'Tamworth Regional':       'Tamworth',
-  };
-  function _cleanName(n) {
-    const s = String(n || '').trim();
-    return _NAME_CLEAN[s] || s;
+  /* Demand Score engine — lean copy of demand-score.html's PP_DEMAND_ENGINE.
+     F=listings/pop×1000; H=VR%×F; L=DOM×(1−rentGrowth); M=L×H; N=grade(M);
+     DS=clamp(((N−Nbench)/Nbench)×100, −20, 80). Benchmark F = median over ALL
+     rows incl National. Keep in sync with the dashboard's engine. */
+  const _DEMAND_ENGINE = (function () {
+    const E1 = 1000;
+    const BENCH = { vr: 3, dom: 45, rentGrowth: 0.1 };
+    const A = (function () {
+      const a = [];
+      for (let v = 0;   v <= 20;   v += 1)  a.push(v);
+      for (let v = 25;  v <= 100;  v += 5)  a.push(v);
+      for (let v = 110; v <= 3740; v += 10) a.push(v);
+      return a;
+    })();
+    function grade(M) {
+      if (!(M > A[0])) return 100;
+      let lo = 0, hi = A.length - 1, idx = 0;
+      while (lo <= hi) { const mid = (lo + hi) >> 1; if (A[mid] <= M) { idx = mid; lo = mid + 1; } else hi = mid - 1; }
+      return 100 - 0.5 * idx;
+    }
+    function median(arr) {
+      const a = arr.filter(x => typeof x === 'number' && isFinite(x)).sort((x, y) => x - y);
+      const n = a.length; if (!n) return 0;
+      return n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2;
+    }
+    function compute(rows) {
+      rows.forEach(r => {
+        const pop = Number(r.population) || 0, list = Number(r.listings) || 0;
+        r._F = pop > 0 ? (list / pop * E1) : 0;
+        r._H = (Number(r.vr) || 0) * r._F;
+        r._L = (Number(r.dom) || 0) * (1 - (Number(r.rentGrowth) || 0));
+        r._M = r._L * r._H;
+      });
+      const Fb = median(rows.map(r => r._F));
+      const Nb = grade((BENCH.dom * (1 - BENCH.rentGrowth)) * (BENCH.vr * Fb));
+      rows.forEach(r => {
+        const N = grade(r._M);
+        r.demandScore = Math.round(Math.min(80, Math.max(-20, ((N - Nb) / Nb) * 100)) * 10) / 10;
+        delete r._F; delete r._H; delete r._L; delete r._M;
+      });
+      return rows;
+    }
+    return { compute };
+  })();
+
+  /* Forge helpers — mirror demand-score.html's _fSlug/_fNum/_mpStats. */
+  function _fSlug(s) {
+    s = String(s == null ? '' : s).trim(); if (/^national$/i.test(s)) return 'australia';
+    return s.replace(/\([^)]*\)/g, ' ').replace(/,\s*(act|nsw|nt|qld|sa|tas|vic|wa)\b/ig, ' ')
+      .replace(/\bgreater\b/ig, ' ').replace(/\bregional\b/ig, ' ').replace(/-hastings/ig, ' ')
+      .replace(/\s+/g, ' ').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  }
+  const _fNum = v => { const n = +String(v == null ? '' : v).replace(/[$,%\s]/g, ''); return isFinite(n) ? n : null; };
+  function _mpStats(arr) {
+    const a = Array.isArray(arr) ? arr.filter(v => typeof v === 'number' && isFinite(v) && v > 0) : [];
+    const n = a.length; if (!n) return { median: 0, g12: 0, g3: 0 };
+    const latest = a[n - 1], v12 = n > 12 ? a[n - 13] : null, v3 = n > 3 ? a[n - 4] : null;
+    return { median: Math.round(latest), g12: v12 ? Math.round((latest - v12) / v12 * 1000) / 10 : 0, g3: v3 ? Math.round((latest - v3) / v3 * 1000) / 10 : 0 };
   }
 
-  /* Lean port of demand-score.html's parseMarkets — extracts only
-     the fields getMarketData returns. Sheet layout assumptions
-     mirror the original; if columns shift in the source sheet
-     both this and the dashboard need updating together. */
-  function _parseMarkets(sheets, propertyType) {
-    if (!sheets) return [];
-    const data   = sheets['DATA']             || [];
-    const rv     = sheets['Runway v Demand']  || [];
-    const median = sheets['Median prices']    || [];
-    const rental = sheets['Rental Growth']    || [];
-
-    let dsCol = -1;
-    const hr = data[1] || [];
-    for (let c = 0; c < hr.length; c++) {
-      if (String(hr[c] || '').includes('Score v Benchmark')) { dsCol = c; break; }
-    }
-    if (dsCol < 0) dsCol = 14;
-
-    const g = (row, col) => {
-      const v = row && row[col];
-      return (v !== null && v !== undefined && v !== '' && !isNaN(Number(v))) ? Number(v) : 0;
-    };
-
+  /* Build per-market objects for one property type from the Forge stores,
+     running the engine over ALL rows (incl National) for the benchmark median
+     then dropping National. Returns the fields getMarketData needs. */
+  function _buildForgeMarkets(propertyType, DI, M) {
+    const isU = propertyType === 'units';
+    const rawRows = Object.keys(DI).map(slug => {
+      const d = DI[slug] || {};
+      const rentNow = isU ? d.rent_u : d.rent_h, rent3 = isU ? d.rent_u_3yr : d.rent_h_3yr;
+      return {
+        slug,
+        name: M.name[slug] || (slug === 'australia' ? 'National' : slug),
+        state: M.state[slug] || '',
+        population: M.pop[slug] || 0,
+        listings: (isU ? d.listings_u : d.listings_h) || 0,
+        vr: M.adjVR[slug] != null ? M.adjVR[slug] : 0,
+        dom: (isU ? M.domU[slug] : M.domH[slug]) || 0,
+        rentGrowth: (rentNow != null && rent3 != null && rent3 > 0) ? (rentNow - rent3) / rent3 : 0,
+        isNational: slug === 'australia',
+      };
+    });
+    _DEMAND_ENGINE.compute(rawRows);
     const markets = [];
-    for (let i = 3; i < data.length; i++) {
-      const row = data[i];
-      const name = row && row[0];
-      if (!name || name === 'National') continue;
+    rawRows.forEach(r => {
+      if (r.isNational) return;
+      const d = DI[r.slug] || {};
+      const st = _mpStats((M.mp[r.slug] || {})[isU ? 'u' : 'h']);
+      const rwp = M.runway[r.slug] || {};
+      const rent = isU ? d.rent_u : d.rent_h;
       markets.push({
-        name:            _cleanName(name),
-        state:           String((row && row[1]) || '').trim(),
-        dom:             Math.round(g(row, 8)),
-        rentalGrowth36m: Math.round(g(row, 9) * 1000) / 10,
-        demandScore:     Math.round(g(row, dsCol) * 10) / 10,
-      });
-    }
-
-    for (let i = 1; i < rv.length; i++) {
-      const n  = _cleanName(rv[i] && rv[i][0]);
-      const rw = rv[i] && rv[i][1];
-      const m  = markets.find(x => x.name === n);
-      if (m && rw != null && !isNaN(Number(rw))) m.runway = Math.round(Number(rw) * 10000) / 10000;
-    }
-
-    for (let i = 2; i < median.length; i++) {
-      const region = _cleanName(median[i] && median[i][1]);
-      const g12 = median[i] && median[i][2];
-      const g3  = median[i] && median[i][3];
-      let latest = 0;
-      for (let c = 4; c < Math.min((median[i] || []).length, 12); c++) {
-        const v = median[i] && median[i][c];
-        if (v != null && !isNaN(Number(v)) && Number(v) > 1000) { latest = Math.round(Number(v)); break; }
-      }
-      const m = markets.find(x => x.name === region || region.includes(x.name) || x.name.includes(region));
-      if (m) {
-        m.medianPrice    = latest;
-        m.priceGrowth12m = g12 != null && !isNaN(Number(g12)) ? Math.round(Number(g12) * 1000) / 10 : 0;
-        m.priceGrowth3m  = g3  != null && !isNaN(Number(g3))  ? Math.round(Number(g3)  * 1000) / 10 : 0;
-      }
-    }
-
-    const rentCol = propertyType === 'units' ? 5 : 4;
-    for (let i = 2; i < rental.length; i++) {
-      const n    = _cleanName(rental[i] && rental[i][0]);
-      const rent = rental[i] && rental[i][rentCol];
-      const m    = markets.find(x => x.name === n);
-      if (m && rent != null && !isNaN(Number(rent))) m.weeklyRent = Math.round(Number(rent));
-    }
-
-    markets.forEach(m => {
-      ['runway','medianPrice','priceGrowth12m','priceGrowth3m','weeklyRent'].forEach(k => {
-        if (m[k] === undefined) m[k] = 0;
+        name: r.name, state: r.state,
+        demandScore: r.demandScore,
+        runway: (isU ? rwp.u : rwp.h) != null ? Math.round((isU ? rwp.u : rwp.h) * 10000) / 10000 : 0,
+        dom: r.dom,
+        rentalGrowth36m: Math.round(r.rentGrowth * 1000) / 10,
+        medianPrice: st.median, priceGrowth12m: st.g12, priceGrowth3m: st.g3,
+        weeklyRent: rent != null ? Math.round(rent) : 0,
       });
     });
     return markets;
+  }
+
+  /* Read all Forge stores + assemble houses[]/units[]. Mirrors
+     demand-score.html's loadForgeAll (minus the legend it doesn't need). */
+  async function _loadForgeMarkets() {
+    for (let i = 0; i < 50 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
+    if (!window.sb) throw new Error('Database client not loaded.');
+    const [reg, di, vr, rw, mp, pop, cot] = await Promise.all([
+      window.sb.from('rdp_regions').select('slug,name,state'),
+      window.sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle(),
+      window.sb.from('rdp_vr_forecast').select('region_slug,payload'),
+      window.sb.from('rdp_runway').select('region_slug,payload'),
+      window.sb.from('forge_monthly_price').select('data').eq('id', 'latest').maybeSingle(),
+      window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', 'population').gte('period', '2020-01-01'),
+      window.sb.from('forge_cotality').select('data').eq('id', 'latest').maybeSingle(),
+    ]);
+    const err = reg.error || di.error || vr.error || rw.error || pop.error;
+    if (err) throw new Error(err.message || 'Forge read failed');
+    const M = { name: {}, state: {}, pop: {}, adjVR: {}, runway: {}, domH: {}, domU: {}, mp: {} };
+    (reg.data || []).forEach(r => { M.name[r.slug] = r.name; M.state[r.slug] = r.state; });
+    { const latest = {}; for (const r of (pop.data || [])) { const s = r.region_slug; if (!latest[s] || r.period > latest[s]) { latest[s] = r.period; M.pop[s] = +r.value; } } }
+    (vr.data || []).forEach(r => { const f = r.payload && r.payload.forecastVR; if (f != null) M.adjVR[r.region_slug] = f * 100; });
+    (rw.data || []).forEach(r => { const p = r.payload || {}; M.runway[r.region_slug] = { h: p.house && p.house.runway_pct, u: p.unit && p.unit.runway_pct }; });
+    const cotData = (cot.data && cot.data.data) || {};   // .select('data').maybeSingle() nests jsonb at .data.data
+    const cotRows = [...((cotData.cap || {}).rows || []), ...((cotData.lga || {}).rows || [])];
+    for (const row of cotRows) { const slug = _fSlug(row[1]); const dom = _fNum(row[6]); if (!slug || dom == null) continue; if (String(row[2]).toUpperCase() === 'U') M.domU[slug] = dom; else M.domH[slug] = dom; }
+    M.mp = ((mp.data && mp.data.data && mp.data.data.regions)) || {};
+    const DI = ((di.data && di.data.data && di.data.data.regions)) || {};
+    if (!Object.keys(DI).length) throw new Error('No Demand Score data in Forge yet.');
+    return { houses: _buildForgeMarkets('houses', DI, M), units: _buildForgeMarkets('units', DI, M) };
   }
 
   async function _fetchMarketData() {
@@ -360,11 +395,9 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
     if (_marketCache.promise) return _marketCache.promise;
     _marketCache.promise = (async () => {
       try {
-        const res = await fetch(DEMAND_API_URL, { cache: 'no-store' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const raw = await res.json();
-        _marketCache.houses = _parseMarkets(raw.houses, 'houses');
-        _marketCache.units  = _parseMarkets(raw.units,  'units');
+        const fm = await _loadForgeMarkets();
+        _marketCache.houses = fm.houses;
+        _marketCache.units  = fm.units;
         _marketCache.fetchedAt = Date.now();
         return _marketCache;
       } finally {
