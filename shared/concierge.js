@@ -371,7 +371,9 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
       window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', 'population').gte('period', '2020-01-01'),
       window.sb.from('forge_cotality').select('data').eq('id', 'latest').maybeSingle(),
     ]);
-    const err = reg.error || di.error || vr.error || rw.error || pop.error;
+    // Check EVERY read — a silent mp/cot failure would zero medians/DOM and
+    // let the chat answer with confidently wrong numbers instead of an error.
+    const err = reg.error || di.error || vr.error || rw.error || pop.error || mp.error || cot.error;
     if (err) throw new Error(err.message || 'Forge read failed');
     const M = { name: {}, state: {}, pop: {}, adjVR: {}, runway: {}, domH: {}, domU: {}, mp: {} };
     (reg.data || []).forEach(r => { M.name[r.slug] = r.name; M.state[r.slug] = r.state; });

@@ -128,6 +128,8 @@ docs/                   BUG.md, CADENCE.md, ONLINE_REPORTS_RENDERER.md, etc.
 
 ## Working rules (important — follow these)
 
+- **Answer short and direct.** Keep explanations simple and to the point —
+  no long or complicated write-ups unless the user asks for detail.
 - **Never `git push` without an explicit go-ahead** ("push it" / "ship it" /
   "go live"). Local commits are fine on request, but the user previews changes
   in their offline copy first. Don't auto-commit or auto-prompt to ship after
