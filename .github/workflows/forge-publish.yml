@@ -1,0 +1,58 @@
+# =============================================================================
+# Data Forge — 2/ PUBLISH (rebuild mart)
+#
+# STEP 2 of 2. Rebuilds the report mart from whatever is currently in Forge and
+# pushes it to every tool that reads Forge:
+#   • build-report-feed        -> rdp_report_feed   (Online Reports)
+#   • build-national-report    -> national report feed
+#   • enrich-marts             -> derived mart fields
+#   • build-runway             -> rdp_runway        (Runway Workbook)
+#   • refresh-snapshots        -> report_data_cache (Presentation snapshot)
+#
+# Run this AFTER "Data Forge — 1/ GATHER" and after you've checked the data in
+# Data Forge. Nothing here fetches external data — it only reshapes what is
+# already in Forge, so it's safe to re-run.
+#
+# MANUAL only (workflow_dispatch) while Forge is being verified.
+#
+# Secrets (already configured for the other workflows):
+#   SUPABASE_URL                project URL
+#   SUPABASE_SERVICE_ROLE_KEY   server-side write to rdp_* + forge_*
+# =============================================================================
+name: Data Forge — 2/ PUBLISH (rebuild mart)
+
+on:
+  workflow_dispatch:        # manual run from the Actions tab
+
+concurrency:
+  group: forge-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      PUPPETEER_SKIP_DOWNLOAD: 'true'            # no Chromium needed — skip the slow download
+      PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install deps
+        run: npm install --no-audit --no-fund
+
+      - name: Rebuild report mart + refresh snapshots
+        run: |
+          set -e
+          echo "::group::build-report-feed";     node scripts/build-report-feed.mjs     --write; echo "::endgroup::"
+          echo "::group::build-national-report"; node scripts/build-national-report.mjs --write; echo "::endgroup::"
+          echo "::group::enrich-marts";          node scripts/enrich-marts.mjs          --write; echo "::endgroup::"
+          echo "::group::build-runway";          node scripts/build-runway.mjs          --write; echo "::endgroup::"   # recompute rdp_runway from the mart (Runway Workbook tool)
+          echo "::group::refresh-snapshots";     node scripts/refresh-snapshots-from-forge.mjs --write; echo "::endgroup::"   # repoint report_data_cache (presentation snapshot) at Forge
