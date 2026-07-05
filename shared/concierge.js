@@ -60,7 +60,7 @@ The hub has 4 swipeable pages: analytics (default — Property Clock, Runway v D
 
 Research Reports cluster (sits alongside the 35 Online Reports under the same picker): National Market Overview (national-report) and Commercial Market Overview (commercial-report). Different shape from the regional Online Reports — they cover Australia-wide macro indicators (cash rate, inflation, retail turnover, lending, yields, etc.) rather than a single market. Use openTool with 'national-report' or 'commercial-report' when the user asks for them.
 
-35 Online Reports markets, grouped: Capitals (Adelaide, Brisbane, Canberra, Darwin, Hobart, Melbourne, Perth, Sydney); QLD (Bundaberg, Cairns, Gladstone, Gold Coast, Ipswich, Mackay, Rockhampton, Sunshine Coast, Toowoomba, Townsville); NSW (Albury, Central Coast, Coffs Harbour, Dubbo, Newcastle, Orange, Port Macquarie, Tamworth, Wagga Wagga, Wollongong); Other (Ballarat, Bendigo, Geelong, Mildura, Wodonga, Bunbury, Rockingham, Launceston). Mandurah uses the Rockingham report.
+35 Online Reports markets, grouped: Capitals (Adelaide, Brisbane, Canberra, Darwin, Hobart, Melbourne, Perth, Sydney); QLD (Bundaberg, Cairns, Gladstone, Gold Coast, Ipswich, Mackay, Rockhampton, Sunshine Coast, Toowoomba, Townsville); NSW (Albury, Central Coast, Coffs Harbour, Newcastle, Orange, Port Macquarie, Tamworth, Wagga Wagga, Wollongong); Other (Ballarat, Bendigo, Geelong, Mildura, Wodonga, Bunbury, Rockingham, Launceston). Mandurah uses the Rockingham report.
 
 Access tiers — internal-only tool, every signed-in user can VIEW everything: Tier 0 (dev, Vandolf), Tier 1 (admin, Saskia/Shaene/Paul/D.Robbins) can edit + download. Tier 2 (company, other @performanceproperty.com.au) can download but not edit. Tier 3 (client) + Tier 4 (guest) can view everything but cannot edit OR download.
 
@@ -207,7 +207,7 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
     'sydney','melbourne','brisbane','adelaide','perth','hobart','canberra','darwin',
     'bundaberg','cairns','gladstone','gold-coast','ipswich','mackay','rockhampton',
     'sunshine-coast','toowoomba','townsville',
-    'albury','central-coast','coffs-harbour','dubbo','newcastle','orange',
+    'albury','central-coast','coffs-harbour','newcastle','orange',
     'port-macquarie','tamworth','wagga-wagga','wollongong',
     'ballarat','bendigo','geelong','mildura','wodonga',
     'bunbury','rockingham','launceston',
@@ -449,7 +449,6 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
     albury:           { name: 'Albury',         state: 'NSW', cluster: 'nsw'      },
     'central-coast':  { name: 'Central Coast',  state: 'NSW', cluster: 'nsw'      },
     'coffs-harbour':  { name: 'Coffs Harbour',  state: 'NSW', cluster: 'nsw'      },
-    dubbo:            { name: 'Dubbo',          state: 'NSW', cluster: 'nsw'      },
     orange:           { name: 'Orange',         state: 'NSW', cluster: 'nsw'      },
     'port-macquarie': { name: 'Port Macquarie', state: 'NSW', cluster: 'nsw'      },
     newcastle:        { name: 'Newcastle',      state: 'NSW', cluster: 'nsw'      },
