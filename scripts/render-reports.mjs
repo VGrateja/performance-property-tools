@@ -70,8 +70,8 @@ const REGION_SLUGS = [
   // QLD regional
   'mackay', 'bundaberg', 'ipswich', 'rockhampton', 'gladstone',
   'cairns', 'townsville', 'sunshine-coast', 'toowoomba', 'gold-coast',
-  // NSW regional
-  'albury', 'central-coast', 'coffs-harbour', 'dubbo', 'orange',
+  // NSW regional (dubbo removed 2026-07-07 — hidden across the system)
+  'albury', 'central-coast', 'coffs-harbour', 'orange',
   'port-macquarie', 'newcastle', 'tamworth', 'wagga-wagga', 'wollongong',
   // VIC / WA / TAS regional
   'ballarat', 'bendigo', 'geelong', 'wodonga', 'mildura',
@@ -126,7 +126,8 @@ const RESEARCH_LINKS_BY_SUB = {
     'cairns',     'townsville',  'sunshine-coast', 'toowoomba', 'gold-coast',
   ],
   'rl-nsw': [
-    'albury',         'central-coast', 'coffs-harbour', 'dubbo',     'orange',
+    /* dubbo removed 2026-07-07 — hidden across the system (not in use) */
+    'albury',         'central-coast', 'coffs-harbour', 'orange',
     'port-macquarie', 'newcastle',     'tamworth',      'wagga-wagga', 'wollongong',
   ],
   'rl-vicwatas': [
@@ -513,6 +514,27 @@ async function updateResearchLinks(sb, successfulFullSlugs) {
       }));
     return { ...sub, items };
   });
+
+  /* "Other" folder — SURGICAL updates only (the folder itself stays
+     user-managed; we never replace its items list). The National +
+     Commercial report PDFs are rendered by this same run, so their two
+     cards get re-pointed at this month's PDF + stamped with today's date.
+     Matched by explicit title patterns so "National Property Clock"
+     (Clock-Save-managed) and any custom cards are never touched. */
+  const OTHERS_RENDERED = [
+    { slug: 'national',   title: /national\s+report/i },
+    { slug: 'commercial', title: /commercial\s+report/i },
+  ];
+  const others = (rlSec.subsections || []).find(s => s && s.id === 'rl-others');
+  if (others && Array.isArray(others.items)) {
+    for (const { slug, title } of OTHERS_RENDERED) {
+      if (!successSet.has(slug)) continue;   // render failed → keep the old link/date
+      const item = others.items.find(it => it && title.test(it.title || ''));
+      if (!item) { console.warn('  rl-others: no card matching ' + title + ' — skipped'); continue; }
+      item.url  = publicPdfUrl(slug);
+      item.date = today;
+    }
+  }
 
   const { error: writeErr } = await sb
     .from('documents_state')
