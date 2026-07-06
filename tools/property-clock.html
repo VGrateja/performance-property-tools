@@ -3232,12 +3232,16 @@ function _notifyClockSaved(){
   }catch(e){ console.warn('[clock] notify threw', e); }
 }
 
-/* Regenerate the shared clock snapshot JPG (the SAME capture as the JPEG
-   download — full #clock-capture at scale 3) and upload it to the PUBLIC
-   'clock-image' bucket at a FIXED path, so every Presentation embedding the
-   Clock image shows the latest clock. Best-effort: never blocks or fails the
-   save. Only reachable from saveState (dev/admin), and writes are RLS-gated to
-   is_writer() (migration 062). */
+/* Regenerate the shared clock snapshots on Save — ONE capture (the same
+   full #clock-capture at scale 3 as the exporters), TWO artifacts:
+     1. national-clock.jpg — the Presentation clock-image embed (as before).
+     2. national-clock.pdf — the SAME A4-landscape layout as "Download PDF",
+        uploaded to the public bucket, and the Documents page's
+        "National Property Clock" card (Research Links → Other) is re-pointed
+        at it with today's date — so the Documents PDF + its "last updated"
+        date refresh automatically on every clock Save.
+   Best-effort: never blocks or fails the save. Only reachable from saveState
+   (dev/admin); storage + documents_state writes are RLS-gated to is_writer(). */
 async function _uploadClockImage(){
   try{
     if(!window.sb || !window.sb.storage) return;
@@ -3249,12 +3253,59 @@ async function _uploadClockImage(){
     await new Promise(r=>setTimeout(r,40));
     try{ canvas=await html2canvas(el,{scale:3,useCORS:true,backgroundColor:'#e8ebef',logging:false}); }
     finally{ el.classList.remove('pdf-export-mode'); }
+
+    // 1. JPG for the Presentation embed (unchanged behaviour)
     const blob=await new Promise(res=>canvas.toBlob(res,'image/jpeg',0.95));
-    if(!blob) return;
-    const { error }=await window.sb.storage.from('clock-image')
-      .upload('national-clock.jpg', blob, { upsert:true, contentType:'image/jpeg', cacheControl:'3600' });
-    if(error) console.warn('[clock] image upload failed', error);
+    if(blob){
+      const { error }=await window.sb.storage.from('clock-image')
+        .upload('national-clock.jpg', blob, { upsert:true, contentType:'image/jpeg', cacheControl:'3600' });
+      if(error) console.warn('[clock] image upload failed', error);
+    }
+
+    // 2. PDF for the Documents page — same A4 math as exportPDF (HD path)
+    try{
+      const{jsPDF}=window.jspdf;
+      const pdf=new jsPDF({orientation:'landscape',unit:'mm',format:'a4',compress:true});
+      const scaleF=3, PW=297,PH=210,margin=6;
+      const aW=PW-margin*2,aH=PH-margin*2;
+      const iW=canvas.width/scaleF*25.4/96,iH=canvas.height/scaleF*25.4/96;
+      const sc=Math.min(aW/iW,aH/iH,1);
+      pdf.addImage(canvas.toDataURL('image/jpeg',0.95),'JPEG',margin+(aW-iW*sc)/2,margin+(aH-iH*sc)/2,iW*sc,iH*sc,undefined,'SLOW');
+      const pdfBlob=pdf.output('blob');
+      const { error: pdfErr }=await window.sb.storage.from('clock-image')
+        .upload('national-clock.pdf', pdfBlob, { upsert:true, contentType:'application/pdf', cacheControl:'3600' });
+      if(pdfErr){ console.warn('[clock] pdf upload failed', pdfErr); toast('Clock PDF update failed: '+(pdfErr.message||'upload error')); return; }
+      await _stampClockDocumentsCard();
+    }catch(e){ console.warn('[clock] pdf snapshot failed', e); toast('Clock PDF update failed: '+(e&&e.message||e)); }
   }catch(e){ console.warn('[clock] image snapshot failed', e); }
+}
+
+/* Point the Documents page's "National Property Clock" card (Research Links →
+   Other) at the freshly-uploaded PDF and stamp today's date. Surgical update:
+   only that one item's url/date change; everything else in documents_state is
+   preserved. The ?v= cache-buster makes browsers refetch the new PDF even
+   though the storage path is fixed. */
+async function _stampClockDocumentsCard(){
+  try{
+    const { data: row, error: readErr }=await window.sb
+      .from('documents_state').select('id, payload').eq('id', 1).maybeSingle();
+    if(readErr || !row || !row.payload){ console.warn('[clock] documents_state read failed', readErr); return; }
+    const payload=row.payload;
+    const rl=(payload.sections||[]).find(s=>s && s.id==='research-links');
+    const others=rl && (rl.subsections||[]).find(s=>s && s.id==='rl-others');
+    const item=others && (others.items||[]).find(it=>it && /clock/i.test(it.title||''));
+    if(!item){ console.warn('[clock] no "clock" card found in Documents → Research Links → Other'); return; }
+    const pub=window.sb.storage.from('clock-image').getPublicUrl('national-clock.pdf');
+    const base=(pub && pub.data && pub.data.publicUrl) || '';
+    if(!base){ console.warn('[clock] could not resolve public pdf url'); return; }
+    const d=new Date();
+    item.url=base+'?v='+Date.now();
+    item.date=String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
+    const { error: writeErr }=await window.sb
+      .from('documents_state').update({ payload, updated_at: new Date().toISOString() }).eq('id', 1);
+    if(writeErr){ console.warn('[clock] documents_state update failed', writeErr); toast('Documents date update failed: '+writeErr.message); return; }
+    toast('Documents → Clock PDF + date updated ('+item.date+')');
+  }catch(e){ console.warn('[clock] documents stamp failed', e); toast('Documents date update failed'); }
 }
 
 async function loadState(){
