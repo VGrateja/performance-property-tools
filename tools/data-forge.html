@@ -593,8 +593,8 @@ const CLUSTERS = [
   { key:'iron_ore_price', icon:'⛏️', ingest:'api', label:'Iron Ore Price', desc:'IMF “Global price of Iron Ore” (USD/tonne), monthly — via FRED (PIORECRUSDM, the same IMF data IndexMundi republishes). Feeds the Perth report; the chart annualises it.', view:'iron' },
   { key:'mineral_exploration', icon:'⚒️', ingest:'api', label:'Mineral Exploration', desc:'ABS Mineral &amp; Petroleum Exploration (cat 8412.0, MIN_EXP, Original) — quarterly exploration expenditure ($m). 7 states + national; the Perth report uses WA.', view:'mining' },
   { key:'commodity_prices', icon:'🪙', ingest:'file', label:'Commodity Prices', desc:'Gold, iron ore, crude oil, silver &amp; copper — annual prices (Mining sheet, marketindex.com.au). Gold/silver USD/oz · crude USD/barrel · copper/iron USD/tonne. 1980–present.', view:'commodities' },
-  { key:'national_only', icon:'🇦🇺', ingest:'hybrid', label:'National Only', desc:'National Online Report series: work done, federal budget, govt debt-to-GDP, household debt-to-income, GDP &amp; debt by country, cash rate, household composition. 5 API (ABS/IMF/RBA) + 2 seeded (Budget, Census).', view:'natonly' },
-  { key:'commercial', icon:'🏢', ingest:'file', label:'Commercial Report', desc:'All Commercial report data (23 tabs) — building approvals, retail turnover, population growth, cash rate/inflation, bonds, term deposits, freight, office vacancy, etc. Seeded from the Commercial Report export; the Commercial report reads this in Forge mode (?src=forge).', view:'commercial' },
+  { key:'national_only', icon:'🇦🇺', ingest:'hybrid', label:'National Only', desc:'National Online Report series: work done, federal budget, govt debt-to-GDP, household debt-to-income, GDP &amp; debt by country, cash rate, household composition. 4 API (ABS/IMF/RBA) + 3 SEEDED needing hand updates (Budget each May/MYEFO · Govt net debt each Data Dump/Budget · Household composition next Census).', view:'natonly' },
+  { key:'commercial', icon:'🏢', ingest:'hybrid', label:'Commercial Report', desc:'All Commercial report data (23 tabs). The API tabs (approvals, retail, population, cash rate/inflation, bonds, term deposits) auto-refresh via CI monthly; the subscription tabs (freight, office vacancy, etc.) need a manual Looker export re-seed. The Commercial report reads this store.', view:'commercial' },
   { key:'monthly_price', icon:'📈', ingest:'derived', label:'Monthly Median Price', desc:'Monthly median price (house &amp; unit) per region, 2004→present. Seeded from the report cluster sheets; the monthly CoreLogic drop in the Cotality card appends each new month.', view:'monthlyprice' },
   { key:'computed_metrics', icon:'🧮', ingest:'derived', label:'Computed Metrics', desc:'Calculated report metrics per region — CAGR, price/rent-to-income, affordability index, P&amp;I repayments, gross yields, YoY growth. Derived from the raw data (research mart) — a preview of what the reports compute.', view:'computed' },
   { key:'inflation', icon:'📉', ingest:'api', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
@@ -613,7 +613,7 @@ function ingestChip(t){
   const m = { api:['⚡ Auto', 'Fetched automatically from a public source (ABS / RBA / IMF / FRED) — no manual step'],
               file:['📄 Seeded', 'Seeded from a spreadsheet — not on a live API; refresh by re-dropping the file'],
               manual:['✋ Manual upload', 'Uploaded by hand'],
-              local:['🖥️ Local run', 'API-sourced, but the source blocks our automation servers — run the ingest locally each month (node scripts/ingest-jsa-jobcreation.mjs --write)'],
+              local:['🖥️ Local run', 'API-sourced, but the source blocks our automation servers — the "Performance Forge - JSA Job Creation" scheduled task on the laptop runs it on the 10th at noon (laptop must be on; or run node scripts/ingest-jsa-jobcreation.mjs --write manually)'],
               hybrid:['🔀 Hybrid', 'Part auto-fetched (API), part manual upload'],
               derived:['🔗 Derived', 'Computed or auto-populated from another Forge data point (e.g. fed by the Cotality drop) — no separate source'] }[t] || ['—',''];
   return '<span class="df-ingest ' + t + '" title="' + esc(m[1]) + '">' + m[0] + '</span>';
@@ -626,7 +626,10 @@ function ageDays(iso){ if (!iso) return null; const t = Date.parse(iso); if (isN
 // carry their date on the store row (manualDates), not always in forge_data_status.
 function freshInfo(c, st, manualDates){
   if (c.key === 'civ' || c.key === 'monthly_price') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Computed live from the Cotality drop — freshness follows Cotality">live</span>' };
-  if (c.key === 'commodity_prices') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Seeded once; static by design">static</span>' };
+  // Recomputed by the PUBLISH mart rebuild — no forge_data_status row of its own,
+  // so without this exemption it rendered a phantom "no date / stale".
+  if (c.key === 'computed_metrics') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Recomputed from the raw data by the PUBLISH mart rebuild — freshness follows the raw points">live</span>' };
+  if (c.key === 'commodity_prices') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Seeded once; static by design (only Iron Ore auto-updates, via its own FRED data point)">static</span>' };
   const manual = (c.key === 'cotality' || c.key === 'arrears' || c.key === 'industry' || c.key === 'commercial' || c.key === 'demand_inputs');
   const iso = manual ? (manualDates[c.key] || st.updated_at || st.last_ok_at) : (st.last_ok_at || st.updated_at);
   const d = ageDays(iso);
@@ -715,7 +718,7 @@ async function loadStatus(){
     manualDates.commercial = co.data && co.data.updated_at; manualDates.industry = ind.data && ind.data.updated_at;
     manualDates.demand_inputs = dsi.data && dsi.data.updated_at;
   } catch (e) {}
-  let nAging = 0, nStale = 0;
+  const agingPts = [], stalePts = [];   // card LABELS, so the banner can say WHICH data
   const cardHtml = (c) => {
     const st = statusMap[c.key] || {};
     const status = (c.key === 'civ' || c.key === 'monthly_price') ? 'derived' : (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears' || c.key === 'demand_inputs') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
@@ -726,7 +729,7 @@ async function loadStatus(){
       ? (st.last_ok_at ? 'Updated ' + fmtDate(st.last_ok_at) + (st.region_count ? ' · ' + st.region_count + ' regions' : '') : 'Not yet run via the monitored path')
       : (st.updated_at ? 'Last activity ' + fmtDate(st.updated_at) : 'Manual upload');
     const fresh = freshInfo(c, st, manualDates);
-    if (fresh.cls === 'aging') nAging++; else if (fresh.cls === 'stale') nStale++;
+    if (fresh.cls === 'aging') agingPts.push(c.label); else if (fresh.cls === 'stale') stalePts.push(c.label);
     return '<button class="df-cluster ' + (isErr ? 'err' : '') + '" data-view="' + c.view + '">'
       + (isErr ? '<span class="warnmark">⚠️</span>' : '')
       + '<span class="ico">' + c.icon + '</span>'
@@ -743,8 +746,12 @@ async function loadStatus(){
       + '<span class="gct">' + cards.length + '</span></div>'
       + cards.map(cardHtml).join('');
   }).join('');
-  const banner = (nStale || nAging)
-    ? '<div class="df-freshbanner warn">⚠️ ' + [nStale ? nStale + ' stale' : '', nAging ? nAging + ' aging' : ''].filter(Boolean).join(' · ') + ' — refresh these before relying on the reports (look for the amber/red chips below).</div>'
+  // Name the offenders so nobody has to hunt for the amber/red chips.
+  const banner = (stalePts.length || agingPts.length)
+    ? '<div class="df-freshbanner warn">⚠️ '
+      + [stalePts.length ? '<b>Stale:</b> ' + stalePts.map(esc).join(', ') : '',
+         agingPts.length ? '<b>Aging:</b> ' + agingPts.map(esc).join(', ') : ''].filter(Boolean).join(' &nbsp;·&nbsp; ')
+      + ' — refresh these before relying on the reports.</div>'
     : '<div class="df-freshbanner ok">✓ All data points current — every source refreshed within ~40 days.</div>';
   el.innerHTML = banner + groupsHtml;
   el.querySelectorAll('.df-cluster').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
@@ -947,28 +954,50 @@ function dsiVrBody(regions) {
   return h;
 }
 
+/* Re-fetch the latest store and merge ONLY the given edits onto it before
+   writing. Without this, a tab opened before the nightly SQM ingest (or
+   before a colleague's save) would write its whole STALE copy back and wipe
+   the newer data — the classic stale-tab clobber. Edits are detected against
+   the copy this tab rendered, so untouched fields always keep the DB value. */
+async function dsiMergeSave(edits, month) {
+  const nowIso = new Date().toISOString();
+  let base = null;
+  try { const { data } = await window.sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle(); base = data && data.data; } catch (e) {}
+  if (!base) base = DSI_DATA;                       // first-ever save / read failure
+  if (!base.regions) base.regions = {};
+  for (const e of edits) {
+    const rec = base.regions[e.slug] || (base.regions[e.slug] = {});
+    rec[e.f] = e.val;
+    if (e.val != null) rec[e.f + '_at'] = nowIso;
+  }
+  if (month) base.month = month;
+  let email = null;
+  try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch (e) {}
+  const { error } = await window.sb.from('forge_demand_inputs').upsert(
+    { id: 'latest', data: base, updated_at: nowIso, uploaded_at: nowIso, uploaded_by: email }, { onConflict: 'id' });
+  if (error) throw error;
+  DSI_DATA = base;                                  // this tab now reflects the merged truth
+  return nowIso;
+}
+
 async function saveDemandInputs() {
   if (!_forgeGuard()) return;
   const msg = document.getElementById('dsiMsg');
   const month = (document.getElementById('dsiMonth') || {}).value || dsiCurMonth();
   const regions = DSI_DATA.regions || (DSI_DATA.regions = {});
-  const nowIso = new Date().toISOString();
+  // Collect only the fields the user actually CHANGED vs what this tab rendered.
+  const edits = [];
   document.querySelectorAll('#dsiOut .dsi-in').forEach(inp => {
     const slug = inp.dataset.slug, f = inp.dataset.f;
     const raw = String(inp.value).trim();
     const val = raw === '' ? null : Math.round(Number(raw));
     if (val != null && !isFinite(val)) return;
-    const rec = regions[slug] || (regions[slug] = {});
-    if (val !== (rec[f] == null ? null : rec[f])) { rec[f] = val; if (val != null) rec[f + '_at'] = nowIso; }
+    const rec = regions[slug] || {};
+    if (val !== (rec[f] == null ? null : rec[f])) edits.push({ slug, f, val });
   });
-  DSI_DATA.month = month;
   if (msg) msg.textContent = 'Saving…';
-  let email = null;
-  try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch (e) {}
   try {
-    const { error } = await window.sb.from('forge_demand_inputs').upsert(
-      { id: 'latest', data: DSI_DATA, updated_at: nowIso, uploaded_at: nowIso, uploaded_by: email }, { onConflict: 'id' });
-    if (error) throw error;
+    const nowIso = await dsiMergeSave(edits, month);
     if (msg) msg.textContent = '✓ Saved ' + fmtDate(nowIso);
     renderDemandInputs();
   } catch (e) { if (msg) msg.textContent = '✗ ' + (e.message || 'save failed'); }
@@ -1043,18 +1072,10 @@ async function dsiIngestSave(cnt){
   const type = (document.getElementById('dsiIngType') || {}).value === 'u' ? 'u' : 'h';
   const field = type === 'u' ? 'listings_u' : 'listings_h';
   const msg = document.getElementById('dsiIngMsg');
-  const regions = DSI_DATA.regions || (DSI_DATA.regions = {});
-  const rec = regions[slug] || (regions[slug] = {});
-  const nowIso = new Date().toISOString();
-  rec[field] = Math.round(cnt); rec[field + '_at'] = nowIso;
-  if (!DSI_DATA.month) DSI_DATA.month = dsiCurMonth();
   if (msg) msg.textContent = 'Saving…';
-  let email = null;
-  try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch (e) {}
   try {
-    const { error } = await window.sb.from('forge_demand_inputs').upsert(
-      { id: 'latest', data: DSI_DATA, updated_at: nowIso, uploaded_at: nowIso, uploaded_by: email }, { onConflict: 'id' });
-    if (error) throw error;
+    // Merge-save (fetch latest + apply just this one field) — see dsiMergeSave.
+    const nowIso = await dsiMergeSave([{ slug, f: field, val: Math.round(cnt) }], DSI_DATA.month || dsiCurMonth());
     const reg = DSI_REGIONS.find(r => r.slug === slug);
     if (msg) msg.textContent = '✓ Saved ' + (reg ? reg.label : slug) + ' ' + (type === 'u' ? 'unit' : 'house') + ' = ' + Math.round(cnt).toLocaleString();
     const inp = document.querySelector('#dsiOut .dsi-in[data-slug="' + slug + '"][data-f="' + field + '"]');
@@ -2125,7 +2146,7 @@ function renderCommoditiesSel(){
    series selector switches between 7 sub-views. ─────────────────────────── */
 const NAT_SERIES = [
   { key: 'workDone', label: 'Value of Work Done' }, { key: 'federalBudget', label: 'Federal Budget', manual: true },
-  { key: 'govtDebtGdp', label: 'Govt Debt-to-GDP' }, { key: 'householdDebtIncome', label: 'Household Debt-to-Income' },
+  { key: 'govtDebtGdp', label: 'Govt Debt-to-GDP', manual: true }, { key: 'householdDebtIncome', label: 'Household Debt-to-Income' },
   { key: 'gdpByCountry', label: 'GDP & Debt by Country' }, { key: 'cashRate', label: 'Cash Rate' },
   { key: 'householdComposition', label: 'Household Composition', manual: true },
 ];
@@ -2171,7 +2192,7 @@ function renderNatOnly(d, meta, st){
   const updated = fmtDate((meta && (meta.updated_at || meta.uploaded_at)) || (d.meta && d.meta.updatedAt) || (st && st.last_ok_at));
   const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
     + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">National Only</div>'
-    + '<div class="df-sub"><span class="df-statuspill ok">Up to date</span> <span>The National report’s national-level series, in one card. 5 auto-update via API (ABS / IMF / RBA); Federal Budget &amp; Household composition are seeded.</span></div></div></div>'
+    + '<div class="df-sub"><span class="df-statuspill ok">Up to date</span> <span>The National report’s national-level series, in one card. 4 auto-update via API (ABS / IMF / RBA); Federal Budget, Govt debt-to-GDP &amp; Household composition are <b>seeded</b> — keep those three current by hand (each has an update guide).</span></div></div></div>'
     + '<div class="df-stats">'
     + dfStat('Series', String(NAT_SERIES.length), true)
     + dfStat('Updated', '<span class="sm">' + esc(updated) + '</span>')
@@ -2187,7 +2208,7 @@ function renderNatOnly(d, meta, st){
   const sel = document.getElementById('natSel'); if (sel) sel.addEventListener('change', e => { NAT_SEL = e.target.value; renderNatSeries(); });
   renderNatSeries();
 }
-// step-by-step self-update guide for the two SEEDED (manual) National Only series
+// step-by-step self-update guide for the three SEEDED (manual) National Only series
 function natUpdateGuide(key){
   const lnk = (u, t) => '<a href="' + u + '" target="_blank" rel="noopener" style="color:#06b6d4;font-weight:700">' + t + '</a>';
   const shell = inner => '<div class="df-card" style="margin-top:14px;border-color:rgba(224,132,58,.55);background:rgba(224,132,58,.05)">'
@@ -2201,6 +2222,13 @@ function natUpdateGuide(key){
     + '<li>Open <code>scripts/ingest-national-only.mjs</code> and find the <code>FEDERAL_BUDGET</code> list (near the top).</li>'
     + '<li>Add the new year on the end, e.g. <code>["2027-28", -28435]</code> &nbsp;— financial-year string, then the $m figure.</li>'
     + '<li>Save, then run <code>node scripts/ingest-national-only.mjs --write</code>. The 5 API series re-fetch and your new budget figure appears here.</li></ol>');
+  if (key === 'govtDebtGdp') return shell(
+      '<b>What to grab:</b> Australia’s <b>net general-government debt as % of GDP</b> per calendar year (the original report’s measure — NOT the IMF gross figure, and the IMF has no net series for AUS).<br>'
+    + '<b>Where:</b> the new <b>Data Dump</b> when one lands (the sheet this series was seeded from), or ' + lnk('https://budget.gov.au', 'budget.gov.au') + ' Budget Paper No.&nbsp;1 (net debt % of GDP table) — typically refreshed each <b>May Budget</b>.<br>'
+    + '<b>Then apply it:</b><ol style="margin:7px 0 0;padding-left:20px">'
+    + '<li>Open <code>scripts/ingest-national-only.mjs</code> and find the <code>NET</code> map (search “Govt debt-to-GDP = NET”).</li>'
+    + '<li>Add / correct the year entries, e.g. <code>2027: 36.1</code>.</li>'
+    + '<li>Save, then run <code>node scripts/ingest-national-only.mjs --write</code>.</li></ol>');
   if (key === 'householdComposition') return shell(
       '<b>What to grab:</b> the <b>count of households</b> for each of the 8 types, for the latest Census.<br>'
     + '<b>Where:</b> ' + lnk('https://www.abs.gov.au/census/find-census-data', 'abs.gov.au/census') + ' → the <b>Household composition</b> table. The 8 types map directly: '
@@ -2233,7 +2261,7 @@ function renderNatSeries(){
     const gd = d.govtDebtGdp, per = gd.years.map(y => y + '-01'), pct = v => v.toFixed(0) + '%';
     const legend = '<div class="arr-legend"><span class="k"><span class="sw" style="background:' + cyan + '"></span>Govt debt-to-GDP <span class="v">' + lv(gd.values).toFixed(1) + '%</span></span><span class="k v">' + esc(gd.note) + '</span></div>';
     let b = ''; for (let i = gd.years.length - 1; i >= 0; i--) b += '<tr><td class="region">' + esc(String(gd.years[i])) + '</td><td class="num last">' + gd.values[i].toFixed(1) + '%</td></tr>';
-    box.innerHTML = wrap(legend, natLineSvg(per, [{ vals: gd.values, color: cyan }], pct), '<tr><th class="th-l">Year</th><th class="last">Debt-to-GDP</th></tr>', b, 340, 'IMF gross general-government debt, % of GDP (DataMapper GGXWDG_NGDP). Auto-updates each WEO. (Your sheet’s ~36.5% was the Treasury <b>net</b> debt measure.)');
+    box.innerHTML = wrap(legend, natLineSvg(per, [{ vals: gd.values, color: cyan }], pct), '<tr><th class="th-l">Year</th><th class="last">Debt-to-GDP</th></tr>', b, 340, '<b>Net</b> general-government debt, % of GDP — the original report’s measure. <b>Seeded</b> (the IMF has no net series for AUS); update when a new Data Dump / Budget lands. The GDP-by-country view stays on IMF gross, auto-updated.') + natUpdateGuide('govtDebtGdp');
   } else if (NAT_SEL === 'householdDebtIncome'){
     const h = d.householdDebtIncome, per = h.periods.map(p => p.slice(0, 7)), pct = v => v.toFixed(0) + '%';
     const legend = '<div class="arr-legend"><span class="k"><span class="sw" style="background:' + cyan + '"></span>Household debt-to-income <span class="v">' + lv(h.values).toFixed(1) + '%</span></span><span class="k v">quarterly</span></div>';

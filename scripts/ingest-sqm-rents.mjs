@@ -96,8 +96,18 @@ for (let i = 0; i < REGIONS.length; i++) {
 }
 console.log(`\nParsed ${ok}/${REGIONS.length} regions (${fail} failed). Week ending: ${weekEnding || 'unknown'}`);
 
+// forge_data_status under 'demand_inputs' so a broken SQM run flags the Demand
+// Score Dashboard Data card red in the Data Forge UI (not just the Actions log).
+async function recordStatus(status, message) {
+  try { const now = new Date().toISOString();
+    const row = { data_key: 'demand_inputs', label: 'Demand Score Dashboard Data', source: 'SQM rents + vacancy (auto) / REA listings (manual)', status, message, last_run_at: now, updated_at: now };
+    if (status === 'ok') row.last_ok_at = now;
+    await sb.from('forge_data_status').upsert(row, { onConflict: 'data_key' });
+  } catch {}
+}
+
 if (!WRITE) { console.log('\nDry run — re-run with --write to merge into forge_demand_inputs.'); process.exit(0); }
-if (!ok) { console.error('Nothing parsed — refusing to write.'); process.exit(1); }
+if (!ok) { console.error('Nothing parsed — refusing to write.'); await recordStatus('error', 'SQM rents: nothing parsed'); process.exit(1); }
 
 // Merge into the existing forge_demand_inputs row (preserve manual listings).
 const { data: existing } = await sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle();
@@ -110,6 +120,7 @@ for (const [slug, r] of Object.entries(results)) {
 }
 store.rent_week_ending = weekEnding || null;
 const { error } = await sb.from('forge_demand_inputs').upsert({ id: 'latest', data: store, updated_at: nowIso, uploaded_at: nowIso, uploaded_by: 'ingest-sqm-rents' }, { onConflict: 'id' });
-if (error) { console.error('Upsert failed:', error.message); process.exit(1); }
+if (error) { console.error('Upsert failed:', error.message); await recordStatus('error', 'SQM rents upsert failed: ' + error.message); process.exit(1); }
 try { await sb.from('rdp_runs').insert({ dataset: 'sqm_rents', source_month: weekEnding || nowIso.slice(0, 7), row_count: ok, status: 'ok', notes: `${ok} regions; SQM weekly rents (house & unit) + 3yr-ago derived` }); } catch {}
+await recordStatus(fail > 5 ? 'error' : 'ok', `SQM rents: ${ok}/${REGIONS.length} regions (week ending ${weekEnding || 'unknown'})${fail ? ', ' + fail + ' failed' : ''}`);
 console.log(`\n✓ Merged SQM rents for ${ok} regions into forge_demand_inputs (week ending ${weekEnding || 'unknown'}).`);

@@ -181,9 +181,10 @@ function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearI
 
 async function load(){
   try {
-    const [reg, vr] = await Promise.all([
+    const [reg, vr, di] = await Promise.all([
       window.sb.from('rdp_regions').select('slug,name,state,cluster'),
-      window.sb.from('rdp_vr_forecast').select('region_slug,payload'),
+      window.sb.from('rdp_vr_forecast').select('region_slug,payload,computed_at'),
+      window.sb.from('forge_demand_inputs').select('updated_at').eq('id', 'latest').maybeSingle(),
     ]);
     if (vr.error){
       $('#vrMsg').innerHTML = /does not exist/i.test(vr.error.message)
@@ -194,8 +195,28 @@ async function load(){
     REGIONS = Object.fromEntries((reg.data || []).map(r => [r.slug, r]));
     VR = Object.fromEntries((vr.data || []).filter(r => r.payload).map(r => [r.region_slug, r.payload]));
     if (!Object.keys(VR).length){ $('#vrMsg').innerHTML = 'No VR forecast rows yet.'; return; }
+    _paintComputedStamp(vr.data, di && di.data && di.data.updated_at);
     initUI();
   } catch (e){ $('#vrMsg').textContent = 'Error: ' + e.message; }
+}
+
+/* "Computed <date>" chip under the header — plus an amber warning when the
+   forecast build is OLDER than the demand-inputs store (i.e. newer SQM VR has
+   landed but the forecast hasn't been rebuilt: run the PUBLISH workflow). */
+function _paintComputedStamp(rows, inputsUpdatedAt){
+  try{
+    const newest = (rows || []).reduce((m, r) => r.computed_at && (!m || r.computed_at > m) ? r.computed_at : m, null);
+    if (!newest) return;
+    const fmt = iso => { const d = new Date(iso); return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + d.getFullYear(); };
+    const stale = inputsUpdatedAt && (new Date(inputsUpdatedAt) - new Date(newest)) > 6 * 3600 * 1000;   // inputs >6h newer = rebuild pending
+    const el = document.createElement('div');
+    el.className = 'note';
+    el.style.marginTop = '8px';
+    el.innerHTML = 'Forecast computed <b>' + fmt(newest) + '</b>' +
+      (stale ? ' <span style="color:var(--amber);font-weight:800"> ⚠ newer input data (' + fmt(inputsUpdatedAt) + ') hasn\'t been folded in yet — run the "Data Forge — 2/ PUBLISH" workflow to rebuild.</span>' : '');
+    const controls = $('#vrControls');
+    if (controls && controls.parentNode) controls.parentNode.insertBefore(el, controls.nextSibling);
+  }catch(e){}
 }
 
 const nameOf = slug => (REGIONS[slug] && REGIONS[slug].name) || (slug === 'australia' ? 'National' : slug);

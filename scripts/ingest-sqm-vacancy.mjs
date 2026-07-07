@@ -58,8 +58,18 @@ for (const r of SQM_REGIONS) {
 }
 console.log(`\nParsed ${ok}/${SQM_REGIONS.length} regions (${fail} failed). As of: ${asOf || 'unknown'}`);
 
+// forge_data_status under 'demand_inputs' — a broken SQM run flags the Demand
+// Score Dashboard Data card red in the Data Forge UI (not just the Actions log).
+async function recordStatus(status, message) {
+  try { const now = new Date().toISOString();
+    const row = { data_key: 'demand_inputs', label: 'Demand Score Dashboard Data', source: 'SQM rents + vacancy (auto) / REA listings (manual)', status, message, last_run_at: now, updated_at: now };
+    if (status === 'ok') row.last_ok_at = now;
+    await sb.from('forge_data_status').upsert(row, { onConflict: 'data_key' });
+  } catch {}
+}
+
 if (!WRITE) { console.log('\nDry run — re-run with --write to merge into forge_demand_inputs.'); process.exit(0); }
-if (!ok) { console.error('Nothing parsed — refusing to write.'); process.exit(1); }
+if (!ok) { console.error('Nothing parsed — refusing to write.'); await recordStatus('error', 'SQM vacancy: nothing parsed'); process.exit(1); }
 
 const { data: existing } = await sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle();
 const store = (existing && existing.data) || { regions: {} };
@@ -71,6 +81,7 @@ for (const [slug, v] of Object.entries(results)) {
 }
 store.vr_as_of = asOf || null;
 const { error } = await sb.from('forge_demand_inputs').upsert({ id: 'latest', data: store, updated_at: nowIso, uploaded_at: nowIso, uploaded_by: 'ingest-sqm-vacancy' }, { onConflict: 'id' });
-if (error) { console.error('Upsert failed:', error.message); process.exit(1); }
+if (error) { console.error('Upsert failed:', error.message); await recordStatus('error', 'SQM vacancy upsert failed: ' + error.message); process.exit(1); }
 try { await sb.from('rdp_runs').insert({ dataset: 'sqm_vacancy', source_month: asOf || nowIso.slice(0, 7), row_count: ok, status: 'ok', notes: `${ok} regions; SQM current vacancy rate %` }); } catch {}
+await recordStatus(fail > 5 ? 'error' : 'ok', `SQM vacancy: ${ok}/${SQM_REGIONS.length} regions (as of ${asOf || 'unknown'})${fail ? ', ' + fail + ' failed' : ''}`);
 console.log(`\n✓ Merged SQM vacancy for ${ok} regions into forge_demand_inputs (as of ${asOf || 'unknown'}).`);
