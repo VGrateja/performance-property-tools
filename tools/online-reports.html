@@ -4990,11 +4990,32 @@ function setupSkeletonPages() {
     });
   }
   const m = REGION_MANIFEST[ACTIVE_REGION];
-  if (!m || !m.pageDrops || !m.pageDrops.length) return;
-  for (const pageId of m.pageDrops) {
-    const el = document.getElementById(pageId);
-    if (el && el.parentNode) el.parentNode.removeChild(el);
+  if (m && m.pageDrops && m.pageDrops.length) {
+    for (const pageId of m.pageDrops) {
+      const el = document.getElementById(pageId);
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    }
   }
+  /* Export-only page subset (&only=p3,p7 with exportMode=1): prune every OTHER
+     page BEFORE data load + chart render, so a hidden export iframe capturing
+     one page builds ONE page's charts instead of ~26. Same removal mechanism
+     as pageDrops above — every chart renderer already null-guards a missing
+     page. Big win for the multi-region JPG export: per-region boot drops from
+     a full-report render to just the requested page(s), and the memory that
+     made html2canvas hang after a few regions never accumulates. Gated on
+     exportMode so a normal browsing URL can't end up with a one-page report. */
+  try {
+    const q = new URLSearchParams(location.search);
+    const only = q.get('exportMode') === '1' ? (q.get('only') || '') : '';
+    if (only) {
+      const keep = new Set(only.split(',').map(s => s.trim()).filter(Boolean));
+      if (keep.size) {
+        document.querySelectorAll('section.page').forEach(el => {
+          if (!keep.has(el.id) && el.parentNode) el.parentNode.removeChild(el);
+        });
+      }
+    }
+  } catch (e) {}
 }
 
 /* ═════════════════════════════════════════════════════════════════════
@@ -8635,6 +8656,26 @@ async function exportReportJpeg(opts) {
    path also relies on. Cancel + overlay UI use the same
    #pdf-overlay machinery so behaviour matches the PDF flow.
    ─────────────────────────────────────────────────────────────── */
+/* Lazy JSZip loader (CDN, only fetched when a multi-image export starts).
+   Bundling the JPGs into ONE zip sidesteps Chrome's multiple-download
+   blocking — the usual reason "9 images" quietly became 5 — and removes the
+   600 ms-per-file pacing. Resolves null on CDN failure; the exporter then
+   falls back to the old one-download-per-file path. */
+let _jszipPromise = null;
+function _loadJsZip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  if (_jszipPromise) return _jszipPromise;
+  _jszipPromise = new Promise(resolve => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+    s.onload  = () => resolve(window.JSZip || null);
+    s.onerror = () => resolve(null);
+    document.head.appendChild(s);
+    setTimeout(() => resolve(window.JSZip || null), 15000);   // belt-and-braces
+  });
+  return _jszipPromise;
+}
+
 async function exportMultiRegionJpeg(opts) {
   if (typeof isViewOnly === 'function' && isViewOnly()) {
     alert('Image download is not available for viewer accounts.');
@@ -8645,6 +8686,7 @@ async function exportMultiRegionJpeg(opts) {
     alert('Image capture library failed to load. Please refresh and try again.');
     return;
   }
+  _loadJsZip();   // start fetching now; awaited only at delivery time
   const regionSlugs  = (opts && Array.isArray(opts.regionSlugs)) ? opts.regionSlugs.slice() : [];
   const wantAllPages = !!(opts && opts.allPages);
   const pageIds      = (opts && Array.isArray(opts.pageIds)) ? opts.pageIds.slice() : null;
@@ -8680,21 +8722,100 @@ async function exportMultiRegionJpeg(opts) {
   let expectedCount = 0;
   let failedRegions = [];
   let failedPages = [];
+  const capturedFiles = [];   // { filename, blob } — delivered as ONE zip at the end
+  let exportFrame = null;     // the single reused export iframe (see loadRegionInIframe)
 
-  for (let r = 0; r < regionSlugs.length; r++) {
-    if (window.__pdfExportCancelled) break;
+  const countedSlugs = new Set();   // expectedCount added once per slug (retries don't double-count)
 
-    const slug       = regionSlugs[r];
+  /* ── Pre-rendered JPG fast path ──────────────────────────────────────
+     The monthly render action stores an At-a-Glance JPG per region at
+     <month>/jpg/<slug>-at-a-glance.jpg (same private bucket + monthly cycle
+     as the prebuilt PDFs). When the selection is exactly the cacheable
+     page(s), pull those files directly — seconds for 9 regions, no
+     rendering at all. Regions missing from the cache fall through to the
+     live iframe flow below. */
+  const PP_CACHED_JPG_PAGES = { p2: { file: 'at-a-glance', label: 'At a Glance' } };
+  let liveSlugs = regionSlugs;
+  let nFromCache = 0;
+  const cacheableSel = !wantAllPages && !(typeof PP_LITE_MODE !== 'undefined' && PP_LITE_MODE)
+    && pageIds && pageIds.length && pageIds.every(id => PP_CACHED_JPG_PAGES[id]);
+  if (cacheableSel && window.sb && window.sb.storage) {
+    setMsg('Checking this month’s pre-rendered images…');
+    /* Renders land on the 12th — before that, the latest cache is last month's. */
+    let jpgMonth = null;
+    for (const cand of [new Date(), new Date(new Date().getFullYear(), new Date().getMonth() - 1, 15)]) {
+      const mk = ppPrebuiltMonthKey(cand);
+      try {
+        const { data } = await window.sb.storage.from(PREBUILT_BUCKET).list(mk + '/jpg', { limit: 1 });
+        if (Array.isArray(data) && data.length) { jpgMonth = mk; break; }
+      } catch (_) {}
+    }
+    if (jpgMonth) {
+      const misses = [];
+      for (const slug of regionSlugs) {
+        if (window.__pdfExportCancelled) break;
+        const mm2  = REGION_MANIFEST[slug];
+        const nice = mm2 ? mm2.name : slug;
+        let slugOk = true;
+        for (const pid of pageIds) {
+          if (typeof regionHasPage === 'function' && !regionHasPage(slug, pid)) continue;   // page not in this region — nothing to fetch
+          const spec = PP_CACHED_JPG_PAGES[pid];
+          const path = jpgMonth + '/jpg/' + slug + '-' + spec.file + '.jpg';
+          let blob = null;
+          try {
+            const { data: su } = await window.sb.storage.from(PREBUILT_BUCKET).createSignedUrl(path, 120);
+            if (su && su.signedUrl) {
+              const res = await fetch(su.signedUrl);
+              if (res.ok) blob = await res.blob();
+            }
+          } catch (_) {}
+          if (blob && blob.size > 5000) {
+            capturedFiles.push({ filename: nice.replace(/\s+/g, '-') + '_' + spec.file + '.jpg', blob });
+            if (!countedSlugs.has(slug)) { countedSlugs.add(slug); }
+            expectedCount++; savedCount++; nFromCache++;
+          } else {
+            slugOk = false;
+          }
+        }
+        if (!slugOk) { countedSlugs.delete(slug); misses.push(slug); }
+      }
+      liveSlugs = misses;
+      console.info('[multi-jpeg] pre-rendered cache (' + jpgMonth + '): ' + nFromCache + ' file(s) fetched, ' + misses.length + ' region(s) falling back to live render');
+      setMsg(nFromCache + ' image(s) fetched from the monthly pre-render…');
+    } else {
+      console.info('[multi-jpeg] no pre-rendered jpg cache found — using live render for all regions');
+    }
+  }
+
+  /* One region end-to-end: filter pages → boot iframe → capture. Returns
+     null on success, 'cancelled', or a short failure reason (retryable). */
+  async function captureRegion(slug, tag) {
     const m          = REGION_MANIFEST[slug];
     const niceRegion = m ? m.name : (slug.charAt(0).toUpperCase() + slug.slice(1));
-    setMsg('Region ' + (r + 1) + ' of ' + regionSlugs.length + ': ' + niceRegion + ' — loading…');
+
+    /* Page-subset mode: figure out which of the requested pages this region
+       actually has (pageDrops) BEFORE loading. Skips a region cleanly when
+       none apply, and lets the iframe prune-render ONLY these pages (&only=)
+       — a fraction of the full ~26-page boot, and no cumulative memory. */
+    let onlyForRegion = null;
+    if (!wantAllPages && pageIds && pageIds.length) {
+      onlyForRegion = pageIds.filter(id => (typeof regionHasPage === 'function') ? regionHasPage(slug, id) : true);
+      if (!onlyForRegion.length) return 'none of the selected pages exist for this region';
+    }
 
     let iframe;
     try {
-      console.info('[multi-jpeg]', 'region', r + 1, '/', regionSlugs.length, '—', slug, 'loading iframe…');
-      iframe = await loadRegionInIframe(slug);
+      console.info('[multi-jpeg]', tag, '—', slug, 'loading iframe…', onlyForRegion ? ('only=' + onlyForRegion.join(',')) : 'all pages');
+      /* ONE iframe reused across all regions (navigated region→region) —
+         creating/destroying per region exhausts Chrome's renderer resources
+         on low-RAM machines after ~5-6 regions (ERR_INSUFFICIENT_RESOURCES)
+         and the next region's boot hangs. 75 s timeout (not the PDF flow's
+         180 s): a pruned Forge boot is seconds, and a stalled region gets a
+         RETRY on a fresh iframe instead of burning minutes. */
+      iframe = await loadRegionInIframe(slug, { iframe: exportFrame, onlyPages: onlyForRegion || undefined, timeoutMs: 75000 });
+      exportFrame = iframe;
       console.info('[multi-jpeg]', slug, 'iframe loaded');
-      if (window.__pdfExportCancelled) break;
+      if (window.__pdfExportCancelled) return 'cancelled';
 
       const idoc = iframe.contentDocument;
       const allRegionPages = Array.from(idoc.querySelectorAll('section.page'));
@@ -8723,15 +8844,13 @@ async function exportMultiRegionJpeg(opts) {
       }
       console.info('[multi-jpeg]', slug, 'selected', pages.length, 'page(s) — ids:', pages.map(p => p.id));
       if (!pages.length) {
-        failedRegions.push(niceRegion + ' (no matching pages — see console for diagnostic)');
-        continue;
+        return 'no matching pages — see console for diagnostic';
       }
-      expectedCount += pages.length;
+      if (!countedSlugs.has(slug)) { expectedCount += pages.length; countedSlugs.add(slug); }
 
       for (let i = 0; i < pages.length; i++) {
         if (window.__pdfExportCancelled) break;
-        setMsg('Region ' + (r + 1) + ' of ' + regionSlugs.length + ': ' + niceRegion +
-               ' — page ' + (i + 1) + ' of ' + pages.length + '…');
+        setMsg(niceRegion + ' — page ' + (i + 1) + ' of ' + pages.length + '…');
         await new Promise(rr => setTimeout(rr, 30));
         if (window.__pdfExportCancelled) break;
 
@@ -8775,22 +8894,21 @@ async function exportMultiRegionJpeg(opts) {
           console.info('[multi-jpeg]', slug, rawLabel, 'canvas ok', canvas.width + 'x' + canvas.height, '(' + captureMs + 'ms)');
           if (window.__pdfExportCancelled) break;
 
-          /* Try Blob first (cleaner Chrome download handling); fall
-             back to dataURL if toBlob returns null (CORS-tainted
-             canvas) or hangs (defensive 8 s timeout). */
-          let url, isObjectUrl = false;
-          const blob = await Promise.race([
+          /* Blob for the zip; fall back to a dataURL-derived blob if toBlob
+             returns null (CORS-tainted canvas) or hangs (defensive 8 s
+             timeout). Files are COLLECTED and delivered as one zip after the
+             loop — a single download can't be burst-blocked by Chrome, so no
+             600 ms-per-file pacing is needed any more. */
+          let blob = await Promise.race([
             new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.82)),
             new Promise(resolve => setTimeout(() => resolve(null), 8000)),
           ]);
-          if (blob) {
-            url = URL.createObjectURL(blob);
-            isObjectUrl = true;
-            console.info('[multi-jpeg]', slug, rawLabel, 'blob size', blob.size);
-          } else {
+          if (!blob) {
             console.warn('[multi-jpeg]', slug, rawLabel, 'toBlob failed — falling back to dataURL');
-            url = canvas.toDataURL('image/jpeg', 0.82);
+            const durl = canvas.toDataURL('image/jpeg', 0.82);
+            blob = await (await fetch(durl)).blob();
           }
+          console.info('[multi-jpeg]', slug, rawLabel, 'blob size', blob.size);
 
           const safeLabel = rawLabel
             .toLowerCase()
@@ -8799,38 +8917,110 @@ async function exportMultiRegionJpeg(opts) {
           const isLite = (typeof PP_LITE_MODE !== 'undefined' && PP_LITE_MODE);
           const litePrefix = isLite ? 'Lite_' : '';
           const filename = litePrefix + niceRegion.replace(/\s+/g, '-') + '_' + safeLabel + '.jpg';
-
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = filename;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          if (isObjectUrl) setTimeout(() => URL.revokeObjectURL(url), 1500);
-          console.info('[multi-jpeg]', slug, rawLabel, 'click() fired — file:', filename);
+          capturedFiles.push({ filename, blob });
           savedCount++;
         } catch (pageErr) {
           console.error('[multi-jpeg] Page capture failed:', niceRegion, rawLabel, pageErr);
           failedPages.push(niceRegion + ' / ' + rawLabel + ': ' + (pageErr && pageErr.message || 'error'));
         }
-
-        /* 600 ms gap puts each download well past Chrome's burst-
-           protection window. */
-        await new Promise(rr => setTimeout(rr, 600));
       }
+      return null;   // success
     } catch (err) {
-      console.error('[multi-jpeg] Multi-region JPEG failed for', slug, err);
-      failedRegions.push(niceRegion + ' (' + (err && err.message || 'error') + ')');
-    } finally {
-      if (iframe && iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      console.error('[multi-jpeg] region failed:', slug, err);
+      /* A timed-out/wedged navigation can leave the SHARED iframe unusable —
+         discard it so the next region (and any retry) starts on a fresh one. */
+      try { if (exportFrame && exportFrame.parentNode) exportFrame.parentNode.removeChild(exportFrame); } catch (_) {}
+      exportFrame = null;
+      return (err && err.message) || 'error';
     }
-    /* Small inter-region pause so the just-removed iframe's memory
-       has a chance to release before the next iframe spins up.
-       Without it, after 3-4 regions html2canvas can start hanging
-       under cumulative memory pressure. */
-    if (r < regionSlugs.length - 1) {
-      await new Promise(rr => setTimeout(rr, 800));
+  }
+
+  /* ── Main pass (live renders — everything the cache didn't cover) ── */
+  const retryQueue = [];
+  for (let r = 0; r < liveSlugs.length; r++) {
+    if (window.__pdfExportCancelled) break;
+    const slug = liveSlugs[r];
+    const mm   = REGION_MANIFEST[slug];
+    const nice = mm ? mm.name : slug;
+    setMsg('Region ' + (r + 1) + ' of ' + liveSlugs.length + ': ' + nice + ' — loading…');
+    const err = await captureRegion(slug, 'region ' + (r + 1) + '/' + liveSlugs.length);
+    if (err === 'cancelled') break;
+    if (err) retryQueue.push({ slug, nice, err });
+    /* Brief inter-region breather (the frame is REUSED, not torn down, so
+       there's no per-region memory churn to wait out any more). */
+    if (r < liveSlugs.length - 1) await new Promise(rr => setTimeout(rr, 300));
+  }
+
+  /* ── ONE automatic retry pass for failed regions, on a FRESH iframe ──
+     Transient failures (a stalled navigation, a mid-boot DOM race) almost
+     always succeed second time; genuine failures fail again and get listed.
+     This is what turns "9 picked, 6 downloaded" into 9/9 without the user
+     having to re-run with the leftovers. */
+  if (retryQueue.length && !window.__pdfExportCancelled) {
+    try { if (exportFrame && exportFrame.parentNode) exportFrame.parentNode.removeChild(exportFrame); } catch (_) {}
+    exportFrame = null;
+    for (let i = 0; i < retryQueue.length; i++) {
+      if (window.__pdfExportCancelled) break;
+      const q = retryQueue[i];
+      setMsg('Retrying ' + q.nice + ' (' + (i + 1) + ' of ' + retryQueue.length + ')…');
+      console.info('[multi-jpeg] RETRY', q.slug, '— first attempt failed with:', q.err);
+      const err2 = await captureRegion(q.slug, 'retry');
+      if (err2 === 'cancelled') break;
+      if (err2) failedRegions.push(q.nice + ' (' + err2 + ' — after a retry)');
+      else console.info('[multi-jpeg] retry succeeded for', q.slug);
+      if (i < retryQueue.length - 1) await new Promise(rr => setTimeout(rr, 300));
     }
+  }
+
+  /* Tear the shared export iframe down once, after all regions. */
+  try { if (exportFrame && exportFrame.parentNode) exportFrame.parentNode.removeChild(exportFrame); } catch (_) {}
+
+  /* ── Delivery ──
+     1 file  → plain download.
+     2+ files → ONE zip (single download = immune to Chrome's multiple-
+     download blocking, which is what used to silently swallow files).
+     JSZip unavailable (CDN blocked) → old per-file downloads, paced 600 ms. */
+  let deliveredAsZip = false;
+  try {
+    if (capturedFiles.length === 1) {
+      const f = capturedFiles[0];
+      const url = URL.createObjectURL(f.blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = f.filename;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } else if (capturedFiles.length > 1) {
+      setMsg('Bundling ' + capturedFiles.length + ' images into one zip…');
+      const JSZipLib = await _loadJsZip();
+      if (JSZipLib) {
+        const zip = new JSZipLib();
+        for (const f of capturedFiles) zip.file(f.filename, f.blob);
+        /* STORE (no compression) — JPEGs don't compress further; keeps it fast. */
+        const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+        const d = new Date();
+        const zipName = 'Report-Pages_' + d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + '.zip';
+        const url = URL.createObjectURL(zipBlob);
+        const link = document.createElement('a');
+        link.href = url; link.download = zipName;
+        document.body.appendChild(link); link.click(); document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        deliveredAsZip = true;
+        console.info('[multi-jpeg] delivered', capturedFiles.length, 'file(s) as', zipName, '(' + Math.round(zipBlob.size / 1024) + ' KB)');
+      } else {
+        console.warn('[multi-jpeg] JSZip unavailable — falling back to per-file downloads');
+        for (const f of capturedFiles) {
+          const url = URL.createObjectURL(f.blob);
+          const link = document.createElement('a');
+          link.href = url; link.download = f.filename;
+          document.body.appendChild(link); link.click(); document.body.removeChild(link);
+          setTimeout(() => URL.revokeObjectURL(url), 1500);
+          await new Promise(rr => setTimeout(rr, 600));   // Chrome burst-protection pacing
+        }
+      }
+    }
+  } catch (dlErr) {
+    console.error('[multi-jpeg] delivery failed:', dlErr);
+    failedPages.push('Delivery: ' + (dlErr && dlErr.message || 'download failed'));
   }
 
   if (overlay) overlay.classList.remove('show');
@@ -8838,18 +9028,18 @@ async function exportMultiRegionJpeg(opts) {
   window.__pdfExportInProgress = false;
   window.__pdfExportCancelled  = false;
 
-  /* Always surface the result. Previously the alert only fired when
-     failedRegions had entries, so silent download throttling left
-     the user with no feedback at all. Now we always tell them what
-     landed vs. what was expected, plus per-page failures if any. */
+  /* Always surface failures. Captures are counted at capture time, so a
+     shortfall now means a real capture/region failure (listed below) — the
+     old silent multiple-download blocking can't happen on the zip path. */
   const summary = [];
-  summary.push('Saved ' + savedCount + ' of ' + expectedCount + ' image' + (expectedCount === 1 ? '' : 's') + '.');
+  summary.push('Saved ' + savedCount + ' of ' + expectedCount + ' image' + (expectedCount === 1 ? '' : 's') +
+               (nFromCache ? ' (' + nFromCache + ' from the monthly pre-render)' : '') +
+               (deliveredAsZip ? ' (bundled into one zip download).' : '.'));
   if (failedRegions.length) summary.push('Region failures:\n  • ' + failedRegions.join('\n  • '));
   if (failedPages.length)   summary.push('Page failures:\n  • '   + failedPages.join('\n  • '));
   if (savedCount < expectedCount && !failedRegions.length && !failedPages.length) {
-    summary.push('No errors were thrown, but ' + (expectedCount - savedCount) + ' file(s) did not download. ' +
-                 'This usually means the browser blocked multiple downloads. ' +
-                 'Check the address bar for a download-permission prompt and allow it, then re-run.');
+    summary.push('No errors were thrown, but ' + (expectedCount - savedCount) + ' file(s) did not capture. ' +
+                 'If files are also missing from the download, check the address bar for a download-permission prompt.');
   }
   if (failedRegions.length || failedPages.length || savedCount < expectedCount) {
     alert(summary.join('\n\n'));
@@ -9077,34 +9267,48 @@ async function exportMultiRegionPdf(opts) {
    signalled liveBoot completion (window.PPA_LIVE_BOOT_DONE inside
    the iframe). The iframe is sized to 1200×900 so html2canvas
    captures at the design dimensions. */
-function loadRegionInIframe(slug) {
+function loadRegionInIframe(slug, opts) {
+  opts = opts || {};
   return new Promise((resolve, reject) => {
-    const iframe = document.createElement('iframe');
-    iframe.style.cssText = ''
-      + 'position:fixed;left:-12000px;top:0;'
-      + 'width:1200px;height:900px;'
-      + 'border:0;margin:0;padding:0;'
-      + 'visibility:hidden;'
-      + 'pointer-events:none;';
-    iframe.setAttribute('aria-hidden', 'true');
+    /* opts.iframe = REUSE an existing export iframe (navigate it to the next
+       region) instead of creating a fresh one per region. Create/destroy per
+       region churns renderer processes; on low-RAM machines Chrome starts
+       failing with ERR_INSUFFICIENT_RESOURCES after ~5-6 regions and the next
+       boot wedges (reproduced headlessly — any region, not a specific one).
+       One navigated iframe = one renderer reused, nothing accumulates. */
+    let iframe = opts.iframe || null;
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.style.cssText = ''
+        + 'position:fixed;left:-12000px;top:0;'
+        + 'width:1200px;height:900px;'
+        + 'border:0;margin:0;padding:0;'
+        + 'visibility:hidden;'
+        + 'pointer-events:none;';
+      iframe.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(iframe);
+    }
     /* exportMode=1 disables the loading overlay + cover-page anims
        inside the iframe so capture is fast. lite=1 carries the
        parent's lite-mode flag through so iframes render the same
        blurred lite layout — without this, an admin downloading a
        lite multi-region PDF would get full-data pages from the
-       iframes instead of the lite preview. */
+       iframes instead of the lite preview. opts.onlyPages (JPG page-
+       subset export) makes the iframe prune to just those pages
+       BEFORE charts render — see setupSkeletonPages — so the boot is
+       a fraction of a full report. */
     const liteSuffix = (typeof PP_LITE_MODE !== 'undefined' && PP_LITE_MODE) ? '&lite=1' : '';
-    iframe.src = location.pathname + '?region=' + encodeURIComponent(slug) + '&exportMode=1' + liteSuffix;
-    document.body.appendChild(iframe);
+    const onlySuffix = (opts.onlyPages && opts.onlyPages.length)
+      ? '&only=' + encodeURIComponent(opts.onlyPages.join(',')) : '';
 
     /* Hard timeout in case liveBoot never finishes (e.g. network
-       failure or Apps Script down). 180 s covers a cold Apps Script
-       start (~25-60 s) plus chart rendering plus the parent's
-       concurrent capture work. Regional clusters (QLD/NSW/vicwatas)
-       have their own Apps Script web apps that each cold-start
-       independently — the first region in each cluster pays the
-       cold-start cost, and 90 s wasn't always enough. */
-    const HARD_TIMEOUT_MS = 180 * 1000;
+       failure or Apps Script down). Default 180 s covers a cold Apps
+       Script start (~25-60 s) plus chart rendering plus the parent's
+       concurrent capture work. The JPG page-subset flow overrides this
+       down (opts.timeoutMs) — its pruned boots are seconds, so waiting
+       3 minutes on a stall just burns the user's time; it retries the
+       region on a fresh iframe instead. */
+    const HARD_TIMEOUT_MS = (opts.timeoutMs && opts.timeoutMs > 0) ? opts.timeoutMs : 180 * 1000;
     let pollHandle = null;
     const cleanup = () => {
       if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
@@ -9114,6 +9318,11 @@ function loadRegionInIframe(slug) {
       reject(new Error('Timed out waiting for ' + slug + ' to load'));
     }, HARD_TIMEOUT_MS);
 
+    /* once:true — on a REUSED iframe a plain listener would stack across
+       navigations and fire the old region's poll again. Listener attached
+       BEFORE src is set so the new navigation's load can't be missed; the
+       old document's PPA_LIVE_BOOT_DONE can't false-positive because the
+       poll only starts after the NEW document's load event. */
     iframe.addEventListener('load', () => {
       pollHandle = setInterval(() => {
         try {
@@ -9134,7 +9343,12 @@ function loadRegionInIframe(slug) {
             const populatedPages = (iframe.contentDocument || {}).querySelectorAll
               ? iframe.contentDocument.querySelectorAll('section.page').length
               : 0;
-            if (populatedPages < 5) {
+            /* Default readiness = ≥5 pages (full report). A page-subset
+               export (opts.onlyPages) prunes the iframe down to just the
+               requested pages, so require only that many. */
+            const minPages = (opts.onlyPages && opts.onlyPages.length)
+              ? Math.min(5, opts.onlyPages.length) : 5;
+            if (populatedPages < minPages) {
               /* Pages not rendered yet (or liveBoot errored). Keep
                  polling. The hard timeout still applies. */
               return;
@@ -9216,7 +9430,10 @@ function loadRegionInIframe(slug) {
           reject(e);
         }
       }, 200);
-    });
+    }, { once: true });
+
+    /* Navigate LAST — the once-listener above is already armed. */
+    iframe.src = location.pathname + '?region=' + encodeURIComponent(slug) + '&exportMode=1' + liteSuffix + onlySuffix;
   });
 }
 

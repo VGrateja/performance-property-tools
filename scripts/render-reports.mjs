@@ -375,17 +375,39 @@ async function renderRegion(browser, slug, lite, session) {
     /* Settle pause — chart resize observers + any deferred layout. */
     await new Promise(r => setTimeout(r, 1500));
 
+    /* At-a-Glance JPG cache: while the FULL regional report is booted anyway,
+       snapshot the At a Glance page (p2) — uploaded alongside the PDFs to
+       <month>/jpg/<slug>-at-a-glance.jpg so the in-tool JPEG download can
+       serve 9 regions in seconds instead of live-rendering each one. Skipped
+       for lite + the research reports (the JPG flow is regional-only).
+       Best-effort: a capture failure never fails the PDF render. */
+    let atGlance = null;
+    if (!lite && !isResearchReportSlug(slug)) {
+      try {
+        /* applyAutoZoom shrinks body at 1200px viewports — force zoom 1 for a
+           full-size element screenshot, restore before the PDF capture. */
+        const prevZoom = await page.evaluate(() => { const z = document.body.style.zoom; document.body.style.zoom = '1'; return z; });
+        await new Promise(r => setTimeout(r, 300));
+        const el = await page.$('#p2');
+        if (el) atGlance = await el.screenshot({ type: 'jpeg', quality: 82 });
+        await page.evaluate(z => { document.body.style.zoom = z || ''; }, prevZoom);
+      } catch (e) {
+        console.warn('  at-a-glance jpg capture failed for ' + slug + ': ' + (e && e.message || e));
+      }
+    }
+
     /* Native PDF. The existing @media print CSS handles page breaks
        (section.page { page-break-after: always }) and background
        colour preservation. We override the @page size to 297×222.75mm
        so the 4:3 design fills the page edge-to-edge. */
-    return await page.pdf({
+    const pdf = await page.pdf({
       width:           PDF_WIDTH_MM + 'mm',
       height:          PDF_HEIGHT_MM + 'mm',
       printBackground: true,
       margin:          { top: 0, right: 0, bottom: 0, left: 0 },
       preferCSSPageSize: false,
     });
+    return { pdf, atGlance };
   } finally {
     await page.close();
   }
@@ -414,9 +436,17 @@ async function renderAndUploadWithRetry(browser, sb, slug, lite, session, label)
   let lastErr;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const buf  = await renderRegion(browser, slug, lite, session);
-      const path = await uploadPdf(sb, slug, lite, buf);
-      return { buf, path };
+      const out  = await renderRegion(browser, slug, lite, session);
+      const path = await uploadPdf(sb, slug, lite, out.pdf);
+      /* At-a-Glance JPG cache (see renderRegion) — best-effort upload. */
+      if (out.atGlance) {
+        const jpgPath = MONTH_KEY + '/jpg/' + slug + '-at-a-glance.jpg';
+        const { error: jErr } = await sb.storage.from(BUCKET).upload(jpgPath, out.atGlance, {
+          contentType: 'image/jpeg', upsert: true, cacheControl: '3600',
+        });
+        if (jErr) console.warn('  at-a-glance jpg upload failed for ' + slug + ': ' + jErr.message);
+      }
+      return { buf: out.pdf, path };
     } catch (err) {
       lastErr = err;
       if (attempt < MAX_ATTEMPTS) {
@@ -452,7 +482,7 @@ async function cleanupOldMonths(sb) {
   let deleted = 0;
   for (const month of toDelete) {
     const paths = [];
-    for (const sub of ['', '/lite']) {
+    for (const sub of ['', '/lite', '/jpg']) {
       const { data } = await sb.storage.from(BUCKET).list(month + sub, { limit: 200 });
       if (Array.isArray(data)) {
         for (const f of data) {
