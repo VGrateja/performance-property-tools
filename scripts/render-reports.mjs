@@ -233,6 +233,19 @@ async function renderRegion(browser, slug, lite, session) {
       { timeout: 90000, polling: 200 }
     );
 
+    /* Data-applied guard: PPA_LIVE_BOOT_DONE can fire on error paths before
+       the region's live data has replaced the static Sydney baseline — which
+       would bake WRONG numbers into the PDF/JPG (caught in the At-a-Glance
+       JPG cache: Adelaide tiles showing Sydney's 5,143,256). Wait until the
+       live merge for THIS region has landed. Best-effort (won't block the
+       render if a region's feed is genuinely down). */
+    if (!isResearchReportSlug(slug)) {
+      await page.waitForFunction(
+        s => window.PPA_REGION_DATA && !!window.PPA_REGION_DATA[s],
+        { timeout: 60000, polling: 200 }, slug
+      ).catch(() => console.warn('  (data-applied guard timed out for ' + slug + ' — capturing anyway)'));
+    }
+
     /* #7: image overlays now load via a signed-URL round-trip
        (createSignedUrl → <img> fetch from the private report-images bucket),
        which can finish after PPA_LIVE_BOOT_DONE. Wait until every overlay

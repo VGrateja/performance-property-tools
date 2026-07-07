@@ -6983,8 +6983,22 @@ function rsAppendAudit(action, details, force) {
 function rsApplyToCache(slug, state) {
   for (const b of Object.keys(RS_BUCKET_KEYS)) {
     if (state[b] !== undefined) {
-      try { localStorage.setItem(RS_BUCKET_KEYS[b](slug), JSON.stringify(state[b])); }
-      catch (_) { /* quota — backup feature surfaces this */ }
+      const key = RS_BUCKET_KEYS[b](slug), val = JSON.stringify(state[b]);
+      try { localStorage.setItem(key, val); }
+      catch (_) {
+        /* Quota full. A silently-failed write here used to cause an INFINITE
+           RELOAD LOOP: the boot merge saw cache≠server → reloaded → the write
+           failed again → reloaded forever. Free the biggest re-fetchable
+           entries (the per-cluster feed caches — they rebuild from the
+           Supabase snapshot in one call) and retry once. */
+        try {
+          ['capital', 'qld', 'nsw', 'vicwatas'].forEach(c => localStorage.removeItem(REPORTS_DATA_CACHE_KEY(c)));
+          localStorage.setItem(key, val);
+          console.warn('[reports] localStorage was full — evicted the cluster feed caches to store report state.');
+        } catch (_) {
+          console.warn('[reports] localStorage still full — report-state cache for "' + b + '" not persisted.');
+        }
+      }
     }
   }
 }
@@ -7147,11 +7161,25 @@ async function rsBoot() {
     await rsDoSave();
   }
   if (cacheNeedsUpdate) {
-    /* Reload so the existing renderers re-paint from the updated
-       cache. Without this, the user would see stale content from
-       before the server-side wins took effect. */
-    setTimeout(() => location.reload(), 60);
-    return;
+    /* Reload so the existing renderers re-paint from the updated cache.
+       ONE-SHOT per slug per tab: if we already reloaded for this sync and
+       the cache STILL differs (e.g. localStorage quota blocked the write),
+       reloading again would loop forever — continue without reloading
+       instead (decorations may be a boot behind; next successful write
+       self-heals). */
+    const onceKey = 'ppa-rs-sync-reloaded-' + slug;
+    let already = false;
+    try { already = sessionStorage.getItem(onceKey) === '1'; } catch (_) {}
+    if (!already) {
+      try { sessionStorage.setItem(onceKey, '1'); } catch (_) {}
+      setTimeout(() => location.reload(), 60);
+      return;
+    }
+    console.warn('[reports] state cache still divergent after a sync reload — continuing without another reload (storage may be full).');
+  } else {
+    /* Converged — clear the one-shot so a FUTURE genuine server change can
+       trigger its own single reload. */
+    try { sessionStorage.removeItem('ppa-rs-sync-reloaded-' + slug); } catch (_) {}
   }
   rsSetStatus('saved');
 }
