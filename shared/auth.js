@@ -69,7 +69,8 @@ const ADMIN_NAMES = {
   'shaene@performanceproperty.com.au':    'Shaene',
   'vandolf@performanceproperty.com.au':   'Vandolf',
   'paul@performanceproperty.com.au':      'Paul',
-  'd.robbins@performanceproperty.com.au': 'David'
+  'd.robbins@performanceproperty.com.au': 'David',
+  'marilou@performanceproperty.com.au':   'Marilou'
 };
 const ALLOWED_DOMAIN = 'performanceproperty.com.au';
 
