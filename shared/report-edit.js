@@ -4201,6 +4201,45 @@ function setupAutoZoom() {
       applyAutoZoom();
     });
   });
+  setupChartZoomPointerFix();
+}
+
+/* ─── Chart pointer fix under body.zoom ──────────────────────────────
+   ECharts (zrender) reads e.offsetX/Y as chart-local coordinates in the
+   chart's LAYOUT pixel space (it sizes charts from clientWidth, which
+   CSS zoom does not scale). But the browser reports offsetX/Y in the
+   ZOOMED coordinate space (verified on Chrome 127 legacy zoom AND
+   Chrome 150 standardized zoom — both deliver zoomed-space offsets for
+   the SVG-renderer targets). So under auto-zoom every hover lands short
+   by the zoom factor: the picked data point and the tooltip drift away
+   from the cursor, worse toward the bottom-right of each chart.
+
+   Fix: on every pointer event headed into an echarts container, shadow
+   offsetX/Y (an own property overrides the prototype getter) with the
+   native value divided by the body zoom — exactly the layout-space
+   coordinate zrender expects. layerX/Y are shadowed too so zrender's
+   Firefox branch sees consistent values and falls through to offsetX.
+   No-op at zoom 1 / outside chart containers, so cost is negligible. */
+function setupChartZoomPointerFix() {
+  const fix = (e) => {
+    const zoom = parseFloat(document.body.style.zoom || '1') || 1;
+    if (zoom === 1) return;
+    if (typeof e.offsetX !== 'number') return;
+    const host = e.target && e.target.closest && e.target.closest('[_echarts_instance_]');
+    if (!host) return;
+    const x = e.offsetX / zoom;   /* read the native (prototype) getters   */
+    const y = e.offsetY / zoom;   /* BEFORE shadowing them on the instance */
+    try {
+      Object.defineProperty(e, 'offsetX', { value: x, configurable: true });
+      Object.defineProperty(e, 'offsetY', { value: y, configurable: true });
+      Object.defineProperty(e, 'layerX',  { value: x, configurable: true });
+      Object.defineProperty(e, 'layerY',  { value: y, configurable: true });
+    } catch (_) { /* shadowing refused → leave the event untouched */ }
+  };
+  ['mousemove', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu',
+   'mouseover', 'mouseout', 'wheel',
+   'pointermove', 'pointerdown', 'pointerup', 'pointerover', 'pointerout',
+  ].forEach(t => document.addEventListener(t, fix, { capture: true, passive: true }));
 }
 
 /* ─── Pager-tools collapse/expand. Hides every tool button (View/Edit,
