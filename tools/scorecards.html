@@ -103,6 +103,19 @@
   .todo .go{ margin-left:auto; color:var(--gold); font-weight:800; transition:.15s; }
 
   .empgrid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:14px; }
+  /* Staff personal view: one enlarged card filling the space instead of a
+     grid of small cards. */
+  .empgrid.solo{ grid-template-columns:minmax(0,720px); justify-content:center; }
+  .empgrid.solo .empcard{ padding:30px 34px 26px; border-radius:22px; }
+  .empgrid.solo .empcard .avatar{ width:60px; height:60px; border-radius:17px; font-size:1.25rem; }
+  .empgrid.solo .empcard .nm{ font-size:1.5rem; }
+  .empgrid.solo .empcard .ps{ font-size:.86rem; }
+  .empgrid.solo .empcard .score .v{ font-size:2rem; }
+  .empgrid.solo .empcard .score .k{ font-size:.66rem; }
+  .empgrid.solo .heat{ gap:7px; margin:22px 0 16px; }
+  .empgrid.solo .heat .cell{ height:34px; border-radius:8px; }
+  .empgrid.solo .heat .cell span{ font-size:.62rem; }
+  .empgrid.solo .empcard .ft .chip{ font-size:.82rem; }
   .empcard{ text-align:left; cursor:pointer; border:1px solid var(--line); border-radius:18px; padding:18px 20px 16px; font-family:inherit; color:var(--ink);
     background:linear-gradient(160deg, rgba(255,255,255,.055), rgba(255,255,255,.015)); transition:.18s; position:relative; }
   [data-theme="light"] .empcard{ background:var(--panel2); box-shadow:var(--shadow); }
@@ -264,7 +277,6 @@
 
 <div class="pp-toolnav">
   <a id="pp-back-to-hub" href="../index.html" title="Back to hub"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg><span>Back to Hub</span></a>
-  <a id="pp-back-to-vault" href="../index.html#vault" title="Back to Vault"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg><span>Vault</span></a>
 </div>
 
 <div class="wrap">
@@ -319,7 +331,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=4d16983b"></script>
-<script src="../shared/auth.js?v=5467335d"></script>
+<script src="../shared/auth.js?v=3f458df2"></script>
 <script src="../shared/auth-gate.js?v=cb10cfed"></script>
 <script src="../shared/fit-screen.js?v=5e41a716"></script>
 <script>
@@ -511,6 +523,12 @@ function renderDash() {
   const fySel = $('#fySel');
   fySel.innerHTML = S.fys.map(y => '<option value="' + y + '"' + (y === S.fy ? ' selected' : '') + '>FY ' + y + '–' + String(y + 1).slice(2) + '</option>').join('');
 
+  /* Staff (company) see only their own card — give them a personal view: no
+     "Team members" stat, "My average" instead of "Team average", and a single
+     enlarged card. dev/admin/leads keep the team view (they may see many). */
+  const view = (typeof getViewAsLevel === 'function') ? getViewAsLevel() : null;
+  const myView = (view || (S.profile && S.profile.tier)) === 'company';
+
   /* stats */
   let signed = 0, pending = 0, sum = 0, n = 0;
   const nowIdx = fyMonths(S.fy).indexOf(nowYm());
@@ -522,12 +540,17 @@ function renderDash() {
       if (st.sc.complete) { sum += st.sc.blended; n++; }
     });
   });
-  $('#statRow').innerHTML = [
+  const stats = myView ? [
+    ['Months signed', signed, 'fully signed off'],
+    ['Awaiting sign-off', pending, 'rated, not yet signed'],
+    ['My average', n ? fmtPct(sum / n * 100) : '—', 'blended score, rated months'],
+  ] : [
     ['Team members', S.employees.length, 'on FY ' + S.fy + '–' + String(S.fy + 1).slice(2) + ' scorecards'],
     ['Months signed', signed, 'fully signed off'],
     ['Awaiting sign-off', pending, 'rated, not yet signed'],
     ['Team average', n ? fmtPct(sum / n * 100) : '—', 'blended score, rated months'],
-  ].map(([k, v, s]) => '<div class="stat"><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="s">' + s + '</div></div>').join('');
+  ];
+  $('#statRow').innerHTML = stats.map(([k, v, s]) => '<div class="stat"><div class="k">' + k + '</div><div class="v">' + v + '</div><div class="s">' + s + '</div></div>').join('');
 
   /* waiting on you */
   const todos = [];
@@ -560,6 +583,7 @@ function renderDash() {
 
   /* employee cards */
   const grid = $('#empGrid');
+  grid.classList.toggle('solo', myView);
   grid.innerHTML = S.employees.map(emp => {
     const yr = rollup(emp, 0, 11);
     const dots = fyMonths(S.fy).map((ym, i) => {
@@ -1008,9 +1032,13 @@ function profileOptions(sel) {
     '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(p.full_name || p.email) + '</option>').join('');
 }
 
-/* roster incl. archived — for the settings list only (dashboard uses S.employees) */
+/* Roster for the Manage list (incl. archived). Uses the admin RPC, not a direct
+   select: migration 073 restricts scorecard_employees reads to dev + linked
+   accounts, so a direct select would hide non-linked employees from admin/leads.
+   scorecard_roster_admin() (SECURITY DEFINER, writer-gated) returns the whole
+   FY roster to writers. The dashboard still uses S.employees (RLS-scoped). */
 async function loadRoster() {
-  const { data } = await sb.from('scorecard_employees').select('*').eq('fy', S.fy).order('name');
+  const { data } = await sb.rpc('scorecard_roster_admin', { p_fy: S.fy });
   S.roster = data || [];
   return S.roster;
 }
@@ -1174,11 +1202,14 @@ async function boot() {
       '<br>Apply migration <b>066_scorecards.sql</b> in Supabase, then reload.</p>';
     return;
   }
-  /* deep-link: an employee opening the tool who is ONLY an employee
-     lands straight on their own scorecard */
+  /* Staff (company) land on their personal dashboard (one enlarged card) so
+     they get the overview + heatmap first, then click in. Other single-role
+     employees (e.g. a client/guest employee) still deep-link straight to their
+     card. */
+  const staffView = S.profile && S.profile.tier === 'company';
   const mine = S.employees.filter(e => { const r = roleFor(e); return r.employee && !r.writer && !r.manager && !r.pc; });
   const others = S.employees.filter(e => { const r = roleFor(e); return r.writer || r.manager || r.pc; });
-  if (mine.length === 1 && !others.length) openEmp(mine[0].id);
+  if (!staffView && mine.length === 1 && !others.length) openEmp(mine[0].id);
   else renderDash();
 }
 
