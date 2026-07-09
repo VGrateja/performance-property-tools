@@ -662,10 +662,12 @@ function forgeGroupOf(c){
 }
 
 /* ── Access gate ── Adding data (any file drop / import) is restricted to
-   dev/admin (tier 0/1). Tier 2 (company) + client/guest can view Forge but
-   not upload. Defaults to DENY until the tier resolves, so a drop that races
-   page-load can't slip through. Real writes are also RLS-gated server-side;
-   this stops the UI path + gives clear feedback. */
+   dev/admin (tier 0/1). Leads (2) / company/Staff (3) + client/guest can view
+   Forge but NOT upload. Defaults to DENY until the tier resolves, so a drop
+   that races page-load can't slip through. Real writes are also RLS-gated
+   server-side (is_writer() = dev/admin); this stops the UI path + gives clear
+   feedback. Honours the dev view-as switcher so previewing as leads/company
+   shows the same read-only Forge a real one of those users gets. */
 let _forgeCanEdit = false;
 function _forgeGuard() {
   if (_forgeCanEdit) return true;
@@ -690,7 +692,17 @@ function _forgeApplyAccess() {
     if (window.sb || ++n > 60) {
       clearInterval(t);
       (typeof sbCurrentProfile === 'function' ? sbCurrentProfile() : Promise.resolve(null))
-        .then(p => { _forgeCanEdit = !!(p && (p.tier === 'dev' || p.tier === 'admin')); })
+        .then(p => {
+          /* Editing needs the REAL account to be a writer (dev/admin) AND —
+             when a dev is previewing another tier via the view-as switcher —
+             the previewed tier to also be dev/admin. So dev-viewing-as-leads
+             (or any non-writer view) gets a read-only Forge, matching what a
+             real leads / company / client / guest user sees. */
+          const realWriter = !!(p && (p.tier === 'dev' || p.tier === 'admin'));
+          const view = (typeof getViewAsLevel === 'function') ? getViewAsLevel() : null;
+          const viewWriter = !view || view === 'dev' || view === 'admin';
+          _forgeCanEdit = realWriter && viewWriter;
+        })
         .catch(() => {})
         .finally(_forgeApplyAccess);
     }
