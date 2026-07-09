@@ -1,0 +1,55 @@
+# =============================================================================
+# Performance Scorecard email reminders.
+#
+# Runs scripts/scorecard-reminders.mjs, which emails each party when their
+# section is still incomplete (Employee 3rd/5th, P&C 8th/10th, AU Manager
+# 13th/15th — all AEST/AEDT). A de-dupe log (migration 075) makes repeated runs
+# safe, so we run across a UTC window covering ~8am–1pm Sydney (which shifts by
+# an hour across daylight saving); the script computes the real Australia/Sydney
+# local time and only acts on the right day/hour.
+#
+# Required GitHub Secrets:
+#   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY   (already present for other jobs)
+#   RESEND_API_KEY                            (add — same key the Edge functions use)
+# Optional:
+#   SCORECARD_FROM_EMAIL, SCORECARD_APP_URL
+# =============================================================================
+
+name: Scorecard Reminders
+
+on:
+  schedule:
+    # UTC hours spanning ~8am–1pm Australia/Sydney across AEST(+10)/AEDT(+11).
+    # The script self-gates on real Sydney local time; the log prevents dupes.
+    - cron: '0 20,21,22,23,0,1,2,3 * * *'
+  workflow_dispatch: {}   # manual run for testing
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scorecard-reminders
+  cancel-in-progress: false
+
+jobs:
+  remind:
+    name: Send scorecard reminders
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Send reminders
+        env:
+          SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RESEND_API_KEY:            ${{ secrets.RESEND_API_KEY }}
+          SCORECARD_FROM_EMAIL:      ${{ secrets.SCORECARD_FROM_EMAIL }}
+          SCORECARD_APP_URL:         ${{ secrets.SCORECARD_APP_URL }}
+        run: npm run scorecard-reminders
