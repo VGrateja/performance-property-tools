@@ -48,7 +48,9 @@ const DEV_EMAILS = [
   'vandolf@performanceproperty.com.au',
   /* Shared internal test account — Tier 2 (company) via the trigger.
      Password is set in Supabase Auth; auth.users.password_hash. */
-  'test@performanceproperty.com.au'
+  'test@performanceproperty.com.au',
+  /* Second internal test account — same deal as above. */
+  'test2@performanceproperty.com.au'
 ];
 
 /* Registration master switch. Off per Paul (CEO): this tool is
