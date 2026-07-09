@@ -1004,10 +1004,17 @@ function profileOptions(sel) {
     '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(p.full_name || p.email) + '</option>').join('');
 }
 
+/* roster incl. archived — for the settings list only (dashboard uses S.employees) */
+async function loadRoster() {
+  const { data } = await sb.from('scorecard_employees').select('*').eq('fy', S.fy).order('name');
+  S.roster = data || [];
+  return S.roster;
+}
+
 let _mtab = 'roster', _editEmp = null;
 async function openSettings(tab) {
   _mtab = tab || 'roster'; _editEmp = null;
-  await loadProfiles();
+  await Promise.all([loadProfiles(), loadRoster()]);
   $('#modalBack').classList.add('show'); $('#settingsModal').classList.add('show');
   renderSettings();
 }
@@ -1018,13 +1025,17 @@ function renderSettings() {
   const body = $('#mtabBody');
   if (_mtab === 'roster') {
     if (_editEmp) { renderEmpForm(body); return; }
-    body.innerHTML = '<div class="rosterlist">' + (S.employees.length ? S.employees.map(e =>
-      '<div class="rowitem"><div class="avatar" style="width:34px;height:34px;font-size:.75rem;border-radius:10px">' + esc(initials(e.name)) + '</div>' +
-      '<div style="flex:1"><b>' + esc(e.name) + '</b> <span class="hint">' + esc(e.position || '') + '</span><div class="hint">' + (e.kpis || []).length + ' KPIs · Manager: ' + esc(e.manager_name || '—') + ' · P&amp;C: ' + esc(e.pc_name || '—') + '</div></div>' +
+    /* Roster settings shows ALL rows for the FY (S.roster), including archived
+       ones — the dashboard's S.employees is active-only, so an archived row
+       would otherwise be invisible and its (fy,name) slot un-clearable. */
+    const roster = S.roster || S.employees;
+    body.innerHTML = '<div class="rosterlist">' + (roster.length ? roster.map(e =>
+      '<div class="rowitem"' + (e.active === false ? ' style="opacity:.6"' : '') + '><div class="avatar" style="width:34px;height:34px;font-size:.75rem;border-radius:10px">' + esc(initials(e.name)) + '</div>' +
+      '<div style="flex:1"><b>' + esc(e.name) + '</b> <span class="hint">' + esc(e.position || '') + '</span>' + (e.active === false ? ' <span class="chip">Archived</span>' : '') + '<div class="hint">' + (e.kpis || []).length + ' KPIs · Manager: ' + esc(e.manager_name || '—') + ' · P&amp;C: ' + esc(e.pc_name || '—') + '</div></div>' +
       '<button class="btn small" data-edit="' + e.id + '">Edit</button></div>').join('') :
       '<div class="hint" style="padding:16px 4px">No employees on FY ' + S.fy + ' yet.</div>') + '</div>' +
       '<div style="margin-top:14px"><button class="btn primary" id="addEmpBtn">＋ Add team member</button></div>';
-    body.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { _editEmp = JSON.parse(JSON.stringify(S.employees.find(x => x.id === b.dataset.edit))); renderSettings(); }));
+    body.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { _editEmp = JSON.parse(JSON.stringify(roster.find(x => x.id === b.dataset.edit))); renderSettings(); }));
     $('#addEmpBtn').addEventListener('click', () => {
       _editEmp = { fy: S.fy, name: '', position: '', manager_name: '', pc_name: '', kpis: [{ measure: '', target: '' }], active: true };
       renderSettings();
@@ -1088,7 +1099,7 @@ function renderEmpForm(body) {
     '<button class="btn small" id="kpiAdd">＋ Add KPI</button>' +
     '<div style="margin-top:20px;display:flex;gap:10px;align-items:center">' +
     '<button class="btn primary" id="empSave">Save team member</button>' +
-    (e.id ? '<button class="btn danger ghost" id="empArchive">' + (e.active === false ? 'Restore' : 'Archive') + '</button>' : '') +
+    (e.id ? '<button class="btn danger ghost" id="empDelete">Delete</button>' : '') +
     '</div>';
   /* Pull the top fields (name/position/FY/names/account links) from the DOM
      back into _editEmp. The KPI inputs bind live, but these don't — so any
@@ -1122,17 +1133,18 @@ function renderEmpForm(body) {
       const { error } = await sb.from('scorecard_employees').upsert(payload);
       if (error) throw error;
       toast('Saved ✓'); _editEmp = null;
-      await loadAll(); renderSettings(); renderDash();
+      await loadRoster(); await loadAll(); renderSettings(); renderDash();
     } catch (err) { toast(err.message || 'Save failed', true); }
   });
-  const arch = $('#empArchive');
-  if (arch) arch.addEventListener('click', async () => {
+  const del = $('#empDelete');
+  if (del) del.addEventListener('click', async () => {
+    if (!confirm('Delete ' + (e.name || 'this team member') + ' permanently?\n\nThis removes their roster entry AND every monthly scorecard, mid-year and annual review on record. This cannot be undone.')) return;
     try {
-      const { error } = await sb.from('scorecard_employees').update({ active: e.active === false }).eq('id', e.id);
+      const { error } = await sb.from('scorecard_employees').delete().eq('id', e.id);
       if (error) throw error;
-      toast(e.active === false ? 'Restored' : 'Archived'); _editEmp = null;
-      await loadAll(); renderSettings(); renderDash();
-    } catch (err) { toast(err.message || 'Failed', true); }
+      toast('Deleted'); _editEmp = null;
+      await loadRoster(); await loadAll(); renderSettings(); renderDash();
+    } catch (err) { toast(err.message || 'Delete failed', true); }
   });
 }
 
