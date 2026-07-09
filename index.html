@@ -1416,7 +1416,16 @@
       <button class="rcm-back" onclick="showClusters()" type="button">← Back to clusters</button>
       <div class="rcm-eyebrow" id="rcmRegionEyebrow">Cluster</div>
       <h2 class="rcm-title">Choose a region</h2>
-      <p class="rcm-sub">Each region opens its own research report. Once inside, you can switch to another region in the same cluster from the top-bar dropdown.</p>
+      <p class="rcm-sub">Each region opens in a <b>new tab</b>, so you can open several and compare them side by side. Turn on <b>Compare</b> to tick multiple regions and open them all at once.</p>
+
+      <div class="rcm-region-toolbar">
+        <button type="button" class="rcm-compare-toggle" id="rcmCompareToggle" aria-pressed="false" onclick="toggleReportsCompare()">⧉ Compare multiple</button>
+        <div class="rcm-compare-bar" id="rcmCompareBar" hidden>
+          <span class="rcm-compare-count" id="rcmCompareCount">0 selected</span>
+          <button type="button" class="rcm-compare-open" id="rcmCompareOpen" onclick="openSelectedReports()" disabled>Open in new tab</button>
+          <button type="button" class="rcm-compare-clear" onclick="clearReportsSelection()">Clear</button>
+        </div>
+      </div>
 
       <div class="rcm-grid rcm-region-grid" id="rcmRegionGrid">
         <!-- region tiles injected by showRegions() -->
@@ -1637,6 +1646,7 @@
   @media (max-width: 720px) { .rcm-grid { grid-template-columns: 1fr; } }
 
   .rcm-tile {
+    position: relative;
     text-align: left;
     background: linear-gradient(135deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.015) 100%);
     border: 1.5px solid rgba(0, 182, 203, 0.22);
@@ -1648,6 +1658,37 @@
     font-family: inherit;
     box-shadow: 0 4px 18px rgba(0,0,0,0.18);
   }
+  /* Compare (multi-select) controls in the region picker */
+  .rcm-region-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: -6px 0 22px; }
+  .rcm-compare-toggle,
+  .rcm-compare-open,
+  .rcm-compare-clear {
+    font-family: inherit; font-size: 11px; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; padding: 8px 14px; border-radius: 10px; cursor: pointer;
+    border: 1.5px solid transparent; transition: all .18s;
+  }
+  .rcm-compare-toggle { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.82); border-color: rgba(0,182,203,0.35); }
+  .rcm-compare-toggle:hover { border-color: rgba(0,182,203,0.7); color: #fff; }
+  .rcm-compare-toggle.on { background: linear-gradient(135deg,#0ea5b7,#00b6cb); border-color: transparent; color: #04121c; }
+  .rcm-compare-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .rcm-compare-count { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: rgba(255,255,255,0.6); }
+  .rcm-compare-open { background: linear-gradient(135deg,#0ea5b7,#00b6cb); color: #04121c; }
+  .rcm-compare-open:hover:not(:disabled) { filter: brightness(1.08); }
+  .rcm-compare-open:disabled { opacity: .4; cursor: not-allowed; }
+  .rcm-compare-clear { background: transparent; border-color: rgba(255,255,255,0.22); color: rgba(255,255,255,0.72); }
+  .rcm-compare-clear:hover { border-color: rgba(255,255,255,0.45); color: #fff; }
+  .rcm-tile.selected { border-color: #00b6cb; box-shadow: 0 0 0 1.5px #00b6cb, 0 12px 36px rgba(0,182,203,0.25); }
+  .rcm-tile.selected::after {
+    content: '✓'; position: absolute; top: 12px; right: 14px;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: #00b6cb; color: #04121c; font-weight: 900; font-size: 13px;
+    display: flex; align-items: center; justify-content: center; line-height: 1;
+  }
+  [data-theme="light"] .rcm-compare-toggle { color: rgba(31,40,63,0.85); background: rgba(0,182,203,0.06); }
+  [data-theme="light"] .rcm-compare-toggle:hover { color: #1a2236; }
+  [data-theme="light"] .rcm-compare-count { color: rgba(31,40,63,0.6); }
+  [data-theme="light"] .rcm-compare-clear { border-color: rgba(31,40,63,0.25); color: rgba(31,40,63,0.7); }
+  [data-theme="light"] .rcm-compare-clear:hover { color: #1a2236; }
   .rcm-tile:hover {
     border-color: rgba(0, 182, 203, 0.7);
     transform: translateY(-3px);
@@ -4252,6 +4293,65 @@ function closePresentations() {
   m.setAttribute('aria-hidden', 'true');
 }
 
+/* ── Reports cluster picker: open-in-new-tab + "Compare" multi-select ──
+   A single tile click opens that region in a NEW TAB and leaves the picker
+   open, so you can open several and compare side by side. "Compare" mode turns
+   tile clicks into a multi-select — tick regions, then open them all at once.
+   (New-tab opens sidestep the single-global-region limitation of the report
+   tool: each tab is its own JS realm with its own ACTIVE_REGION.) */
+let _rcmCompare = false;
+const _rcmSelected = new Map();   // selectionKey -> { url, name }
+
+function _rcmRegionUrl(clusterKey, r) {
+  /* Region entries can override the default online-reports.html destination
+     via `url` (the Research Reports cluster routes to its own report files). */
+  return r.url
+    ? (r.url + (__reportsLiteMode ? '?lite=1' : ''))
+    : ('tools/online-reports.html'
+        + '?cluster=' + encodeURIComponent(clusterKey)
+        + '&region='  + encodeURIComponent(r.slug)
+        + (__reportsLiteMode ? '&lite=1' : ''));
+}
+function _rcmKey(clusterKey, r) { return r.url || (clusterKey + '/' + r.slug); }
+
+function _openReportTab(url) {
+  const w = window.open(url, '_blank');
+  if (w) { try { w.opener = null; } catch (e) {} }   // sever opener; also lets us detect pop-up blocks
+  return !!w;
+}
+function _rcmUpdateCompareUI() {
+  const bar    = document.getElementById('rcmCompareBar');
+  const count  = document.getElementById('rcmCompareCount');
+  const open   = document.getElementById('rcmCompareOpen');
+  const toggle = document.getElementById('rcmCompareToggle');
+  if (toggle) { toggle.classList.toggle('on', _rcmCompare); toggle.setAttribute('aria-pressed', _rcmCompare ? 'true' : 'false'); }
+  if (bar) bar.hidden = !_rcmCompare;
+  const n = _rcmSelected.size;
+  if (count) count.textContent = n + ' selected';
+  if (open) { open.disabled = n === 0; open.textContent = n > 1 ? ('Open ' + n + ' in new tabs') : 'Open in new tab'; }
+}
+function clearReportsSelection() {
+  _rcmSelected.clear();
+  document.querySelectorAll('#rcmRegionGrid .rcm-tile.selected').forEach(t => t.classList.remove('selected'));
+  _rcmUpdateCompareUI();
+}
+function toggleReportsCompare() {
+  _rcmCompare = !_rcmCompare;
+  if (!_rcmCompare) clearReportsSelection();
+  _rcmUpdateCompareUI();
+}
+function openSelectedReports() {
+  const items = Array.from(_rcmSelected.values());
+  if (!items.length) return;
+  let blocked = 0;
+  items.forEach(it => { if (!_openReportTab(it.url)) blocked++; });
+  if (blocked) {
+    alert(blocked + ' of ' + items.length + " tab(s) were blocked by your browser's pop-up blocker.\n\nAllow pop-ups for this site (the icon in the address bar), then try again — or open them one at a time.");
+  } else {
+    clearReportsSelection();
+  }
+}
+
 /* Step 1 → step 2: render the cluster's regions and switch views. */
 function showRegions(clusterKey) {
   const cluster = REGION_CLUSTERS[clusterKey];
@@ -4267,23 +4367,18 @@ function showRegions(clusterKey) {
     const tile = document.createElement('button');
     tile.className = 'rcm-tile';
     tile.type = 'button';
-    /* Build the URL with both cluster + region params so the report
-       tool knows the source dataset and the specific market. Click
-       routes through navigateToTool() so the same blur-overlay
-       transition the user sees on the other tool pills plays here
-       too — keeps the entire flow visually consistent. */
     tile.onclick = () => {
-      /* Region entries can override the default online-reports.html
-         destination by setting `url` — the Research Reports cluster
-         routes to its own per-report tool files instead of the
-         residential reports tool. */
-      const url = r.url
-        ? (r.url + (__reportsLiteMode ? '?lite=1' : ''))
-        : ('tools/online-reports.html'
-            + '?cluster=' + encodeURIComponent(clusterKey)
-            + '&region='  + encodeURIComponent(r.slug)
-            + (__reportsLiteMode ? '&lite=1' : ''));
-      navigateToTool(url, r.name);
+      const url = _rcmRegionUrl(clusterKey, r);
+      if (_rcmCompare) {
+        /* Compare mode: toggle this region's selection instead of opening. */
+        const key = _rcmKey(clusterKey, r);
+        if (_rcmSelected.has(key)) { _rcmSelected.delete(key); tile.classList.remove('selected'); }
+        else { _rcmSelected.set(key, { url, name: r.name }); tile.classList.add('selected'); }
+        _rcmUpdateCompareUI();
+        return;
+      }
+      /* Default: open this region in a new tab, keep the picker open. */
+      _openReportTab(url);
     };
     tile.innerHTML =
       '<div class="rcm-icon">' + r.icon + '</div>' +
@@ -4291,6 +4386,9 @@ function showRegions(clusterKey) {
       '<div class="rcm-count">' + r.state + '</div>';
     grid.appendChild(tile);
   });
+
+  /* Fresh selection per cluster (Compare mode state itself persists). */
+  clearReportsSelection();
 
   document.getElementById('rcmClustersView').hidden = true;
   document.getElementById('rcmRegionsView').hidden  = false;
