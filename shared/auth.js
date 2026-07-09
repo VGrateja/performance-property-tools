@@ -104,9 +104,10 @@ function getAccessLevel() { return getViewAsLevel(); }
 function isDev()          { return getAuthLevel() === 'dev'; }
 function isAdmin()        { const l = getAccessLevel(); return l === 'admin' || l === 'dev'; }
 function isCompany()      { return getAccessLevel() === 'company'; }
+function isLeads()        { return getAccessLevel() === 'leads'; }
 function isClient()       { return getAccessLevel() === 'client'; }
 function isGuest()        { return getAccessLevel() === 'guest'; }
-function isLimitedUser()  { return isCompany() || isClient() || isGuest(); }
+function isLimitedUser()  { return isLeads() || isCompany() || isClient() || isGuest(); }
 function isViewOnly()     { return isClient() || isGuest(); }
 
 /* Expose every helper on window so the rest of the codebase keeps working. */
@@ -116,6 +117,7 @@ window.getAccessLevel = getAccessLevel;
 window.isDev          = isDev;
 window.isAdmin        = isAdmin;
 window.isCompany      = isCompany;
+window.isLeads        = isLeads;
 window.isClient       = isClient;
 window.isGuest        = isGuest;
 window.isLimitedUser  = isLimitedUser;
@@ -187,9 +189,10 @@ function _ppBuildTierSwitcher() {
   const tiers = [
     ['dev',    'TIER 0', 'Dev / Full access'],
     ['admin',  'TIER 1', 'Admin'],
-    ['company','TIER 2', 'Company staff'],
-    ['client', 'TIER 3', 'Client (no edits, no downloads)'],
-    ['guest',  'TIER 4', 'Lite — Contact Us blur wall']
+    ['leads',  'TIER 2', 'Leads — Staff access + Vault & PM'],
+    ['company','TIER 3', 'Staff'],
+    ['client', 'TIER 4', 'Client (no edits, no downloads)'],
+    ['guest',  'TIER 5', 'Lite — Contact Us blur wall']
   ];
   tiers.forEach(([tier, label, sub]) => {
     const b = document.createElement('button');
@@ -231,7 +234,7 @@ function initTierSwitcher() {
   _ppBuildTierSwitcher();
   try {
     const va = getViewAsLevel();
-    const labels = { dev:'TIER 0', admin:'TIER 1', company:'TIER 2', client:'TIER 3', guest:'TIER 4' };
+    const labels = { dev:'TIER 0', admin:'TIER 1', leads:'TIER 2', company:'TIER 3', client:'TIER 4', guest:'TIER 5' };
     const lbl = document.getElementById('ts-current-label-js');
     if (lbl) lbl.textContent = labels[va] || 'TIER 0';
     document.querySelectorAll('#ts-menu-js button[data-tier]').forEach(b => {
@@ -245,7 +248,7 @@ window.initTierSwitcher = initTierSwitcher;
 
 function setViewAs(tier) {
   if (!isDev()) return;
-  if (!['dev','admin','company','client','guest'].includes(tier)) return;
+  if (!['dev','admin','leads','company','client','guest'].includes(tier)) return;
   sessionStorage.setItem('pp_view_as', tier);
   location.reload();
 }
@@ -300,7 +303,7 @@ function applyAccessRestrictions() {
   try { initTierSwitcher(); } catch (e) {}
 
   try {
-    document.body.classList.remove('tier-dev','tier-admin','tier-company','tier-client','tier-guest');
+    document.body.classList.remove('tier-dev','tier-admin','tier-leads','tier-company','tier-client','tier-guest');
     document.body.classList.add('tier-' + level);
   } catch (e) {}
 
@@ -330,21 +333,22 @@ function applyAccessRestrictions() {
   const hubPill = document.getElementById('hubIdentityPill');
   if (hubPill) hubPill.style.display = 'none';
 
-  /* Company / Client / Guest all get the same VIEW surface — this is an
-     internal-only tool now (no external clients use it), so tier 3
-     (client) and tier 4 (guest) should see everything tier 2 (company)
-     sees. The only differences:
-       • All three lose edit toolbar buttons (.tbtn:not(.pdf-btn)) and
-         the save indicator — they're view-only as far as content
-         editing goes.
-       • Tier 3/4 ADDITIONALLY lose the download buttons (.pdf-btn,
-         #runwayPdfBtn, #runwayJpegBtn) — that's the single
-         differentiator between them and tier 2.
+  /* Leads / Company / Client / Guest all get the same VIEW surface — this
+     is an internal-only tool now (no external clients use it), so every
+     tier below admin sees everything Staff (company) sees. The only
+     differences:
+       • All lose edit toolbar buttons (.tbtn:not(.pdf-btn)) and the save
+         indicator — they're view-only as far as content editing goes.
+         (Leads' extra reach is the Vault + PM hub pages, gated in
+         index.html, not edit rights.)
+       • Client / Guest ADDITIONALLY lose the download buttons (.pdf-btn,
+         #runwayPdfBtn, #runwayJpegBtn) — that's the single differentiator
+         between them and Leads / Staff, who keep downloads.
      The old guest branch hid the whole toolbar (no tab switcher etc.)
      and the old client branch hid the Runway data-source dropdown;
      both are gone so 3/4 see the same controls 2 sees, minus
      download. */
-  if (level === 'company' || level === 'client' || level === 'guest') {
+  if (level === 'leads' || level === 'company' || level === 'client' || level === 'guest') {
     document.querySelectorAll('.tbtn:not(.pdf-btn)').forEach(b => b.style.display = 'none');
     const saveInd = document.getElementById('save-indicator');
     if (saveInd) saveInd.style.display = 'none';
@@ -961,9 +965,10 @@ function populateHubWidgets() {
       const labels = {
         dev:    'Tier 0 · Dev',
         admin:  'Tier 1 · Admin',
-        company:'Tier 2 · Company',
-        client: 'Tier 3 · Client',
-        guest:  'Tier 4 · Lite'
+        leads:  'Tier 2 · Leads',
+        company:'Tier 3 · Staff',
+        client: 'Tier 4 · Client',
+        guest:  'Tier 5 · Lite'
       };
       const lvl = getAuthLevel();
       tierEl.textContent = labels[lvl] || '—';

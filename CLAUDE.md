@@ -37,16 +37,23 @@ that alone, not the site.
 |---|---|---|
 | `dev` | Vandolf | full edit + download + view-as switcher |
 | `admin` | Saskia / Shaene / Paul / D.Robbins | full edit + download |
-| `company` | other `@performanceproperty.com.au` | view + download, no edit |
+| `leads` | assigned manually (like dev) | Staff rights **+ Vault & PM hub pages**; no edit |
+| `company` (labelled "Staff") | other `@performanceproperty.com.au` | view + download, no edit |
 | `client` / `guest` | external | view only, no edit, no download |
+
+- `leads` sits between `admin` and `company`: same data rights as company
+  (view + download, **not** a writer — `is_writer()` stays dev/admin), but
+  `_hubIsStaff()` (index.html) also lets it reach the Vault + PM (Cadence)
+  pages. Its extra reach is client-side gating only; RLS is unchanged.
 
 - DB writes require `is_writer()` (dev/admin) — enforced by RLS, so a UI
   bug or leaked anon key can't write.
 - `tier1-only` CSS class hides elements for tier 2+; `applyAccessRestrictions()`
   applies it on load. `isViewOnly()` = client/guest.
 - **Registration is OFF** (`REGISTRATION_ENABLED = false`) — internal tool.
-- Tier names are strings (`dev`/`admin`/`company`/`client`/`guest`), even
-  though README/old comments sometimes say "Tier 0–4".
+- Tier names are strings (`dev`/`admin`/`leads`/`company`/`client`/`guest`),
+  even though README/old comments sometimes say "Tier 0–4". Display numbering
+  is Dev 0 · Admin 1 · Leads 2 · Staff 3 (=`company`) · Client 4 · Guest 5.
 
 ## The tools (`tools/`)
 
