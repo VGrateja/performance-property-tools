@@ -76,11 +76,9 @@ const SKIP_TABS = [
   'DASHBOARD GUIDE',
   'NATIONAL CHARTS GUIDE',
   'CHARTS GUIDE',
-  /* Mandurah is being phased out — Rockingham is the canonical
-     Rockingham/Mandurah report. Kept in the sheet for historical
-     reference but excluded from the JSON response so the front-end
-     never sees a 'mandurah' slug. */
-  'MANDURAH (WA)',
+  /* Mandurah was split back out to its own report 2026-07, so its tab is
+     emitted again (no longer skipped). Forge (rdp_report_feed) is the primary
+     source; this legacy feed only matters as a fallback. */
 ];
 
 /* Australian state/territory codes that often trail tab names — both

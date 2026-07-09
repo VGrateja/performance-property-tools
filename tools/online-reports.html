@@ -4943,6 +4943,7 @@ const REGION_MANIFEST = {
   wodonga:    { name: 'Wodonga',    state: 'VIC', cluster: 'vicwatas', kind: 'regional', peer: 'melbourne', pageDrops: REGION_PAGE_DROPS_26P },
   mildura:    { name: 'Mildura',    state: 'VIC', cluster: 'vicwatas', kind: 'regional', peer: 'melbourne', pageDrops: ['p11', ...REGION_PAGE_DROPS_26P] },
   rockingham: { name: 'Rockingham', state: 'WA',  cluster: 'vicwatas', kind: 'regional', peer: 'perth',     pageDrops: REGION_PAGE_DROPS_26P },
+  mandurah:   { name: 'Mandurah',   state: 'WA',  cluster: 'vicwatas', kind: 'regional', peer: 'perth',     pageDrops: REGION_PAGE_DROPS_26P },
   bunbury:    { name: 'Bunbury',    state: 'WA',  cluster: 'vicwatas', kind: 'regional', peer: 'perth',     pageDrops: REGION_PAGE_DROPS_26P },
   launceston: { name: 'Launceston', state: 'TAS', cluster: 'vicwatas', kind: 'regional', peer: 'hobart',    pageDrops: REGION_PAGE_DROPS_26P },
 };
@@ -5086,6 +5087,7 @@ const REGION_COVER_IMAGES = {
   wodonga:          'wodonga-coverpage.jpg',
   mildura:          'mildura-coverpage.jpg',
   rockingham:       'rockingham-coverpage.jpg',
+  mandurah:         'mandurah-coverpage.jpg',
   bunbury:          'bunbury-coverpage.jpg',
   launceston:       'launceston-coverpage.jpg',
 };
@@ -5124,6 +5126,19 @@ let ACTIVE_REGION = (function () {
    localStorage keys — the data layer just shows Sydney's numbers
    underneath until each region's data is wired separately. */
 function R() { return REGIONS[ACTIVE_REGION] || REGIONS.sydney; }
+
+/* Per-region start-year override for the price charts ONLY — p3 (Median Price)
+   + p4 (YoY Price). Mandurah's CoreLogic price series runs back to 1983 but the
+   early years are sparse/volatile, so its report opens these two charts at 1988.
+   Other regions are unaffected (p3 shows full history; p4 keeps its 1980 clip).
+   Add regions here to trim their price/YoY charts' start year. */
+const REGION_PRICE_CHART_START = { mandurah: 1988 };
+
+/* Per-region start-year override for the Population Movement chart (p11).
+   Mandurah's pre-2017 LGA migration series (NOM/NIM/Natural Increase) is
+   unreliable, so its chart opens at 2017. Only pushes the start LATER than the
+   data-driven first year; never earlier. */
+const REGION_POPMOVE_START = { mandurah: 2017 };
 
 /* ═════════════════════════════════════════════════════════════════════
    LIVE DATA — Google Sheets via Apps Script (per-cluster)
@@ -6120,6 +6135,10 @@ function mapLiveToRegion(raw, slug, peerRaw) {
     };
     let startIdx = yArr.findIndex((_, i) => hasVal(colNI[i]) || hasVal(colNIM[i]) || hasVal(colNOM[i]));
     if (startIdx < 0) startIdx = 0;
+    /* Per-region floor (e.g. Mandurah 2017) — only pushes the start later than
+       the data-driven first year, never earlier. Trims unreliable early years. */
+    const _pmStart = REGION_POPMOVE_START[slug];
+    if (_pmStart) { const oi = yArr.findIndex(y => Number(y) >= _pmStart); if (oi > startIdx) startIdx = oi; }
     const slc = (col) => (col || []).slice(startIdx);
 
     const a = liveAlignYearsLoose(slc(raw.year), [slc(raw.naturalIncrease), slc(raw.nim), slc(raw.nom), slc(raw.populationState)]);
@@ -6755,6 +6774,10 @@ async function liveBoot() {
   window.PPA_REGION_DATA = window.PPA_REGION_DATA || {};
   const baseline = window.PPA_REGION_DATA[slug] || window.PPA_REGION_DATA.sydney || {};
   window.PPA_REGION_DATA[slug] = Object.assign({}, baseline, mapped);
+  /* p4 (YoY Price) clips to 1980 by default; a per-region override starts it
+     later (e.g. Mandurah 1988). Only the YoY chart reads yoyStartYear, so this
+     doesn't touch any other price chart. */
+  if (REGION_PRICE_CHART_START[slug]) window.PPA_REGION_DATA[slug].yoyStartYear = REGION_PRICE_CHART_START[slug];
 
   /* Inline renderers read from REGIONS[slug] via R(). For non-Sydney
      regions (Melbourne, Brisbane, etc.), REGIONS doesn't have a stub,
@@ -7306,6 +7329,16 @@ function renderMedianPrice() {
      'getAttribute')" and halts the rest of boot. No region currently
      drops p3, but the guard keeps boot resilient if one ever does. */
   if (!el) return;
+  /* Optional per-region start-year clip (p3 only) — e.g. Mandurah opens at
+     1988. Slice all three series together so they stay aligned; no clip when
+     the region isn't in REGION_PRICE_CHART_START (full history). */
+  const _mpStart = REGION_PRICE_CHART_START[ACTIVE_REGION];
+  const _mpAllYears = R().priceYears || [];
+  let _mpFrom = 0;
+  if (_mpStart) { const i = _mpAllYears.findIndex(y => Number(y) >= _mpStart); if (i > 0) _mpFrom = i; }
+  const mpYears = _mpAllYears.slice(_mpFrom).map(String);
+  const mpHouse = (R().priceHouse || []).slice(_mpFrom);
+  const mpUnit  = (R().priceUnit  || []).slice(_mpFrom);
   const chart = echarts.init(el, null, { renderer: 'svg' });
   chart.setOption({
     animation: false,
@@ -7353,7 +7386,7 @@ function renderMedianPrice() {
     },
     xAxis: {
       type: 'category',
-      data: R().priceYears.map(String),
+      data: mpYears,
       axisLabel: Object.assign({}, AXIS_FONT, {
         interval: 0,
         // Staircase the year labels so they don't overlap — odd-indexed
@@ -7404,7 +7437,7 @@ function renderMedianPrice() {
         emphasis: { scale: false },
         lineStyle: { color: '#0b1a24', width: 2 },
         itemStyle: { color: '#0b1a24' },
-        data: R().priceHouse,
+        data: mpHouse,
         markLine: {
           symbol: 'none',
           silent: true,
@@ -7424,7 +7457,7 @@ function renderMedianPrice() {
         emphasis: { scale: false },
         lineStyle: { color: '#d99759', width: 2 },
         itemStyle: { color: '#d99759' },
-        data: R().priceUnit,
+        data: mpUnit,
       },
     ],
   });
@@ -8233,14 +8266,12 @@ function addPdfLinkAnnotations(pdf, pageEl, drawX, drawY, drawW, drawH, srcW, sr
    Suffix is freshly randomised on every call, so two downloads
    of the same region in the same month still get distinct tags.
    Edition number (ED{MM}) tracks the current calendar month. */
-/* Region-specific filename suffixes — appended to the display name
-   for downloads of paired/twin markets. Rockingham + Mandurah share
-   a market boundary in WA, so the user wants Rockingham's PDF named
-   "Rockingham_Mandurah". Extend this map for any future pairings;
-   the bucket path still uses the bare slug so storage is unaffected. */
-const REGION_FILENAME_SUFFIX = {
-  rockingham: 'Mandurah',
-};
+/* Region-specific filename suffixes — appended to the display name for
+   downloads of paired/twin markets, e.g. { rockingham: 'Mandurah' } would name
+   Rockingham's PDF "Rockingham_Mandurah". Empty now that Mandurah is its own
+   report (each downloads under its own bare name). Re-add entries here for any
+   future pairings; the bucket path still uses the bare slug. */
+const REGION_FILENAME_SUFFIX = {};
 
 function buildEditionFilename(regionName, regionSlug, opts) {
   const mm = String(new Date().getMonth() + 1).padStart(2, '0');
@@ -10739,7 +10770,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
 <script src="../shared/auth.js?v=3f458df2"></script>
 <script src="../shared/auth-gate.js?v=cb10cfed"></script>
-<script src="../shared/concierge.js?v=e23899f2"></script>
+<script src="../shared/concierge.js?v=7416dbf7"></script>
 <!-- [#5 cutover] shared report-edit.js config — read at initReportEdit()/runtime -->
 <script>
 window.PPA_REPORT_EDIT_OPTS = {

@@ -60,7 +60,7 @@ The hub has 4 swipeable pages: analytics (default — Property Clock, Runway v D
 
 Research Reports cluster (sits alongside the 35 Online Reports under the same picker): National Market Overview (national-report) and Commercial Market Overview (commercial-report). Different shape from the regional Online Reports — they cover Australia-wide macro indicators (cash rate, inflation, retail turnover, lending, yields, etc.) rather than a single market. Use openTool with 'national-report' or 'commercial-report' when the user asks for them.
 
-35 Online Reports markets, grouped: Capitals (Adelaide, Brisbane, Canberra, Darwin, Hobart, Melbourne, Perth, Sydney); QLD (Bundaberg, Cairns, Gladstone, Gold Coast, Ipswich, Mackay, Rockhampton, Sunshine Coast, Toowoomba, Townsville); NSW (Albury, Central Coast, Coffs Harbour, Newcastle, Orange, Port Macquarie, Tamworth, Wagga Wagga, Wollongong); Other (Ballarat, Bendigo, Geelong, Mildura, Wodonga, Bunbury, Rockingham, Launceston). Mandurah uses the Rockingham report.
+36 Online Reports markets, grouped: Capitals (Adelaide, Brisbane, Canberra, Darwin, Hobart, Melbourne, Perth, Sydney); QLD (Bundaberg, Cairns, Gladstone, Gold Coast, Ipswich, Mackay, Rockhampton, Sunshine Coast, Toowoomba, Townsville); NSW (Albury, Central Coast, Coffs Harbour, Newcastle, Orange, Port Macquarie, Tamworth, Wagga Wagga, Wollongong); Other (Ballarat, Bendigo, Geelong, Mildura, Wodonga, Bunbury, Rockingham, Mandurah, Launceston).
 
 Access tiers — internal-only tool, every signed-in user can VIEW everything: Tier 0 (dev, Vandolf), Tier 1 (admin, Saskia/Shaene/Paul/D.Robbins) can edit + download. Tier 2 (company, other @performanceproperty.com.au) can download but not edit. Tier 3 (client) + Tier 4 (guest) can view everything but cannot edit OR download.
 
@@ -104,7 +104,7 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
       name: 'openOnlineReport',
       description: "Open the online property report for a specific Australian market. 35 supported regions.",
       parameters: { type: 'object', properties: {
-        location: { type: 'string', description: "Market name (e.g. 'Sydney', 'Gold Coast', 'Port Macquarie'). Mandurah is served from the Rockingham report." },
+        location: { type: 'string', description: "Market name (e.g. 'Sydney', 'Gold Coast', 'Port Macquarie', 'Mandurah')." },
         lite: { type: 'boolean', description: 'Open the Lite (preview) version.', default: false },
       }, required: ['location'] }
     }},
@@ -210,7 +210,7 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
     'albury','central-coast','coffs-harbour','newcastle','orange',
     'port-macquarie','tamworth','wagga-wagga','wollongong',
     'ballarat','bendigo','geelong','mildura','wodonga',
-    'bunbury','rockingham','launceston',
+    'bunbury','rockingham','mandurah','launceston',
   ]);
 
   const TOOL_RECOMMENDATIONS = [
@@ -461,6 +461,7 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
     wodonga:          { name: 'Wodonga',        state: 'VIC', cluster: 'vicwatas' },
     mildura:          { name: 'Mildura',        state: 'VIC', cluster: 'vicwatas' },
     rockingham:       { name: 'Rockingham',     state: 'WA',  cluster: 'vicwatas' },
+    mandurah:         { name: 'Mandurah',       state: 'WA',  cluster: 'vicwatas' },
     bunbury:          { name: 'Bunbury',        state: 'WA',  cluster: 'vicwatas' },
     launceston:       { name: 'Launceston',     state: 'TAS', cluster: 'vicwatas' },
   };
@@ -750,7 +751,6 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
       },
       openOnlineReport({ location, lite }) {
         let slug = String(location || '').toLowerCase().replace(/\s+/g, '-');
-        if (slug === 'mandurah') slug = 'rockingham';
         if (!REPORT_REGIONS.has(slug)) {
           return { ok: false, message: 'no report for "' + location + '"' };
         }

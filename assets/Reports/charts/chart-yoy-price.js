@@ -23,13 +23,13 @@
 
   NS.register('yoy-price', function (el, data) {
     const D = data.medianPrice;
-    /* Clip the chart's view of medianPrice to start at year 1980 (per
-       region — find the first year >= 1980 in this region's series).
-       The shared medianPrice mapping might extend further back if the
-       sheet has earlier price data, but the YoY chart's intended view
-       starts at 1980. Slicing here keeps the Median Price page
-       (which uses the same data) untouched. */
-    const startIdx = D.years.findIndex(y => Number(y) >= 1980);
+    /* Clip the chart's view of medianPrice to start at a given year (default
+       1980, per region — first year >= start in this region's series). A
+       per-region override arrives as data.yoyStartYear (e.g. Mandurah 1988,
+       whose early price data is sparse). The shared medianPrice mapping might
+       extend further back; slicing here keeps the Median Price page untouched. */
+    const startYear = Number(data.yoyStartYear) || 1980;
+    const startIdx = D.years.findIndex(y => Number(y) >= startYear);
     const sliceFrom = startIdx > 0 ? startIdx : 0;
     const years = D.years.slice(sliceFrom);
     const house = D.house.slice(sliceFrom);
@@ -43,8 +43,15 @@
        then nudge the cap up to the next 10%. */
     const dataMax = Math.max.apply(null, houseYoy.concat(unitYoy).filter(v => v != null && isFinite(v)));
     const dataMin = Math.min.apply(null, houseYoy.concat(unitYoy).filter(v => v != null && isFinite(v)));
-    const yMax = Math.ceil(Math.max(dataMax, 30) / 10) * 10;
-    const yMin = Math.floor(Math.min(dataMin, -10) / 10) * 10;
+    /* Adaptive tick step: 10% is right for the usual ±30-40% range, but a
+       volatile region (big early-year swings) would then show a dozen-plus
+       gridlines. Widen the step as the range grows so every region lands at
+       ~6-8 clean labels. yMin/yMax snap to the step so ticks stay round. */
+    const _hi = Math.max(dataMax, 30), _lo = Math.min(dataMin, -10);
+    const _span = _hi - _lo;
+    const yStep = _span <= 80 ? 10 : _span <= 160 ? 20 : _span <= 400 ? 40 : 50;
+    const yMax = Math.ceil(_hi / yStep) * yStep;
+    const yMin = Math.floor(_lo / yStep) * yStep;
 
     /* SVG renderer keeps text crisp at any zoom and produces a vector
        PDF on print — same path the inline Median Price chart uses. */
@@ -91,7 +98,7 @@
       },
       xAxis: staircaseYearAxis(years),
       yAxis: {
-        type: 'value', min: yMin, max: yMax, interval: 10,
+        type: 'value', min: yMin, max: yMax, interval: yStep,
         axisLabel: Object.assign({}, T.axis, { formatter: v => v + '%' }),
         splitLine: { lineStyle: { color: T.colors.grid } },
         name: 'House % Change Year on Year | Unit % Change Year on Year',
