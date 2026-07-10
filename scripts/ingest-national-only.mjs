@@ -46,13 +46,12 @@ const Q_MONTH = { Q1: '01', Q2: '04', Q3: '07', Q4: '10' };
 
 // ── SEEDED: Federal Budget — underlying cash balance ($m) by financial year ──
 // (Treasury Budget papers; no API. Update each Budget / MYEFO.)
-// Underlying cash balance ($m) by FY. 2024-25 onward from the 2026-27 Budget
-// (May 2026), Budget Paper No.1 Statement 3, Table 3.1 (values are $b → ×1000):
-//   2024-25 actual -10.0 · 2025-26 -28.3 · 2026-27 -31.5 · 2027-28 -31.0 ·
-//   2028-29 -34.4 · 2029-30 -25.3. NOTE: the pre-2024-25 figures below are the
-//   original seed and look inaccurate vs published Final Budget Outcomes
-//   (e.g. 2022-23 & 2023-24 were surpluses) — flagged for a full-history rebuild.
-const FEDERAL_BUDGET = [["2011-12",-42002],["2012-13",2500],["2013-14",2646],["2014-15",-37537],["2015-16",-28147],["2016-17",-20317],["2017-18",-3383],["2018-19",-18816],["2019-20",-126327],["2020-21",-104565],["2021-22",67420],["2022-23",-19444],["2023-24",-11773],["2024-25",-10000],["2025-26",-28300],["2026-27",-31500],["2027-28",-31000],["2028-29",-34400],["2029-30",-25300]];
+// Underlying cash balance ($m) by financial year — full series rebuilt from the
+// authoritative PBO "Historical Fiscal Data — 2026-27 Budget" (Table 4; the same
+// series as Budget Paper No.1 Statement 11). Actuals through 2024-25, forward
+// estimates 2025-26 → 2029-30. (Per PBO note (d): between 2005-06 and 2019-20 the
+// UCB nets off Future Fund earnings; other years = receipts − payments.)
+const FEDERAL_BUDGET = [["2011-12",-43360],["2012-13",-18834],["2013-14",-48456],["2014-15",-37867],["2015-16",-39606],["2016-17",-33151],["2017-18",-10141],["2018-19",-690],["2019-20",-85272],["2020-21",-134171],["2021-22",-31962],["2022-23",22064],["2023-24",15779],["2024-25",-9990],["2025-26",-28284],["2026-27",-31542],["2027-28",-31000],["2028-29",-34445],["2029-30",-25259]];
 
 // ── SEEDED: Household composition by type (ABS Census; update next census) ──
 const HH_TYPES = ["Couple with children","Couples without children","One parent families","Other families","Group household","Lone person","Other not classifiable household","Visitor only households"];
