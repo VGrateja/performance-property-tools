@@ -55,6 +55,18 @@
   .df-checkbtn:disabled{ cursor:default; opacity:.8; }
   .df-checkbtn.done{ color:#16b364; border-color:#16b364; background:rgba(22,179,100,.14); }
   body.df-readonly .df-checkrow{ display:none; }   /* viewers can't reset the clock */
+  /* ── Commercial in-place tab editor ── */
+  .comm-editbar{ display:flex; gap:8px; align-items:center; }
+  .comm-btn{ font:inherit; font-size:.72rem; font-weight:800; padding:6px 12px; border-radius:8px; cursor:pointer; border:1px solid var(--border); background:var(--panel2); color:var(--text); transition:border-color .13s, background .13s; }
+  .comm-btn:hover{ border-color:var(--pp-cyan); }
+  .comm-btn.primary{ background:var(--pp-cyan); color:#04121c; border-color:var(--pp-cyan); }
+  .comm-btn:disabled{ opacity:.55; cursor:default; }
+  body.df-readonly .comm-editbar{ display:none; }   /* viewers can't edit */
+  table.df-table td.comm-cellwrap{ padding:3px; }
+  .comm-cell{ width:100%; min-width:82px; box-sizing:border-box; font:inherit; font-size:.8rem; padding:5px 7px; background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:5px; }
+  .comm-cell:focus{ outline:none; border-color:var(--pp-cyan); }
+  .comm-delrow{ cursor:pointer; color:#ef4444; background:none; border:none; font-size:1.05rem; line-height:1; padding:0 6px; }
+  .comm-editwarn{ margin-top:10px; padding:9px 12px; border-radius:8px; font-size:.78rem; line-height:1.5; background:rgba(245,166,35,.12); border:1px solid rgba(245,166,35,.35); color:var(--text); }
   .df-freshbanner{ display:flex; align-items:center; gap:9px; padding:11px 15px; border-radius:12px; margin-top:22px; font-size:.82rem; font-weight:700; }
   .df-freshbanner.ok{ background:rgba(22,179,100,.1); color:#16b364; border:1px solid rgba(22,179,100,.3); }
   .df-freshbanner.warn{ background:rgba(245,166,35,.1); color:#d98a00; border:1px solid rgba(245,166,35,.4); }
@@ -2168,7 +2180,7 @@ function renderCommercial(updatedAt){
   const upd = updatedAt ? String(updatedAt).slice(0, 10) : (meta.seeded ? String(meta.seeded).slice(0, 10) : '—');
   const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
     + '<div class="df-eyebrow">' + eyebrow + '</div><div class="df-title">Commercial Report</div>'
-    + '<div class="df-sub"><span class="df-statuspill ok">Loaded</span> <span>All Commercial report data tabs — the source the Commercial report reads in Forge mode (<code>?src=forge</code>). The <b>⚡</b> tabs auto-refresh from Forge on the 10th (GATHER → PUBLISH); the <b>✋</b> tabs are subscription/manual and need a Looker export re-seed.</span></div></div></div>'
+    + '<div class="df-sub"><span class="df-statuspill ok">Loaded</span> <span>All Commercial report data tabs — the source the Commercial report reads in Forge mode (<code>?src=forge</code>). The <b>⚡</b> tabs auto-refresh from Forge on the 10th (GATHER → PUBLISH); every other tab is <b>edited right here</b> (✏️ Edit) — no spreadsheet, no re-seed.</span></div></div></div>'
     + '<div class="df-stats">'
     + dfStat('Tabs', String(keys.length) + ' <span class="sm" style="opacity:.7">(' + COMM_AUTO_TABS.size + ' ⚡ / ' + (keys.length - keys.filter(k => COMM_AUTO_TABS.has(k)).length) + ' ✋)</span>', true)
     + dfStat('Columns', String(meta.colCount || '—'))
@@ -2188,21 +2200,82 @@ function renderCommercial(updatedAt){
     + '<div class="df-card df-tablecard">'
     + '<div class="ind-controls"><label for="commRepSel">Tab</label><select id="commRepSel" class="ind-select">' + opts + '</select></div>'
     + '<div id="commRepBody"></div>'
-    + '<div class="df-note"><b>⚡ Wired</b> (retail turnover, corporate bond, building approvals, population growth, term deposits, govt bonds) — auto-refresh from <code>rdp_raw_series</code> on the 10th (GATHER → PUBLISH), no action. <b>🔷 From Forge, not auto-wired</b> (cash-rate/inflation, population pyramid) — the data lives in Forge (its own data point) but isn’t wired into this tab yet (chart-shape mismatches), so manual for now. <b>✋ Totally manual</b> (freight, offices/vacancy, WFH, e-commerce, health/budget, building-price, stocks/gold, etc.) — no Forge/API source. Refresh the non-wired tabs by re-seeding from a current Looker export (<code>seed-commercial.mjs</code>). The Commercial report reads this store via <code>?src=forge</code>.</div></div>';
+    + '<div class="df-note"><b>⚡ Wired</b> (retail turnover, corporate bond, building approvals, population growth, term deposits, govt bonds) — auto-refresh from <code>rdp_raw_series</code> on the 10th (GATHER → PUBLISH), no action. <b>🔷 From Forge, not auto-wired</b> (cash-rate/inflation, population pyramid) — the data lives in Forge (its own data point) but isn’t wired into this tab yet, so treat as manual. <b>✋ Totally manual</b> (freight, offices/vacancy, WFH, e-commerce, health/budget, building-price, stocks/gold, etc.) — no Forge/API source. <b>Edit any non-⚡ tab in place</b> with the ✏️ Edit button below — it writes straight to <code>forge_commercial</code>, so no more Looker spreadsheet / re-seed. (Editing a ⚡ tab is allowed but gets overwritten on the 10th.) The Commercial report reads this store via <code>?src=forge</code>.</div></div>';
   const sel = document.getElementById('commRepSel'); if (sel) sel.addEventListener('change', e => { COMM_REPORT_TAB = e.target.value; renderCommercialTab(); });
   renderCommercialTab();
 }
+let COMM_EDIT = false, COMM_DRAFT = null;   // in-place tab editor state
 function renderCommercialTab(){
   const box = document.getElementById('commRepBody'); if (!box || !COMM_REPORT) return;
   const tab = COMM_REPORT.tabs[COMM_REPORT_TAB]; if (!tab) { box.innerHTML = ''; return; }
+  const isAuto = COMM_AUTO_TABS.has(COMM_REPORT_TAB);
+  if (COMM_EDIT && COMM_DRAFT) { renderCommercialEditor(box, isAuto); return; }
   const cols = Object.keys(tab.columns || {});
   const n = cols.length ? (tab.columns[cols[0]] || []).length : 0;
   const head = '<tr>' + cols.map((c, ci) => '<th' + (ci === 0 ? ' class="th-l"' : '') + '>' + esc(c) + '</th>').join('') + '</tr>';
   let body = '';
   for (let i = 0; i < n; i++) body += '<tr>' + cols.map((c, ci) => '<td' + (ci === 0 ? ' class="region"' : '') + '>' + esc(String(tab.columns[c][i] == null ? '' : tab.columns[c][i])) + '</td>').join('') + '</tr>';
-  const isAuto = COMM_AUTO_TABS.has(COMM_REPORT_TAB);
-  box.innerHTML = '<div class="df-tablewrap" style="margin-top:14px;max-height:480px;overflow:auto"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
-    + '<div class="df-note" style="margin-top:8px">' + (isAuto ? '⚡ Auto-updates from <code>rdp_raw_series</code> (10th → PUBLISH)' : '✋ Manual — refresh via Looker export re-seed') + ' · ' + esc(String(n)) + ' rows · ' + esc(String(cols.length)) + ' columns</div>';
+  box.innerHTML = '<div class="ind-controls" style="margin-top:12px;justify-content:flex-end"><span class="comm-editbar"><button type="button" class="comm-btn" id="commEditBtn">✏️ Edit this tab</button></span></div>'
+    + '<div class="df-tablewrap" style="max-height:480px;overflow:auto"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + '<div class="df-note" style="margin-top:8px">' + (isAuto ? '⚡ Auto-updates from <code>rdp_raw_series</code> (10th → PUBLISH)' : '✏️ Editable here — writes straight to <code>forge_commercial</code>, no spreadsheet') + ' · ' + esc(String(n)) + ' rows · ' + esc(String(cols.length)) + ' columns</div>';
+  const eb = document.getElementById('commEditBtn'); if (eb) eb.addEventListener('click', commEnterEdit);
+}
+function commEnterEdit(){
+  if (!_forgeGuard()) return;
+  const tab = COMM_REPORT.tabs[COMM_REPORT_TAB]; if (!tab) return;
+  const cols = Object.keys(tab.columns || {});
+  const n = cols.length ? (tab.columns[cols[0]] || []).length : 0;
+  const rows = [];
+  for (let i = 0; i < n; i++) rows.push(cols.map(c => { const v = tab.columns[c][i]; return v == null ? '' : String(v); }));
+  COMM_DRAFT = { cols, rows }; COMM_EDIT = true; renderCommercialTab();
+}
+function commCancelEdit(){ COMM_EDIT = false; COMM_DRAFT = null; renderCommercialTab(); }
+function commSyncDraft(){   // pull current input values back into the draft (before add/delete/save re-renders)
+  const box = document.getElementById('commRepBody'); if (!box || !COMM_DRAFT) return;
+  box.querySelectorAll('tr[data-row]').forEach(tr => { const i = +tr.dataset.row; tr.querySelectorAll('input.comm-cell').forEach(inp => { COMM_DRAFT.rows[i][+inp.dataset.col] = inp.value; }); });
+}
+function commAddRow(){ if (!COMM_DRAFT) return; commSyncDraft(); COMM_DRAFT.rows.push(COMM_DRAFT.cols.map(() => '')); renderCommercialTab(); }
+function commDelRow(i){ if (!COMM_DRAFT) return; commSyncDraft(); COMM_DRAFT.rows.splice(i, 1); renderCommercialTab(); }
+function renderCommercialEditor(box, isAuto){
+  const { cols, rows } = COMM_DRAFT;
+  const head = '<tr>' + cols.map((c, ci) => '<th' + (ci === 0 ? ' class="th-l"' : '') + '>' + esc(c) + '</th>').join('') + '<th></th></tr>';
+  let body = '';
+  rows.forEach((r, i) => {
+    body += '<tr data-row="' + i + '">' + cols.map((c, ci) => '<td class="comm-cellwrap"><input class="comm-cell" data-col="' + ci + '" value="' + esc(String(r[ci] == null ? '' : r[ci])) + '"></td>').join('')
+      + '<td><button type="button" class="comm-delrow" data-del="' + i + '" title="Delete row">×</button></td></tr>';
+  });
+  box.innerHTML = '<div class="ind-controls" style="margin-top:12px;justify-content:flex-end"><span class="comm-editbar">'
+      + '<button type="button" class="comm-btn" id="commAddRow">+ Add row</button>'
+      + '<button type="button" class="comm-btn" id="commCancel">Cancel</button>'
+      + '<button type="button" class="comm-btn primary" id="commSave">Save</button></span></div>'
+    + (isAuto ? '<div class="comm-editwarn">⚡ This tab <b>auto-refreshes from Forge on the 10th</b> (PUBLISH) — manual edits here will be overwritten. Edit its source data point instead.</div>' : '')
+    + '<div class="df-tablewrap" style="max-height:480px;overflow:auto"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
+    + '<div class="df-note" style="margin-top:8px">Edit values in place · <b>+ Add row</b> for a new period · <b>×</b> deletes a row · columns are fixed (they map to the report chart). <b>Save</b> writes straight to <code>forge_commercial</code> — no spreadsheet, no re-seed.</div>';
+  document.getElementById('commAddRow').addEventListener('click', commAddRow);
+  document.getElementById('commCancel').addEventListener('click', commCancelEdit);
+  document.getElementById('commSave').addEventListener('click', saveCommercialTab);
+  box.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => commDelRow(+b.dataset.del)));
+}
+async function saveCommercialTab(){
+  if (!_forgeGuard() || !COMM_DRAFT) return;
+  commSyncDraft();
+  const { cols, rows } = COMM_DRAFT;
+  const isNum = s => { const t = String(s).trim(); return t !== '' && /^-?\d+(\.\d+)?$/.test(t); };   // keep dates/labels as strings; coerce plain numbers
+  const newCols = {};
+  cols.forEach((c, ci) => { newCols[c] = rows.map(r => { const v = r[ci]; const t = String(v == null ? '' : v).trim(); return t === '' ? null : (isNum(t) ? Number(t) : v); }); });
+  const tab = COMM_REPORT.tabs[COMM_REPORT_TAB];
+  tab.columns = newCols; tab.headers = cols.slice();
+  const btn = document.getElementById('commSave'); if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  let email = ''; try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = (p && p.email) || ''; } catch {}
+  try {
+    const now = new Date().toISOString();
+    const { error } = await window.sb.from('forge_commercial').upsert({ id: 'latest', data: COMM_REPORT, updated_at: now, uploaded_by: email || 'data-forge-edit' }, { onConflict: 'id' });
+    if (error) throw error;
+    COMM_EDIT = false; COMM_DRAFT = null; renderCommercial(now);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+    alert('Could not save the Commercial tab: ' + ((e && e.message) || e));
+  }
 }
 async function loadCommodities(){
   const out = document.getElementById('commOut');
