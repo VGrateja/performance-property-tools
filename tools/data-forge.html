@@ -46,6 +46,15 @@
   .df-fresh.aging{ background:rgba(245,166,35,.18); color:#d98a00; }
   .df-fresh.stale{ background:rgba(239,68,68,.16); color:#ef4444; }
   .df-fresh.neutral{ background:var(--panel2); color:var(--muted); border:1px solid var(--border); }
+  /* Home-grid card wrapper: card on top, a small "no new data" action row below. */
+  .df-cluster-wrap{ display:flex; flex-direction:column; }
+  .df-cluster-wrap > .df-cluster{ flex:1 1 auto; }
+  .df-checkrow{ display:flex; justify-content:flex-end; margin-top:7px; }
+  .df-checkbtn{ font:inherit; font-size:.64rem; font-weight:800; letter-spacing:.02em; padding:4px 10px; border-radius:20px; cursor:pointer; background:var(--panel2); color:var(--muted); border:1px solid var(--border); transition:color .13s, border-color .13s, background .13s; }
+  .df-checkbtn:hover{ color:#16b364; border-color:#16b364; background:rgba(22,179,100,.12); }
+  .df-checkbtn:disabled{ cursor:default; opacity:.8; }
+  .df-checkbtn.done{ color:#16b364; border-color:#16b364; background:rgba(22,179,100,.14); }
+  body.df-readonly .df-checkrow{ display:none; }   /* viewers can't reset the clock */
   .df-freshbanner{ display:flex; align-items:center; gap:9px; padding:11px 15px; border-radius:12px; margin-top:22px; font-size:.82rem; font-weight:700; }
   .df-freshbanner.ok{ background:rgba(22,179,100,.1); color:#16b364; border:1px solid rgba(22,179,100,.3); }
   .df-freshbanner.warn{ background:rgba(245,166,35,.1); color:#d98a00; border:1px solid rgba(245,166,35,.4); }
@@ -652,14 +661,29 @@ function freshInfo(c, st, manualDates){
   // Recomputed by the PUBLISH mart rebuild — no forge_data_status row of its own,
   // so without this exemption it rendered a phantom "no date / stale".
   if (c.key === 'computed_metrics') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Recomputed from the raw data by the PUBLISH mart rebuild — freshness follows the raw points">live</span>' };
-  if (c.key === 'commodity_prices') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Seeded once; static by design (only Iron Ore auto-updates, via its own FRED data point)">static</span>' };
+  // A manual "no new data" check (076) resets the freshness clock without changing
+  // the data — treat the check date as a refresh signal alongside the real one.
+  const dCheck = ageDays(st.checked_at);
+  if (c.key === 'commodity_prices') {
+    // Static/seeded — no age of its own, but the user still checks marketindex each
+    // month; once confirmed, show the check age instead of a bare "static".
+    if (dCheck == null) return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Seeded once; static by design (only Iron Ore auto-updates, via its own FRED data point)">static</span>' };
+    const scls = dCheck <= 40 ? 'ok' : dCheck <= 75 ? 'aging' : 'stale';
+    return { cls: scls, chip: '<span class="df-fresh ' + scls + '" title="Checked ' + dCheck + ' days ago — you confirmed no new annual data (static source)">checked · ' + dCheck + 'd</span>' };
+  }
   const manual = (c.key === 'cotality' || c.key === 'arrears' || c.key === 'industry' || c.key === 'commercial' || c.key === 'demand_inputs');
   const iso = manual ? (manualDates[c.key] || st.updated_at || st.last_ok_at) : (st.last_ok_at || st.updated_at);
-  const d = ageDays(iso);
+  const dData = ageDays(iso);
+  // effective age = the MORE RECENT of the data refresh and the "no new data" check.
+  const verified = dCheck != null && (dData == null || dCheck < dData);
+  const d = verified ? dCheck : (dData != null ? dData : dCheck);
   if (d == null) return { cls: 'stale', chip: '<span class="df-fresh stale" title="No refresh date on record — check this source">no date</span>' };
   const cls = d <= 40 ? 'ok' : d <= 75 ? 'aging' : 'stale';
-  const lab = (cls === 'ok' ? 'current' : cls) + ' · ' + d + 'd';
-  return { cls, chip: '<span class="df-fresh ' + cls + '" title="Last refreshed ' + d + ' days ago' + (manual ? ' (manual upload)' : '') + '">' + lab + '</span>' };
+  const lab = (verified ? 'checked' : (cls === 'ok' ? 'current' : cls)) + ' · ' + d + 'd';
+  const title = verified
+    ? 'Checked ' + d + ' days ago — you confirmed there was no new data (the data itself is unchanged)'
+    : 'Last refreshed ' + d + ' days ago' + (manual ? ' (manual upload)' : '');
+  return { cls, chip: '<span class="df-fresh ' + cls + '" title="' + title + '">' + lab + '</span>' };
 }
 
 // gathering-method groups for the home grid — at a glance, which need a manual
@@ -765,13 +789,21 @@ async function loadStatus(){
       : (st.updated_at ? 'Last activity ' + fmtDate(st.updated_at) : 'Manual upload');
     const fresh = freshInfo(c, st, manualDates);
     if (fresh.cls === 'aging') agingPts.push(c.label); else if (fresh.cls === 'stale') stalePts.push(c.label);
-    return '<button class="df-cluster ' + (isErr ? 'err' : '') + '" data-view="' + c.view + '">'
+    // "No new data" reset applies to age-based points — not the live/computed ones
+    // (CIV / Monthly Price / Computed follow another point) and not errored cards.
+    const canCheck = !isErr && c.key !== 'civ' && c.key !== 'monthly_price' && c.key !== 'computed_metrics';
+    const card = '<button class="df-cluster ' + (isErr ? 'err' : '') + '" data-view="' + c.view + '">'
       + (isErr ? '<span class="warnmark">⚠️</span>' : '')
       + '<span class="ico">' + c.icon + '</span>'
       + '<span class="ct"><span class="title">' + esc(c.label) + badge(status) + '</span>'
       + '<span class="desc">' + esc(c.desc) + '</span>'
       + (isErr && st.message ? '<span class="meta" style="color:#ef4444">' + esc(st.message) + '</span>' : '')
       + '<span class="meta">' + ingestChip(c.ingest) + fresh.chip + esc(meta) + '</span></span></button>';
+    const checkRow = canCheck
+      ? '<div class="df-checkrow"><button type="button" class="df-checkbtn" data-check="' + esc(c.key) + '" data-label="' + esc(c.label) + '"'
+        + ' title="You checked the source and there is no new data — reset the freshness clock to today. This does NOT change the data.">✓ No new data</button></div>'
+      : '';
+    return '<div class="df-cluster-wrap">' + card + checkRow + '</div>';
   };
   const groupsHtml = FORGE_GROUPS.map(g => {
     const cards = CLUSTERS.filter(c => forgeGroupOf(c) === g.id);
@@ -790,6 +822,31 @@ async function loadStatus(){
     : '<div class="df-freshbanner ok">✓ All data points current — every source refreshed within ~40 days.</div>';
   el.innerHTML = banner + groupsHtml;
   el.querySelectorAll('.df-cluster').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
+  el.querySelectorAll('.df-checkbtn').forEach(b => b.addEventListener('click', ev => { ev.stopPropagation(); markNoNewData(b); }));
+}
+
+/* "No new data" — stamp forge_data_status.checked_at = now for this data point.
+   Records that a writer verified the source and there was nothing new, resetting
+   the freshness clock WITHOUT touching the data or its real update timestamp. */
+async function markNoNewData(btn){
+  if (!_forgeGuard()) return;
+  const key = btn.dataset.check, label = btn.dataset.label;
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  let email = ''; try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = (p && p.email) || ''; } catch {}
+  try {
+    const now = new Date().toISOString();
+    const { error } = await window.sb.from('forge_data_status')
+      .upsert({ data_key: key, label: label, checked_at: now, checked_by: email }, { onConflict: 'data_key' });
+    if (error) throw error;
+    btn.textContent = '✓ Checked today';
+    btn.classList.add('done');
+    setTimeout(loadStatus, 800);   // refresh chips + banner to reflect the reset clock
+  } catch (e) {
+    btn.disabled = false; btn.textContent = prev;
+    const m = String((e && e.message) || e);
+    alert('Could not save the check: ' + m + (/checked_at|column/.test(m) ? '\n\n(Apply migration 076_forge_checked_at.sql first.)' : ''));
+  }
 }
 
 /* ═══════════════════════ Demand Score Dashboard Data (manual inputs) ═══════════════════════
