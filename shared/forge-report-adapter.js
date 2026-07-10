@@ -99,7 +99,7 @@
     var years = (payload && payload.years) || [];
     var extras = (payload && payload.extras) || {};
     var byYear = {}; years.forEach(function (o) { byYear[o.year] = o; });
-    var maxY = years.length ? years[years.length - 1].year : 2026;
+    var maxY = years.length ? years[years.length - 1].year : new Date().getFullYear();   // dynamic fallback — no hardcoded year ceiling
     var yearAxis = []; for (var y = FLOOR; y <= maxY; y++) yearAxis.push(y);
 
     // Per-region start years (window.ForgeReportStarts, generated from the feeds) so
