@@ -1,4 +1,12 @@
 // =============================================================================
+// ⛔ RETIRED / PARKED — kept for reference only (decision 2026-07-10).
+//
+// rdp_demand_score is a write-only dead end: this builder is in no workflow,
+// writes score:null / listings:null, and has ZERO readers. The LIVE Demand
+// Score computes client-side (PP_DEMAND_ENGINE in tools/demand-score.html)
+// from forge_demand_inputs + rdp_vr_forecast + rdp_runway + forge_cotality +
+// forge_monthly_price + rdp population. Do not wire this script anywhere.
+// =============================================================================
 // build-demand-score.mjs  —  L2 mart builder for rdp_demand_score (INPUTS only).
 //
 // Assembles the per-region Demand Score INPUTS from the Data Dump "DemandScore"
@@ -31,6 +39,7 @@ const numv = v => (typeof v === 'number' && isFinite(v)) ? v : null;
 
 // inputs from the Data Dump DemandScore tab
 const ddPath = join(homedir(), 'Downloads', 'Data Dump - Online Report.xlsx');
+if (!existsSync(ddPath)) { console.error(`Data Dump xlsx not found: ${ddPath} — this retired builder needs "Data Dump - Online Report.xlsx" in Downloads.`); process.exit(1); }
 const g = XLSX.utils.sheet_to_json(XLSX.readFile(ddPath, { cellFormula: false }).Sheets['DemandScore'], { header: 1, raw: true, defval: '' });
 const inputs = {};
 for (let r = 1; r < g.length; r++) {

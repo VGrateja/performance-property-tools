@@ -27,6 +27,7 @@ const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^
 const serialToMonth = s => { const d = new Date(Date.UTC(1899, 11, 30) + Math.round(s) * 86400000); return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-01'; };
 
 const DD = join(homedir(), 'Downloads', 'Data Dump - Online Report.xlsx');
+if (!existsSync(DD)) { console.error(`Missing ${DD} — this is a LOCAL-ONLY historical seeder; download "Data Dump - Online Report.xlsx" to Downloads first.`); process.exit(1); }
 const wb = XLSX.readFile(DD, { cellFormula: false });
 const grid = name => wb.Sheets[name] ? XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '' }) : null;
 const all = []; const reports = [];

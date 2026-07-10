@@ -1,0 +1,47 @@
+# =============================================================================
+# Data Forge — watchdog (missed runs)
+#
+# GitHub cron is best-effort and there is no native missed-run recovery: if
+# the GATHER schedule silently skips (or fails) a month, every status row just
+# looks "ok, but old" and nobody notices. This watchdog runs a few days after
+# the scheduled GATHER (10th) and red-flags a missed/failed month BOTH places:
+#   • here in Actions (the run goes red), and
+#   • in the Data Forge UI, via the 'pipeline_watchdog' forge_data_status row
+#     that scripts/forge-watchdog.mjs upserts with its verdict.
+# It checks: GATHER succeeded this (Sydney) month, PUBLISH followed within
+# grace, no ingest stuck in error, and the LOCAL JSA task hasn't gone dead.
+# It never re-dispatches or re-runs anything itself — a red run means a human
+# re-dispatches the missed workflow (or fixes the errored ingest).
+#
+# Secrets (already configured for the other workflows):
+#   SUPABASE_URL                project URL
+#   SUPABASE_SERVICE_ROLE_KEY   server-side read/write of forge_data_status
+# =============================================================================
+name: Data Forge — watchdog (missed runs)
+
+on:
+  schedule:
+    - cron: '0 15 13 * *'   # ~1am AEST on the 14th — 4 days after the GATHER cron
+  workflow_dispatch:        # manual run from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      PUPPETEER_SKIP_DOWNLOAD: 'true'            # no Chromium needed — skip the slow download
+      PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check pipeline health
+        run: |
+          npm install --no-audit --no-fund
+          node scripts/forge-watchdog.mjs
