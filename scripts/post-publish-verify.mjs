@@ -40,7 +40,7 @@ const fails = [], warns = [], oks = [];
 const close = (a, b, tol = 1e-6) => a != null && b != null && Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
 
 // slug maps (mirror sync-cotality / sync-arrears)
-const COT_ALIAS = { 'greater-hobart': 'hobart', 'greater-bendigo': 'bendigo', 'greater-geelong': 'geelong', 'central-coast-nsw': 'central-coast', 'port-macquarie-hastings': 'port-macquarie' };
+const COT_ALIAS = { 'greater-hobart': 'hobart', 'greater-bendigo': 'bendigo', 'greater-geelong': 'geelong', 'central-coast-nsw': 'central-coast', 'port-macquarie-hastings': 'port-macquarie', 'greater-sydney': 'sydney', 'greater-perth': 'perth', 'tamworth-regional': 'tamworth' };
 const ARR_SLUG = { australia: 'australia', 'st-nsw': 'sydney', 'st-vic': 'melbourne', 'st-qld': 'brisbane', 'st-wa': 'perth', 'st-sa': 'adelaide', 'st-nt': 'darwin', 'st-act': 'canberra', 'st-tas': 'hobart' };
 const slugify = s => String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const num = s => { const n = Number(String(s == null ? '' : s).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n; };
@@ -100,6 +100,27 @@ async function main() {
     }
     if (arrOk && !arrBad) oks.push(`arrears parity: ${arrOk}/${arrOk} slugs match forge_arrears (month-aligned, ÷100)`);
   } else warns.push('forge_arrears unreadable — arrears parity skipped');
+
+  // ── 3b. vacancy-rate parity (rentvacancy store → mart latest-year, ÷100) ──
+  // Added after Sydney showed 2.23% in Forge but 2.18% in the reports — the
+  // sync now carries the full drop, and this catches any future stranding.
+  try {
+    const { data: rvRow } = await sb.from('forge_cotality').select('data').eq('id', 'rentvacancy').maybeSingle();
+    if (rvRow && rvRow.data) {
+      const rvAll = [...(rvRow.data.capitals || []), ...(rvRow.data.regions || [])];
+      let vrOk = 0, vrBad = 0;
+      for (const r of rvAll) {
+        if (r.vacHouse == null) continue;
+        const rgSlug = COT_ALIAS[slugify(r.name)] || slugify(r.name);
+        const m = martBy[rgSlug]; if (!m) continue;
+        const last = [...(m.payload.years || [])].reverse().find(y => y.vacancy_rate != null);
+        if (!last) continue;
+        if (!close(last.vacancy_rate, Number(r.vacHouse) / 100, 1e-6)) { fails.push(`vacancy[${rgSlug}]: mart ${last.vacancy_rate} (${last.year}) ≠ store ${Number(r.vacHouse) / 100} — Cotality sync/feed mismatch`); vrBad++; }
+        else vrOk++;
+      }
+      if (vrOk && !vrBad) oks.push(`vacancy-rate parity: ${vrOk} regions match the rentvacancy store (÷100)`);
+    } else warns.push('rentvacancy store unreadable — vacancy parity skipped');
+  } catch (e) { warns.push('vacancy parity check errored: ' + (e.message || e)); }
 
   // ── 3. median parity (Cotality store → mart latest-year mp_h/mp_u) ──
   if (cot && cot.data && cot.data.cap) {

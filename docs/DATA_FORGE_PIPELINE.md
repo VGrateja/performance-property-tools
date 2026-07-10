@@ -145,7 +145,7 @@ The run's outcome is recorded to `forge_data_status` as **`pipeline_publish`** (
 | # | Script | Reads | Writes |
 |---|---|---|---|
 | 1 | **publish-readiness-gate** | `forge_data_status`, the `forge_*` stores | nothing — **INPUT gate**; fails the run before any mart write if the inputs aren't ready |
-| 2 | **sync-cotality-medians-to-rdp** | `forge_cotality`, `rdp_regions` | `rdp_raw_series` (current-year mp_h/mp_u, source=corelogic, freq A; prior years untouched) |
+| 2 | **sync-cotality-medians-to-rdp** | `forge_cotality` (`latest` + `rentvacancy`), `rdp_regions` | `rdp_raw_series` — the FULL drop's current-year annual rows: mp_h/mp_u, sales_h/u, adom_h/u (corelogic) + som_h/u, vacancy_rate (÷100), rent_h/u (sqm). Prior years untouched |
 | 3 | **sync-arrears** | `forge_arrears`, `rdp_raw_series` (existing series, for the parity diff) | `rdp_raw_series` metric `arrears` (values ÷100 to fractions, hardcoded st-*→capital slug map) — closes the National-vs-regional arrears divergence |
 | 4 | **build-report-feed** | `rdp_raw_series` (A), `rdp_regions` | `rdp_report_feed` city rows — `payload:{years}` (**extras-PRESERVING**; year ceiling is dynamic, no hardcoded 2026) |
 | 5 | **build-national-report** | `rdp_raw_series` (A), `rdp_regions` | `rdp_report_feed` `australia` row — `payload:{national:true,years}` (extras-preserving, same) |
