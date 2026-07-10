@@ -101,6 +101,29 @@ async function main() {
     if (arrOk && !arrBad) oks.push(`arrears parity: ${arrOk}/${arrOk} slugs match forge_arrears (month-aligned, ÷100)`);
   } else warns.push('forge_arrears unreadable — arrears parity skipped');
 
+  // ── 2b. JCI parity (live job_creation_index → mart extras.jci) ──
+  // Added after May was missing in the reports: enrich must read the live JSA
+  // lineage, not the stale 'jci' Data-Dump copy. Compare each region's latest
+  // job_creation_index to the mart's extras.jci.
+  try {
+    const jci = {};   // slug -> { period, value } latest
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', 'job_creation_index').eq('freq', 'M').order('region_slug').order('period').range(from, from + 999);
+      if (error) throw error;
+      for (const r of (data || [])) { const c = jci[r.region_slug]; if (!c || r.period > c.period) jci[r.region_slug] = { period: String(r.period).slice(0, 7), value: +r.value }; }
+      if (!data || data.length < 1000) break;
+    }
+    let jOk = 0, jBad = 0;
+    for (const [slug, want] of Object.entries(jci)) {
+      const m = martBy[slug]; if (!m || !m.payload || !m.payload.extras) continue;
+      const got = m.payload.extras.jci;
+      if (got == null) { fails.push(`jci[${slug}]: live job_creation_index has ${want.value} @ ${want.period} but mart extras carry none`); jBad++; }
+      else if (!close(got, want.value, 1e-6)) { fails.push(`jci[${slug}]: mart ${got} ≠ live ${want.value} (${want.period}) — enrich reading the stale 'jci' copy?`); jBad++; }
+      else jOk++;
+    }
+    if (jOk && !jBad) oks.push(`JCI parity: ${jOk} regions match live job_creation_index (latest month)`);
+  } catch (e) { warns.push('JCI parity check errored: ' + (e.message || e)); }
+
   // ── 3b. vacancy-rate parity (rentvacancy store → mart latest-year, ÷100) ──
   // Added after Sydney showed 2.23% in Forge but 2.18% in the reports — the
   // sync now carries the full drop, and this catches any future stranding.

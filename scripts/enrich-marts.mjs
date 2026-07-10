@@ -21,7 +21,7 @@ const AGE_ORDER = ['0_04','05_09','10_14','15_19','20_24','25_29','30_34','35_39
 
 // load the relevant raw
 let raw = [], from = 0;
-for (;;) { const { data, error } = await sb.from('rdp_raw_series').select('region_slug,metric,freq,period,value').or('metric.like.pyr\\_%,metric.like.ind\\_%,metric.eq.arrears,metric.eq.jci,metric.eq.nom,metric.eq.nim,metric.eq.owner_occupier,metric.eq.investor').order('region_slug').order('metric').order('period').range(from, from + 999); if (error) { console.error(error.message); process.exit(1); } raw.push(...data.map(r => ({ ...r, value: Number(r.value) }))); if (data.length < 1000) break; from += 1000; }
+for (;;) { const { data, error } = await sb.from('rdp_raw_series').select('region_slug,metric,freq,period,value').or('metric.like.pyr\\_%,metric.like.ind\\_%,metric.eq.arrears,metric.eq.jci,metric.eq.job_creation_index,metric.eq.nom,metric.eq.nim,metric.eq.owner_occupier,metric.eq.investor').order('region_slug').order('metric').order('period').range(from, from + 999); if (error) { console.error(error.message); process.exit(1); } raw.push(...data.map(r => ({ ...r, value: Number(r.value) }))); if (data.length < 1000) break; from += 1000; }
 const idx = Object.create(null);
 for (const r of raw) { const k = r.region_slug + '|' + r.metric; (idx[k] || (idx[k] = [])).push(r); }
 const latest = (slug, metric) => { const a = idx[slug + '|' + metric]; if (!a) return null; return a.slice().sort((x, y) => y.period.localeCompare(x.period))[0].value; };
@@ -197,11 +197,16 @@ for (const f of feeds) {
   let ar = latest(slug, 'arrears');
   if (ar == null && stateOf[slug]) { const cap = STATECAP[stateOf[slug].slice(3)]; if (cap) ar = latest(cap, 'arrears'); }
   if (ar != null) extras.arrears = ar;
-  const jc = latest(slug, 'jci'); if (jc != null) extras.jci = jc;
+  // JCI: prefer the LIVE JSA lineage (metric 'job_creation_index', refreshed
+  // monthly by the local run) over the stale Data-Dump copy ('jci') — same IVI
+  // series, but 'jci' lags (e.g. it ends April while job_creation_index has
+  // May). Per-region fallback keeps any region the JSA run doesn't cover.
+  const jciMet = idx[slug + '|job_creation_index'] ? 'job_creation_index' : 'jci';
+  const jc = latest(slug, jciMet); if (jc != null) extras.jci = jc;
   extras.arrears_national = latest('australia', 'arrears');
   // monthly series for the monthly charts (lending already added below)
   if (monthlyPrice[slug]) extras.monthly_price = { months: monthlyPrice[slug].months, h: monthlyPrice[slug].h, u: monthlyPrice[slug].u };
-  const jm = monthlySeries(slug, 'jci'); if (jm) extras.jci_monthly = jm;
+  const jm = monthlySeries(slug, jciMet); if (jm) extras.jci_monthly = jm;
   let amS = monthlySeries(slug, 'arrears');
   if (!amS && stateOf[slug]) { const cap = STATECAP[stateOf[slug].slice(3)]; if (cap) amS = monthlySeries(cap, 'arrears'); }
   if (amS) extras.arrears_monthly = amS;
