@@ -31,10 +31,16 @@
     const regMed = y => median(regionals.map(s => g(s, 'mp_h', y)));
 
     const out = [];
+    // ERP population lags the annual FHB count by ~a year, so the latest year
+    // has FHB but no population — carry the last known national population
+    // forward for the FHB-% denominator only (the `population` field stays
+    // honestly null); the next ERP release corrects it.
+    let _lastPop = null;
     for (const y of years) {
       const C = g('australia', 'bank_rate', y), E = g('australia', 'median_income', y);
       const G = capMed(y), I = regMed(y);
       const O = g('australia', 'population', y), Op = g('australia', 'population', y - 1);
+      if (O != null) _lastPop = O;
       const ah = g('australia', 'approvals_h', y), au = g('australia', 'approvals_u', y);
       const ch = g('australia', 'commenced_h', y), cu = g('australia', 'commenced_u', y);
       const sm = {}; for (const st in STATECAP) sm[st] = g(STATECAP[st], 'mp_h', y);
@@ -55,7 +61,7 @@
         commenced_h: ch, commenced_u: cu, commenced_total: (num(ch) != null && num(cu) != null) ? ch + cu : null,
         approvals_h: ah, approvals_u: au, approvals_total: (num(ah) != null && num(au) != null) ? ah + au : null,
         bedroom_commencements: (num(ah) != null && num(au) != null) ? ((ah + au) * 0.8) * 2.5 : null,
-        annualised_fhb: fhb, fhb_pct: (num(fhb) != null && num(O) && O !== 0) ? fhb / O : null,
+        annualised_fhb: fhb, fhb_pct: (() => { const den = O != null ? O : _lastPop; return (num(fhb) != null && num(den) && den !== 0) ? fhb / den : null; })(),
         retail_turnover: rt, retail_yoy: pct(rt, g('australia', 'retail_turnover', y - 1)),
         bus_investment: g('australia', 'bus_investment', y),
         bus_inv_manufacturing: g('australia', 'bus_inv_manufacturing', y),

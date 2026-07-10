@@ -64,6 +64,12 @@
     const cidx = (metric, yy) => { const v = g('australia', metric, yy), b = g('australia', metric, 1980); return (num(v) != null && num(b) && b !== 0) ? v / b * 100 : null; };
 
     const out = [];
+    // ERP population is published ~a year behind the annual FHB count, so the
+    // latest year has an FHB number but no population yet — which nulls the
+    // FHB-as-%-of-population line and drops the newest point. Carry the last
+    // known state population forward for THAT denominator only (pop_state stays
+    // honestly null); the next ERP release corrects it exactly.
+    let _lastStatePop = null;
     for (const y of years) {
       const E = g(region, 'mp_h', y), F = g(region, 'mp_u', y);
       const C = g('australia', 'cash_rate', y), B = C, BankC = g('australia', 'bank_rate', y);
@@ -72,6 +78,7 @@
       const AD = g(region, 'rent_h', y), AE = g(region, 'rent_u', y);
       const AJ = g(region, 'population', y), ALp = g(state, 'population', y), AN = g('australia', 'population', y);
       const AJp = g(region, 'population', y - 1), ALpp = g(state, 'population', y - 1), ANp = g('australia', 'population', y - 1);
+      if (ALp != null) _lastStatePop = ALp;
       const BW = g(benchmark, 'mp_h', y), BWu = g(benchmark, 'mp_u', y);
       const Qv = annualPI(BankC, num(E) != null ? E * 0.8 : null);   // repayments use the BANK rate (cluster col C), not cash rate
       const Rv = annualPI(BankC, num(F) != null ? F * 0.8 : null);
@@ -125,7 +132,7 @@
         retail_turnover: g(state, 'retail_turnover', y),
         business_investment: g(state, 'bus_investment', y),
         annualised_fhb: g(state, 'fhb', y),
-        fhb_pct: div(g(state, 'fhb', y), ALp),
+        fhb_pct: div(g(state, 'fhb', y), ALp != null ? ALp : _lastStatePop),   // carry-forward pop denom so the latest FHB year still charts (ERP not yet published)
       });
     }
     return out;

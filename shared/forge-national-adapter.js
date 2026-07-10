@@ -58,8 +58,11 @@
     data.ownerOccupierAbs = ser('owner_occupier');
     data.investorAbs = ser('investor');
     data.annualizedFhb = ser('fhb');
-    // FHB as a % of population (p15 bar) — FHB count ÷ national population.
-    data.fhbPopulation = data.annualizedFhb.map((v, i) => { const p = data.populationNational[i]; return (v != null && p != null && p !== 0) ? v / p : null; });
+    // FHB as a % of population (p15 line) — FHB count ÷ national population.
+    // ERP population lags the FHB count by ~a year, so carry the last known
+    // population forward for the newest year(s) — else the latest FHB % drops.
+    var _lastNatPop = null;
+    data.fhbPopulation = data.annualizedFhb.map((v, i) => { const p = data.populationNational[i]; if (p != null) _lastNatPop = p; const den = p != null ? p : _lastNatPop; return (v != null && den != null && den !== 0) ? v / den : null; });
     data.manufacturingIndustry = ser('bus_inv_manufacturing');
     data.miningIndustry = ser('bus_inv_mining');
     data.totalIncludingEducationAndHealth = ser('bus_investment');
