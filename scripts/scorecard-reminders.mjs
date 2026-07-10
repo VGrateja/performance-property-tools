@@ -8,16 +8,17 @@
 // most once per month / role / phase, so repeated runs and GitHub's timing
 // drift are harmless.
 //
-// Schedule (AEST/AEDT), per active scorecard for the CURRENT month:
+// Schedule (AEST/AEDT), per active scorecard for the CURRENT month. Each reminder
+// has a CATCH-UP WINDOW (send day → endDay) so a dropped cron run (GitHub cron is
+// best-effort and skips whole hour-blocks) doesn't permanently miss it:
 //   Employee   — section 1 "Actual" + section 2 self-assessment
-//                · first reminder  3rd  08:00
-//                · final reminder  5th  12:00
+//                · first  3rd 08:00 (catch-up to 4th) · final 5th 12:00 (to 7th)
 //   P&C        — section 2 "Achieved"
-//                · first  8th 08:00   · final 10th 12:00
+//                · first  8th 08:00 (to 9th)          · final 10th 12:00 (to 12th)
 //   AU Manager — section 1 "Achieved" + section 3 comment
-//                · first 13th 08:00   · final 15th 12:00
+//                · first 13th 08:00 (to 14th)         · final 15th 12:00 (to 17th)
 // A reminder is sent ONLY if that party's section is still incomplete and their
-// account is email-linked. Completed → nothing.
+// account is email-linked. Completed → nothing. The de-dupe log keeps it once-only.
 //
 // Env (GitHub Secrets):
 //   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY   — read all scorecards, write log
@@ -52,14 +53,23 @@ function sydneyNow() {
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
-/* Reminder schedule: which party/phase is due on which local day + hour. */
+/* Reminder schedule: which party/phase is due, with a CATCH-UP WINDOW.
+ * `day`/`hour` = the intended send (local Sydney); `endDay` = last day the
+ * reminder may still go out. GitHub Actions cron is best-effort and regularly
+ * drops entire hour-blocks (e.g. the 00:00-03:00 UTC = ~noon-Sydney window),
+ * so a single-day gate meant a dropped window = a permanently missed reminder.
+ * With a window, any surviving run on the due day (at/after `hour`) OR on a
+ * later day up to `endDay` sends it. The de-dupe log (scorecard_notify_log,
+ * keyed month/role/phase) still guarantees each reminder goes out at most once.
+ * Windows don't overlap within a role, so a catch-up never fires first+final
+ * together; if a "first" window is dropped entirely, its later "final" covers it. */
 const SCHEDULE = [
-  { day: 3,  role: 'employee', phase: 'first', hour: 8  },
-  { day: 5,  role: 'employee', phase: 'final', hour: 12 },
-  { day: 8,  role: 'pc',       phase: 'first', hour: 8  },
-  { day: 10, role: 'pc',       phase: 'final', hour: 12 },
-  { day: 13, role: 'manager',  phase: 'first', hour: 8  },
-  { day: 15, role: 'manager',  phase: 'final', hour: 12 },
+  { role: 'employee', phase: 'first', day: 3,  hour: 8,  endDay: 4  },
+  { role: 'employee', phase: 'final', day: 5,  hour: 12, endDay: 7  },
+  { role: 'pc',       phase: 'first', day: 8,  hour: 8,  endDay: 9  },
+  { role: 'pc',       phase: 'final', day: 10, hour: 12, endDay: 12 },
+  { role: 'manager',  phase: 'first', day: 13, hour: 8,  endDay: 14 },
+  { role: 'manager',  phase: 'final', day: 15, hour: 12, endDay: 17 },
 ];
 
 const rated = (v) => v === 'Yes' || v === 'Partial' || v === 'No';
@@ -147,7 +157,11 @@ async function main() {
   const fy  = now.month >= 7 ? now.year : now.year - 1;
   const monthLabel = `${MONTHS[now.month - 1]} ${now.year}`;
 
-  const due = SCHEDULE.filter(s => s.day === now.day && now.hour >= s.hour);
+  // Due if: on the intended day at/after the send hour, OR any later day within
+  // the catch-up window (any hour — the intended send was earlier and was missed).
+  const due = SCHEDULE.filter(s =>
+    (now.day === s.day && now.hour >= s.hour) ||
+    (now.day > s.day && now.day <= (s.endDay ?? s.day)));
   if (!due.length) {
     console.log(`[scorecard-reminders] Sydney ${ym}-${String(now.day).padStart(2,'0')} ${now.hour}:00 — no reminders due. Exit.`);
     return;
