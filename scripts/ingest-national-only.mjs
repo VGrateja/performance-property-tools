@@ -46,7 +46,13 @@ const Q_MONTH = { Q1: '01', Q2: '04', Q3: '07', Q4: '10' };
 
 // ── SEEDED: Federal Budget — underlying cash balance ($m) by financial year ──
 // (Treasury Budget papers; no API. Update each Budget / MYEFO.)
-const FEDERAL_BUDGET = [["2011-12",-42002],["2012-13",2500],["2013-14",2646],["2014-15",-37537],["2015-16",-28147],["2016-17",-20317],["2017-18",-3383],["2018-19",-18816],["2019-20",-126327],["2020-21",-104565],["2021-22",67420],["2022-23",-19444],["2023-24",-11773],["2024-25",-45707],["2025-26",-35779],["2026-27",-28435]];
+// Underlying cash balance ($m) by FY. 2024-25 onward from the 2026-27 Budget
+// (May 2026), Budget Paper No.1 Statement 3, Table 3.1 (values are $b → ×1000):
+//   2024-25 actual -10.0 · 2025-26 -28.3 · 2026-27 -31.5 · 2027-28 -31.0 ·
+//   2028-29 -34.4 · 2029-30 -25.3. NOTE: the pre-2024-25 figures below are the
+//   original seed and look inaccurate vs published Final Budget Outcomes
+//   (e.g. 2022-23 & 2023-24 were surpluses) — flagged for a full-history rebuild.
+const FEDERAL_BUDGET = [["2011-12",-42002],["2012-13",2500],["2013-14",2646],["2014-15",-37537],["2015-16",-28147],["2016-17",-20317],["2017-18",-3383],["2018-19",-18816],["2019-20",-126327],["2020-21",-104565],["2021-22",67420],["2022-23",-19444],["2023-24",-11773],["2024-25",-10000],["2025-26",-28300],["2026-27",-31500],["2027-28",-31000],["2028-29",-34400],["2029-30",-25300]];
 
 // ── SEEDED: Household composition by type (ABS Census; update next census) ──
 const HH_TYPES = ["Couple with children","Couples without children","One parent families","Other families","Group household","Lone person","Other not classifiable household","Visitor only households"];
