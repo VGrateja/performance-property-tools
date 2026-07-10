@@ -98,6 +98,27 @@ jobs:
           done
           echo "fails=$fails" >> "$GITHUB_OUTPUT"
 
+      # Record the GATHER outcome to forge_data_status (data_key 'pipeline_gather')
+      # so the Data Forge UI can show "GATHER ran this month" / "GATHER failed"
+      # without anyone opening the Actions tab, and the watchdog can detect a
+      # missed month. Same service-role secret — no new secrets or permissions.
+      - name: Record gather outcome in Data Forge
+        if: always()
+        env:
+          FAILS: ${{ steps.ingests.outputs.fails }}
+          INGESTS_OUTCOME: ${{ steps.ingests.outcome }}
+        run: |
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          # ok requires the ingests step to have actually RUN and succeeded — a
+          # checkout/npm failure or cancellation leaves FAILS empty too, and
+          # recording ok then would fake a green month (the silent-gap class
+          # this heartbeat exists to catch).
+          if [ "$INGESTS_OUTCOME" = "success" ] && [ -z "$FAILS" ]; then STATUS=ok; MSG="GATHER succeeded $NOW (all ingests ok)"; LASTOK=",\"last_ok_at\":\"$NOW\""; else STATUS=error; MSG="GATHER $NOW — ingests outcome: ${INGESTS_OUTCOME:-skipped}; failed:$FAILS"; LASTOK=""; fi
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/forge_data_status?on_conflict=data_key" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" -H "Prefer: resolution=merge-duplicates" \
+            -d "[{\"data_key\":\"pipeline_gather\",\"label\":\"GATHER pipeline\",\"source\":\"forge-ingests.yml\",\"status\":\"$STATUS\",\"message\":\"$MSG\",\"last_run_at\":\"$NOW\"$LASTOK,\"updated_at\":\"$NOW\"}]" || echo "::warning::could not record gather outcome"
+
       - name: Fail the run if any ingest errored
         if: steps.ingests.outputs.fails != ''
         run: |

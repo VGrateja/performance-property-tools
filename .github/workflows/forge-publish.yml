@@ -2,18 +2,24 @@
 # Data Forge — 2/ PUBLISH (rebuild mart)
 #
 # STEP 2 of 2. Rebuilds the report mart from whatever is currently in Forge and
-# pushes it to every tool that reads Forge:
+# pushes it to every tool that reads Forge. Steps, in load-bearing order:
+#   • publish-readiness-gate   — INPUT gate: stores exist/sane, no error statuses (FAILS the run)
 #   • sync-cotality-medians    -> rdp_raw_series    (current-year mp_h/mp_u from the Cotality drop)
-#   • build-report-feed        -> rdp_report_feed   (Online Reports)
+#   • sync-arrears             -> rdp_raw_series    (S&P SPIN drop → the arrears series ALL reports read)
+#   • build-report-feed        -> rdp_report_feed   (Online Reports; preserves payload.extras)
 #   • build-national-report    -> national report feed
-#   • enrich-marts             -> derived mart fields
+#   • enrich-marts             -> payload.extras    (must FOLLOW the two feed builds)
+#   • rebuild-vr-forecast      -> rdp_vr_forecast   (VR Projection + Demand Score's Adjusted VR)
 #   • build-runway             -> rdp_runway        (Runway Workbook)
-#   • build-commercial-from-rdp-> forge_commercial  (Commercial report — API tabs)
+#   • build-commercial-from-rdp-> forge_commercial  (Commercial report — API tabs; FAILS on >25% divergence)
 #   • refresh-snapshots        -> report_data_cache (Presentation snapshot)
+#   • post-publish-verify      — OUTPUT gate: marts absorbed the stores, parity holds (FAILS the run)
 #
 # Run this AFTER "Data Forge — 1/ GATHER" and after you've checked the data in
 # Data Forge. Nothing here fetches external data — it only reshapes what is
-# already in Forge, so it's safe to re-run.
+# already in Forge, so it's safe to re-run (idempotent; a red run = fix + re-dispatch).
+# Success/failure is recorded to forge_data_status (data_key 'pipeline_publish')
+# so the Data Forge UI can show pipeline health without opening GitHub.
 #
 # MANUAL only (workflow_dispatch) while Forge is being verified.
 #
@@ -53,7 +59,9 @@ jobs:
       - name: Rebuild report mart + refresh snapshots
         run: |
           set -e
+          echo "::group::readiness-gate";        node scripts/publish-readiness-gate.mjs;        echo "::endgroup::"   # INPUT gate — abort before any write if a store is missing/corrupt or an ingest errored
           echo "::group::sync-cotality-medians"; node scripts/sync-cotality-medians-to-rdp.mjs --write; echo "::endgroup::"   # wire the monthly Cotality drop into the annual median series (mp_h/mp_u, current year) so build-report-feed picks it up
+          echo "::group::sync-arrears";          node scripts/sync-arrears-to-rdp.mjs   --write; echo "::endgroup::"   # wire the S&P SPIN drop (forge_arrears, percent) into rdp arrears (fraction, capital slugs) so enrich-marts serves fresh arrears to ALL reports
           echo "::group::build-report-feed";     node scripts/build-report-feed.mjs     --write; echo "::endgroup::"
           echo "::group::build-national-report"; node scripts/build-national-report.mjs --write; echo "::endgroup::"
           echo "::group::enrich-marts";          node scripts/enrich-marts.mjs          --write; echo "::endgroup::"
@@ -61,3 +69,19 @@ jobs:
           echo "::group::build-runway";          node scripts/build-runway.mjs          --write; echo "::endgroup::"   # recompute rdp_runway from the mart (Runway Workbook tool)
           echo "::group::build-commercial";      node scripts/build-commercial-from-rdp.mjs --write; echo "::endgroup::"   # refresh forge_commercial's API tabs (retail/corp-bond/approvals/population) from rdp_raw_series; manual/subscription tabs untouched
           echo "::group::refresh-snapshots";     node scripts/refresh-snapshots-from-forge.mjs --write; echo "::endgroup::"   # repoint report_data_cache (presentation snapshot) at Forge
+          echo "::group::post-publish-verify";   node scripts/post-publish-verify.mjs;           echo "::endgroup::"   # OUTPUT gate — red run if any mart failed to absorb its store (idempotent: fix + re-dispatch)
+
+      # Record the outcome to forge_data_status so the Data Forge UI shows
+      # pipeline health without anyone opening the Actions tab. Uses the same
+      # service-role secret (server-side only) — no new secrets or permissions.
+      - name: Record publish outcome in Data Forge
+        if: always()
+        env:
+          OUTCOME: ${{ job.status }}
+        run: |
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          if [ "$OUTCOME" = "success" ]; then STATUS=ok; MSG="PUBLISH succeeded $NOW"; LASTOK=",\"last_ok_at\":\"$NOW\""; else STATUS=error; MSG="PUBLISH FAILED $NOW — open the Actions log, fix the cause, re-dispatch (idempotent)"; LASTOK=""; fi
+          curl -sf -X POST "$SUPABASE_URL/rest/v1/forge_data_status?on_conflict=data_key" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" -H "Prefer: resolution=merge-duplicates" \
+            -d "[{\"data_key\":\"pipeline_publish\",\"label\":\"PUBLISH pipeline\",\"source\":\"forge-publish.yml\",\"status\":\"$STATUS\",\"message\":\"$MSG\",\"last_run_at\":\"$NOW\"$LASTOK,\"updated_at\":\"$NOW\"}]" || echo "::warning::could not record publish outcome"
