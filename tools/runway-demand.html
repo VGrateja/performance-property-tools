@@ -738,6 +738,55 @@ const PUSH_STORAGE_KEY='ppt-runway-pushed-data';
   });
 })();
 
+// ── MERGE MONTHS PUSHED VIA FORGE (forge_demand_snapshots, version 'rvd-*') ──
+// The Demand Score push used to live ONLY in this browser's localStorage, so a
+// pushed month silently didn't exist on other machines — decks/embeds elsewhere
+// showed a shorter, staler timeline. Pushes are now mirrored into
+// forge_demand_snapshots (version 'rvd-YYYY-MM', label = 'Mon YYYY', data = the
+// same payload shape). Merge them here AFTER boot: baseline + localStorage
+// months win (localStorage stays the same-month manual override); Forge fills
+// in what this browser doesn't have, then the timeline/chart refresh in place.
+// Fail-soft — on any error the chart shows the local timeline exactly as before.
+window.__forgePushed = null;
+(function mergeForgeMonths(){
+  let tries = 0;
+  const t = setInterval(() => {
+    if (!window.sb && ++tries < 60) return;   // wait for supabase-client (≤6s), else give up quietly
+    clearInterval(t);
+    if (!window.sb) return;
+    window.sb.from('forge_demand_snapshots').select('label,data').like('version', 'rvd-%')
+      .then(({ data, error }) => {
+        if (error || !data || !data.length) return;
+        const typeLookup = {};
+        Object.values(RAW).flat().forEach(d => { if (d && d.city && d.type && !typeLookup[d.city]) typeLookup[d.city] = d.type; });
+        const pushed = {};
+        let addedAny = false;
+        const atEnd = currentIdx >= months.length - 1;   // follow the timeline end only if the user was on it
+        for (const row of data) {
+          const month = row.label, payload = row.data;
+          if (!month || !payload) continue;
+          pushed[month] = payload;
+          [['houses','house_'],['units','unit_']].forEach(([grp,pref]) => {
+            const list = payload[grp];
+            if (!Array.isArray(list) || RAW[pref+month]) return;   // local (baseline/localStorage) data wins for the same month
+            RAW[pref+month] = list.filter(r => r && r.city).map(r => {
+              const city = CITY_RENAMES[r.city] || String(r.city);   // boot-time rename pass already ran — apply it here
+              return { city, rw: Number(r.rw)||0, ds: Number(r.ds)||0, type: typeLookup[city]||'smooth' };
+            });
+            addedAny = true;
+          });
+        }
+        window.__forgePushed = pushed;                    // legend source — see _readPushedLegend
+        if (!addedAny) { applyRunwayLegend(); return; }   // no new months, but the legend may still be fresher
+        months = _computeMonths();
+        if (atEnd) currentIdx = months.length - 1;
+        try { if (months.length) localStorage.setItem('ppa-runway-latest', months[months.length-1]); } catch(e) {}
+        buildTimeline(); buildRegionList(); updateRegionBtn(); render();
+        applyRunwayLegend();   // render() doesn't repaint the runway-axis legend — without this a new latest month keeps the boot-time defaults
+      });
+  }, 100);
+})();
+
 // ── CITY NAME NORMALIZATION ──
 // Standardise names so all months use the same 36 city names
 const CITY_RENAMES={'Sydney':'Greater Sydney','Perth':'Greater Perth','Greater Hobart':'Hobart','Central Coast':'Central Coast (NSW)','Greater Geelong':'Geelong','Greater Bendigo':'Bendigo','Port Macquarie-Hastings':'Port Macquarie','Tamworth Regional':'Tamworth'};
@@ -895,10 +944,12 @@ function _readPushedLegend(){
   try {
     const pushed = JSON.parse(localStorage.getItem(PUSH_STORAGE_KEY) || '{}') || {};
     let latest = null;
-    Object.values(pushed).forEach(p => {
+    const scan = obj => Object.values(obj || {}).forEach(p => {
       if(!p || !p.pushedAt) return;
       if(!latest || p.pushedAt > latest.pushedAt) latest = p;
     });
+    scan(pushed);
+    scan(window.__forgePushed);   // Forge-mirrored pushes (from any machine) — latest pushedAt wins
     return (latest && latest.legend) ? latest.legend : null;
   } catch(_) { return null; }
 }
@@ -1750,18 +1801,40 @@ async function exportRunwayJPEG(){
 function _listPushedMonths(){
   let pushed={};
   try{ pushed=JSON.parse(localStorage.getItem(PUSH_STORAGE_KEY)||'{}')||{}; }catch(e){ pushed={}; }
-  return Object.keys(pushed).sort((a,b)=>_monthKeyToNum(a)-_monthKeyToNum(b));
+  // union with the Forge-mirrored pushes — a month pushed from ANOTHER machine
+  // has no localStorage entry here but must still be manageable/deletable
+  const keys=new Set(Object.keys(pushed));
+  Object.keys(window.__forgePushed||{}).forEach(k=>keys.add(k));
+  return [...keys].sort((a,b)=>_monthKeyToNum(a)-_monthKeyToNum(b));
 }
 
-function _deletePushedMonth(key){
+async function _deletePushedMonth(key){
   let pushed={};
   try{ pushed=JSON.parse(localStorage.getItem(PUSH_STORAGE_KEY)||'{}')||{}; }catch(e){ pushed={}; }
-  if(!(key in pushed)) return false;
+  const inLocal=(key in pushed);
+  const inForge=!!(window.__forgePushed&&window.__forgePushed[key]);
+  if(!inLocal&&!inForge) return false;
   // Remember what the user was viewing, so if we delete an earlier month
   // we can re-anchor currentIdx on the same month label afterwards.
   const wasViewing = months[currentIdx];
-  delete pushed[key];
-  try{ localStorage.setItem(PUSH_STORAGE_KEY, JSON.stringify(pushed)); }catch(e){ return false; }
+  if(inLocal){
+    delete pushed[key];
+    try{ localStorage.setItem(PUSH_STORAGE_KEY, JSON.stringify(pushed)); }catch(e){ return false; }
+  }
+  // Also remove the Forge mirror (forge_demand_snapshots, version 'rvd-YYYY-MM')
+  // — otherwise the month resurrects from Forge on the next load, here and on
+  // every other machine. RLS allows writers only, and PostgREST reports an
+  // RLS-filtered delete as success-with-0-rows, so check the returned rows.
+  if(inForge&&window.sb){
+    const p=key.split(' ');
+    const ver='rvd-'+p[1]+'-'+String((MONTH_ORDER[p[0]]??0)+1).padStart(2,'0');
+    try{
+      const { data:delRows, error }=await window.sb.from('forge_demand_snapshots').delete().eq('version',ver).select('version');
+      if(error||!(delRows&&delRows.length)){
+        alert('Removed from this browser, but the Forge copy could NOT be deleted'+(error?' ('+error.message+')':' (writers only — sign in as dev/admin)')+' — it will come back on the next load and stays visible on other machines.');
+      } else if(window.__forgePushed){ delete window.__forgePushed[key]; }
+    }catch(e){ alert('Removed from this browser, but the Forge copy could not be deleted ('+(e.message||e)+') — it will come back on the next load.'); }
+  }
   // Remove from the live RAW so the chart stops showing that month immediately.
   delete RAW['house_'+key];
   delete RAW['unit_'+key];
@@ -1791,18 +1864,22 @@ function openManageMonthsModal(){
     let houseCt=0, unitCt=0;
     try{
       const pushed=JSON.parse(localStorage.getItem(PUSH_STORAGE_KEY)||'{}')||{};
-      houseCt=(pushed[key]&&pushed[key].houses||[]).length;
-      unitCt=(pushed[key]&&pushed[key].units||[]).length;
-      const pushedAt=pushed[key]&&pushed[key].pushedAt;
+      // Forge-only months (pushed from another machine) have no localStorage
+      // entry — read their payload from the merged Forge cache instead.
+      const src=pushed[key]||((window.__forgePushed||{})[key]);
+      const origin=pushed[key]?'':' · Forge';
+      houseCt=(src&&src.houses||[]).length;
+      unitCt=(src&&src.units||[]).length;
+      const pushedAt=src&&src.pushedAt;
       if(pushedAt){
         const d=new Date(pushedAt);
         if(!isNaN(d.getTime())){
-          meta.textContent=houseCt+' houses · '+unitCt+' units · pushed '+d.toLocaleString();
+          meta.textContent=houseCt+' houses · '+unitCt+' units · pushed '+d.toLocaleString()+origin;
         } else {
-          meta.textContent=houseCt+' houses · '+unitCt+' units';
+          meta.textContent=houseCt+' houses · '+unitCt+' units'+origin;
         }
       } else {
-        meta.textContent=houseCt+' houses · '+unitCt+' units';
+        meta.textContent=houseCt+' houses · '+unitCt+' units'+origin;
       }
     }catch(e){ meta.textContent='—'; }
     label.appendChild(title); label.appendChild(meta);
@@ -1812,9 +1889,9 @@ function openManageMonthsModal(){
     del.style.cssText='background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.45);color:#ef4444;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;font-family:inherit';
     del.addEventListener('mouseenter',()=>del.style.background='rgba(239,68,68,.22)');
     del.addEventListener('mouseleave',()=>del.style.background='rgba(239,68,68,.12)');
-    del.addEventListener('click',()=>{
-      if(!confirm('Delete pushed data for '+key+' from Runway v Demand?\n\nThis only removes the pushed entry — baseline months are never affected.')) return;
-      const ok=_deletePushedMonth(key);
+    del.addEventListener('click',async ()=>{
+      if(!confirm('Delete pushed data for '+key+' from Runway v Demand?\n\nThis removes the pushed entry here AND its Forge mirror (all machines) — baseline months are never affected.')) return;
+      const ok=await _deletePushedMonth(key);
       if(ok){
         row.remove();
         // Refresh the modal (empty-state, etc.)

@@ -2290,7 +2290,9 @@ async function loadPrevSnapshot() {
   try {
     for (let i = 0; i < 40 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
     if (!window.sb) return;
-    const { data } = await window.sb.from("forge_demand_snapshots").select("version,label,data").order("version", { ascending: false }).limit(1).maybeSingle();
+    // exclude the 'rvd-*' Runway-v-Demand push mirrors — they'd sort above every
+    // capture version and permanently hijack the compare baseline
+    const { data } = await window.sb.from("forge_demand_snapshots").select("version,label,data").not("version", "like", "rvd-%").order("version", { ascending: false }).limit(1).maybeSingle();
     if (data) { state.prevSnapshot = data; if (state.view === "compare") render(); }
   } catch (e) { /* table may not exist yet */ }
 }
@@ -2609,14 +2611,40 @@ function openPushModal() {
             fontSize:"13px", fontWeight:"800",
             display:"inline-flex", alignItems:"center", gap:"6px"
           },
-          onClick: () => {
+          onClick: async (ev) => {
+            const btn = ev.currentTarget;
+            if (btn.disabled) return;   // the await below leaves the modal clickable — block double-pushes
+            btn.disabled = true; btn.style.opacity = "0.6";
             const payload = buildPushPayload();
             const store = readPushedData();
             store[key] = payload;
             try { writePushedData(store); }
-            catch(e){ alert("Could not save: " + (e.message || e)); return; }
+            catch(e){ alert("Could not save: " + (e.message || e)); btn.disabled = false; btn.style.opacity = ""; return; }
+            /* Forge-backed push (2026-07-10): localStorage is per-browser, so a
+               pushed month used to exist only on THIS machine — decks/embeds
+               opened elsewhere silently missed it. Mirror the push into
+               forge_demand_snapshots (version 'rvd-YYYY-MM', same payload
+               shape) so Runway v Demand can merge it on ANY machine. The
+               localStorage copy stays as the same-month manual override.
+               Write is RLS-gated (is_writer); a viewer's push stays local. */
+            let forgeErr = null;
+            try {
+              const ver = 'rvd-' + live.y + '-' + String(live.m + 1).padStart(2, '0');
+              let email = null; try { const p = await sbCurrentProfile(); email = p && p.email; } catch (e) {}
+              const { error } = await window.sb.from('forge_demand_snapshots').upsert(
+                { version: ver, label: key, data: payload, captured_at: new Date().toISOString(), captured_by: email },
+                { onConflict: 'version' });
+              if (error) forgeErr = error.message;
+            } catch (e) { forgeErr = e.message || String(e); }
             modal.remove();
-            showPushToast(key);
+            if (forgeErr) {
+              // a console-only warning would let an admin believe the month is on
+              // every machine when it exists only in this browser — say it loudly.
+              console.warn('[push] Forge mirror failed: ' + forgeErr);
+              alert("Pushed to THIS browser only — the Forge mirror failed, so other machines/decks will NOT see " + key + ".\n\n" + forgeErr + "\n\nFix the cause (sign in as dev/admin?) and push again.");
+            } else {
+              showPushToast(key);
+            }
           }
         }, icon("upload-cloud", 12), "Push " + live.label)
       )
