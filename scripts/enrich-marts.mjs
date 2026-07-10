@@ -182,8 +182,16 @@ const updates = [];
 for (const f of feeds) {
   const slug = f.region_slug;
   const extras = {};
-  const py = pyramidForge(slug, stateOf[slug]) || pyramid(slug, stateOf[slug]); if (py) extras.pyramid = py;
-  const ind = industryForge(slug) || industry(slug); if (ind) extras.industry = ind;
+  // Preferred store vs stale-rdp fallback, with PROVENANCE — the bare `||` here
+  // used to fall back silently, so a region missing from a freshly-updated store
+  // kept serving the old Data-Dump copy with no signal anywhere.
+  const pyF = pyramidForge(slug, stateOf[slug]); const py = pyF || pyramid(slug, stateOf[slug]); if (py) extras.pyramid = py;
+  const indF = industryForge(slug); const ind = indF || industry(slug); if (ind) extras.industry = ind;
+  extras._sources = {
+    pyramid:       pyF ? 'forge_population_pyramid' : (py ? 'rdp_stale' : 'none'),
+    industry:      indF ? 'forge_industry'          : (ind ? 'rdp_stale' : 'none'),
+    monthly_price: monthlyPrice[slug] ? 'forge_monthly_price' : 'none',
+  };
   // arrears: region's own (capitals = their state) → fall back to the region's
   // state capital's series for regionals (the chart plots region-state vs national)
   let ar = latest(slug, 'arrears');
@@ -229,8 +237,14 @@ console.log('capcity yields (CIV): ' + capcityYields.map(c => c.slug + ' H' + (c
 if (adel) { const L = adel.payload.extras.lending; console.log('adelaide lending (' + (L && L.state) + '): ' + (L ? L.months.length + ' months, latest OO $' + L.owner_occupier[L.owner_occupier.length - 1] + 'm / INV $' + L.investor[L.investor.length - 1] + 'm' : 'none')); }
 if (au) console.log('australia extras: pyramid=' + (au.payload.extras.pyramid || []).length + ' bands, arrears_by_state.sa=' + au.payload.extras.arrears_by_state?.sa + ', state_migration.nsw=' + JSON.stringify(au.payload.extras.state_migration?.nsw));
 
+// name every region riding a STALE rdp fallback (store lacks it) — this used to be invisible
+const fbPyr = updates.filter(u => u.payload.extras._sources.pyramid === 'rdp_stale').map(u => u.region_slug);
+const fbInd = updates.filter(u => u.payload.extras._sources.industry === 'rdp_stale').map(u => u.region_slug);
+console.log('fallbacks — pyramid(rdp_stale): ' + (fbPyr.length ? fbPyr.join(', ') : 'none') + ' | industry(rdp_stale): ' + (fbInd.length ? fbInd.join(', ') : 'none'));
+
 if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert.'); process.exit(0); }
 const stamp = new Date().toISOString(); let n = 0;
+const RUN_MONTH = 'enrich ' + stamp.slice(0, 7);   // real run-month (was hardcoded 'enrich 2026-06')
 for (const u of updates) { const { error } = await sb.from('rdp_report_feed').upsert({ region_slug: u.region_slug, cluster: u.cluster, payload: u.payload, computed_at: stamp }, { onConflict: 'region_slug' }); if (error) { console.error(u.region_slug, error.message); process.exit(1); } n++; }
-await sb.from('rdp_runs').insert({ dataset: 'report_feed', source_month: 'enrich 2026-06', row_count: n, status: 'ok', notes: 'extras: pyramid/industry/arrears/jci + capcity_yields(CIV) + lt CAGR + lending (OO/INV monthly) (+ national state migration)' });
+await sb.from('rdp_runs').insert({ dataset: 'report_feed', source_month: RUN_MONTH, row_count: n, status: 'ok', notes: 'extras + _sources provenance; stale-rdp fallbacks — pyramid: ' + (fbPyr.join(',') || 'none') + '; industry: ' + (fbInd.join(',') || 'none') });
 console.log(`✓ Enriched ${n} report_feed payloads with extras.`);

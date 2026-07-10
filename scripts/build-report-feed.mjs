@@ -38,7 +38,10 @@ for (;;) {
 }
 console.log('loaded', rows.length, 'raw rows;', cities.length, 'city regions');
 
-const years = []; for (let y = 1975; y <= 2026; y++) years.push(y);
+// annual span runs to the CURRENT year — a hardcoded ceiling here froze the mart
+// at 2026 (2027+ rows would silently never build).
+const THIS_YEAR = new Date().getUTCFullYear();
+const years = []; for (let y = 1975; y <= THIS_YEAR; y++) years.push(y);
 // Capital-City-Comparison benchmark: capitals compare to Sydney; regional cities
 // compare to THEIR OWN state capital (Mackay→Brisbane, Ballarat→Melbourne), like
 // the report does — not Sydney.
@@ -66,12 +69,20 @@ console.log('TOTAL regions:', payloads.length);
 if (!WRITE) { console.log('\nDry run complete. Re-run with --write to upsert into rdp_report_feed.'); process.exit(0); }
 
 const stamp = new Date().toISOString();
+const RUN_MONTH = 'forge ' + stamp.slice(0, 7);   // real run-month provenance (was a hardcoded 'Data Dump 2026-06')
+// EXTRAS-PRESERVING write: upsert replaces the whole payload jsonb, which used to
+// wipe payload.extras whenever this ran standalone (outside a full PUBLISH, where
+// enrich-marts restores it). Merge over the existing payload so extras survive.
+const { data: existingRows, error: exErr } = await sb.from('rdp_report_feed').select('region_slug,payload');
+if (exErr) { console.error(exErr.message); process.exit(1); }
+const existingBy = Object.fromEntries((existingRows || []).map(r => [r.region_slug, r.payload]));
 let n = 0;
 for (const p of payloads) {
-  const { error } = await sb.from('rdp_report_feed').upsert({ region_slug: p.region_slug, cluster: p.cluster, payload: { years: p.rows }, source_month: 'Data Dump 2026-06', computed_at: stamp }, { onConflict: 'region_slug' });
+  const merged = { ...(existingBy[p.region_slug] || {}), years: p.rows };
+  const { error } = await sb.from('rdp_report_feed').upsert({ region_slug: p.region_slug, cluster: p.cluster, payload: merged, source_month: RUN_MONTH, computed_at: stamp }, { onConflict: 'region_slug' });
   if (error) { console.error('upsert', p.region_slug, error.message); process.exit(1); }
   n++; process.stdout.write(`\r  upserted ${n}/${payloads.length}`);
 }
 console.log('');
-await sb.from('rdp_runs').insert({ dataset: 'report_feed', source_month: 'Data Dump 2026-06', row_count: n, status: 'ok', notes: `${n} city regions; ReportFeedCalc` });
+await sb.from('rdp_runs').insert({ dataset: 'report_feed', source_month: RUN_MONTH, row_count: n, status: 'ok', notes: `${n} city regions; ReportFeedCalc` });
 console.log(`✓ Built rdp_report_feed for ${n} regions.`);

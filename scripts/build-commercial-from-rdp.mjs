@@ -75,6 +75,7 @@ async function main() {
   const store = row.data;
   const tabs = store.tabs;
   const flags = [];
+  let worstDiff = 0;   // largest relative divergence seen — >25% hard-fails (corruption guard)
 
   // ── MONTHLY tabs ──
   const ym = d => String(d).slice(0, 7);   // YYYY-MM key (handles first/end-of-month seeds)
@@ -94,7 +95,7 @@ async function main() {
     const tol = cfg.tol || 0.02; let over = 0, maxd = 0, ex = '';
     for (const k of keys) { const a = rdpMap.get(k), b = oldMap.get(k); const rd = relDiff(a, b); if (rd != null) { over++; if (rd > maxd) { maxd = rd; ex = `${k} old=${b} new=${a}`; } } }
     console.log(`${cfg.tab.padEnd(24)} ${cfg.metric.padEnd(22)} rows ${oldDate.length}→${dateOut.length} (rdp ${series.length}), overlap ${over}, maxRelDiff ${(maxd*100).toFixed(3)}%  ${maxd>tol ? '⚠ ' + ex : ''}`);
-    if (maxd > tol) flags.push(`${cfg.tab}: ${(maxd*100).toFixed(2)}% (${ex})`);
+    if (maxd > tol) { flags.push(`${cfg.tab}: ${(maxd*100).toFixed(2)}% (${ex})`); worstDiff = Math.max(worstDiff, maxd); }
     tab.columns = { [cfg.dateCol]: dateOut, [cfg.valCol]: valOut };   // solo — drop vestigial columns the renderers ignore
     tab.headers = Object.keys(tab.columns);
   }
@@ -119,12 +120,16 @@ async function main() {
       let over = 0, maxd = 0, ex = '';
       for (const y of years) { const a = rm.get(y), b = om.get(y); const rd = relDiff(a, b); if (rd != null) { over++; if (rd > maxd) { maxd = rd; ex = `${y} old=${b} new=${a}`; } } }
       console.log(`${cfg.tab.padEnd(24)} ${col.padEnd(12)} (${region}) years ${oldDate.length}→${years.length}, overlap ${over}, maxRelDiff ${(maxd*100).toFixed(3)}%  ${maxd>0.03?'⚠ '+ex:''}`);
-      if (maxd > 0.03) flags.push(`${cfg.tab}.${col}: ${(maxd*100).toFixed(2)}% (${ex})`);
+      if (maxd > 0.03) { flags.push(`${cfg.tab}.${col}: ${(maxd*100).toFixed(2)}% (${ex})`); worstDiff = Math.max(worstDiff, maxd); }
     }
     tab.headers = Object.keys(tab.columns);
   }
 
   console.log(flags.length ? `\n⚠ ${flags.length} column(s) diverge >tolerance (revisions expected for approvals/pop; investigate if large):\n  ${flags.join('\n  ')}` : '\n✓ All refreshed columns within parity tolerance of the seed.');
+  // HARD corruption guard: revisions run single-digit % (2026 approvals hit ~18%);
+  // >25% means a scale slip / wrong series — refuse to ship it (warnings alone
+  // let a corrupted refresh straight into the live Commercial report).
+  if (worstDiff > 0.25) { console.error(`\n✗ Divergence ${(worstDiff * 100).toFixed(1)}% exceeds the 25% hard limit — refusing to ${WRITE ? 'write' : 'pass'}. Investigate the flagged columns above.`); process.exit(1); }
 
   if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert forge_commercial.'); return; }
   const now = new Date().toISOString();

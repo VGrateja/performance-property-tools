@@ -68,6 +68,9 @@ if (wbExists) {
     for (const [mine, theirs] of [[c.ai, row.wb_ai], [c.ceiling, row.wb_ceiling], [c.runway_pct, row.wb_runway], [c.forecast_ai, row.wb_fc_ai], [c.forecast_ceiling, row.wb_fc_ceiling], [c.forecast_pct, row.wb_fc_pct]]) { if (theirs == null) continue; checks++; if (close(mine, theirs)) pass++; }
   }
   console.log(`verify calc vs workbook: ${pass}/${checks} match`);
+  if (checks && pass / checks < 0.95) { console.error(`✗ VERIFY FAILED — only ${pass}/${checks} match the workbook (threshold 95%).`); process.exit(1); }
+} else {
+  console.log('verify calc vs workbook: SKIPPED — local workbook not present (CI run); rdp_runway freshness is covered by post-publish-verify.mjs.');
 }
 
 // ── recompute mart from rdp_report_feed; store INPUTS for the tool ──
@@ -88,6 +91,7 @@ console.log('regions:', list.length);
 
 if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert into rdp_runway.'); process.exit(0); }
 const stamp = new Date().toISOString(); let n = 0;
-for (const r of list) { const { error } = await sb.from('rdp_runway').upsert({ region_slug: r.region_slug, payload: r.payload, source_month: 'Runway recompute 2026-06', computed_at: stamp }, { onConflict: 'region_slug' }); if (error) { console.error(r.region_slug, error.message); process.exit(1); } n++; }
-await sb.from('rdp_runs').insert({ dataset: 'runway', source_month: 'Runway recompute 2026-06', row_count: n, status: 'ok', notes: `${n} regions; RunwayCalc recompute (config: ${dbCfg.rates ? 'DB' : 'workbook'}; verify ${pass}/${checks})` });
+const RUN_MONTH = 'Runway recompute ' + stamp.slice(0, 7);   // real run-month provenance (was hardcoded '2026-06')
+for (const r of list) { const { error } = await sb.from('rdp_runway').upsert({ region_slug: r.region_slug, payload: r.payload, source_month: RUN_MONTH, computed_at: stamp }, { onConflict: 'region_slug' }); if (error) { console.error(r.region_slug, error.message); process.exit(1); } n++; }
+await sb.from('rdp_runs').insert({ dataset: 'runway', source_month: RUN_MONTH, row_count: n, status: 'ok', notes: `${n} regions; RunwayCalc recompute (config: ${dbCfg.rates ? 'DB' : 'workbook'}; verify ${wbExists ? pass + '/' + checks : 'skipped'})` });
 console.log(`✓ Recomputed rdp_runway for ${n} regions (with inputs for the tool).`);

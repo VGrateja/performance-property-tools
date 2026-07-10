@@ -29,7 +29,10 @@ const regionals = regions.filter(r => ['qld', 'nsw', 'vicwatas'].includes(r.clus
 let rows = [], from = 0;
 for (;;) { const { data, error } = await sb.from('rdp_raw_series').select('region_slug,metric,period,value').eq('freq', 'A').order('region_slug').order('metric').order('period').range(from, from + 999); if (error) { console.error(error.message); process.exit(1); } rows.push(...data.map(r => ({ ...r, value: Number(r.value) }))); if (data.length < 1000) break; from += 1000; }
 
-const years = []; for (let y = 1980; y <= 2026; y++) years.push(y);
+// span runs to the CURRENT year — a hardcoded 2026 ceiling would freeze the
+// national mart in 2027 (same latent cliff as build-report-feed).
+const THIS_YEAR = new Date().getUTCFullYear();
+const years = []; for (let y = 1980; y <= THIS_YEAR; y++) years.push(y);
 const feed = globalThis.NationalReportCalc.computeNationalReport({ rows, capitals, regionals, years });
 const byYear = Object.fromEntries(feed.map(r => [r.year, r]));
 console.log('capitals:', capitals.length, '| regionals:', regionals.length, '| years:', feed.length);
@@ -50,6 +53,11 @@ if (existsSync(ddPath)) {
   }
   console.log(`VERIFY vs AUSTRALIA tab: ${pass}/${checks} match`);
   if (fails.length) for (const f of fails.slice(0, 25)) console.log('  ' + f);
+  // a genuinely failing verify should redden the run — silence was hiding real divergence
+  if (checks && pass / checks < 0.95) { console.error(`✗ VERIFY FAILED — only ${pass}/${checks} match the AUSTRALIA tab (threshold 95%).`); process.exit(1); }
+} else {
+  // Be honest in CI logs: the runner has no ~/Downloads workbook, so parity is NOT checked here.
+  console.log('VERIFY SKIPPED — local workbook not present (' + ddPath + '); parity is covered by post-publish-verify.mjs instead.');
 }
 const s25 = byYear[2025] || byYear[2024];
 if (s25) console.log(`sample ${s25.year}: capCityMedian=${s25.cap_city_median} regionalMedian=${s25.regional_median} p2i_cap=${(s25.p2i_cap_city||0).toFixed(2)} pop=${s25.population}`);
@@ -57,7 +65,12 @@ if (s25) console.log(`sample ${s25.year}: capCityMedian=${s25.cap_city_median} r
 if (!WRITE) { console.log('\nDry run complete. Re-run with --write to upsert.'); process.exit(0); }
 const nonEmpty = feed.filter(r => r.cap_city_median != null || r.population != null);
 const stamp = new Date().toISOString();
-const { error } = await sb.from('rdp_report_feed').upsert({ region_slug: 'australia', cluster: 'national', payload: { national: true, years: nonEmpty }, source_month: 'Data Dump 2026-06', computed_at: stamp }, { onConflict: 'region_slug' });
+const RUN_MONTH = 'forge ' + stamp.slice(0, 7);   // real run-month provenance (was a hardcoded 'Data Dump 2026-06')
+// extras-preserving: merge over the existing australia payload so payload.extras
+// survives a standalone run (upsert otherwise replaces the whole jsonb).
+const { data: exRow } = await sb.from('rdp_report_feed').select('payload').eq('region_slug', 'australia').maybeSingle();
+const merged = { ...((exRow && exRow.payload) || {}), national: true, years: nonEmpty };
+const { error } = await sb.from('rdp_report_feed').upsert({ region_slug: 'australia', cluster: 'national', payload: merged, source_month: RUN_MONTH, computed_at: stamp }, { onConflict: 'region_slug' });
 if (error) { console.error(error.message); process.exit(1); }
-await sb.from('rdp_runs').insert({ dataset: 'report_feed', source_month: 'Data Dump 2026-06', row_count: 1, status: 'ok', notes: 'national (australia) aggregate; NationalReportCalc' });
+await sb.from('rdp_runs').insert({ dataset: 'report_feed', source_month: RUN_MONTH, row_count: 1, status: 'ok', notes: 'national (australia) aggregate; NationalReportCalc' });
 console.log('✓ Built national report_feed (australia).');

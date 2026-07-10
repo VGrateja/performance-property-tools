@@ -58,5 +58,7 @@ for (const src of Object.keys(out)) {
   const { error } = await sb.from('report_data_cache').upsert({ source: src, data: out[src], updated_at: now }, { onConflict: 'source' });
   if (error) { console.error('✗ ' + src + ':', error.message); process.exit(1); }
 }
+// lineage log — this was the one PUBLISH step writing no rdp_runs row
+try { await sb.from('rdp_runs').insert({ dataset: 'snapshots', source_month: 'snapshots ' + now.slice(0, 7), row_count: Object.keys(out).length, status: 'ok', notes: 'report_data_cache repointed at Forge: ' + Object.keys(out).join(', ') }); } catch {}
 console.log('\n✓ Repointed report_data_cache (' + Object.keys(out).length + ' sources) at Data Forge.');
 process.exit(0);
