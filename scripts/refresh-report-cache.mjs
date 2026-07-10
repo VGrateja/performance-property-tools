@@ -1,10 +1,17 @@
 // =============================================================================
 // scripts/refresh-report-cache.mjs
 //
-// Monthly refresh of the report-data snapshot cache (table report_data_cache,
-// migration 040). Run by .github/workflows/refresh-report-cache.yml on the
-// 13th of each month (after the CoreLogic 10th-of-month data refresh finishes
-// ~11th-12th), or manually with `node scripts/refresh-report-cache.mjs`.
+// ⚠ DEPRECATED / LEGACY — Apps-Script-sourced. Since the Forge cutover the
+// snapshots are refreshed FROM FORGE by scripts/refresh-snapshots-from-forge.mjs
+// (run in the PUBLISH workflow) and by the reports' "⤓ Save data" buttons.
+// Running THIS script overwrites those Forge-built snapshots with Google
+// Apps Script data — an emergency fallback only, not the monthly routine.
+//
+// Legacy behaviour: refresh of the report-data snapshot cache (table
+// report_data_cache, migration 040). Its workflow
+// (.github/workflows/refresh-report-cache.yml) has its cron disabled and is
+// gated behind a typed confirmation; manual run:
+// `node scripts/refresh-report-cache.mjs`.
 //
 // For each feed (the four regional clusters + national + commercial):
 //   1. Fetch the Apps Script feed JSON (the slow cold-start path).
@@ -13,8 +20,8 @@
 // Sequential with one retry: firing all six at Google in parallel makes
 // Apps Script queue them and the heavy feeds (qld/nsw) time out.
 //
-// This is the unattended twin of the dev/admin "⤓ Save data" button in the
-// reports (shared/report-cache.js updateAllSnapshots) — same effect, no human.
+// This is the unattended twin of shared/report-cache.js updateAllSnapshots —
+// itself deprecated + guarded for the same reason.
 //
 // Required env vars (GitHub Secrets, already present for the PDF renderer):
 //   SUPABASE_URL                https://<project-ref>.supabase.co

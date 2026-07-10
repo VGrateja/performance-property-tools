@@ -806,10 +806,12 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=4d16983b"></script>
-<!-- Forge → feed-shape adapter for the Commercial report (used only with ?src=forge). -->
-<script src="../shared/forge-commercial-adapter.js?v=1ff0af1e"></script>
+<!-- Forge → feed-shape adapter for the Commercial report. Forge is the DEFAULT
+     data source, so this runs on every normal load; ?src=live / ?src=legacy is
+     the escape hatch that skips it. -->
+<script src="../shared/forge-commercial-adapter.js?v=3cd6e01c"></script>
 <!-- Report-data snapshot cache + global "Save data" refresh (window.PPReportCache). -->
-<script src="../shared/report-cache.js?v=5edb9f7b"></script>
+<script src="../shared/report-cache.js?v=6cf08cbe"></script>
 <script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
 <script src="../shared/auth.js?v=3f458df2"></script>
 <script src="../shared/auth-gate.js?v=cb10cfed"></script>
@@ -908,11 +910,11 @@
     <button id="reportsRefreshBtn" type="button"
             title="Reload report data from the stored snapshot"
             aria-label="Reload report data">↻</button>
-    <!-- Dev/Admin only (the whole pager is .tier1-only): pull the latest
-         data from Google and save it to Supabase so this report + the
+    <!-- Dev/Admin only (the whole pager is .tier1-only): assemble the latest
+         data from Data Forge and save it to Supabase so this report + the
          presentation embed load fast from the stored snapshot. -->
     <button class="pp-edit-btn" id="reportsCacheUpdateBtn" type="button"
-            title="Dev/Admin: fetch the latest data from Google and save it to Supabase, so this report and presentations load fast. Run after the monthly data update, or for a mid-month change.">⤓ Save data</button>
+            title="Dev/Admin: assemble the latest data from Data Forge and save it to Supabase, so this report and presentations load fast. Run after the monthly data update, or for a mid-month change.">⤓ Save data</button>
     <select id="region-select" title="Switch research report"></select>
     <span class="sep">│</span>
     <span class="page-indicator" id="page-indicator" title="Current page · scroll to jump">1 / 25</span>
@@ -2010,8 +2012,9 @@ async function downloadAllResearchPdfs() {
   }
 }
 
-/* liveBoot — fetches the Apps Script feed (if configured), caches
-   the payload in REPORT_DATA so chart code can read it, then signals
+/* liveBoot — loads the report data (Forge by default, falling back to
+   the Supabase snapshot then the legacy Apps Script feed), caches the
+   payload in REPORT_DATA so chart code can read it, then signals
    PPA_LIVE_BOOT_DONE so Puppeteer's pre-render loop knows the page
    is captureable. If the URL isn't set or the fetch fails, we still
    signal so export mode doesn't hang forever — pages just render
@@ -2037,15 +2040,16 @@ function hideLiveLoadingOverlay() {
 setTimeout(function () { try { hideLiveLoadingOverlay(); } catch (_) {} }, (PP_EXPORT_MODE && !PP_EMBED_PAGE) ? 0 : 23000);
 
 /* ═════════════════════════════════════════════════════════════════════
-   SUPABASE SNAPSHOT CACHE — the monthly stored copy
+   SUPABASE SNAPSHOT CACHE — the stored fallback copy
    ─────────────────────────────────────────────────────────────────────
-   The Apps Script feed cold-starts at up to ~20 s, the bulk of this
-   report's load time. The data only changes monthly, so we read a stored
-   copy from Supabase instead of phoning Google. The cache read/write + the
-   GLOBAL "Save data" refresh live in shared/report-cache.js
-   (window.PPReportCache, source='commercial'). The PDF renderer passes
-   ?fresh=1 to bypass the snapshot and capture live data; the presentation
-   embed (exportMode=1, no fresh) reads the snapshot, so it loads fast.
+   Since the Forge cutover this snapshot is the FALLBACK, not the primary:
+   normal loads read Forge directly (see PP_FORGE_SRC below) and only fall
+   back to the snapshot, then the legacy Apps Script feed, if Forge fails.
+   The Save-data buttons + the PUBLISH workflow now WRITE the snapshot from
+   Forge. The cache read/write lives in shared/report-cache.js
+   (window.PPReportCache, source='commercial'). ?fresh=1 (the PDF renderer)
+   only skips the snapshot step — on the Forge-default path it's a no-op,
+   which is fine: PDFs capture the last-PUBLISHed mart, as intended.
    ═════════════════════════════════════════════════════════════════════ */
 const REPORT_CACHE_SOURCE = 'commercial';
 const PP_FORCE_FRESH = (function () {
@@ -2078,14 +2082,14 @@ async function liveBoot() {
   }
   try {
     let data = null, src = 'live';
-    /* Forge mode (?src=forge): read the forge_commercial store + reshape it to
+    /* Forge (the default): read the forge_commercial store + reshape it to
        the feed shape via the adapter — skips the snapshot + Apps Script feed. */
     if (PP_FORGE_SRC) {
       try { data = await forgeCommercialFeed(); if (data) src = 'forge'; }
       catch (e) { console.warn('[commercial-report] forge load failed, falling back:', e && e.message || e); }
     }
-    /* Supabase snapshot first (fast) — unless ?fresh=1 (the PDF renderer,
-       which must capture live data before the monthly snapshot refresh). */
+    /* Supabase snapshot (fallback when Forge fails) — unless ?fresh=1, which
+       skips it. On the Forge-default path above ?fresh=1 is a no-op. */
     if (!data && !PP_FORCE_FRESH && window.PPReportCache) {
       data = await window.PPReportCache.readSnapshot(REPORT_CACHE_SOURCE);
       if (data) src = 'snapshot';
@@ -2603,9 +2607,10 @@ document.addEventListener('DOMContentLoaded', () => {
   if (typeof applyAccessRestrictions === 'function') applyAccessRestrictions();
   rsBoot();
 
-  /* Dev/Admin "⤓ Save data": refresh the Supabase snapshot from Google.
-     The slow Google fetch happens here, off-stage, on an explicit click —
-     never during a viewer's load. The write is RLS-protected (is_writer). */
+  /* Dev/Admin "⤓ Save data": refresh the Supabase snapshot from Data Forge
+     (assembled via forgeCommercialFeed — no Apps Script involved). Happens
+     here, off-stage, on an explicit click — never during a viewer's load.
+     The write is RLS-protected (is_writer). */
   const cacheBtn = document.getElementById('reportsCacheUpdateBtn');
   if (cacheBtn) {
     const cacheBtnLabel = cacheBtn.textContent;

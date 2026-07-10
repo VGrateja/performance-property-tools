@@ -91,10 +91,13 @@ function isResearchReportSlug(slug) {
 }
 function reportUrlForSlug(slug, lite) {
   const liteSuffix = lite ? '&lite=1' : '';
-  /* fresh=1: the monthly PDF must capture the LATEST Google data. It runs
-     on the 12th, before the ~13th-14th Supabase snapshot refresh, so it
-     bypasses the snapshot cache and reads the live feed directly. (Live
-     viewers + the presentation embed read the fast snapshot instead.) */
+  /* fresh=1: skips the Supabase snapshot step in the reports' fallback
+     chain. Since the Forge cutover the reports read Forge by DEFAULT, so
+     on the normal path this flag is a NO-OP — the PDFs capture the
+     last-PUBLISHed Forge mart, which is correct and intended (don't
+     "fix" this). It only still matters on the legacy ?src=live path /
+     when Forge is unreadable, where it forces the live Apps Script feed
+     instead of a possibly-stale snapshot. */
   const freshSuffix = '&fresh=1';
   if (isResearchReportSlug(slug)) {
     /* Research reports live in their own tool files. They don't

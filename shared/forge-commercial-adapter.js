@@ -2,8 +2,9 @@
    shared/forge-commercial-adapter.js  —  window.ForgeCommercialAdapter
 
    Reshapes the forge_commercial store into the Commercial report's feed
-   shape so the unchanged chart code renders it. Used only when the report
-   is opened with ?src=forge.
+   shape so the unchanged chart code renders it. Forge is the DEFAULT
+   source, so this runs on every normal load (and in the Save-data
+   assembly); ?src=live / ?src=legacy is the escape hatch that skips it.
 
    Store shape:  { tabs: { <tab>: { name, columns:{ <col>:[vals] }, headers } }, _meta }
    Feed shape:   { _meta, tabs: { <tab>: { <col>:[vals] } } }

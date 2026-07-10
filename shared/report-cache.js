@@ -1,23 +1,24 @@
 /* ════════════════════════════════════════════════════════════════════
    shared/report-cache.js — report-data snapshot cache (window.PPReportCache)
    ────────────────────────────────────────────────────────────────────
-   The reports' chart data comes from Google Apps Script web apps that
-   cold-start at 10-25 s each. The data only changes once a month, so we
-   keep a copy in Supabase (table report_data_cache, one row per `source`)
-   and read THAT on load — see migration 040. This module owns the cache
-   read/write plus the GLOBAL refresh used by every report's dev/admin
-   "Save data" button: one click refreshes EVERY feed (the four regional
-   clusters + national + commercial), so it only has to be pressed once.
+   The snapshot cache (table report_data_cache, one row per `source` — see
+   migration 040). Since the Forge cutover the reports read Data Forge by
+   DEFAULT and the snapshot is the FALLBACK copy: it is WRITTEN from Forge
+   by each report's dev/admin "Save data" button and by the PUBLISH
+   workflow's scripts/refresh-snapshots-from-forge.mjs; the presentation
+   embeds still read it. The Google Apps Script web apps survive ONLY as
+   the read fallback of last resort (Forge fails AND no snapshot stored)
+   and behind the ?src=live / ?src=legacy escape hatch.
 
    Reads are open to any signed-in user; writes require a writer (dev/admin)
    — enforced by RLS on report_data_cache (a non-writer's upsert is rejected
    even if they trigger this from the console).
 
-   NOTE: the feed URLs below are the single list used for the global refresh.
-   They are duplicated in each report's own page code (online-reports.html
-   REPORTS_DATA_URLS; national/commercial REPORT_DATA_URL) which still owns
-   its live-fetch fallback — keep the two in sync if a feed URL ever changes.
-   These Apps Script web apps are public GETs (not secrets), same as before.
+   NOTE: the feed URLs below back that last-resort fetchLive fallback. They
+   are duplicated in each report's own page code (online-reports.html
+   REPORTS_DATA_URLS; national/commercial REPORT_DATA_URL) — keep the two
+   in sync if a feed URL ever changes. These Apps Script web apps are
+   public GETs (not secrets), same as before.
    ════════════════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
@@ -76,9 +77,14 @@
     } finally { clearTimeout(to); }
   }
 
-  /* GLOBAL refresh — fetch EVERY feed fresh from Google and upsert each
-     into Supabase. One click covers all reports (regionals + national +
-     commercial). opts.onProgress(done, total, source, ok) fires per feed.
+  /* [DEPRECATED — Apps-Script-sourced] GLOBAL refresh — fetch EVERY feed
+     fresh from Google and upsert each into Supabase. Since the Forge
+     cutover NOTHING calls this: the Save-data buttons assemble from Forge
+     and the PUBLISH workflow runs refresh-snapshots-from-forge.mjs.
+     Kept only as an emergency way to repoint the snapshots at Apps Script
+     from a writer's console — and guarded below so a stray call can't
+     silently overwrite the Forge-built snapshots with stale Google data.
+     opts.onProgress(done, total, source, ok) fires per feed.
      Returns { ok, updated:[...sources], failed:[...'source (reason)'] }.
 
      SEQUENTIAL, not parallel: Google Apps Script queues concurrent calls
@@ -87,6 +93,15 @@
      time — with one retry — gives each feed its own clean window. */
   async function updateAllSnapshots(opts) {
     opts = opts || {};
+    /* Refuse unless explicitly acknowledged — this OVERWRITES the
+       Forge-built snapshots with Apps Script data. */
+    if (opts.iKnowThisWritesAppsScriptData !== true) {
+      console.error('[report-cache] updateAllSnapshots is deprecated (Apps-Script-sourced). ' +
+        'Snapshots are refreshed from Forge by the Save-data buttons and the PUBLISH workflow ' +
+        '(scripts/refresh-snapshots-from-forge.mjs). To force an Apps Script overwrite anyway, ' +
+        'call updateAllSnapshots({ iKnowThisWritesAppsScriptData: true }).');
+      return { ok: false, updated: [], failed: ['refused (pass { iKnowThisWritesAppsScriptData: true } to override)'] };
+    }
     var sources = Object.keys(FEEDS).filter(function (s) { return FEEDS[s]; });
     var total = sources.length, done = 0, updated = [], failed = [];
     for (var i = 0; i < sources.length; i++) {

@@ -16,13 +16,16 @@
      below so it acts as a base; regional inline rules still win conflicts. -->
 <link rel="stylesheet" href="../shared/report-edit.css?v=b223070e">
 <script src="../shared/theme.js?v=7d2772e3"></script>
-<!-- Report-data snapshot cache + global "Save data" refresh (window.PPReportCache).
-     Classic script so it's defined before the inline boot code runs; uses
-     window.sb only at call-time, so load order vs supabase-client is fine. -->
-<script src="../shared/report-cache.js?v=5edb9f7b"></script>
+<!-- Report-data snapshot cache (window.PPReportCache) — since the Forge cutover
+     the snapshot is the FALLBACK (Forge is the default source) and "Save data"
+     WRITES it from Forge. Classic script so it's defined before the inline boot
+     code runs; uses window.sb only at call-time, so load order vs
+     supabase-client is fine. -->
+<script src="../shared/report-cache.js?v=6cf08cbe"></script>
 <!-- Data Forge → feed-shape adapter. forge-report-starts sets per-region chart
      start years (window.ForgeReportStarts) and MUST load before the adapter, which
-     reads it. Used only with ?src=forge; harmless to load otherwise. -->
+     reads it. Forge is the DEFAULT source, so the adapter runs on every normal
+     load; ?src=live / ?src=legacy is the escape hatch that skips it. -->
 <script src="../shared/forge-report-starts.js?v=2b5f48e0"></script>
 <script src="../shared/forge-report-adapter.js?v=4ef9e390"></script>
 <script src="../shared/color-picker.js?v=a7ec7189" defer></script>
@@ -3812,7 +3815,7 @@
          to match the pattern in the other 3 tools. The pager keeps
          the rest of the tool chrome below. -->
     <!-- Refresh: clears the localStorage cluster cache and re-runs
-         liveBoot so the latest Google Sheet edits land immediately
+         liveBoot so the latest data (Forge by default) lands immediately
          (vs. waiting up to 15 min for the TTL to expire). The full-
          page #live-loading-overlay is reused for the visible "fetching
          latest data" cue. Sits LEFT of the region picker per UX
@@ -3820,12 +3823,12 @@
     <button id="reportsRefreshBtn" type="button"
             title="Reload report data from the stored snapshot"
             aria-label="Reload report data">↻</button>
-    <!-- Dev/Admin only: pull the latest data from Google and save it to
-         Supabase so reports + presentations load fast from the stored
-         snapshot instead of waiting on Apps Script. Run after the monthly
-         data update, or for a mid-month change. Tier-gated via .tier1-only. -->
+    <!-- Dev/Admin only: assemble the latest data from Data Forge and save
+         it to Supabase so the snapshot fallback + presentation embeds load
+         fast from the stored copy. Run after the monthly data update, or
+         for a mid-month change. Tier-gated via .tier1-only. -->
     <button id="reportsCacheUpdateBtn" type="button" class="tier1-only"
-            title="Dev/Admin: fetch the latest data from Google and save it to Supabase, so the reports and presentations load fast. Run this after the monthly data update, or for any mid-month change.">⤓ Save data</button>
+            title="Dev/Admin: assemble the latest data from Data Forge and save it to Supabase, so the reports and presentations load fast. Run this after the monthly data update, or for any mid-month change.">⤓ Save data</button>
     <select id="region-select" title="Switch region">
       <!-- options injected at boot from REGIONS -->
     </select>
@@ -5192,21 +5195,23 @@ function liveDataWriteCache(cluster, data) {
 }
 
 /* ═════════════════════════════════════════════════════════════════════
-   SUPABASE SNAPSHOT CACHE — the monthly stored copy
+   SUPABASE SNAPSHOT CACHE — the stored fallback copy
    ─────────────────────────────────────────────────────────────────────
-   The Apps Script feeds cold-start at 10-25 s per cluster, which is the
-   bulk of the report's load time (regionals fetch TWO clusters). Since the
-   data only changes monthly, we read a stored copy from Supabase instead
-   of phoning Google. The cache read/write + the GLOBAL "Save data" refresh
-   live in shared/report-cache.js (window.PPReportCache, keyed by `source`
-   = cluster slug); this page just layers its localStorage cache in front.
+   Since the Forge cutover this snapshot is the FALLBACK, not the primary:
+   normal loads read Forge directly (see PP_FORGE_SRC below) and only fall
+   back to the snapshot, then the legacy Apps Script feed, if Forge fails.
+   The "Save data" button + the PUBLISH workflow now WRITE the snapshot
+   from Forge. The cache read/write lives in shared/report-cache.js
+   (window.PPReportCache, keyed by `source` = cluster slug); this page
+   just layers its localStorage cache in front.
    ═════════════════════════════════════════════════════════════════════ */
 
-/* The monthly PDF renderer opens reports with ?fresh=1 so it always
-   captures the latest Google data (it runs on the 12th, before the
-   ~13th-14th snapshot refresh). EVERYTHING else — including the
-   presentation embed, which uses exportMode=1 — reads the fast Supabase
-   snapshot. So the bypass is keyed to ?fresh=1, NOT exportMode. */
+/* The monthly PDF renderer opens reports with ?fresh=1, which skips the
+   snapshot step in the fallback chain. On the Forge-default path it's a
+   no-op (PDFs capture the last-PUBLISHed mart — correct and intended);
+   it only matters on the legacy ?src=live path / when Forge is
+   unreadable. The presentation embed (exportMode=1, no fresh flag) keeps
+   the snapshot fallback — the bypass is keyed to ?fresh=1, NOT exportMode. */
 const PP_FORCE_FRESH = (function () {
   try { return new URLSearchParams(location.search).get('fresh') === '1'; }
   catch (_) { return false; }
@@ -10674,12 +10679,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  /* Dev/Admin "⤓ Save data": refresh the Supabase snapshot from Google.
-     This is the slow step (fetches every cluster's live feed), so it
-     happens here, off-stage, on an explicit click — never during a
-     viewer's load. Afterwards every report + presentation reads the fast
-     stored copy. The write is RLS-protected (is_writer), so a non-writer
-     who forces the button via the console still can't persist anything. */
+  /* Dev/Admin "⤓ Save data": refresh the Supabase snapshot from Data Forge
+     (the rdp_report_feed mart, reshaped per cluster — no Apps Script
+     involved). Happens here, off-stage, on an explicit click — never during
+     a viewer's load. Afterwards the snapshot fallback + presentation embeds
+     read the fresh stored copy. The write is RLS-protected (is_writer), so a
+     non-writer who forces the button via the console still can't persist
+     anything. */
   const cacheBtn = document.getElementById('reportsCacheUpdateBtn');
   if (cacheBtn) {
     const cacheBtnLabel = cacheBtn.textContent;
