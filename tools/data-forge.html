@@ -70,6 +70,8 @@
   .df-freshbanner{ display:flex; align-items:center; gap:9px; padding:11px 15px; border-radius:12px; margin-top:22px; font-size:.82rem; font-weight:700; }
   .df-freshbanner.ok{ background:rgba(22,179,100,.1); color:#16b364; border:1px solid rgba(22,179,100,.3); }
   .df-freshbanner.warn{ background:rgba(245,166,35,.1); color:#d98a00; border:1px solid rgba(245,166,35,.4); }
+  .df-freshbanner.err{ background:rgba(239,68,68,.1); color:#ef4444; border:1px solid rgba(239,68,68,.4); }
+  .df-freshbanner.sub{ font-weight:600; font-size:.76rem; padding:7px 15px; margin-top:14px; }   /* subtle one-liner (pipeline health) */
   /* gathering-method group headers (span the full grid width) */
   .df-group-head{ grid-column:1/-1; display:flex; align-items:center; gap:11px; margin-top:18px; padding-bottom:10px; border-bottom:1px solid var(--border); }
   .df-group-head:first-child{ margin-top:2px; }
@@ -675,13 +677,19 @@ function freshInfo(c, st, manualDates){
   if (c.key === 'computed_metrics') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Recomputed from the raw data by the PUBLISH mart rebuild — freshness follows the raw points">live</span>' };
   // A manual "no new data" check (076) resets the freshness clock without changing
   // the data — treat the check date as a refresh signal alongside the real one.
-  const dCheck = ageDays(st.checked_at);
+  // The check itself EXPIRES after 40 days: an old ✓ must not keep a card looking
+  // verified forever, so past that it's ignored and the true data age shows again.
+  const dCheckRaw = ageDays(st.checked_at);
+  let dCheck = dCheckRaw;
+  if (dCheck != null && dCheck > 40) dCheck = null;
   if (c.key === 'commodity_prices') {
     // Static/seeded — no age of its own, but the user still checks marketindex each
-    // month; once confirmed, show the check age instead of a bare "static".
-    if (dCheck == null) return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Seeded once; static by design (only Iron Ore auto-updates, via its own FRED data point)">static</span>' };
-    const scls = dCheck <= 40 ? 'ok' : dCheck <= 75 ? 'aging' : 'stale';
-    return { cls: scls, chip: '<span class="df-fresh ' + scls + '" title="Checked ' + dCheck + ' days ago — you confirmed no new annual data (static source)">checked · ' + dCheck + 'd</span>' };
+    // month; show the check age. Uses the RAW (un-expired) age so an old check
+    // escalates to aging/stale here (nagging the monthly re-check) instead of
+    // silently reverting to "static".
+    if (dCheckRaw == null) return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Seeded once; static by design (only Iron Ore auto-updates, via its own FRED data point)">static</span>' };
+    const scls = dCheckRaw <= 40 ? 'ok' : dCheckRaw <= 75 ? 'aging' : 'stale';
+    return { cls: scls, chip: '<span class="df-fresh ' + scls + '" title="Checked ' + dCheckRaw + ' days ago — you confirmed no new annual data (static source)">checked · ' + dCheckRaw + 'd</span>' };
   }
   const manual = (c.key === 'cotality' || c.key === 'arrears' || c.key === 'industry' || c.key === 'commercial' || c.key === 'demand_inputs');
   const iso = manual ? (manualDates[c.key] || st.updated_at || st.last_ok_at) : (st.last_ok_at || st.updated_at);
@@ -775,6 +783,17 @@ async function loadStatus(){
     const { data } = await window.sb.from('forge_data_status').select('*');
     statusMap = Object.fromEntries((data || []).map(r => [r.data_key, r]));
   } catch (e) { /* show cards anyway */ }
+  // Workflow heartbeat rows: GATHER / PUBLISH upsert their own status under
+  // data_key 'pipeline_*'. Pull them out FIRST — they're not data points, so
+  // they must never feed the per-card statusMap / aging-stale lists.
+  const pipe = {};
+  for (const k of Object.keys(statusMap)) if (k.startsWith('pipeline_')) { pipe[k] = statusMap[k]; delete statusMap[k]; }
+  // The Commercial card's 5 automated feeders report under their own keys —
+  // roll an error in any of them up to the card (otherwise a failed commercial
+  // ingest shows no error anywhere on the grid).
+  const COMM_FEEDS = ['retail_trade', 'building_approvals_total', 'corporate_bond_yield', 'govt_bond_yield', 'term_deposit_1y'];
+  const commErr = COMM_FEEDS.map(k => statusMap[k]).find(r => r && r.status === 'error');
+  if (commErr) statusMap.commercial = Object.assign({}, statusMap.commercial, { status: 'error', message: (commErr.label || commErr.data_key) + ': ' + (commErr.message || 'fetch failed') });
   // manual stores carry their freshness on the store row (not always forge_data_status)
   const manualDates = {};
   try {
@@ -813,7 +832,7 @@ async function loadStatus(){
       + '<span class="meta">' + ingestChip(c.ingest) + fresh.chip + esc(meta) + '</span></span></button>';
     const checkRow = canCheck
       ? '<div class="df-checkrow"><button type="button" class="df-checkbtn" data-check="' + esc(c.key) + '" data-label="' + esc(c.label) + '"'
-        + ' title="You checked the source and there is no new data — reset the freshness clock to today. This does NOT change the data.">✓ No new data</button></div>'
+        + ' title="You checked the source and there is no new data — reset the freshness clock to today. This does NOT change the data. The check expires after 40 days, then the card shows its true data age again.">✓ No new data</button></div>'
       : '';
     return '<div class="df-cluster-wrap">' + card + checkRow + '</div>';
   };
@@ -825,6 +844,40 @@ async function loadStatus(){
       + '<span class="gct">' + cards.length + '</span></div>'
       + cards.map(cardHtml).join('');
   }).join('');
+  // Pipeline health — the GATHER/PUBLISH heartbeat rows pulled out above.
+  // Red if either failed · amber if GATHER outran PUBLISH by >2 days (mart is
+  // pending) · else a subtle green one-liner.
+  const pg = pipe.pipeline_gather, pp = pipe.pipeline_publish;
+  // scan EVERY pipeline_* row (incl. the watchdog's verdict) — hardcoding two
+  // keys would leave a red watchdog invisible, its whole reason to exist.
+  const PIPE_LABEL = { pipeline_gather: 'GATHER', pipeline_publish: 'PUBLISH', pipeline_watchdog: 'WATCHDOG' };
+  const failed = Object.values(pipe).filter(r => r && r.status === 'error');
+  let pipeHtml = '';
+  if (failed.length) {
+    pipeHtml = '<div class="df-freshbanner err">⛔ Pipeline failed: '
+      + failed.map(r => '<b>' + (PIPE_LABEL[r.data_key] || esc(r.data_key)) + '</b>' + (r.message ? ' — ' + esc(r.message) : '')).join(' &nbsp;·&nbsp; ')
+      + '</div>';
+  } else if (pg && pg.last_ok_at && (!pp || !pp.last_ok_at || Date.parse(pg.last_ok_at) - Date.parse(pp.last_ok_at) > 2 * 86400000)) {
+    pipeHtml = '<div class="df-freshbanner warn">⚠️ <b>PUBLISH is pending</b> — GATHER ran ' + esc(fmtDate(pg.last_ok_at))
+      + ' but the mart was last published ' + (pp && pp.last_ok_at ? esc(fmtDate(pp.last_ok_at)) : '<b>never</b>')
+      + ' — run “Data Forge — 2/ PUBLISH” once the data is confirmed.</div>';
+  } else if (pg || pp) {
+    const ago = r => { const d = r ? ageDays(r.last_ok_at) : null; return d == null ? '—' : d + 'd ago'; };
+    pipeHtml = '<div class="df-freshbanner ok sub">pipeline health — GATHER ' + ago(pg) + ' · PUBLISH ' + ago(pp) + '</div>';
+  }
+  // Stale-fallback visibility — enrich-marts flags regions it had to serve from
+  // the old rdp copy (payload.extras._sources = 'rdp_stale') because the forge
+  // store lacks them. Fail-soft: the grid must render even if this query fails.
+  let staleSrcHtml = '';
+  try {
+    const { data: feed } = await window.sb.from('rdp_report_feed').select('region_slug,src:payload->extras->_sources');
+    const pyr = [], ind = [];
+    for (const r of (feed || [])) { const s = r.src || {}; if (s.pyramid === 'rdp_stale') pyr.push(r.region_slug); if (s.industry === 'rdp_stale') ind.push(r.region_slug); }
+    if (pyr.length || ind.length) staleSrcHtml = '<div class="df-freshbanner warn">⚠️ Regions served from the stale rdp fallback: '
+      + [pyr.length ? '<b>pyramid:</b> ' + pyr.map(esc).join(', ') : '',
+         ind.length ? '<b>industry:</b> ' + ind.map(esc).join(', ') : ''].filter(Boolean).join(' &nbsp;·&nbsp; ')
+      + ' — update the store in the Population Pyramid / Industry card.</div>';
+  } catch (e) { /* banner is best-effort */ }
   // Name the offenders so nobody has to hunt for the amber/red chips.
   const banner = (stalePts.length || agingPts.length)
     ? '<div class="df-freshbanner warn">⚠️ '
@@ -832,7 +885,7 @@ async function loadStatus(){
          agingPts.length ? '<b>Aging:</b> ' + agingPts.map(esc).join(', ') : ''].filter(Boolean).join(' &nbsp;·&nbsp; ')
       + ' — refresh these before relying on the reports.</div>'
     : '<div class="df-freshbanner ok">✓ All data points current — every source refreshed within ~40 days.</div>';
-  el.innerHTML = banner + groupsHtml;
+  el.innerHTML = pipeHtml + banner + staleSrcHtml + groupsHtml;
   el.querySelectorAll('.df-cluster').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
   el.querySelectorAll('.df-checkbtn').forEach(b => b.addEventListener('click', ev => { ev.stopPropagation(); markNoNewData(b); }));
 }
@@ -1776,9 +1829,16 @@ function parseArrearsSheet(wb){
     for (let r = hi + 1; r < rows.length; r++){
       const mo = arrSerialToMonth(rows[r][dateCol]); if (!mo) continue;
       months.push(mo);
-      for (const col of cols){ const cell = rows[r][col.c]; const v = Number(cell); regions[col.slug].values.push((cell == null || cell === '' || isNaN(v)) ? null : +(Math.abs(v) <= 1 ? v * 100 : v).toFixed(2)); }
+      for (const col of cols){ const cell = rows[r][col.c]; const v = Number(cell); const bad = (cell == null || cell === '' || isNaN(v)); if (!bad) col.lastRaw = v; regions[col.slug].values.push(bad ? null : +(Math.abs(v) <= 1 ? v * 100 : v).toFixed(2)); }
     }
-    if (months.length >= 6) return { months, regions };
+    if (months.length >= 6){
+      // Mixed-scale guard: the abs(v)<=1 → ×100 heuristic is PER CELL, so a sheet
+      // with some columns in percent (0.83) and others in decimal (0.0083) would
+      // silently mis-scale. Flag it when the columns' latest raw values straddle 1.
+      const lasts = cols.map(c => c.lastRaw).filter(v => v != null);
+      const mixed = lasts.some(v => Math.abs(v) <= 1) && lasts.some(v => Math.abs(v) > 1);
+      return { months, regions, mixed };
+    }
   }
   return null;
 }
@@ -1790,9 +1850,12 @@ async function importArrearsFiles(files){
   let parsed = null, used = '';
   for (const f of files){ try { const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' }); const p = parseArrearsSheet(wb); if (p){ parsed = p; used = f.name; break; } } catch (err){ /* try next */ } }
   if (!parsed){ msg.innerHTML = '<div class="df-banner warn">No Arrears sheet recognised — need a monthly date column plus a “National” column and the state columns.</div>'; return; }
+  // Mixed-scale warning (parse-time flag, display only — not persisted with the data).
+  const mixedWarn = parsed.mixed ? '<div class="df-banner warn">⚠️ Mixed value scales detected — some columns end ≤1 (decimal?) and others &gt;1 (percent?), so the per-cell ×100 normalisation may have mis-scaled a series. Check the source sheet.</div>' : '';
+  delete parsed.mixed;
   await saveArrears(parsed);
   const nm = parsed.months.length;
-  msg.innerHTML = '<div class="df-banner ok">Saved · ' + Object.keys(parsed.regions).length + ' series × ' + nm + ' months (' + monthLabelArr(parsed.months[0]) + ' → ' + monthLabelArr(parsed.months[nm - 1]) + ') from <b>' + esc(used) + '</b>.</div>';
+  msg.innerHTML = mixedWarn + '<div class="df-banner ok">Saved · ' + Object.keys(parsed.regions).length + ' series × ' + nm + ' months (' + monthLabelArr(parsed.months[0]) + ' → ' + monthLabelArr(parsed.months[nm - 1]) + ') from <b>' + esc(used) + '</b>.</div>';
   renderArrears(parsed, { uploaded_at: new Date().toISOString() });
 }
 async function saveArrears(data){
