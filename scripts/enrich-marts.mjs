@@ -117,12 +117,16 @@ function vacancySnapshot() {
 }
 
 // Perth-only report charts (p32 Iron Ore Price, p33 Mineral Exploration). The
-// report's annual ironOre = each year's ANNUAL AVERAGE of the monthly price
-// (verified vs the Perth tab: 2004 16.39, 2024 108.54 exact, others within ~1%);
-// mineral exploration = WA quarterly ($m). Data in rdp_raw_series.
+// report's annual ironOre = each year's ANNUAL AVERAGE of the monthly price.
+// Source = the GLOBAL IMF iron-ore price (FRED PIORECRUSDM) — the same live
+// series the Data Forge "Iron Ore Price" card shows. Iron ore is a WORLD price,
+// not Perth-specific; it lives in the Perth report because WA is the iron-ore
+// economy. (Was previously wired to a separate `mining_iron_ore` marketindex
+// annual series that stopped at 2025 and didn't match the card — hence the
+// "2026 missing / not matching" bug.) mineral exploration = WA quarterly ($m).
 const perthSeries = { iron: {}, mineral: [] };
 {
-  const { data: ir } = await sb.from('rdp_raw_series').select('period,value').eq('region_slug', 'perth').eq('metric', 'iron_ore_price').eq('freq', 'M').order('period');
+  const { data: ir } = await sb.from('rdp_raw_series').select('period,value').eq('region_slug', 'global').eq('metric', 'iron_ore_price').eq('freq', 'M').order('period');
   const ironM = {};
   for (const r of (ir || [])) { const y = +String(r.period).slice(0, 4); (ironM[y] || (ironM[y] = [])).push(Number(r.value)); }
   for (const y in ironM) perthSeries.iron[y] = ironM[y].reduce((a, b) => a + b, 0) / ironM[y].length;
@@ -227,6 +231,11 @@ for (const f of feeds) {
   if (slug === 'perth') {  // Perth-only report charts (p32 Iron Ore Price, p33 Mineral Exploration)
     const iy = Object.keys(perthSeries.iron).map(Number).sort((a, b) => a - b);
     if (iy.length) extras.iron_ore = { years: iy, values: iy.map(y => perthSeries.iron[y]) };
+    // The p32 chart reads payload.years[].iron_ore (feed field `ironOre`), which
+    // build-report-feed populates from the annual `mining_iron_ore` marketindex
+    // series (stops at 2025). Overwrite it with the annualised GLOBAL IMF/FRED
+    // price so the report matches the Data Forge card and carries the latest year.
+    if (iy.length) for (const yr of (f.payload.years || [])) { const v = perthSeries.iron[yr.year]; yr.iron_ore = (v != null) ? v : null; }
     if (perthSeries.mineral.length) extras.mineral_exploration = { quarters: perthSeries.mineral.map(x => x.period), values: perthSeries.mineral.map(x => x.value) };
   }
   const payload = { ...f.payload, extras };
