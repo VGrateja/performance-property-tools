@@ -2610,14 +2610,30 @@ async function appendMonthlyFromCotality(result){
     if (!Object.keys(by).length) return;
     const { data } = await window.sb.from('forge_monthly_price').select('data').eq('id', 'latest').maybeSingle();
     const store = (data && data.data && data.data.regions) ? data.data : { regions: {} };
-    let touched = 0;
+    // the month AFTER `mo` (handles year rollover) — used by the anti-clobber guard below
+    const nextMo = (m) => { const [yy, mm] = m.split('-').map(Number); const d = new Date(Date.UTC(yy, mm, 1)); return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-01'; };
+    let touched = 0, shifted = 0;
     for (const [sl, v] of Object.entries(by)){
       const reg = store.regions[sl]; if (!reg) continue;     // only update regions we already track
       const idx = reg.months.indexOf(mo);
-      if (idx >= 0){ if (v.h != null) reg.h[idx] = v.h; if (v.u != null) reg.u[idx] = v.u; }
+      if (idx >= 0){
+        // Anti-clobber guard: `mo` comes from the month selector (RV_STATE.monthEnd),
+        // which can lag the actual drop. If it points at the LATEST committed month and
+        // the incoming medians differ materially, that's a new month misfiled onto an old
+        // one — append it as the NEXT month instead of silently overwriting real data.
+        const isLast = idx === reg.months.length - 1;
+        const differs = (v.h != null && reg.h[idx] != null && Math.abs(v.h - reg.h[idx]) > 1) || (v.u != null && reg.u[idx] != null && Math.abs(v.u - reg.u[idx]) > 1);
+        if (isLast && differs){
+          const nmo = nextMo(mo); const j = reg.months.indexOf(nmo);
+          if (j >= 0){ if (v.h != null) reg.h[j] = v.h; if (v.u != null) reg.u[j] = v.u; }
+          else { reg.months.push(nmo); reg.h.push(v.h ?? null); reg.u.push(v.u ?? null); }
+          shifted++;
+        } else { if (v.h != null) reg.h[idx] = v.h; if (v.u != null) reg.u[idx] = v.u; }
+      }
       else { reg.months.push(mo); reg.h.push(v.h ?? null); reg.u.push(v.u ?? null); }
       touched++;
     }
+    if (shifted) console.warn('[monthly-price] month selector (' + mo + ') lagged the drop — appended ' + shifted + ' region(s) to ' + nextMo(mo) + ' instead of overwriting ' + mo + '. If this was a correction to ' + mo + ', set the month selector to ' + mo + ' and re-drop.');
     if (touched){ let email = null; try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch {}
       await window.sb.from('forge_monthly_price').upsert({ id: 'latest', data: store, updated_at: new Date().toISOString(), uploaded_by: email }, { onConflict: 'id' }); }
   } catch (_) { /* never block the Cotality import */ }
