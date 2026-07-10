@@ -110,7 +110,7 @@ try {
 } catch (e) { console.error('\n✗ IVI Regions parse failed:', e.message); await recordStatus('job_creation_index', 'Job Creation Index', 'error', `parse failed: ${e.message}`); process.exit(1); }
 
 // ── 2) National Internet Job Vacancies — Seasonally Adjusted count + index ──
-const natRows = [];
+const natRows = []; let natErr = null;
 try {
   const wb = XLSX.read(stBuf, { type: 'buffer' });
   const pull = (sheet, metric) => {
@@ -122,7 +122,7 @@ try {
   const okCount = pull('Seasonally Adjusted', 'internet_vacancies');
   const okIndex = pull('Seasonally Adjusted Index', 'internet_vacancies_index');
   if (!okCount || !okIndex) throw new Error('AUSTRALIAN TOTAL row not found in states file');
-} catch (e) { console.error('\n✗ States parse failed:', e.message); await recordStatus('internet_vacancies', 'Internet Job Vacancies (National)', 'error', `parse failed: ${e.message}`); }
+} catch (e) { console.error('\n✗ States parse failed:', e.message); natErr = `national internet-vacancies parse failed: ${e.message}`; await recordStatus('national_vacancies', 'National Job Vacancies', 'error', natErr); }
 
 // ── report + completeness ──
 const slugs = Object.keys(CITY_MAP);
@@ -135,13 +135,17 @@ console.log('\nNational (latest): SA count =', natLatest.internet_vacancies && n
 if (missing.length) console.error(`\n✗ COMPLETENESS FAIL: missing ${latestM} for ${missing.join(', ')}`);
 else console.log(`\n✓ all ${slugs.length} cities have ${latestM}.`);
 
-if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert into rdp_raw_series.'); process.exit(missing.length ? 1 : 0); }
+if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert into rdp_raw_series.'); process.exit((missing.length || natErr) ? 1 : 0); }
 
 const all = rows.concat(natRows);
 let written = 0;
 for (let k = 0; k < all.length; k += 500) { const chunk = all.slice(k, k + 500); const { error } = await sb.from('rdp_raw_series').upsert(chunk, { onConflict: 'source,region_slug,metric,freq,period' }); if (error) { console.error('\n', error.message); process.exit(1); } written += chunk.length; }
 await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `JSA jobcreation ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: missing.length ? 'partial' : 'ok', notes: `JSA IVI: job_creation_index (${slugs.length} cities) + national internet vacancies (SA count + index), through ${latestM}${missing.length ? '; MISSING: ' + missing.join(', ') : ''}` });
+// Each card reflects ITS OWN data: job_creation_index = the 36 cities (missing
+// months), national_vacancies = the national parse (natErr). Pinning natErr on
+// job_creation_index would flag a card whose data succeeded while the failing
+// one stayed green.
 await recordStatus('job_creation_index', 'Job Creation Index', missing.length ? 'error' : 'ok', missing.length ? `Missing ${latestM} for ${missing.join(', ')}` : `Current through ${latestM} (JSA IVI, ${slugs.length} cities).`, { row_count: rows.length, region_count: slugs.length, latest_year: +latestM.slice(0, 4) });
-await recordStatus('national_vacancies', 'National Job Vacancies', 'ok', `Internet vacancies current through ${latestM} (JSA, seasonally adjusted).`, { latest_year: +latestM.slice(0, 4) });
+await recordStatus('national_vacancies', 'National Job Vacancies', natErr ? 'error' : 'ok', natErr || `Internet vacancies current through ${latestM} (JSA, seasonally adjusted).`, { latest_year: +latestM.slice(0, 4) });
 console.log(`\n✓ Upserted ${written} rows (job_creation_index + national internet vacancies).`);
-process.exit(missing.length ? 1 : 0);
+process.exit((missing.length || natErr) ? 1 : 0);

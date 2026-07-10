@@ -44,19 +44,19 @@ function parseVacancy(html) {
   return { vr: Math.round(vr * 100 * 100) / 100, asOf: last.year + '-' + String(last.month).padStart(2, '0') };
 }
 
-const results = {}; let asOf = null, ok = 0, fail = 0;
+const results = {}; let asOf = null, ok = 0; const failed = [];
 for (const r of SQM_REGIONS) {
   try {
     const v = parseVacancy(await fetchHtml(sqmUrl('vacancy-rates', r.qs)));
-    if (!v) { console.log(`  ${r.slug}: no data parsed`); fail++; continue; }
+    if (!v) { console.log(`  ${r.slug}: no data parsed`); failed.push(r.slug); continue; }
     results[r.slug] = v;
     if (asOf == null) asOf = v.asOf;
     ok++;
     console.log(`  ${r.slug}: VR ${v.vr}% (as of ${v.asOf})`);
-  } catch (e) { console.log(`  ${r.slug}: ERROR ${e.message}`); fail++; }
+  } catch (e) { console.log(`  ${r.slug}: ERROR ${e.message}`); failed.push(r.slug); }
   await sleep(500);
 }
-console.log(`\nParsed ${ok}/${SQM_REGIONS.length} regions (${fail} failed). As of: ${asOf || 'unknown'}`);
+console.log(`\nParsed ${ok}/${SQM_REGIONS.length} regions (${failed.length} failed). As of: ${asOf || 'unknown'}`);
 
 // forge_data_status under 'demand_inputs' — a broken SQM run flags the Demand
 // Score Dashboard Data card red in the Data Forge UI (not just the Actions log).
@@ -83,5 +83,5 @@ store.vr_as_of = asOf || null;
 const { error } = await sb.from('forge_demand_inputs').upsert({ id: 'latest', data: store, updated_at: nowIso, uploaded_at: nowIso, uploaded_by: 'ingest-sqm-vacancy' }, { onConflict: 'id' });
 if (error) { console.error('Upsert failed:', error.message); await recordStatus('error', 'SQM vacancy upsert failed: ' + error.message); process.exit(1); }
 try { await sb.from('rdp_runs').insert({ dataset: 'sqm_vacancy', source_month: asOf || nowIso.slice(0, 7), row_count: ok, status: 'ok', notes: `${ok} regions; SQM current vacancy rate %` }); } catch {}
-await recordStatus(fail > 5 ? 'error' : 'ok', `SQM vacancy: ${ok}/${SQM_REGIONS.length} regions (as of ${asOf || 'unknown'})${fail ? ', ' + fail + ' failed' : ''}`);
+await recordStatus(failed.length > 5 ? 'error' : 'ok', `SQM vacancy: ${ok}/${SQM_REGIONS.length} regions (as of ${asOf || 'unknown'})${failed.length ? ', failed: ' + failed.join(', ') : ''}`);
 console.log(`\n✓ Merged SQM vacancy for ${ok} regions into forge_demand_inputs (as of ${asOf || 'unknown'}).`);

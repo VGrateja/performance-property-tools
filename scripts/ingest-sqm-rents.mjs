@@ -72,14 +72,14 @@ function getWeekEnding(html) {
 }
 const round2 = n => Math.round(n * 100) / 100;
 
-const results = {}; let weekEnding = null, ok = 0, fail = 0;
+const results = {}; let weekEnding = null, ok = 0; const failed = [];
 for (let i = 0; i < REGIONS.length; i++) {
   const [slug, url] = REGIONS[i];
   try {
     const html = await fetchHtml(url);
     if (weekEnding == null) weekEnding = getWeekEnding(html);
     const d = parseRegionData(html);
-    if (!d) { console.log(`  ${slug}: no data parsed`); fail++; continue; }
+    if (!d) { console.log(`  ${slug}: no data parsed`); failed.push(slug); continue; }
     const h3 = d.houseRent / Math.pow(1 + d.house3YrPa / 100, 3);
     const u3 = d.unitRent / Math.pow(1 + d.unit3YrPa / 100, 3);
     results[slug] = {
@@ -90,11 +90,11 @@ for (let i = 0; i < REGIONS.length; i++) {
     ok++;
     console.log(`  ${slug}: H $${d.houseRent} U $${d.unitRent} (3yr-ago H $${round2(h3)} U $${round2(u3)})`);
   } catch (e) {
-    console.log(`  ${slug}: ERROR ${e.message}`); fail++;
+    console.log(`  ${slug}: ERROR ${e.message}`); failed.push(slug);
   }
   await sleep(500);
 }
-console.log(`\nParsed ${ok}/${REGIONS.length} regions (${fail} failed). Week ending: ${weekEnding || 'unknown'}`);
+console.log(`\nParsed ${ok}/${REGIONS.length} regions (${failed.length} failed). Week ending: ${weekEnding || 'unknown'}`);
 
 // forge_data_status under 'demand_inputs' so a broken SQM run flags the Demand
 // Score Dashboard Data card red in the Data Forge UI (not just the Actions log).
@@ -122,5 +122,5 @@ store.rent_week_ending = weekEnding || null;
 const { error } = await sb.from('forge_demand_inputs').upsert({ id: 'latest', data: store, updated_at: nowIso, uploaded_at: nowIso, uploaded_by: 'ingest-sqm-rents' }, { onConflict: 'id' });
 if (error) { console.error('Upsert failed:', error.message); await recordStatus('error', 'SQM rents upsert failed: ' + error.message); process.exit(1); }
 try { await sb.from('rdp_runs').insert({ dataset: 'sqm_rents', source_month: weekEnding || nowIso.slice(0, 7), row_count: ok, status: 'ok', notes: `${ok} regions; SQM weekly rents (house & unit) + 3yr-ago derived` }); } catch {}
-await recordStatus(fail > 5 ? 'error' : 'ok', `SQM rents: ${ok}/${REGIONS.length} regions (week ending ${weekEnding || 'unknown'})${fail ? ', ' + fail + ' failed' : ''}`);
+await recordStatus(failed.length > 5 ? 'error' : 'ok', `SQM rents: ${ok}/${REGIONS.length} regions (week ending ${weekEnding || 'unknown'})${failed.length ? ', failed: ' + failed.join(', ') : ''}`);
 console.log(`\n✓ Merged SQM rents for ${ok} regions into forge_demand_inputs (week ending ${weekEnding || 'unknown'}).`);
