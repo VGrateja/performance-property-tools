@@ -4337,7 +4337,6 @@ const REGIONAL_REGIONS = {
   albury:           { name: 'Albury',          state: 'NSW', cluster: 'nsw' },
   'central-coast':  { name: 'Central Coast',   state: 'NSW', cluster: 'nsw' },
   'coffs-harbour':  { name: 'Coffs Harbour',   state: 'NSW', cluster: 'nsw' },
-  dubbo:            { name: 'Dubbo',           state: 'NSW', cluster: 'nsw' },
   newcastle:        { name: 'Newcastle',       state: 'NSW', cluster: 'nsw' },
   orange:           { name: 'Orange',          state: 'NSW', cluster: 'nsw' },
   'port-macquarie': { name: 'Port Macquarie',  state: 'NSW', cluster: 'nsw' },
@@ -4351,6 +4350,7 @@ const REGIONAL_REGIONS = {
   wodonga:          { name: 'Wodonga',         state: 'VIC', cluster: 'vicwatas' },
   bunbury:          { name: 'Bunbury',         state: 'WA',  cluster: 'vicwatas' },
   rockingham:       { name: 'Rockingham',      state: 'WA',  cluster: 'vicwatas' },
+  mandurah:         { name: 'Mandurah',        state: 'WA',  cluster: 'vicwatas' },
   launceston:       { name: 'Launceston',      state: 'TAS', cluster: 'vicwatas' },
 };
 const REGIONAL_CLUSTER_ORDER  = ['capital', 'qld', 'nsw', 'vicwatas'];
