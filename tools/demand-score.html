@@ -718,7 +718,8 @@ let state = {
   selected: null,
   view: "table",        // "table" | "grid" | "map" | "compare"
   compare: [],          // array of market names (max 10)
-  prevSnapshot: null,   // latest forge_demand_snapshots version = the "prev" baseline for the compare view
+  snapshots: [],        // all captured monthly snapshots (forge_demand_snapshots, non-rvd), newest first
+  compareMonth: "live", // which month the compare view shows: "live" (uncaptured) or a version id "YYYY-MM"
   houseData: null,
   unitData: null,
   // Wage-growth + PP variable-rate values per property type. Mirrors
@@ -2265,7 +2266,7 @@ function render() {
       });
       body.appendChild(grid);
     } else if (view === "compare") {
-      body.appendChild(compareView(filtered, tab));
+      body.appendChild(compareView(tab));
     }
   }
 
@@ -2286,16 +2287,24 @@ function render() {
    stored snapshot (forge_demand_snapshots), with the diff, before the numbers
    are pushed to Runway v Demand. Mirrors the workbook's "Prev - Cur" tab.
    ============================================================================ */
-async function loadPrevSnapshot() {
+async function loadSnapshots() {
   try {
     for (let i = 0; i < 40 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
     if (!window.sb) return;
-    // exclude the 'rvd-*' Runway-v-Demand push mirrors — they'd sort above every
-    // capture version and permanently hijack the compare baseline
-    const { data } = await window.sb.from("forge_demand_snapshots").select("version,label,data").not("version", "like", "rvd-%").order("version", { ascending: false }).limit(1).maybeSingle();
-    if (data) { state.prevSnapshot = data; if (state.view === "compare") render(); }
+    // ALL captured monthly snapshots, newest first. Exclude the 'rvd-*' Runway-v-Demand
+    // push mirrors — they're a different payload shape and not part of the month history.
+    const { data } = await window.sb.from("forge_demand_snapshots").select("version,label,data").not("version", "like", "rvd-%").order("version", { ascending: false });
+    state.snapshots = data || [];
+    if (state.view === "compare") render();
   } catch (e) { /* table may not exist yet */ }
 }
+
+// per-market snapshot shape (what a capture freezes + what the compare reads back)
+const _snapMap = arr => { const o = {}; (arr || []).forEach(m => { const s = _fSlug(m.name); if (s) o[s] = { ds: m.demandScore, rw: m.runway, pop: m.population, listings: m.listings, avr: m.adjustedVR, rg: m.rentalGrowth36m, median: m.medianPrice }; }); return o; };
+const _MONS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const _monthVer = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+const _monthLabel = d => _MONS[d.getMonth()] + " " + d.getFullYear();
+const _labelToVer = s => { const m = String(s).toLowerCase().match(/([a-z]{3,})\.?\s+(\d{4})/); if (m) { const mi = _MONS.findIndex(x => x.toLowerCase() === m[1].slice(0, 3)); if (mi >= 0) return m[2] + "-" + String(mi + 1).padStart(2, "0"); } const m2 = String(s).match(/(\d{4})-(\d{2})/); return m2 ? m2[1] + "-" + m2[2] : null; };
 
 /* Custom hover tooltip — native title="" doesn't render reliably under the
    fit-screen CSS `zoom` on <html>, so we draw our own. Positions in CSS px by
@@ -2333,34 +2342,72 @@ function _cmpDelta(cur, prev, kind) {
   return { txt, col: flat ? "var(--ds-fg-faint)" : (d > 0 ? "#16a34a" : "#dc2626") };
 }
 
-function compareView(rowsIn, tab) {
-  const prev = state.prevSnapshot;
-  if (!prev) return h("div", { style: { padding: "48px 20px", textAlign: "center", color: "var(--ds-fg-muted)", fontSize: "13px", lineHeight: "1.6" } },
-    "No previous snapshot stored yet.", h("br"), "Apply migration 065 and seed it — e.g. node scripts/seed-demand-snapshot-from-sheet.mjs --write");
-  const prevMap = (prev.data && prev.data[tab === "Houses" ? "houses" : "units"]) || {};
+function compareView(tab) {
+  const snaps = state.snapshots || [];
   const canWrite = (typeof isAdmin === "function" && isAdmin());
+  const key = tab === "Houses" ? "houses" : "units";
+  const now = new Date();
   const wrap = h("div", {});
+
+  // slug → {name, state} from the live markets (always loaded) so stored snapshots render with names
+  const nameBySlug = {};
+  (state.houseData || []).concat(state.unitData || []).forEach(m => { const s = _fSlug(m.name); if (s && !nameBySlug[s]) nameBySlug[s] = { name: m.name, st: m.state }; });
+
+  // month options: a "Live" (uncaptured current) entry on top, then every captured month
+  const LIVE = "live";
+  const options = [{ v: LIVE, label: "Live — " + _monthLabel(now) + " (uncaptured)" }]
+    .concat(snaps.map(s => ({ v: s.version, label: s.label || s.version })));
+  let sel = state.compareMonth;
+  if (!options.some(o => o.v === sel)) sel = LIVE;
+
+  // resolve current + previous data maps for the selected month
+  let curMap, prevMap, curLabel, prevLabel;
+  if (sel === LIVE) {
+    curMap = _snapMap(tab === "Houses" ? state.houseData : state.unitData);
+    curLabel = "Live (" + _monthLabel(now) + ")";
+    const pv = snaps[0];
+    prevMap = (pv && pv.data && pv.data[key]) || {};
+    prevLabel = pv ? (pv.label || pv.version) : "—";
+  } else {
+    const i = snaps.findIndex(s => s.version === sel), cur = snaps[i], pv = snaps[i + 1];
+    curMap = (cur && cur.data && cur.data[key]) || {};
+    curLabel = cur ? (cur.label || cur.version) : sel;
+    prevMap = (pv && pv.data && pv.data[key]) || {};
+    prevLabel = pv ? (pv.label || pv.version) : "— (earliest month)";
+  }
+
+  const picker = h("select", { style: { padding: "7px 12px", borderRadius: "7px", border: "1px solid var(--ds-surface-4)", background: "var(--ds-surface-2)", color: "var(--ds-fg-1)", fontSize: "12px", fontWeight: "700", cursor: "pointer" }, onChange: e => { state.compareMonth = e.target.value; render(); } },
+    ...options.map(o => h("option", { value: o.v, style: { background: "var(--ds-surface-2)", color: "var(--ds-fg-1)" } }, o.label)));
+  picker.value = sel;
 
   wrap.appendChild(h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px", marginBottom: "12px" } },
     h("div", {},
-      h("div", { style: { fontSize: "14px", fontWeight: "800", color: "var(--ds-fg-1)" } }, "Current (live) vs " + (prev.label || prev.version) + " — " + tab),
+      h("div", { style: { fontSize: "14px", fontWeight: "800", color: "var(--ds-fg-1)" } }, curLabel + " vs " + prevLabel + " — " + tab),
       h("div", { style: { fontSize: "11px", color: "var(--ds-fg-muted)", marginTop: "3px", maxWidth: "640px", lineHeight: "1.5" } },
-        "Review the change before pushing to Runway v Demand. Δ = current − previous; sorted by biggest Demand-Score move.")),
-    canWrite ? h("button", { style: { padding: "7px 14px", borderRadius: "7px", border: "1px solid var(--ds-selection)", background: "var(--ds-indigo-lav)", color: "var(--ds-indigo-ink)", fontSize: "12px", fontWeight: "700", cursor: "pointer", whiteSpace: "nowrap" }, onClick: captureSnapshot }, "Capture current as snapshot") : null
+        "Δ = current − previous; sorted by biggest Demand-Score move. Pick a month to compare it against the month before it.")),
+    h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
+      h("label", { style: { fontSize: "11px", fontWeight: "700", color: "var(--ds-fg-muted)" } }, "Month"),
+      picker,
+      canWrite ? h("button", { style: { padding: "7px 14px", borderRadius: "7px", border: "1px solid var(--ds-selection)", background: "var(--ds-indigo-lav)", color: "var(--ds-indigo-ink)", fontSize: "12px", fontWeight: "700", cursor: "pointer", whiteSpace: "nowrap" }, onClick: captureMonth }, "Capture " + _monthLabel(now)) : null)
   ));
+
+  if (!Object.keys(curMap).length) return (wrap.appendChild(h("div", { style: { padding: "40px 20px", textAlign: "center", color: "var(--ds-fg-muted)", fontSize: "13px", lineHeight: "1.6" } },
+    sel === LIVE ? "No live data loaded yet." : "No data stored for this month.", h("br"),
+    canWrite ? "Click “Capture " + _monthLabel(now) + "” to freeze the current live numbers as this month." : "")), wrap);
 
   const _arrow = (pv, cv, fmt) => ((pv == null || isNaN(pv)) ? "—" : fmt(+pv)) + "  →  " + ((cv == null || isNaN(cv)) ? "—" : fmt(+cv));
   const _int0 = v => Math.round(v).toLocaleString();
-  const rows = (rowsIn || []).map(m => {
-    const p = prevMap[_fSlug(m.name)] || {};
+  const rows = Object.keys(curMap).map(slug => {
+    const c = curMap[slug] || {}, p = prevMap[slug] || {};
+    const nm = nameBySlug[slug] || { name: slug, st: "" };
     const dsTitle = "What changed (prev → now):\n"
-      + "Population: " + _arrow(p.pop, m.population, _int0) + "\n"
-      + "Listings: " + _arrow(p.listings, m.listings, _int0) + "\n"
-      + "Adjusted VR: " + _arrow(p.avr, m.adjustedVR, v => v.toFixed(2)) + "\n"
-      + "Rental Growth: " + _arrow(p.rg, m.rentalGrowth36m, v => v.toFixed(2) + "%");
+      + "Population: " + _arrow(p.pop, c.pop, _int0) + "\n"
+      + "Listings: " + _arrow(p.listings, c.listings, _int0) + "\n"
+      + "Adjusted VR: " + _arrow(p.avr, c.avr, v => v.toFixed(2)) + "\n"
+      + "Rental Growth: " + _arrow(p.rg, c.rg, v => v.toFixed(2) + "%");
     const rwTitle = "What changed (prev → now):\n"
-      + "Median " + (tab === "Houses" ? "house" : "unit") + " price: " + _arrow(p.median, m.medianPrice, fmtPrice);
-    return { name: m.name, st: m.state, dsCur: m.demandScore, dsPrev: (p.ds == null ? null : +p.ds), rwCur: m.runway, rwPrev: (p.rw == null ? null : +p.rw), dsTitle, rwTitle };
+      + "Median " + (tab === "Houses" ? "house" : "unit") + " price: " + _arrow(p.median, c.median, fmtPrice);
+    return { name: nm.name, st: nm.st, dsCur: (c.ds == null ? null : +c.ds), dsPrev: (p.ds == null ? null : +p.ds), rwCur: (c.rw == null ? null : +c.rw), rwPrev: (p.rw == null ? null : +p.rw), dsTitle, rwTitle };
   });
   const chg = r => (r.dsCur == null || r.dsPrev == null) ? -1 : Math.abs(r.dsCur - r.dsPrev);
   rows.sort((a, b) => chg(b) - chg(a));
@@ -2407,17 +2454,24 @@ function compareView(rowsIn, tab) {
   return wrap;
 }
 
-async function captureSnapshot() {
+async function captureMonth() {
   if (!(typeof isAdmin === "function" && isAdmin())) { alert("Only dev / admin can capture snapshots."); return; }
-  const ver = (prompt("New snapshot version id (e.g. 2026-07):", "") || "").trim(); if (!ver) return;
-  const label = (prompt("Label (e.g. July 2026):", ver) || ver).trim();
-  const toMap = arr => { const o = {}; (arr || []).forEach(m => { const s = _fSlug(m.name); if (s) o[s] = { ds: m.demandScore, rw: m.runway, pop: m.population, listings: m.listings, avr: m.adjustedVR, rg: m.rentalGrowth36m, median: m.medianPrice }; }); return o; };
-  const data = { houses: toMap(state.houseData), units: toMap(state.unitData) };
+  const now = new Date();
+  const label = (prompt("Freeze the current live numbers (latest Runway Workbook + VR Projection) as which month?\nThis becomes the newest month; the previous capture becomes its comparison baseline.", _monthLabel(now)) || "").trim();
+  if (!label) return;
+  const ver = _labelToVer(label) || _monthVer(now);
+  // Re-pull live data so we snapshot the very latest RW Workbook + VR Projection marts.
+  try { await loadData(); } catch (e) { /* fall back to the data already in state */ }
+  const data = { houses: _snapMap(state.houseData), units: _snapMap(state.unitData) };
   let email = null; try { const p = await sbCurrentProfile(); email = p && p.email; } catch (e) {}
   const { error } = await window.sb.from("forge_demand_snapshots").upsert({ version: ver, label, data, captured_at: new Date().toISOString(), captured_by: email }, { onConflict: "version" });
   if (error) { alert("Save failed (writers only): " + error.message); return; }
-  alert("Captured snapshot “" + label + "” — it's now the previous baseline.");
-  loadPrevSnapshot();
+  await loadSnapshots();
+  state.compareMonth = ver;   // jump to the just-captured month (shown vs the prior capture)
+  state.view = "compare";
+  render();
+  const prior = (state.snapshots.find(s => s.version < ver) || {});
+  alert("Captured “" + label + "”. Now comparing it against " + (prior.label || prior.version || "— (no earlier month)") + ".");
 }
 
 /* ============================================================================
@@ -2963,7 +3017,7 @@ function backToVault(){
 }
 
 loadData().finally(scheduleOverlayHide);
-loadPrevSnapshot();   // fetch the latest stored snapshot for the "vs Prev" compare view
+loadSnapshots();   // fetch every captured monthly snapshot for the compare view + month picker
 
 /* Defensive 30 s fallback — hides the overlay even if loadData
    never resolves (network entirely dead etc.). */
