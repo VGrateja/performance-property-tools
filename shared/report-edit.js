@@ -3821,6 +3821,17 @@ async function _downloadCachedReportPdfs(slugs) {
   const now = new Date();
   const months = [mk(now), mk(new Date(now.getFullYear(), now.getMonth() - 1, 1))];
   const nameOf = (s) => ((RESEARCH_REGIONS[s] || REGIONAL_REGIONS[s] || {}).name || s);
+  /* Edition-code filename matching the regional + research own-tool downloads
+     (PPA_<Name>_report_ED<mm>-<5 letters><2 digits>). Research reports use the
+     short slug label (National / Commercial) to match _researchEditionName;
+     regionals use their display name — both mirror buildEditionFilename. */
+  const _edMm = String(new Date().getMonth() + 1).padStart(2, '0');
+  const editionName = (s) => {
+    let letters = ''; for (let i = 0; i < 5; i++) letters += String.fromCharCode(97 + Math.floor(Math.random() * 26));
+    const digits = String(Math.floor(Math.random() * 100)).padStart(2, '0');
+    const nice = RESEARCH_REGIONS[s] ? (s.charAt(0).toUpperCase() + s.slice(1)) : ((REGIONAL_REGIONS[s] || {}).name || (s.charAt(0).toUpperCase() + s.slice(1)));
+    return 'PPA_' + nice + '_report_ED' + _edMm + '-' + letters + digits;
+  };
   const miss = [];
   for (const slug of slugs) {
     let done = false;
@@ -3834,7 +3845,7 @@ async function _downloadCachedReportPdfs(slugs) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'PPA-' + nameOf(slug).replace(/[^\w]+/g, '-') + '.pdf';
+        a.download = editionName(slug) + '.pdf';
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 5000);
         done = true;
