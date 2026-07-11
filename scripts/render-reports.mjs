@@ -75,7 +75,7 @@ const REGION_SLUGS = [
   'port-macquarie', 'newcastle', 'tamworth', 'wagga-wagga', 'wollongong',
   // VIC / WA / TAS regional
   'ballarat', 'bendigo', 'geelong', 'wodonga', 'mildura',
-  'rockingham', 'bunbury', 'launceston',
+  'rockingham', 'mandurah', 'bunbury', 'launceston',   // mandurah split into its own report 2026-07-09
 ];
 
 /* Research-reports slugs — Australia-wide reports that live in
