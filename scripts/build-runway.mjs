@@ -59,6 +59,15 @@ if (dbCfg.rates && dbCfg.ai_ceiling) {
 } else { console.error('No config available — seed rdp_runway_config (migration 052 + seed-runway-config) or provide the workbook.'); process.exit(1); }
 console.log('rates: current=' + rateCur + ' forecast=' + rateFc);
 
+// wage-growth config + region cluster — for the Demand Score's runway, which is the
+// Runway Workbook's headline scenario: FORECAST rate with income grown by wage growth
+// over the horizon (capitals use wgCapital, regions wgRegional). This is what the
+// Runway Workbook tool shows by default (e.g. Sydney +1.32%), NOT the current-rate leg.
+const wg = dbCfg.wage_growth || { years: 1, capital: 0, regional: 0 };
+const { data: regRows } = await sb.from('rdp_regions').select('slug,cluster');
+const clusterOf = Object.fromEntries((regRows || []).map(r => [r.slug, r.cluster]));
+console.log('wage growth: capital=' + wg.capital + ' regional=' + wg.regional + ' years=' + wg.years);
+
 // ── verify vs workbook (only if present) ──
 let checks = 0, pass = 0;
 if (wbExists) {
@@ -83,7 +92,13 @@ for (const f of feeds || []) {
   const income = latest.median_income;
   const house = ceilH[slug] != null ? globalThis.RunwayCalc.computeRunway({ median: latest.mp_h, income, aiCeiling: ceilH[slug], currentRate: rateCur, forecastRate: rateFc }) : null;
   const unit = ceilU[slug] != null ? globalThis.RunwayCalc.computeRunway({ median: latest.mp_u, income, aiCeiling: ceilU[slug], currentRate: rateCur, forecastRate: rateFc }) : null;
-  list.push({ region_slug: slug, payload: { house, unit, inputs: { median_h: latest.mp_h, median_u: latest.mp_u, income }, ai_ceiling: { h: ceilH[slug] ?? null, u: ceilU[slug] ?? null }, rates: { current: rateCur, forecast: rateFc }, year: latest.year } });
+  // forecast + wage-growth runway (the Demand Score reads this): grow income by the
+  // region's wage-growth over the horizon, then take the runway at the forecast rate.
+  const wgRate = (clusterOf[slug] === 'capital') ? (wg.capital || 0) : (wg.regional || 0);
+  const grownIncome = income != null ? income * Math.pow(1 + wgRate, wg.years || 1) : income;
+  if (house) house.forecast_wg_pct = globalThis.RunwayCalc.computeRunway({ median: latest.mp_h, income: grownIncome, aiCeiling: ceilH[slug], currentRate: rateFc, forecastRate: rateFc }).runway_pct;
+  if (unit) unit.forecast_wg_pct = globalThis.RunwayCalc.computeRunway({ median: latest.mp_u, income: grownIncome, aiCeiling: ceilU[slug], currentRate: rateFc, forecastRate: rateFc }).runway_pct;
+  list.push({ region_slug: slug, payload: { house, unit, inputs: { median_h: latest.mp_h, median_u: latest.mp_u, income }, ai_ceiling: { h: ceilH[slug] ?? null, u: ceilU[slug] ?? null }, rates: { current: rateCur, forecast: rateFc }, wage_growth: { rate: wgRate, years: wg.years || 1 }, year: latest.year } });
 }
 const a = list.find(x => x.region_slug === 'adelaide');
 if (a) console.log('adelaide:', JSON.stringify({ median_h: a.payload.inputs.median_h, ai: a.payload.house.ai, ceiling: Math.round(a.payload.house.ceiling), runway: a.payload.house.runway_pct }));
