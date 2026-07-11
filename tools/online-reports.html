@@ -8086,38 +8086,54 @@ async function ppDownloadMultiRegionPrebuiltOrFallback(regionSlugs, pageIds, wan
     else                      misses.push(slug);
   }
 
-  /* Stream cache hits to the browser as Blob downloads. Small pause
-     between each so the browser's "Allow multiple downloads" prompt
-     fires once at the start rather than spamming per file. */
-  let savedFromCache = 0;
+  /* Fetch each cache hit into memory, then deliver the whole batch as ONE
+     .zip (mirrors the multi-JPEG export) — no more 36× "Allow multiple
+     downloads" prompts / loose files. */
+  const zipFiles = [];   // { filename, blob }
   for (let i = 0; i < hits.length; i++) {
     const { slug } = hits[i];
-    setMsg('Downloading ' + (i + 1) + ' of ' + hits.length + ' cached: ' + slug + '…');
+    setMsg('Fetching ' + (i + 1) + ' of ' + hits.length + ' cached: ' + slug + '…');
     try {
       /* Re-mint the signed URL right before fetching. The URLs minted during
          the cache-check above expire long before a 30+ region batch of
-         5-11MB PDFs finishes — that silently dropped the tail-end regions
-         (the VIC/WA/TAS cluster, alphabetically after Ballarat) to the slow
-         live-render fallback. A fresh URL per download is always within TTL. */
+         5-11MB PDFs finishes — a fresh URL per fetch is always within TTL. */
       const url = (await ppPrebuiltSignedUrl(slug, isLite)) || hits[i].url;
       const resp = await fetch(url, { cache: 'no-store' });
       if (!resp.ok) throw new Error('cache fetch ' + resp.status);
       const blob       = await resp.blob();
-      const niceRegion = slug.charAt(0).toUpperCase() + slug.slice(1);
-      const filename   = buildEditionFilename(niceRegion, slug, { lite: isLite }) + '.pdf';
-      const blobUrl    = URL.createObjectURL(blob);
-      const a          = document.createElement('a');
-      a.href = blobUrl; a.download = filename;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-      savedFromCache++;
-      /* 350ms — empirically enough to keep Chrome/Edge happy without
-         feeling slow. Without this the browser sometimes batches all
-         downloads into one prompt or drops some silently. */
-      await new Promise(r => setTimeout(r, 350));
+      const niceRegion = (typeof REGION_MANIFEST !== 'undefined' && REGION_MANIFEST[slug])
+        ? REGION_MANIFEST[slug].name : (slug.charAt(0).toUpperCase() + slug.slice(1));
+      zipFiles.push({ filename: buildEditionFilename(niceRegion, slug, { lite: isLite }) + '.pdf', blob });
     } catch (err) {
       console.warn('Cache fetch failed for ' + slug + ', falling back to live render:', err);
       misses.push(slug);
+    }
+  }
+
+  /* Deliver the cached reports. >1 → one zip via JSZip; single file (or JSZip
+     blocked) → direct download(s), paced so Chrome doesn't drop any. */
+  if (zipFiles.length) {
+    const JSZipLib = zipFiles.length > 1 ? await _loadJsZip() : null;
+    if (JSZipLib) {
+      setMsg('Bundling ' + zipFiles.length + ' reports into one zip…');
+      const zip = new JSZipLib();
+      for (const f of zipFiles) zip.file(f.filename, f.blob);
+      const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });   // PDFs are already compressed
+      const d = new Date();
+      const zipName = 'Online-Reports_' + (isLite ? 'Lite' : 'Full') + '_' +
+        d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '.zip';
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a'); a.href = url; a.download = zipName;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } else {
+      for (const f of zipFiles) {
+        const url = URL.createObjectURL(f.blob);
+        const a = document.createElement('a'); a.href = url; a.download = f.filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        await new Promise(r => setTimeout(r, 400));
+      }
     }
   }
 
@@ -9219,6 +9235,7 @@ async function exportMultiRegionPdf(opts) {
 
   let savedCount = 0;
   let failedRegions = [];
+  const zipFiles = [];   // { filename, blob } — collected, delivered as ONE zip (>1) after the loop
 
   for (let r = 0; r < regionSlugs.length; r++) {
     if (window.__pdfExportCancelled) break;
@@ -9297,28 +9314,46 @@ async function exportMultiRegionPdf(opts) {
       }
 
       if (!window.__pdfExportCancelled) {
-        /* "-N-pages" suffix only when the user picked a strict subset.
-           wantAllPages → never a subset. pageIds present + this region
-           rendered every page it has → not flagged partial either
-           (the PDF really is the full report for this region). */
+        /* "-N-pages" suffix only when the user picked a strict subset. */
         const isPartial = !wantAllPages
           && (pageIds || pageIndices)
           && pages.length !== allRegionPages.length;
-        if (isPartial) {
-          pdf.save('PPA-Research-Report-' + niceRegion + '-' + pages.length + '-pages.pdf');
-        } else {
-          pdf.save(buildEditionFilename(niceRegion, slug) + '.pdf');
-        }
+        const fname = isPartial
+          ? 'PPA-Research-Report-' + niceRegion + '-' + pages.length + '-pages.pdf'
+          : buildEditionFilename(niceRegion, slug) + '.pdf';
+        zipFiles.push({ filename: fname, blob: pdf.output('blob') });   // collect → zipped after the loop
         savedCount++;
-        /* Tiny breather between saves so the browser's download
-           dialog/multi-download prompt doesn't get spammed. */
-        await new Promise(rr => setTimeout(rr, 250));
       }
     } catch (err) {
       console.error('Multi-region export failed for', slug, err);
       failedRegions.push(niceRegion + ' (' + (err && err.message || 'error') + ')');
     } finally {
       if (iframe && iframe.parentNode) iframe.parentNode.removeChild(iframe);
+    }
+  }
+
+  /* Deliver: >1 rendered report → one zip; single → plain PDF. */
+  if (zipFiles.length && !window.__pdfExportCancelled) {
+    const JSZipLib = zipFiles.length > 1 ? await _loadJsZip() : null;
+    if (JSZipLib) {
+      if (msgEl) msgEl.textContent = 'Bundling ' + zipFiles.length + ' reports into one zip…';
+      const zip = new JSZipLib();
+      for (const f of zipFiles) zip.file(f.filename, f.blob);
+      const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
+      const d = new Date();
+      const zipName = 'Online-Reports_' + d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '.zip';
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a'); a.href = url; a.download = zipName;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } else {
+      for (const f of zipFiles) {
+        const url = URL.createObjectURL(f.blob);
+        const a = document.createElement('a'); a.href = url; a.download = f.filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        await new Promise(rr => setTimeout(rr, 400));
+      }
     }
   }
 
