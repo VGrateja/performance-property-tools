@@ -41,8 +41,11 @@ const { data: rows, error: vrErr } = await sb.from('rdp_vr_forecast').select('re
 if (vrErr) { console.error('rdp_vr_forecast read failed:', vrErr.message); process.exit(1); }
 if (!rows || !rows.length) { console.error('rdp_vr_forecast is empty — run the local build-vr-forecast.mjs first.'); process.exit(1); }
 
+// slug-ify a Cotality region/capital name to match rdp slugs ("Greater Sydney" → sydney)
+const cotSlug = s => String(s).replace(/\(.*?\)/g, '').split(',')[0].trim().toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').replace(/^greater-/, '');
+
 // ── Fresh Forge inputs (same queries + period floors as build-vr-forecast.mjs) ──
-const forgePop = {}, forgeVR = {}, forgeAppr = {};
+const forgePop = {}, forgeVR = {}, forgeAppr = {}, forgeRentSqm = {}, forgeRentCot = {};
 {
   const { data: pop } = await sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', 'population').gte('period', '2020-01-01');   // period floor keeps us under the 1000-row cap
   const latest = {};
@@ -51,7 +54,13 @@ const forgePop = {}, forgeVR = {}, forgeAppr = {};
 
   const { data: di } = await sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle();
   const dreg = (di && di.data && di.data.regions) || {};
-  for (const s of Object.keys(dreg)) { const v = dreg[s] && dreg[s].vr; if (v != null && isFinite(+v)) forgeVR[s] = +v / 100; }   // % → fraction
+  for (const s of Object.keys(dreg)) { const d = dreg[s]; if (!d) continue;
+    if (d.vr != null && isFinite(+d.vr)) forgeVR[s] = +d.vr / 100;   // % → fraction
+    if (d.rent_h != null || d.rent_u != null) forgeRentSqm[s] = { h: d.rent_h != null ? +d.rent_h : null, u: d.rent_u != null ? +d.rent_u : null };
+  }
+  const { data: rvRow } = await sb.from('forge_cotality').select('data').eq('id', 'rentvacancy').maybeSingle();
+  const rv = rvRow && rvRow.data;
+  for (const r of [].concat((rv && rv.capitals) || [], (rv && rv.regions) || [])) { const slug = cotSlug(r.name); if (!slug) continue; forgeRentCot[slug] = { h: r.rentHouse != null ? +r.rentHouse : null, u: r.rentUnit != null ? +r.rentUnit : null }; }
 
   const { data: appr } = await sb.from('rdp_raw_series').select('region_slug,metric,period,value').in('metric', ['approvals_h', 'approvals_u']).eq('freq', 'A').gte('period', '2018-01-01');
   const byY = {};
@@ -65,7 +74,17 @@ const updates = []; const skipped = []; const shifts = [];
 for (const row of rows) {
   const slug = row.region_slug, p = row.payload || {};
   // Workbook-side inputs the CI run can't source — reuse the stored values.
-  const hhSize = p.hhSize, expectedPeople = p.expectedPeople;
+  const hhSize = p.hhSize;
+  // Demand: NB + IM are fixed 2-yr averages; OM (net overseas migration) is a
+  // Treasury forward projection stored per year → auto-advance to CUR_YEAR like
+  // OE supply. Fall back to the frozen expectedPeople if omByYear isn't present.
+  let expectedPeople = p.expectedPeople, omUsed = p.om;
+  if (p.omByYear && p.nb != null && p.im != null) {
+    const yrs = Object.keys(p.omByYear).map(Number).sort((a, b) => b - a);
+    const omYear = yrs.includes(CUR_YEAR) ? CUR_YEAR : yrs[0];   // auto-advance; past last year → latest
+    const om = p.omByYear[omYear];
+    if (om != null) { omUsed = om; expectedPeople = p.nb + p.im + om; }
+  }
   if (hhSize == null || expectedPeople == null) { skipped.push(slug + ' (no hhSize/expectedPeople in payload — needs a local full build)'); continue; }
 
   const population = forgePop[slug] != null ? forgePop[slug] : p.population;
@@ -97,7 +116,10 @@ for (const row of rows) {
   // hhSize) survives untouched via the spread base.
   updates.push({
     region_slug: slug,
-    payload: { ...p, ...calc, oeCommencements: oeInput, oeSource, oeYear, population, popSource: forgePop[slug] != null ? 'forge' : p.popSource, vrSource: forgeVR[slug] != null ? 'forge_sqm' : p.vrSource },
+    payload: { ...p, ...calc, om: omUsed,
+      rentHouseSqm: forgeRentSqm[slug] ? forgeRentSqm[slug].h : p.rentHouseSqm, rentUnitSqm: forgeRentSqm[slug] ? forgeRentSqm[slug].u : p.rentUnitSqm,
+      rentHouseCot: forgeRentCot[slug] ? forgeRentCot[slug].h : p.rentHouseCot, rentUnitCot: forgeRentCot[slug] ? forgeRentCot[slug].u : p.rentUnitCot,
+      oeCommencements: oeInput, oeSource, oeYear, population, popSource: forgePop[slug] != null ? 'forge' : p.popSource, vrSource: forgeVR[slug] != null ? 'forge_sqm' : p.vrSource },
     source_month: row.source_month,
     computed_at: stamp,
   });
