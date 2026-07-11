@@ -119,6 +119,6 @@ let written = 0;
 for (let k = 0; k < rows.length; k += 500) { const chunk = rows.slice(k, k + 500); const { error } = await sb.from('rdp_raw_series').upsert(chunk, { onConflict: 'source,region_slug,metric,freq,period' }); if (error) { console.error('\n', error.message); process.exit(1); } written += chunk.length; }
 const latestMo = Object.values(latestByRegion).map(l => l.period).sort().pop();
 await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS cpi ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `ABS CPI year-ended % (640101, monthly), national + 8 capitals, through ${latestMo}` });
-await recordStatus('ok', `Current through ${latestMo} — national + 8 capital cities (ABS CPI 640101, year-ended %).`, { row_count: written, region_count: found.length, latest_month: latestMo });
+await recordStatus('ok', `Current through ${latestMo} — national + 8 capital cities (ABS CPI 640101, year-ended %).`, { row_count: written, region_count: found.length });
 console.log(`\n✓ Upserted ${written} CPI rows (source='abs', metric='cpi').`);
 process.exit(0);
