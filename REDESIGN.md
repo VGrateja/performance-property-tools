@@ -56,6 +56,8 @@
 
 - **2026-07-12 · Session 7 (People wave): scorecards + results.** People pink/violet accents. Scorecards: rating-band + donut/heatmap colors asserted untouched; privacy/tier logic untouched (Van verifies company-tier solo view + 3-party sign-off). Results: first tool with NO legacy back pill — uniform header added fresh.
 
+- **2026-07-12 · HOTFIX (Van-reported): OS kit scoped under .** The kit’s generic class names (.seg/.chip/.table/.toast/…) were GLOBAL and collided with tools’ own classes — Scorecards’ td.seg picked up the kit’s padded glass box + flex display, fattening the Always/Partial/No controls and stacking the Self-assessment/Achieved columns. All Layer-5 selectors now require a  ancestor (os-preview wraps accordingly); probe-verified: bare .seg receives zero kit styles, kit intact inside the wrapper. RULE: kit classes only apply inside  wrappers.
+
 ## Session protocol
 
 1. Work happens **in this worktree** only; `main` stays clean for hotfixes.
