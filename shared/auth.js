@@ -286,7 +286,8 @@ function showWelcomeAndProceed(name) {
   msg.textContent = 'Welcome back, ' + name + '!';
   overlay.style.display = 'flex';
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    msg.style.opacity = '1'; bar.style.opacity = '1'; sub.style.opacity = '1';
+    msg.style.opacity = '1'; bar.style.opacity = '1';
+    if (sub) sub.style.opacity = '1';   /* subtitle removed from the hub (Van 2026-07-12) */
   }));
   setTimeout(() => {
     overlay.style.transition = 'opacity 0.9s ease';
