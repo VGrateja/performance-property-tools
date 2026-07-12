@@ -21,8 +21,8 @@
 | 9 | `tools/runway-demand.html` | Analytics | — | ☐ JPEG ☐ PDF vs baseline | — | D3 |
 | 10 | `tools/cadence.html` | PM | ✅ S6 | n/a | ☐ Van (realtime + notify) | --cad-* re-point to PM green; success/danger + card-status colors untouched; realtime/notify logic untouched |
 | 11 | `tools/tenant-summary.html` | PM | ✅ S6 | ✅ paper brand asserted + print PDF captured; ☐ Van real one-pager | Chrome PM green; **#summaryPaper re-pins PP brand (cyan/navy/logo)** — owner output untouched; print block untouched |
-| 12 | `tools/scorecards.html` | People | — | n/a | — | Per-person privacy — verify company-tier view |
-| 13 | `tools/results.html` | People | — | n/a | — | |
+| 12 | `tools/scorecards.html` | People | ✅ S7 | n/a | ☐ Van — incl. company-tier solo view + sign-off | People pink/violet; rating bands (green/amber/red/gold) + donut/heatmap untouched; privacy/tier gating untouched |
+| 13 | `tools/results.html` | People | ✅ S7 | n/a | ☐ Van | --pp-cyan→People accent; in-tool ‹All results backs kept; hub back pill retired for the uniform header |
 | 14 | `tools/arena.html` | Arena | — | n/a | — | |
 | 15 | `tools/arena-typing.html` | Arena | — | n/a | — | |
 | 16 | `tools/arena-chess.html` | Arena | — | n/a | — | Realtime |
@@ -53,6 +53,8 @@
 - **2026-07-12 · Session 5: data-forge (282KB).** 10 asserted transforms. The tool’s charts/sparklines read `--pp-cyan`/`--pp-violet` from computed style with hex fallbacks — re-pointing the tokens re-hues every canvas/SVG automatically (fallback hexes swapped too). Harness learning: aborting supabase simulates network-death and trips paths prod never hits — for gate-less tools test with LIVE anon traffic; and CONTROL-TEST 8123 before chasing “regressions” (signed-out empty grid = pre-existing).
 
 - **2026-07-12 · Session 6 (PM wave): cadence + tenant-summary.** PM green accents. Tenant one-pager treated as CLIENT OUTPUT: `#summaryPaper` re-pins the PP brand tokens inside the paper while the tool chrome re-points — pattern for any tool that RENDERS a branded document. Both tools keep guarded `navigateToHub` back behaviour. **Harness lesson (caught by post-checks): a transform helper must mutate ONE source of truth — an fn(x,…) parameter shadowing the closure wrote a stale original back while logging ok; fixed T() to closure-only + has() checks. Always confirm a real `git diff --stat` after a transform.**
+
+- **2026-07-12 · Session 7 (People wave): scorecards + results.** People pink/violet accents. Scorecards: rating-band + donut/heatmap colors asserted untouched; privacy/tier logic untouched (Van verifies company-tier solo view + 3-party sign-off). Results: first tool with NO legacy back pill — uniform header added fresh.
 
 ## Session protocol
 
