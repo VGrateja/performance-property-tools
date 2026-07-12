@@ -161,8 +161,8 @@ function _ppBuildTierSwitcher() {
   };
   for (const [k,v] of Object.entries(btnStyles)) btn.style.setProperty(k, v, 'important');
   btn.innerHTML = '<span style="font-size:13px;line-height:1">&#128065;</span>'
-                + '<span>View as:&nbsp;</span>'
-                + '<span id="ts-current-label-js" style="color:#00b6cb">TIER 0</span>';
+                + '<span style="opacity:.6">View as:&nbsp;</span>'
+                + '<span id="ts-current-label-js" style="color:#ffffff">TIER 0</span>';
   btn.addEventListener('click', function (e) {
     e.stopPropagation();
     const m = document.getElementById('ts-menu-js');
@@ -211,8 +211,8 @@ function _ppBuildTierSwitcher() {
     b.addEventListener('mouseenter', () => b.style.setProperty('background', 'rgba(255,255,255,0.08)', 'important'));
     b.addEventListener('mouseleave', () => {
       const active = b.getAttribute('data-tier') === getViewAsLevel();
-      b.style.setProperty('background', active ? '#00b6cb' : 'transparent', 'important');
-      b.style.setProperty('color',      active ? '#04222a' : '#e8edf7', 'important');
+      b.style.setProperty('background', active ? '#e8edf7' : 'transparent', 'important');
+      b.style.setProperty('color',      active ? '#10131c' : '#e8edf7', 'important');
     });
     b.addEventListener('click', function (e) { e.stopPropagation(); setViewAs(tier); });
     menu.appendChild(b);
@@ -243,8 +243,8 @@ function initTierSwitcher() {
     if (lbl) lbl.textContent = labels[va] || 'TIER 0';
     document.querySelectorAll('#ts-menu-js button[data-tier]').forEach(b => {
       const active = b.getAttribute('data-tier') === va;
-      b.style.setProperty('background', active ? '#00b6cb' : 'transparent', 'important');
-      b.style.setProperty('color',      active ? '#04222a' : '#e8edf7', 'important');
+      b.style.setProperty('background', active ? '#e8edf7' : 'transparent', 'important');
+      b.style.setProperty('color',      active ? '#10131c' : '#e8edf7', 'important');
     });
   } catch (e) {}
 }
