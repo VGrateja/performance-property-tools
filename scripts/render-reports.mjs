@@ -294,6 +294,7 @@ async function renderRegion(browser, slug, lite, session) {
          late-injected nodes (concierge widget, etc.) that arrive
          after this evaluate runs. */
       const CHROME_SELECTORS = [
+        '.appbar', '.wall',
         '.pager', '.ct-panel', '.side-toc', '.mobile-control-bar',
         '#or-back-to-hub', '#or-cluster-btn', '#or-theme-toggle',
         '#pdf-overlay', '.bands-modal-bg',
@@ -339,6 +340,7 @@ async function renderRegion(browser, slug, lite, session) {
            AI Concierge launcher + panel are loaded on every tool
            page and would otherwise paint a cyan circle in the
            bottom-right corner of every PDF page. */
+        .appbar, .wall,
         .pager, .ct-panel, .side-toc, .mobile-control-bar,
         #or-back-to-hub, #or-cluster-btn, #or-theme-toggle,
         #pdf-overlay, .bands-modal-bg,
