@@ -17,8 +17,8 @@
 | 5 | `tools/data-forge.html` | Vault | ✅ S5 | n/a | ☐ Van | Vault violet accent pair via --pp-cyan/--pp-violet re-point (charts read the vars at runtime — auto-follow); orbs→wallpaper; status/health + up/dn colors untouched; no auth-gate (unchanged; home grid renders signed-in — pre-existing, control-tested) |
 | 6 | `tools/suburb-selection-data.html` | Vault | ✅ S4 | n/a | ☐ Van | common.css family: --pp-cyan→violet + wall; A/B/C/D rating colors untouched; no auth-gate (unchanged) |
 | 7 | `tools/data-architecture.html` | Vault | ✅ S4 | n/a | ☐ Van | Accent→violet; ALL node-type/status colors untouched; drawer .scrim renamed .drawer-scrim (collided with the OS wallpaper class; id/JS untouched) |
-| 8 | `tools/property-clock.html` | Analytics | — | ☐ JPEG ☐ PDF vs baseline | — | `bakeClockLogo()` untouchable; D3 |
-| 9 | `tools/runway-demand.html` | Analytics | — | ☐ JPEG ☐ PDF vs baseline | — | D3 |
+| 8 | `tools/property-clock.html` | Analytics | ✅ S9 | ☐ JPEG ☐ PDF vs :8123 baseline | ☐ Van | **MAX-CONSERVATIVE**: uniform header + wallpaper ONLY — no accent re-hue, no font swap (Montserrat re-pinned; body color re-pinned `var(--text)`); `bakeClockLogo()` + export code byte-identical; clock stage untouched |
+| 9 | `tools/runway-demand.html` | Analytics | ✅ S9 | ☐ JPEG ☐ PDF vs :8123 baseline | ☐ Van | **MAX-CONSERVATIVE**: header + wallpaper only — Roboto kept, `.chart-wrap` (the exported node) untouched; flex-body appbar stretch fix (`align-self:stretch` + full-bleed margins) |
 | 10 | `tools/cadence.html` | PM | ✅ S6 | n/a | ☐ Van (realtime + notify) | --cad-* re-point to PM green; success/danger + card-status colors untouched; realtime/notify logic untouched |
 | 11 | `tools/tenant-summary.html` | PM | ✅ S6 | ✅ paper brand asserted + print PDF captured; ☐ Van real one-pager | Chrome PM green; **#summaryPaper re-pins PP brand (cyan/navy/logo)** — owner output untouched; print block untouched |
 | 12 | `tools/scorecards.html` | People | ✅ S7 | n/a | ☐ Van — incl. company-tier solo view + sign-off | People pink/violet; rating bands (green/amber/red/gold) + donut/heatmap untouched; privacy/tier gating untouched |
@@ -60,6 +60,8 @@
 
 - **2026-07-12 · Session 8 (Arena wave): arena + typing + chess + scrabble.** Arena pink chrome; game/board/tile colors untouched (scrabble has zero accent-cyan — its palette is all game data). Games get an **Arena action button** in the uniform header (static binding). Gotchas: (1) arena pills were NOT body-top — blind in-place chrome injection nested the wall/appbar and initChrome’s insertBefore threw; os-chrome now guards (anchors to the wall only when it’s a direct body child, else prepends); (2) naive `indexOf('<body')` hit the literal text “<body>” inside scrabble’s CSS comments — anchor on a REAL tag (`
 <body>`) when relocating blocks in big files.
+
+- **2026-07-12 · Session 9 (Analytics export pair): property-clock + runway-demand.** These two produce client-facing JPEG/PDF exports, so the reskin is **maximum-conservative**: head swap + wallpaper + uniform header and NOTHING else — no accent re-hue, no Figtree (fonts re-pinned: clock Montserrat + `color:var(--text)`, runway Roboto — os-theme's global `body{font-family:var(--ui);color:var(--tx)}` would otherwise shift exported text metrics/hues). Loading-overlay card gradients left as-is (never captured). New gotcha: **a centered flex-column body turns the sticky appbar into a shrink-to-fit flex item** — fix `.appbar{align-self:stretch;margin:-24px -16px 18px}` (stretch + cancel body side padding = full-bleed bar, body padding preserved so `.chart-wrap` width is unchanged). Headless (gate-abort recipe): both pages full-render with correct bar/wall/fonts and interiors pixel-faithful; exports must be Van-verified **side-by-side vs :8123** (same region/month → JPEG + PDF from both servers should be identical).
 
 ## Open issues
 
