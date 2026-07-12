@@ -1,0 +1,59 @@
+# Performance OS — redesign tracker
+
+**Branch:** `os-redesign` (this worktree folder) · **Preview:** http://localhost:8124
+**Current design stays on:** http://localhost:8123 + VS Code Live Server (5500) — folder `Supabase - Performance Internal Tool`, branch `main`. GitHub Pages deploys `main` only, so nothing here goes live until the final merge.
+
+**Rules of the project** (locked): visual language from `pp-os.html` + `pp-os-app-template.html` · never modify tool logic / calculations / Supabase calls / tier gating / export code · every export path wraps capture in `PP_OS.exportFlat()` · mode lives in `localStorage['ppos-mode']` and behaves identically everywhere · one tool per session · vanilla JS, no build step.
+
+## Status
+
+| # | Page | Section | Reskinned | Exports verified | Tier verified | Notes |
+|---|------|---------|-----------|------------------|---------------|-------|
+| 0 | `index.html` (login → welcome → desktop) | Desktop | — | n/a | — | Session 1. Login: glass card on live day-cycle wallpaper, **no sun/moon toggle** (mode = auto pre-login; cycling lives in OS chrome) |
+| 1 | `tools/demand-score.html` | Analytics | — | CSV/JSON only | — | **Pilot** — template mocks this tool |
+| 2 | `tools/traffic-lights.html` | Vault | — | n/a | — | |
+| 3 | `tools/vr-projection.html` | Vault | — | n/a | — | |
+| 4 | `tools/runway-workbook.html` | Analytics | — | n/a | — | |
+| 5 | `tools/data-forge.html` | Vault | — | n/a | — | No auth-gate today (leave as-is) |
+| 6 | `tools/suburb-selection-data.html` | Vault | — | n/a | — | No auth-gate today |
+| 7 | `tools/data-architecture.html` | Vault | — | n/a | — | No auth-gate today |
+| 8 | `tools/property-clock.html` | Analytics | — | ☐ JPEG ☐ PDF vs baseline | — | `bakeClockLogo()` untouchable; D3 |
+| 9 | `tools/runway-demand.html` | Analytics | — | ☐ JPEG ☐ PDF vs baseline | — | D3 |
+| 10 | `tools/cadence.html` | PM | — | n/a | — | Realtime board |
+| 11 | `tools/tenant-summary.html` | PM | — | ☐ one-pager | — | |
+| 12 | `tools/scorecards.html` | People | — | n/a | — | Per-person privacy — verify company-tier view |
+| 13 | `tools/results.html` | People | — | n/a | — | |
+| 14 | `tools/arena.html` | Arena | — | n/a | — | |
+| 15 | `tools/arena-typing.html` | Arena | — | n/a | — | |
+| 16 | `tools/arena-chess.html` | Arena | — | n/a | — | Realtime |
+| 17 | `tools/arena-scrabble.html` | Arena | — | n/a | — | Realtime; no fit-screen |
+| 18 | `tools/whitepapers-strategies.html` | Docs | — | n/a | — | |
+| 19 | `tools/online-reports.html` | Docs | — | ☐ download modal ☐ monthly PDF | — | **CHROME ONLY** — report pages excluded; add new chrome to `render-reports.mjs` strip lists |
+| 20 | `tools/national-report.html` | Docs | — | ☐ | — | CHROME ONLY |
+| 21 | `tools/commercial-report.html` | Docs | — | ☐ | — | CHROME ONLY; no theme.js today (dark-fixed) |
+| 22 | `tools/presentations-library.html` | Present | — | n/a | — | |
+| 23 | `tools/presentation.html` | Present | — | ☐ deck render | — | **Builder CHROME only** — slide content excluded |
+| 24 | `shared/concierge.js` widget | (all) | — | n/a | — | Own session |
+| — | `tools/present-chart-lab.html` | — | excluded | — | — | Dev utility, dark-only |
+
+## Decisions log
+
+- **2026-07-12 · Session 0.** Discovery approved. Desktop-first (index.html reskin — auth/tier/session logic stays byte-identical). Report + presentation *interiors* excluded — chrome only, last. Design system lives in `shared/` (not `assets/`) so `stamp-shared-assets.mjs` cache-busts it automatically. **Theme bridge:** `os-chrome.js` mirrors shade → legacy `data-theme` + `pp-theme` + `pp-theme-change` so un-reskinned pages stay in sync throughout the rollout; reskinned pages drop `theme.js` (single writer). Login design: no sun/moon — glass login card floating on the live period wallpaper (Van 2026-07-12). Six tiers (not four): dock/windows gate per tier, boot stays symmetric across tiers (hub-freeze rule). `fit-screen.js` zoom: mount OS chrome outside zoomed containers, decide per tool. Fonts Figtree + DM Mono via Google Fonts `<link>` per page.
+- Dock sections (7 + reserved): Analytics · Vault · PM · Arena · Docs · Present · People — accents/glyphs registered in `os-chrome.js` `SECTIONS`.
+
+## Session protocol
+
+1. Work happens **in this worktree** only; `main` stays clean for hotfixes.
+2. Before starting: `git merge main` (pull in anything shipped on main since last session).
+3. One tool per session → update the Status table → end with a click-by-click test script for Van at :8124.
+4. Any session touching `shared/` runs `node scripts/stamp-shared-assets.mjs` before commit.
+5. Export-capable tools: capture "before" files into `baselines/` (from the CURRENT design) **before** reskinning, and diff after.
+6. Ship day (end of project): final `git merge main` → merge `os-redesign` into `main` → stamp → push → post-ship export + monthly-PDF check.
+
+## Infrastructure
+
+| What | Where |
+|---|---|
+| New design preview | http://localhost:8124 ← this folder (`Desktop\PP-OS-Redesign`), auto-starts at logon (task “Performance Tools - OS Redesign Server”, `scratch/serve-redesign.vbs` in the main folder) |
+| Current design | http://localhost:8123 (task “Performance Tools - Local Server”) + VS Code Live Server :5500 — main folder, branch `main` |
+| Kit demo | http://localhost:8124/os-preview.html — renders the extracted design system without touching any tool |
