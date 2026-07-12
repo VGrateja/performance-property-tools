@@ -23,7 +23,7 @@
 | 11 | `tools/tenant-summary.html` | PM | ✅ S6 | ✅ paper brand asserted + print PDF captured; ☐ Van real one-pager | Chrome PM green; **#summaryPaper re-pins PP brand (cyan/navy/logo)** — owner output untouched; print block untouched |
 | 12 | `tools/scorecards.html` | People | ✅ S7 | n/a | ☐ Van — incl. company-tier solo view + sign-off | People pink/violet; rating bands (green/amber/red/gold) + donut/heatmap untouched; privacy/tier gating untouched |
 | 13 | `tools/results.html` | People | ✅ S7 | n/a | ☐ Van | --pp-cyan→People accent; in-tool ‹All results backs kept; hub back pill retired for the uniform header |
-| 14 | `tools/arena.html` | Arena | ✅ S8 | n/a | ☐ Van | Arena pink; pills → uniform header |
+| 14 | `tools/arena.html` | Arena | ✅ S8+ | n/a | ☐ Van | REBUILT to the ORIGINAL hub-arena presentation (Van): compact stat cards (LIVE badges, top-score lines, watermark) + Live Now / Highlights / Top of the Leaderboards, powered by the hub’s loaders ported verbatim (+60s refresh); tier gate untouched |
 | 15 | `tools/arena-typing.html` | Arena | ✅ S8 | n/a | ☐ Van | + Arena action button in header |
 | 16 | `tools/arena-chess.html` | Arena | ✅ S8 | n/a | ☐ Van (live match) | Board/piece colors untouched; + Arena action button |
 | 17 | `tools/arena-scrabble.html` | Arena | ✅ S8 | n/a | ☐ Van (live match + tile drag) | Tile/board colors + opacity-only body guard untouched; no fit-screen (unchanged); + Arena action button |
