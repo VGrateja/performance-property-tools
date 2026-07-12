@@ -48,7 +48,8 @@
   /* ── mode / period / shade (identical rules to the desktop mockup) ──────── */
   var MODES = ['auto', 'light', 'dark'];
   var MODE_ICO = {
-    auto:  '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M4.5 12H3M21 12h-1.5M6 6l1 1M17 17l1 1"/>',
+    /* auto = sun/moon combo (Van 2026-07-12): the cycle reads sun-moon, sun, moon */
+    auto:  '<circle cx="9" cy="15" r="3.2"/><path d="M9 10.2V8.6M9 21.4v-1.6M4.2 15H2.6M4.9 10.9L3.8 9.8M4.9 19.1l-1.1 1.1M13.1 19.1l1.1 1.1"/><path d="M21.2 9.3A4.6 4.6 0 1115.9 4 3.7 3.7 0 0021.2 9.3z"/>',
     light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
     dark:  '<path d="M21 12.8A9 9 0 1111.2 3 7 7 0 0021 12.8z"/>'
   };
