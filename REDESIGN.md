@@ -11,8 +11,8 @@
 |---|------|---------|-----------|------------------|---------------|-------|
 | 0 | `index.html` (login → welcome → desktop) | Desktop | ✅ S1 | n/a | ☐ Van (real login, all tiers via view-as) | Login glass card on day-cycle sky (no sun/moon — verified day+night screenshots); welcome reskin; menubar + widgets + dock + windows; carousel removed. Auth/tier JS untouched |
 | 1 | `tools/demand-score.html` | Analytics | ✅ S2 | n/a (print styles only — untouched) | ☐ Van | **Pilot.** Token-layer re-point + uniform header; hero logo (−77KB base64), back pills + dead toggle retired; accent teal→coral; data colors (houses/units/tiers/map) unchanged |
-| 2 | `tools/traffic-lights.html` | Vault | — | n/a | — | |
-| 3 | `tools/vr-projection.html` | Vault | — | n/a | — | |
+| 2 | `tools/traffic-lights.html` | Vault | ✅ S3 | n/a | ☐ Van | Token re-point + uniform header; back/vault pills + logo topbar retired; accent teal→violet; signal colors untouched; glass cards |
+| 3 | `tools/vr-projection.html` | Vault | ✅ S3 | n/a | ☐ Van | Token re-point + uniform header; accent cyan→violet, “current” marker→blue (kept distinct from forecast); bands untouched |
 | 4 | `tools/runway-workbook.html` | Analytics | — | n/a | — | |
 | 5 | `tools/data-forge.html` | Vault | — | n/a | — | No auth-gate today (leave as-is) |
 | 6 | `tools/suburb-selection-data.html` | Vault | — | n/a | — | No auth-gate today |
@@ -45,6 +45,8 @@
 
 - **2026-07-12 · UNIFORM HEADER STANDARD (Van).** Every tool wears the identical OS app bar via `PP_OS.initChrome`: **← Desktop · section-gradient icon · tool name · section chip · (optional tool-specific action buttons) · appearance · clock.** No per-tool logos, heroes with brand marks, or ad-hoc back/theme buttons — branding lives on the desktop + login. Tool-specific extras are allowed as app-bar `actions` when their bindings are static, otherwise they stay in-page (Demand Score keeps Refresh/Push in-page — they're state-bound).
 - **2026-07-12 · Session 2 (pilot: Demand Score).** Reskin pattern proven for token-based tools: **re-point the tool's own token layer** (`--ds-*`) at the OS palette + swap chrome — zero logic changes. 16 asserted transforms; −79KB (embedded hero logo base64 removed). Surfaces stay OPAQUE (OS-hued) because sticky table cells must occlude — glass = app bar/wallpaper/overlays only. Data-language colors intentionally kept: houses blue / units violet, tier greens→reds, smooth/workforce dots, dark Leaflet card. Action accent re-hued teal `#00b6cb` → Analytics coral (asserted counts). Two minimal JS string edits, stated: hero logo `h("img")` pair removed; nothing else. Back button preserves the tool's outbound overlay (`navigateToHub`). Headless: gate redirect ✓; skin verified via gate-aborted signed-out run (fake-session wedge = pre-existing env artifact — OLD tool control-tested identical); light+dark screenshots ✓. Error-card colors are hardcoded dark (polish-sweep item).
+
+- **2026-07-12 · Session 3 (Vault wave 1/3): traffic-lights + vr-projection.** Both small enough to pair (42KB+29KB, both recently built). Direct-edit reskin (no transform script needed): head swap (os-chrome + os-theme + Figtree), token re-point to Vault violet, wall + initChrome replacing pp-toolnav/topbar, glass upgrade on cards. VR marker distinction preserved (current=blue vs forecast=violet). Headless: full TL UI verified via baked-DATA fallback (rows/dots/summary/accents both shades, screenshots); VR chrome+tokens+graceful sign-in message verified.
 
 ## Session protocol
 
