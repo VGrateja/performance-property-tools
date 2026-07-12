@@ -9,7 +9,7 @@
 
 | # | Page | Section | Reskinned | Exports verified | Tier verified | Notes |
 |---|------|---------|-----------|------------------|---------------|-------|
-| 0 | `index.html` (login → welcome → desktop) | Desktop | — | n/a | — | Session 1. Login: glass card on live day-cycle wallpaper, **no sun/moon toggle** (mode = auto pre-login; cycling lives in OS chrome) |
+| 0 | `index.html` (login → welcome → desktop) | Desktop | ✅ S1 | n/a | ☐ Van (real login, all tiers via view-as) | Login glass card on day-cycle sky (no sun/moon — verified day+night screenshots); welcome reskin; menubar + widgets + dock + windows; carousel removed. Auth/tier JS untouched |
 | 1 | `tools/demand-score.html` | Analytics | — | CSV/JSON only | — | **Pilot** — template mocks this tool |
 | 2 | `tools/traffic-lights.html` | Vault | — | n/a | — | |
 | 3 | `tools/vr-projection.html` | Vault | — | n/a | — | |
@@ -40,6 +40,8 @@
 
 - **2026-07-12 · Session 0.** Discovery approved. Desktop-first (index.html reskin — auth/tier/session logic stays byte-identical). Report + presentation *interiors* excluded — chrome only, last. Design system lives in `shared/` (not `assets/`) so `stamp-shared-assets.mjs` cache-busts it automatically. **Theme bridge:** `os-chrome.js` mirrors shade → legacy `data-theme` + `pp-theme` + `pp-theme-change` so un-reskinned pages stay in sync throughout the rollout; reskinned pages drop `theme.js` (single writer). Login design: no sun/moon — glass login card floating on the live period wallpaper (Van 2026-07-12). Six tiers (not four): dock/windows gate per tier, boot stays symmetric across tiers (hub-freeze rule). `fit-screen.js` zoom: mount OS chrome outside zoomed containers, decide per tool. Fonts Figtree + DM Mono via Google Fonts `<link>` per page.
 - Dock sections (7 + reserved): Analytics · Vault · PM · Arena · Docs · Present · People — accents/glyphs registered in `os-chrome.js` `SECTIONS`.
+
+- **2026-07-12 · Session 1 (desktop shell).** index.html reskinned via asserted transform (14 splices; celestial toggle + 4-page carousel removed, −20KB). Kept byte-identical: all auth/tier JS, login form ids/flows, modals (reports cluster / presentations / pending approvals), search palette logic, arena loaders, watchHubReveal, navigateToTool (wrapped only to record “Jump back in” recents). Dock = 7 sections; **PM + Vault CSS-gated to dev/admin/leads** (same fail-closed pattern) + nav-gated via `_hubIsStaff()` in openWin; Scorecards/Users-Presentations/Cadence rows reuse the existing gate classes. Windows carry the live ids (clockEditionBadge, forgeWarn→dock badge, arena feeds — loaders re-fire on window open). **fit-screen.js removed from the desktop only** (viewport-fit layout; CSS zoom breaks dock/window rect math). Tour copy updated to dock/appearance wording. hs-* at-a-glance ids live in the static widgets so auth.js populates them. **Headless verification:** signed-out boot fully green (login glass day+night screenshots in main folder `scratch/os-login-*.png`); signed-in desktop can’t be validated headless — a fake-session boot wedges headless Chrome identically on the OLD design (8123 control) → pre-existing environment artifact, so parity holds; real-browser sign-in testing = Van’s script below.
 
 ## Session protocol
 
