@@ -296,7 +296,8 @@ function showWelcomeAndProceed(name) {
       overlay.style.display = 'none';
       overlay.style.opacity = '1';
       overlay.style.transition = '';
-      msg.style.opacity = '0'; bar.style.opacity = '0'; sub.style.opacity = '0';
+      msg.style.opacity = '0'; bar.style.opacity = '0';
+      if (sub) sub.style.opacity = '0';
       showMain();
     }, 900);
   }, 2800);
