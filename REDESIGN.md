@@ -23,10 +23,10 @@
 | 11 | `tools/tenant-summary.html` | PM | ✅ S6 | ✅ paper brand asserted + print PDF captured; ☐ Van real one-pager | Chrome PM green; **#summaryPaper re-pins PP brand (cyan/navy/logo)** — owner output untouched; print block untouched |
 | 12 | `tools/scorecards.html` | People | ✅ S7 | n/a | ☐ Van — incl. company-tier solo view + sign-off | People pink/violet; rating bands (green/amber/red/gold) + donut/heatmap untouched; privacy/tier gating untouched |
 | 13 | `tools/results.html` | People | ✅ S7 | n/a | ☐ Van | --pp-cyan→People accent; in-tool ‹All results backs kept; hub back pill retired for the uniform header |
-| 14 | `tools/arena.html` | Arena | — | n/a | — | |
-| 15 | `tools/arena-typing.html` | Arena | — | n/a | — | |
-| 16 | `tools/arena-chess.html` | Arena | — | n/a | — | Realtime |
-| 17 | `tools/arena-scrabble.html` | Arena | — | n/a | — | Realtime; no fit-screen |
+| 14 | `tools/arena.html` | Arena | ✅ S8 | n/a | ☐ Van | Arena pink; pills → uniform header |
+| 15 | `tools/arena-typing.html` | Arena | ✅ S8 | n/a | ☐ Van | + Arena action button in header |
+| 16 | `tools/arena-chess.html` | Arena | ✅ S8 | n/a | ☐ Van (live match) | Board/piece colors untouched; + Arena action button |
+| 17 | `tools/arena-scrabble.html` | Arena | ✅ S8 | n/a | ☐ Van (live match + tile drag) | Tile/board colors + opacity-only body guard untouched; no fit-screen (unchanged); + Arena action button |
 | 18 | `tools/whitepapers-strategies.html` | Docs | — | n/a | — | |
 | 19 | `tools/online-reports.html` | Docs | — | ☐ download modal ☐ monthly PDF | — | **CHROME ONLY** — report pages excluded; add new chrome to `render-reports.mjs` strip lists |
 | 20 | `tools/national-report.html` | Docs | — | ☐ | — | CHROME ONLY |
@@ -57,6 +57,9 @@
 - **2026-07-12 · Session 7 (People wave): scorecards + results.** People pink/violet accents. Scorecards: rating-band + donut/heatmap colors asserted untouched; privacy/tier logic untouched (Van verifies company-tier solo view + 3-party sign-off). Results: first tool with NO legacy back pill — uniform header added fresh.
 
 - **2026-07-12 · HOTFIX (Van-reported): OS kit scoped under .** The kit’s generic class names (.seg/.chip/.table/.toast/…) were GLOBAL and collided with tools’ own classes — Scorecards’ td.seg picked up the kit’s padded glass box + flex display, fattening the Always/Partial/No controls and stacking the Self-assessment/Achieved columns. All Layer-5 selectors now require a  ancestor (os-preview wraps accordingly); probe-verified: bare .seg receives zero kit styles, kit intact inside the wrapper. RULE: kit classes only apply inside  wrappers.
+
+- **2026-07-12 · Session 8 (Arena wave): arena + typing + chess + scrabble.** Arena pink chrome; game/board/tile colors untouched (scrabble has zero accent-cyan — its palette is all game data). Games get an **Arena action button** in the uniform header (static binding). Gotchas: (1) arena pills were NOT body-top — blind in-place chrome injection nested the wall/appbar and initChrome’s insertBefore threw; os-chrome now guards (anchors to the wall only when it’s a direct body child, else prepends); (2) naive `indexOf('<body')` hit the literal text “<body>” inside scrabble’s CSS comments — anchor on a REAL tag (`
+<body>`) when relocating blocks in big files.
 
 ## Session protocol
 

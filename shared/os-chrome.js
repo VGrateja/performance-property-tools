@@ -136,9 +136,17 @@
         '<button class="ab-ic" id="pposModeBtn" title="Appearance (auto / light / dark)"><svg id="pposModeIco" viewBox="0 0 24 24">' + MODE_ICO[root.dataset.mode || 'auto'] + '</svg></button>' +
         (cfg.clock !== false ? '<span class="ab-clock" id="pposClock">—</span>' : '') +
       '</div>';
-    /* insert after the wallpaper so the bar is the first visible element */
+    /* insert after the wallpaper so the bar is the first visible element.
+       Guard: the wall may sit NESTED in a page wrapper (some tools' old nav
+       lived deep in the DOM) — insertBefore against <body> then throws and
+       the bar never renders. Only anchor to the wall when it is a direct
+       body child; otherwise prepend to <body>. */
     var anchor = doc.querySelector('.wall');
-    doc.body.insertBefore(bar, anchor ? anchor.nextSibling : doc.body.firstChild);
+    if (anchor && anchor.parentNode === doc.body) {
+      doc.body.insertBefore(bar, anchor.nextSibling);
+    } else {
+      doc.body.insertBefore(bar, doc.body.firstChild);
+    }
 
     bar.querySelector('#pposModeBtn').addEventListener('click', cycleMode);
     (cfg.actions || []).forEach(function (a) {
