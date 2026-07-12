@@ -459,6 +459,8 @@ async function loadArenaLiveFeed() {
   if (!$feed) return;
   _arenaLiveFeedInFlight = true;
   try {
+    /* My user id (for incoming-challenge filter). Best-effort — if
+       there's no session for any reason we just skip that bucket. */
     let myId = null;
     try {
       const { data: sess } = await window.sb.auth.getSession();
@@ -469,19 +471,26 @@ async function loadArenaLiveFeed() {
     const items = [];
 
     const queries = [
+      /* Incoming chess challenges. */
       myId ? window.sb.from('arena_chess_challenges')
         .select('id, challenger_name, challenger_email, ranked, time_control, created_at')
         .eq('challengee_user_id', myId).eq('status', 'pending').gt('expires_at', nowIso)
         .order('created_at', { ascending: false }).limit(5)
         : Promise.resolve({ data: [] }),
+      /* Incoming scrabble challenges. */
       myId ? window.sb.from('arena_scrabble_challenges')
         .select('id, challenger_name, challenger_email, ranked, time_control, created_at')
         .eq('challengee_user_id', myId).eq('status', 'pending').gt('expires_at', nowIso)
         .order('created_at', { ascending: false }).limit(5)
         : Promise.resolve({ data: [] }),
+      /* Active chess games. */
       window.sb.from('arena_chess_games')
         .select('id, white_name, white_email, black_name, black_email, ranked, time_control, started_at')
         .eq('status', 'active').order('started_at', { ascending: false }).limit(5),
+      /* Active scrabble games. Players live in arena_scrabble_game_players
+         since the 2-4 player refactor — the games table has no player
+         columns, so the old player1_name/time_control select silently failed
+         and active scrabble games never appeared here. */
       window.sb.from('arena_scrabble_games')
         .select('id, ranked, started_at, players:arena_scrabble_game_players(name, email, seat)')
         .eq('status', 'active').order('started_at', { ascending: false }).limit(5),
@@ -489,6 +498,8 @@ async function loadArenaLiveFeed() {
     const settled = await Promise.allSettled(queries);
     const [chessChIn, scrChIn, chessAct, scrAct] = settled.map(s => (s.status === 'fulfilled' && s.value && s.value.data) || []);
 
+    /* Build feed items. priority: 0=incoming challenge, 1=active game,
+       2=recent finish, 3=typing PB. */
     chessChIn.forEach(c => items.push({
       priority: 0, type: 'challenge', icon: '📩',
       time: new Date(c.created_at).getTime(),
@@ -530,6 +541,9 @@ async function loadArenaLiveFeed() {
         action: { label: 'Watch', href: 'tools/arena-scrabble.html', title: 'Scrabble' },
       });
     });
+    /* Recent finishes are intentionally NOT added here — they moved to
+       Highlights. Live Now shows only active games + open challenges. */
+    /* Re-use typing PB highlights already loaded by loadArenaNews(). */
     if (typeof _arenaNewsItems !== 'undefined' && Array.isArray(_arenaNewsItems)) {
       _arenaNewsItems.slice(0, 5).forEach(n => items.push({
         priority: 3, type: 'pb', icon: '⌨️',
@@ -573,18 +587,23 @@ async function loadArenaHighlights() {
   try {
     const items = [];
 
+    /* Pull 60 most recent chess + scrabble matches. Enough to detect
+       active streaks while staying small. */
     const settled = await Promise.allSettled([
       window.sb.from('arena_chess_matches')
         .select('white_email, white_name, black_email, black_name, result, ranked, white_pts_before, black_pts_before, ended_at')
         .order('ended_at', { ascending: false }).limit(60),
       window.sb.from('arena_scrabble_matches')
         .select('id, ranked, termination, ended_at, players:arena_scrabble_match_players(email, name, finish_rank, pts_before)')
-        .neq('termination', 'void')
+        .neq('termination', 'void')   /* voided games give EVERY player finish_rank=1 — never a real win */
         .order('ended_at', { ascending: false }).limit(60),
     ]);
     const chessMatches = (settled[0].status === 'fulfilled' && settled[0].value.data) || [];
     const scrabMatches = (settled[1].status === 'fulfilled' && settled[1].value.data) || [];
 
+    /* ── 1. Chess streaks ────────────────────────────────────────
+       For each player, walk their matches newest-first and count
+       consecutive wins (a draw or loss breaks). 3+ = highlight. */
     const chessByPlayer = {};
     chessMatches.forEach(m => {
       const sides = [
@@ -614,6 +633,9 @@ async function loadArenaHighlights() {
       }
     });
 
+    /* ── 2. Chess upsets ─────────────────────────────────────────
+       Winner's pre-match rating ≥100 below loser's. Caps at top 3
+       by margin so a single big-gap match doesn't crowd the card. */
     const chessUpsets = [];
     chessMatches.forEach(m => {
       if (m.result === '1/2-1/2') return;
@@ -642,6 +664,9 @@ async function loadArenaHighlights() {
       });
     });
 
+    /* ── 3. Scrabble streaks ────────────────────────────────────
+       Walk matches newest first; per player, count consecutive
+       finish_rank=1 results. 3+ = highlight. */
     const scrabByPlayer = {};
     scrabMatches.forEach(m => {
       (m.players || []).forEach(p => {
@@ -671,12 +696,15 @@ async function loadArenaHighlights() {
       }
     });
 
+    /* ── 4. Scrabble upsets ─────────────────────────────────────
+       Winner's pre-rating ≥100 below the highest pre-rating in the
+       same match. Surfaces lower-rated players beating the field. */
     const scrabUpsets = [];
     scrabMatches.forEach(m => {
       const players = (m.players || []).slice();
       if (!players.length) return;
       const winners = players.filter(p => p.finish_rank === 1);
-      if (winners.length !== 1) return;
+      if (winners.length !== 1) return;  // skip multi-way ties
       const winner = winners[0];
       const highest = players.reduce((max, p) => p.pts_before > max ? p.pts_before : max, -Infinity);
       const gap = highest - winner.pts_before;
@@ -699,10 +727,23 @@ async function loadArenaHighlights() {
       });
     });
 
+    /* ── 5. Typing personal bests — reuse the cached news items
+       built by loadArenaNews(), which already filters to "strictly
+       beat your previous best" runs. Two changes vs the original
+       slice(0,3) cap:
+         a) Pin the CURRENT USER's most recent PB to the top of the
+            Highlights list (priority -1 — above streaks even) so a
+            user who just set a record always sees themselves.
+         b) Widen the rest of the band to the 10 most recent PBs
+            from everyone else (was 3) so a busy week doesn't push
+            an ordinary user's PB off the card. */
     let myEmail = '';
     try { if (typeof getCurrentUserEmail === 'function') myEmail = (getCurrentUserEmail() || '').toLowerCase(); } catch (_) {}
     const myLocalPart = myEmail ? myEmail.split('@')[0] : '';
     const pbItems = (typeof _arenaNewsItems !== 'undefined' && Array.isArray(_arenaNewsItems)) ? _arenaNewsItems : [];
+    /* Find this user's most recent PB. PBs have an email field as of
+       this commit; older items pre-field would still match on name
+       (local-part of email), so fall through to name-match. */
     const myPB = myEmail
       ? pbItems.find(n => (n.email || '') === myEmail || (myLocalPart && n.name === myLocalPart))
       : null;
@@ -722,6 +763,11 @@ async function loadArenaHighlights() {
         html: _escapeHtml(n.text),
       }));
 
+    /* ── 6. WPM milestone crossings (60 / 80 / 100 / 120) — built by
+       loadArenaNews into _arenaMilestones. Per-player, fires only
+       the first time their max crossed each threshold. The current
+       user's own crossing gets pinned same as PB above. Priority 1
+       so milestones sit alongside upsets in the sort order. */
     const milestoneItems = (typeof _arenaMilestones !== 'undefined' && Array.isArray(_arenaMilestones)) ? _arenaMilestones : [];
     const myMilestone = myEmail
       ? milestoneItems.find(m => (m.email || '') === myEmail)
@@ -742,6 +788,10 @@ async function loadArenaHighlights() {
         html: '<strong>' + _escapeHtml(m.name) + '</strong> crossed <strong>' + m.threshold + ' WPM</strong> for the first time (' + m.wpm + ')',
       }));
 
+    /* ── 7. Recent finishes — moved here from Live Now (which now shows
+       only active games + open challenges). Voided scrabble games are
+       already excluded by the query (.neq termination void); chess has no
+       void. Lowest priority so streaks/upsets/PBs lead, then results. */
     const finishes = [];
     chessMatches.forEach(m => {
       if (!m.ended_at) return;
@@ -751,7 +801,7 @@ async function loadArenaHighlights() {
       if (!m.ended_at) return;
       const players = (m.players || []);
       const winners = players.filter(p => p.finish_rank === 1);
-      if (winners.length !== 1) return;
+      if (winners.length !== 1) return;   /* skip multi-way ties / malformed */
       const w = winners[0];
       const wName = w.name || (w.email || '').split('@')[0];
       let html;
@@ -768,6 +818,10 @@ async function loadArenaHighlights() {
       priority: 3, icon: '🏁', time: f.time, html: f.html,
     }));
 
+    /* Sort by priority then recency. Priority -1 pins the current
+       user's own items (PB + milestone crossing) at the very top,
+       followed by streaks (0), upsets + milestones (1), PBs (2),
+       recent finishes (3). */
     items.sort((a, b) => (a.priority - b.priority) || (b.time - a.time));
     const top = items.slice(0, 40);
     if (!top.length) {
@@ -821,6 +875,10 @@ function _escapeHtml(s) {
 async function updateArenaCardStats() {
   if (!window.sb) return;
 
+  /* Local helper — paints whichever Top Rankers row exists. The
+     elements live in the new bottom-row "Top of the leaderboards"
+     card; missing element is silently ignored when this function
+     runs on a page that doesn't include the new markup yet. */
   const setRanker = (id, html) => {
     const el = document.getElementById(id);
     if (el) el.innerHTML = html;
@@ -829,6 +887,7 @@ async function updateArenaCardStats() {
     (name && String(name).trim()) ? String(name).trim() :
     (email ? String(email).split('@')[0] : '—');
 
+  /* Typing — top WPM (60s English) + total players. */
   (async () => {
     const $stat = document.getElementById('hub-tool-stat-typing');
     try {
@@ -854,6 +913,7 @@ async function updateArenaCardStats() {
     }
   })();
 
+  /* Chess — top points + player count. */
   (async () => {
     const $stat = document.getElementById('hub-tool-stat-chess');
     try {
@@ -876,6 +936,8 @@ async function updateArenaCardStats() {
     }
   })();
 
+  /* Scrabble — top points + player count, or "Lobby open" if no
+     points data yet (table-missing errors handled gracefully). */
   (async () => {
     const $stat = document.getElementById('hub-tool-stat-scrabble');
     try {
@@ -906,9 +968,10 @@ async function loadArenaStats() {
   const $typing  = document.getElementById('hs-arena-typing');
   const $chess   = document.getElementById('hs-arena-chess');
   const $players = document.getElementById('hs-arena-players');
-  if (!$typing || !$players) return;
+  if (!$typing || !$players) return; /* not on hub */
   _arenaStatsInFlight = true;
   try {
+    /* All-time top WPM, 60s English. */
     const { data: topRows } = await window.sb
       .from('arena_typing_scores')
       .select('player_email, wpm')
@@ -921,6 +984,11 @@ async function loadArenaStats() {
       const name = r.player_email ? r.player_email.split('@')[0] : '—';
       $typing.textContent = name + ' · ' + r.wpm;
     }
+    /* Top chess points — pulls the leader off the
+       arena_chess_points view. The view only includes ranked games,
+       so casual matches don't pollute the standing. View-not-found
+       errors (migration not applied) are swallowed silently and the
+       tile keeps its '—' placeholder. */
     if ($chess) {
       try {
         const { data: chessRows, error: chessErr } = await window.sb
@@ -933,8 +1001,11 @@ async function loadArenaStats() {
           const cname = (c.name && c.name.trim()) ? c.name : (c.email || '').split('@')[0];
           $chess.textContent = cname + ' · ' + c.points;
         }
-      } catch (_) {}
+      } catch (_) { /* migration may not be applied yet */ }
     }
+    /* Distinct active players. Postgrest's JS client doesn't
+       expose COUNT(DISTINCT) directly, so we fetch the email
+       column for every row and dedupe client-side. */
     const { data: emailRows } = await window.sb
       .from('arena_typing_scores')
       .select('player_email');
@@ -958,6 +1029,69 @@ let _arenaMilestones = [];
 const _WPM_MILESTONES = [60, 80, 100, 120];
 let _arenaNewsInFlight = false;
 
+function _renderArenaNewsTicker() {
+  const $track = document.getElementById('hs-arena-news-track');
+  if (!$track) return;
+  if (_arenaNewsCycleTimer) {
+    clearInterval(_arenaNewsCycleTimer);
+    _arenaNewsCycleTimer = null;
+  }
+  const items = _arenaNewsItems.slice(0, 10);
+  if (!items.length) {
+    $track.classList.remove('is-sliding');
+    $track.style.transform = 'translateY(0)';
+    $track.innerHTML = '<div class="hub-stat-news-item">No highlights yet — beat a PB to land here.</div><div class="hub-stat-news-item"></div>';
+    return;
+  }
+  _arenaNewsCycleIdx = 0;
+  /* Initial paint: items[0] visible, items[1 % len] queued below. */
+  $track.classList.remove('is-sliding');
+  $track.style.transform = 'translateY(0)';
+  $track.innerHTML =
+    '<div class="hub-stat-news-item">' + _escapeHtml(items[0].text) + '</div>' +
+    '<div class="hub-stat-news-item">' + _escapeHtml(items[1 % items.length].text) + '</div>';
+  if (items.length < 2) return;
+  _arenaNewsCycleTimer = setInterval(function () {
+    /* 1. Animate the track up by one frame so the second item
+       slides into view. */
+    $track.classList.add('is-sliding');
+    $track.style.transform = 'translateY(-1.5em)';
+    /* 2. After the transition, advance the index, swap markup so
+       the (now-current) item is on top + the next is queued, and
+       snap back to translateY(0) without a transition. */
+    setTimeout(function () {
+      _arenaNewsCycleIdx = (_arenaNewsCycleIdx + 1) % items.length;
+      const nextIdx = (_arenaNewsCycleIdx + 1) % items.length;
+      $track.classList.remove('is-sliding');
+      $track.style.transform = 'translateY(0)';
+      $track.innerHTML =
+        '<div class="hub-stat-news-item">' + _escapeHtml(items[_arenaNewsCycleIdx].text) + '</div>' +
+        '<div class="hub-stat-news-item">' + _escapeHtml(items[nextIdx].text) + '</div>';
+    }, ARENA_NEWS_SLIDE_MS);
+  }, ARENA_NEWS_TICK_MS);
+}
+function _renderArenaNewsList() {
+  const $list = document.getElementById('arenaNewsList');
+  const $empty = document.getElementById('arenaNewsEmpty');
+  if (!$list || !$empty) return;
+  if (!_arenaNewsItems.length) {
+    $list.innerHTML = '';
+    $empty.style.display = 'block';
+    return;
+  }
+  $empty.style.display = 'none';
+  $list.innerHTML = _arenaNewsItems.map(function (it) {
+    const cls = 'news-bubble' + (it.isPB ? ' is-pb' : '');
+    const initial = (it.name || '?').charAt(0).toUpperCase();
+    return '<li class="news-bubble-row">' +
+      '<div class="news-bubble-avatar' + (it.isPB ? ' is-pb' : '') + '">' + _escapeHtml(initial) + '</div>' +
+      '<div class="' + cls + '">' +
+        '<div class="news-bubble-text">' + _escapeHtml(it.text) + '</div>' +
+        '<div class="news-bubble-time">' + _formatRelativeTime(it.time) + '</div>' +
+      '</div>' +
+    '</li>';
+  }).join('');
+}
 async function loadArenaNews() {
   if (!window.sb) return;
   if (_arenaNewsInFlight) return;
@@ -972,11 +1106,27 @@ async function loadArenaNews() {
       .limit(500);
     if (!data || !data.length) {
       _arenaNewsItems = [];
+      _renderArenaNewsTicker();
+      _renderArenaNewsList();
       return;
     }
+    /* HIGHLIGHTS-ONLY feed.
+       Walk runs chronologically (oldest → newest) and track each
+       player's running max WPM. A run is a "highlight" iff it
+       strictly beat that player's prior best — i.e., a *new*
+       personal best, not just a run that ties or matches.
+       First-ever runs we see for a player are skipped (we have no
+       history to compare them against, and showing every first run
+       would just create noise). Subsequent PBs are emitted in
+       chronological order, then reversed for newest-first display.
+       Future highlight types (chess upsets, milestones, etc.) plug
+       in here alongside the PB scan. */
     const ordered = data.slice().reverse();
     const playerMax = {};
     const highlights = [];
+    /* Milestone crossings (60/80/100/120 WPM) emitted into a parallel
+       array so the news ticker stays focused on PBs while the Arena
+       Highlights card surfaces them as their own entry. */
     const milestones = [];
     ordered.forEach(r => {
       const email = (r.player_email || '').toLowerCase();
@@ -990,19 +1140,40 @@ async function loadArenaNews() {
           const sec = r.mode_seconds || 60;
           const text = name + ' set a new personal best — ' + r.wpm + ' WPM (' + sec + 's ' + list + ')';
           highlights.push({
-            text: text, name: name, email: email, wpm: r.wpm, sec: sec, list: list,
-            isPB: true, prevBest: prev, time: r.completed_at,
+            text: text,
+            name: name,
+            email: email,
+            wpm: r.wpm,
+            sec: sec,
+            list: list,
+            isPB: true,
+            prevBest: prev,
+            time: r.completed_at,
           });
         }
+        /* Milestone crossings — when this run pushed the player's
+           running max across any of the 60/80/100/120 thresholds,
+           emit a separate highlight per threshold crossed. First-ever
+           runs ARE counted here (unlike the PB stream above) — going
+           from no record to 70 WPM legitimately crosses the 60 line. */
         _WPM_MILESTONES.forEach(t => {
           if (prev < t && r.wpm >= t) {
-            milestones.push({ name: name, email: email, wpm: r.wpm, threshold: t, time: r.completed_at });
+            milestones.push({
+              name: name,
+              email: email,
+              wpm: r.wpm,
+              threshold: t,
+              time: r.completed_at,
+            });
           }
         });
       }
     });
+    /* Newest highlight first for the ticker + popup. */
     _arenaNewsItems = highlights.reverse();
     _arenaMilestones = milestones.reverse();
+    _renderArenaNewsTicker();
+    _renderArenaNewsList();
   } catch (e) {
     console.warn('loadArenaNews failed', e);
   } finally {
