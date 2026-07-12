@@ -13,10 +13,10 @@
 | 1 | `tools/demand-score.html` | Analytics | ✅ S2 | n/a (print styles only — untouched) | ☐ Van | **Pilot.** Token-layer re-point + uniform header; hero logo (−77KB base64), back pills + dead toggle retired; accent teal→coral; data colors (houses/units/tiers/map) unchanged |
 | 2 | `tools/traffic-lights.html` | Vault | ✅ S3 | n/a | ☐ Van | Token re-point + uniform header; back/vault pills + logo topbar retired; accent teal→violet; signal colors untouched; glass cards |
 | 3 | `tools/vr-projection.html` | Vault | ✅ S3 | n/a | ☐ Van | Token re-point + uniform header; accent cyan→violet, “current” marker→blue (kept distinct from forecast); bands untouched |
-| 4 | `tools/runway-workbook.html` | Analytics | — | n/a | — | |
+| 4 | `tools/runway-workbook.html` | Analytics | ✅ S4 | n/a | ☐ Van | Token re-point + uniform header; accent cyan→coral; runway bands + WG-toggle violet untouched; assumptions editor intact |
 | 5 | `tools/data-forge.html` | Vault | — | n/a | — | No auth-gate today (leave as-is) |
-| 6 | `tools/suburb-selection-data.html` | Vault | — | n/a | — | No auth-gate today |
-| 7 | `tools/data-architecture.html` | Vault | — | n/a | — | No auth-gate today |
+| 6 | `tools/suburb-selection-data.html` | Vault | ✅ S4 | n/a | ☐ Van | common.css family: --pp-cyan→violet + wall; A/B/C/D rating colors untouched; no auth-gate (unchanged) |
+| 7 | `tools/data-architecture.html` | Vault | ✅ S4 | n/a | ☐ Van | Accent→violet; ALL node-type/status colors untouched; drawer .scrim renamed .drawer-scrim (collided with the OS wallpaper class; id/JS untouched) |
 | 8 | `tools/property-clock.html` | Analytics | — | ☐ JPEG ☐ PDF vs baseline | — | `bakeClockLogo()` untouchable; D3 |
 | 9 | `tools/runway-demand.html` | Analytics | — | ☐ JPEG ☐ PDF vs baseline | — | D3 |
 | 10 | `tools/cadence.html` | PM | — | n/a | — | Realtime board |
@@ -47,6 +47,8 @@
 - **2026-07-12 · Session 2 (pilot: Demand Score).** Reskin pattern proven for token-based tools: **re-point the tool's own token layer** (`--ds-*`) at the OS palette + swap chrome — zero logic changes. 16 asserted transforms; −79KB (embedded hero logo base64 removed). Surfaces stay OPAQUE (OS-hued) because sticky table cells must occlude — glass = app bar/wallpaper/overlays only. Data-language colors intentionally kept: houses blue / units violet, tier greens→reds, smooth/workforce dots, dark Leaflet card. Action accent re-hued teal `#00b6cb` → Analytics coral (asserted counts). Two minimal JS string edits, stated: hero logo `h("img")` pair removed; nothing else. Back button preserves the tool's outbound overlay (`navigateToHub`). Headless: gate redirect ✓; skin verified via gate-aborted signed-out run (fake-session wedge = pre-existing env artifact — OLD tool control-tested identical); light+dark screenshots ✓. Error-card colors are hardcoded dark (polish-sweep item).
 
 - **2026-07-12 · Session 3 (Vault wave 1/3): traffic-lights + vr-projection.** Both small enough to pair (42KB+29KB, both recently built). Direct-edit reskin (no transform script needed): head swap (os-chrome + os-theme + Figtree), token re-point to Vault violet, wall + initChrome replacing pp-toolnav/topbar, glass upgrade on cards. VR marker distinction preserved (current=blue vs forecast=violet). Headless: full TL UI verified via baked-DATA fallback (rows/dots/summary/accents both shades, screenshots); VR chrome+tokens+graceful sign-in message verified.
+
+- **2026-07-12 · Session 4 (Vault wave 2/3): runway-workbook + suburb-selection-data + data-architecture.** Asserted batch transforms (22 steps). Gotcha logged: a tool defining its own `.scrim` class collides with the OS wallpaper div (`.wall.scrim`) — opacity:0/z-index wars; fix = rename the TOOL’s class (element id + JS untouched). Self-collision gotcha: inserted payload text must not contain the patterns later count-swapped. Headless: all 3 verified (appbar/chip/wall z-order/fonts/accents; data-architecture full map — 29 nodes, master cyan + status colors preserved).
 
 ## Session protocol
 
