@@ -542,16 +542,9 @@ async function loadArenaLiveFeed() {
       });
     });
     /* Recent finishes are intentionally NOT added here — they moved to
-       Highlights. Live Now shows only active games + open challenges. */
-    /* Re-use typing PB highlights already loaded by loadArenaNews(). */
-    if (typeof _arenaNewsItems !== 'undefined' && Array.isArray(_arenaNewsItems)) {
-      _arenaNewsItems.slice(0, 5).forEach(n => items.push({
-        priority: 3, type: 'pb', icon: '⌨️',
-        time: n.time ? new Date(n.time).getTime() : 0,
-        html: _escapeHtml(n.text),
-        meta: n.time ? _arenaFriendly(n.time) : '',
-      }));
-    }
+       Highlights. Live Now shows only active games + open challenges.
+       Typing-PB filler removed (Van 2026-07-12): Live Now shows ONLY what
+       is happening right now — otherwise the empty state below. */
 
     items.sort((a, b) => (a.priority - b.priority) || (b.time - a.time));
     const top = items.slice(0, 10);
@@ -741,13 +734,17 @@ async function loadArenaHighlights() {
     try { if (typeof getCurrentUserEmail === 'function') myEmail = (getCurrentUserEmail() || '').toLowerCase(); } catch (_) {}
     const myLocalPart = myEmail ? myEmail.split('@')[0] : '';
     const pbItems = (typeof _arenaNewsItems !== 'undefined' && Array.isArray(_arenaNewsItems)) ? _arenaNewsItems : [];
+    /* Typing items qualify as "highlights" only while fresh (Van 2026-07-12):
+       a weeks-old personal best shouldn't outrank real match results. */
+    const HIGHLIGHT_FRESH_MS = 7 * 86400000;
+    const _isFreshTime = t => { const ms = t ? new Date(t).getTime() : 0; return ms && (Date.now() - ms) <= HIGHLIGHT_FRESH_MS; };
     /* Find this user's most recent PB. PBs have an email field as of
        this commit; older items pre-field would still match on name
        (local-part of email), so fall through to name-match. */
     const myPB = myEmail
       ? pbItems.find(n => (n.email || '') === myEmail || (myLocalPart && n.name === myLocalPart))
       : null;
-    if (myPB) {
+    if (myPB && _isFreshTime(myPB.time)) {
       items.push({
         priority: -1, icon: '⌨️',
         time: myPB.time ? new Date(myPB.time).getTime() : 0,
@@ -756,9 +753,10 @@ async function loadArenaHighlights() {
     }
     pbItems
       .filter(n => !(myEmail && ((n.email || '') === myEmail || (myLocalPart && n.name === myLocalPart))))
+      .filter(n => _isFreshTime(n.time))
       .slice(0, 10)
       .forEach(n => items.push({
-        priority: 2, icon: '⌨️',
+        priority: 3, icon: '⌨️',
         time: n.time ? new Date(n.time).getTime() : 0,
         html: _escapeHtml(n.text),
       }));
@@ -772,7 +770,7 @@ async function loadArenaHighlights() {
     const myMilestone = myEmail
       ? milestoneItems.find(m => (m.email || '') === myEmail)
       : null;
-    if (myMilestone) {
+    if (myMilestone && _isFreshTime(myMilestone.time)) {
       items.push({
         priority: -1, icon: '🚀',
         time: myMilestone.time ? new Date(myMilestone.time).getTime() : 0,
@@ -781,9 +779,10 @@ async function loadArenaHighlights() {
     }
     milestoneItems
       .filter(m => !(myEmail && (m.email || '') === myEmail))
+      .filter(m => _isFreshTime(m.time))
       .slice(0, 5)
       .forEach(m => items.push({
-        priority: 1, icon: '🚀',
+        priority: 3, icon: '🚀',
         time: m.time ? new Date(m.time).getTime() : 0,
         html: '<strong>' + _escapeHtml(m.name) + '</strong> crossed <strong>' + m.threshold + ' WPM</strong> for the first time (' + m.wpm + ')',
       }));
@@ -815,13 +814,13 @@ async function loadArenaHighlights() {
       finishes.push({ time: new Date(m.ended_at).getTime(), html: html });
     });
     finishes.sort((a, b) => b.time - a.time).slice(0, 8).forEach(f => items.push({
-      priority: 3, icon: '🏁', time: f.time, html: f.html,
+      priority: 2, icon: '🏁', time: f.time, html: f.html,
     }));
 
-    /* Sort by priority then recency. Priority -1 pins the current
-       user's own items (PB + milestone crossing) at the very top,
-       followed by streaks (0), upsets + milestones (1), PBs (2),
-       recent finishes (3). */
+    /* Sort by priority then recency. Priority -1 pins the current user's
+       own FRESH items (PB + milestone, ≤7 days), then streaks (0),
+       upsets (1), recent finishes (2), fresh typing PBs + milestones (3).
+       Match results outrank typing items (Van 2026-07-12). */
     items.sort((a, b) => (a.priority - b.priority) || (b.time - a.time));
     const top = items.slice(0, 40);
     if (!top.length) {
