@@ -4172,7 +4172,12 @@ function navigateToTool(url, label) {
     background:var(--dockbg);border:1px solid var(--brd);backdrop-filter:blur(28px) saturate(1.6);
     box-shadow:0 24px 60px -18px rgba(0,0,0,.45);transform:translateY(160%);transition:transform .7s var(--pop) .15s}
   body.on-hub .dock{transform:none}
-  .dicon{position:relative;width:52px;height:52px;flex-shrink:0;background:none;border:none;cursor:pointer;padding:0;transition:width .18s,height .18s}
+  /* No standing width/height transition — the magnification JS writes sizes
+     every FRAME and a transition makes each write lag 180ms behind the
+     cursor (rubber-banding). The .settle class restores an eased return
+     only when the pointer leaves the dock. */
+  .dicon{position:relative;width:52px;height:52px;flex-shrink:0;background:none;border:none;cursor:pointer;padding:0}
+  .dock.settle .dicon{transition:width .22s var(--ease),height .22s var(--ease)}
   .dicon .sq{display:grid;place-items:center;width:100%;height:100%;border-radius:15px;position:relative;overflow:hidden;
     background:linear-gradient(135deg,var(--a1),var(--a2));box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 8px 18px -8px var(--a2)}
   .dicon svg{width:46%;height:46%;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 1px 2px rgba(0,0,0,.25))}
@@ -4477,19 +4482,35 @@ function navigateToTool(url, label) {
       openWin(ic.dataset.sec);
     });
   });
-  /* dock magnification */
+  /* dock magnification — frame-batched. Mice report at up to 1000Hz; doing
+     layout reads + width writes per EVENT thrashed layout (and re-blurred
+     the dock's backdrop-filter) many times per frame. One rAF per frame:
+     read every rect first, then write every size — no interleaved
+     read/write, crisp cursor tracking. */
   if (fine && !reduce) {
     var BASE = 52, MAX = 1.5, RANGE = 105;
-    dock.addEventListener('mousemove', function (e) {
-      icons.forEach(function (ic) {
-        if (ic.offsetParent === null) return;   /* skip tier-hidden icons */
-        var r = ic.getBoundingClientRect();
-        var d = Math.abs(e.clientX - (r.left + r.width / 2));
-        var s = 1 + (MAX - 1) * Math.exp(-(d * d) / (2 * RANGE * RANGE));
-        ic.style.width = BASE * s + 'px'; ic.style.height = BASE * s + 'px';
+    var mx = 0, raf = 0;
+    var applyMag = function () {
+      raf = 0;
+      var rects = icons.map(function (ic) {
+        return ic.offsetParent === null ? null : ic.getBoundingClientRect();   /* skip tier-hidden icons */
       });
+      icons.forEach(function (ic, i) {
+        var r = rects[i]; if (!r) return;
+        var d = Math.abs(mx - (r.left + r.width / 2));
+        var s = 1 + (MAX - 1) * Math.exp(-(d * d) / (2 * RANGE * RANGE));
+        var px = (BASE * s).toFixed(1) + 'px';
+        if (ic.style.width !== px) { ic.style.width = px; ic.style.height = px; }
+      });
+    };
+    dock.addEventListener('mousemove', function (e) {
+      dock.classList.remove('settle');
+      mx = e.clientX;
+      if (!raf) raf = requestAnimationFrame(applyMag);
     });
     dock.addEventListener('mouseleave', function () {
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      dock.classList.add('settle');
       icons.forEach(function (ic) { ic.style.width = ''; ic.style.height = ''; });
     });
   }
