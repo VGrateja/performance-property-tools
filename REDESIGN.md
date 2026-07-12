@@ -61,6 +61,10 @@
 - **2026-07-12 · Session 8 (Arena wave): arena + typing + chess + scrabble.** Arena pink chrome; game/board/tile colors untouched (scrabble has zero accent-cyan — its palette is all game data). Games get an **Arena action button** in the uniform header (static binding). Gotchas: (1) arena pills were NOT body-top — blind in-place chrome injection nested the wall/appbar and initChrome’s insertBefore threw; os-chrome now guards (anchors to the wall only when it’s a direct body child, else prepends); (2) naive `indexOf('<body')` hit the literal text “<body>” inside scrabble’s CSS comments — anchor on a REAL tag (`
 <body>`) when relocating blocks in big files.
 
+## Open issues
+
+- **Arena Live Now / Highlights content differs from the original (Van, deferred).** Loaders machine-diffed as logic-identical; session-gated boot applied (158760c) — still differs per Van. Next: side-by-side screenshots of 8123 vs 8124 panels at the same moment to pinpoint (data-dependent).
+
 ## Session protocol
 
 1. Work happens **in this worktree** only; `main` stays clean for hotfixes.
