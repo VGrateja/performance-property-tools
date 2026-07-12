@@ -142,7 +142,7 @@ function _ppBuildTierSwitcher() {
   const hostStyles = {
     'position':'fixed','bottom':'18px','right':'96px','z-index':'2147483647',
     'display':'block','width':'auto','height':'auto','min-width':'180px','min-height':'40px',
-    'font-family':"'Montserrat', system-ui, -apple-system, sans-serif",
+    'font-family':"'Figtree', 'Montserrat', system-ui, -apple-system, sans-serif",
     'pointer-events':'auto','margin':'0','padding':'0','border':'none',
     'background':'transparent','transform':'none','opacity':'1','visibility':'visible'
   };
@@ -152,16 +152,17 @@ function _ppBuildTierSwitcher() {
   btn.type = 'button'; btn.id = 'ts-toggle-btn';
   btn.setAttribute('title', 'View as tier — dev tool');
   const btnStyles = {
-    'display':'flex','align-items':'center','gap':'8px','background':'#1f283f','color':'#ffffff',
-    'border':'1.5px solid #00b6cb','padding':'10px 18px','border-radius':'22px','font-size':'11px',
+    'display':'flex','align-items':'center','gap':'8px','background':'rgba(21,25,38,0.72)','color':'#ffffff',
+    'backdrop-filter':'blur(20px) saturate(1.5)','-webkit-backdrop-filter':'blur(20px) saturate(1.5)',
+    'border':'1px solid rgba(255,255,255,0.16)','padding':'10px 16px','border-radius':'12px','font-size':'11px',
     'font-weight':'800','letter-spacing':'2px','text-transform':'uppercase','cursor':'pointer',
     'box-shadow':'0 6px 24px rgba(0,0,0,.45)','font-family':'inherit','line-height':'1',
     'white-space':'nowrap','min-height':'40px'
   };
   for (const [k,v] of Object.entries(btnStyles)) btn.style.setProperty(k, v, 'important');
   btn.innerHTML = '<span style="font-size:13px;line-height:1">&#128065;</span>'
-                + '<span>View as:&nbsp;</span>'
-                + '<span id="ts-current-label-js" style="color:#00b6cb">TIER 0</span>';
+                + '<span style="opacity:.6">View as:&nbsp;</span>'
+                + '<span id="ts-current-label-js" style="color:#ffffff">TIER 0</span>';
   btn.addEventListener('click', function (e) {
     e.stopPropagation();
     const m = document.getElementById('ts-menu-js');
@@ -172,18 +173,19 @@ function _ppBuildTierSwitcher() {
   const menu = document.createElement('div');
   menu.id = 'ts-menu-js';
   const menuStyles = {
-    'position':'absolute','bottom':'calc(100% + 10px)','right':'0','background':'#ffffff',
-    'border-radius':'10px','box-shadow':'0 14px 48px rgba(0,0,0,.35)','min-width':'240px',
-    'overflow':'hidden','border':'1px solid #e0e3ec','display':'none'
+    'position':'absolute','bottom':'calc(100% + 10px)','right':'0','background':'rgba(18,22,34,0.92)',
+    'backdrop-filter':'blur(24px) saturate(1.5)','-webkit-backdrop-filter':'blur(24px) saturate(1.5)',
+    'border-radius':'12px','box-shadow':'0 14px 48px rgba(0,0,0,.45)','min-width':'240px',
+    'overflow':'hidden','border':'1px solid rgba(255,255,255,0.12)','display':'none'
   };
   for (const [k,v] of Object.entries(menuStyles)) menu.style.setProperty(k, v, 'important');
 
   const header = document.createElement('div');
   header.textContent = 'Switch Tier Perspective';
   const hdrStyles = {
-    'padding':'10px 14px','background':'#f7f8fb','border-bottom':'1px solid #e6e8ef',
+    'padding':'10px 14px','background':'rgba(255,255,255,0.05)','border-bottom':'1px solid rgba(255,255,255,0.10)',
     'font-size':'9px','font-weight':'800','letter-spacing':'2px','text-transform':'uppercase',
-    'color':'#666666','font-family':'inherit'
+    'color':'rgba(235,240,250,0.55)','font-family':'inherit'
   };
   for (const [k,v] of Object.entries(hdrStyles)) header.style.setProperty(k, v, 'important');
   menu.appendChild(header);
@@ -201,16 +203,16 @@ function _ppBuildTierSwitcher() {
     b.type = 'button'; b.setAttribute('data-tier', tier);
     const bs = {
       'display':'block','width':'100%','text-align':'left','padding':'11px 14px','border':'none',
-      'border-bottom':'1px solid #f0f2f6','background':'#ffffff','font-family':'inherit',
-      'font-size':'11.5px','font-weight':'700','color':'#1f283f','cursor':'pointer','letter-spacing':'0.3px'
+      'border-bottom':'1px solid rgba(255,255,255,0.07)','background':'transparent','font-family':'inherit',
+      'font-size':'11.5px','font-weight':'700','color':'#e8edf7','cursor':'pointer','letter-spacing':'0.3px'
     };
     for (const [k,v] of Object.entries(bs)) b.style.setProperty(k, v, 'important');
     b.innerHTML = label + ' <span style="display:block;font-size:9.5px;font-weight:600;opacity:.7;margin-top:2px;letter-spacing:.5px">' + sub + '</span>';
-    b.addEventListener('mouseenter', () => b.style.setProperty('background', '#eef7f9', 'important'));
+    b.addEventListener('mouseenter', () => b.style.setProperty('background', 'rgba(255,255,255,0.08)', 'important'));
     b.addEventListener('mouseleave', () => {
       const active = b.getAttribute('data-tier') === getViewAsLevel();
-      b.style.setProperty('background', active ? '#00b6cb' : '#ffffff', 'important');
-      b.style.setProperty('color',      active ? '#ffffff' : '#1f283f', 'important');
+      b.style.setProperty('background', active ? '#e8edf7' : 'transparent', 'important');
+      b.style.setProperty('color',      active ? '#10131c' : '#e8edf7', 'important');
     });
     b.addEventListener('click', function (e) { e.stopPropagation(); setViewAs(tier); });
     menu.appendChild(b);
@@ -241,8 +243,8 @@ function initTierSwitcher() {
     if (lbl) lbl.textContent = labels[va] || 'TIER 0';
     document.querySelectorAll('#ts-menu-js button[data-tier]').forEach(b => {
       const active = b.getAttribute('data-tier') === va;
-      b.style.setProperty('background', active ? '#00b6cb' : '#ffffff', 'important');
-      b.style.setProperty('color',      active ? '#ffffff' : '#1f283f', 'important');
+      b.style.setProperty('background', active ? '#e8edf7' : 'transparent', 'important');
+      b.style.setProperty('color',      active ? '#10131c' : '#e8edf7', 'important');
     });
   } catch (e) {}
 }

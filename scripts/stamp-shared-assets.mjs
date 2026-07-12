@@ -30,10 +30,16 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SHARED = join(ROOT, 'shared');
 
 // 1. Hash every shared CSS/JS file (8-char sha1 of its contents).
+//    Line endings are normalised to LF before hashing: git checkouts on
+//    Windows can materialise the SAME committed file as LF in one folder and
+//    CRLF in another (main folder vs the redesign worktree), and raw-byte
+//    hashing then churns every ?v= ref between the two. Content-identical
+//    files must stamp identically everywhere.
 const hashes = {};
 for (const f of readdirSync(SHARED)) {
   if (!/\.(css|js)$/i.test(f)) continue;
-  hashes[f] = createHash('sha1').update(readFileSync(join(SHARED, f))).digest('hex').slice(0, 8);
+  const normalised = readFileSync(join(SHARED, f), 'utf8').replace(/\r\n/g, '\n');
+  hashes[f] = createHash('sha1').update(normalised).digest('hex').slice(0, 8);
 }
 
 // 2. The live-site HTML: index.html + every tools/*.html (skip node_modules,
