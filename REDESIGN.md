@@ -87,7 +87,7 @@
 
 ## Open issues
 
-- **Arena Live Now / Highlights (Van, deferred → FIXED in S15, f24c55a).** Root cause: stale loader versions from the S8 port, not data. Awaiting Van's signed-in confirmation.
+- **Arena Live Now / Highlights (Van → FULLY RESOLVED, f24c55a + b935a28).** Two layers: (1) S8 port had stale loaders → re-ported from main. (2) Deeper truth via Van's console diagnostic: **the OLD hub only LOOKED right because its double-fired boot raced the news cache** (first render had no typing items; `_inFlight` guards discarded the corrective second pass). Main's actual code pads Live Now with typing PBs and lets weeks-old PBs outrank matches in Highlights. Van's spec now EXPLICIT on both new surfaces: Live Now = challenges + active games only; Highlights = streaks(0) → upsets(1) → finishes(2) → typing PBs/milestones only when ≤7 days fresh (3), pins require freshness too.
 
 ## Session protocol
 
