@@ -1010,26 +1010,34 @@ async function loadArenaNews() {
   }
 }
 
-/* ── boot: run once sb is ready, then keep Live Now fresh (60s) ── */
+/* ── boot: wait for the AUTH SESSION (not just the sb client) before the
+   first load — the hub only ever ran these loaders after sign-in completed,
+   so the queries always carried the user's RLS context + user id (incoming
+   challenges, "You" pinning). Firing on bare window.sb raced auth hydration
+   and the first paint queried as anon → wrong/partial rows vs the original.
+   Then keep Live Now fresh (60s). ── */
 (function arenaFeedsBoot() {
   let n = 0;
-  const t = setInterval(() => {
-    if (!window.sb && ++n < 60) return;
+  const t = setInterval(async () => {
+    n++;
+    if (!window.sb) { if (n > 100) clearInterval(t); return; }
+    let hasSession = false;
+    try {
+      const { data } = await window.sb.auth.getSession();
+      hasSession = !!(data && data.session);
+    } catch (_) {}
+    if (!hasSession && n < 100) return;   // auth.js still hydrating — same wait the hub's reveal gave it
     clearInterval(t);
-    if (!window.sb) return;
-    loadArenaStats();
-    updateArenaCardStats();
-    loadArenaNews().then(() => {
-      loadArenaLiveFeed();
-      loadArenaHighlights();
-    });
-    setInterval(() => {
+    const runAll = () => {
+      loadArenaStats();
       updateArenaCardStats();
       loadArenaNews().then(() => {
         loadArenaLiveFeed();
         loadArenaHighlights();
       });
-    }, 60000);
+    };
+    runAll();
+    setInterval(runAll, 60000);
   }, 100);
 })();
 </script>
