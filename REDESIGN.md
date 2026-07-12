@@ -19,8 +19,8 @@
 | 7 | `tools/data-architecture.html` | Vault | ✅ S4 | n/a | ☐ Van | Accent→violet; ALL node-type/status colors untouched; drawer .scrim renamed .drawer-scrim (collided with the OS wallpaper class; id/JS untouched) |
 | 8 | `tools/property-clock.html` | Analytics | — | ☐ JPEG ☐ PDF vs baseline | — | `bakeClockLogo()` untouchable; D3 |
 | 9 | `tools/runway-demand.html` | Analytics | — | ☐ JPEG ☐ PDF vs baseline | — | D3 |
-| 10 | `tools/cadence.html` | PM | — | n/a | — | Realtime board |
-| 11 | `tools/tenant-summary.html` | PM | — | ☐ one-pager | — | |
+| 10 | `tools/cadence.html` | PM | ✅ S6 | n/a | ☐ Van (realtime + notify) | --cad-* re-point to PM green; success/danger + card-status colors untouched; realtime/notify logic untouched |
+| 11 | `tools/tenant-summary.html` | PM | ✅ S6 | ✅ paper brand asserted + print PDF captured; ☐ Van real one-pager | Chrome PM green; **#summaryPaper re-pins PP brand (cyan/navy/logo)** — owner output untouched; print block untouched |
 | 12 | `tools/scorecards.html` | People | — | n/a | — | Per-person privacy — verify company-tier view |
 | 13 | `tools/results.html` | People | — | n/a | — | |
 | 14 | `tools/arena.html` | Arena | — | n/a | — | |
@@ -51,6 +51,8 @@
 - **2026-07-12 · Session 4 (Vault wave 2/3): runway-workbook + suburb-selection-data + data-architecture.** Asserted batch transforms (22 steps). Gotcha logged: a tool defining its own `.scrim` class collides with the OS wallpaper div (`.wall.scrim`) — opacity:0/z-index wars; fix = rename the TOOL’s class (element id + JS untouched). Self-collision gotcha: inserted payload text must not contain the patterns later count-swapped. Headless: all 3 verified (appbar/chip/wall z-order/fonts/accents; data-architecture full map — 29 nodes, master cyan + status colors preserved).
 
 - **2026-07-12 · Session 5: data-forge (282KB).** 10 asserted transforms. The tool’s charts/sparklines read `--pp-cyan`/`--pp-violet` from computed style with hex fallbacks — re-pointing the tokens re-hues every canvas/SVG automatically (fallback hexes swapped too). Harness learning: aborting supabase simulates network-death and trips paths prod never hits — for gate-less tools test with LIVE anon traffic; and CONTROL-TEST 8123 before chasing “regressions” (signed-out empty grid = pre-existing).
+
+- **2026-07-12 · Session 6 (PM wave): cadence + tenant-summary.** PM green accents. Tenant one-pager treated as CLIENT OUTPUT: `#summaryPaper` re-pins the PP brand tokens inside the paper while the tool chrome re-points — pattern for any tool that RENDERS a branded document. Both tools keep guarded `navigateToHub` back behaviour. **Harness lesson (caught by post-checks): a transform helper must mutate ONE source of truth — an fn(x,…) parameter shadowing the closure wrote a stale original back while logging ok; fixed T() to closure-only + has() checks. Always confirm a real `git diff --stat` after a transform.**
 
 ## Session protocol
 
