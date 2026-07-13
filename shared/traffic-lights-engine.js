@@ -194,7 +194,13 @@
     var ar = await sb.from('forge_arrears').select('data').eq('id', 'latest').maybeSingle();
     var sn = await sb.from('forge_demand_snapshots').select('version,data').order('version');
     var snaps = (sn.data || []).filter(function (s) { return /^\d{4}-\d{2}$/.test(s.version); });
-    return { series: series, arrears: (ar.data && ar.data.data && ar.data.data.regions) || {}, snaps: snaps };
+    // cash rate keyed by 'YYYY-MM' + the latest CPI quarter — so the real cash rate can
+    // align a QUARTERLY (3-month-avg) cash rate to the quarterly CPI (workbook method).
+    var cq = await sb.from('rdp_raw_series').select('period,value').eq('metric', 'cash_rate').eq('region_slug', 'australia').eq('freq', 'M').order('period');   // monthly only — an annual (freq 'A') row shares the same period and would clobber it
+    var cashByPeriod = {}; (cq.data || []).forEach(function (r) { cashByPeriod[String(r.period).slice(0, 7)] = +r.value; });
+    var cp = await sb.from('rdp_raw_series').select('period').eq('metric', 'cpi').order('period', { ascending: false }).limit(1);
+    var cpiLatest = (cp.data && cp.data[0]) ? String(cp.data[0].period).slice(0, 7) : null;
+    return { series: series, arrears: (ar.data && ar.data.data && ar.data.data.regions) || {}, snaps: snaps, cashByPeriod: cashByPeriod, cpiLatest: cpiLatest };
   }
 
   function buildRegion(cap, ctx) {
@@ -210,16 +216,28 @@
     var lendLast = (lastN(oo) || 0) + (lastN(inv) || 0), lendPrior = (backN(oo, 12) || 0) + (backN(inv, 12) || 0);   // YoY (12 months back), per workbook
     var unemp = S('unemployment', cap.state);
     var arr = (ctx.arrears[cap.state] && ctx.arrears[cap.state].values) || [];
-    var cash = lastN(S('cash_rate', 'australia')), cpi = lastN(S('cpi', cap.slug));
-    var cashP = priorN(S('cash_rate', 'australia')), cpiP = priorN(S('cpi', cap.slug));
-    var real = (cash != null && cpi != null) ? cash - cpi : null;
-    var realP = (cashP != null && cpiP != null) ? cashP - cpiP : null;
+    // Real cash rate — workbook method: QUARTERLY cash rate (3-month avg aligned to the
+    // CPI's latest quarter) minus the region's latest year-ended CPI. Using the latest
+    // MONTHLY cash rate (misaligned with the quarterly CPI) skewed every capital when a
+    // rate moved after the CPI quarter — the cause of the cash-rate drift.
+    var qAvgCash = function (endPeriod) {
+      if (!endPeriod) return null;
+      var y = +endPeriod.slice(0, 4), m = +endPeriod.slice(5, 7), vals = [];
+      for (var d = 0; d < 3; d++) { var mm = m - d, yy = y; while (mm < 1) { mm += 12; yy--; } var k = yy + '-' + (mm < 10 ? '0' + mm : '' + mm); if (ctx.cashByPeriod[k] != null) vals.push(ctx.cashByPeriod[k]); }
+      var s = 0; for (var i = 0; i < vals.length; i++) s += vals[i]; return vals.length ? s / vals.length : null;
+    };
+    var prevQ = function (p) { if (!p) return null; var y = +p.slice(0, 4), m = +p.slice(5, 7) - 3; while (m < 1) { m += 12; y--; } return y + '-' + (m < 10 ? '0' + m : '' + m); };
+    var cpi = lastN(S('cpi', cap.slug)), cpiP = priorN(S('cpi', cap.slug));
+    var qc = qAvgCash(ctx.cpiLatest), qcP = qAvgCash(prevQ(ctx.cpiLatest));
+    var real = (qc != null && cpi != null) ? qc - cpi : null;
+    var realP = (qcP != null && cpiP != null) ? qcP - cpiP : null;
 
     // ── per-indicator confidence FORECASTS (each projects its OWN trend) ──
     // annual indicators (stock/days/retail/biz-inv/unemp): 3-pt trend → 1 ahead;
     // monthly (cash-rate/arrears/job-creation/lending): 6-pt window → 3 ahead.
     var fcUnemp = projFwd(unemp, 3, 1), unLast = lastN(unemp);
-    var fcCash = projFwd(S('cash_rate', 'australia'), 6, 3), fcCpi = projFwd(S('cpi', cap.slug), 6, 3);
+    // project the quarterly REAL cash-rate series (qtr-avg cash − CPI per quarter), like the workbook
+    var fcReal = (function () { var cpiArr = cleanNums(S('cpi', cap.slug)), rs = [], per = ctx.cpiLatest; for (var qi = cpiArr.length - 1; qi >= 0 && per; qi--) { var v = qAvgCash(per); if (v != null) rs.unshift(v - cpiArr[qi]); per = prevQ(per); } return projFwd(rs, 6, 3); })();
     var lendSeries = []; for (var li = 0, lm = Math.max(oo.length, inv.length); li < lm; li++) if (oo[li] != null && inv[li] != null) lendSeries.push(oo[li] + inv[li]);
 
     var inp = {
@@ -245,7 +263,7 @@
       fc_bizinv: projChg(S('bus_investment', cap.state), 3, 1),
       fc_unemp_level: fcUnemp,
       fc_unemp_change: (fcUnemp != null && unLast != null) ? fcUnemp - unLast : null,
-      fc_real_cash_rate: (fcCash != null && fcCpi != null) ? fcCash - fcCpi : null,
+      fc_real_cash_rate: fcReal,
       fc_arrears: projChg(arr, 6, 3),
       fc_jci: projChg(S('job_creation_index', cap.slug), 6, 3),
       fc_lending: projChg(lendSeries, 6, 3)
