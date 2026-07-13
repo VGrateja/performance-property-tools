@@ -804,6 +804,20 @@
     transition:background .12s, border-color .12s, transform .12s;
     line-height:1.3;
   }
+  /* Copy-link button on a PDF Reports row — pushed to the right edge, copies
+     the shareable link without opening the PDF. */
+  .ws-col-copy{
+    margin-left:auto; flex:0 0 auto;
+    padding:5px 10px; border-radius:6px;
+    font:inherit; font-size:11px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase;
+    background:transparent; border:1px solid rgba(255,255,255,0.20); color:var(--fg-light);
+    cursor:pointer; white-space:nowrap;
+    transition:background .12s, border-color .12s, color .12s;
+  }
+  .ws-col-copy:hover{ border-color:var(--accent); color:var(--accent); background:rgba(246,158,44,0.10); }
+  .ws-col-copy.copied{ border-color:#3EDC97; color:#3EDC97; }
+  [data-theme="light"] .ws-col-copy{ border-color:rgba(31,40,63,0.22); color:var(--fg-dark); }
+  [data-theme="light"] .ws-col-copy:hover{ border-color:var(--accent); color:var(--accent); }
   .ws-col-item:hover{
     background:rgba(246,158,44,0.10);
     border-color:rgba(246,158,44,0.40);
@@ -1025,6 +1039,25 @@
     background:rgba(246,158,44,0.14);
     border-color:rgba(246,158,44,0.70);
   }
+  /* Copy-link button — compact outline, sits beside the Open CTA. Copies the
+     shareable Google-Cloud URL without opening the PDF. Turns green on copy. */
+  .ws-copy-link{
+    flex:0 0 auto;
+    display:inline-flex; align-items:center; justify-content:center;
+    padding:9px 12px;
+    border-radius:8px;
+    font:inherit; font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase;
+    background:transparent;
+    border:1px solid rgba(255,255,255,0.18);
+    color:var(--fg-light);
+    cursor:pointer;
+    transition:background .12s, border-color .12s, color .12s;
+    white-space:nowrap;
+  }
+  .ws-copy-link:hover{ border-color:var(--accent); color:var(--accent); }
+  .ws-copy-link.copied{ border-color:#3EDC97; color:#3EDC97; }
+  [data-theme="light"] .ws-copy-link{ border-color:rgba(31,40,63,0.20); color:var(--fg-dark); }
+  [data-theme="light"] .ws-copy-link:hover{ border-color:var(--accent); color:var(--accent); }
   .ws-action-disabled{
     background:rgba(255,255,255,0.04);
     border:1px solid rgba(255,255,255,0.12);
@@ -2168,9 +2201,60 @@ function _gridIdFor(secIdx, subIdx) {
 
 /* Generic / whitepaper card — single primary CTA. The CTA label is
    "Open Paper" inside a Whitepapers subsection, "Open" elsewhere. */
+/* ── Shareable GCS PDF links (captured at download by the online-reports tool) ──
+   Overlays permanent Google-Cloud links + a Copy-link button onto the PDF
+   Reports cards. Read from the report_pdf_links singleton; keyed by report
+   slug, which we recover from the card title (the renderer titled each card via
+   slugToTitle, so title → slug is just lowercase + hyphenate). Best-effort:
+   before migration 078 is applied the table is absent and we silently skip. */
+let _PDF_GCS_LINKS = {};
+async function _loadPdfLinks() {
+  try {
+    if (!window.sb) return;
+    const { data, error } = await window.sb.from('report_pdf_links').select('payload').eq('id', 1).maybeSingle();
+    if (error || !data || !data.payload) return;
+    _PDF_GCS_LINKS = data.payload;
+    renderAll();
+  } catch (_) { /* overlay is optional — never block the tool */ }
+}
+function _capturedLinkFor(item) {
+  if (!item || !item.title) return null;
+  const t = String(item.title);
+  const L = _PDF_GCS_LINKS || {};
+  /* Regional reports: the renderer titled each card via slugToTitle, so
+     title → slug inverts cleanly ("Gold Coast" → "gold-coast"). */
+  const slug = t.trim().toLowerCase().replace(/\s+/g, '-');
+  if (L[slug]) return L[slug];
+  /* The "Others" cards are captured under canonical keys, matched by keyword.
+     Clock is checked first — "National Property Clock" also contains "national". */
+  if (/clock/i.test(t) && L['clock']) return L['clock'];
+  if (/commercial/i.test(t) && L['commercial']) return L['commercial'];
+  if (/national/i.test(t) && L['national']) return L['national'];
+  return null;
+}
+function _copyFallback(text, cb) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; ta.style.pointerEvents = 'none';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta); cb && cb();
+  } catch (_) {}
+}
+function _copyReportLink(url, btn) {
+  const restore = () => { btn.classList.remove('copied'); btn.textContent = 'Copy link'; };
+  const done = () => { btn.classList.add('copied'); btn.textContent = 'Copied'; clearTimeout(btn._t); btn._t = setTimeout(restore, 1500); };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, () => _copyFallback(url, done));
+    else _copyFallback(url, done);
+  } catch (_) { _copyFallback(url, done); }
+}
+
 function _renderItemView(item, ctaLabel, showStatus) {
   const label = ctaLabel || 'Open';
-  const meta = item.date ? 'Last updated ' + _esc(item.date) : 'Last updated —';
+  const cap = _capturedLinkFor(item);
+  const url = (cap && cap.url) || (item && item.url) || '';
+  const dateStr = (cap && cap.date) || item.date;
+  const meta = dateStr ? 'Last updated ' + _esc(dateStr) : 'Last updated —';
   const statusHtml = showStatus
     ? '<div class="ws-card-status ' + _esc(_statusClass(item.status)) + '">' + _esc(_statusLabel(item.status)) + '</div>'
     : '';
@@ -2178,12 +2262,17 @@ function _renderItemView(item, ctaLabel, showStatus) {
     statusHtml +
     '<h3 class="ws-card-title">' + _esc(item.title || 'Untitled') + '</h3>' +
     '<div class="ws-card-meta">' + meta + '</div>';
-  if (item.url) {
+  if (url) {
     const a = document.createElement('a');
     a.className = 'ws-card';
-    a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
     a.innerHTML = head +
-      '<div class="ws-card-actions"><span class="ws-action ws-action-primary">' + _esc(label) + ' <span>›</span></span></div>';
+      '<div class="ws-card-actions">' +
+        '<span class="ws-action ws-action-primary">' + _esc(label) + ' <span>›</span></span>' +
+        '<button type="button" class="ws-copy-link" title="Copy shareable link">Copy link</button>' +
+      '</div>';
+    const btn = a.querySelector('.ws-copy-link');
+    if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, btn); });
     return a;
   }
   const div = document.createElement('div');
@@ -3046,22 +3135,30 @@ function _renderSubsectionColumn(secIdx, subIdx, sub) {
    subsection has a status workflow (whitepaper/strategy). Date
    renders as a small muted line under the title when present. */
 function _renderColumnItemView(item, showStatusDot) {
+  /* Overlay the captured Google-Cloud link (+ Copy button) over the Supabase
+     fallback. PDF Reports uses THIS column renderer (not the grid one). */
+  const cap = _capturedLinkFor(item);
+  const url = (cap && cap.url) || (item && item.url) || '';
+  const dateStr = (cap && cap.date) || item.date;
   const dotHtml = showStatusDot
     ? '<span class="ws-col-dot ws-col-dot--' + _esc(item.status || 'in-progress') + '" title="' + _esc(_statusLabel(item.status)) + '"></span>'
     : '';
-  const dateHtml = item.date
-    ? '<span class="ws-col-item-date">' + _esc(item.date) + '</span>'
+  const dateHtml = dateStr
+    ? '<span class="ws-col-item-date">' + _esc(dateStr) + '</span>'
     : '';
   const stackHtml =
     '<div class="ws-col-item-stack">' +
       '<span class="ws-col-item-title">' + _esc(item.title || 'Untitled') + '</span>' +
       dateHtml +
     '</div>';
-  if (item.url) {
+  if (url) {
     const a = document.createElement('a');
     a.className = 'ws-col-item';
-    a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-    a.innerHTML = dotHtml + stackHtml;
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    a.innerHTML = dotHtml + stackHtml +
+      '<button type="button" class="ws-col-copy" title="Copy shareable link">Copy link</button>';
+    const btn = a.querySelector('.ws-col-copy');
+    if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, btn); });
     return a;
   }
   const div = document.createElement('div');
@@ -3342,6 +3439,8 @@ renderAll();
    sees something immediately. The cloud version, if present, will
    override and re-render. */
 _hydrateFromCloud();
+/* Overlay the captured Google-Cloud PDF links (Copy-link buttons) once loaded. */
+_loadPdfLinks();
 
 /* ─── Signed-URL interceptor for online-reports storage links ───
    Migration 028 flipped the online-reports bucket from public to

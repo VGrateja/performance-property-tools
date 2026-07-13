@@ -2957,6 +2957,34 @@ function _clockExportBaseName(){
   return 'Clock_diagram_Smooth&Workforce_Edition_' + ver + '_' + yr + '-' + rand;
 }
 
+/* ── Shareable-PDF-link capture (report_pdf_links / migration 078). The clock
+   PDF is uploaded to research/Clocks/{YEAR}/ (its own folder, no edition
+   subfolder). Keyed 'clock' so the Documents "National Property Clock" card
+   picks it up. Best-effort: no table/writer → warns, no-ops. ── */
+const _pdfLinkQueue = {};
+let _pdfLinkFlushTimer = null;
+function _recordClockPdfLink(baseName){
+  try {
+    const yr = new Date().getFullYear();
+    const url = 'https://docs.performanceproperty.com.au/research/Clocks/' + yr + '/' + baseName + '.pdf';
+    const d = new Date();
+    const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    _pdfLinkQueue['clock'] = { key:'clock', url:url, date: String(d.getDate()).padStart(2,'0')+' '+MON[d.getMonth()]+' '+yr, at:d.toISOString() };
+    clearTimeout(_pdfLinkFlushTimer);
+    _pdfLinkFlushTimer = setTimeout(_flushClockPdfLink, 600);
+  } catch(_){}
+}
+async function _flushClockPdfLink(){
+  if (!_pdfLinkQueue.clock || !window.sb) return;
+  try {
+    let payload = {};
+    try { const { data } = await window.sb.from('report_pdf_links').select('payload').eq('id',1).maybeSingle(); if (data && data.payload && typeof data.payload==='object') payload = data.payload; } catch(_){}
+    payload['clock'] = _pdfLinkQueue.clock; delete _pdfLinkQueue.clock;
+    const { error } = await window.sb.from('report_pdf_links').upsert({ id:1, payload:payload }, { onConflict:'id' });
+    if (error) console.warn('[pdf-links] not saved (' + error.message + ') — apply migration 078 or check writer access.');
+  } catch(e){ console.warn('[pdf-links] flush failed', e); }
+}
+
 /* ═══ PDF EXPORT — captures only #clock-capture ═══
    Tier 0/1 (dev/admin)   — HD render (scale:4, lossless PNG).
    Tier 2 (company)       — standard render (scale:2, JPEG).
@@ -2988,7 +3016,9 @@ async function exportPDF(){
     const sc=Math.min(aW/iW,aH/iH,1);
     const dataUrl = canvas.toDataURL('image/jpeg', hd ? 0.95 : 0.9);
     pdf.addImage(dataUrl, 'JPEG', margin+(aW-iW*sc)/2, margin+(aH-iH*sc)/2, iW*sc, iH*sc, undefined, hd ? 'SLOW' : 'FAST');
-    pdf.save(_clockExportBaseName() + '.pdf');
+    const _clockName = _clockExportBaseName();
+    pdf.save(_clockName + '.pdf');
+    try { _recordClockPdfLink(_clockName); } catch (_) {}
     toast(hd ? 'HD PDF downloaded!' : 'PDF downloaded!');
   }catch(err){console.error(err);alert('PDF failed - try Ctrl+P instead.');}
   finally{

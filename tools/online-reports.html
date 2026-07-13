@@ -8330,7 +8330,61 @@ function buildEditionFilename(regionName, regionSlug, opts) {
   const litePart = lite ? 'Lite_' : '';
   const suffix = regionSlug && REGION_FILENAME_SUFFIX[regionSlug];
   const namePart = suffix ? regionName + '_' + suffix : regionName;
-  return 'PPA_' + litePart + namePart + '_report_ED' + mm + '-' + letters + digits;
+  const finalName = 'PPA_' + litePart + namePart + '_report_ED' + mm + '-' + letters + digits;
+  /* Capture the shareable GCS link now — this is the ONLY moment the exact
+     filename (incl. the random suffix above) exists. The Documents tool's
+     "PDF Reports" folder reads these and shows a permanent, copyable link once
+     you upload the downloaded file to Google Cloud. See recordReportPdfLink. */
+  try { recordReportPdfLink(regionSlug, finalName, lite); } catch (_) {}
+  return finalName;
+}
+
+/* ── Shareable-PDF-link capture (Option A: capture at download) ──────────────
+   buildEditionFilename() calls this for every full/lite report PDF it names.
+   We compute the Google Cloud Storage URL the uploaded file WILL live at and
+   record it in the report_pdf_links singleton (one JSONB row). Writes are
+   batched (a bulk edition download names ~36 files in a tight loop → one save)
+   and best-effort: if migration 078 isn't applied yet, or the user is not a
+   writer, it warns and no-ops without affecting the download. GCS layout (from
+   the live samples):
+     Full:  research/Online/{YEAR}/ED{MM}/<name>.pdf
+     Lite:  research/Online/{YEAR}_Lite/ED{MM}/<name>.pdf                     */
+const GCS_REPORTS_BASE = 'https://docs.performanceproperty.com.au/research/Online/';
+const _pdfLinkQueue = {};
+let _pdfLinkFlushTimer = null;
+function recordReportPdfLink(slug, name, lite) {
+  if (!slug || !name) return;
+  const d = new Date();
+  const yr = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const yearFolder = lite ? (yr + '_Lite') : String(yr);
+  const url = GCS_REPORTS_BASE + yearFolder + '/ED' + mm + '/' + name + '.pdf';
+  const key = (lite ? 'lite:' : '') + slug;
+  _pdfLinkQueue[key] = {
+    slug: slug, lite: !!lite, edition: 'ED' + mm, year: yr, url: url,
+    date: String(d.getDate()).padStart(2, '0') + ' ' + MON[d.getMonth()] + ' ' + yr,
+    at: d.toISOString(),
+  };
+  clearTimeout(_pdfLinkFlushTimer);
+  _pdfLinkFlushTimer = setTimeout(flushReportPdfLinks, 600);
+}
+async function flushReportPdfLinks() {
+  const keys = Object.keys(_pdfLinkQueue);
+  if (!keys.length || !window.sb) return;
+  try {
+    let payload = {};
+    try {
+      const { data } = await window.sb.from('report_pdf_links').select('payload').eq('id', 1).maybeSingle();
+      if (data && data.payload && typeof data.payload === 'object') payload = data.payload;
+    } catch (_) { /* table may not exist pre-migration; start fresh */ }
+    for (const k of keys) { payload[k] = _pdfLinkQueue[k]; delete _pdfLinkQueue[k]; }
+    const { error } = await window.sb.from('report_pdf_links')
+      .upsert({ id: 1, payload: payload }, { onConflict: 'id' });
+    if (error) console.warn('[pdf-links] not saved (' + error.message + ') — apply migration 078 or check writer access.');
+  } catch (e) {
+    console.warn('[pdf-links] flush failed', e);
+  }
 }
 
 async function exportReportPdf(opts) {
