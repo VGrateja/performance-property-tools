@@ -165,6 +165,10 @@
     { slug: 'darwin', state: 'st-nt', name: 'Darwin' },
     { slug: 'hobart', state: 'st-tas', name: 'Hobart' }
   ];
+  // Each state's capital — the CPI proxy for regional markets (ABS publishes CPI by
+  // capital city only, so a region uses its state capital's inflation for the real
+  // cash rate; state-level indicators already come from the region's own state).
+  var STATE_CAP = { NSW: 'sydney', VIC: 'melbourne', QLD: 'brisbane', WA: 'perth', SA: 'adelaide', ACT: 'canberra', NT: 'darwin', TAS: 'hobart' };
 
   var lastN = function (a) { for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) return +a[i]; return null; };
   var priorN = function (a) { var seen = 0; for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) { seen++; if (seen === 2) return +a[i]; } return null; };
@@ -180,10 +184,30 @@
   var projChg = function (a, window, ahead) { var p = projFwd(a, window, ahead), l = lastN(a); return (p == null || l == null || l === 0) ? null : p / l - 1; };
 
   async function fetchAll(sb) {
+    // Discover the market set from the latest demand snapshot (the regions that have
+    // SD/Value data) + rdp_regions (name/state). Each market carries its state slug
+    // (st-*) for the state-level indicators and its state capital's slug for CPI.
+    var rg = await sb.from('rdp_regions').select('slug,name,state');
+    var regInfo = {}; (rg.data || []).forEach(function (r) { regInfo[r.slug] = { name: r.name, state: r.state }; });
+    var sn = await sb.from('forge_demand_snapshots').select('version,data').order('version');
+    var snaps = (sn.data || []).filter(function (s) { return /^\d{4}-\d{2}$/.test(s.version); });
+    var latest = snaps.length ? snaps[snaps.length - 1] : null;
+    var snapSlugs = latest ? Object.keys((latest.data && latest.data.houses) || {}) : [];
+    var capSet = {}; for (var sk in STATE_CAP) capSet[STATE_CAP[sk]] = 1;
+    var markets = [];
+    for (var si = 0; si < snapSlugs.length; si++) {
+      var mslug = snapSlugs[si], info = regInfo[mslug], sc = info && info.state, capSlug = sc && STATE_CAP[sc];
+      if (!sc || !capSlug) continue;   // skip anything without a resolvable state/capital
+      markets.push({ slug: mslug, name: (info && info.name) || mslug, state: 'st-' + sc.toLowerCase(), capitalSlug: capSlug });
+    }
+    markets.sort(function (a, b) { var ca = capSet[a.slug] ? 0 : 1, cb = capSet[b.slug] ? 0 : 1; return ca !== cb ? ca - cb : a.name.localeCompare(b.name); });   // capitals first, then regional A→Z
+
     var METRICS = ['som_h', 'adom_h', 'retail_turnover', 'bus_investment', 'unemployment', 'cash_rate', 'cpi', 'job_creation_index', 'owner_occupier', 'investor', 'ranking_h', 'ranking_u'];
-    var REGIONS = ['australia']; for (var i = 0; i < CAPS.length; i++) { REGIONS.push(CAPS[i].slug); REGIONS.push(CAPS[i].state); }
+    var regSet = { australia: 1 };
+    for (var mi = 0; mi < markets.length; mi++) { regSet[markets[mi].slug] = 1; regSet[markets[mi].state] = 1; regSet[markets[mi].capitalSlug] = 1; }
+    var REGIONS = Object.keys(regSet);
     var rows = [];
-    for (var pg = 0; pg < 25; pg++) {
+    for (var pg = 0; pg < 60; pg++) {
       var q = await sb.from('rdp_raw_series').select('metric,region_slug,period,value').in('metric', METRICS).in('region_slug', REGIONS).order('period').range(pg * 1000, pg * 1000 + 999);
       if (q.error) throw q.error;
       rows = rows.concat(q.data || []);
@@ -192,15 +216,13 @@
     var series = {};   // metric|region -> [values in period order]
     for (var r = 0; r < rows.length; r++) { var k = rows[r].metric + '|' + rows[r].region_slug; (series[k] || (series[k] = [])).push(+rows[r].value); }
     var ar = await sb.from('forge_arrears').select('data').eq('id', 'latest').maybeSingle();
-    var sn = await sb.from('forge_demand_snapshots').select('version,data').order('version');
-    var snaps = (sn.data || []).filter(function (s) { return /^\d{4}-\d{2}$/.test(s.version); });
     // cash rate keyed by 'YYYY-MM' + the latest CPI quarter — so the real cash rate can
     // align a QUARTERLY (3-month-avg) cash rate to the quarterly CPI (workbook method).
     var cq = await sb.from('rdp_raw_series').select('period,value').eq('metric', 'cash_rate').eq('region_slug', 'australia').eq('freq', 'M').order('period');   // monthly only — an annual (freq 'A') row shares the same period and would clobber it
     var cashByPeriod = {}; (cq.data || []).forEach(function (r) { cashByPeriod[String(r.period).slice(0, 7)] = +r.value; });
     var cp = await sb.from('rdp_raw_series').select('period').eq('metric', 'cpi').order('period', { ascending: false }).limit(1);
     var cpiLatest = (cp.data && cp.data[0]) ? String(cp.data[0].period).slice(0, 7) : null;
-    return { series: series, arrears: (ar.data && ar.data.data && ar.data.data.regions) || {}, snaps: snaps, cashByPeriod: cashByPeriod, cpiLatest: cpiLatest };
+    return { series: series, arrears: (ar.data && ar.data.data && ar.data.data.regions) || {}, snaps: snaps, cashByPeriod: cashByPeriod, cpiLatest: cpiLatest, markets: markets };
   }
 
   function buildRegion(cap, ctx) {
@@ -227,7 +249,7 @@
       var s = 0; for (var i = 0; i < vals.length; i++) s += vals[i]; return vals.length ? s / vals.length : null;
     };
     var prevQ = function (p) { if (!p) return null; var y = +p.slice(0, 4), m = +p.slice(5, 7) - 3; while (m < 1) { m += 12; y--; } return y + '-' + (m < 10 ? '0' + m : '' + m); };
-    var cpi = lastN(S('cpi', cap.slug)), cpiP = priorN(S('cpi', cap.slug));
+    var cpi = lastN(S('cpi', cap.capitalSlug)), cpiP = priorN(S('cpi', cap.capitalSlug));
     var qc = qAvgCash(ctx.cpiLatest), qcP = qAvgCash(prevQ(ctx.cpiLatest));
     var real = (qc != null && cpi != null) ? qc - cpi : null;
     var realP = (qcP != null && cpiP != null) ? qcP - cpiP : null;
@@ -237,7 +259,7 @@
     // monthly (cash-rate/arrears/job-creation/lending): 6-pt window → 3 ahead.
     var fcUnemp = projFwd(unemp, 3, 1), unLast = lastN(unemp);
     // project the quarterly REAL cash-rate series (qtr-avg cash − CPI per quarter), like the workbook
-    var fcReal = (function () { var cpiArr = cleanNums(S('cpi', cap.slug)), rs = [], per = ctx.cpiLatest; for (var qi = cpiArr.length - 1; qi >= 0 && per; qi--) { var v = qAvgCash(per); if (v != null) rs.unshift(v - cpiArr[qi]); per = prevQ(per); } return projFwd(rs, 6, 3); })();
+    var fcReal = (function () { var cpiArr = cleanNums(S('cpi', cap.capitalSlug)), rs = [], per = ctx.cpiLatest; for (var qi = cpiArr.length - 1; qi >= 0 && per; qi--) { var v = qAvgCash(per); if (v != null) rs.unshift(v - cpiArr[qi]); per = prevQ(per); } return projFwd(rs, 6, 3); })();
     var lendSeries = []; for (var li = 0, lm = Math.max(oo.length, inv.length); li < lm; li++) if (oo[li] != null && inv[li] != null) lendSeries.push(oo[li] + inv[li]);
 
     var inp = {
@@ -303,8 +325,8 @@
       { name: 'Runway Unit', meta: 'Affordability runway', sub: 'Projected: ' + (inp.runway_u_fcst == null ? '—' : Math.round(inp.runway_u_fcst * 100) + '%'), right: (inp.runway_u == null ? '--' : (inp.runway_u * 100).toFixed(1) + '%'), signal: vi[3].signal }
     ];
     var sd_inds = [
-      { name: 'Demand Score - House', meta: 'Demand score', sub: 'Projected: ' + (inp.ds_h_fcst == null ? '—' : inp.ds_h_fcst), right: (inp.ds_h == null ? '--' : Math.round(inp.ds_h)), signal: out.sd_inds[0].signal },
-      { name: 'Demand Score - Unit', meta: 'Demand score', sub: 'Projected: ' + (inp.ds_u_fcst == null ? '—' : inp.ds_u_fcst), right: (inp.ds_u == null ? '--' : Math.round(inp.ds_u)), signal: out.sd_inds[1].signal }
+      { name: 'Demand Score - House', meta: 'Demand score', sub: 'Projected: ' + (inp.ds_h_fcst == null ? '—' : inp.ds_h_fcst), right: (inp.ds_h == null ? '--' : String(Math.round(inp.ds_h))), signal: out.sd_inds[0].signal },
+      { name: 'Demand Score - Unit', meta: 'Demand score', sub: 'Projected: ' + (inp.ds_u_fcst == null ? '—' : inp.ds_u_fcst), right: (inp.ds_u == null ? '--' : String(Math.round(inp.ds_u))), signal: out.sd_inds[1].signal }
     ];
     return {
       sd: out.sd, sd_fcst: out.sd_fcst, value: out.value, value_fcst: out.value_fcst,
@@ -319,7 +341,8 @@
   async function assembleTrafficLights(sb) {
     var ctx = await fetchAll(sb);
     var DATA = {};
-    for (var i = 0; i < CAPS.length; i++) { try { DATA[CAPS[i].name] = buildRegion(CAPS[i], ctx); } catch (e) { /* skip a region that fails */ } }
+    var mk = ctx.markets || [];
+    for (var i = 0; i < mk.length; i++) { try { DATA[mk[i].name] = buildRegion(mk[i], ctx); } catch (e) { /* skip a region that fails */ } }
     return DATA;
   }
 
