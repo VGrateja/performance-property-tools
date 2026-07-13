@@ -135,7 +135,7 @@ const RESEARCH_LINKS_BY_SUB = {
   ],
   'rl-vicwatas': [
     'ballarat',  'bendigo', 'geelong',  'wodonga', 'mildura',
-    'rockingham','bunbury', 'launceston',
+    'rockingham','mandurah','bunbury', 'launceston',   // mandurah split from rockingham 2026-07-09
   ],
 };
 
