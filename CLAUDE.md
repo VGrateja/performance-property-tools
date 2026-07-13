@@ -178,5 +178,9 @@ docs/                   BUG.md, CADENCE.md, ONLINE_REPORTS_RENDERER.md, etc.
   Git warns "LF will be replaced by CRLF" — harmless.
 - `reports_state` page IDs (p1, p2, …) overlap between regional and research
   reports but mean different content — the sync UI warns about this on purpose.
+- **GitHub Pages does NOT auto-build on push for this repo** (legacy build
+  from `main`). After pushing to `main`, kick a build:
+  `gh api -X POST repos/VGrateja/performance-property-tools/pages/builds`,
+  then it deploys in ~1–2 min.
 - Past mojibake incidents: UTF-8 saved as Windows-1252 (incl. 4-byte emoji).
   Be careful editing files with emoji/curly-quote content.
