@@ -654,7 +654,7 @@ body{ background:transparent !important; }
 <script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
 <script src="../shared/auth.js?v=dfb5f1d8"></script>
 <script src="../shared/auth-gate.js?v=bfa4ab26"></script>
-<script src="../shared/concierge.js?v=7416dbf7"></script>
+<script src="../shared/concierge.js?v=084ef091"></script>
 
 <!-- ══════════ OS chrome — the UNIFORM tool header (redesign standard) ══════════
      Every tool wears the identical app bar: ← Desktop · section icon · name ·
@@ -813,7 +813,9 @@ const PP_DEMAND_ENGINE = (function () {
       r.supplyScore    = Math.round(r._H * 100) / 100;
       r.rawDS          = Math.round(r._L * 10) / 10;
       r.scoreInversion = Math.round(N * 10) / 10;
-      r.demandScore    = Math.round(Math.min(80, Math.max(-20, ((N - Nb) / Nb) * 100)) * 10) / 10;
+      // Keep FULL precision — do NOT pre-round to 1dp. Rounding here then again at
+      // display double-rounds (e.g. 50.45→50.5→51 instead of →50, vs the sheet's 50).
+      r.demandScore    = Math.min(80, Math.max(-20, ((N - Nb) / Nb) * 100));
       delete r._F; delete r._H; delete r._L; delete r._M;
     });
     return rows;
@@ -1197,7 +1199,7 @@ function australiaMap(allMarkets, filteredMarkets, accentColor) {
       ["12mo Growth", (m.priceGrowth12m > 0 ? "+" : "") + m.priceGrowth12m.toFixed(1) + "%"],
       ["3mo Growth", (m.priceGrowth3m > 0 ? "+" : "") + m.priceGrowth3m.toFixed(1) + "%"],
       ["Weekly Rent", "$" + m.weeklyRent],
-      ["Rental Growth 36m", m.rentalGrowth36m.toFixed(1) + "%"],
+      ["Rental Growth 36m", m.rentalGrowth36m.toFixed(2) + "%"],
       ["Population", fmt(m.population)],
       ["Listings", fmt(m.listings)],
       ["Listings/1K", m.listingsPer1k.toFixed(2)],
@@ -1284,7 +1286,7 @@ function australiaMap(allMarkets, filteredMarkets, accentColor) {
           '<div class="map-tooltip-row"><span class="map-tooltip-label">DOM</span><span class="map-tooltip-value">' + m.dom + 'd</span></div>' +
           '<div class="map-tooltip-row"><span class="map-tooltip-label">Median Price</span><span class="map-tooltip-value">' + (m.medianPrice ? fmtPrice(m.medianPrice) : "\u2014") + '</span></div>' +
           '<div class="map-tooltip-row"><span class="map-tooltip-label">Rent/wk</span><span class="map-tooltip-value">$' + m.weeklyRent + '</span></div>' +
-          '<div class="map-tooltip-row"><span class="map-tooltip-label">Rental Growth 36m</span><span class="map-tooltip-value">' + m.rentalGrowth36m.toFixed(1) + '%</span></div>' +
+          '<div class="map-tooltip-row"><span class="map-tooltip-label">Rental Growth 36m</span><span class="map-tooltip-value">' + m.rentalGrowth36m.toFixed(2) + '%</span></div>' +
           '<div class="map-tooltip-row"><span class="map-tooltip-label">Rank</span><span class="map-tooltip-value">#' + m.dsRank + '</span></div>' +
         '</div>';
 
@@ -1351,7 +1353,7 @@ function detailPanel() {
     { l:"Adjusted Vacancy",    v: mk.adjustedVR.toFixed(2) + "%" },
     { l:"Supply Score",        v: mk.supplyScore.toFixed(2) },
     { l: pt === "Houses" ? "DOM (Houses)" : "DOM (Units)", v: mk.dom + "d" },
-    { l:"36mo Rental Growth",  v: mk.rentalGrowth36m.toFixed(1) + "%" },
+    { l:"36mo Rental Growth",  v: mk.rentalGrowth36m.toFixed(2) + "%" },
     { l:"Weekly Rent",         v: "$" + mk.weeklyRent },
     { l:"Median Price",        v: mk.medianPrice ? fmtPrice(mk.medianPrice) : "N/A" },
     { l:"12mo Price Growth",   v: mk.priceGrowth12m.toFixed(1) + "%" },
@@ -1551,7 +1553,7 @@ function compareModal() {
     { l:"3mo Price Growth",   key:"priceGrowth3m",  kind:"num-high", fmt: v => v.toFixed(1)+"%" },
     { l:"DOM",                key:"dom",            kind:"num-low",  fmt: v => v+"d" },
     { l:"Weekly Rent",        key:"weeklyRent",     kind:"text",    fmt: v => "$"+v },
-    { l:"Rental Growth 36m",  key:"rentalGrowth36m",kind:"num-high", fmt: v => v.toFixed(1)+"%" },
+    { l:"Rental Growth 36m",  key:"rentalGrowth36m",kind:"num-high", fmt: v => v.toFixed(2)+"%" },
     { l:"Population",         key:"population",     kind:"text",    fmt: v => fmt(v) },
     { l:"Listings / 1K",      key:"listingsPer1k",  kind:"num-low",  fmt: v => v.toFixed(2) },
     { l:"Adjusted Vacancy",   key:"adjustedVR",     kind:"num-low",  fmt: v => v.toFixed(2)+"%" },
@@ -2303,12 +2305,18 @@ const _cmpDS = v => (v == null || isNaN(v)) ? "—" : Math.round(+v).toString();
 const _cmpRW = v => (v == null || isNaN(v)) ? "—" : (+v * 100).toFixed(2) + "%";         // Runway: 2 decimals
 function _cmpDelta(cur, prev, kind) {
   if (cur == null || prev == null || isNaN(cur) || isNaN(prev)) return { txt: "—", col: "var(--ds-fg-faint)" };
-  const d = cur - prev;
-  const flat = Math.abs(d) < (kind === "rw" ? 0.00005 : 0.5);
-  let txt;
-  if (kind === "rw") txt = (d >= 0 ? "+" : "") + (d * 100).toFixed(2) + "pp";
-  else { const dr = Math.round(d); txt = (dr >= 0 ? "+" : "") + dr; }
-  return { txt, col: flat ? "var(--ds-fg-faint)" : (d > 0 ? "#16a34a" : "#dc2626") };
+  // Subtract the DISPLAYED values, not the raw ones, so the delta always reconciles
+  // with the two cells on screen — e.g. DS 13 and 4 read as +9, never +8.
+  let d, txt;
+  if (kind === "rw") {                    // Runway diff → whole-number %, matching the sheet's rounded difference
+    const raw = +(((+cur) - (+prev)) * 100).toFixed(4);
+    d = (raw < 0 ? -Math.round(-raw) : Math.round(raw)) || 0;   // integer %, Excel-style half-away, no -0
+    txt = (d > 0 ? "+" : "") + d + "%";
+  } else {                                // DS cells show whole numbers, so delta = their integer difference
+    d = Math.round(+cur) - Math.round(+prev);
+    txt = (d > 0 ? "+" : "") + d;
+  }
+  return { txt, col: d === 0 ? "var(--ds-fg-faint)" : (d > 0 ? "#16a34a" : "#dc2626") };
 }
 
 function compareView(tab) {
@@ -2456,7 +2464,7 @@ const PUSH_MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep",
    Runway v Demand. Match is by exact `name` (case-insensitive) against
    the cleaned market name. Add more entries here if other regions
    should be excluded from the Runway v Demand timeline. */
-const PUSH_EXCLUDED_REGIONS = new Set(["mandurah"]);
+const PUSH_EXCLUDED_REGIONS = new Set([]);   // Mandurah now included in the push (June baseline added to Runway v Demand)
 const isPushExcluded = (m) => m && typeof m.name === "string" &&
   PUSH_EXCLUDED_REGIONS.has(m.name.trim().toLowerCase());
 const PUSH_BASELINE_MONTHS = new Set([
@@ -2847,7 +2855,7 @@ function buildForgeMarkets(propertyType, DI, M){
     markets.push({
       name: r.name, state: r.state, population: r.population, listings: r.listings,
       listingsPer1k: r.listingsPer1k, adjustedVR: Math.round(r.vr * 100) / 100,
-      supplyScore: r.supplyScore, dom: r.dom, rentalGrowth36m: Math.round(r.rentGrowth * 1000) / 10,
+      supplyScore: r.supplyScore, dom: r.dom, rentalGrowth36m: Math.round(r.rentGrowth * 10000) / 100,
       rawDS: r.rawDS, demandScore: r.demandScore, scoreInversion: r.scoreInversion,
       runway: (isU ? rw.u : rw.h) != null ? Math.round((isU ? rw.u : rw.h) * 10000) / 10000 : 0,
       prevRW: 0, rwDiff: 0, prevDS: 0, dsDiff: 0,

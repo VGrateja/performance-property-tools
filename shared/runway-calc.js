@@ -25,11 +25,13 @@
   const CLOCK = [[1.25, '5:30'], [1.15, '6:00'], [1.05, '6:30'], [0.95, '7:00'], [0.85, '7:30'], [0.75, '8:00'], [0.65, '8:30'], [0.55, '9:00'], [0.45, '9:30'], [0.35, '10:00'], [0.25, '10:30'], [0.15, '11:00'], [0.05, '11:30'], [0, '12:00'], [-0.05, '12:30']];
   function clock(j) { if (j == null) return null; for (const [t, lab] of CLOCK) if (j >= t) return lab; return 'for evaluation'; }
 
+  const RUNWAY_CAP = 1.3;   // business rule: runway maxes out at 130%; anything above is capped here at the source
+
   function leg(median, income, aiCeiling, rate) {
     if (num(median) == null || num(income) == null || num(aiCeiling) == null || num(rate) == null) return { ai: null, ceiling: null, runway_pct: null };
     const ai = annualPI(rate, median * 0.8) / (income * 52);
     const ceiling = pvLoan(rate, (income * 52 * aiCeiling) / 12) / 0.8;
-    return { ai, ceiling, runway_pct: (ceiling - median) / median };
+    return { ai, ceiling, runway_pct: Math.min(RUNWAY_CAP, (ceiling - median) / median) };
   }
 
   function computeRunway({ median, income, aiCeiling, currentRate, forecastRate }) {

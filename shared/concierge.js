@@ -349,7 +349,7 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
         demandScore: r.demandScore,
         runway: (isU ? rwp.u : rwp.h) != null ? Math.round((isU ? rwp.u : rwp.h) * 10000) / 10000 : 0,
         dom: r.dom,
-        rentalGrowth36m: Math.round(r.rentGrowth * 1000) / 10,
+        rentalGrowth36m: Math.round(r.rentGrowth * 10000) / 100,
         medianPrice: st.median, priceGrowth12m: st.g12, priceGrowth3m: st.g3,
         weeklyRent: rent != null ? Math.round(rent) : 0,
       });
