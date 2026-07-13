@@ -52,6 +52,28 @@
                              : (E >= spec.g ? 2 : E <= spec.r ? 0 : 1);
   }
 
+  // FORECAST score for a confidence indicator — scores that indicator's OWN projected
+  // value (inp.fc_<key> / fc_unemp_* / fc_real_cash_rate) against the SAME green/red
+  // thresholds as the current signal. Mirrors scoreConf; a null projection (missing or
+  // broken data — the IFERROR case) defaults to neutral (1) rather than crashing.
+  function scoreConfFcst(spec, inp) {
+    if (spec.cmp === 'unemp') {
+      // forecast scores the PROJECTED level only (workbook W14), not the level+trend combo the current uses.
+      var C = inp.fc_unemp_level;
+      if (C == null) return 1;
+      return C <= spec.g ? 2 : C >= spec.r ? 0 : 1;
+    }
+    if (spec.cmp === 'lvl') {
+      var Cl = inp.fc_real_cash_rate;
+      if (Cl == null) return 1;
+      return Cl <= spec.g ? 2 : Cl >= spec.r ? 0 : 1;
+    }
+    var E = inp['fc_' + spec.key];
+    if (E == null || isNaN(E)) return 1;
+    return spec.cmp === 'le' ? (E <= spec.g ? 2 : E >= spec.r ? 0 : 1)
+                             : (E >= spec.g ? 2 : E <= spec.r ? 0 : 1);
+  }
+
   // FORECAST(x, ys, xs) — linear-regression extrapolation to targetX. ys at x=1..n.
   function linForecast(ys, targetX) {
     var xs = [], vy = [];
@@ -70,16 +92,18 @@
 
   function scoreRegion(inp) {
     // ── Confidence (9 indicators) ──
-    var indicators = [], lc = 0, lf = 0, anyRed = false;
+    var indicators = [], lc = 0, lf = 0, kfSum = 0, anyRed = false;
     for (var i = 0; i < CONF.length; i++) {
-      var s = scoreConf(CONF[i], inp);
+      var s = scoreConf(CONF[i], inp);            // current score (2/1/0)
+      var fs = scoreConfFcst(CONF[i], inp);       // forecast score — each indicator's OWN projected trend
       if (s === 0) anyRed = true;
-      lc += s * CONF[i].kc; lf += s * CONF[i].kf;
-      indicators.push({ key: CONF[i].key, name: CONF[i].name, score: s, signal: sigOf(s) });
+      lc += s * CONF[i].kc; lf += fs * CONF[i].kf; kfSum += CONF[i].kf;
+      indicators.push({ key: CONF[i].key, name: CONF[i].name, score: s, signal: sigOf(s), fscore: fs, fsignal: sigOf(fs) });
     }
-    var confScore = lc / CONF.length, confFcstScore = lf / CONF.length;
+    var confScore = lc / CONF.length;             // current: weighted sum / 9 (unchanged)
+    var confFcstScore = lf / kfSum;               // forecast: weighted AVERAGE over Σ(forecast weights)
     var confidence = (anyRed) ? 'ORANGE' : verdict(confScore, 1.5, 0.7);   // any-RED veto caps current at ORANGE
-    var confFcst = verdict(confFcstScore, 1.5, 0.7);                        // forecast: same scores, forecast weights, no veto
+    var confFcst = verdict(confFcstScore, 1.5, 0.7);                        // forecast: single green line at 1.5, no veto
 
     // ── Value: Ranking H/U (w2) + Runway H/U (w0.5); verdict = Σweighted/Σweight ──
     var vw = { rank_h: 2, rank_u: 2, runway_h: 0.5, runway_u: 0.5 }, vwSum = 5;
@@ -144,8 +168,16 @@
 
   var lastN = function (a) { for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) return +a[i]; return null; };
   var priorN = function (a) { var seen = 0; for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) { seen++; if (seen === 2) return +a[i]; } return null; };
+  // value k rows before the last populated one — the workbook's INDEX(col, MATCH(last)-k).
+  // Monthly confidence indicators use k=12 (year-on-year), NOT the previous point.
+  var backN = function (a, k) { for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) { var j = i - k; return (j >= 0 && a[j] != null && !isNaN(a[j])) ? +a[j] : null; } return null; };
   var yoy = function (a) { var l = lastN(a), p = priorN(a); return (l == null || p == null || p === 0) ? null : l / p - 1; };
   var mean = function (a) { var s = 0, n = 0; for (var i = 0; i < a.length; i++) if (a[i] != null && !isNaN(a[i])) { s += +a[i]; n++; } return n ? s / n : null; };
+  var cleanNums = function (a) { var o = []; for (var i = 0; i < a.length; i++) if (a[i] != null && !isNaN(a[i])) o.push(+a[i]); return o; };
+  // project an indicator's OWN trend forward: fit the last `window` clean points, read `ahead` steps past the end.
+  var projFwd = function (a, window, ahead) { var w = cleanNums(a).slice(-window); return w.length ? linForecast(w, w.length + ahead) : null; };
+  // projected CHANGE = projected level vs the latest actual (mirrors the current YoY/ratio the signal scores).
+  var projChg = function (a, window, ahead) { var p = projFwd(a, window, ahead), l = lastN(a); return (p == null || l == null || l === 0) ? null : p / l - 1; };
 
   async function fetchAll(sb) {
     var METRICS = ['som_h', 'adom_h', 'retail_turnover', 'bus_investment', 'unemployment', 'cash_rate', 'cpi', 'job_creation_index', 'owner_occupier', 'investor', 'ranking_h', 'ranking_u'];
@@ -175,13 +207,20 @@
     }
     var rkH = S('ranking_h', cap.slug), rkU = S('ranking_u', cap.slug);
     var oo = S('owner_occupier', cap.state), inv = S('investor', cap.state);
-    var lendLast = (lastN(oo) || 0) + (lastN(inv) || 0), lendPrior = (priorN(oo) || 0) + (priorN(inv) || 0);
+    var lendLast = (lastN(oo) || 0) + (lastN(inv) || 0), lendPrior = (backN(oo, 12) || 0) + (backN(inv, 12) || 0);   // YoY (12 months back), per workbook
     var unemp = S('unemployment', cap.state);
     var arr = (ctx.arrears[cap.state] && ctx.arrears[cap.state].values) || [];
     var cash = lastN(S('cash_rate', 'australia')), cpi = lastN(S('cpi', cap.slug));
     var cashP = priorN(S('cash_rate', 'australia')), cpiP = priorN(S('cpi', cap.slug));
     var real = (cash != null && cpi != null) ? cash - cpi : null;
     var realP = (cashP != null && cpiP != null) ? cashP - cpiP : null;
+
+    // ── per-indicator confidence FORECASTS (each projects its OWN trend) ──
+    // annual indicators (stock/days/retail/biz-inv/unemp): 3-pt trend → 1 ahead;
+    // monthly (cash-rate/arrears/job-creation/lending): 6-pt window → 3 ahead.
+    var fcUnemp = projFwd(unemp, 3, 1), unLast = lastN(unemp);
+    var fcCash = projFwd(S('cash_rate', 'australia'), 6, 3), fcCpi = projFwd(S('cpi', cap.slug), 6, 3);
+    var lendSeries = []; for (var li = 0, lm = Math.max(oo.length, inv.length); li < lm; li++) if (oo[li] != null && inv[li] != null) lendSeries.push(oo[li] + inv[li]);
 
     var inp = {
       ds_h: lastN(dsH), ds_u: lastN(dsU),
@@ -196,9 +235,20 @@
       retail: yoy(S('retail_turnover', cap.state)), bizinv: yoy(S('bus_investment', cap.state)),
       unemp_level: lastN(unemp), unemp_change: (lastN(unemp) != null && priorN(unemp) != null) ? lastN(unemp) - priorN(unemp) : null,
       real_cash_rate: real,
-      arrears: (lastN(arr) != null && priorN(arr) != null && priorN(arr) !== 0) ? lastN(arr) / priorN(arr) - 1 : null,
-      jci: yoyMoM(S('job_creation_index', cap.slug)),
-      lending: lendPrior ? lendLast / lendPrior - 1 : null
+      arrears: (function () { var l = lastN(arr), p = backN(arr, 12); return (l != null && p != null && p !== 0) ? l / p - 1 : null; })(),   // YoY
+      jci: (function () { var j = S('job_creation_index', cap.slug), l = lastN(j), p = backN(j, 12); return (l != null && p != null && p !== 0) ? l / p - 1 : null; })(),   // YoY
+      lending: lendPrior ? lendLast / lendPrior - 1 : null,
+      // forecasts — scored against the same thresholds as the current signal above
+      fc_som: projChg(S('som_h', cap.slug), 3, 1),
+      fc_adom: projChg(S('adom_h', cap.slug), 3, 1),
+      fc_retail: projChg(S('retail_turnover', cap.state), 3, 3),   // workbook uses FORECAST(6) on the 3-pt trend
+      fc_bizinv: projChg(S('bus_investment', cap.state), 3, 1),
+      fc_unemp_level: fcUnemp,
+      fc_unemp_change: (fcUnemp != null && unLast != null) ? fcUnemp - unLast : null,
+      fc_real_cash_rate: (fcCash != null && fcCpi != null) ? fcCash - fcCpi : null,
+      fc_arrears: projChg(arr, 6, 3),
+      fc_jci: projChg(S('job_creation_index', cap.slug), 6, 3),
+      fc_lending: projChg(lendSeries, 6, 3)
     };
     var out = scoreRegion(inp);
     return formatForTool(cap, inp, out, { som: lastN(S('som_h', cap.slug)), adom: lastN(S('adom_h', cap.slug)), retail: lastN(S('retail_turnover', cap.state)), bizinv: lastN(S('bus_investment', cap.state)), arrears: lastN(arr), jci: lastN(S('job_creation_index', cap.slug)), lending: lendLast, realP: realP });
@@ -214,17 +264,17 @@
   var trendW = function (a, b) { return (a == null || b == null) ? 'steady' : b > a + 0.5 ? 'rising' : b < a - 0.5 ? 'falling' : 'steady'; };
 
   function formatForTool(cap, inp, out, raw) {
-    var byKey = {}; out.indicators.forEach(function (o) { byKey[o.key] = o.signal; });
+    var byKey = {}, byF = {}; out.indicators.forEach(function (o) { byKey[o.key] = o.signal; byF[o.key] = o.fsignal; });
     var indicators = [
-      { name: 'Stock on Market', latest: intS(raw.som), change: pctS(inp.som), signal: byKey.som },
-      { name: 'Average Days on Market', latest: oneS(raw.adom), change: pctS(inp.adom), signal: byKey.adom },
-      { name: 'Retail Turnover', latest: intS(raw.retail), change: pctS(inp.retail), signal: byKey.retail },
-      { name: 'Business Investment', latest: intS(raw.bizinv), change: pctS(inp.bizinv), signal: byKey.bizinv },
-      { name: 'Unemployment', latest: lvlS(inp.unemp_level), change: ppS(inp.unemp_change), signal: byKey.unemp },
-      { name: 'Cash Rate vs. Inflation', latest: lvlS(inp.real_cash_rate), change: ppS(inp.real_cash_rate != null && raw.realP != null ? inp.real_cash_rate - raw.realP : null), signal: byKey.realcash },
-      { name: 'Mortgage Arrears', latest: (raw.arrears == null ? '--' : (+raw.arrears).toFixed(2) + '%'), change: pctS(inp.arrears), signal: byKey.arrears },
-      { name: 'Job Creation Index', latest: oneS(raw.jci), change: pctS(inp.jci), signal: byKey.jci },
-      { name: 'Lending Flows (OO+INV)', latest: intS(raw.lending), change: pctS(inp.lending), signal: byKey.lending }
+      { name: 'Stock on Market', latest: intS(raw.som), change: pctS(inp.som), signal: byKey.som, fsignal: byF.som },
+      { name: 'Average Days on Market', latest: oneS(raw.adom), change: pctS(inp.adom), signal: byKey.adom, fsignal: byF.adom },
+      { name: 'Retail Turnover', latest: intS(raw.retail), change: pctS(inp.retail), signal: byKey.retail, fsignal: byF.retail },
+      { name: 'Business Investment', latest: intS(raw.bizinv), change: pctS(inp.bizinv), signal: byKey.bizinv, fsignal: byF.bizinv },
+      { name: 'Unemployment', latest: lvlS(inp.unemp_level), change: ppS(inp.unemp_change), signal: byKey.unemp, fsignal: byF.unemp },
+      { name: 'Cash Rate vs. Inflation', latest: lvlS(inp.real_cash_rate), change: ppS(inp.real_cash_rate != null && raw.realP != null ? inp.real_cash_rate - raw.realP : null), signal: byKey.realcash, fsignal: byF.realcash },
+      { name: 'Mortgage Arrears', latest: (raw.arrears == null ? '--' : (+raw.arrears).toFixed(2) + '%'), change: pctS(inp.arrears), signal: byKey.arrears, fsignal: byF.arrears },
+      { name: 'Job Creation Index', latest: oneS(raw.jci), change: pctS(inp.jci), signal: byKey.jci, fsignal: byF.jci },
+      { name: 'Lending Flows (OO+INV)', latest: intS(raw.lending), change: pctS(inp.lending), signal: byKey.lending, fsignal: byF.lending }
     ];
     var gapS = function (v) { return (v == null || isNaN(v)) ? '--' : (v >= 0 ? '+' : '') + (+v).toFixed(1); };
     var vi = out.value_inds;
