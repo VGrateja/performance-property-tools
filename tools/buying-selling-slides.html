@@ -137,6 +137,18 @@ body.bss-edit .bss-ov.sel .bss-ov-h{display:block}
 .bss-ctx[hidden]{display:none}
 .bss-ctx button{font:inherit;font-size:13px;font-weight:600;text-align:left;padding:8px 12px;border:0;background:none;color:var(--bss-ink);cursor:pointer;border-radius:6px}
 .bss-ctx button:hover{background:rgba(56,198,224,.15)}
+/* copy-to-regions modal */
+.bss-modal{position:fixed;inset:0;z-index:80;background:rgba(4,12,24,.7);display:flex;align-items:center;justify-content:center;padding:20px}
+.bss-modal[hidden]{display:none}
+.bss-modal-card{width:460px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;background:rgba(10,24,44,.99);border:1px solid var(--bss-line);border-radius:16px;padding:20px 22px;box-shadow:0 24px 60px rgba(0,0,0,.6);color:var(--bss-ink)}
+.bss-modal .cm-note{font-size:12.5px;color:var(--bss-mut);line-height:1.5;margin:10px 0 14px}
+.bss-modal .cm-list{overflow-y:auto;flex:1;display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;border:1px solid var(--bss-line);border-radius:10px;padding:10px 12px;background:var(--bss-navy)}
+.bss-modal .cm-item{display:flex;align-items:center;gap:7px;font-size:13px;padding:3px 0;cursor:pointer}
+.bss-modal .cm-actions{display:flex;align-items:center;gap:10px;margin-top:14px}
+.bss-modal .cm-all{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--bss-mut);cursor:pointer}
+.bss-modal .cm-actions .grow{flex:1}
+.bss-modal .bss-btn{padding:8px 16px}
+.bss-modal .bss-btn.primary{background:var(--bss-cyan);border-color:var(--bss-cyan);color:#04202a}
 /* background popover */
 .bss-bgpop{position:fixed;z-index:60;width:300px;background:rgba(8,20,38,.98);border:1px solid var(--bss-line);border-radius:14px;padding:14px 15px;box-shadow:0 16px 44px rgba(0,0,0,.55);color:var(--bss-ink);font-size:13px}
 .bss-bgpop .bgp-title{font-family:'Figtree',sans-serif;font-weight:800;font-size:12.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--bss-cyan);margin-bottom:10px}
@@ -193,6 +205,7 @@ body.bss-present .bss-presd{display:flex}
       <button class="bss-btn" data-add="shape">+ Shape</button>
       <button class="bss-btn" data-add="image">+ Image</button>
       <button class="bss-btn" data-add="page">+ Page</button>
+      <button class="bss-btn" id="bssCopyTo" title="Copy this deck's layout (text/shapes/images/backgrounds/pages) to other regions">⧉ Copy to…</button>
     </span>
     <input type="file" id="bssImgIn" accept="image/*" hidden>
   </span>
@@ -210,6 +223,14 @@ body.bss-present .bss-presd{display:flex}
 <!-- selected-overlay mini toolbar + background popover (edit mode) -->
 <div class="bss-selbar" id="bssSelBar" hidden></div>
 <div class="bss-ctx" id="bssCtx" hidden><button data-c="copy">Copy</button><button data-c="del">Delete</button></div>
+<div class="bss-modal" id="bssCopyModal" hidden>
+  <div class="bss-modal-card">
+    <div class="bp-title">Copy this deck's edits to…</div>
+    <p class="cm-note">Copies the layout (text, shapes, images, backgrounds, added pages) of <b id="cmFrom">this deck</b> to the regions you pick, for the <b id="cmMode">Selling</b> deck. Each region keeps its own charts &amp; data — only the manual layer is copied. <b>Overwrites</b> any existing edits on the targets.</p>
+    <div class="cm-list" id="cmList"></div>
+    <div class="cm-actions"><label class="cm-all"><input type="checkbox" id="cmAll"> Select all</label><span class="grow"></span><button class="bss-btn" data-cm="cancel">Cancel</button><button class="bss-btn primary" data-cm="apply">Copy</button></div>
+  </div>
+</div>
 <div class="bss-bgpop" id="bssBgPop" hidden>
   <div class="bgp-title" id="bgpTitle">Page Background</div>
   <div class="bgp-tabs"><button data-bgt="solid" class="on">Solid</button><button data-bgt="gradient">Gradient</button></div>
@@ -328,12 +349,9 @@ function chrome(inner){ return '<div class="bss-logo"><b>PERFORMANCE</b>PROPERTY
 function head(kicker,title){ return '<div class="kicker">'+esc(kicker)+'</div><h2>'+esc(title)+'</h2><div class="rule"></div>'; }
 function stub(kicker,title,source){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="bss-stub"><div class="big">'+esc(title)+'</div><div class="src">Phase 2 · '+esc(source)+'</div></div></div>'); }
 
-function slideTitle(ctx){
-  const verb = ctx.mode==='buy'?'Buying':'Selling';
-  return chrome('<div class="pad bss-title"><div class="mode">'+verb+' in</div><h1>'+esc(ctx.name)+'</h1>'
-    + '<div class="sub">Investment Committee Review — '+REVIEW_YEAR+'</div>'
-    + '<div class="sub" style="font-size:16px;margin-top:6px">'+MONTH_LABEL+'</div></div>');
-}
+/* Blank title slide — add your own text via the editor (use tokens like
+   {region} {kind} {year} so it auto-fills per region + year). */
+function slideTitle(ctx){ return chrome('<div class="pad"></div>'); }
 function slideForecastPop(ctx){
   const f = forecastPop(ctx.slug, 3);
   if (!f) return stub('Forecast','Forecasted Population','population.gov.au + Forge');
@@ -596,9 +614,23 @@ function renderOverlays(){
   slide.querySelectorAll('.bss-ov').forEach(e=>e.remove());
   ((key&&OVL[key])||[]).forEach(o=>{ const el=makeOverlayEl(o); slide.appendChild(el); if(EDIT) attachOverlayHandlers(el,o); });
 }
+/* Text tokens (resolved at render time, like the Online Reports editor):
+   {region}/{REGION}, {kind}/{KIND} (Selling/Buying), {year} (auto-updates each
+   year), {month}, {state}/{STATE}. Resolved for display; the raw {token} text is
+   what's stored + edited, so it follows the region on Copy-to and updates the
+   year automatically. */
+function resolveTokens(s){
+  if(!s || s.indexOf('{')<0) return s;
+  const m=DB.meta[state.slug]||{}, name=m.name||state.slug, st=m.state||'';
+  const kind=state.mode==='buy'?'Buying':'Selling';
+  const d=new Date(), mon=MONTHS[d.getMonth()];
+  const map={ region:name, REGION:String(name).toUpperCase(), kind:kind, KIND:kind.toUpperCase(),
+    year:String(d.getFullYear()), month:mon, MONTH:String(mon).toUpperCase(), state:st, STATE:String(st).toUpperCase() };
+  return s.replace(/\{(\w+)\}/g,(mm,k)=> (map[k]!=null?map[k]:mm));
+}
 function makeOverlayEl(o){
   let el=document.createElement('div'); el.className='bss-ov bss-ov-'+o.type; el.dataset.id=o.id;
-  if(o.type==='text'){ el.textContent=o.text||'Text'; el.style.color=o.color||'#ffffff'; el.style.fontSize=(o.fontSize||34)+'px';
+  if(o.type==='text'){ el.textContent=resolveTokens(o.text||'Text'); el.style.color=o.color||'#ffffff'; el.style.fontSize=(o.fontSize||34)+'px';
     el.style.fontFamily=o.fontFamily||"'Figtree',sans-serif"; el.style.fontWeight=o.bold?'800':'600'; el.style.fontStyle=o.italic?'italic':'normal';
     el.style.textDecoration=o.underline?'underline':'none'; el.style.textAlign=o.align||'left'; el.style.width=o.w?(o.w+'px'):'auto'; }
   else if(o.type==='image'){ el.style.width=(o.w||300)+'px'; el.style.height=(o.h||200)+'px'; el.style.backgroundSize='cover'; el.style.backgroundPosition='center'; el.style.opacity=(o.opacity==null?1:o.opacity/100);
@@ -627,8 +659,8 @@ function attachOverlayHandlers(el,o){
     document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
   });
   if(o.type==='text'){
-    el.addEventListener('dblclick',ev=>{ ev.stopPropagation(); el.contentEditable='true'; el.classList.add('editing'); el.focus();
-      const fin=()=>{ el.contentEditable='false'; el.classList.remove('editing'); if((o.text||'')!==el.textContent){ o.text=el.textContent; commit(); } el.removeEventListener('blur',fin); };
+    el.addEventListener('dblclick',ev=>{ ev.stopPropagation(); el.textContent=o.text||''; el.contentEditable='true'; el.classList.add('editing'); el.focus();   /* show RAW {tokens} while editing */
+      const fin=()=>{ el.contentEditable='false'; el.classList.remove('editing'); const nv=el.textContent; if((o.text||'')!==nv){ o.text=nv; commit(); } el.textContent=resolveTokens(o.text||''); el.removeEventListener('blur',fin); };
       el.addEventListener('blur',fin); });
   } else {
     const h=document.createElement('div'); h.className='bss-ov-h'; el.appendChild(h);
@@ -688,6 +720,7 @@ function showSelBar(){
     h+='<label class="bp-l">Style</label><div class="bp-row3"><button class="bp-tg'+(o.bold?' on':'')+'" data-t="b"><b>B</b></button><button class="bp-tg'+(o.italic?' on':'')+'" data-t="i"><i>I</i></button><button class="bp-tg'+(o.underline?' on':'')+'" data-t="u"><u>U</u></button></div>';
     h+='<label class="bp-l">Align</label><div class="bp-row3"><button class="bp-tg'+(((o.align||"left")==="left")?' on':'')+'" data-t="al">L</button><button class="bp-tg'+((o.align==="center")?' on':'')+'" data-t="ac">C</button><button class="bp-tg'+((o.align==="right")?' on':'')+'" data-t="ar">R</button></div>';
     h+='<label class="bp-l">Colour</label><div class="bp-color"><input type="color" data-t="c" value="'+_hex(o.color||'#ffffff')+'"><input class="bp-hex" data-t="chex" value="'+(o.color||'#ffffff')+'"></div>';
+    h+='<div class="bp-note">Auto-fill tokens: {region} {REGION} {kind} {year} {month} {state}</div>';
   } else if(o.type==='shape'){
     h+='<div class="bp-title">Shape</div>';
     h+='<label class="bp-l">Type</label><div class="bp-row3"><button class="bp-tg'+(((o.shape||"rect")==="rect")?' on':'')+'" data-t="tr">Rect</button><button class="bp-tg'+((o.shape==="ellipse")?' on':'')+'" data-t="te">Ellipse</button></div>';
@@ -759,7 +792,27 @@ function applyBgOthers(){ const css=bgCompose(); DECK.forEach(d=>{ BGS[d.key]=cs
 function setEditMode(on){ EDIT=on; document.body.classList.toggle('bss-edit',on); $('#bssEdBtns').hidden=!on;
   document.querySelectorAll('#bssEditMode button').forEach(b=>b.classList.toggle('on', (b.dataset.em==='edit')===on));
   if(!on){ deselect(); $('#bssBgPop').hidden=true; } renderOverlays(); showSelBar(); }
+/* Replication: copy THIS deck's manual layer (overlays/backgrounds/pages) to
+   other regions for the current mode. Data slides stay each region's own. */
+function openCopyModal(){ if(!_bsCanEdit)return; const m=$('#bssCopyModal');
+  $('#cmFrom').textContent=((DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug);
+  $('#cmMode').textContent=(state.mode==='buy'?'Buying':'Selling');
+  const slugs=Object.keys(DB.runway).filter(s=>s!==state.slug).sort((a,b)=>((DB.meta[a]&&DB.meta[a].name)||a).localeCompare((DB.meta[b]&&DB.meta[b].name)||b));
+  $('#cmList').innerHTML=slugs.map(s=>'<label class="cm-item"><input type="checkbox" value="'+s+'"> '+esc((DB.meta[s]&&DB.meta[s].name)||s)+'</label>').join('');
+  $('#cmAll').checked=false; m.hidden=false;
+}
+async function applyCopyTo(){
+  const sel=Array.from($('#cmList').querySelectorAll('input:checked')).map(i=>i.value);
+  if(!sel.length){ $('#bssCopyModal').hidden=true; return; }
+  const payload=JSON.parse(JSON.stringify(_edPayload())); const btn=$('#bssCopyModal').querySelector('[data-cm="apply"]'); btn.disabled=true; btn.textContent='Copying…';
+  let n=0; for(const slug of sel){ try{ const {error}=await window.sb.from('reports_state').upsert({region:'bss-'+slug+'-'+state.mode,payload:payload},{onConflict:'region'}); if(!error)n++; }catch(e){} }
+  btn.disabled=false; btn.textContent='Copy'; $('#bssCopyModal').hidden=true;
+  alert('Copied this deck’s layout to '+n+' region'+(n===1?'':'s')+' ('+(state.mode==='buy'?'Buying':'Selling')+').');
+}
 function setupEditor(){
+  $('#bssCopyTo').addEventListener('click',openCopyModal);
+  $('#cmAll').addEventListener('change',e=>{ $('#cmList').querySelectorAll('input').forEach(i=>i.checked=e.target.checked); });
+  $('#bssCopyModal').addEventListener('click',e=>{ if(e.target.id==='bssCopyModal'){ $('#bssCopyModal').hidden=true; return; } const b=e.target.closest('[data-cm]'); if(!b)return; if(b.dataset.cm==='cancel')$('#bssCopyModal').hidden=true; else if(b.dataset.cm==='apply')applyCopyTo(); });
   $('#bssEditMode').addEventListener('click',e=>{ const b=e.target.closest('button[data-em]'); if(b) setEditMode(b.dataset.em==='edit'); });
   $('#bssEdBtns').addEventListener('click',e=>{ const b=e.target.closest('button[data-add]'); if(!b)return; const a=b.dataset.add;
     if(a==='text')addText(); else if(a==='shape')addShape(); else if(a==='page')addPage(); else if(a==='image')$('#bssImgIn').click(); });
