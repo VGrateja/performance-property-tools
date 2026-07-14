@@ -4690,38 +4690,54 @@ function navigateToTool(url, label) {
     ppllApply();
     setInterval(ppllApply, 30000);
     document.addEventListener('visibilitychange', function () { if (!document.hidden) ppllApply(); });
-    /* ── Perf: keep the frosted-glass hub from freezing machines in meetings ──
-       The hub's backdrop-filter glass + idle animations are GPU/RAM heavy; a
-       video meeting (Google Meet) wants the same GPU, so under-powered laptops
-       freeze. Two levers, neither of which changes the look on a capable machine:
+    /* ── Perf: keep the frosted-glass hub smooth on weaker machines ───────────
+       The glass (backdrop-filter) + the living logo's non-stop animation are
+       continuous GPU work. Strong machines shrug it off; weak ones go sluggish
+       (and freeze when a video meeting also wants the GPU). Two AUTOMATIC levers
+       — no setting for staff to worry about:
        (1) HIDDEN-TAB: when the tab is backgrounded, pause all animation and drop
-           every backdrop-filter (off-screen → zero visual cost) so the meeting
-           gets the GPU. Restores on return.
-       (2) ADAPTIVE "lite": only on low-RAM / low-core devices (or a manual
-           localStorage['pp-lite']='1'), scale the glass blur down via
-           --pp-glass-scale and stop the perpetual logo animation. Normal
-           machines keep the full design untouched. window.PP_LITE lets tools
-           opt into the same treatment. */
+           every backdrop-filter (off-screen → zero visual cost) so a meeting in
+           front gets the GPU. Restores on return.
+       (2) ADAPTIVE "lite": MEASURE the real frame rate for ~1.2s after boot; if
+           the machine can't sustain it, scale the glass blur down and stop the
+           perpetual logo animation. We measure instead of reading specs because
+           navigator.deviceMemory is capped at 8 — it can't tell an 8GB laptop
+           from a 32GB one. The verdict is remembered per device so return visits
+           apply instantly (no flash) then re-verify. window.PP_LITE mirrors it. */
     if (!window.__ppPerf) {
       window.__ppPerf = 1;
-      var _ppLite = false;
-      try {
-        _ppLite = (localStorage.getItem('pp-lite') === '1')
-          || (typeof navigator.deviceMemory === 'number' && navigator.deviceMemory > 0 && navigator.deviceMemory <= 4)
-          || (typeof navigator.hardwareConcurrency === 'number' && navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 4);
-      } catch (e) {}
-      window.PP_LITE = _ppLite;
-      if (_ppLite) document.documentElement.classList.add('pp-lite');
       var _st = document.createElement('style');
       _st.textContent =
         'html.pp-perf-hidden *,html.pp-perf-hidden *::before,html.pp-perf-hidden *::after{animation-play-state:paused !important;transition:none !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important}'
         + 'html.pp-lite{--pp-glass-scale:.4}'
-        + 'html.pp-lite .ppll.idle,html.pp-lite .ppll.idle *{animation:none !important}'
-        + '@media (prefers-reduced-motion:reduce){.ppll.idle,.ppll.idle *{animation:none !important}}';
+        + 'html.pp-lite .ppll.idle,html.pp-lite .ppll.idle *{animation:none !important}';
       document.head.appendChild(_st);
+      /* (1) hidden-tab pause */
       var _apply = function () { document.documentElement.classList.toggle('pp-perf-hidden', document.hidden); };
       document.addEventListener('visibilitychange', _apply);
       _apply();
+      /* (2) adaptive lite — measure, don't guess */
+      var _LKEY = 'pp-lite-auto';
+      var _setLite = function (on) { document.documentElement.classList.toggle('pp-lite', !!on); window.PP_LITE = !!on; try { localStorage.setItem(_LKEY, on ? '1' : '0'); } catch (e) {} };
+      var _forced = null; try { var _f = localStorage.getItem('pp-lite'); if (_f === '1') _forced = true; else if (_f === '0') _forced = false; } catch (e) {}
+      if (_forced !== null) { _setLite(_forced); }           /* hidden dev escape hatch, not user-facing */
+      else {
+        try { var _prev = localStorage.getItem(_LKEY); if (_prev !== null) { document.documentElement.classList.toggle('pp-lite', _prev === '1'); window.PP_LITE = _prev === '1'; } } catch (e) {}
+        var _probe = function () {
+          if (document.hidden) { setTimeout(_probe, 1000); return; }   /* never measure a throttled background tab */
+          var frames = 0, slow = 0, t0 = performance.now(), last = t0;
+          var step = function (now) {
+            var dt = now - last; last = now; frames++;
+            if (dt > 24) slow++;                                       /* frame slower than ~42fps = struggling */
+            if (now - t0 < 1200 && !document.hidden) { requestAnimationFrame(step); return; }
+            if (document.hidden) { setTimeout(_probe, 1000); return; } /* tab hid mid-probe → retry cleanly */
+            var fps = frames / ((now - t0) / 1000);
+            _setLite(fps < 50 || (frames > 10 && slow / frames > 0.3));
+          };
+          requestAnimationFrame(step);
+        };
+        setTimeout(_probe, 2200);   /* let the boot intro settle first */
+      }
     }
     /* re-colour immediately when the appearance mode cycles */
     new MutationObserver(ppllApply).observe(document.documentElement, { attributes: true, attributeFilter: ['data-mode'] });
