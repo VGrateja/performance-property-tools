@@ -4248,6 +4248,19 @@ paintRack = function() {
     }
     $rack.appendChild(slot);
   }
+  /* A repaint can land mid-drag (opponent update, my rack-broadcast echo, the
+     turn ticker…). Keep the dragged tile's source slot hidden so the rack gap
+     stays open instead of showing a DUPLICATE of the tile riding the cursor,
+     and restore the insert-gap shift. */
+  if (_drag && _drag.active) {
+    const srcSlot = $rack.querySelector('.scrabble-rack-slot[data-slot="' + _drag.fromSlot + '"]');
+    const srcTile = srcSlot && srcSlot.querySelector('.scrabble-tile');
+    if (srcTile) { srcTile.classList.add('is-dragging-src'); _drag.srcTile = srcTile; }
+    _applyRackShift();
+  }
+  /* Janitor: with no drag in flight, sweep any stranded ghost left on <html>
+     (a pointerup we never saw, or a second pointer that clobbered the drag). */
+  if (!_drag) document.querySelectorAll('.scrabble-drag-ghost').forEach(g => g.remove());
 };
 
 /* Hook into paintBoard too so pending tiles overlay the persistent
@@ -4494,6 +4507,18 @@ if ($recallBtn) {
 const RACK_GAP = 6;   // px — matches .scrabble-rack { gap } (the slide distance)
 let _drag = null;     // active drag state, or null
 
+/* Remove every visual trace of a drag: the floating ghost(s) on <html>, the
+   grab / hidden-source classes, the board drop-hover, and the body flag. Used
+   on every drag end/cancel and defensively when a fresh press meets a stale
+   drag — so a ghost can never be left stranded on screen. */
+function _cleanupDragArtifacts() {
+  document.querySelectorAll('.scrabble-drag-ghost').forEach(g => g.remove());
+  document.querySelectorAll('.scrabble-tile.is-dragging-src, .scrabble-tile.is-grabbing')
+    .forEach(t => t.classList.remove('is-dragging-src', 'is-grabbing'));
+  document.body.classList.remove('scrabble-dragging');
+  if ($board) $board.querySelectorAll('.is-drop-hover').forEach(c => c.classList.remove('is-drop-hover'));
+}
+
 /* Move the rack tile at index `from` to index `to`, keeping any pending
    (already-placed) tiles pointing at their underlying rack letter. */
 function reorderRack(from, to) {
@@ -4573,6 +4598,10 @@ if ($rack) {
   $rack.addEventListener('pointerdown', (ev) => {
     if (ev.button != null && ev.button !== 0) return;
     if (_isSpectating) return;
+    /* A drag already in flight? A real (active) one wins — ignore the extra
+       pointer (multi-touch) that would clobber _drag and strand its ghost. A
+       stale, non-active press: clear it and start fresh. */
+    if (_drag) { if (_drag.active) return; _cleanupDragArtifacts(); _drag = null; }
     const slotEl = ev.target.closest('.scrabble-rack-slot');
     if (!slotEl || !$rack.contains(slotEl) || slotEl.classList.contains('is-used')) return;
     const from = parseInt(slotEl.dataset.slot, 10);
@@ -4653,9 +4682,7 @@ if ($rack) {
     }
     ev.preventDefault();
     _drag = null;
-    document.body.classList.remove('scrabble-dragging');
-    _clearBoardHover();
-    if (d.ghost && d.ghost.parentNode) d.ghost.parentNode.removeChild(d.ghost);
+    _cleanupDragArtifacts();
     _suppressNextClick();
     if (d.mode === 'board' && d.boardIdx != null && canPlaceTiles()) {
       const row = Math.floor(d.boardIdx / DIM), col = d.boardIdx % DIM;
@@ -4678,9 +4705,7 @@ if ($rack) {
     if (!_drag) return;
     try { $rack.releasePointerCapture(ev.pointerId); } catch (_) {}
     _drag = null;
-    document.body.classList.remove('scrabble-dragging');
-    _clearBoardHover();
-    document.querySelectorAll('.scrabble-drag-ghost').forEach(g => { if (g.parentNode) g.parentNode.removeChild(g); });
+    _cleanupDragArtifacts();
     paintRack();
   });
 }
