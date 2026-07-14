@@ -8,6 +8,22 @@
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="../shared/common.css?v=3d044d9a"/>
 <script src="../shared/fit-screen.js?v=5e41a716"></script>
+<!-- Native report charts, fed from Forge. Same engine + modules the online
+     reports use, so a slide chart is pixel-identical to the report; data comes
+     from rdp_report_feed via shared/forge-report-adapter.js (NOT the Apps-Script
+     cache). Load order: engine → adapter → theme → helpers → chart modules. -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" defer></script>
+<script src="../shared/present-charts.js?v=4cca4674" defer></script>
+<script src="../shared/forge-report-adapter.js?v=32336ad1" defer></script>
+<script src="../shared/forge-report-starts.js?v=2b5f48e0" defer></script>
+<script src="../assets/Reports/charts/_theme.js" defer></script>
+<script src="../assets/Reports/charts/_helpers.js" defer></script>
+<script src="../assets/Reports/charts/chart-median-price.js" defer></script>
+<script src="../assets/Reports/charts/chart-affordability-house.js" defer></script>
+<script src="../assets/Reports/charts/chart-price-to-income.js" defer></script>
+<script src="../assets/Reports/charts/chart-stock-dom.js" defer></script>
+<script src="../assets/Reports/charts/chart-vacancy-vs-rent.js" defer></script>
+<script src="../assets/Reports/charts/chart-sydney-vs-melbourne.js" defer></script>
 <style>
 /* ============================================================================
    Buying / Selling Slides — an Online-Reports-style deck, but horizontal 16:9
@@ -74,6 +90,9 @@ body{margin:0;font-family:'Figtree','DM Sans',sans-serif;background:var(--bg,#0b
 .bss-stub{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;border:2px dashed var(--bss-line);border-radius:14px;color:var(--bss-mut);gap:8px;margin-top:6px}
 .bss-stub .big{font-size:22px;font-weight:800;color:#cfe0f5}
 .bss-stub .src{font-size:14px;background:rgba(56,198,224,.14);color:var(--bss-cyan);padding:4px 12px;border-radius:20px;font-weight:700}
+/* native report chart area */
+.bss-chart{flex:1;min-height:0;margin-top:4px;position:relative}
+.bss-chartload{display:flex;align-items:center;justify-content:center;height:100%;color:var(--bss-mut);font-size:16px}
 /* nav */
 .bss-nav{display:flex;align-items:center;justify-content:center;gap:16px;padding:10px 0 26px}
 .bss-nav .arrow{width:40px;height:40px;border-radius:50%;border:1px solid var(--border,#2b3a52);background:var(--panel2,#131c2e);color:var(--text);font-size:18px;cursor:pointer;display:grid;place-items:center}
@@ -126,6 +145,7 @@ body.bss-present .bss-presd{display:flex}
   <button id="bssPExit" title="Exit (Esc)">✕</button>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=8a4cbba0"></script>
 <script src="../shared/auth.js?v=dfb5f1d8"></script>
 <script src="../shared/auth-gate.js?v=bfa4ab26"></script>
@@ -252,19 +272,60 @@ function slideSensitivity(ctx, type){
     + '<table class="bss-tbl"><thead><tr><th>Cash Rate</th><th>Ceiling Price</th><th>Growth from '+mLab+'</th><th>% Growth</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
 }
 
+/* ── Native report charts from Forge ──────────────────────────────────────
+   rdp_report_feed(payload) → ForgeReportAdapter.forgeRegionToFeed() (flat feed
+   shape) → an OR_RECIPES mapper → PresentChart.create(). The recipes + helpers
+   below are copied verbatim from the online-reports/presentation chart code so
+   a slide chart is pixel-identical to the report. */
+function _orAlign(yearCol, valueCol){ const years=[],values=[]; const yc=yearCol||[],vc=valueCol||[]; for(let i=0;i<yc.length;i++){ const y=parseInt(yc[i],10); const v=vc[i]; if(!Number.isFinite(y))continue; if(v===''||v==null||(typeof v==='number'&&isNaN(v)))continue; years.push(y); values.push(Number(v)); } return {years,values}; }
+function _orSeries(yearCol, defs, transform){ const yc=yearCol||[]; const rows=[]; for(let i=0;i<yc.length;i++){ const y=parseInt(yc[i],10); if(!Number.isFinite(y))continue; const vals=defs.map(d=>{ const v=(d.col||[])[i]; if(v===''||v==null||(typeof v==='number'&&isNaN(v)))return null; return transform?transform(Number(v)):Number(v); }); if(vals.every(v=>v==null))continue; rows.push({y,vals}); } return { x:rows.map(r=>String(r.y)), series:defs.map((d,i)=>({name:d.name,values:rows.map(r=>r.vals[i])})) }; }
+function _orAlignCols(keyCol, valCols, opts){ opts=opts||{}; const mode=opts.mode||'strict'; const kp=k=>{const n=parseInt(k,10);return Number.isFinite(n)?n:null;}; const kc=keyCol||[]; const keys=[],cols=valCols.map(()=>[]); for(let i=0;i<kc.length;i++){ const k=kp(kc[i]); if(k==null||k==='')continue; const vals=valCols.map(vc=>{const v=(vc||[])[i]; if(v===''||v==null||(typeof v==='number'&&isNaN(v)))return null; return Number(v);}); const present=vals.filter(v=>v!=null).length; if(present===0)continue; if(mode==='strict'&&present<valCols.length)continue; keys.push(k); vals.forEach((v,j)=>cols[j].push(v)); } return {keys,cols}; }
+const OR_CRISES = [{year:1982,label:'Severe Recession'},{year:1991,label:'Major Recession'},{year:2001,label:'Dot Com Crash'},{year:2008,label:'GFC'},{year:2020,label:'Covid-19'}];
+const OR_BANDS = [{from:1982,to:1985,type:'correct'},{from:1985,to:1991,type:'growth'},{from:1991,to:1996,type:'correct'},{from:1996,to:2004,type:'growth'},{from:2004,to:2009,type:'correct'},{from:2009,to:2020,type:'growth'},{from:2020,to:2022,type:'correct'},{from:2022,to:2026,type:'growth'}];
+const OR_RECIPES = {
+  p3: function(raw){ const H=_orAlign(raw.year,raw.medianHousePrice), U=_orAlign(raw.year,raw.medianUnitPrice); if(!H.years.length||!U.years.length)return null; const start=Math.max(H.years[0],U.years[0]), end=Math.min(H.years[H.years.length-1],U.years[U.years.length-1]); const years=[],house=[],unit=[]; for(let y=start;y<=end;y++){ const hi=H.years.indexOf(y),ui=U.years.indexOf(y); if(hi<0||ui<0)continue; years.push(y); house.push(H.values[hi]); unit.push(U.values[ui]); } if(!years.length)return null; return {module:'median-price',grid:{bottom:55},data:{medianPrice:{years,house,unit},crises:OR_CRISES,bands:OR_BANDS}}; },
+  p16: function(raw){ const a=_orAlignCols(raw.year,[raw.aiHouseStateIncome,raw.houseYoY],{mode:'strict'}); if(!a.keys.length)return null; const pct=v=>Math.round(v*1e4)/100; return {module:'affordability-house',data:{affordabilityHouse:{years:a.keys,ai:a.cols[0].map(pct),priceMovement:a.cols[1].map(pct)}}}; },
+  p9: function(raw){ const d=_orSeries(raw.year,[{name:'House',col:raw.priceToIncomeHouse},{name:'Unit',col:raw.priceToIncomeUnit}]); if(!d.x.length)return null; return {module:'price-to-income',data:{priceToIncome:{years:d.x.map(Number),house:d.series[0].values,unit:d.series[1].values},crises:OR_CRISES}}; },
+  p5: function(raw){ const yArr=raw.year||[],somH=raw.somHouse||[],somU=raw.somUnit||[],adomH=raw.adomHouse||[]; const years=[],house=[],unit=[],dom=[]; const len=Math.min(yArr.length,somH.length,somU.length,adomH.length); for(let i=0;i<len;i++){ if(somH[i]===''||somH[i]==null)continue; if(somU[i]===''||somU[i]==null)continue; if(adomH[i]===''||adomH[i]==null)continue; years.push(parseInt(yArr[i],10)); house.push(Math.round(Number(somH[i]))); unit.push(Math.round(Number(somU[i]))); dom.push(Math.round(Number(adomH[i]))); } if(!years.length)return null; return {module:'stock-dom',data:{stockVsDom:{years,house,unit,dom}}}; },
+  p10: function(raw){ const a=_orAlignCols(raw.year,[raw.medianRentHouse,raw.medianRentUnit,raw.vacancyRate],{mode:'strict'}); const i0=a.keys.findIndex(y=>y>=2000); if(i0<0)return null; return {module:'vacancy-vs-rent',data:{vacancyVsRent:{years:a.keys.slice(i0),rentHouse:a.cols[0].slice(i0).map(v=>Math.round(v)),rentUnit:a.cols[1].slice(i0).map(v=>Math.round(v)),vacancy:a.cols[2].slice(i0).map(v=>Math.round(v*1e4)/100)}}}; },
+};
+const FEED = {};   // per-region rdp_report_feed payload cache
+async function getFeed(slug){ if(FEED[slug]!==undefined) return FEED[slug]; try{ const {data}=await window.sb.from('rdp_report_feed').select('payload').eq('region_slug',slug).maybeSingle(); FEED[slug]=(data&&data.payload)||null; }catch(e){ FEED[slug]=null; } return FEED[slug]; }
+function whenChartsReady(){ return new Promise(res=>{ let n=0; (function chk(){ if((window.PresentChart&&window.ForgeReportAdapter&&window.PpaCharts&&window.PpaCharts.registry)||++n>120) return res(); setTimeout(chk,50); })(); }); }
+async function renderReportChart(host, slug, recipeKey){
+  host.innerHTML = '<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.PresentChart||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const payload = await getFeed(slug);
+  if(!payload){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
+  let spec=null; try{ const feed=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug); spec=OR_RECIPES[recipeKey](feed); }catch(e){}
+  if(!spec){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  host.innerHTML=''; const box=document.createElement('div'); box.style.width='100%'; box.style.height='100%'; host.appendChild(box);
+  /* Two frames so the (transform-scaled) host has real dimensions before
+     echarts.init, then advance through every build step to draw the chart FULLY
+     — the same static render the reports/presentation thumbnails use (play()
+     only arms the animation; next()-to-complete actually paints it). */
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    try{ var ctrl=window.PresentChart.create(box,spec); var g=0; while(ctrl&&!ctrl.isComplete()&&g++<1000) ctrl.next(); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to render.</div>'; }
+  }); });
+}
+function chartSlide(kicker,title){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="bss-chart"></div></div>'); }
+function mountChart(slideEl, slug, recipeKey){ const host=slideEl.querySelector('.bss-chart'); if(host) renderReportChart(host, slug, recipeKey); }
+
 const SLIDE_DEFS = [
   { render: slideTitle },
   { render: c=>stub('Timing','Market Positions Clock','Property Clock') },
   { render: c=>stub('Timing','Property Clock — Timing','Property Clock') },
-  { render: c=>stub('Value','Median House Price','Forge median price + thesis') },
+  { render: c=>chartSlide('Value','Median House Price'), mount:(el,c)=>mountChart(el,c.slug,'p3') },
   { render: c=>stub('Supply & Demand','Vacancy Rate Forecast','rdp_vr_forecast') },
   { render: c=>stub('Value','Replacement Cost','land + build cost input') },
-  { render: c=>stub('Affordability','Affordability Index','Computed Metrics') },
-  { render: c=>stub('Affordability','Price to Income','Computed Metrics') },
+  { render: c=>chartSlide('Affordability','Affordability Index'), mount:(el,c)=>mountChart(el,c.slug,'p16') },
+  { render: c=>chartSlide('Affordability','Price to Income'), mount:(el,c)=>mountChart(el,c.slug,'p9') },
   { render: c=>stub('Value','Ranking as Most Expensive','Ranking (Forge)') },
   { render: c=>stub('Value','Adelaide as % of Melbourne','median-price ratio') },
-  { render: c=>stub('Supply & Demand','Stock on Market v. ADOM','demand inputs') },
-  { render: c=>stub('Supply & Demand','Vacancy Rate v. Rent','VR + rents') },
+  { render: c=>chartSlide('Supply & Demand','Stock on Market v. ADOM'), mount:(el,c)=>mountChart(el,c.slug,'p5') },
+  { render: c=>chartSlide('Supply & Demand','Vacancy Rate v. Rent'), mount:(el,c)=>mountChart(el,c.slug,'p10') },
   { render: slideForecastPop },
   { render: c=>slideSensitivity(c,'h') },
   { render: c=>slideSensitivity(c,'u') },
@@ -272,15 +333,17 @@ const SLIDE_DEFS = [
 
 /* ── render + nav ── */
 function ctx(){ const m=DB.meta[state.slug]; return { slug:state.slug, name:(m&&m.name)||state.slug, mode:state.mode }; }
-function buildDeck(){ const c=ctx(); DECK = SLIDE_DEFS.map(d=>d.render(c)); if(state.idx>=DECK.length)state.idx=DECK.length-1; }
+function buildDeck(){ const c=ctx(); DECK = SLIDE_DEFS.map(d=>({ html:d.render(c), mount:d.mount, c:c })); if(state.idx>=DECK.length)state.idx=DECK.length-1; }
 function fitSlide(){ const wrap=document.querySelector('.bss-slidewrap'); if(!wrap)return; const s=wrap.clientWidth/1280; document.querySelectorAll('.bss-slide').forEach(el=>el.style.transform='scale('+s+')'); const sc=document.querySelector('.bss-scale'); if(sc)sc.style.height=(720*s)+'px'; }
 function render(){
-  const slide=$('#bssSlide'); slide.innerHTML = DECK[state.idx] || '';
+  const S = DECK[state.idx] || { html:'' };
+  const slide=$('#bssSlide'); slide.innerHTML = S.html || '';
   $('#bssNav').hidden=false;
   $('#bssCount').textContent = 'Slide '+(state.idx+1)+' / '+DECK.length;
   $('#bssPCount').textContent = (state.idx+1)+' / '+DECK.length;
   const dots=$('#bssDots'); dots.innerHTML=DECK.map((_,i)=>'<button class="bss-dot'+(i===state.idx?' on':'')+'" data-i="'+i+'"></button>').join('');
   fitSlide();
+  if (S.mount) { try { S.mount(slide, S.c); } catch(e){} }
 }
 function go(i){ state.idx=Math.max(0,Math.min(DECK.length-1,i)); render(); }
 function rebuild(){ buildDeck(); render(); }
