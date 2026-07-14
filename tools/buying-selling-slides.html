@@ -107,7 +107,7 @@ body{margin:0;font-family:'Figtree','DM Sans',sans-serif;background:var(--bg,#0b
 .bss-ov{position:absolute;cursor:default;box-sizing:border-box}
 body.bss-edit .bss-ov{cursor:move}
 .bss-ov-text{white-space:pre-wrap;line-height:1.2;padding:2px 4px;max-width:1120px;outline:none}
-.bss-ov-image{background-size:cover;background-repeat:no-repeat;background-position:center}
+.bss-ov-image{background-size:contain;background-repeat:no-repeat;background-position:center}
 body.bss-edit .bss-ov:hover{outline:1px dashed rgba(56,198,224,.6)}
 .bss-ov.sel{outline:2px solid var(--bss-cyan) !important}
 .bss-ov.editing{cursor:text;outline:2px solid var(--bss-cyan)}
@@ -345,7 +345,9 @@ function sensitivity(slug, type, years){
 
 /* ── slide builders (deck order matches the sample) ── */
 const esc = s => String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-function chrome(inner){ return '<div class="bss-logo"><b>PERFORMANCE</b>PROPERTY</div>' + inner + '<div class="bss-disc">'+DISC+'</div>'; }
+/* No baked chrome — slides are clean; add your own logo (+ Image) / disclaimer
+   (+ Text, tokens ok) via the editor. */
+function chrome(inner){ return inner; }
 function head(kicker,title){ return '<div class="kicker">'+esc(kicker)+'</div><h2>'+esc(title)+'</h2><div class="rule"></div>'; }
 function stub(kicker,title,source){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="bss-stub"><div class="big">'+esc(title)+'</div><div class="src">Phase 2 · '+esc(source)+'</div></div></div>'); }
 
@@ -633,7 +635,7 @@ function makeOverlayEl(o){
   if(o.type==='text'){ el.textContent=resolveTokens(o.text||'Text'); el.style.color=o.color||'#ffffff'; el.style.fontSize=(o.fontSize||34)+'px';
     el.style.fontFamily=o.fontFamily||"'Figtree',sans-serif"; el.style.fontWeight=o.bold?'800':'600'; el.style.fontStyle=o.italic?'italic':'normal';
     el.style.textDecoration=o.underline?'underline':'none'; el.style.textAlign=o.align||'left'; el.style.width=o.w?(o.w+'px'):'auto'; }
-  else if(o.type==='image'){ el.style.width=(o.w||300)+'px'; el.style.height=(o.h||200)+'px'; el.style.backgroundSize='cover'; el.style.backgroundPosition='center'; el.style.opacity=(o.opacity==null?1:o.opacity/100);
+  else if(o.type==='image'){ el.style.width=(o.w||300)+'px'; el.style.height=(o.h||200)+'px'; el.style.backgroundSize='contain'; el.style.backgroundPosition='center'; el.style.opacity=(o.opacity==null?1:o.opacity/100);
     if(o.src){ el.style.backgroundImage='url('+o.src+')'; }                                   /* legacy inline */
     else if(o.path){ const c=_imgUrl.get(o.path); if(c&&c.exp>Date.now()){ el.style.backgroundImage='url('+c.url+')'; }
       else { const id=o.id; imgSignedUrl(o.path).then(u=>{ if(!u)return; const cur=document.querySelector('#bssSlide .bss-ov[data-id="'+id+'"]'); if(cur)cur.style.backgroundImage='url('+u+')'; }); } }
@@ -664,8 +666,11 @@ function attachOverlayHandlers(el,o){
       el.addEventListener('blur',fin); });
   } else {
     const h=document.createElement('div'); h.className='bss-ov-h'; el.appendChild(h);
-    h.addEventListener('mousedown',ev=>{ ev.stopPropagation(); ev.preventDefault(); const sx=ev.clientX,sy=ev.clientY,ow=o.w||200,oh=o.h||140;
-      const mv=e=>{ o.w=Math.max(30,Math.round(ow+(e.clientX-sx)/_slideScale)); o.h=Math.max(20,Math.round(oh+(e.clientY-sy)/_slideScale)); el.style.width=o.w+'px'; el.style.height=o.h+'px'; };
+    h.addEventListener('mousedown',ev=>{ ev.stopPropagation(); ev.preventDefault(); const sx=ev.clientX,sy=ev.clientY,ow=o.w||200,oh=o.h||140; const asp=o.aspect||(ow/oh)||1;
+      const mv=e=>{ const nw=Math.max(30,Math.round(ow+(e.clientX-sx)/_slideScale));
+        if(o.type==='image'){ o.w=nw; o.h=Math.max(20,Math.round(nw/asp)); }   /* images stay proportional */
+        else { o.w=nw; o.h=Math.max(20,Math.round(oh+(e.clientY-sy)/_slideScale)); }
+        el.style.width=o.w+'px'; el.style.height=o.h+'px'; };
       const up=()=>{ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); commit(); };
       document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up); });
   }
@@ -702,10 +707,11 @@ function addImageFile(file){ if(!file||!/^image\//.test(file.type||''))return;
   const r=new FileReader(); r.onload=()=>{ const im=new Image(); im.onload=async()=>{
     const id=_nid(); const dispSc=Math.min(1,480/(im.naturalWidth||480));
     const w=Math.round((im.naturalWidth||300)*dispSc), h=Math.round((im.naturalHeight||200)*dispSc);
+    const aspect=(im.naturalWidth||1)/(im.naturalHeight||1);
     let blob=null; try{ blob=await imgCompress(file, im); }catch(e){ blob=file; }
     let path=null; try{ if(blob) path=await imgUpload(blob, id); }catch(e){}
-    if(path) _add({id:id,type:'image',x:150,y:120,w:w,h:h,path:path});
-    else _add({id:id,type:'image',x:150,y:120,w:w,h:h,src:r.result});   /* fallback: inline data URL if the upload fails */
+    if(path) _add({id:id,type:'image',x:150,y:120,w:w,h:h,aspect:aspect,path:path});
+    else _add({id:id,type:'image',x:150,y:120,w:w,h:h,aspect:aspect,src:r.result});   /* fallback: inline data URL if the upload fails */
   }; im.src=r.result; }; r.readAsDataURL(file); }
 const FONTS=[['Figtree',"'Figtree',sans-serif"],['Roboto',"'Roboto',Arial,sans-serif"],['DM Sans',"'DM Sans',sans-serif"],['Montserrat',"'Montserrat',sans-serif"],['Georgia',"Georgia,serif"],['Arial',"Arial,Helvetica,sans-serif"],['Times',"'Times New Roman',serif"]];
 const HEX68=/^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;   // accept #RRGGBB or #RRGGBBAA (alpha)
@@ -731,7 +737,7 @@ function showSelBar(){
     h+='<div class="bp-title">Image</div>';
     h+='<label class="bp-l">Opacity</label><div class="bp-step"><input type="range" class="bp-range" data-t="io" min="0" max="100" value="'+(o.opacity==null?100:o.opacity)+'"><input class="bp-num" data-t="ion" value="'+(o.opacity==null?100:o.opacity)+'"></div>';
     h+='<label class="bp-l">Size (px)</label><div class="bp-step"><input class="bp-num" data-t="iw" value="'+(o.w||300)+'"><span style="color:var(--bss-mut)">×</span><input class="bp-num" data-t="ih" value="'+(o.h||200)+'"></div>';
-    h+='<div class="bp-note">Width &amp; height are independent — give matching images the same values to make them the same size. The image fills the box (may crop if shapes differ).</div>';
+    h+='<div class="bp-note">Resizing keeps the image’s proportions — the whole image stays visible (no crop, no stretch).</div>';
     h+='<div class="bp-note">Right-click the image for Copy / Delete.</div>';
   }
   if(o.type!=='image') h+='<div class="bp-actions"><button class="bp-copy" data-t="copy">Copy</button><button class="bp-del" data-t="del">Delete</button></div>';
@@ -763,8 +769,8 @@ function showSelBar(){
       else if(k==='swn') ob.strokeWidth=Math.max(1,parseInt(e.target.value)||2);
       else if(k==='io'){ ob.opacity=Math.max(0,Math.min(100,parseInt(e.target.value)||0)); const x=bar.querySelector('[data-t="ion"]'); if(x)x.value=ob.opacity; }
       else if(k==='ion'){ ob.opacity=Math.max(0,Math.min(100,parseInt(e.target.value)||0)); const x=bar.querySelector('[data-t="io"]'); if(x)x.value=ob.opacity; }
-      else if(k==='iw') ob.w=Math.max(20,parseInt(e.target.value)||300);
-      else if(k==='ih') ob.h=Math.max(20,parseInt(e.target.value)||200);
+      else if(k==='iw'){ ob.w=Math.max(20,parseInt(e.target.value)||300); if(ob.aspect){ ob.h=Math.max(20,Math.round(ob.w/ob.aspect)); const x=bar.querySelector('[data-t="ih"]'); if(x)x.value=ob.h; } }
+      else if(k==='ih'){ ob.h=Math.max(20,parseInt(e.target.value)||200); if(ob.aspect){ ob.w=Math.max(20,Math.round(ob.h*ob.aspect)); const x=bar.querySelector('[data-t="iw"]'); if(x)x.value=ob.w; } }
       _swapOverlay(ob);
       if(!live){ showSelBar(); commit(); }   // buttons: reflect new toggle state + save
     });
