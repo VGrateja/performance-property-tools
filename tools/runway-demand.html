@@ -326,7 +326,8 @@ body.user-d-robbins .month-display{color:#000080}
 .chart-month{position:absolute;top:14px;right:22px;font-family:'Roboto',sans-serif;font-style:italic;font-size:12.5px;color:rgba(0,0,0,.6);letter-spacing:.02em;pointer-events:none;z-index:2;font-weight:500}
 #runwayView svg{width:100%;display:block;overflow:visible}
 .city-dot{cursor:pointer}
-.trail-path{fill:none;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.trail-path{fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:5 6;pointer-events:none}
+.city-arrow{cursor:pointer}
 .tooltip{position:absolute;pointer-events:none;background:#1a2236;border:1px solid rgba(0,182,203,.4);color:#fff;border-radius:8px;padding:10px 14px;font-size:.8rem;line-height:1.7;box-shadow:0 4px 24px rgba(0,0,0,.55);opacity:0;transition:opacity .15s;white-space:nowrap;z-index:10}
 .tooltip strong{color:var(--accent);font-size:.88rem;display:block;margin-bottom:2px}
 
@@ -629,7 +630,15 @@ body.embed-mode html { overflow: hidden; }
     <label>Trail Length</label>
     <select id="trailSelect">
       <option value="3">Last 3 months</option>
+      <option value="4">Last 4 months</option>
+      <option value="5">Last 5 months</option>
       <option value="6">Last 6 months</option>
+      <option value="7">Last 7 months</option>
+      <option value="8">Last 8 months</option>
+      <option value="9">Last 9 months</option>
+      <option value="10">Last 10 months</option>
+      <option value="11">Last 11 months</option>
+      <option value="12">Last 12 months</option>
       <option value="99" selected>All history</option>
     </select>
   </div>
@@ -1046,6 +1055,8 @@ g.append('text').attr('x',iW+68).attr('y',yScale(30)).attr('transform',`rotate(-
 
 // Layers
 const trailLayer=g.append('g');
+const trailDefs=g.append('defs');   // holds one comet-fade linearGradient per visible trail
+const _cssCol=(v,fb)=>{ const c=getComputedStyle(document.documentElement).getPropertyValue(v).trim(); return c||fb; };
 const connectorLayer=g.append('g');   // House↔Unit links in the Combined view (beneath the dots)
 const dotLayer=g.append('g');
 const labelLayer=g.append('g');
@@ -1319,17 +1330,38 @@ function render(animate=false){
       return {city, pts, prevPts:prevPt};
     }).filter(Boolean);
 
+    // Comet fade — stroke each trail with its OWN gradient running from the oldest
+    // point (near-transparent) to the head (solid). The line stays one continuous
+    // strand (so regions never get mixed up, even in all-history/all-regions), but
+    // reads as a motion streak flowing into the dot rather than a uniform squiggle.
+    const WF=_cssCol('--workforce','#e57373'), SM=_cssCol('--smooth','#000080');
+    const gid=c=>'tg-'+c.replace(/[^a-z0-9]+/gi,'-').toLowerCase();
+    trailDefs.selectAll('linearGradient').data(trailData,d=>d.city).join(
+      en=>en.append('linearGradient').attr('gradientUnits','userSpaceOnUse').attr('id',d=>gid(d.city))
+        .call(gg=>{ gg.append('stop').attr('class','s0').attr('offset','0%'); gg.append('stop').attr('class','s1').attr('offset','100%'); }),
+      up=>up, ex=>ex.remove()
+    );
+    trailDefs.selectAll('linearGradient').each(function(d){
+      const a=d.pts[0], b=d.pts[d.pts.length-1], col=b.type==='workforce'?WF:SM;
+      const x1=dataX(getRunwayValue(a)),y1=dataY(a.ds),x2=dataX(getRunwayValue(b)),y2=dataY(b.ds);
+      const degen=(x1===x2&&y1===y2);
+      const s=d3.select(this);
+      s.attr('x1',x1).attr('y1',y1).attr('x2',x2).attr('y2',y2);
+      s.select('stop.s0').attr('stop-color',col).attr('stop-opacity',degen?0.5:0.04);
+      s.select('stop.s1').attr('stop-color',col).attr('stop-opacity',0.65);
+    });
+
     const trails=trailLayer.selectAll('path.trail-path').data(trailData,d=>d.city);
 
     // Enter: draw immediately at current position (no prev to tween from)
     trails.enter().append('path').attr('class','trail-path')
-      .attr('stroke',d=>d.pts[d.pts.length-1].type==='workforce'?'var(--workforce)':'var(--smooth)')
-      .attr('stroke-width',2).attr('opacity',0.7)
+      .attr('stroke',d=>'url(#'+gid(d.city)+')')
+      .attr('stroke-width',2.5).attr('opacity',1)
       .attr('d',d=>line(d.pts));
 
     // Update: tween the last point from prev→current so it moves with the dot
     trails.merge(trailLayer.selectAll('path.trail-path'))
-      .attr('stroke',d=>d.pts[d.pts.length-1].type==='workforce'?'var(--workforce)':'var(--smooth)')
+      .attr('stroke',d=>'url(#'+gid(d.city)+')').attr('stroke-width',2.5).attr('opacity',1)
       .transition(trans)
       .attrTween('d',function(d){
         const cur=d.pts[d.pts.length-1];
@@ -1350,6 +1382,7 @@ function render(animate=false){
     trails.exit().transition(trans).attr('opacity',0).remove();
   } else {
     trailLayer.selectAll('path.trail-path').transition(trans).attr('opacity',0).remove();
+    trailDefs.selectAll('linearGradient').remove();
   }
 
   /* Visual encoders. Colour ALWAYS = Smooth/Workforce. In the Combined view,
@@ -1386,30 +1419,47 @@ function render(animate=false){
     connectorLayer.selectAll('line.rw-conn').remove();
   }
 
-  // Dots
-  const dots=dotLayer.selectAll('.city-dot').data(data,d=>d._key);
-  const enterDots=dots.enter().append('circle').attr('class','city-dot')
-    .attr('cx',dotCX).attr('cy',d=>dataY(d.ds))
-    .attr('r',dotR).attr('fill',dotFill).attr('opacity',dotOp)
-    .attr('stroke',dotStroke).attr('stroke-width',dotStrokeW)
-    /* Hollow Unit dots (fill:none) only capture pointer events on the thin ring
-       by default — set pointer-events:all so the whole disc (incl. the hollow
-       interior) triggers the tooltip / click. Solid dots keep the default. */
-    .attr('pointer-events',d=>(combined && d._kind==='unit')?'all':null)
-    .on('mouseover',(e,d)=>showTip(e,d)).on('mousemove',e=>moveTip(e)).on('mouseout',()=>hideTip())
-    .on('click',(e,d)=>{
-      if(selectedCities.has(d.city)) selectedCities.delete(d.city); else selectedCities.add(d.city);
-      // sync checkboxes
-      regionDropdown.querySelectorAll('input[type=checkbox]').forEach(cb=>{
-        if(cb.value===d.city) cb.checked=selectedCities.has(d.city);
-      });
-      updateRegionBtn(); render();
-    });
-  dots.merge(enterDots).transition(trans)
-    .attr('cx',dotCX).attr('cy',d=>dataY(d.ds))
-    .attr('r',dotR).attr('fill',dotFill).attr('opacity',dotOp)
-    .attr('stroke',dotStroke).attr('stroke-width',dotStrokeW);
-  dots.exit().remove();
+  // Head marker — a round dot normally; a DIRECTION ARROW when trails are on (single
+  // view), so "round dot + trailing line" no longer reads as a sperm. The arrow points
+  // along the last month's move; the dashed faded trail flows into it.
+  const clickCity=(e,d)=>{
+    if(selectedCities.has(d.city)) selectedCities.delete(d.city); else selectedCities.add(d.city);
+    regionDropdown.querySelectorAll('input[type=checkbox]').forEach(cb=>{ if(cb.value===d.city) cb.checked=selectedCities.has(d.city); });
+    updateRegionBtn(); render();
+  };
+  const useArrow = showTrail && !combined;
+  const prevBy={}; if(currentIdx>0) getData(activeType,months[currentIdx-1]).forEach(p=>{ prevBy[p.city]=p; });
+  const arrowAngle=d=>{ const pv=prevBy[d.city]; if(!pv) return 0; const dx=dotCX(d)-dataX(getRunwayValue(pv,d._kind)), dy=dataY(d.ds)-dataY(pv.ds); return (dx===0&&dy===0)?0:Math.atan2(dy,dx)*180/Math.PI; };
+  const arrowSz=d=>highlight&&selectedCities.has(d.city)?9:6.5;
+  const arrowD=d=>{ const s=arrowSz(d); return 'M'+(-s*0.6)+','+(-s*0.72)+'L'+s+',0L'+(-s*0.6)+','+(s*0.72)+'Z'; };   // rightward arrowhead, rotated to the move
+  const arrowTF=d=>'translate('+dotCX(d)+','+dataY(d.ds)+') rotate('+arrowAngle(d)+')';
+
+  if(useArrow){
+    dotLayer.selectAll('circle.city-dot').remove();
+    const arr=dotLayer.selectAll('path.city-arrow').data(data,d=>d._key);
+    const arrEnter=arr.enter().append('path').attr('class','city-arrow')
+      .attr('d',arrowD).attr('transform',arrowTF).attr('fill',typeColor).attr('opacity',dotOp).attr('pointer-events','all')
+      .on('mouseover',(e,d)=>showTip(e,d)).on('mousemove',e=>moveTip(e)).on('mouseout',()=>hideTip()).on('click',clickCity);
+    arr.merge(arrEnter).attr('d',arrowD).attr('fill',typeColor)
+      .transition(trans).attr('opacity',dotOp).attr('transform',arrowTF);
+    arr.exit().remove();
+  } else {
+    dotLayer.selectAll('path.city-arrow').remove();
+    const dots=dotLayer.selectAll('circle.city-dot').data(data,d=>d._key);
+    const enterDots=dots.enter().append('circle').attr('class','city-dot')
+      .attr('cx',dotCX).attr('cy',d=>dataY(d.ds))
+      .attr('r',dotR).attr('fill',dotFill).attr('opacity',dotOp)
+      .attr('stroke',dotStroke).attr('stroke-width',dotStrokeW)
+      /* Hollow Unit dots (fill:none) capture pointer events only on the ring by
+         default — pointer-events:all makes the whole disc trigger tooltip/click. */
+      .attr('pointer-events',d=>(combined && d._kind==='unit')?'all':null)
+      .on('mouseover',(e,d)=>showTip(e,d)).on('mousemove',e=>moveTip(e)).on('mouseout',()=>hideTip()).on('click',clickCity);
+    dots.merge(enterDots).transition(trans)
+      .attr('cx',dotCX).attr('cy',d=>dataY(d.ds))
+      .attr('r',dotR).attr('fill',dotFill).attr('opacity',dotOp)
+      .attr('stroke',dotStroke).attr('stroke-width',dotStrokeW);
+    dots.exit().remove();
+  }
 
   // ── ANIMATED LABELS (feature #2) ──
   let visibleData=highlight ? data.filter(d=>selectedCities.has(d.city)) : data;
