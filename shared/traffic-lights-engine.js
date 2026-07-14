@@ -264,8 +264,10 @@
 
     var inp = {
       ds_h: lastN(dsH), ds_u: lastN(dsU),
-      ds_h_fcst: dsH.length ? Math.round(linForecast(dsH, dsH.length + 3)) : null,
-      ds_u_fcst: dsU.length ? Math.round(linForecast(dsU, dsU.length + 3)) : null,
+      // trailing 6-month window (like the per-indicator confidence forecasts) so the
+      // projection tracks the recent trajectory, not the whole multi-year series.
+      ds_h_fcst: dsH.length ? Math.round(projFwd(dsH, 6, 3)) : null,
+      ds_u_fcst: dsU.length ? Math.round(projFwd(dsU, 6, 3)) : null,
       rank_h: lastN(rkH), rank_h_avg: mean(rkH), rank_h_fcst: rkH.length ? Math.round(linForecast(rkH.slice(-5), 6) * 10) / 10 : null,
       rank_u: lastN(rkU), rank_u_avg: mean(rkU), rank_u_fcst: rkU.length ? Math.round(linForecast(rkU.slice(-5), 6) * 10) / 10 : null,
       runway_h: lastN(rwH), runway_u: lastN(rwU),
