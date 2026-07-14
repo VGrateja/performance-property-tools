@@ -93,6 +93,11 @@ body{margin:0;font-family:'Figtree','DM Sans',sans-serif;background:var(--bg,#0b
 /* native report chart area */
 .bss-chart{flex:1;min-height:0;margin-top:4px;position:relative}
 .bss-chartload{display:flex;align-items:center;justify-content:center;height:100%;color:var(--bss-mut);font-size:16px}
+.bss-img{flex:1;min-height:0;margin-top:4px;display:flex;align-items:center;justify-content:center;position:relative}
+.bss-imgup{flex:1;min-height:0;margin-top:4px;display:flex;align-items:center;justify-content:center;position:relative}
+.bss-imgbtn{position:absolute;top:6px;right:6px;font:inherit;font-size:12px;font-weight:700;padding:6px 12px;border-radius:8px;border:1px solid var(--bss-line);background:rgba(8,20,38,.72);color:var(--bss-ink);cursor:pointer}
+.bss-drop{border:2px dashed var(--bss-line);border-radius:14px;padding:40px 60px;text-align:center;color:var(--bss-mut);cursor:pointer;font-size:16px;display:flex;flex-direction:column;align-items:center;gap:8px}
+.bss-drop small{opacity:.7}
 /* nav */
 .bss-nav{display:flex;align-items:center;justify-content:center;gap:16px;padding:10px 0 26px}
 .bss-nav .arrow{width:40px;height:40px;border-radius:50%;border:1px solid var(--border,#2b3a52);background:var(--panel2,#131c2e);color:var(--text);font-size:18px;cursor:pointer;display:grid;place-items:center}
@@ -164,6 +169,7 @@ const REVIEW_YEAR = now.getFullYear();
 let DB = null;
 let state = { slug:'adelaide', mode:'sell', idx:0 };
 let DECK = [];
+let _bsCanEdit = false;   // dev/admin → can upload the Market Positions Clock image
 
 const fmtInt = v => (v<0?'-':'') + '$'.replace('$','') + Math.abs(Math.round(v)).toLocaleString();
 const money  = v => (v<0?'-$':'$') + Math.abs(Math.round(v)).toLocaleString();
@@ -359,11 +365,58 @@ function chartSlide(kicker,title){ return chrome('<div class="pad">'+head(kicker
 function narrSlide(kicker,title,cls){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="'+cls+'" style="flex:1"></div></div>'); }
 function mountChart(slideEl, slug, recipeKey){ const host=slideEl.querySelector('.bss-chart'); if(host) renderReportChart(host, slug, recipeKey); }
 function mountRatio(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderRatioChart(host, slug); }
+/* Property Clock — Timing: the auto-updating National Property Clock. The Clock
+   tool uploads national-clock.jpg to the PUBLIC clock-image bucket on every Save
+   and bumps clock_state.payload.clockImageUpdatedAt; we cache-bust with that so
+   the slide always shows the latest clock (refreshes on next open). */
+async function clockImageUrl(){
+  let v=''; try{ const {data}=await window.sb.from('clock_state').select('payload').eq('id',1).single(); if(data&&data.payload&&data.payload.clockImageUpdatedAt!=null) v=String(data.payload.clockImageUpdatedAt); }catch(e){}
+  let base=''; try{ const {data:pub}=window.sb.storage.from('clock-image').getPublicUrl('national-clock.jpg'); base=(pub&&pub.publicUrl)||''; }catch(e){}
+  return base ? base+(base.indexOf('?')>=0?'&':'?')+'v='+encodeURIComponent(v||'1') : '';
+}
+function clockSlide(kicker,title){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="bss-img"></div></div>'); }
+async function mountAutoClock(slideEl){
+  const host=slideEl.querySelector('.bss-img'); if(!host) return;
+  host.innerHTML='<div class="bss-chartload">Loading clock…</div>';
+  const url=await clockImageUrl();
+  if(!url){ host.innerHTML='<div class="bss-chartload">No clock image yet — save the Property Clock tool once.</div>'; return; }
+  const img=new Image(); img.alt='National Property Clock'; img.style.cssText='max-width:100%;max-height:100%;object-fit:contain';
+  img.onload=function(){ host.innerHTML=''; host.appendChild(img); };
+  img.onerror=function(){ host.innerHTML='<div class="bss-chartload">Clock image unavailable.</div>'; };
+  img.src=url;
+}
+/* Market Positions Clock — a manually-added image (like Online Reports' image
+   overlay). Reuses the private report-images bucket; one image per region at a
+   deterministic path (the bucket IS the store — no state row). Writers upload;
+   everyone sees it via a signed URL. */
+const BS_IMG_BUCKET='report-images';
+const bsImgPath=slug=>'buysell/market-clock/'+slug+'.jpg';
+async function bsImgUrl(slug){ try{ const {data}=await window.sb.storage.from(BS_IMG_BUCKET).createSignedUrl(bsImgPath(slug),600); return (data&&data.signedUrl)||''; }catch(e){ return ''; } }
+function imageSlide(kicker,title){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="bss-imgup"></div></div>'); }
+async function mountMarketClock(slideEl, slug){
+  const host=slideEl.querySelector('.bss-imgup'); if(!host) return;
+  host.innerHTML='<div class="bss-chartload">Loading…</div>';
+  const url=await bsImgUrl(slug);
+  const editBtn=_bsCanEdit?'<button class="bss-imgbtn" data-act="pick">'+(url?'Replace image':'Upload image')+'</button><input type="file" accept="image/*" class="bss-imgfile" hidden>':'';
+  if(url){ host.innerHTML='<img src="'+url+'" alt="Market Positions Clock" style="max-width:100%;max-height:100%;object-fit:contain">'+editBtn; }
+  else{ host.innerHTML=(_bsCanEdit
+      ? '<div class="bss-drop" data-act="pick"><div style="font-size:30px">🖼️</div><div>Add the Market Positions Clock image</div><small>PNG or JPG · click to choose</small></div>'
+      : '<div class="bss-chartload">No image set for '+esc((DB.meta[slug]&&DB.meta[slug].name)||slug)+' yet.</div>')+editBtn; }
+  const file=host.querySelector('.bss-imgfile');
+  host.querySelectorAll('[data-act="pick"]').forEach(b=>b.addEventListener('click',()=>file&&file.click()));
+  if(file) file.addEventListener('change',async function(e){
+    const f=e.target.files&&e.target.files[0]; if(!f) return;
+    host.innerHTML='<div class="bss-chartload">Uploading…</div>';
+    try{ const {error}=await window.sb.storage.from(BS_IMG_BUCKET).upload(bsImgPath(slug), f, {upsert:true, contentType:f.type||'image/jpeg'}); if(error) throw error; }
+    catch(err){ host.innerHTML='<div class="bss-chartload">Upload failed: '+esc(err.message||err)+'</div>'; return; }
+    mountMarketClock(slideEl, slug);
+  });
+}
 
 const SLIDE_DEFS = [
   { render: slideTitle },
-  { render: c=>stub('Timing','Market Positions Clock','Property Clock') },
-  { render: c=>stub('Timing','Property Clock — Timing','Property Clock') },
+  { render: c=>imageSlide('Timing','Market Positions Clock'), mount:(el,c)=>mountMarketClock(el,c.slug) },
+  { render: c=>clockSlide('Timing','Property Clock — Timing'), mount:(el,c)=>mountAutoClock(el) },
   { render: c=>chartSlide('Value','Median House Price'), mount:(el,c)=>mountChart(el,c.slug,'p3') },
   { render: c=>stub('Supply & Demand','Vacancy Rate Forecast','rdp_vr_forecast') },
   { render: c=>stub('Value','Replacement Cost','land + build cost input') },
@@ -404,6 +457,7 @@ document.addEventListener('fullscreenchange',()=>{ if(!document.fullscreenElemen
 async function boot(){
   try { await loadForge(); }
   catch(e){ $('#bssSlide').innerHTML='<div class="bss-boot">Couldn’t load Forge data: '+esc(e.message)+'</div>'; return; }
+  try { const p = (typeof sbCurrentProfile==='function') ? await sbCurrentProfile() : null; _bsCanEdit = !!(p && (p.tier==='dev' || p.tier==='admin')); } catch(e){}
   // region dropdown — every region that has runway (sensitivity) data, capitals first
   const slugs = Object.keys(DB.runway).sort((a,b)=>{ const ca=CAPS.has(a)?0:1, cb=CAPS.has(b)?0:1; return ca-cb || ((DB.meta[a]&&DB.meta[a].name)||a).localeCompare((DB.meta[b]&&DB.meta[b].name)||b); });
   if (!slugs.includes(state.slug)) state.slug = slugs.includes('adelaide')?'adelaide':slugs[0];
