@@ -618,6 +618,14 @@ body.embed-mode html { overflow: hidden; }
   </div>
 
   <div class="ctrl-group">
+    <label>Wage Growth</label>
+    <select id="wageYearsSelect">
+      <option value="5" selected>5-Year</option>
+      <option value="1">1-Year</option>
+    </select>
+  </div>
+
+  <div class="ctrl-group">
     <label>Trail Length</label>
     <select id="trailSelect">
       <option value="3">Last 3 months</option>
@@ -709,6 +717,7 @@ body.embed-mode html { overflow: hidden; }
 <!-- shared auth (constants + helpers) -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=8a4cbba0"></script>
+<script src="../shared/runway-calc.js?v=216fb1a0"></script>
 <script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
 <script src="../shared/auth.js?v=dfb5f1d8"></script>
 <!-- gate: redirect to /index.html if not signed in, and run applyAccessRestrictions -->
@@ -973,7 +982,7 @@ function _readPushedLegend(){
    we don't retroactively label April with May's numbers. */
 function applyRunwayLegend(){
   if(!isLatestMonth()){
-    if(runwayAxisLabel) runwayAxisLabel.text('Runway');
+    if(runwayAxisLabel) runwayAxisLabel.text('Runway - ' + wageYears + ' Year Wage Growth');
     return;
   }
   let year = RUNWAY_V1_LEGEND.year;
@@ -993,15 +1002,25 @@ function applyRunwayLegend(){
   // when it comes through as 0.0635 * 100.
   const rateStr = (typeof rate === 'number') ? rate.toFixed(2) : String(rate);
   if(runwayAxisLabel){
-    runwayAxisLabel.text('Runway - ' + year + ' Year Wage Growth | PP Variable Rate: ' + rateStr + '%');
+    runwayAxisLabel.text('Runway - ' + wageYears + ' Year Wage Growth | PP Variable Rate: ' + rateStr + '%');
   }
 }
 
 /* Lookup helper used by render(): the runway value to plot for a data
    point — always the point's own value. (`kind` is accepted but unused;
    kept so the Combined-view call sites don't need touching.) */
+// Capitals grow income at 3%/yr, regionals 2% (matches the runway config).
+const _RW_CAPS = new Set(['sydney','melbourne','brisbane','perth','adelaide','canberra','darwin','hobart']);
+const _rwSlug = s => String(s||'').replace(/\([^)]*\)/g,' ').replace(/,\s*(act|nsw|nt|qld|sa|tas|vic|wa)\b/ig,' ').replace(/\bgreater\b/ig,' ').replace(/\bregional\b/ig,' ').replace(/-hastings/ig,' ').replace(/\s+/g,' ').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
 function getRunwayValue(d, kind){
-  return d.rw;
+  if (wageYears !== 1 || !d) return d ? d.rw : 0;
+  if (d.rw1 != null) return d.rw1;   // exact 1yr — current month, computed live from inputs (respects the 130% cap)
+  // History: derive 1yr from the baked 5yr runway. The affordability ceiling is linear
+  // in income and wage growth just scales income, so income cancels in the ratio:
+  //   rw1 = (rw5 + 1) / (1+wg)^4 − 1   (4 = 5−1 years). Verified exact vs the live engine.
+  if (d.rw == null) return d.rw;
+  const wg = _RW_CAPS.has(_rwSlug(d.city)) ? 0.03 : 0.02;
+  return ((d.rw/100 + 1) / Math.pow(1 + wg, 4) - 1) * 100;
 }
 
 /* Runway axis label — always visible. The content (year + variable
@@ -1039,6 +1058,7 @@ const combinedNote=g.append('text').attr('x',iW/2).attr('y',iH/2)
 
 // ── STATE ──
 let activeType='house';
+let wageYears=5;   // 5 = baked 5-year wage-growth runway (d.rw); 1 = 1-year (d.rw1: live for the current month, stored for history)
 const BASELINE_MONTHS=['Jan 2025','Feb 2025','Mar 2025','Apr 2025','May 2025','Jun 2025','Jul 2025','Aug 2025','Sep 2025','Oct 2025','Nov 2025','Dec 2025','Jan 2026','Feb 2026','Mar 2026','Apr 2026','May 2026'];
 const MONTH_ORDER={Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
 function _monthKeyToNum(s){const p=(s||'').split(' ');const mi=MONTH_ORDER[p[0]];const y=Number(p[1]);return (Number.isFinite(y)?y:0)*12+(mi==null?0:mi);}
@@ -1058,6 +1078,39 @@ try { if (months.length) localStorage.setItem('ppa-runway-latest', months[months
 // Math.max guards against an empty months array even though the
 // baseline set is always populated.
 let currentIdx=Math.max(0, months.length-1), selectedCities=new Set(), playing=false, playTimer=null, showTrail=false;
+
+/* ── WAGE-GROWTH TOGGLE (5-year baked ↔ 1-year) ── switches the runway axis only
+   (wage growth doesn't affect the demand score). */
+(function(){ const sel=document.getElementById('wageYearsSelect'); if(sel) sel.addEventListener('change',()=>{ wageYears=(+sel.value===1)?1:5; applyRunwayLegend(); render(); }); })();
+
+/* 1-YEAR MACHINE — recompute each region's runway with 1-year wage growth from the
+   rdp_runway inputs (median/income/AI-ceiling/rates + the region's wage rate) via
+   RunwayCalc, then stamp .rw1 on the CURRENT (latest) month's house/unit points.
+   Verified: the same calc with the payload's own years reproduces the baked 5-year
+   runway exactly, so the 1-year values are trustworthy. Historical months get their
+   .rw1 from stored data (added separately). Fail-soft: falls back to 5-year on error. */
+(function computeRw1(){ let n=0; const t=setInterval(async ()=>{
+  if((!window.sb || !window.RunwayCalc) && ++n<80) return; clearInterval(t);
+  if(!window.sb || !window.RunwayCalc) return;
+  try {
+    const { data } = await window.sb.from('rdp_runway').select('region_slug,payload');
+    const RC=window.RunwayCalc, map={};
+    (data||[]).forEach(r=>{ const p=r.payload; if(!p) return;
+      const one=leg=>{ const inp=p.inputs,ai=p.ai_ceiling,rt=p.rates,wg=p.wage_growth; if(!inp||!ai||!rt||!wg) return null;
+        const med=leg==='house'?inp.median_h:inp.median_u, ceil=leg==='house'?ai.h:ai.u;
+        if(med==null||ceil==null||inp.income==null) return null;
+        const grown=inp.income*Math.pow(1+(wg.rate||0),1);   // 1-year wage growth
+        const rr=RC.computeRunway({median:med,income:grown,aiCeiling:ceil,currentRate:rt.forecast,forecastRate:rt.forecast});
+        return (rr&&rr.runway_pct!=null)?rr.runway_pct*100:null; };
+      map[r.region_slug]={house:p.house?one('house'):null,unit:p.unit?one('unit'):null}; });
+    // slugify an RvD display name to the rdp_runway slug (mirrors the demand-score _fSlug)
+    const slugify=s=>String(s||'').replace(/\([^)]*\)/g,' ').replace(/,\s*(act|nsw|nt|qld|sa|tas|vic|wa)\b/ig,' ').replace(/\bgreater\b/ig,' ').replace(/\bregional\b/ig,' ').replace(/-hastings/ig,' ').replace(/\s+/g,' ').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+    const latest=months[months.length-1];
+    [['house','house_'],['unit','unit_']].forEach(([leg,pref])=>{ const arr=RAW[pref+latest]; if(!Array.isArray(arr)) return;
+      arr.forEach(row=>{ const m=map[slugify(row.city)]; if(m&&m[leg]!=null) row.rw1=m[leg]; }); });
+    if(wageYears===1) render();
+  } catch(e){ console.warn('[runway] 1-year compute unavailable', e); }
+},100); })();
 
 /* True only when the timeline cursor is on the most recent month.
    The Live-Sheet override and the full "Runway - N Year Wage Growth |
