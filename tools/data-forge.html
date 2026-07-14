@@ -520,6 +520,12 @@
     <div id="civOut"></div>
   </section>
 
+  <!-- ── SENSITIVITY ANALYSIS (DERIVED from Runway inputs — no upload) ── -->
+  <section id="dfSensitivity" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="sensOut"></div>
+  </section>
+
   <!-- ── IRON ORE PRICE (IMF via FRED — API, no upload) ── -->
   <section id="dfIron" hidden>
     <button class="df-back" data-home>← All data points</button>
@@ -602,7 +608,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCpi','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfRanking','dfComputed','dfCommercial','dfDemandinputs']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCpi','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfSensitivity','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfRanking','dfComputed','dfCommercial','dfDemandinputs']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -627,6 +633,7 @@ function showView(name){
   if (name === 'popPyramid') loadPopPyramid();
   if (name === 'arrears') loadArrears();
   if (name === 'civ') loadCiv();
+  if (name === 'sensitivity') loadSensitivity();
   if (name === 'iron') loadIron();
   if (name === 'mining') loadMining();
   if (name === 'commodities') loadCommodities();
@@ -668,6 +675,7 @@ const CLUSTERS = [
   { key:'population_pyramid', icon:'🔺', ingest:'api', label:'Population Pyramid', desc:'Population by 5-year age group per region. National, 8 states & 8 capital cities (GCCSA) auto-pulled from the ABS API (ERP_ASGS2021, age×sex); the 28 regional cities uploaded from the Data Dump PopPyramid sheet.', view:'popPyramid' },
   { key:'arrears', icon:'🏚️', ingest:'manual', label:'Mortgage Arrears', desc:'S&P Global Ratings RMBS SPIN arrears index — national + 8 states, monthly %. No API (S&P subscription PDF/spreadsheet); upload the Data Dump Arrears sheet.', view:'arrears' },
   { key:'civ', icon:'💰', ingest:'derived', label:'Current Investment Value', desc:'Gross rental yield (house & unit) for the 5 major capitals — derived live from the Cotality data point: yield = weekly rent × 52 ÷ median price. Updates automatically when Cotality is re-imported.', view:'civ' },
+  { key:'sensitivity', icon:'📊', ingest:'derived', label:'Sensitivity Analysis', desc:'Affordability <b>ceiling price</b> (house &amp; unit) per region across a ladder of cash-rate scenarios, and its growth vs the current median — the same ceiling math as the Runway Workbook (cash rate + forecast margin + APRA buffer). Income is grown by wage growth over the horizon: <b>Selling = 1yr, Buying = 5yr</b>. Derived live from the Runway data point.', view:'sensitivity' },
   { key:'iron_ore_price', icon:'⛏️', ingest:'api', label:'Iron Ore Price', desc:'IMF “Global price of Iron Ore” (USD/tonne), monthly — via FRED (PIORECRUSDM, the same IMF data IndexMundi republishes). Feeds the Perth report; the chart annualises it.', view:'iron' },
   { key:'mineral_exploration', icon:'⚒️', ingest:'api', label:'Mineral Exploration', desc:'ABS Mineral &amp; Petroleum Exploration (cat 8412.0, MIN_EXP, Original) — quarterly exploration expenditure ($m). 7 states + national; the Perth report uses WA.', view:'mining' },
   { key:'commodity_prices', icon:'🪙', ingest:'file', label:'Commodity Prices', desc:'Gold, iron ore, crude oil, silver &amp; copper — annual prices (Mining sheet, marketindex.com.au). Gold/silver USD/oz · crude USD/barrel · copper/iron USD/tonne. 1980–present.', view:'commodities' },
@@ -2096,6 +2104,86 @@ function renderCiv(latest, rv, meta){
     + civBarsSvg(rowsData, cyan, violet)
     + '<div class="df-tablewrap" style="margin-top:16px"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>'
     + '<div class="df-note">Each yield is computed live: <b>gross yield = weekly rent × 52 ÷ median price</b>. Median price comes from the Cotality CoreLogic “Market Trends” export (3-month median, house/unit); rent from the CoreLogic rent/vacancy CSVs. Re-import either in the Cotality view and this updates automatically.</div></div>';
+}
+
+/* ── Sensitivity Analysis (DERIVED — no upload). For a region, the affordability
+   CEILING PRICE (house & unit) if the cash rate moved to each level, and its
+   growth vs the current median. Reuses the Runway Workbook ceiling math:
+     applied mortgage rate = cash rate + forecast lender margin + APRA buffer
+     ceiling = PV(rate, 360, income×52×AI-ceiling/12) / 0.8
+   Income is grown by wage growth over the horizon: SELLING = 1yr, BUYING = 5yr
+   (3% capital / 2% regional). The cash-rate ladder = fixed scenario anchors plus
+   the current & forecast cash rates from the runway config. Verified to the
+   dollar against the June-2026 "Selling in Adelaide - Sensitivity" workbook. ── */
+let SENS_CFG = null, SENS_RW = null, SENS_SEL = null, SENS_YEARS = 1;   // 1 = Selling, 5 = Buying
+const SENS_ANCHORS = [0.05, 0.045, 0.035, 0.03, 0.02, 0.015, 0.01];
+const sensCeiling = (rate, income, ai) => { const m = income * 52 * ai / 12; return (m * (1 - Math.pow(1 + rate / 12, -360)) / (rate / 12)) / 0.8; };
+const SENS_EYEBROW = 'Derived · affordability ceiling by cash-rate scenario';
+async function loadSensitivity(){
+  const out = document.getElementById('sensOut');
+  out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + SENS_EYEBROW + '</div><div class="df-title">Sensitivity Analysis</div><div class="df-sub">Loading…</div></div>';
+  try {
+    const [{ data: cfg }, { data: rw }] = await Promise.all([
+      window.sb.from('rdp_runway_config').select('key,value'),
+      window.sb.from('rdp_runway').select('region_slug,payload'),
+    ]);
+    SENS_CFG = Object.fromEntries((cfg || []).map(r => [r.key, r.value]));
+    SENS_RW = (rw || []).filter(r => r.payload && r.payload.inputs && r.payload.inputs.income != null && r.payload.ai_ceiling);
+  } catch (e) { SENS_RW = null; }
+  if (!SENS_CFG || !SENS_CFG.rates || !SENS_CFG.rates.forecast || !SENS_RW || !SENS_RW.length){
+    out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + SENS_EYEBROW + '</div><div class="df-title">Sensitivity Analysis</div><div class="df-sub"><span class="df-statuspill">Derived</span> <span>Needs the <b>Runway</b> mart + config — run <code>node scripts/build-runway.mjs --write</code> first.</span></div></div>';
+    return;
+  }
+  SENS_RW.sort((a, b) => groupOf(a.region_slug) - groupOf(b.region_slug) || labelOf(a.region_slug).localeCompare(labelOf(b.region_slug)));
+  if (!SENS_SEL || !SENS_RW.find(r => r.region_slug === SENS_SEL)) SENS_SEL = (SENS_RW.find(r => r.region_slug === 'adelaide') || SENS_RW[0]).region_slug;
+  const margin = SENS_CFG.rates.forecast.margin + (SENS_CFG.rates.forecast.apra || 0);
+  const opts = SENS_RW.map(r => '<option value="' + esc(r.region_slug) + '"' + (r.region_slug === SENS_SEL ? ' selected' : '') + '>' + esc(labelOf(r.region_slug)) + '</option>').join('');
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + SENS_EYEBROW + '</div><div class="df-title">Sensitivity Analysis</div>'
+    + '<div class="df-sub"><span class="df-statuspill">🔗 Derived</span> <span>The affordability <b>ceiling price</b> (house &amp; unit) if the cash rate moved to each level — and how that compares to the current median. Same ceiling math as the Runway Workbook.</span></div></div></div>'
+    + '<div class="df-stats">' + dfStat('Regions', String(SENS_RW.length), true)
+    + dfStat('Applied rate', '<span class="sm">cash + ' + (margin * 100).toFixed(2) + '%</span>')
+    + dfStat('Source', '<span class="sm">Runway inputs + config</span><div class="df-stat-foot">' + ingestChip('derived') + '</div>') + '</div></div>';
+  out.innerHTML = hero + '<div class="df-card df-tablecard">'
+    + '<div class="ind-controls"><label for="sensRegion">Region</label><select id="sensRegion" class="ind-select">' + opts + '</select>'
+    + '<label for="sensPurpose" style="margin-left:18px">Purpose</label><select id="sensPurpose" class="ind-select">'
+    + '<option value="1"' + (SENS_YEARS === 1 ? ' selected' : '') + '>Selling — 1yr wage growth</option>'
+    + '<option value="5"' + (SENS_YEARS === 5 ? ' selected' : '') + '>Buying — 5yr wage growth</option></select></div>'
+    + '<div id="sensBody"></div>'
+    + '<div class="df-note">Ceiling = the maximum price sustainable at each cash rate: <b>PV of the affordable repayment over 30&nbsp;years ÷ 0.8 (80% LVR)</b>. Applied mortgage rate = <b>cash rate + ' + (margin * 100).toFixed(2) + '%</b> (forecast lender margin + APRA buffer). Weekly income is grown by wage growth over the horizon — <b>Selling = 1&nbsp;year, Buying = 5&nbsp;years</b> (3% capital / 2% regional). The ladder is a fixed set of cash-rate scenarios plus the <b>current</b> (' + (SENS_CFG.rates.current.cash * 100).toFixed(2) + '%) and <b>forecast</b> (' + (SENS_CFG.rates.forecast.cash * 100).toFixed(2) + '%) cash rates from the runway config.</div></div>';
+  const rs = document.getElementById('sensRegion'); if (rs) rs.addEventListener('change', e => { SENS_SEL = e.target.value; renderSensitivityRegion(); });
+  const ps = document.getElementById('sensPurpose'); if (ps) ps.addEventListener('change', e => { SENS_YEARS = (+e.target.value === 5) ? 5 : 1; renderSensitivityRegion(); });
+  renderSensitivityRegion();
+}
+function renderSensitivityRegion(){
+  const box = document.getElementById('sensBody'); if (!box) return;
+  const row = SENS_RW.find(r => r.region_slug === SENS_SEL);
+  if (!row){ box.innerHTML = '<div class="df-empty">No runway inputs for ' + esc(labelOf(SENS_SEL)) + '.</div>'; return; }
+  const inp = row.payload.inputs || {}, ceil = row.payload.ai_ceiling || {};
+  const wg = CAP_SET.has(SENS_SEL) ? (SENS_CFG.wage_growth.capital || 0.03) : (SENS_CFG.wage_growth.regional || 0.02);
+  const income = inp.income * Math.pow(1 + wg, SENS_YEARS);
+  const margin = SENS_CFG.rates.forecast.margin + (SENS_CFG.rates.forecast.apra || 0);
+  const curCash = SENS_CFG.rates.current.cash, fcCash = SENS_CFG.rates.forecast.cash;
+  const ladder = [...new Set([...SENS_ANCHORS, curCash, fcCash])].sort((a, b) => b - a);
+  const money = v => (v < 0 ? '-$' : '$') + Math.abs(Math.round(v)).toLocaleString();
+  const gcol = v => v > 0 ? ' style="color:#16b364"' : v < 0 ? ' style="color:#ef4444"' : '';
+  const table = (median, aiv, mlabel) => {
+    if (median == null || aiv == null) return '<div class="df-empty">No ' + mlabel + ' inputs for ' + esc(labelOf(SENS_SEL)) + '.</div>';
+    const body = ladder.map(cash => {
+      const rate = cash + margin, c = sensCeiling(rate, income, aiv), g = c - median, gp = g / median * 100;
+      const tag = cash === curCash ? ' <span class="src">current</span>' : cash === fcCash ? ' <span class="src">forecast</span>' : '';
+      const hl = (cash === curCash || cash === fcCash) ? ' style="background:rgba(142,123,255,.07)"' : '';
+      return '<tr' + hl + '><td class="region">' + (cash * 100).toFixed(2) + '%' + tag + '</td>'
+        + '<td class="num">$' + Math.round(c).toLocaleString() + '</td>'
+        + '<td class="num"' + gcol(g) + '>' + money(g) + '</td>'
+        + '<td class="num last"' + gcol(g) + '>' + (gp >= 0 ? '+' : '') + gp.toFixed(2) + '%</td></tr>';
+    }).join('');
+    return '<div class="df-tablewrap"><table class="df-table"><thead><tr><th class="th-l">Cash rate</th><th>Ceiling price</th><th>Growth vs median</th><th class="last">% growth</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+  };
+  const purpose = SENS_YEARS === 5 ? 'Buying' : 'Selling';
+  box.innerHTML = '<div class="df-note" style="margin-bottom:12px">' + esc(labelOf(SENS_SEL)) + ' · <b>' + purpose + '</b> (' + SENS_YEARS + 'yr wage growth) · weekly income $' + Math.round(income).toLocaleString() + ' <span class="src">base $' + Math.round(inp.income).toLocaleString() + ' × ' + (1 + wg).toFixed(2) + '^' + SENS_YEARS + '</span></div>'
+    + '<h2 style="margin:6px 0 8px">House <span class="count">current median $' + Math.round(inp.median_h || 0).toLocaleString() + '</span></h2>' + table(inp.median_h, ceil.h, 'house')
+    + '<h2 style="margin:20px 0 8px">Unit <span class="count">current median $' + Math.round(inp.median_u || 0).toLocaleString() + '</span></h2>' + table(inp.median_u, ceil.u, 'unit');
 }
 function civBarsSvg(rows, cyan, violet){
   const W = 740, H = 300, padL = 42, padR = 14, padT = 26, padB = 44, n = rows.length;
