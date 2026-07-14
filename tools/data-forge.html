@@ -233,6 +233,8 @@
   .arr-chart text{ fill:var(--muted); font-size:11px; font-weight:600; }
   .arr-chart .grid{ stroke:var(--border); stroke-width:1; }
 
+  /* Forecasted Population — highlight the year-total (population) columns */
+  .df-table.popfc th.popcol, .df-table.popfc td.popcol{ background:rgba(142,123,255,.08); }
   /* CIV — derived gross-yield grouped bars (house vs unit) by capital */
   .civ-chart{ width:100%; height:auto; display:block; max-width:780px; margin:0 auto; }
   .civ-chart text{ fill:var(--muted); font-size:11px; }
@@ -526,6 +528,12 @@
     <div id="sensOut"></div>
   </section>
 
+  <!-- ── FORECASTED POPULATION (DERIVED — Forge pop/shares + population.gov.au projections) ── -->
+  <section id="dfPopforecast" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="popfcOut"></div>
+  </section>
+
   <!-- ── IRON ORE PRICE (IMF via FRED — API, no upload) ── -->
   <section id="dfIron" hidden>
     <button class="df-back" data-home>← All data points</button>
@@ -608,7 +616,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCpi','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfSensitivity','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfRanking','dfComputed','dfCommercial','dfDemandinputs']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCpi','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfSensitivity','dfPopforecast','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfRanking','dfComputed','dfCommercial','dfDemandinputs']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'population') loadPopulation();
@@ -634,6 +642,7 @@ function showView(name){
   if (name === 'arrears') loadArrears();
   if (name === 'civ') loadCiv();
   if (name === 'sensitivity') loadSensitivity();
+  if (name === 'popforecast') loadPopForecast();
   if (name === 'iron') loadIron();
   if (name === 'mining') loadMining();
   if (name === 'commodities') loadCommodities();
@@ -676,6 +685,7 @@ const CLUSTERS = [
   { key:'arrears', icon:'🏚️', ingest:'manual', label:'Mortgage Arrears', desc:'S&P Global Ratings RMBS SPIN arrears index — national + 8 states, monthly %. No API (S&P subscription PDF/spreadsheet); upload the Data Dump Arrears sheet.', view:'arrears' },
   { key:'civ', icon:'💰', ingest:'derived', label:'Current Investment Value', desc:'Gross rental yield (house & unit) for the 5 major capitals — derived live from the Cotality data point: yield = weekly rent × 52 ÷ median price. Updates automatically when Cotality is re-imported.', view:'civ' },
   { key:'sensitivity', icon:'📊', ingest:'derived', label:'Sensitivity Analysis', desc:'Affordability <b>ceiling price</b> (house &amp; unit) per region across a ladder of cash-rate scenarios, and its growth vs the current median — the same ceiling math as the Runway Workbook (cash rate + forecast margin + APRA buffer). Income is grown by wage growth over the horizon: <b>Selling = 1yr, Buying = 5yr</b>. Derived live from the Runway data point.', view:'sensitivity' },
+  { key:'pop_forecast', icon:'🔮', ingest:'derived', label:'Forecasted Population', desc:'Population projection per region &amp; capital — each year rolls forward as <b>current + Natural Increase + Net Overseas Migration + Net Interstate Migration</b>. Base population &amp; the region shares are live from Forge; the forward NI/NOM/NIM projections are seeded from population.gov.au (Centre for Population).', view:'popforecast' },
   { key:'iron_ore_price', icon:'⛏️', ingest:'api', label:'Iron Ore Price', desc:'IMF “Global price of Iron Ore” (USD/tonne), monthly — via FRED (PIORECRUSDM, the same IMF data IndexMundi republishes). Feeds the Perth report; the chart annualises it.', view:'iron' },
   { key:'mineral_exploration', icon:'⚒️', ingest:'api', label:'Mineral Exploration', desc:'ABS Mineral &amp; Petroleum Exploration (cat 8412.0, MIN_EXP, Original) — quarterly exploration expenditure ($m). 7 states + national; the Perth report uses WA.', view:'mining' },
   { key:'commodity_prices', icon:'🪙', ingest:'file', label:'Commodity Prices', desc:'Gold, iron ore, crude oil, silver &amp; copper — annual prices (Mining sheet, marketindex.com.au). Gold/silver USD/oz · crude USD/barrel · copper/iron USD/tonne. 1980–present.', view:'commodities' },
@@ -715,6 +725,7 @@ function ageDays(iso){ if (!iso) return null; const t = Date.parse(iso); if (isN
 function freshInfo(c, st, manualDates){
   if (c.key === 'civ' || c.key === 'monthly_price') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Computed live from the Cotality drop — freshness follows Cotality">live</span>' };
   if (c.key === 'sensitivity') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Computed live from the Runway data point — freshness follows Runway">live</span>' };
+  if (c.key === 'pop_forecast') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Base population + shares live from Forge; NI/NOM/NIM projections seeded from population.gov.au">live</span>' };
   // Recomputed by the PUBLISH mart rebuild — no forge_data_status row of its own,
   // so without this exemption it rendered a phantom "no date / stale".
   if (c.key === 'computed_metrics') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Recomputed from the raw data by the PUBLISH mart rebuild — freshness follows the raw points">live</span>' };
@@ -854,9 +865,10 @@ async function loadStatus(){
   const agingPts = [], stalePts = [];   // card LABELS, so the banner can say WHICH data
   const cardHtml = (c) => {
     const st = statusMap[c.key] || {};
-    const status = (c.key === 'civ' || c.key === 'monthly_price' || c.key === 'sensitivity') ? 'derived' : (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears' || c.key === 'demand_inputs') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
+    const status = (c.key === 'civ' || c.key === 'monthly_price' || c.key === 'sensitivity' || c.key === 'pop_forecast') ? 'derived' : (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears' || c.key === 'demand_inputs') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
     const isErr = status === 'error';
     const meta = c.key === 'civ' ? 'Computed live from Cotality'
+      : c.key === 'pop_forecast' ? 'Forge pop + population.gov.au projections'
       : c.key === 'sensitivity' ? 'Computed live from the Runway inputs'
       : c.key === 'monthly_price' ? 'Appends from the Cotality drop'
       : (c.key === 'population' || c.key === 'population_pyramid')
@@ -2186,6 +2198,87 @@ function renderSensitivityRegion(){
   box.innerHTML = '<div class="df-note" style="margin-bottom:12px">' + esc(labelOf(SENS_SEL)) + ' · <b>' + purpose + '</b> (' + SENS_YEARS + 'yr wage growth) · weekly income $' + Math.round(income).toLocaleString() + ' <span class="src">base $' + Math.round(inp.income).toLocaleString() + ' × ' + (1 + wg).toFixed(2) + '^' + SENS_YEARS + '</span></div>'
     + '<h2 style="margin:6px 0 8px">House <span class="count">current median $' + Math.round(inp.median_h || 0).toLocaleString() + '</span></h2>' + table(inp.median_h, ceil.h, 'house')
     + '<h2 style="margin:20px 0 8px">Unit <span class="count">current median $' + Math.round(inp.median_u || 0).toLocaleString() + '</span></h2>' + table(inp.median_u, ceil.u, 'unit');
+}
+/* ── Forecasted Population (DERIVED — no upload of its own). Rolls each region's
+   population forward one year at a time:  next = current + NI + NOM + NIM.
+   • Capitals + National use the population.gov.au projected components directly.
+   • Regions apply their STATE's projected component scaled by the region's live
+     share of the state (regionActual / stateActual, latest year in Forge).
+   Base population + shares are LIVE from Forge (population / natural_increase /
+   nom / nim); the forward NI/NOM/NIM projections are the seeded population.gov.au
+   point (pop_proj_*, refresh ~yearly via scripts/seed-pop-forecast.mjs).
+   Verified: capitals reproduce the workbook to the person; regions within ~0.2%
+   (Forge vs workbook state-total denominator). ─────────────────────────────── */
+let POPFC = null;
+const POPFC_EYEBROW = 'Derived · population projection (population.gov.au components)';
+async function loadPopForecast(){
+  const out = document.getElementById('popfcOut');
+  out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + POPFC_EYEBROW + '</div><div class="df-title">Forecasted Population</div><div class="df-sub">Loading…</div></div>';
+  const pull = async metric => { let all = [], from = 0; for (;;){ const { data, error } = await window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', metric).range(from, from + 999); if (error) throw error; all = all.concat(data || []); if (!data || data.length < 1000) break; from += 1000; } return all; };
+  const idx = rows => { const m = {}; for (const r of rows){ (m[r.region_slug] ||= {})[String(r.period).slice(0,4)] = r.value; } return m; };
+  let pop, ni, nom, nim, pni, pnom, pnim, reg;
+  try {
+    const [POP, NI, NOM, NIM, PNI, PNOM, PNIM] = await Promise.all(['population','natural_increase','nom','nim','pop_proj_ni','pop_proj_nom','pop_proj_nim'].map(pull));
+    [pop, ni, nom, nim, pni, pnom, pnim] = [POP, NI, NOM, NIM, PNI, PNOM, PNIM].map(idx);
+    reg = (await window.sb.from('rdp_regions').select('slug,name,state,cluster')).data || [];
+  } catch (e) { out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + POPFC_EYEBROW + '</div><div class="df-title">Forecasted Population</div><div class="df-sub"><span class="df-statuspill err">Unavailable</span> <span>Couldn’t load the population series.</span></div></div>'; return; }
+  if (!Object.keys(pni).length){ out.innerHTML = '<div class="df-hero"><div class="df-eyebrow">' + POPFC_EYEBROW + '</div><div class="df-title">Forecasted Population</div><div class="df-sub"><span class="df-statuspill">Derived</span> <span>No projections seeded yet — run <code>node scripts/seed-pop-forecast.mjs --write</code> (population.gov.au).</span></div></div>'; return; }
+  const latestVal = o => { if (!o) return null; const y = Object.keys(o).sort(); return y.length ? o[y[y.length - 1]] : null; };
+  const share = (m, slug, st) => { const a = latestVal(m[slug]), b = latestVal(m[st]); return (a == null || !b) ? 0 : a / b; };
+  const yearsFor = slug => Object.keys(pni[slug] || {}).map(Number).sort((a, b) => a - b);
+  const stateOf = {}, clusterOf = {}, nameOf = {}; for (const r of reg){ stateOf[r.slug] = r.state ? 'st-' + r.state.toLowerCase() : null; clusterOf[r.slug] = r.cluster; nameOf[r.slug] = r.name; }
+  const forecast = (slug, years, isCap) => {
+    const base = latestVal(pop[slug]); if (base == null) return null;
+    const st = stateOf[slug];
+    const shares = isCap ? null : { ni: share(ni, slug, st), nom: share(nom, slug, st), nim: share(nim, slug, st) };
+    if (!isCap && !st) return null;
+    let p = base; const cells = [];
+    for (const y of years){ const ys = String(y);
+      let dni, dnom, dnim;
+      if (isCap){ dni = (pni[slug] || {})[ys] || 0; dnom = (pnom[slug] || {})[ys] || 0; dnim = (pnim[slug] || {})[ys] || 0; }
+      else { dni = ((pni[st] || {})[ys] || 0) * shares.ni; dnom = ((pnom[st] || {})[ys] || 0) * shares.nom; dnim = ((pnim[st] || {})[ys] || 0) * shares.nim; }
+      p += dni + dnom + dnim; cells.push({ ni: dni, nom: dnom, nim: dnim, pop: p });
+    }
+    return { slug, base, shares, cells };
+  };
+  const capYears = yearsFor('sydney'), regYears = yearsFor('st-nsw');
+  // capitals + national (national uses its own projection; NIM absent → 0)
+  const capSlugs = reg.filter(r => r.cluster === 'capital' && r.slug !== 'australia' && pni[r.slug]).map(r => r.slug).sort((a, b) => nameOf[a].localeCompare(nameOf[b]));
+  const caps = [forecast('australia', capYears, true), ...capSlugs.map(s => forecast(s, capYears, true))].filter(Boolean);
+  // regions = anything with a state projection + its own actuals, excluding capitals/states/national
+  const regSlugs = reg.filter(r => r.cluster !== 'capital' && r.cluster !== 'state' && stateOf[r.slug] && pni[stateOf[r.slug]] && pop[r.slug] && ni[r.slug]).map(r => r.slug)
+    .sort((a, b) => (stateOf[a] || '').localeCompare(stateOf[b] || '') || nameOf[a].localeCompare(nameOf[b]));
+  const regs = regSlugs.map(s => forecast(s, regYears, false)).filter(Boolean);
+  POPFC = { caps, regs, capYears, regYears };
+  const total = caps.length + regs.length;
+  const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
+    + '<div class="df-eyebrow">' + POPFC_EYEBROW + '</div><div class="df-title">Forecasted Population</div>'
+    + '<div class="df-sub"><span class="df-statuspill">🔗 Derived</span> <span>Population rolled forward each year as <b>current + Natural Increase + Net Overseas Migration + Net Interstate Migration</b>. Base population &amp; shares are live from Forge.</span></div></div></div>'
+    + '<div class="df-stats">' + dfStat('Regions', String(total), true)
+    + dfStat('Horizon', '<span class="sm">to ' + popfcYl(regYears[regYears.length - 1]) + ' · caps ' + popfcYl(capYears[capYears.length - 1]) + '</span>')
+    + dfStat('Source', '<span class="sm">Forge pop + population.gov.au</span><div class="df-stat-foot">' + ingestChip('derived') + '</div>') + '</div></div>';
+  out.innerHTML = hero
+    + '<div class="df-card df-tablecard"><h2>Capital Cities <span class="count">projected components applied directly</span></h2>' + popfcTable(caps, capYears, false) + '</div>'
+    + '<div class="df-card df-tablecard" style="margin-top:14px"><h2>Regions <span class="count">state projection × the region’s live share of the state</span></h2>' + popfcTable(regs, regYears, true) + '</div>'
+    + '<div class="df-note" style="margin-top:14px">Each year: <b>population = prior year + NI + NOM + NIM</b>. Capitals &amp; National use the population.gov.au projected components directly; each region takes its <b>state’s</b> projected component × the region’s share of the state, where the share = the region’s latest actual ÷ the state’s latest actual (live from Forge’s <code>natural_increase</code> / <code>nom</code> / <code>nim</code>). Base population is Forge’s latest ERP. The forward NI/NOM/NIM projections come from <b>population.gov.au</b> (Centre for Population) — seeded via <code>scripts/seed-pop-forecast.mjs</code>, refresh when a new projection release lands. Capitals reproduce the source workbook exactly; regions sit within ~0.2% (Forge vs the workbook’s ABS state-total vintage).</div>';
+}
+const popfcYl = y => (y - 1) + '–' + String(y).slice(-2);   // 2026 → "2025–26"
+function popfcTable(rows, years, showShares){
+  if (!rows.length) return '<div class="df-empty">No regions.</div>';
+  const int = v => (v < 0 ? '-' : '') + Math.abs(Math.round(v)).toLocaleString();
+  let head = '<tr><th class="th-l">Region</th>' + (showShares ? '<th>% NI</th><th>% NOM</th><th>% NIM</th>' : '') + '<th>Current</th>';
+  years.forEach((y, i) => { const last = i === years.length - 1; head += '<th>NI</th><th>NOM</th><th>NIM</th><th class="' + (last ? 'last ' : '') + 'popcol">' + popfcYl(y) + '</th>'; });
+  head += '</tr>';
+  const body = rows.map(r => {
+    let tds = '<td class="region">' + esc(labelOf(r.slug)) + '</td>';
+    if (showShares) tds += '<td class="num">' + (r.shares.ni * 100).toFixed(2) + '%</td><td class="num">' + (r.shares.nom * 100).toFixed(2) + '%</td><td class="num">' + (r.shares.nim * 100).toFixed(2) + '%</td>';
+    tds += '<td class="num" style="font-weight:700">' + int(r.base) + '</td>';
+    r.cells.forEach((c, i) => { const last = i === r.cells.length - 1;
+      tds += '<td class="num">' + int(c.ni) + '</td><td class="num">' + int(c.nom) + '</td><td class="num">' + int(c.nim) + '</td>'
+        + '<td class="num ' + (last ? 'last ' : '') + 'popcol" style="font-weight:700">' + int(c.pop) + '</td>'; });
+    return '<tr>' + tds + '</tr>';
+  }).join('');
+  return '<div class="df-tablewrap"><table class="df-table popfc"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
 }
 function civBarsSvg(rows, cyan, violet){
   const W = 740, H = 300, padL = 42, padR = 14, padT = 26, padB = 44, n = rows.length;
