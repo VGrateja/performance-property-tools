@@ -2319,6 +2319,33 @@ function _cmpDelta(cur, prev, kind) {
   return { txt, col: d === 0 ? "var(--ds-fg-faint)" : (d > 0 ? "#16a34a" : "#dc2626") };
 }
 
+/* ── Display re-rate: show every month's runway on the CURRENT PP Variable Rate
+   (Current 216M Ave = 4.91%), matching Runway v Demand. runway = (ceiling−median)/
+   median and the ceiling scales with the rate via a 30-yr annuity factor that is
+   independent of price/income, so re-rating a stored month is exact:
+       rw_new = (1 + rw_old) × AF(target) / AF(rate_that_month) − 1   (cap 130%)
+   Demand score, median, listings etc. are untouched, and the stored snapshot
+   RECORDS are never modified — this only changes what the compare view displays.
+   Live/current data is already built at 4.91%, so only stored snapshots re-rate. */
+const DS_REC_RATE = {
+  '2025-01':0.0545,'2025-02':0.0545,'2025-03':0.0545,'2025-04':0.0545,'2025-05':0.0535,'2025-06':0.0555,
+  '2025-07':0.0555,'2025-08':0.0540,'2025-09':0.0540,'2025-10':0.0540,'2025-11':0.0560,'2025-12':0.0560,
+  '2026-01':0.0560,'2026-02':0.0603,'2026-03':0.0494,'2026-04':0.0494,'2026-05':0.0494,'2026-06':0.0494,'2026-07':0.0491
+};
+const DS_RATE_TARGET = 0.0491;   // Current 216M Ave / PP Variable Rate — the display basis
+function _dsAF(r){ r=+r; if(!(r>0)) return null; const m=r/12; return (1-Math.pow(1+m,-360))/m; }
+function _dsReRate(map, version){   // rw is a DECIMAL here (from _snapMap: m.runway); cap 1.3 = 130%
+  if(!map) return map;
+  const rOld = DS_REC_RATE[String(version||'').slice(0,7)], afT = _dsAF(DS_RATE_TARGET);
+  if(!rOld || afT==null) return map;
+  const afO = _dsAF(rOld); if(!afO) return map;
+  const f = afT/afO;
+  if(f===1) return map;
+  const out = {};
+  for(const slug in map){ const r=map[slug];
+    out[slug] = (r && r.rw!=null) ? Object.assign({}, r, { rw: Math.min(1.3, (1+(+r.rw))*f - 1) }) : r; }
+  return out;
+}
 function compareView(tab) {
   const snaps = state.snapshots || [];
   const canWrite = (typeof isAdmin === "function" && isAdmin());
@@ -2340,16 +2367,16 @@ function compareView(tab) {
   // resolve current + previous data maps for the selected month
   let curMap, prevMap, curLabel, prevLabel;
   if (sel === LIVE) {
-    curMap = _snapMap(tab === "Houses" ? state.houseData : state.unitData);
+    curMap = _snapMap(tab === "Houses" ? state.houseData : state.unitData);   // live = already at the current PP Variable Rate
     curLabel = "Live (" + _monthLabel(now) + ")";
     const pv = snaps[0];
-    prevMap = (pv && pv.data && pv.data[key]) || {};
+    prevMap = _dsReRate((pv && pv.data && pv.data[key]) || {}, pv && pv.version);
     prevLabel = pv ? (pv.label || pv.version) : "—";
   } else {
     const i = snaps.findIndex(s => s.version === sel), cur = snaps[i], pv = snaps[i + 1];
-    curMap = (cur && cur.data && cur.data[key]) || {};
+    curMap = _dsReRate((cur && cur.data && cur.data[key]) || {}, cur && cur.version);
     curLabel = cur ? (cur.label || cur.version) : sel;
-    prevMap = (pv && pv.data && pv.data[key]) || {};
+    prevMap = _dsReRate((pv && pv.data && pv.data[key]) || {}, pv && pv.version);
     prevLabel = pv ? (pv.label || pv.version) : "— (earliest month)";
   }
 
