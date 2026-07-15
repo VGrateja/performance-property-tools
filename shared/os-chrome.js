@@ -78,12 +78,43 @@
       try { doc.dispatchEvent(new CustomEvent('ppos-shade-change', { detail: { shade: shade, period: p } })); } catch (e) {}
     }
   }
+  /* ── Day/Night switch animation (ported from legacy theme.js 2026-07-15) ──
+     Primary: View Transitions API — a circular reveal expanding from the last
+     pointer position (CSS keyframes pp-theme-circle-reveal in os-theme.css /
+     common.css, driven by --ppt-x/--ppt-y/--ppt-r). The page is frozen into two
+     snapshots for ~0.9s, so the glass isn't live-re-blurring during the sweep.
+     Fallback: the pp-theme-transitioning class (~750ms soft cross-fade).
+     PERF GUARDS: skipped entirely under prefers-reduced-motion, lite mode
+     (pp-lite) and calm mode (pp-perf-hidden) — weak machines switch instantly.
+     window.__pposThemeSwitchAt lets the hub's FPS watchdog ignore samples that
+     overlap a toggle, so the one-shot animation can never trip auto-lite. */
+  var lastX = window.innerWidth - 50, lastY = 40, _themeFallbackT = null;
+  doc.addEventListener('pointerdown', function (e) { lastX = e.clientX; lastY = e.clientY; }, { capture: true, passive: true });
   function setMode(m) {
     if (MODES.indexOf(m) < 0) m = 'light';
-    root.dataset.mode = m;
-    try { localStorage.setItem('ppos-mode', m); } catch (e) {}
-    syncModeIcon();
-    applyPeriod();
+    var apply = function () {
+      root.dataset.mode = m;
+      try { localStorage.setItem('ppos-mode', m); } catch (e) {}
+      syncModeIcon();
+      applyPeriod();
+    };
+    var changed = root.dataset.mode !== m;
+    var reduce = false; try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
+    var perfOff = root.classList.contains('pp-lite') || root.classList.contains('pp-perf-hidden');
+    if (!changed || reduce || perfOff) { apply(); return; }
+    window.__pposThemeSwitchAt = Date.now();
+    var maxR = Math.hypot(Math.max(lastX, window.innerWidth - lastX), Math.max(lastY, window.innerHeight - lastY));
+    root.style.setProperty('--ppt-x', lastX + 'px');
+    root.style.setProperty('--ppt-y', lastY + 'px');
+    root.style.setProperty('--ppt-r', maxR + 'px');
+    if (document.startViewTransition) {
+      document.startViewTransition(apply);
+    } else {
+      root.classList.add('pp-theme-transitioning');
+      if (_themeFallbackT) clearTimeout(_themeFallbackT);
+      _themeFallbackT = setTimeout(function () { root.classList.remove('pp-theme-transitioning'); _themeFallbackT = null; }, 750);
+      apply();
+    }
   }
   function cycleMode() { setMode(root.dataset.mode === 'dark' ? 'light' : 'dark'); }
 
