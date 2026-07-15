@@ -316,7 +316,7 @@ select option{background:var(--panel2);color:var(--text)}
 .play-btn .pause-icon{display:none}
 .play-btn.playing .play-icon{display:none}
 .play-btn.playing .pause-icon{display:block;transform:none}
-.month-display{font-family:'Roboto Condensed',sans-serif;font-size:1.85rem;font-weight:700;color:var(--accent);letter-spacing:.04em;line-height:1;padding-bottom:2px;min-width:120px;text-align:right}
+.month-display{font-family:'Roboto Condensed',sans-serif;font-size:1.45rem;font-weight:700;color:var(--accent);letter-spacing:.04em;line-height:1;padding-bottom:4px;min-width:auto;white-space:nowrap;text-align:right}
 /* Per-user accessibility override — David Robbins struggles to read
    the cyan accent, so swap the timeline date to navy (#000080) for
    him only. Body class is set in shared/auth.js. */
@@ -623,6 +623,14 @@ body.embed-mode html { overflow: hidden; }
     <select id="wageYearsSelect">
       <option value="5" selected>5-Year</option>
       <option value="1">1-Year</option>
+    </select>
+  </div>
+
+  <div class="ctrl-group">
+    <label>Interest Rate</label>
+    <select id="rateNormSelect" title="At current rate re-plots every month's runway at today's rate assumption so you can compare the trend without past rate changes muddying it. Demand scores and the original values are unchanged.">
+      <option value="recorded" selected>As recorded</option>
+      <option value="current">At current rate</option>
     </select>
   </div>
 
@@ -990,6 +998,11 @@ function _readPushedLegend(){
    year + PP variable rate) only apply to the most recent month, so
    we don't retroactively label April with May's numbers. */
 function applyRunwayLegend(){
+  if(rateNorm){
+    const rr=(_currentRateFrac()*100).toFixed(2);
+    if(runwayAxisLabel) runwayAxisLabel.text('Runway - ' + wageYears + ' Year Wage Growth | At Current Rate ' + rr + '% (all months)');
+    return;
+  }
   if(!isLatestMonth()){
     if(runwayAxisLabel) runwayAxisLabel.text('Runway - ' + wageYears + ' Year Wage Growth');
     return;
@@ -1021,15 +1034,47 @@ function applyRunwayLegend(){
 // Capitals grow income at 3%/yr, regionals 2% (matches the runway config).
 const _RW_CAPS = new Set(['sydney','melbourne','brisbane','perth','adelaide','canberra','darwin','hobart']);
 const _rwSlug = s => String(s||'').replace(/\([^)]*\)/g,' ').replace(/,\s*(act|nsw|nt|qld|sa|tas|vic|wa)\b/ig,' ').replace(/\bgreater\b/ig,' ').replace(/\bregional\b/ig,' ').replace(/-hastings/ig,' ').replace(/\s+/g,' ').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+/* ── RATE-NORMALISE ("Compare at current rate" toggle) ───────────────────────
+   Re-plots every month's runway at TODAY's rate assumption so the trail shows
+   market movement, not rate changes. runway = (ceiling − median)/median, and the
+   ceiling scales with the rate through an annuity factor that's independent of
+   price and income — so re-rating a month is just (1+rw) × AF(now)/AF(then) − 1.
+   AF(then) uses that month's RBA cash rate (Forge `cash_rate`) held at the current
+   margin. Originals are never mutated; this only changes the plotted x-position.
+   The 130% runway cap still applies; months already at the cap can't be un-capped. */
+let rateNorm=false, _cashByYm={}, _rateFactor=[];
+const _AF = r => { r=+r; if(!(r>0)) return null; const m=r/12; return (1-Math.pow(1+m,-360))/m; };
+function _labelToYm(lbl){ const M={jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'}; const m=String(lbl||'').match(/^([A-Za-z]{3})\w*\s+(\d{4})$/); return m?(m[2]+'-'+M[m[1].toLowerCase()]):null; }
+function _currentRateFrac(){ let r=RUNWAY_V1_LEGEND.rate; try{ const p=_readPushedLegend(); const b=p&&(p.house||p.unit); if(b&&typeof b.rate==='number'&&Number.isFinite(b.rate)) r=_normPercent(b.rate); }catch(e){} return r/100; }
+function _recomputeRateFactors(){
+  const cur=_currentRateFrac(), afCur=_AF(cur);
+  let cashLatest=null;
+  for(let i=months.length-1;i>=0;i--){ const ym=_labelToYm(months[i]); if(ym&&_cashByYm[ym]!=null){ cashLatest=_cashByYm[ym]; break; } }
+  _rateFactor = months.map(lbl=>{
+    if(afCur==null||cashLatest==null) return 1;
+    const ym=_labelToYm(lbl), cash=(ym!=null)?_cashByYm[ym]:null;
+    if(cash==null) return 1;
+    const afOld=_AF(cur-(cashLatest-cash));   // oldRate = currentRate − (cash_now − cash_then)
+    return (afOld&&afOld>0)? afCur/afOld : 1;
+  });
+}
 function getRunwayValue(d, kind){
-  if (wageYears !== 1 || !d) return d ? d.rw : 0;
-  if (d.rw1 != null) return d.rw1;   // exact 1yr — current month, computed live from inputs (respects the 130% cap)
-  // History: derive 1yr from the baked 5yr runway. The affordability ceiling is linear
-  // in income and wage growth just scales income, so income cancels in the ratio:
-  //   rw1 = (rw5 + 1) / (1+wg)^4 − 1   (4 = 5−1 years). Verified exact vs the live engine.
-  if (d.rw == null) return d.rw;
-  const wg = _RW_CAPS.has(_rwSlug(d.city)) ? 0.03 : 0.02;
-  return ((d.rw/100 + 1) / Math.pow(1 + wg, 4) - 1) * 100;
+  let v;
+  if (wageYears !== 1 || !d) v = d ? d.rw : 0;
+  else if (d.rw1 != null) v = d.rw1;             // exact 1yr — current month, live from inputs (respects the 130% cap)
+  else if (d.rw == null) v = d.rw;
+  else {
+    // History: derive 1yr from the baked 5yr runway. Ceiling is linear in income and
+    // wage growth just scales income, so income cancels: rw1 = (rw5+1)/(1+wg)^4 − 1.
+    const wg = _RW_CAPS.has(_rwSlug(d.city)) ? 0.03 : 0.02;
+    v = ((d.rw/100 + 1) / Math.pow(1 + wg, 4) - 1) * 100;
+  }
+  if (rateNorm && v != null) {                    // re-rate this point's month to today's rate
+    const mi = (d && d.monthIdx != null) ? d.monthIdx : currentIdx;
+    const f = _rateFactor[mi];
+    if (f && f !== 1) v = Math.min(130, ((v/100 + 1) * f - 1) * 100);
+  }
+  return v;
 }
 
 /* Runway axis label — always visible. The content (year + variable
@@ -1093,6 +1138,8 @@ let currentIdx=Math.max(0, months.length-1), selectedCities=new Set(), playing=f
 /* ── WAGE-GROWTH TOGGLE (5-year baked ↔ 1-year) ── switches the runway axis only
    (wage growth doesn't affect the demand score). */
 (function(){ const sel=document.getElementById('wageYearsSelect'); if(sel) sel.addEventListener('change',()=>{ wageYears=(+sel.value===1)?1:5; applyRunwayLegend(); render(); }); })();
+/* RATE-NORMALISE dropdown — "At current rate" re-rates all months to today's rate. */
+(function(){ const sel=document.getElementById('rateNormSelect'); if(sel) sel.addEventListener('change',()=>{ rateNorm=(sel.value==='current'); if(rateNorm && _rateFactor.length!==months.length) _recomputeRateFactors(); applyRunwayLegend(); render(); }); })();
 
 /* 1-YEAR MACHINE — recompute each region's runway with 1-year wage growth from the
    rdp_runway inputs (median/income/AI-ceiling/rates + the region's wage rate) via
@@ -1121,6 +1168,20 @@ let currentIdx=Math.max(0, months.length-1), selectedCities=new Set(), playing=f
       arr.forEach(row=>{ const m=map[slugify(row.city)]; if(m&&m[leg]!=null) row.rw1=m[leg]; }); });
     if(wageYears===1) render();
   } catch(e){ console.warn('[runway] 1-year compute unavailable', e); }
+},100); })();
+
+/* Load the monthly RBA cash-rate history (Forge `cash_rate`, freq M) so the
+   "Compare at current rate" toggle can re-rate each past month. Fail-soft: on any
+   error the toggle simply leaves runway values unchanged (all factors stay 1). */
+(function loadCashRates(){ let n=0; const t=setInterval(async ()=>{
+  if(!window.sb && ++n<80) return; clearInterval(t);
+  if(!window.sb) return;
+  try{
+    const { data } = await window.sb.from('rdp_raw_series').select('period,value').eq('metric','cash_rate').eq('freq','M');
+    const byYm={};
+    (data||[]).forEach(r=>{ if(r.value==null) return; let v=Number(r.value); if(!Number.isFinite(v)) return; if(v>1) v=v/100; byYm[String(r.period).slice(0,7)]=v; });
+    _cashByYm=byYm; _recomputeRateFactors(); if(rateNorm) render();
+  }catch(e){ console.warn('[runway] cash-rate history unavailable', e); }
 },100); })();
 
 /* True only when the timeline cursor is on the most recent month.
@@ -1281,6 +1342,7 @@ function getTrailData(city,upToIdx,trailLen){
 
 // ── RENDER ──
 function render(animate=false){
+  if(rateNorm && _rateFactor.length!==months.length) _recomputeRateFactors();
   const month=months[currentIdx];
   const combined=(activeType==='combined');
   /* Each plotted point carries _kind ('house'|'unit') + a stable _key. In the
