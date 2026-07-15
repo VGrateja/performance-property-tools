@@ -2,9 +2,9 @@
  * Performance OS — shared chrome (os-chrome.js)
  *
  * Owns everything the desktop and every reskinned tool page share:
- *   • data-mode (auto|light|dark) — persisted in localStorage 'ppos-mode'
- *   • data-period (dawn|day|dusk|night) + data-shade (light|dark), re-checked
- *     every minute (logic identical to the pp-os.html desktop)
+ *   • data-mode (light|dark) — persisted in localStorage 'ppos-mode'
+ *   • data-period (day|night) + data-shade (light|dark) — fixed Day/Night,
+ *     set once at boot + on toggle (auto/time-of-day retired 2026-07-15)
  *   • LEGACY BRIDGE — while the rollout is in progress, also mirrors the shade
  *     into the old theme system (data-theme attribute + localStorage 'pp-theme'
  *     + the 'pp-theme-change' event) so not-yet-reskinned pages and existing
@@ -35,14 +35,18 @@
     people: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3 3-5 6-5s6 2 6 5"/><circle cx="17" cy="9" r="2.4"/><path d="M16 15c2.6.2 5 1.9 5 4.5"/></svg>',
     plus:   '<svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg>'
   };
+  /* Section accents = the Brand Guidelines accent palette (p14) with gradient
+     ends taken from each accent's official tone ramp (p15) — every value below
+     is a sanctioned brand tone. PM wears Eucalyptus (the Asset Management
+     sub-brand pairing, p27). Snapped from the old near-miss hues 2026-07-15. */
   var SECTIONS = {
-    analytics: { name: 'Analytics Hub',       a1: '#FF8E63', a2: '#FF4D6D', glyph: 'pulse'   },
-    vault:     { name: 'The Vault',           a1: '#8E7BFF', a2: '#5B3DF5', glyph: 'lock'    },
-    pm:        { name: 'Property Management', a1: '#3EDC97', a2: '#0FA36B', glyph: 'check'   },
-    arena:     { name: 'Performance Arena',   a1: '#FF7AC3', a2: '#D6338F', glyph: 'game'    },
-    docs:      { name: 'Documents & Reports', a1: '#FFC24D', a2: '#F58A1F', glyph: 'book'    },
-    present:   { name: 'Presentations',       a1: '#5AC8FF', a2: '#2A7FE8', glyph: 'present' },
-    people:    { name: 'People & Culture',    a1: '#D68CFF', a2: '#9B4DE0', glyph: 'people'  }
+    analytics: { name: 'Analytics Hub',       a1: '#ED5A75', a2: '#CA1637', glyph: 'pulse'   }, /* Red */
+    vault:     { name: 'The Vault',           a1: '#7E8CF1', a2: '#233AE7', glyph: 'lock'    }, /* Cobalt Blue */
+    pm:        { name: 'Property Management', a1: '#5DAC96', a2: '#3E7967', glyph: 'check'   }, /* Eucalyptus */
+    arena:     { name: 'Performance Arena',   a1: '#D373D3', a2: '#AB36AB', glyph: 'game'    }, /* Purple */
+    docs:      { name: 'Documents & Reports', a1: '#FFB947', a2: '#E08A00', glyph: 'book'    }, /* Yellow */
+    present:   { name: 'Presentations',       a1: '#54A6DE', a2: '#2478BC', glyph: 'present' }, /* Celestial Blue */
+    people:    { name: 'People & Culture',    a1: '#47DAFF', a2: '#00A3CC', glyph: 'people'  }  /* Bright Blue */
   };
 
   /* ── mode / period / shade (identical rules to the desktop mockup) ──────── */
@@ -105,7 +109,7 @@
      Returns { el, setStatus } for later tweaks. */
   function initChrome(cfg) {
     cfg = cfg || {};
-    var sec = SECTIONS[cfg.section] || { name: cfg.section || '', a1: '#8E7BFF', a2: '#5B3DF5', glyph: 'pulse' };
+    var sec = SECTIONS[cfg.section] || { name: cfg.section || '', a1: '#7E8CF1', a2: '#233AE7', glyph: 'pulse' };
     var a1 = cfg.a1 || sec.a1, a2 = cfg.a2 || sec.a2;
     var glyph = cfg.glyph ? (GLYPH[cfg.glyph] || cfg.glyph) : GLYPH[sec.glyph];
     doc.body.style.setProperty('--a1', a1);
