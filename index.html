@@ -13,7 +13,7 @@
 <script src="shared/error-reporter.js?v=b0f8f8c9"></script>
 <link rel="stylesheet" href="shared/common.css?v=3d044d9a"/>
 <link rel="stylesheet" href="shared/concierge.css?v=641e0933"/>
-<link rel="stylesheet" href="shared/os-theme.css?v=701d29a9"/>
+<link rel="stylesheet" href="shared/os-theme.css?v=2a1e38aa"/>
 
 <!-- Pre-paint auth check. Runs synchronously in <head> BEFORE the
      body parses, so we can mark the page as already-authed before
@@ -952,7 +952,9 @@
     display: flex;
     width: 400%;
     transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
-    will-change: transform;
+    /* will-change is applied by setHubPage() only for the duration of a slide,
+       then released — a standing will-change keeps a large composited layer (all
+       4 hub pages, 400% wide) allocated in GPU memory at idle. */
     align-items: flex-start;
   }
   .hub-pages-track > .hub-tools {
@@ -3059,6 +3061,10 @@ function _renderArenaNewsTicker() {
     '<div class="hub-stat-news-item">' + _escapeHtml(items[1 % items.length].text) + '</div>';
   if (items.length < 2) return;
   _arenaNewsCycleTimer = setInterval(function () {
+    /* Don't churn the DOM + repaint while the Arena page is off-screen or the
+       tab is hidden/unfocused — nobody can see the ticker then, and it was
+       animating forever regardless of which hub page was showing. */
+    if (document.hidden || !document.hasFocus() || _hubCurrentPage() !== 'arena') return;
     /* 1. Animate the track up by one frame so the second item
        slides into view. */
     $track.classList.add('is-sliding');
@@ -3151,6 +3157,10 @@ function setHubPage(page) {
   /* Non-staff can't land on PM / Vault (covers nav + any stale programmatic
      call). Redirect to main. */
   if ((page === 'pm' || page === 'vault') && !_hubIsStaff()) page = 'main';
+  /* Promote the track to its own GPU layer ONLY across the ~0.55s slide, then
+     release it — a permanent will-change holds that layer in VRAM at idle. */
+  var _trk = document.querySelector('.hub-pages-track');
+  if (_trk) { _trk.style.willChange = 'transform'; clearTimeout(_trk._wcRelease); _trk._wcRelease = setTimeout(function () { _trk.style.willChange = 'auto'; }, 650); }
   document.body.classList.toggle('hub-pm-active',    page === 'pm');
   document.body.classList.toggle('hub-arena-active', page === 'arena');
   document.body.classList.toggle('hub-vault-active', page === 'vault');
@@ -4706,11 +4716,18 @@ function navigateToTool(url, label) {
       var _st = document.createElement('style');
       _st.textContent =
         'html.pp-perf-hidden *,html.pp-perf-hidden *::before,html.pp-perf-hidden *::after{animation-play-state:paused !important;transition:none !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important}'
-        + 'html.pp-lite{--pp-glass-scale:.35}';   /* the logo is now flat for EVERYONE, so lite only trims the glass */
+        + 'html.pp-lite{--pp-glass-scale:0}'                              /* struggling machine → drop hub glass blur entirely (var feeds every hub backdrop-filter) */
+        + 'html.pp-lite .hub-tier4-notice-cta{animation:none !important}';
       document.head.appendChild(_st);
-      /* (1) hidden-tab pause */
-      var _apply = function () { document.documentElement.classList.toggle('pp-perf-hidden', document.hidden); };
+      /* (1) CALM MODE — pause all animation + drop all glass whenever the hub is
+         NOT the user's active window: hidden tab, minimised, OR sitting beside a
+         focused Google Meet window. The old code keyed only on document.hidden,
+         so a side-by-side Meet never triggered it and the (formerly animated)
+         glass kept burning GPU during calls. document.hasFocus() closes that gap. */
+      var _apply = function () { document.documentElement.classList.toggle('pp-perf-hidden', document.hidden || !document.hasFocus()); };
       document.addEventListener('visibilitychange', _apply);
+      window.addEventListener('blur',  _apply);
+      window.addEventListener('focus', _apply);
       _apply();
       /* (2) adaptive lite — measure, don't guess */
       var _LKEY = 'pp-lite-auto';
