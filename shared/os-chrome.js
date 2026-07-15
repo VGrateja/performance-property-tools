@@ -46,27 +46,26 @@
   };
 
   /* ── mode / period / shade (identical rules to the desktop mockup) ──────── */
-  var MODES = ['auto', 'light', 'dark'];
+  var MODES = ['light', 'dark'];
   var MODE_ICO = {
-    /* auto = sun/moon combo (Van 2026-07-12): the cycle reads sun-moon, sun, moon */
-    auto:  '<circle cx="9" cy="15" r="3.2"/><path d="M9 10.2V8.6M9 21.4v-1.6M4.2 15H2.6M4.9 10.9L3.8 9.8M4.9 19.1l-1.1 1.1M13.1 19.1l1.1 1.1"/><path d="M21.2 9.3A4.6 4.6 0 1115.9 4 3.7 3.7 0 0021.2 9.3z"/>',
     light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
     dark:  '<path d="M21 12.8A9 9 0 1111.2 3 7 7 0 0021 12.8z"/>'
   };
-  function periodFor(h) { return h >= 5 && h < 9 ? 'dawn' : h >= 9 && h < 17 ? 'day' : h >= 17 && h < 20 ? 'dusk' : 'night'; }
+  /* Fixed Day/Night only (auto / time-of-day retired 2026-07-15). First visit
+     follows the OS preference; after that the user's explicit choice sticks. */
   function getMode() {
-    try { var m = localStorage.getItem('ppos-mode'); if (MODES.indexOf(m) > -1) return m; } catch (e) {}
-    return 'auto';
+    try { var m = localStorage.getItem('ppos-mode'); if (m === 'light' || m === 'dark') return m; } catch (e) {}
+    try { if (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) return 'dark'; } catch (e) {}
+    return 'light';
   }
+  function syncModeIcon() { var ico = doc.getElementById('pposModeIco'); if (ico) ico.innerHTML = MODE_ICO[root.dataset.mode] || MODE_ICO.light; }
   function applyPeriod() {
-    var mode = root.dataset.mode || getMode();
-    var p = mode === 'light' ? 'day' : mode === 'dark' ? 'night' : periodFor(new Date().getHours());
-    root.dataset.period = p;
-    var shade = (p === 'day' || p === 'dawn') ? 'light' : 'dark';
+    var shade = (root.dataset.mode === 'dark') ? 'dark' : 'light';
+    var p = shade === 'dark' ? 'night' : 'day';
     var changed = root.dataset.shade !== shade;
+    root.dataset.period = p;
     root.dataset.shade = shade;
-    /* LEGACY BRIDGE — keep the old theme system in lockstep during rollout.
-       Old convention: dark = NO data-theme attribute; light = data-theme="light". */
+    /* LEGACY BRIDGE — dark = NO data-theme attribute; light = data-theme="light". */
     if (shade === 'light') root.setAttribute('data-theme', 'light');
     else root.removeAttribute('data-theme');
     try { localStorage.setItem('pp-theme', shade); } catch (e) {}
@@ -76,20 +75,19 @@
     }
   }
   function setMode(m) {
-    if (MODES.indexOf(m) < 0) m = 'auto';
+    if (MODES.indexOf(m) < 0) m = 'light';
     root.dataset.mode = m;
     try { localStorage.setItem('ppos-mode', m); } catch (e) {}
-    var ico = doc.getElementById('pposModeIco');
-    if (ico) ico.innerHTML = MODE_ICO[m];
+    syncModeIcon();
     applyPeriod();
   }
-  function cycleMode() { setMode(MODES[(MODES.indexOf(root.dataset.mode || 'auto') + 1) % MODES.length]); }
+  function cycleMode() { setMode(root.dataset.mode === 'dark' ? 'light' : 'dark'); }
 
-  /* Apply immediately (script loads in <head> or early <body> — first paint
-     must already wear the right shade, same contract as the old theme.js). */
+  /* Apply immediately (script loads early — first paint must wear the right
+     shade). No time-of-day polling anymore. */
   root.dataset.mode = getMode();
   applyPeriod();
-  setInterval(applyPeriod, 60000);
+  if (doc.readyState === 'loading') doc.addEventListener('DOMContentLoaded', syncModeIcon); else syncModeIcon();
 
   /* ── app bar ────────────────────────────────────────────────────────────── */
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
@@ -134,7 +132,7 @@
       '</div>' +
       '<div class="ab-sp"></div>' +
       '<div class="ab-r">' + actions +
-        '<button class="ab-ic" id="pposModeBtn" title="Appearance (auto / light / dark)"><svg id="pposModeIco" viewBox="0 0 24 24">' + MODE_ICO[root.dataset.mode || 'auto'] + '</svg></button>' +
+        '<button class="ab-ic" id="pposModeBtn" title="Appearance (day / night)"><svg id="pposModeIco" viewBox="0 0 24 24">' + (MODE_ICO[root.dataset.mode] || MODE_ICO.light) + '</svg></button>' +
         (cfg.clock !== false ? '<span class="ab-clock" id="pposClock">—</span>' : '') +
       '</div>';
     /* insert after the wallpaper so the bar is the first visible element.
