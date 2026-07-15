@@ -204,13 +204,16 @@ body{
 #runwayView .rwpdf-btn svg{width:12px;height:12px;flex-shrink:0;display:inline-block;opacity:.85}
 #runwayView .rwpdf-btn:hover svg{opacity:1}
 #runwayView .tab:hover:not(.active){border-color:var(--accent);color:#fff}
-.controls{width:100%;max-width:1120px;display:flex;align-items:flex-end;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.controls{width:100%;max-width:1120px;display:flex;align-items:flex-end;gap:12px;margin-bottom:14px;flex-wrap:nowrap}
+/* Keep the play/month on the controls row: don't wrap (fit-screen zoom handles
+   narrow viewports). The region button is capped narrower so the row still fits
+   1120px even when the widest dropdown option ("Current 216M Ave") is picked. */
 .ctrl-group{display:flex;flex-direction:column}
 .ctrl-group label{display:block;font-size:.66rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;height:16px}
 
 /* Multi-select region picker */
 .region-picker{position:relative}
-.region-btn{appearance:none;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-family:'Roboto',sans-serif;font-size:.86rem;padding:8px 36px 8px 12px;border-radius:6px;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2300b6cb'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;transition:border-color .18s;min-width:260px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:38px}
+.region-btn{appearance:none;background:var(--panel2);border:1px solid var(--border);color:var(--text);font-family:'Roboto',sans-serif;font-size:.86rem;padding:8px 36px 8px 12px;border-radius:6px;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2300b6cb'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;transition:border-color .18s;min-width:200px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:38px}
 .region-btn:hover,.region-btn.open{border-color:var(--accent)}
 .region-dropdown{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:200;background:#1a2236;border:1px solid rgba(0,182,203,.3);border-radius:8px;min-width:280px;max-height:280px;overflow-x:hidden;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.5)}
 .region-dropdown.open{display:block}
@@ -628,9 +631,10 @@ body.embed-mode html { overflow: hidden; }
 
   <div class="ctrl-group">
     <label>Interest Rate</label>
-    <select id="rateNormSelect" title="At current rate re-plots every month's runway at today's rate assumption so you can compare the trend without past rate changes muddying it. Demand scores and the original values are unchanged.">
+    <select id="rateBasisSelect" title="Rate basis for the runway axis. 'As recorded' = each month at the rate it was actually built with. 'PPA Assumed' / 'Current 216M Ave' re-plot every month on one consistent rate so the trend compares like-for-like (this is what removes the Feb→Mar 2026 step). Demand scores and the stored values are unchanged.">
       <option value="recorded" selected>As recorded</option>
-      <option value="current">At current rate</option>
+      <option value="ppa">PPA Assumed</option>
+      <option value="rolling">Current 216M Ave</option>
     </select>
   </div>
 
@@ -998,9 +1002,9 @@ function _readPushedLegend(){
    year + PP variable rate) only apply to the most recent month, so
    we don't retroactively label April with May's numbers. */
 function applyRunwayLegend(){
-  if(rateNorm){
-    const rr=(_currentRateFrac()*100).toFixed(2);
-    if(runwayAxisLabel) runwayAxisLabel.text('Runway - ' + wageYears + ' Year Wage Growth | At Current Rate ' + rr + '% (all months)');
+  if(rateBasis!=='recorded'){
+    const nm=(rateBasis==='ppa')?'PPA Assumed':('Current 216M Ave '+(ROLLING_RATE*100).toFixed(2)+'%');
+    if(runwayAxisLabel) runwayAxisLabel.text('Runway - ' + wageYears + ' Year Wage Growth | ' + nm);
     return;
   }
   if(!isLatestMonth()){
@@ -1034,28 +1038,47 @@ function applyRunwayLegend(){
 // Capitals grow income at 3%/yr, regionals 2% (matches the runway config).
 const _RW_CAPS = new Set(['sydney','melbourne','brisbane','perth','adelaide','canberra','darwin','hobart']);
 const _rwSlug = s => String(s||'').replace(/\([^)]*\)/g,' ').replace(/,\s*(act|nsw|nt|qld|sa|tas|vic|wa)\b/ig,' ').replace(/\bgreater\b/ig,' ').replace(/\bregional\b/ig,' ').replace(/-hastings/ig,' ').replace(/\s+/g,' ').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
-/* ── RATE-NORMALISE ("Compare at current rate" toggle) ───────────────────────
-   Re-plots every month's runway at TODAY's rate assumption so the trail shows
-   market movement, not rate changes. runway = (ceiling − median)/median, and the
-   ceiling scales with the rate through an annuity factor that's independent of
-   price and income — so re-rating a month is just (1+rw) × AF(now)/AF(then) − 1.
-   AF(then) uses that month's RBA cash rate (Forge `cash_rate`) held at the current
-   margin. Originals are never mutated; this only changes the plotted x-position.
-   The 130% runway cap still applies; months already at the cap can't be un-capped. */
-let rateNorm=false, _cashByYm={}, _rateFactor=[];
+/* ── INTEREST-RATE BASIS (runway axis) ───────────────────────────────────────
+   Runway = (ceiling − median)/median, and the ceiling scales with the assumed
+   lending rate through a 30-yr annuity factor that is independent of price and
+   income — so re-plotting a month at a different rate is exact:
+       runway_new = (1 + runway_old) × AF(target) / AF(rate_that_month) − 1   (cap 130%)
+   Each month's recorded runway was built at PP's FORECAST Variable Rate below
+   (= PP IC Cash Forecast + 1.75% bank margin + 0.50% APRA buffer). From Mar 2026
+   the forecast method switched to the Rolling-216-month average (2.69→2.66% cash
+   → 4.94→4.91% variable) — that switch is what makes Feb→Mar 2026 jump.
+   The dropdown re-plots the WHOLE series on ONE basis so it compares like-for-like:
+     • As recorded       — each month at the rate it was actually built with (raw)
+     • PPA Assumed        — PPA forecast method the whole way (= recorded to Feb '26; 6.03% Mar–Jul '26)
+     • Current 216M Ave — rolling method the whole way (flat 4.91%)
+   Demand scores and the stored values are never touched; only the plotted x moves. */
+let rateBasis='recorded', _rateFactor=[];
 const _AF = r => { r=+r; if(!(r>0)) return null; const m=r/12; return (1-Math.pow(1+m,-360))/m; };
 function _labelToYm(lbl){ const M={jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'}; const m=String(lbl||'').match(/^([A-Za-z]{3})\w*\s+(\d{4})$/); return m?(m[2]+'-'+M[m[1].toLowerCase()]):null; }
-function _currentRateFrac(){ let r=RUNWAY_V1_LEGEND.rate; try{ const p=_readPushedLegend(); const b=p&&(p.house||p.unit); if(b&&typeof b.rate==='number'&&Number.isFinite(b.rate)) r=_normPercent(b.rate); }catch(e){} return r/100; }
+/* As Recorded — the forecast PP Variable Rate each month's runway was ACTUALLY
+   built at: PPA forecast method Jan '25–Feb '26, then Rolling-216 from Mar '26
+   (4.94% while the rolling avg was 2.69%, 4.91% once it updated to 2.66% by Jul). */
+const REC_RATE = {
+  '2025-01':0.0545,'2025-02':0.0545,'2025-03':0.0545,'2025-04':0.0545,'2025-05':0.0535,'2025-06':0.0555,
+  '2025-07':0.0555,'2025-08':0.0540,'2025-09':0.0540,'2025-10':0.0540,'2025-11':0.0560,'2025-12':0.0560,
+  '2026-01':0.0560,'2026-02':0.0603,'2026-03':0.0494,'2026-04':0.0494,'2026-05':0.0494,'2026-06':0.0494,'2026-07':0.0491
+};
+/* PPA Assumed — PPA's forecast method applied the whole way: = As Recorded
+   through Feb '26, then held at Feb's 6.03% for Mar–Jul '26. */
+const PPA_RATE = {
+  '2025-01':0.0545,'2025-02':0.0545,'2025-03':0.0545,'2025-04':0.0545,'2025-05':0.0535,'2025-06':0.0555,
+  '2025-07':0.0555,'2025-08':0.0540,'2025-09':0.0540,'2025-10':0.0540,'2025-11':0.0560,'2025-12':0.0560,
+  '2026-01':0.0560,'2026-02':0.0603,'2026-03':0.0603,'2026-04':0.0603,'2026-05':0.0603,'2026-06':0.0603,'2026-07':0.0603
+};
+const ROLLING_RATE = 0.0491;   // Current 216M Ave — flat across the whole series (Jan '25 – Jul '26)
+function _targetRate(ym){ if(rateBasis==='ppa') return PPA_RATE[ym]; if(rateBasis==='rolling') return ROLLING_RATE; return null; }
 function _recomputeRateFactors(){
-  const cur=_currentRateFrac(), afCur=_AF(cur);
-  let cashLatest=null;
-  for(let i=months.length-1;i>=0;i--){ const ym=_labelToYm(months[i]); if(ym&&_cashByYm[ym]!=null){ cashLatest=_cashByYm[ym]; break; } }
   _rateFactor = months.map(lbl=>{
-    if(afCur==null||cashLatest==null) return 1;
-    const ym=_labelToYm(lbl), cash=(ym!=null)?_cashByYm[ym]:null;
-    if(cash==null) return 1;
-    const afOld=_AF(cur-(cashLatest-cash));   // oldRate = currentRate − (cash_now − cash_then)
-    return (afOld&&afOld>0)? afCur/afOld : 1;
+    const ym=_labelToYm(lbl); if(!ym) return 1;
+    const rec=REC_RATE[ym], tgt=_targetRate(ym);
+    if(!rec||!tgt) return 1;                         // 'As recorded' (tgt null) or unknown month → no re-rating
+    const afRec=_AF(rec), afTgt=_AF(tgt);
+    return (afRec&&afTgt&&afRec>0)? afTgt/afRec : 1;
   });
 }
 function getRunwayValue(d, kind){
@@ -1069,7 +1092,7 @@ function getRunwayValue(d, kind){
     const wg = _RW_CAPS.has(_rwSlug(d.city)) ? 0.03 : 0.02;
     v = ((d.rw/100 + 1) / Math.pow(1 + wg, 4) - 1) * 100;
   }
-  if (rateNorm && v != null) {                    // re-rate this point's month to today's rate
+  if (rateBasis!=='recorded' && v != null) {       // re-plot this point's month on the chosen rate basis
     const mi = (d && d.monthIdx != null) ? d.monthIdx : currentIdx;
     const f = _rateFactor[mi];
     if (f && f !== 1) v = Math.min(130, ((v/100 + 1) * f - 1) * 100);
@@ -1138,8 +1161,8 @@ let currentIdx=Math.max(0, months.length-1), selectedCities=new Set(), playing=f
 /* ── WAGE-GROWTH TOGGLE (5-year baked ↔ 1-year) ── switches the runway axis only
    (wage growth doesn't affect the demand score). */
 (function(){ const sel=document.getElementById('wageYearsSelect'); if(sel) sel.addEventListener('change',()=>{ wageYears=(+sel.value===1)?1:5; applyRunwayLegend(); render(); }); })();
-/* RATE-NORMALISE dropdown — "At current rate" re-rates all months to today's rate. */
-(function(){ const sel=document.getElementById('rateNormSelect'); if(sel) sel.addEventListener('change',()=>{ rateNorm=(sel.value==='current'); if(rateNorm && _rateFactor.length!==months.length) _recomputeRateFactors(); applyRunwayLegend(); render(); }); })();
+/* INTEREST-RATE BASIS dropdown — re-plot all months on the chosen rate basis. */
+(function(){ const sel=document.getElementById('rateBasisSelect'); if(sel) sel.addEventListener('change',()=>{ rateBasis=sel.value; _recomputeRateFactors(); applyRunwayLegend(); render(); }); })();
 
 /* 1-YEAR MACHINE — recompute each region's runway with 1-year wage growth from the
    rdp_runway inputs (median/income/AI-ceiling/rates + the region's wage rate) via
@@ -1168,20 +1191,6 @@ let currentIdx=Math.max(0, months.length-1), selectedCities=new Set(), playing=f
       arr.forEach(row=>{ const m=map[slugify(row.city)]; if(m&&m[leg]!=null) row.rw1=m[leg]; }); });
     if(wageYears===1) render();
   } catch(e){ console.warn('[runway] 1-year compute unavailable', e); }
-},100); })();
-
-/* Load the monthly RBA cash-rate history (Forge `cash_rate`, freq M) so the
-   "Compare at current rate" toggle can re-rate each past month. Fail-soft: on any
-   error the toggle simply leaves runway values unchanged (all factors stay 1). */
-(function loadCashRates(){ let n=0; const t=setInterval(async ()=>{
-  if(!window.sb && ++n<80) return; clearInterval(t);
-  if(!window.sb) return;
-  try{
-    const { data } = await window.sb.from('rdp_raw_series').select('period,value').eq('metric','cash_rate').eq('freq','M');
-    const byYm={};
-    (data||[]).forEach(r=>{ if(r.value==null) return; let v=Number(r.value); if(!Number.isFinite(v)) return; if(v>1) v=v/100; byYm[String(r.period).slice(0,7)]=v; });
-    _cashByYm=byYm; _recomputeRateFactors(); if(rateNorm) render();
-  }catch(e){ console.warn('[runway] cash-rate history unavailable', e); }
 },100); })();
 
 /* True only when the timeline cursor is on the most recent month.
@@ -1342,7 +1351,7 @@ function getTrailData(city,upToIdx,trailLen){
 
 // ── RENDER ──
 function render(animate=false){
-  if(rateNorm && _rateFactor.length!==months.length) _recomputeRateFactors();
+  if(rateBasis!=='recorded' && _rateFactor.length!==months.length) _recomputeRateFactors();
   const month=months[currentIdx];
   const combined=(activeType==='combined');
   /* Each plotted point carries _kind ('house'|'unit') + a stable _key. In the
