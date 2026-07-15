@@ -128,6 +128,14 @@ body.bss-edit .bss-ov.sel .bss-ov-h{display:block}
 .bss-selbar .bp-color input[type=color]{width:34px;height:32px;border:0;background:none;padding:0;cursor:pointer;flex:none}
 .bss-selbar .bp-color .bp-hex{flex:1}
 .bss-selbar .bp-color .bp-tg{flex:none;padding:7px 12px;cursor:pointer;border-radius:8px;border:1px solid var(--bss-line);background:var(--bss-navy);color:var(--bss-ink);font-weight:700;font-size:12px}
+.bss-selbar .bp-row2{display:flex;gap:6px}
+.bss-selbar .bp-rt{font:inherit;font-size:12px;font-weight:700;padding:7px 0;border-radius:8px;border:1px solid var(--bss-line);background:var(--bss-navy);color:var(--bss-ink);cursor:pointer;flex:1}
+.bss-selbar .bp-rt:hover{border-color:var(--bss-cyan)}
+.bss-ov-text a{color:inherit;text-decoration:underline}
+.bss-ov-text ul,.bss-ov-text ol{margin:.2em 0;padding-left:1.4em}
+.bss-ov-text ul.dash{list-style:none;padding-left:1.1em}
+.bss-ov-text ul.dash>li::before{content:"\2013\00a0"}
+.bss-ov-text.editing .bss-tok{background:rgba(56,198,224,.22);border-radius:4px;padding:0 2px;box-shadow:inset 0 0 0 1px rgba(56,198,224,.55);cursor:default}
 .bss-selbar .bp-actions{display:flex;gap:8px;margin-top:16px}
 .bss-selbar .bp-actions button{flex:1;font:inherit;font-weight:700;padding:9px 0;border-radius:9px;cursor:pointer;border:1px solid var(--bss-line);background:var(--panel2,#131c2e);color:var(--bss-ink)}
 .bss-selbar .bp-del{border-color:#ff6b6b !important;color:#ff6b6b !important}
@@ -231,6 +239,14 @@ body.bss-present .bss-presd{display:flex}
     <div class="cm-actions"><label class="cm-all"><input type="checkbox" id="cmAll"> Select all</label><span class="grow"></span><button class="bss-btn" data-cm="cancel">Cancel</button><button class="bss-btn primary" data-cm="apply">Copy</button></div>
   </div>
 </div>
+<div class="bss-modal" id="bssSlidesModal" hidden>
+  <div class="bss-modal-card">
+    <div class="bp-title">Copy this text box to slides…</div>
+    <p class="cm-note">Duplicates the selected text box onto the slides you pick (in this deck). Great for headers/footers that should repeat.</p>
+    <div class="cm-list" id="csList"></div>
+    <div class="cm-actions"><label class="cm-all"><input type="checkbox" id="csAll"> Select all</label><span class="grow"></span><button class="bss-btn" data-cs="cancel">Cancel</button><button class="bss-btn primary" data-cs="apply">Copy</button></div>
+  </div>
+</div>
 <div class="bss-bgpop" id="bssBgPop" hidden>
   <div class="bgp-title" id="bgpTitle">Page Background</div>
   <div class="bgp-tabs"><button data-bgt="solid" class="on">Solid</button><button data-bgt="gradient">Gradient</button></div>
@@ -280,7 +296,7 @@ let state = { slug:'adelaide', mode:'sell', idx:0 };
 let DECK = [];
 let _bsCanEdit = false;   // dev/admin → can edit (overlays, backgrounds, image upload)
 let _slideScale = 1;      // current .bss-slide transform scale (drag deltas ÷ this)
-let EDIT=false, OVL={}, BGS={}, CUSTOM=[], _sel=null, _saveT=null, _hist=[], _hi=-1;   // slide editor state
+let EDIT=false, OVL={}, BGS={}, CUSTOM=[], _sel=null, _saveT=null, _hist=[], _hi=-1, _edEl=null;   // slide editor state (_edEl = text overlay being edited)
 
 const fmtInt = v => (v<0?'-':'') + '$'.replace('$','') + Math.abs(Math.round(v)).toLocaleString();
 const money  = v => (v<0?'-$':'$') + Math.abs(Math.round(v)).toLocaleString();
@@ -621,20 +637,39 @@ function renderOverlays(){
    year), {month}, {state}/{STATE}. Resolved for display; the raw {token} text is
    what's stored + edited, so it follows the region on Copy-to and updates the
    year automatically. */
-function resolveTokens(s){
-  if(!s || s.indexOf('{')<0) return s;
+function _tokenMap(){
   const m=DB.meta[state.slug]||{}, name=m.name||state.slug, st=m.state||'';
   const kind=state.mode==='buy'?'Buying':'Selling';
   const d=new Date(), mon=MONTHS[d.getMonth()];
-  const map={ region:name, REGION:String(name).toUpperCase(), kind:kind, KIND:kind.toUpperCase(),
+  return { region:name, REGION:String(name).toUpperCase(), kind:kind, KIND:kind.toUpperCase(),
     year:String(d.getFullYear()), month:mon, MONTH:String(mon).toUpperCase(), state:st, STATE:String(st).toUpperCase() };
-  return s.replace(/\{(\w+)\}/g,(mm,k)=> (map[k]!=null?map[k]:mm));
 }
+function resolveTokens(s){ if(!s || s.indexOf('{')<0) return s; const map=_tokenMap(); return s.replace(/\{(\w+)\}/g,(mm,k)=> (map[k]!=null?map[k]:mm)); }
+/* While editing, a {token} becomes an atomic non-editable "chip" that shows the
+   resolved value — so typing next to it, lists, links, spellcheck etc. can never
+   split the braces. Chips serialize straight back to {token} on save, so the text
+   stays a live token even after it's been edited. */
+function toEditHtml(raw){ if(raw==null)return ''; const map=_tokenMap();
+  return String(raw).replace(/\{(\w+)\}/g,(mm,k)=> (map[k]!=null?('<span class="bss-tok" contenteditable="false" data-tok="'+k+'">'+esc(map[k])+'</span>'):mm)); }
+function fromEditHtml(el){ const c=el.cloneNode(true); c.querySelectorAll('.bss-tok').forEach(s=>s.replaceWith(document.createTextNode('{'+(s.dataset.tok||'')+'}'))); return c.innerHTML; }
+/* In-text-edit shortcuts: double-click copies the word (native word-select), triple-click
+   selects+copies the sentence around the click point. */
+function copySelection(){ const s=window.getSelection&&window.getSelection(); if(!s||!s.toString())return; try{ document.execCommand('copy'); }catch(e){} }
+function selectSentenceAt(x,y){ const sel=window.getSelection(); if(!sel)return; let r=null;
+  if(document.caretRangeFromPoint) r=document.caretRangeFromPoint(x,y);
+  else if(document.caretPositionFromPoint){ const p=document.caretPositionFromPoint(x,y); if(p){ r=document.createRange(); r.setStart(p.offsetNode,p.offset); } }
+  if(!r || r.startContainer.nodeType!==3){ if(_edEl){ const rng=document.createRange(); rng.selectNodeContents(_edEl); sel.removeAllRanges(); sel.addRange(rng); } return; }
+  const node=r.startContainer, txt=node.textContent||'', i=r.startOffset;
+  let s=i; while(s>0 && !/[.!?]/.test(txt[s-1])) s--; while(s<txt.length && /\s/.test(txt[s])) s++;
+  let e=i; while(e<txt.length && !/[.!?]/.test(txt[e])) e++; if(e<txt.length) e++; if(e<=s) e=txt.length;
+  const rng=document.createRange(); rng.setStart(node,Math.min(s,txt.length)); rng.setEnd(node,Math.min(e,txt.length));
+  sel.removeAllRanges(); sel.addRange(rng); }
 function makeOverlayEl(o){
   let el=document.createElement('div'); el.className='bss-ov bss-ov-'+o.type; el.dataset.id=o.id;
-  if(o.type==='text'){ el.textContent=resolveTokens(o.text||'Text'); el.style.color=o.color||'#ffffff'; el.style.fontSize=(o.fontSize||34)+'px';
-    el.style.fontFamily=o.fontFamily||"'Figtree',sans-serif"; el.style.fontWeight=o.bold?'800':'600'; el.style.fontStyle=o.italic?'italic':'normal';
-    el.style.textDecoration=o.underline?'underline':'none'; el.style.textAlign=o.align||'left'; el.style.width=o.w?(o.w+'px'):'auto'; }
+  if(o.type==='text'){ el.innerHTML=resolveTokens(o.html!=null?o.html:(o.text||'Text')); el.style.color=o.color||'#ffffff'; el.style.fontSize=(o.fontSize||34)+'px';
+    el.style.fontFamily=o.fontFamily||"'Figtree',sans-serif"; el.style.fontWeight=o.bold?'800':String(o.weight||600); el.style.fontStyle=o.italic?'italic':'normal';
+    el.style.textDecoration=o.underline?'underline':'none'; el.style.textAlign=o.align||'left'; el.style.lineHeight=String(o.lineHeight||1.2); el.style.width=o.w?(o.w+'px'):'auto';
+    if(o.bg){ el.style.background=o.bg; el.style.padding='6px 12px'; } else { el.style.background=''; el.style.padding=''; } }
   else if(o.type==='image'){ el.style.width=(o.w||300)+'px'; el.style.height=(o.h||200)+'px'; el.style.backgroundSize='contain'; el.style.backgroundPosition='center'; el.style.opacity=(o.opacity==null?1:o.opacity/100);
     if(o.src){ el.style.backgroundImage='url('+o.src+')'; }                                   /* legacy inline */
     else if(o.path){ const c=_imgUrl.get(o.path); if(c&&c.exp>Date.now()){ el.style.backgroundImage='url('+c.url+')'; }
@@ -661,9 +696,12 @@ function attachOverlayHandlers(el,o){
     document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
   });
   if(o.type==='text'){
-    el.addEventListener('dblclick',ev=>{ ev.stopPropagation(); el.textContent=o.text||''; el.contentEditable='true'; el.classList.add('editing'); el.focus();   /* show RAW {tokens} while editing */
-      const fin=()=>{ el.contentEditable='false'; el.classList.remove('editing'); const nv=el.textContent; if((o.text||'')!==nv){ o.text=nv; commit(); } el.textContent=resolveTokens(o.text||''); el.removeEventListener('blur',fin); };
+    el.addEventListener('dblclick',ev=>{ ev.stopPropagation();
+      if(el.classList.contains('editing')){ copySelection(); return; }   /* already editing → dbl-click selected a word → copy it */
+      el.innerHTML=toEditHtml(o.html!=null?o.html:(o.text||'')); el.contentEditable='true'; el.classList.add('editing'); _edEl=el; el.focus();   /* tokens shown as atomic chips while editing */
+      const fin=()=>{ el.contentEditable='false'; el.classList.remove('editing'); if(_edEl===el)_edEl=null; const raw=(o.html!=null?o.html:(o.text||'')), nv=fromEditHtml(el); if(raw!==nv){ o.html=nv; if('text' in o)delete o.text; commit(); } el.innerHTML=resolveTokens(o.html!=null?o.html:(o.text||'')); el.removeEventListener('blur',fin); };
       el.addEventListener('blur',fin); });
+    el.addEventListener('click',ev=>{ if(el.classList.contains('editing') && ev.detail>=3){ ev.preventDefault(); selectSentenceAt(ev.clientX,ev.clientY); copySelection(); } });
   } else {
     const h=document.createElement('div'); h.className='bss-ov-h'; el.appendChild(h);
     h.addEventListener('mousedown',ev=>{ ev.stopPropagation(); ev.preventDefault(); const sx=ev.clientX,sy=ev.clientY,ow=o.w||200,oh=o.h||140; const asp=o.aspect||(ow/oh)||1;
@@ -715,6 +753,7 @@ function addImageFile(file){ if(!file||!/^image\//.test(file.type||''))return;
   }; im.src=r.result; }; r.readAsDataURL(file); }
 const FONTS=[['Figtree',"'Figtree',sans-serif"],['Roboto',"'Roboto',Arial,sans-serif"],['DM Sans',"'DM Sans',sans-serif"],['Montserrat',"'Montserrat',sans-serif"],['Georgia',"Georgia,serif"],['Arial',"Arial,Helvetica,sans-serif"],['Times',"'Times New Roman',serif"]];
 const HEX68=/^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;   // accept #RRGGBB or #RRGGBBAA (alpha)
+const WEIGHTS=[['Light',300],['Regular',400],['Medium',500],['Semibold',600],['Bold',700],['Extra Bold',800]];
 function showSelBar(){
   const bar=$('#bssSelBar'); const o=_selObj();
   if(!EDIT||!o){ bar.hidden=true; bar.innerHTML=''; return; }
@@ -722,11 +761,16 @@ function showSelBar(){
   if(o.type==='text'){
     h+='<div class="bp-title">Text</div>';
     h+='<label class="bp-l">Font</label><select class="bp-sel" data-t="ff">'+FONTS.map(f=>'<option value="'+f[1]+'"'+(((o.fontFamily||FONTS[0][1])===f[1])?' selected':'')+'>'+f[0]+'</option>').join('')+'</select>';
+    h+='<label class="bp-l">Weight</label><select class="bp-sel" data-t="wt">'+WEIGHTS.map(w=>'<option value="'+w[1]+'"'+(((o.weight||600)===w[1])?' selected':'')+'>'+w[0]+'</option>').join('')+'</select>';
     h+='<label class="bp-l">Size (px)</label><div class="bp-step"><button data-t="sz-">−</button><input class="bp-num" data-t="szn" value="'+(o.fontSize||34)+'"><button data-t="sz+">+</button></div>';
+    h+='<label class="bp-l">Line space</label><div class="bp-step"><button data-t="ls-">−</button><input class="bp-num" data-t="lsn" value="'+(o.lineHeight||1.2)+'"><button data-t="ls+">+</button></div>';
     h+='<label class="bp-l">Style</label><div class="bp-row3"><button class="bp-tg'+(o.bold?' on':'')+'" data-t="b"><b>B</b></button><button class="bp-tg'+(o.italic?' on':'')+'" data-t="i"><i>I</i></button><button class="bp-tg'+(o.underline?' on':'')+'" data-t="u"><u>U</u></button></div>';
     h+='<label class="bp-l">Align</label><div class="bp-row3"><button class="bp-tg'+(((o.align||"left")==="left")?' on':'')+'" data-t="al">L</button><button class="bp-tg'+((o.align==="center")?' on':'')+'" data-t="ac">C</button><button class="bp-tg'+((o.align==="right")?' on':'')+'" data-t="ar">R</button></div>';
     h+='<label class="bp-l">Colour</label><div class="bp-color"><input type="color" data-t="c" value="'+_hex(o.color||'#ffffff')+'"><input class="bp-hex" data-t="chex" value="'+(o.color||'#ffffff')+'"></div>';
-    h+='<div class="bp-note">Auto-fill tokens: {region} {REGION} {kind} {year} {month} {state}</div>';
+    h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
+    h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
+    h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first). Tokens: {region} {REGION} {kind} {year} {month} {state}.</div>';
   } else if(o.type==='shape'){
     h+='<div class="bp-title">Shape</div>';
     h+='<label class="bp-l">Type</label><div class="bp-row3"><button class="bp-tg'+(((o.shape||"rect")==="rect")?' on':'')+'" data-t="tr">Rect</button><button class="bp-tg'+((o.shape==="ellipse")?' on':'')+'" data-t="te">Ellipse</button></div>';
@@ -740,13 +784,15 @@ function showSelBar(){
     h+='<div class="bp-note">Resizing keeps the image’s proportions — the whole image stays visible (no crop, no stretch).</div>';
     h+='<div class="bp-note">Right-click the image for Copy / Delete.</div>';
   }
-  if(o.type!=='image') h+='<div class="bp-actions"><button class="bp-copy" data-t="copy">Copy</button><button class="bp-del" data-t="del">Delete</button></div>';
+  if(o.type==='text') h+='<div class="bp-actions"><button class="bp-copy" data-t="copyslides">Copy to slides…</button><button class="bp-del" data-t="del">Delete</button></div>';
+  else if(o.type==='shape') h+='<div class="bp-actions"><button class="bp-copy" data-t="copy">Copy</button><button class="bp-del" data-t="del">Delete</button></div>';
   bar.innerHTML=h; bar.hidden=false;
   bar.querySelectorAll('[data-t]').forEach(b=>{
     const k=b.dataset.t; const live=(b.tagName==='SELECT')||(b.type==='color')||(b.type==='range')||b.classList.contains('bp-hex')||b.classList.contains('bp-num');
     b.addEventListener(live?'input':'click',e=>{ const ob=_selObj(); if(!ob)return;
       if(k==='del'){ deleteSelected(); return; }
       if(k==='copy'){ copyOverlay(); return; }
+      if(k==='copyslides'){ openCopySlides(); return; }
       if(k==='ff') ob.fontFamily=e.target.value;
       else if(k==='sz-') ob.fontSize=Math.max(8,(ob.fontSize||34)-2);
       else if(k==='sz+') ob.fontSize=(ob.fontSize||34)+2;
@@ -771,10 +817,31 @@ function showSelBar(){
       else if(k==='ion'){ ob.opacity=Math.max(0,Math.min(100,parseInt(e.target.value)||0)); const x=bar.querySelector('[data-t="io"]'); if(x)x.value=ob.opacity; }
       else if(k==='iw'){ ob.w=Math.max(20,parseInt(e.target.value)||300); if(ob.aspect){ ob.h=Math.max(20,Math.round(ob.w/ob.aspect)); const x=bar.querySelector('[data-t="ih"]'); if(x)x.value=ob.h; } }
       else if(k==='ih'){ ob.h=Math.max(20,parseInt(e.target.value)||200); if(ob.aspect){ ob.w=Math.max(20,Math.round(ob.h*ob.aspect)); const x=bar.querySelector('[data-t="iw"]'); if(x)x.value=ob.w; } }
+      else if(k==='wt') ob.weight=parseInt(e.target.value)||600;
+      else if(k==='ls-') ob.lineHeight=Math.max(0.8,Math.round(((ob.lineHeight||1.2)-0.1)*10)/10);
+      else if(k==='ls+') ob.lineHeight=Math.round(((ob.lineHeight||1.2)+0.1)*10)/10;
+      else if(k==='lsn') ob.lineHeight=Math.max(0.8,parseFloat(e.target.value)||1.2);
+      else if(k==='bgc'){ ob.bg=e.target.value; const x=bar.querySelector('[data-t="bghex"]'); if(x)x.value=e.target.value; }
+      else if(k==='bghex'){ if(!e.target.value){ ob.bg=''; } else if(HEX68.test(e.target.value)){ ob.bg=e.target.value; const x=bar.querySelector('[data-t="bgc"]'); if(x)x.value=_hex(e.target.value); } }
+      else if(k==='bgrst') ob.bg='';
       _swapOverlay(ob);
       if(!live){ showSelBar(); commit(); }   // buttons: reflect new toggle state + save
     });
     if(b.tagName==='INPUT'&&b.type!=='button') b.addEventListener('change',()=>commit());
+  });
+  // Rich-text (Link / List) — act on the live selection inside the editing text box.
+  bar.querySelectorAll('.bp-rt').forEach(b=>{
+    b.addEventListener('mousedown',e=>e.preventDefault());   // keep the caret/selection in the text box
+    b.addEventListener('click',()=>{
+      if(!_edEl){ alert('Double-click the text box to edit it, then select the words you want to format.'); return; }
+      _edEl.focus(); const cmd=b.dataset.rt;
+      if(cmd==='link'){ const url=prompt('Link URL:','https://'); if(url) document.execCommand('createLink',false,url); }
+      else if(cmd==='unlink') document.execCommand('unlink');
+      else if(cmd==='ul') document.execCommand('insertUnorderedList');
+      else if(cmd==='ol') document.execCommand('insertOrderedList');
+      else if(cmd==='dash'){ document.execCommand('insertUnorderedList'); const s=window.getSelection(); let n=s&&s.anchorNode; while(n&&n!==_edEl){ if(n.tagName==='UL'){ n.classList.add('dash'); break; } n=n.parentNode; } }
+      const ob=_selObj(); if(ob){ ob.html=fromEditHtml(_edEl); if('text' in ob)delete ob.text; commit(); }
+    });
   });
 }
 const _hex=v=>{ const m=String(v||'').match(/#([0-9a-f]{6})/i); return m?('#'+m[1]):'#38c6e0'; };
@@ -815,8 +882,24 @@ async function applyCopyTo(){
   btn.disabled=false; btn.textContent='Copy'; $('#bssCopyModal').hidden=true;
   alert('Copied this deck’s layout to '+n+' region'+(n===1?'':'s')+' ('+(state.mode==='buy'?'Buying':'Selling')+').');
 }
+/* Copy the SELECTED text box onto other slides in this same deck (repeating
+   headers/footers). Each target gets an independent clone. */
+function slideTitleAt(i){ const m=((DECK[i]&&DECK[i].html)||'').match(/<h2[^>]*>([^<]*)<\/h2>/); return m?m[1].trim():('Slide '+(i+1)); }
+function openCopySlides(){ const o=_selObj(); if(!o||o.type!=='text')return; const m=$('#bssSlidesModal');
+  $('#csList').innerHTML=DECK.map((d,i)=> i===state.idx ? '' : '<label class="cm-item"><input type="checkbox" value="'+i+'"> '+(i+1)+'. '+esc(slideTitleAt(i))+'</label>').join('');
+  $('#csAll').checked=false; m.hidden=false;
+}
+function applyCopySlides(){ const o=_selObj(); const m=$('#bssSlidesModal');
+  if(!o){ m.hidden=true; return; }
+  const idxs=Array.from($('#csList').querySelectorAll('input:checked')).map(i=>+i.value);
+  idxs.forEach(i=>{ const key=DECK[i].key; if(!key)return; const clone=JSON.parse(JSON.stringify(o)); clone.id=_nid(); (OVL[key]||(OVL[key]=[])).push(clone); });
+  m.hidden=true;
+  if(idxs.length){ renderOverlays(); commit(); alert('Copied this text box to '+idxs.length+' slide'+(idxs.length===1?'':'s')+'.'); }
+}
 function setupEditor(){
   $('#bssCopyTo').addEventListener('click',openCopyModal);
+  $('#csAll').addEventListener('change',e=>{ $('#csList').querySelectorAll('input').forEach(i=>i.checked=e.target.checked); });
+  $('#bssSlidesModal').addEventListener('click',e=>{ if(e.target.id==='bssSlidesModal'){ $('#bssSlidesModal').hidden=true; return; } const b=e.target.closest('[data-cs]'); if(!b)return; if(b.dataset.cs==='cancel')$('#bssSlidesModal').hidden=true; else if(b.dataset.cs==='apply')applyCopySlides(); });
   $('#cmAll').addEventListener('change',e=>{ $('#cmList').querySelectorAll('input').forEach(i=>i.checked=e.target.checked); });
   $('#bssCopyModal').addEventListener('click',e=>{ if(e.target.id==='bssCopyModal'){ $('#bssCopyModal').hidden=true; return; } const b=e.target.closest('[data-cm]'); if(!b)return; if(b.dataset.cm==='cancel')$('#bssCopyModal').hidden=true; else if(b.dataset.cm==='apply')applyCopyTo(); });
   $('#bssEditMode').addEventListener('click',e=>{ const b=e.target.closest('button[data-em]'); if(b) setEditMode(b.dataset.em==='edit'); });
@@ -867,7 +950,15 @@ $('#bssPNext').addEventListener('click',()=>go(state.idx+1));
 $('#bssPExit').addEventListener('click',exitPresent);
 $('#bssPresent').addEventListener('click',enterPresent);
 $('#bssDots').addEventListener('click',e=>{ const d=e.target.closest('.bss-dot'); if(d)go(+d.dataset.i); });
-document.addEventListener('keydown',e=>{ if(e.key==='ArrowRight'||e.key==='PageDown')go(state.idx+1); else if(e.key==='ArrowLeft'||e.key==='PageUp')go(state.idx-1); else if(e.key==='Escape'&&document.body.classList.contains('bss-present'))exitPresent(); });
+function _editingActive(){ const a=document.activeElement; return !!(_edEl || (a&&(a.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)))); }
+let _nudgeT=null;
+function nudgeSel(dx,dy){ const o=_selObj(); if(!o)return; o.x=Math.round((o.x||0)+dx); o.y=Math.round((o.y||0)+dy); const el=document.querySelector('#bssSlide .bss-ov[data-id="'+o.id+'"]'); if(el){ el.style.left=o.x+'px'; el.style.top=o.y+'px'; } clearTimeout(_nudgeT); _nudgeT=setTimeout(commit,400); }
+document.addEventListener('keydown',e=>{
+  const arrow = e.key==='ArrowRight'||e.key==='ArrowLeft'||e.key==='ArrowUp'||e.key==='ArrowDown';
+  if(arrow && _editingActive()) return;                          // caret movement / control input — never page
+  if(arrow && EDIT && _sel){ e.preventDefault(); const st=e.shiftKey?10:1;   // nudge the selected overlay instead of paging
+    if(e.key==='ArrowRight')nudgeSel(st,0); else if(e.key==='ArrowLeft')nudgeSel(-st,0); else if(e.key==='ArrowDown')nudgeSel(0,st); else nudgeSel(0,-st); return; }
+  if(e.key==='ArrowRight'||e.key==='PageDown')go(state.idx+1); else if(e.key==='ArrowLeft'||e.key==='PageUp')go(state.idx-1); else if(e.key==='Escape'&&document.body.classList.contains('bss-present'))exitPresent(); });
 window.addEventListener('resize',fitSlide);
 boot();
 </script>
