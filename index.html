@@ -346,11 +346,7 @@
       <div class="widget w-hello">
         <div class="date" id="wDate">—</div>
         <h1 id="wGreet">Welcome</h1>
-        <p>Open a section from the dock below, or press <b>/</b> to search every tool and report.</p>
-      </div>
-      <div class="widget w-recent" id="wRecent" hidden>
-        <div class="w-title">Jump back in</div>
-        <div id="wRecentList"></div>
+        <p id="wWeather" style="display:none"></p>
       </div>
     </div>
   </main>
@@ -3667,6 +3663,66 @@ document.addEventListener('keydown', (ev) => {
 </div>
 
 <script src="shared/auth.js?v=dfb5f1d8"></script>
+<script src="shared/desktop-pins.js?v=e2416017"></script>
+<script>
+/* Hub greeting weather line — approximate location via a keyless IP lookup,
+   current conditions via Open-Meteo (both keyless, no API key in-page), plus a
+   weather-appropriate suggestion. Cached ~2h in localStorage; every fetch is
+   best-effort and the line simply stays hidden if anything fails. */
+(function ppHubWeather(){
+  try{
+    var el=document.getElementById('wWeather'); if(!el) return;
+    var CK='pp-weather-v1';
+    function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+    var COND=[
+      {codes:[0],label:'Clear',tips:['great day for property inspections','perfect for shooting listing photos','ideal for open-home walkthroughs','a good day to get out and meet clients']},
+      {codes:[1,2],label:'Partly cloudy',tips:['good light for site visits','comfortable conditions for appraisals','a nice day to walk a few streets and read the market']},
+      {codes:[3],label:'Overcast',tips:['even light — great for listing photos','a calm day for client meetings']},
+      {codes:[45,48],label:'Foggy',tips:['easy on the roads — a good morning for desk work and reports']},
+      {codes:[51,53,55,56,57],label:'Drizzly',tips:['grab a coffee and catch up on the research','a good day to prep decks and call clients']},
+      {codes:[61,63,65,66,67,80,81,82],label:'Rainy',tips:['indoor day — perfect for deep-diving the reports','rainy one: great for planning and follow-ups']},
+      {codes:[71,73,75,77,85,86],label:'Snowy',tips:['bundle up — a cosy day for planning and reports']},
+      {codes:[95,96,99],label:'Stormy',tips:['wild weather — a good day to work from the desk']}
+    ];
+    function info(code){for(var i=0;i<COND.length;i++)if(COND[i].codes.indexOf(code)>=0)return COND[i];return {label:'Today',tips:['a good day to get after it']};}
+    function paint(w){
+      var ci=info(w.code), tip=ci.tips[Math.floor(Math.random()*ci.tips.length)];
+      el.innerHTML='<b>'+esc(ci.label)+', '+Math.round(w.temp)+'°</b>'+(w.city?' in '+esc(w.city):'')+' — '+esc(tip)+'.';
+      el.style.display='';
+    }
+    try{var c=JSON.parse(localStorage.getItem(CK)||'null'); if(c&&c.ts&&(Date.now()-c.ts)<7200000) paint(c);}catch(e){}
+    function geoloc(){ return new Promise(function(res){
+      if(!navigator.geolocation){ res(null); return; }
+      /* no artificial race — wait for the user to answer the permission prompt
+         (the old 3.5s timeout fired before "Allow" was clicked, losing the fix) */
+      navigator.geolocation.getCurrentPosition(
+        function(p){ res({lat:p.coords.latitude,lon:p.coords.longitude,city:''}); },
+        function(){ res(null); },
+        {enableHighAccuracy:false, timeout:20000, maximumAge:3600000}
+      );
+    }); }
+    (async function(){
+      var loc=null;
+      try{ var g=await fetch('https://ipwho.is/').then(function(r){return r.json();});
+           if(g&&g.success!==false&&g.latitude!=null) loc={lat:g.latitude,lon:g.longitude,city:g.city||''}; }catch(e){}
+      if(!loc){ try{ loc=await geoloc(); }catch(e){} }   // IP lookup blocked/failed → try the browser's own location
+      if(!loc) return;
+      if(!loc.city){ try{   // geolocation returns coordinates only → reverse-geocode to a city (keyless, CORS)
+        var rg=await fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude='+loc.lat+'&longitude='+loc.lon+'&localityLanguage=en').then(function(r){return r.json();});
+        loc.city=(rg&&(rg.city||rg.locality||rg.principalSubdivision))||'';
+      }catch(e){} }
+      try{
+        var u='https://api.open-meteo.com/v1/forecast?latitude='+loc.lat+'&longitude='+loc.lon+'&current=temperature_2m,weather_code';
+        var m=await fetch(u).then(function(r){return r.json();});
+        if(!m||!m.current) return;
+        var w={temp:m.current.temperature_2m,code:m.current.weather_code,city:loc.city||'',ts:Date.now()};
+        try{localStorage.setItem(CK,JSON.stringify(w));}catch(e){}
+        paint(w);
+      }catch(e){/* stays hidden */}
+    })();
+  }catch(e){}
+})();
+</script>
 <script>
 /* ═══════════════════════════════════════════════════════════════════════════
  * HUB "AT A GLANCE" STATS — manually kept in sync with the Runway tool's data.
@@ -4400,6 +4456,29 @@ function navigateToTool(url, label) {
   .ofr-go{font-size:10.5px;color:var(--accent,#00A0B4);font-weight:700;flex:none;opacity:0;transition:opacity .12s var(--ease);white-space:nowrap}
   .os-fly-row:hover .ofr-go{opacity:1}
   .dicon.fly-active .tip{opacity:0 !important}   /* fly-out replaces the little name tooltip */
+
+  /* ── desktop pins (Phase 1): pinned tool shortcuts on the desktop, draggable +
+     snap-to-grid, per-user via PP_PINS. Solid icons, no backdrop-filter (perf). */
+  .os-pins{position:absolute;inset:0;pointer-events:none;z-index:2}
+  .os-pin{position:absolute;width:96px;pointer-events:auto;display:flex;flex-direction:column;align-items:center;gap:7px;
+    background:none;border:0;padding:6px 4px;border-radius:14px;cursor:pointer;font-family:var(--ui);transition:transform .12s var(--ease)}
+  .os-pin:focus-visible{outline:2px solid var(--accent,#00A0B4);outline-offset:3px}
+  .os-pin.dragging{transition:none;z-index:6;cursor:grabbing}
+  .os-pin .op-ic{width:64px;height:64px;border-radius:18px;display:grid;place-items:center;position:relative;overflow:hidden;
+    background:linear-gradient(135deg,var(--a1),var(--a2));
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 10px 22px -12px var(--a2);transition:transform .12s var(--ease)}
+  .os-pin .op-ic svg{width:46%;height:46%;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 1px 2px rgba(0,0,0,.25))}
+  .os-pin .op-lbl{font-size:11.5px;font-weight:600;color:var(--tx2);text-align:center;line-height:1.2;max-width:92px;
+    overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .os-pin:hover .op-lbl,.os-pin.dragging .op-lbl{color:var(--tx)}
+  .os-pin:hover .op-ic{transform:translateY(-2px)}
+  /* tiny right-click menu (pin / remove) — shared by the dock fly-out + pins */
+  .os-ctx{position:fixed;z-index:95;background:#1b212c;border:1px solid var(--brd);border-radius:10px;padding:4px;
+    box-shadow:var(--shadow-big);font-family:var(--ui);min-width:168px}
+  html[data-shade="light"] .os-ctx{background:#fff}
+  .os-ctx button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:0;
+    padding:8px 10px;border-radius:7px;cursor:pointer;font-size:12.5px;color:var(--tx);font-family:var(--ui)}
+  .os-ctx button:hover{background:var(--field)}
 </style>
 
 <script id="pp-os-desktop-js">
@@ -4699,10 +4778,165 @@ function navigateToTool(url, label) {
         hideFly();
         if (tool && typeof tool.run === 'function') { try { tool.run(); } catch (err) { console.warn('[ppos] tool launch failed', err); } }
       });
+      /* right-click a tool row → offer to pin it to the desktop */
+      fly.addEventListener('contextmenu', function (e) {
+        var row = e.target.closest ? e.target.closest('.os-fly-row') : null;
+        if (!row || !curId) return;
+        e.preventDefault();
+        var secId = curId, a = appById(secId), tool = a && a.tools[parseInt(row.dataset.k, 10)];
+        if (!tool || typeof window.ppOsCtx !== 'function' || typeof window.ppOsPinTool !== 'function') return;
+        var toolName = tool.n;
+        window.ppOsCtx(e.clientX, e.clientY, [{ label: 'Pin to desktop', run: function () { window.ppOsPinTool(secId, toolName); } }]);
+      });
       window.addEventListener('resize', hideFly);
       /* hide on an OUTER scroll only — never when scrolling inside the fly-out itself */
       window.addEventListener('scroll', function (e) { if (fly.contains(e.target)) return; hideFly(); }, true);
     } catch (err) { console.warn('[ppos] dock fly-out init failed', err); }
+  })();
+
+  /* ── desktop pins (Phase 1): render the user's pinned tools on the desktop,
+     draggable + snap-to-grid, per-user via PP_PINS (Supabase-backed, localStorage
+     mirror). Right-click a pin to remove it. Wrapped in try/catch; if PP_PINS is
+     missing it simply does nothing. */
+  (function ppOsPins() {
+    try {
+      if (!window.PP_PINS) return;
+      var PIN_W = 104, PIN_H = 116, PINW = 96, MARGIN = 14, GY0 = 8;   // PIN_W/PIN_H = min cell size; PINW = pin box; MARGIN = edge gap
+      var layer = document.createElement('div'); layer.className = 'os-pins'; desktop.appendChild(layer);
+
+      /* shared tiny context menu (also used by the dock fly-out's right-click) */
+      var ctxEl = null;
+      function closeCtx() { if (ctxEl) { ctxEl.remove(); ctxEl = null; document.removeEventListener('pointerdown', onDocDown, true); } }
+      function onDocDown(e) { if (ctxEl && !ctxEl.contains(e.target)) closeCtx(); }
+      function showCtx(x, y, items) {
+        closeCtx();
+        ctxEl = document.createElement('div'); ctxEl.className = 'os-ctx';
+        items.forEach(function (it) {
+          var b = document.createElement('button'); b.type = 'button'; b.textContent = it.label;
+          b.addEventListener('click', function () { closeCtx(); try { it.run(); } catch (e) {} });
+          ctxEl.appendChild(b);
+        });
+        document.body.appendChild(ctxEl);
+        ctxEl.style.left = Math.max(8, Math.min(x, innerWidth - ctxEl.offsetWidth - 8)) + 'px';
+        ctxEl.style.top = Math.max(8, Math.min(y, innerHeight - ctxEl.offsetHeight - 8)) + 'px';
+        setTimeout(function () { document.addEventListener('pointerdown', onDocDown, true); }, 0);
+      }
+      window.ppOsCtx = showCtx;
+
+      function appTool(sec, n) {
+        var a = null; for (var i = 0; i < APPS.length; i++) if (APPS[i].id === sec) a = APPS[i];
+        if (!a) return null;
+        var t = null; for (var j = 0; j < a.tools.length; j++) if (a.tools[j].n === n) t = a.tools[j];
+        return t ? { a: a, t: t } : null;
+      }
+      function dockTop() {   // desktop-relative y of the dock's top edge (measured, so pins can sit just above it)
+        var dr = desktop.getBoundingClientRect(), d = document.querySelector('.dockwrap') || document.querySelector('.dock');
+        if (d) { var r = d.getBoundingClientRect(); if (r.height) return r.top - dr.top; }
+        return dr.height - 110;
+      }
+      function gridMax() {
+        var dr = desktop.getBoundingClientRect();
+        var nCols = Math.max(1, Math.floor((dr.width - 2 * MARGIN) / PIN_W));   // columns that fit
+        var availH = Math.max(PIN_H, dockTop() - 12 - GY0);                     // usable height, down to just above the dock
+        var nRows = Math.max(1, Math.floor(availH / PIN_H));
+        /* stretch rows + columns to fill, so bottom/right margins match top/left */
+        return { cols: nCols - 1, rows: nRows - 1, cellW: (dr.width - 2 * MARGIN) / nCols, cellH: availH / nRows };
+      }
+      function colX(col, cellW) { return Math.round(MARGIN + col * cellW + (cellW - PINW) / 2); }   // pin left, centred in its cell
+      function rowY(row, cellH) { return Math.round(GY0 + row * cellH) + 4; }                        // pin top
+      function occupied(col, row, exceptId) {
+        return PP_PINS.get().some(function (p) { return p.id !== exceptId && p.col === col && p.row === row; });
+      }
+      function reservedCells() {
+        /* cells overlapping the greeting card or the logo are off-limits, so a pin
+           never lands on top of them — whether auto-placed or dropped there */
+        var dr = desktop.getBoundingClientRect(), g = gridMax(), blocked = {};
+        ['.w-hello', '.ppll'].forEach(function (sel) {
+          var e = document.querySelector(sel); if (!e) return;
+          var r = e.getBoundingClientRect(); if (!r.width || !r.height) return;
+          var x0 = r.left - dr.left, y0 = r.top - dr.top, x1 = r.right - dr.left, y1 = r.bottom - dr.top;
+          for (var c = 0; c <= g.cols; c++) for (var rr = 0; rr <= g.rows; rr++) {
+            var cx = colX(c, g.cellW), cy = rowY(rr, g.cellH);
+            if (cx < x1 && cx + PINW > x0 && cy < y1 && cy + PIN_H > y0) blocked[c + ',' + rr] = 1;
+          }
+        });
+        return blocked;
+      }
+      function freeFrom(col, row, exceptId) {
+        var g = gridMax(), blocked = reservedCells();
+        col = Math.max(0, Math.min(col, g.cols)); row = Math.max(0, Math.min(row, g.rows));
+        for (var guard = 0; guard < 800; guard++) {
+          if (!blocked[col + ',' + row] && !occupied(col, row, exceptId)) return { col: col, row: row };
+          row++; if (row > g.rows) { row = 0; col++; if (col > g.cols) col = 0; }   // fill down the left column first, then rightward
+        }
+        return { col: col, row: row };
+      }
+      function defaultCell() { return freeFrom(0, 0, null); }   // first free cell clear of the card + logo
+      function runPin(p) {
+        if (p.kind === 'tool') { var info = appTool(p.sec, p.n); if (info && typeof info.t.run === 'function') { try { info.t.run(); } catch (e) {} } }
+        else if (p.url && typeof navigateToTool === 'function') { try { navigateToTool(p.url, p.label || ''); } catch (e) { location.href = p.url; } }
+      }
+      function wirePin(el, p) {
+        var moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+        el.addEventListener('pointerdown', function (e) {
+          if (e.button !== 0) return;
+          moved = false; var dr = desktop.getBoundingClientRect();
+          ox = e.clientX - (dr.left + el.offsetLeft); oy = e.clientY - (dr.top + el.offsetTop); sx = e.clientX; sy = e.clientY;
+          try { el.setPointerCapture(e.pointerId); } catch (er) {}
+        });
+        el.addEventListener('pointermove', function (e) {
+          if (el.hasPointerCapture && !el.hasPointerCapture(e.pointerId)) return;
+          if (!moved && Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) < 5) return;
+          moved = true; el.classList.add('dragging');
+          var dr = desktop.getBoundingClientRect();
+          el.style.left = Math.max(0, e.clientX - dr.left - ox) + 'px';
+          el.style.top = Math.max(0, e.clientY - dr.top - oy) + 'px';
+        });
+        el.addEventListener('pointerup', function (e) {
+          if (e.button !== 0) return;            // right/middle button → leave it for the context menu
+          try { el.releasePointerCapture(e.pointerId); } catch (er) {}
+          if (!moved) { runPin(p); return; }
+          el.classList.remove('dragging');
+          var gm = gridMax();
+          var col = Math.round((el.offsetLeft - MARGIN - (gm.cellW - PINW) / 2) / gm.cellW), row = Math.round((el.offsetTop - GY0 - 4) / gm.cellH);
+          var cell = freeFrom(Math.max(0, col), Math.max(0, row), p.id);
+          PP_PINS.update(p.id, { col: cell.col, row: cell.row });
+        });
+        el.addEventListener('contextmenu', function (e) {
+          e.preventDefault();
+          showCtx(e.clientX, e.clientY, [{ label: 'Remove from desktop', run: function () { PP_PINS.remove(p.id); } }]);
+        });
+      }
+      function makePinEl(p) {
+        var info = p.kind === 'tool' ? appTool(p.sec, p.n) : null;
+        var a1 = p.a1 || (info && info.a.a1) || '#7E8CF1', a2 = p.a2 || (info && info.a.a2) || '#233AE7';
+        var icon = p.icon || (info && info.t.icon) || '', label = p.label || (info && info.t.n) || p.n || 'Pinned';
+        var g = gridMax(), col = Math.max(0, Math.min(p.col || 0, g.cols)), row = Math.max(0, Math.min(p.row || 0, g.rows));
+        var el = document.createElement('button');
+        el.className = 'os-pin'; el.type = 'button'; el.dataset.id = p.id; el.title = label;
+        el.style.left = colX(col, g.cellW) + 'px';
+        el.style.top = rowY(row, g.cellH) + 'px';
+        el.innerHTML = '<span class="op-ic" style="--a1:' + a1 + ';--a2:' + a2 + '">' + icon + '</span>' +
+                       '<span class="op-lbl">' + esc(label) + '</span>';
+        wirePin(el, p); return el;
+      }
+      function render() {
+        layer.innerHTML = '';
+        PP_PINS.get().forEach(function (p) {
+          if (p.kind === 'tool' && !appTool(p.sec, p.n)) return;   // stale / not-visible tool → skip
+          layer.appendChild(makePinEl(p));
+        });
+      }
+      window.ppOsPinTool = function (sec, n) {
+        if (PP_PINS.has(function (p) { return p.kind === 'tool' && p.sec === sec && p.n === n; })) return false;
+        var cell = defaultCell();
+        PP_PINS.add({ kind: 'tool', sec: sec, n: n, col: cell.col, row: cell.row });
+        return true;
+      };
+
+      PP_PINS.onChange(render);
+      PP_PINS.load();
+    } catch (err) { console.warn('[ppos] desktop pins init failed', err); }
   })();
   /* ── LIVING LOGO — sprite build + day-schedule colourways.
         Ported from pp-logo-living.html: same sprite geometry, same
