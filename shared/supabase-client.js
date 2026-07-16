@@ -7,9 +7,9 @@
  *
  * The PUBLISHABLE key below is intentionally in-page. It's safe in the
  * browser; security comes from Row-Level Security policies on each table
- * (see supabase/migrations/001_init.sql). Treat it like the JSONBin
- * write tokens that already live in the legacy Netlify build — visible
- * but harmless because the DB enforces the real boundary.
+ * (see supabase/migrations/001_init.sql). The key identifies the project,
+ * not a privileged user — visible but harmless because the DB enforces the
+ * real boundary.
  *
  * Loading order on every page that uses this:
  *   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
