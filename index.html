@@ -4873,8 +4873,11 @@ function navigateToTool(url, label) {
       }
       function defaultCell() { return freeFrom(0, 0, null); }   // first free cell clear of the card + logo
       function runPin(p) {
-        if (p.kind === 'tool') { var info = appTool(p.sec, p.n); if (info && typeof info.t.run === 'function') { try { info.t.run(); } catch (e) {} } }
-        else if (p.url && typeof navigateToTool === 'function') { try { navigateToTool(p.url, p.label || ''); } catch (e) { location.href = p.url; } }
+        if (p.kind === 'tool') { var info = appTool(p.sec, p.n); if (info && typeof info.t.run === 'function') { try { info.t.run(); } catch (e) {} } return; }
+        if (!p.url) return;
+        if (/^https?:\/\//i.test(p.url)) { try { window.open(p.url, '_blank', 'noopener'); } catch (e) { location.href = p.url; } }         // external doc/PDF → new tab
+        else if (typeof navigateToTool === 'function') { try { navigateToTool(p.url, p.label || ''); } catch (e) { location.href = p.url; } } // internal deep-link
+        else location.href = p.url;
       }
       function wirePin(el, p) {
         var moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
@@ -4920,7 +4923,27 @@ function navigateToTool(url, label) {
                        '<span class="op-lbl">' + esc(label) + '</span>';
         wirePin(el, p); return el;
       }
+      var _placing = false;
+      function placeUnplaced() {   // link pins added from tool pages arrive with no col/row — give each a free cell so they don't stack on (0,0)
+        if (_placing) return;
+        var all = PP_PINS.get(), unplaced = all.filter(function (p) { return p.col == null || p.row == null; });
+        if (!unplaced.length) return;
+        _placing = true;
+        var g = gridMax(), blocked = reservedCells(), occ = {};
+        all.forEach(function (p) { if (p.col != null && p.row != null) occ[p.col + ',' + p.row] = 1; });
+        function nextFree() {
+          var c = 0, r = 0;
+          for (var i = 0; i < 800; i++) {
+            if (!blocked[c + ',' + r] && !occ[c + ',' + r]) return { col: c, row: r };
+            r++; if (r > g.rows) { r = 0; c++; if (c > g.cols) c = 0; }
+          }
+          return { col: 0, row: 0 };
+        }
+        unplaced.forEach(function (p) { var cell = nextFree(); occ[cell.col + ',' + cell.row] = 1; PP_PINS.update(p.id, { col: cell.col, row: cell.row }); });
+        _placing = false;
+      }
       function render() {
+        placeUnplaced();
         layer.innerHTML = '';
         PP_PINS.get().forEach(function (p) {
           if (p.kind === 'tool' && !appTool(p.sec, p.n)) return;   // stale / not-visible tool → skip

@@ -656,6 +656,16 @@
     padding-top:8px;
     position:relative; z-index:1;
   }
+  /* Whitepaper square-card footer — date on the left, Pin on the right. */
+  .ws-square-foot{ margin-top:auto; padding-top:8px; display:flex; align-items:flex-end; justify-content:space-between; gap:8px; position:relative; z-index:1; }
+  .ws-square-foot .ws-square-card-date{ margin-top:0; padding-top:0; }
+  .ws-square-pin{ flex:0 0 auto; padding:5px 10px; border-radius:6px; font:inherit; font-size:11px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; background:rgba(246,158,44,0.14); border:1px solid rgba(246,158,44,0.40); color:var(--accent); cursor:pointer; white-space:nowrap; transition:background .12s, border-color .12s; }
+  .ws-square-pin:hover{ background:rgba(246,158,44,0.26); border-color:rgba(246,158,44,0.65); }
+  [data-theme="light"] .ws-square-pin{ border-color:rgba(246,158,44,0.45); }
+  /* Strategy square card: two columns — each link (Document / Slides) with its Pin directly beneath. */
+  .ws-strat-col{ flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; }
+  .ws-square-actions .ws-strat-col .ws-action{ flex:0 0 auto; width:100%; }
+  .ws-strat-col .ws-square-pin{ align-self:stretch; box-sizing:border-box; max-width:100%; padding-left:6px; padding-right:6px; text-align:center; overflow:hidden; text-overflow:ellipsis; }
   /* Strategy bottom actions — Document + Slides side-by-side. */
   .ws-square-actions{
     display:flex; gap:6px; margin-top:10px;
@@ -817,6 +827,10 @@
   .ws-col-copy.copied{ border-color:#3EDC97; color:#3EDC97; }
   [data-theme="light"] .ws-col-copy{ border-color:rgba(31,40,63,0.22); color:var(--fg-dark); }
   [data-theme="light"] .ws-col-copy:hover{ border-color:var(--accent); color:var(--accent); }
+  /* PDF Reports card: the region name gets a full-width row; Copy link + Pin sit on a row beneath it. */
+  .ws-col-item--stacked{ flex-wrap:wrap; }
+  .ws-col-actions{ display:flex; gap:6px; flex:1 1 100%; margin-top:2px; }
+  .ws-col-item--stacked .ws-col-copy{ margin-left:0; }
   .ws-col-item:hover{
     background:rgba(246,158,44,0.10);
     border-color:rgba(246,158,44,0.40);
@@ -1505,6 +1519,7 @@
      before any chrome paints. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=fe17cd23"></script>
+<script src="../shared/desktop-pins.js?v=e2416017"></script>
 <script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
 <script src="../shared/auth.js?v=dfb5f1d8"></script>
 <script src="../shared/auth-gate.js?v=bfa4ab26"></script>
@@ -2248,6 +2263,29 @@ function _copyReportLink(url, btn) {
   } catch (_) { _copyFallback(url, done); }
 }
 
+/* ── "Pin to desktop": pin a document/report by its OWN url to the hub desktop
+   (window.PP_PINS). External urls open in a new tab when clicked from the hub.
+   Dedupes by url; no-op if the store isn't present. ── */
+function _pinIconSvg() { return '<svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 12h6M9 15.5h6"/></svg>'; }
+function _addPinBtn(container, url, label, cls, btnText) {
+  try {
+    if (!container || !url || !window.PP_PINS) return;
+    const txt = btnText || 'Pin';
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = cls; b.title = 'Pin to your hub desktop'; b.textContent = txt;
+    b.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      try {
+        if (!PP_PINS.has(function (p) { return p.url === url; }))
+          PP_PINS.add({ kind: 'link', label: label || 'Document', url: url, a1: '#FFB947', a2: '#E08A00', icon: _pinIconSvg() });
+        b.textContent = 'Pinned';
+        clearTimeout(b._t); b._t = setTimeout(function () { b.textContent = txt; }, 1500);
+      } catch (er) {}
+    });
+    container.appendChild(b);
+  } catch (e) {}
+}
+
 function _renderItemView(item, ctaLabel, showStatus) {
   const label = ctaLabel || 'Open';
   const cap = _capturedLinkFor(item);
@@ -2982,7 +3020,8 @@ function _renderSquareItemView(item, kind) {
     const a = document.createElement('a');
     a.className = 'ws-square-card';
     a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-    a.innerHTML = inner;
+    a.innerHTML = statusHtml + iconHtml + titleHtml + '<div class="ws-square-foot">' + dateHtml + '</div>';
+    _addPinBtn(a.querySelector('.ws-square-foot'), item.url, item.title, 'ws-square-pin');
     return a;
   }
   const div = document.createElement('div');
@@ -3011,7 +3050,12 @@ function _renderSquareStrategyView(item) {
     '<div class="ws-square-icon" aria-hidden="true">' + _esc(_iconForTitle(item.title)) + '</div>' +
     '<h3 class="ws-square-card-title">' + _esc(item.title || 'Untitled') + '</h3>' +
     '<div class="ws-square-card-date">' + (item.date ? 'Last upload ' + _esc(item.date) : 'Last upload —') + '</div>' +
-    '<div class="ws-square-actions">' + docBtn + slidesBtn + '</div>';
+    '<div class="ws-square-actions">' +
+      '<div class="ws-strat-col" data-col="doc">' + docBtn + '</div>' +
+      '<div class="ws-strat-col" data-col="slides">' + slidesBtn + '</div>' +
+    '</div>';
+  _addPinBtn(card.querySelector('.ws-strat-col[data-col="doc"]'), item.url, (item.title || '') + ' — Document', 'ws-square-pin', 'Pin');
+  _addPinBtn(card.querySelector('.ws-strat-col[data-col="slides"]'), item.slidesUrl, (item.title || '') + ' — Slides', 'ws-square-pin', 'Pin');
   return card;
 }
 
@@ -3152,12 +3196,16 @@ function _renderColumnItemView(item, showStatusDot) {
     '</div>';
   if (url) {
     const a = document.createElement('a');
-    a.className = 'ws-col-item';
+    a.className = 'ws-col-item ws-col-item--stacked';
     a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
     a.innerHTML = dotHtml + stackHtml +
-      '<button type="button" class="ws-col-copy" title="Copy shareable link">Copy link</button>';
+      '<div class="ws-col-actions">' +
+        '<button type="button" class="ws-col-copy" title="Copy shareable link">Copy link</button>' +
+      '</div>';
+    const acts = a.querySelector('.ws-col-actions');
     const btn = a.querySelector('.ws-col-copy');
     if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, btn); });
+    _addPinBtn(acts, url, item.title, 'ws-col-copy');
     return a;
   }
   const div = document.createElement('div');
