@@ -1328,6 +1328,23 @@
     letter-spacing:-0.01em;
     line-height:1.25;
   }
+  /* Pin-to-desktop chip, overlaid bottom-right of each deck card (view mode).
+     The card itself is an <a>, so the pin is a SIBLING inside a relative
+     wrapper — bottom-right keeps clear of the status pill (top-right) and
+     the date (bottom-left). */
+  .ws-sq-wrap{ position:relative; display:flex; min-width:0; }
+  .ws-sq-wrap > .ws-square-card{ flex:1 1 auto; width:100%; }
+  .ws-sq-pin{
+    position:absolute; right:10px; bottom:10px; z-index:3;
+    padding:4px 10px; border-radius:7px; max-width:calc(100% - 20px);
+    border:1px solid rgba(70,170,245,0.45);
+    background:rgba(21,27,38,0.85); color:#bfe0ff;
+    font-family:inherit; font-size:10px; font-weight:800; letter-spacing:0.08em; text-transform:uppercase;
+    cursor:pointer; transition:background .15s ease, color .15s ease, border-color .15s ease;
+  }
+  .ws-sq-pin:hover{ background:rgba(70,170,245,0.30); color:#fff; border-color:rgba(70,170,245,0.70); }
+  [data-theme="light"] .ws-sq-pin{ background:rgba(255,255,255,0.9); color:#1668b8; border-color:rgba(70,170,245,0.40); }
+  [data-theme="light"] .ws-sq-pin:hover{ background:rgba(70,170,245,0.18); color:#0d4f8f; }
   .ws-type-count{
     font-size:11px; font-weight:700;
     letter-spacing:0.10em; text-transform:uppercase;
@@ -1477,6 +1494,7 @@
      before any chrome paints. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=fe17cd23"></script>
+<script src="../shared/desktop-pins.js?v=e2416017"></script>
 <script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
 <script src="../shared/auth.js?v=dfb5f1d8"></script>
 <script src="../shared/auth-gate.js?v=bfa4ab26"></script>
@@ -2218,6 +2236,36 @@ function _renderAddItemTile(secIdx, subIdx) {
    × delete appears at the corner. The "Open Section ›" CTA at the
    bottom navigates regardless of mode. */
 
+/* "Pin to desktop" for a Library deck card — pins the card's own target URL.
+   Internal tool links are normalized to the hub-relative form (tools/<file>?…)
+   so the hub opens them in place; external slides/doc URLs stay as-is and the
+   hub opens them in a new tab. Returns null when there's nothing to pin. */
+function _libItemPin(item) {
+  if (!window.PP_PINS || !item || !item.url) return null;
+  var url = String(item.url);
+  if (!/^https?:\/\//i.test(url)) {                    // internal → hub-relative
+    url = url.replace(/^\.\//, '').replace(/^(\.\.\/)+/, '');
+    if (!/^tools\//.test(url)) url = 'tools/' + url;   // same-dir tool link (e.g. presentation.html?deck=…)
+  }
+  var pin = document.createElement('button');
+  pin.type = 'button';
+  pin.className = 'ws-sq-pin';
+  pin.textContent = 'Pin';
+  pin.title = 'Pin to your desktop';
+  pin.addEventListener('click', function (e) {
+    e.preventDefault(); e.stopPropagation();
+    try {
+      if (!PP_PINS.has(function (p) { return p.url === url; })) {
+        PP_PINS.add({ kind: 'link', label: item.title || 'Presentation', url: url, a1: '#54A6DE', a2: '#2478BC',
+          icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 12l3-3 2 2 4-4.5"/><path d="M9 20l3-2 3 2"/></svg>' });
+      }
+      pin.textContent = 'Pinned';
+      setTimeout(function () { pin.textContent = 'Pin'; }, 1600);
+    } catch (err) {}
+  });
+  return pin;
+}
+
 function _renderTypeTile(secIdx, section) {
   const itemCount = _countItems(section);
   const countText = itemCount + ' card' + (itemCount === 1 ? '' : 's');
@@ -2634,7 +2682,15 @@ function _renderSquareItemView(item, isSplit, kind) {
     a.className = 'ws-square-card';
     a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
     a.innerHTML = inner;
-    return a;
+    /* Pin-to-desktop chip — a SIBLING overlay (never a button inside the <a>),
+       bottom-right. Only when the card has a target + the store is loaded. */
+    const pin = _libItemPin(item);
+    if (!pin) return a;
+    const wrap = document.createElement('div');
+    wrap.className = 'ws-sq-wrap';
+    wrap.appendChild(a);
+    wrap.appendChild(pin);
+    return wrap;
   }
   const div = document.createElement('div');
   div.className = 'ws-square-card is-disabled';
@@ -3034,6 +3090,14 @@ setTimeout(applyTierGate, 200);
 setTimeout(applyTierGate, 800);
 
 /* ─── Boot ─── */
+/* Deep-link: ?cat=<section id> opens that category directly (e.g. a pinned Library category). */
+try {
+  var _catParam = new URLSearchParams(location.search).get('cat');
+  if (_catParam) {
+    var _catIdx = WS_DATA.sections.findIndex(function (s) { return s && s.id === _catParam; });
+    if (_catIdx >= 0) { _currentSecIdx = _catIdx; _currentView = 'section'; }
+  }
+} catch (e) {}
 renderAll();
 /* Kick off cloud hydration after the synchronous render so the user
    sees something immediately. The cloud version, if present, will
