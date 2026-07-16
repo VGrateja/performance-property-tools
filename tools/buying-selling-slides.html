@@ -133,6 +133,7 @@ body.bss-edit .bss-ov.sel .bss-ov-h{display:block}
 .bss-selbar .bp-rt:hover{border-color:var(--bss-cyan)}
 .bss-ov-text a{color:inherit;text-decoration:underline}
 .bss-ov-text ul,.bss-ov-text ol{margin:.2em 0;padding-left:1.4em}
+.bss-ov-text b,.bss-ov-text strong{font-weight:800}   /* selection-level bold must read clearly against the 600-weight box */
 .bss-ov-text ul.dash{list-style:none;padding-left:1.1em}
 .bss-ov-text ul.dash>li::before{content:"\2013\00a0"}
 .bss-selbar .bp-actions{display:flex;gap:8px;margin-top:16px}
@@ -240,7 +241,11 @@ body.bss-present .bss-presd{display:flex}
 <div class="bss-modal" id="bssCopyModal" hidden>
   <div class="bss-modal-card">
     <div class="bp-title">Copy this deck's edits to…</div>
-    <p class="cm-note">Copies the layout (text, shapes, images, backgrounds, added pages) of <b id="cmFrom">this deck</b> to the regions you pick, for the <b id="cmMode">Selling</b> deck. Each region keeps its own charts &amp; data — only the manual layer is copied. <b>Overwrites</b> any existing edits on the targets.</p>
+    <div class="cm-scope" style="display:flex;gap:16px;margin:2px 0 8px;font-size:13px">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="cmScope" value="deck" checked> Whole deck</label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="cmScope" value="slide"> Current slide only</label>
+    </div>
+    <p class="cm-note" id="cmNote">Copies the layout (text, shapes, images, backgrounds, added pages) of <b id="cmFrom">this deck</b> to the regions you pick, for the <b id="cmMode">Selling</b> deck. Each region keeps its own charts &amp; data — only the manual layer is copied. <b>Overwrites</b> any existing edits on the targets.</p>
     <div class="cm-list" id="cmList"></div>
     <div class="cm-actions"><label class="cm-all"><input type="checkbox" id="cmAll"> Select all</label><span class="grow"></span><button class="bss-btn" data-cm="cancel">Cancel</button><button class="bss-btn primary" data-cm="apply">Copy</button></div>
   </div>
@@ -675,6 +680,12 @@ function fromEditHtml(el){ return el.innerHTML; }
 /* In-text-edit shortcuts: double-click copies the word (native word-select), triple-click
    selects+copies the sentence around the click point. */
 function copySelection(){ const s=window.getSelection&&window.getSelection(); if(!s||!s.toString())return; try{ document.execCommand('copy'); }catch(e){} }
+/* Apply an inline format (bold/italic/underline) to the CURRENT SELECTION inside
+   the text box being edited — not the whole box — then persist the rich HTML.
+   Mirrors the Link/List (.bp-rt) path. With no selection, the format arms at the
+   caret and applies to whatever is typed next (native contenteditable behaviour). */
+function _rtInline(cmd){ if(!_edEl) return; _edEl.focus(); try{ document.execCommand(cmd); }catch(e){}
+  const ob=_selObj(); if(ob){ ob.html=fromEditHtml(_edEl); if('text' in ob)delete ob.text; commit(); } }
 function selectSentenceAt(x,y){ const sel=window.getSelection(); if(!sel)return; let r=null;
   if(document.caretRangeFromPoint) r=document.caretRangeFromPoint(x,y);
   else if(document.caretPositionFromPoint){ const p=document.caretPositionFromPoint(x,y); if(p){ r=document.createRange(); r.setStart(p.offsetNode,p.offset); } }
@@ -836,6 +847,9 @@ function showSelBar(){
   bar.innerHTML=h; bar.hidden=false;
   bar.querySelectorAll('[data-t]').forEach(b=>{
     const k=b.dataset.t; const live=(b.tagName==='SELECT')||(b.type==='color')||(b.type==='range')||b.classList.contains('bp-hex')||b.classList.contains('bp-num');
+    /* B/I/U while text-editing: keep the caret/selection alive (a normal click
+       would blur the contenteditable and end the edit before the click lands) */
+    if(k==='b'||k==='i'||k==='u') b.addEventListener('mousedown',e=>{ if(_edEl) e.preventDefault(); });
     b.addEventListener(live?'input':'click',e=>{ const ob=_selObj(); if(!ob)return;
       if(k==='del'){ deleteSelected(); return; }
       if(k==='copy'){ copyOverlay(); return; }
@@ -844,9 +858,9 @@ function showSelBar(){
       else if(k==='sz-') ob.fontSize=Math.max(8,(ob.fontSize||34)-2);
       else if(k==='sz+') ob.fontSize=(ob.fontSize||34)+2;
       else if(k==='szn') ob.fontSize=Math.max(8,parseInt(e.target.value)||34);
-      else if(k==='b') ob.bold=!ob.bold;
-      else if(k==='i') ob.italic=!ob.italic;
-      else if(k==='u') ob.underline=!ob.underline;
+      else if(k==='b'){ if(_edEl){ _rtInline('bold'); return; } ob.bold=!ob.bold; }        /* editing → selection only; else whole box */
+      else if(k==='i'){ if(_edEl){ _rtInline('italic'); return; } ob.italic=!ob.italic; }
+      else if(k==='u'){ if(_edEl){ _rtInline('underline'); return; } ob.underline=!ob.underline; }
       else if(k==='al') ob.align='left'; else if(k==='ac') ob.align='center'; else if(k==='ar') ob.align='right';
       else if(k==='c'){ ob.color=e.target.value; const x=bar.querySelector('[data-t="chex"]'); if(x)x.value=e.target.value; }
       else if(k==='chex'){ if(HEX68.test(e.target.value)){ ob.color=e.target.value; const x=bar.querySelector('[data-t="c"]'); if(x)x.value=_hex(e.target.value); } }
@@ -926,10 +940,27 @@ function openCopyModal(){ if(!_bsCanEdit)return; const m=$('#bssCopyModal');
 async function applyCopyTo(){
   const sel=Array.from($('#cmList').querySelectorAll('input:checked')).map(i=>i.value);
   if(!sel.length){ $('#bssCopyModal').hidden=true; return; }
-  const payload=JSON.parse(JSON.stringify(_edPayload())); const btn=$('#bssCopyModal').querySelector('[data-cm="apply"]'); btn.disabled=true; btn.textContent='Copying…';
-  let n=0; for(const slug of sel){ try{ const {error}=await window.sb.from('reports_state').upsert({region:'bss-'+slug+'-'+state.mode,payload:payload},{onConflict:'region'}); if(!error)n++; }catch(e){} }
+  const scope=($('#bssCopyModal').querySelector('input[name="cmScope"]:checked')||{}).value||'deck';
+  const btn=$('#bssCopyModal').querySelector('[data-cm="apply"]'); btn.disabled=true; btn.textContent='Copying…';
+  let n=0;
+  if(scope==='slide'){
+    /* Merge ONLY the current slide's manual layer into each target deck —
+       their other slides (and added pages) stay untouched. */
+    const key=curKey(), ovl=JSON.parse(JSON.stringify(OVL[key]||[])), bg=BGS[key];
+    for(const slug of sel){ try{
+      const row='bss-'+slug+'-'+state.mode;
+      const {data}=await window.sb.from('reports_state').select('payload').eq('region',row).maybeSingle();
+      const p=(data&&data.payload)||{}; p.overlays=p.overlays||{}; p.bgs=p.bgs||{}; p.customPages=p.customPages||[];
+      p.overlays[key]=ovl; if(bg)p.bgs[key]=bg; else delete p.bgs[key];
+      if(!/^f\d+$/.test(key) && p.customPages.indexOf(key)<0) p.customPages.push(key);   /* copying a custom +Page → ensure the page exists on the target */
+      const {error}=await window.sb.from('reports_state').upsert({region:row,payload:p},{onConflict:'region'}); if(!error)n++;
+    }catch(e){} }
+  } else {
+    const payload=JSON.parse(JSON.stringify(_edPayload()));
+    for(const slug of sel){ try{ const {error}=await window.sb.from('reports_state').upsert({region:'bss-'+slug+'-'+state.mode,payload:payload},{onConflict:'region'}); if(!error)n++; }catch(e){} }
+  }
   btn.disabled=false; btn.textContent='Copy'; $('#bssCopyModal').hidden=true;
-  alert('Copied this deck’s layout to '+n+' region'+(n===1?'':'s')+' ('+(state.mode==='buy'?'Buying':'Selling')+').');
+  alert('Copied '+(scope==='slide'?'this slide':'this deck’s layout')+' to '+n+' region'+(n===1?'':'s')+' ('+(state.mode==='buy'?'Buying':'Selling')+').');
 }
 /* Copy the SELECTED text box onto other slides in this same deck (repeating
    headers/footers). Each target gets an independent clone. */
@@ -950,7 +981,11 @@ function setupEditor(){
   $('#csAll').addEventListener('change',e=>{ $('#csList').querySelectorAll('input').forEach(i=>i.checked=e.target.checked); });
   $('#bssSlidesModal').addEventListener('click',e=>{ if(e.target.id==='bssSlidesModal'){ $('#bssSlidesModal').hidden=true; return; } const b=e.target.closest('[data-cs]'); if(!b)return; if(b.dataset.cs==='cancel')$('#bssSlidesModal').hidden=true; else if(b.dataset.cs==='apply')applyCopySlides(); });
   $('#cmAll').addEventListener('change',e=>{ $('#cmList').querySelectorAll('input').forEach(i=>i.checked=e.target.checked); });
-  $('#bssCopyModal').addEventListener('click',e=>{ if(e.target.id==='bssCopyModal'){ $('#bssCopyModal').hidden=true; return; } const b=e.target.closest('[data-cm]'); if(!b)return; if(b.dataset.cm==='cancel')$('#bssCopyModal').hidden=true; else if(b.dataset.cm==='apply')applyCopyTo(); });
+  $('#bssCopyModal').addEventListener('click',e=>{ if(e.target.id==='bssCopyModal'){ $('#bssCopyModal').hidden=true; return; }
+    if(e.target.name==='cmScope'){ $('#cmNote').innerHTML = e.target.value==='slide'
+      ? 'Copies ONLY the current slide’s manual layer (text, shapes, images, background) onto the <b>same slide</b> of the regions you pick, for the <b id="cmMode">'+(state.mode==='buy'?'Buying':'Selling')+'</b> deck. Their other slides are untouched. <b>Overwrites</b> that one slide’s existing edits on the targets.'
+      : 'Copies the layout (text, shapes, images, backgrounds, added pages) of <b id="cmFrom">'+esc((DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug)+'</b> to the regions you pick, for the <b id="cmMode">'+(state.mode==='buy'?'Buying':'Selling')+'</b> deck. Each region keeps its own charts &amp; data — only the manual layer is copied. <b>Overwrites</b> any existing edits on the targets.'; return; }
+    const b=e.target.closest('[data-cm]'); if(!b)return; if(b.dataset.cm==='cancel')$('#bssCopyModal').hidden=true; else if(b.dataset.cm==='apply')applyCopyTo(); });
   $('#bssEditMode').addEventListener('click',e=>{ const b=e.target.closest('button[data-em]'); if(b) setEditMode(b.dataset.em==='edit'); });
   $('#bssEdBtns').addEventListener('click',e=>{ const b=e.target.closest('button[data-add]'); if(!b)return; const a=b.dataset.add;
     if(a==='text')addText(); else if(a==='shape')openShapePop(b); else if(a==='page')addPage(); else if(a==='image')$('#bssImgIn').click(); });
