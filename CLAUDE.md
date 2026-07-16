@@ -184,3 +184,24 @@ docs/                   BUG.md, CADENCE.md, ONLINE_REPORTS_RENDERER.md, etc.
   then it deploys in ~1–2 min.
 - Past mojibake incidents: UTF-8 saved as Windows-1252 (incl. 4-byte emoji).
   Be careful editing files with emoji/curly-quote content.
+
+## Brand
+
+All UI, documents, and copy follow the Performance Property brand.
+Rules: `.claude/skills/performance-property-brand/SKILL.md` (copied from the
+brand repo `Performance-Property/performance-property-brand`; re-copy to update).
+
+This repo deviates from TEAM_SETUP.md's submodule/npm consumption **on
+purpose** — do not "fix" it: the brand repo is private, so a submodule breaks
+the GitHub Pages build (Pages only fetches public submodules) and an npm git
+dependency breaks every Actions workflow's `npm install`. The site is also
+static/no-build, so nothing could import `brand.css` anyway. Instead the
+palette is applied natively: `shared/os-theme.css` + `shared/common.css` are
+the in-repo token layer (Teal #00A0B4, Dark Teal #171B24, Montserrat — see
+the skill for the full rules). Revisit literal token consumption after the
+Vercel migration.
+
+- Never introduce a NEW brand color/font by hand — check the skill; if it
+  isn't in the palette, that's a brand-repo PR conversation, not a local hex.
+- Logos: use the repo's existing `assets/` logo files; never redraw/recolor.
+  The canonical set lives in the brand repo under `assets/logos/`.
