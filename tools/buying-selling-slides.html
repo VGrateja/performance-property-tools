@@ -82,6 +82,15 @@ body{margin:0;font-family:'Figtree','DM Sans',sans-serif;background:var(--bg,#0b
 .bss-tbl td .tag{font-size:11px;color:var(--bss-cyan);font-weight:800;margin-left:8px;text-transform:uppercase;letter-spacing:.5px}
 .bss-pos{color:var(--bss-pos)} .bss-neg{color:var(--bss-neg)}
 .bss-cards{display:flex;gap:18px;margin-top:6px}
+/* VR Forecast slide — light-friendly, self-contained styling (readable on the
+   authored light-grey slides AND the navy default); block vertically centred. */
+.bss-vrbody{display:flex;flex-direction:column;justify-content:center}
+.bss-vrcards{display:flex;gap:20px}
+.bss-vrcard{flex:1;background:#ffffff;border:1px solid #d0d0d0;border-radius:12px;padding:22px 24px;box-shadow:0 2px 8px rgba(23,27,36,.06)}
+.bss-vrcard .k{font-size:13.5px;font-weight:700;color:#63666A;line-height:1.3}
+.bss-vrcard .v{font-size:34px;font-weight:800;color:#171B24;margin-top:8px;font-variant-numeric:tabular-nums}
+.bss-vrnote{margin-top:26px;font-size:15px;line-height:1.55;color:#3F4650;text-align:center}
+.bss-vrnote b{color:#0083A3;font-weight:800}
 .bss-card{flex:1;background:var(--bss-panel);border:1px solid var(--bss-line);border-radius:12px;padding:20px 22px}
 .bss-card .k{color:var(--bss-mut);font-size:14px;font-weight:600}
 .bss-card .v{font-size:34px;font-weight:800;margin-top:6px}
@@ -470,6 +479,12 @@ async function renderReportChart(host, slug, recipeKey){
   const payload = await getFeed(slug);
   if(!payload){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
   let spec=null; try{ const feed=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug); spec=OR_RECIPES[recipeKey](feed); }catch(e){}
+  /* VR SOURCE NOTE (verified 2026-07-17): the feed's vacancyRate = rdp metric
+     'vacancy_rate' whose source tag reads 'sqm' — a LEGACY LABEL from the old
+     Google-Sheet block header. Its recent values come from Van's monthly
+     COTALITY upload (forge_cotality 'rentvacancy' → sync-cotality-medians).
+     So the VR-v-Rent chart is already Cotality — do NOT "fix" it to
+     corelogic/vacancy_rate_h (that's the older data-dump vintage). */
   if(!spec){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
   _drawChart(host, spec);
 }
@@ -482,7 +497,12 @@ function _drawChart(host, spec){
   host.innerHTML=''; const box=document.createElement('div'); box.style.width='100%'; box.style.height='100%'; host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
     if(!box.isConnected||!window.PresentChart) return;   /* navigated away before paint → don't spawn an orphan instance */
-    try{ var ctrl=window.PresentChart.create(box,spec); if(ctrl)_liveCharts.push(ctrl); var g=0; while(ctrl&&!ctrl.isComplete()&&g++<1000) ctrl.next(); }
+    try{ var ctrl=window.PresentChart.create(box,spec); if(ctrl)_liveCharts.push(ctrl); var g=0; while(ctrl&&!ctrl.isComplete()&&g++<1000) ctrl.next();
+      /* page-4 treatment for every module chart: transparent bg + axis tooltip
+         (the controller hides its ECharts instance; the global registry doesn't) */
+      try{ var inst=window.echarts&&echarts.getInstanceByDom(box.querySelector('div')||box)||echarts.getInstanceByDom(box);
+        if(inst) inst.setOption({backgroundColor:'transparent', tooltip:{show:true,trigger:'axis',confine:true}}); }catch(e2){}
+    }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to render.</div>'; }
   }); });
 }
@@ -666,16 +686,35 @@ async function getVRF(slug){ if(VRF[slug]!==undefined) return VRF[slug]; try{ co
 async function mountVRForecast(slideEl, slug){
   const host=slideEl.querySelector('.bss-vrbody'); if(!host) return;
   host.innerHTML='<div class="bss-chartload">Loading…</div>';
-  const p=await getVRF(slug);
-  if(!p){ host.innerHTML='<div class="bss-chartload">No VR forecast in Forge for this region.</div>'; return; }
+  const p0=await getVRF(slug);
+  if(!p0){ host.innerHTML='<div class="bss-chartload">No VR forecast in Forge for this region.</div>'; return; }
+  /* Buying/Selling shows the COTALITY vacancy rate (Van 2026-07-17); the
+     pipeline's currentVR is the SQM weekly feed (payload.vrSource 'forge_sqm')
+     which belongs to the Demand Score Dashboard only. Current VR here = latest
+     rdp 'vacancy_rate' — NOTE its source tag reads 'sqm' but that's a legacy
+     sheet-header label: the recent values ARE Van's monthly Cotality upload
+     (rentvacancy vacHouse → sync-cotality-medians). Forecasted VR keeps the
+     pipeline's supply/demand DELTA re-based onto the Cotality figure (workbook
+     floor 0.1%). Falls back to the pipeline numbers if unavailable. */
+  const p={...p0};
+  try{
+    const {data:cv}=await window.sb.from('rdp_raw_series').select('value,period')
+      .eq('source','sqm').eq('metric','vacancy_rate').eq('region_slug',slug)
+      .order('period',{ascending:false}).limit(1);
+    const cot=cv&&cv[0]&&Number(cv[0].value);
+    if(isFinite(cot)&&cot>0&&p0.currentVR!=null&&p0.forecastVR!=null){
+      p.currentVR=cot;
+      p.forecastVR=Math.max(0.001, p0.forecastVR+(cot-p0.currentVR));
+    }
+  }catch(e){}
   const pctv=v=>v==null?'—':(v*100).toFixed(2)+'%', intv=v=>v==null?'—':Math.round(v).toLocaleString();
   const easing = (p.forecastVR!=null && p.currentVR!=null && p.forecastVR>=p.currentVR);
-  host.innerHTML='<div class="bss-cards">'
-    +'<div class="bss-card"><div class="k">Current VR</div><div class="v">'+pctv(p.currentVR)+'</div></div>'
-    +'<div class="bss-card"><div class="k">Expected new households <span style="font-weight:400">(next 1yr)</span></div><div class="v">'+intv(p.expNewHouseholds)+'</div></div>'
-    +'<div class="bss-card"><div class="k">Expected properties <span style="font-weight:400">(next 1yr)</span></div><div class="v">'+intv(p.expProperties)+'</div></div>'
-    +'<div class="bss-card"><div class="k">Forecasted VR</div><div class="v">'+pctv(p.forecastVR)+'</div></div></div>'
-    +'<div class="bss-note" style="margin-top:24px">Over the next year, ~<span class="num" style="color:var(--bss-cyan)">'+intv(p.expProperties)+'</span> new properties against ~<span class="num" style="color:var(--bss-cyan)">'+intv(p.expNewHouseholds)+'</span> new households move the vacancy rate from <span class="num" style="color:var(--bss-cyan)">'+pctv(p.currentVR)+'</span> to a forecast <span class="num" style="color:var(--bss-cyan)">'+pctv(p.forecastVR)+'</span> — '+(easing?'a modest easing of a tight rental market.':'a further tightening of the rental market.')+'</div>';
+  host.innerHTML='<div class="bss-vrcards">'
+    +'<div class="bss-vrcard"><div class="k">Current VR</div><div class="v">'+pctv(p.currentVR)+'</div></div>'
+    +'<div class="bss-vrcard"><div class="k">Expected new households <span style="font-weight:400">(next 1yr)</span></div><div class="v">'+intv(p.expNewHouseholds)+'</div></div>'
+    +'<div class="bss-vrcard"><div class="k">Expected properties <span style="font-weight:400">(next 1yr)</span></div><div class="v">'+intv(p.expProperties)+'</div></div>'
+    +'<div class="bss-vrcard"><div class="k">Forecasted VR</div><div class="v">'+pctv(p.forecastVR)+'</div></div></div>'
+    +'<div class="bss-vrnote">Over the next year, ~<b>'+intv(p.expProperties)+'</b> new properties against ~<b>'+intv(p.expNewHouseholds)+'</b> new households move the vacancy rate from <b>'+pctv(p.currentVR)+'</b> to a forecast <b>'+pctv(p.forecastVR)+'</b> — '+(easing?'a modest easing of a tight rental market.':'a further tightening of the rental market.')+'</div>';
 }
 
 const SLIDE_DEFS = [
@@ -683,14 +722,14 @@ const SLIDE_DEFS = [
   { render: slideTitle },   /* slide 2 blanked (was head('Timing','Market Positions Clock')) — Van authors it via overlays, like slide 1 */
   { render: c=>chrome('<div class="pad" style="padding:128px 80px 30px"><div class="bss-img"></div></div>'), mount:(el,c)=>mountAutoClock(el) },   /* slide 3: heading/rule stripped (Van authors via overlays); slim margins so the LIVE clock spans nearly full width, ~105px headroom for the title/disclaimer */
   { render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'h') },   /* slide 4 Median HOUSE Price: entry-story chart (red entry line, live endpoint); bottom space for the narrative overlay */
-  { render: c=>narrSlide('Supply & Demand','Vacancy Rate Forecast','bss-vrbody'), mount:(el,c)=>mountVRForecast(el,c.slug) },
+  { render: c=>chrome('<div class="pad" style="padding:128px 48px 112px"><div class="bss-vrbody" style="flex:1"></div></div>'), mount:(el,c)=>mountVRForecast(el,c.slug) },   /* slide 5 VR Forecast: headless — authored via overlays; live cards + note stay */
   { render: c=>stub('Value','Replacement Cost','land + build cost input') },
-  { render: c=>chartSlide('Affordability','Affordability Index'), mount:(el,c)=>mountChart(el,c.slug,'p16') },
-  { render: c=>chartSlide('Affordability','Price to Income'), mount:(el,c)=>mountChart(el,c.slug,'p9') },
+  { render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p16') }   /* Affordability Index — headless, page-4 treatment */,
+  { render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p9') }   /* Price to Income — headless */,
   { render: c=>narrSlide('Value','Ranking as Most Expensive','bss-rankbody'), mount:(el,c)=>mountRanking(el,c.slug) },
-  { render: c=>{ const pn=(DB.meta[ratioPeer(c.slug)]&&DB.meta[ratioPeer(c.slug)].name)||'Melbourne'; return chartSlide('Value', c.name+' as % of '+pn); }, mount:(el,c)=>mountRatio(el,c.slug) },
-  { render: c=>chartSlide('Supply & Demand','Stock on Market v. ADOM'), mount:(el,c)=>mountChart(el,c.slug,'p5') },
-  { render: c=>chartSlide('Supply & Demand','Vacancy Rate v. Rent'), mount:(el,c)=>mountChart(el,c.slug,'p10') },
+  { render: c=>chartSlideBare(112), mount:(el,c)=>mountRatio(el,c.slug) }   /* % of peer — headless */,
+  { render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p5') }   /* SOM v ADOM — headless */,
+  { render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p10') }   /* VR v Rent — headless */,
   { render: slideForecastPop },
   { render: c=>slideSensitivity(c,'h') },
   { render: c=>slideSensitivity(c,'u') },

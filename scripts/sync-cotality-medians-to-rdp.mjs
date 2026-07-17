@@ -18,7 +18,9 @@
 //     som_h / som_u      (source sqm       — listings last month; the report's
 //                         stock-on-market series carries the legacy sqm tag)
 //   from 'rentvacancy' capitals / regions  {name, vacHouse, rentHouse, rentUnit}:
-//     vacancy_rate       (source sqm — store holds PERCENT (2.23), rdp holds
+//     vacancy_rate       (source tag 'sqm' = LEGACY sheet-header label ONLY —
+//                         the data is Van's monthly COTALITY upload, not SQM;
+//                         store holds PERCENT (2.23), rdp holds
 //                         FRACTION (0.0223) → ÷100; house basis, per the
 //                         2026-07-01 all-Cotality decision)
 //     rent_h / rent_u    (source sqm — the calc PREFERS sqm over the duplicate
