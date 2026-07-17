@@ -56,6 +56,10 @@ h1{font-size:30px;font-weight:800;letter-spacing:-0.02em;margin:6px 0 2px}
 .mc-add:hover{border-color:var(--mc-teal)}
 .mc-add[disabled]{opacity:.4;cursor:default}
 .mc-seg{display:inline-flex;border:1px solid var(--mc-border-2);border-radius:10px;overflow:hidden}
+.mc-seg[hidden]{display:none}
+.mc-h2row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:3px}
+.mc-h2row .mc-h2{margin:0}
+.mc-seg-sm button{padding:6px 11px;font-size:11px}
 .mc-seg button{font:700 12.5px 'Montserrat',sans-serif;padding:9px 13px;border:none;background:none;color:var(--mc-mut);cursor:pointer}
 .mc-seg button.on{background:var(--mc-teal);color:#fff}
 .mc-btn{font:700 12.5px 'Montserrat',sans-serif;color:var(--mc-ink);background:var(--mc-surface);border:1px solid var(--mc-border-2);border-radius:10px;padding:9px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:7px}
@@ -213,7 +217,13 @@ body.mc-present .mc-cards{grid-template-columns:repeat(auto-fit,minmax(290px,1fr
   </div>
 
   <div class="mc-section">
-    <h2 class="mc-h2">Sensitivity — affordability ceiling by cash rate</h2>
+    <div class="mc-h2row">
+      <h2 class="mc-h2">Sensitivity — affordability ceiling by cash rate</h2>
+      <span class="mc-seg mc-seg-sm" id="mcSensHz" hidden>
+        <button data-h="sell" class="on">Selling · 1yr</button>
+        <button data-h="buy">Buying · 5yr</button>
+      </span>
+    </div>
     <p class="mc-h2sub" id="mcSensSub">The maximum sustainable price at each cash-rate scenario, versus today's median.</p>
     <div class="mc-sensgrid" id="mcSens"><div class="mc-skel">Loading…</div></div>
     <p class="mc-foot" id="mcSensFoot"></p>
@@ -253,7 +263,7 @@ const pct=(v,dp)=>(v==null||!isFinite(v))?'—':((v*100).toFixed(dp==null?2:dp)+
 const num=v=>(v==null||!isFinite(v))?'—':Math.round(v).toLocaleString();
 const DASH='—';
 
-const state={ markets:['brisbane','melbourne'], type:'h', flip:false };
+const state={ markets:['brisbane','melbourne'], type:'h', flip:false, sensHorizon:'sell' };   /* sensHorizon: 3-market-mode ladder horizon */
 let REG={}, RW={}, CFG=null, SNAP=null, CLOCK=null, TL=null, FEED={}, ENTRY={}, CAPS=new Set();
 let _profile=null;
 
@@ -341,6 +351,24 @@ function dsRank(slug){
   const i=sorted.findIndex(([k])=>k===slug);
   return i<0?null:{rank:i+1,of:sorted.length};
 }
+/* direction horizon: with exactly two markets the sell side uses 1-yr wage growth
+   and the buy side 5-yr (Van's rule); any other count shows everything on the
+   selling (1-yr) horizon — matching the sensitivity section */
+const roleOf=i=>(state.markets.length===2 && i===(state.flip?0:1))?'buy':'sell';
+/* runway on the direction horizon. The snapshot rw is the 5-yr wage-growth figure
+   (build-runway forecast_wg_pct). Wage growth only scales income and the ceiling is
+   linear in income, so income cancels and the 1-yr figure derives exactly:
+   rw1 = (rw5+1)/(1+wg)^4 − 1 — the same formula Runway v Demand uses. */
+function rw1(slug){
+  const m=dsOf(slug); if(!m||m.rw==null) return null;
+  const wg=CAPS.has(slug)?((CFG&&CFG.wage_growth&&CFG.wage_growth.capital)||0.03)
+                         :((CFG&&CFG.wage_growth&&CFG.wage_growth.regional)||0.02);
+  return (m.rw+1)/Math.pow(1+wg,4)-1;
+}
+function rwOf(slug,i){
+  const m=dsOf(slug); if(!m||m.rw==null) return null;
+  return roleOf(i)==='buy'?m.rw:rw1(slug);
+}
 const TIERS=[
   {min:40,label:'Strong buy',color:'#4D7F39'},
   {min:25,label:'Buy',       color:'#3E7967'},
@@ -423,7 +451,8 @@ function tlOf(slug){
 
 /* ═══ EVIDENCE TABLE ═══ */
 const T=()=>state.type;  /* 'h' | 'u' */
-const ROWS=[
+/* rebuilt per render — the runway row(s) depend on how many markets are compared */
+function ROWS(){ return [
   {group:'Price & growth'},
   {l:'Median price',      kind:'text', tip:'Latest annual median from the research feed.', get:s=>latest(s,'mp_'+T()).v, fmt:money},
   {l:'12-month growth',   kind:'high', tip:'Year-on-year change in the median.', get:s=>latest(s, T()==='u'?'unit_yoy':'house_yoy').v, fmt:v=>pct(v,1)},
@@ -441,17 +470,22 @@ const ROWS=[
   {group:'Supply & demand'},
   {l:'Demand score',      kind:'high', tip:'Performance Property demand engine score (0–100).', get:s=>{const m=dsOf(s);return m?m.ds:null;}, fmt:v=>(v==null?DASH:v.toFixed(1))},
   {l:'Demand rank',       kind:'text', tip:'Rank across all tracked markets in this snapshot.', get:s=>{const r=dsRank(s);return r?r.rank:null;}, fmt:v=>(v==null?DASH:'#'+v)},
-  {l:'Runway',            kind:'high', tip:'How much affordability headroom remains before the market hits its ceiling.', get:s=>{const m=dsOf(s);return m?m.rw:null;}, fmt:v=>pct(v,0)},
+  ...(state.markets.length===2?[
+    {l:'Runway',          kind:'high', tip:'Affordability headroom before the market hits its ceiling, on this market’s direction horizon — selling 1-yr / buying 5-yr wage growth.', get:s=>rwOf(s,state.markets.indexOf(s)), fmt:v=>pct(v,0)},
+  ]:[
+    {l:'Runway · 1yr wg', kind:'high', tip:'Affordability headroom with income grown one year — the selling horizon.', get:s=>rw1(s), fmt:v=>pct(v,0)},
+    {l:'Runway · 5yr wg', kind:'high', tip:'Affordability headroom with income grown five years — the buying horizon (the figure the Demand Score Dashboard shows).', get:s=>{const m=dsOf(s);return m?m.rw:null;}, fmt:v=>pct(v,0)},
+  ]),
   {l:'Rental growth 36m', kind:'high', tip:'Three-year rental growth from the demand snapshot.', get:s=>{const m=dsOf(s);return (m&&m.rg!=null)?m.rg/100:null;}, fmt:v=>pct(v,1)},
   {group:'People'},
   {l:'Population',        kind:'text', tip:'Metro population.', get:s=>latest(s,'pop_metro').v, fmt:num},
   {l:'Population growth', kind:'high', tip:'Annual metro population growth.', get:s=>latest(s,'pct_change_metro').v, fmt:v=>pct(v,2)},
-];
+];}
 
 function winners(){
   /* per comparable row: index of best + worst market (only rows with a kind) */
   const res={best:{},worst:{},wins:state.markets.map(()=>0),comparable:0};
-  ROWS.forEach((r,ri)=>{
+  ROWS().forEach((r,ri)=>{
     if(!r.get||r.kind==='text') return;
     const vals=state.markets.map(s=>{ const v=r.get(s); return (v==null||!isFinite(v))?null:v; });
     const have=vals.filter(v=>v!=null);
@@ -518,7 +552,7 @@ function renderVerdict(w){
   const an=nameOf(A), bn=nameOf(B);
   const ca=clockOf(A), cb=clockOf(B);
   const da=dsOf(A), db=dsOf(B);
-  const qa=quadrantOf(da&&da.ds, da&&da.rw), qb=quadrantOf(db&&db.ds, db&&db.rw);
+  const qa=quadrantOf(da&&da.ds, rwOf(A,ai)), qb=quadrantOf(db&&db.ds, rwOf(B,bi));
   let line;
   const sa=ca?stageOf(ca.label):0, sb=cb?stageOf(cb.label):0;
   if(sa===3&&sb===1){
@@ -547,7 +581,7 @@ function renderVerdict(w){
 function renderCards(w){
   w=w||winners();
   $('#mcCards').innerHTML=state.markets.map((s,i)=>{
-    const m=dsOf(s), ck=clockOf(s), q=quadrantOf(m&&m.ds, m&&m.rw), tier=tierOf(m&&m.ds);
+    const m=dsOf(s), ck=clockOf(s), rwv=rwOf(s,i), q=quadrantOf(m&&m.ds, rwv), tier=tierOf(m&&m.ds);
     const tl=tlOf(s);
     const ent=ENTRY[s];
     const rank=dsRank(s);
@@ -564,7 +598,9 @@ function renderCards(w){
       +'<div class="mc-scorerow">'
         +'<div class="mc-ds"><div class="n">'+(m&&m.ds!=null?m.ds.toFixed(0):DASH)+'</div><div class="k">Demand'+(rank?' · #'+rank.rank+' of '+rank.of:'')+'</div></div>'
         +'<div class="mc-gauge"><i style="width:'+(m&&m.ds!=null?Math.max(2,Math.min(100,m.ds)):0)+'%"></i></div>'
-        +'<div class="mc-rw"><div class="n">'+(m&&m.rw!=null?Math.round(m.rw*100)+'%':DASH)+'</div><div class="k">Runway</div></div>'
+        +(state.markets.length===2
+          ?'<div class="mc-rw"><div class="n">'+(rwv!=null?Math.round(rwv*100)+'%':DASH)+'</div><div class="k">Runway · '+(roleOf(i)==='buy'?'5yr':'1yr')+' wg</div></div>'
+          :'<div class="mc-rw"><div class="n">'+(rwv!=null?Math.round(rwv*100)+'%':DASH)+' / '+(m&&m.rw!=null?Math.round(m.rw*100)+'%':DASH)+'</div><div class="k">Runway · 1yr / 5yr wg</div></div>')
       +'</div>'
       +(tier?'<span class="mc-tier" style="color:'+tier.color+'">'+esc(tier.label)+'</span>':'')
       +'<div class="mc-rag">'+['sd','value','confidence'].map((k,ki)=>{
@@ -580,7 +616,7 @@ function renderCards(w){
 
 function renderTable(w){
   const heads='<tr><th class="metric">Metric</th>'+state.markets.map(s=>'<th>'+esc(nameOf(s))+'</th>').join('')+'</tr>';
-  const body=ROWS.map((r,ri)=>{
+  const body=ROWS().map((r,ri)=>{
     if(r.group) return '<tr class="mc-group"><td colspan="'+(state.markets.length+1)+'">'+esc(r.group)+'</td></tr>';
     const cells=state.markets.map((s,i)=>{
       const v=r.get(s); const disp=r.fmt?r.fmt(v):String(v==null?DASH:v);
@@ -703,14 +739,14 @@ function renderSens(){
   const curCash=CFG.rates.current.cash, fcCash=CFG.rates.forecast.cash;
   const ladder=[...new Set([...SENS_ANCHORS,curCash,fcCash])].sort((a,b)=>b-a);
   const two=state.markets.length===2;
-  const roleOf=i=>{ if(!two) return 'sell'; const ai=state.flip?1:0; return i===ai?'sell':'buy'; };
+  $('#mcSensHz').hidden=two;   /* horizon toggle only matters without a declared direction */
   box.innerHTML=state.markets.map((s,i)=>{
     const p=RW[s]||{}, inp=p.inputs||{}, ceil=p.ai_ceiling||{};
     const aiv=T()==='u'?ceil.u:ceil.h;
     const median=T()==='u'?inp.median_u:inp.median_h;
     if(inp.income==null||aiv==null||median==null)
       return '<div class="mc-senscard"><div class="hd"><b>'+esc(nameOf(s))+'</b></div><div class="mc-skel">No runway inputs for this market.</div></div>';
-    const role=roleOf(i), yrs=role==='buy'?5:1;
+    const role=two?roleOf(i):state.sensHorizon, yrs=role==='buy'?5:1;
     const wg=CAPS.has(s)?((CFG.wage_growth&&CFG.wage_growth.capital)||0.03):((CFG.wage_growth&&CFG.wage_growth.regional)||0.02);
     const income=inp.income*Math.pow(1+wg,yrs);
     const moneyS=v=>(v<0?'-$':'$')+Math.abs(Math.round(v)).toLocaleString();   /* signed $ like the Forge card */
@@ -730,13 +766,15 @@ function renderSens(){
       +'</div>';
   }).join('');
   $('#mcSensFoot').innerHTML='Ceiling = the maximum price sustainable at each cash rate: PV of the affordable repayment over 30 years ÷ 0.8 (80% LVR). Applied mortgage rate = cash + '+(margin*100).toFixed(2)+'%. '
-    +(two?'The selling market uses 1-year wage growth; the buying market 5-year (3% capitals / 2% regional) — swap the direction above to flip them.':'All markets shown on the selling (1-year) horizon.');
+    +(two?'The selling market uses 1-year wage growth; the buying market 5-year (3% capitals / 2% regional) — swap the direction above to flip them.'
+         :'All markets shown on the '+(state.sensHorizon==='buy'?'buying (5-year)':'selling (1-year)')+' wage-growth horizon — switch it beside the heading.');
 }
 
 function renderProv(){
   $('#mcProv').innerHTML='Sources — demand & runway: monthly demand snapshot'+(SNAP?' ('+esc(SNAP.label||SNAP.version)+')':'')
     +' · price, growth, affordability (AI P&amp;I loan), rents, yield: research feed (annual) · vacancy: Cotality'
-    +' · cycle position: Property Clock (live) · signals: Traffic Lights engine (live) · ceilings: Runway Workbook math.';
+    +' · cycle position: Property Clock (live) · signals: Traffic Lights engine (live) · ceilings: Runway Workbook math.'
+    +' Runway is shown on the direction horizon — selling 1-yr / buying 5-yr wage growth (same derivation as Runway v Demand).';
 }
 
 /* ── controls wiring ── */
@@ -754,6 +792,12 @@ function wireControls(){
     state.markets.push(next); await ensureFeeds([next]); renderAll();
   });
   $('#mcSwap').addEventListener('click',()=>{ state.flip=!state.flip; renderAll(); });
+  $('#mcSensHz').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+    if(state.sensHorizon===b.dataset.h) return;
+    state.sensHorizon=b.dataset.h;
+    $('#mcSensHz').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    renderSens();   /* the toggle is local to the sensitivity section */
+  }));
   /* present mode — fullscreen client view; ESC or the floating button exits */
   const exitPresent=()=>{ document.body.classList.remove('mc-present');
     if(document.fullscreenElement){ try{ document.exitFullscreen(); }catch(e){} }
