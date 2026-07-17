@@ -344,7 +344,7 @@ let state = { slug:'adelaide', mode:'sell', idx:0 };
 let DECK = [];
 let _bsCanEdit = false;   // dev/admin → can edit (overlays, backgrounds, image upload)
 let _slideScale = 1;      // current .bss-slide transform scale (drag deltas ÷ this)
-let EDIT=false, OVL={}, BGS={}, CUSTOM=[], _sel=null, _saveT=null, _hist=[], _hi=-1, _edEl=null, _clip=null;   // slide editor state (_edEl = text overlay being edited; _clip = Ctrl+C overlay clipboard)
+let EDIT=false, OVL={}, BGS={}, CUSTOM=[], _sel=null, _msel=new Set(), _saveT=null, _hist=[], _hi=-1, _edEl=null, _clip=null;   // slide editor state (_sel = primary/last-clicked, _msel = full multi-selection set; _edEl = text overlay being edited; _clip = Ctrl+C overlay clipboard)
 
 const fmtInt = v => (v<0?'-':'') + '$'.replace('$','') + Math.abs(Math.round(v)).toLocaleString();
 const money  = v => (v<0?'-$':'$') + Math.abs(Math.round(v)).toLocaleString();
@@ -717,6 +717,57 @@ async function mountVRForecast(slideEl, slug){
     +'<div class="bss-vrnote">Over the next year, ~<b>'+intv(p.expProperties)+'</b> new properties against ~<b>'+intv(p.expNewHouseholds)+'</b> new households move the vacancy rate from <b>'+pctv(p.currentVR)+'</b> to a forecast <b>'+pctv(p.forecastVR)+'</b> — '+(easing?'a modest easing of a tight rental market.':'a further tightening of the rental market.')+'</div>';
 }
 
+/* Affordability Index — sample-deck look (Van 2026-07-17): BLACK bars (Gross
+   Affordability Index, per-bar % labels, series average in the legend name),
+   TEAL smooth House-Price-Movement line with point labels, ONE shared left %
+   axis (no right axis), red full-height entry-year markLine like page 4. */
+async function mountAfford(el,slug){ const host=el.querySelector('.bss-chart'); if(host) _mountAfford(host,slug); }
+async function _mountAfford(host,slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const payload=await getFeed(slug);
+  if(!payload){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
+  let years=[],ai=[],mov=[];
+  try{ const raw=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug);
+    const a=_orAlignCols(raw.year,[raw.aiHouseStateIncome,raw.houseYoY],{mode:'strict'});
+    const pc=v=>Math.round(v*1e4)/100;
+    years=a.keys; ai=a.cols[0].map(pc); mov=a.cols[1].map(pc); }catch(e){}
+  if(!years.length){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  const name=(DB.meta[slug]&&DB.meta[slug].name)||slug;
+  const avg=Math.round(ai.reduce((s,v)=>s+v,0)/ai.length);
+  const aiName='Gross Affordability Index (Ave '+avg+'%)', movName='House Price Movement', entName='Performance Property enters '+name;
+  const ent=ENTRY||{}, eYear=parseInt(ent.year,10), eIdx=Number.isFinite(eYear)?years.indexOf(eYear):-1;
+  const pctl=v=>(v==null?'':v.toFixed(2)+'%');
+  /* pin the axis to 5%-steps so the red entry bar (base 0% → axis top) exactly
+     touches the ceiling without inflating the auto-scale */
+  const axMax=Math.ceil(Math.max.apply(null,ai.concat(mov))/5)*5;
+  const axMin=Math.min(0, Math.floor(Math.min.apply(null,mov.concat([0]))/5)*5);
+  const series=[
+    /* red entry marker: a real bar — starts at the 0% baseline, WIDER than the
+       AI bars and drawn BEHIND them (black overlaps via barGap -100%) */
+    { name:entName, type:'bar', barWidth:'86%', data:years.map(y=>y===eYear?axMax:null), itemStyle:{color:'#E72347'}, silent:true, z:1 },
+    { name:aiName, type:'bar', data:ai, barWidth:'58%', barGap:'-83%', itemStyle:{color:'#171B24'}, z:2,
+      label:{show:true,position:'top',fontSize:8,color:'#333',formatter:p=>pctl(p.value)} },
+    { name:movName, type:'line', data:mov, smooth:true, symbol:'circle', symbolSize:1, z:3,
+      lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
+      label:{show:true,position:'bottom',fontSize:8,color:'#0083A3',formatter:p=>pctl(p.value)} }
+  ];
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', confine:true, valueFormatter:v=>(v==null?'—':v.toFixed(2)+'%') },
+    legend:{ top:2, itemWidth:12, itemHeight:12, icon:'rect', textStyle:{color:'#333',fontSize:11,fontWeight:700},
+      data:[{name:aiName},{name:movName},{name:entName,textStyle:{color:'#E72347'}}] },
+    grid:{left:58,right:28,top:40,bottom:34},
+    xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:8.5,interval:0}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', min:axMin, max:axMax, interval:5, axisLabel:{color:'#444',fontSize:10,formatter:v=>v+'%'}, splitLine:{lineStyle:{color:'#e8e8e8'}} },
+    series:series };
+  host.innerHTML=''; const box=document.createElement('div'); box.style.cssText='width:100%;height:100%'; host.appendChild(box);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
+  }); });
+}
+
 const SLIDE_DEFS = [
   { render: slideTitle },
   { render: slideTitle },   /* slide 2 blanked (was head('Timing','Market Positions Clock')) — Van authors it via overlays, like slide 1 */
@@ -724,7 +775,7 @@ const SLIDE_DEFS = [
   { render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'h') },   /* slide 4 Median HOUSE Price: entry-story chart (red entry line, live endpoint); bottom space for the narrative overlay */
   { render: c=>chrome('<div class="pad" style="padding:128px 48px 112px"><div class="bss-vrbody" style="flex:1"></div></div>'), mount:(el,c)=>mountVRForecast(el,c.slug) },   /* slide 5 VR Forecast: headless — authored via overlays; live cards + note stay */
   { render: c=>stub('Value','Replacement Cost','land + build cost input') },
-  { render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p16') }   /* Affordability Index — headless, page-4 treatment */,
+  { render: c=>chartSlideBare(112), mount:(el,c)=>mountAfford(el,c.slug) }   /* Affordability Index — custom sample-look chart (black labelled bars + teal line, one axis, red entry) */,
   { render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p9') }   /* Price to Income — headless */,
   { render: c=>narrSlide('Value','Ranking as Most Expensive','bss-rankbody'), mount:(el,c)=>mountRanking(el,c.slug) },
   { render: c=>chartSlideBare(112), mount:(el,c)=>mountRatio(el,c.slug) }   /* % of peer — headless */,
@@ -774,7 +825,7 @@ function edKey(){ return 'bss-'+state.slug+'-'+state.mode; }
 function curKey(){ const d=DECK[state.idx]; return d?d.key:null; }
 function _edPayload(){ return { overlays:OVL, bgs:BGS, customPages:CUSTOM }; }
 async function loadDeckState(){
-  OVL={}; BGS={}; CUSTOM=[]; _sel=null; _hist=[]; _hi=-1;
+  OVL={}; BGS={}; CUSTOM=[]; _sel=null; _msel=new Set(); _hist=[]; _hi=-1;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region',edKey()).maybeSingle();
     const p=(data&&data.payload)||{}; OVL=p.overlays||{}; BGS=p.bgs||{}; CUSTOM=Array.isArray(p.customPages)?p.customPages:[]; }catch(e){}
   await loadEntryAndPrices();   /* region entry data + live medians — feeds the median slides + tokens */
@@ -783,7 +834,7 @@ async function loadDeckState(){
 function saveDeckState(){ if(!_bsCanEdit) return; clearTimeout(_saveT); const key=edKey(), pl=JSON.parse(JSON.stringify(_edPayload()));
   _saveT=setTimeout(async()=>{ try{ await window.sb.from('reports_state').upsert({region:key,payload:pl},{onConflict:'region'}); }catch(e){} },700); }
 function commit(){ _hist=_hist.slice(0,_hi+1); _hist.push(JSON.stringify(_edPayload())); if(_hist.length>60)_hist.shift(); _hi=_hist.length-1; saveDeckState(); }
-function _applyHist(){ const s=_hist[_hi]; if(!s)return; const p=JSON.parse(s); OVL=p.overlays||{}; BGS=p.bgs||{}; CUSTOM=p.customPages||[]; _sel=null; buildDeck(); render(); saveDeckState(); }
+function _applyHist(){ const s=_hist[_hi]; if(!s)return; const p=JSON.parse(s); OVL=p.overlays||{}; BGS=p.bgs||{}; CUSTOM=p.customPages||[]; _sel=null; _msel=new Set(); buildDeck(); render(); saveDeckState(); }
 function undo(){ if(_hi>0){ _hi--; _applyHist(); } }
 function redo(){ if(_hi<_hist.length-1){ _hi++; _applyHist(); } }
 
@@ -850,18 +901,24 @@ function makeOverlayEl(o){
   }
   else { el.style.width=(o.w||220)+'px'; el.style.height=(o.h||140)+'px'; el.innerHTML=shapeSVG(o); }
   el.style.left=(o.x||0)+'px'; el.style.top=(o.y||0)+'px';
-  if(_sel===o.id) el.classList.add('sel');
+  if(_msel.has(o.id)) el.classList.add('sel');
   return el;
 }
 function _swapOverlay(o){ const slide=$('#bssSlide'); const old=slide.querySelector('.bss-ov[data-id="'+o.id+'"]'); if(!old)return; const neu=makeOverlayEl(o); if(EDIT)attachOverlayHandlers(neu,o); old.replaceWith(neu); }
 function attachOverlayHandlers(el,o){
-  el.addEventListener('contextmenu',ev=>{ ev.preventDefault(); selectOverlay(o.id); showCtxMenu(ev.clientX,ev.clientY); });
+  el.addEventListener('contextmenu',ev=>{ ev.preventDefault(); if(!_msel.has(o.id)) selectOverlay(o.id); else { _sel=o.id; _paintSel(); } showCtxMenu(ev.clientX,ev.clientY); });   /* right-click on a member acts on the whole group */
   el.addEventListener('mousedown',ev=>{
     if(ev.button===2) return;
     if(el.classList.contains('editing')) return;
-    ev.preventDefault(); ev.stopPropagation(); selectOverlay(o.id);
-    const sx=ev.clientX, sy=ev.clientY, ox=o.x||0, oy=o.y||0; let moved=false;
-    const mv=e=>{ moved=true; o.x=Math.round(ox+(e.clientX-sx)/_slideScale); o.y=Math.round(oy+(e.clientY-sy)/_slideScale); el.style.left=o.x+'px'; el.style.top=o.y+'px'; };
+    ev.preventDefault(); ev.stopPropagation();
+    if(ev.shiftKey||ev.ctrlKey||ev.metaKey){ selectOverlay(o.id,true); return; }   /* Shift/Ctrl+click toggles multi-selection; no drag */
+    if(!_msel.has(o.id)) selectOverlay(o.id); else { _sel=o.id; _paintSel(); showSelBar(); }   /* clicking a member keeps the group */
+    /* drag moves the WHOLE selection together */
+    const group=_selObjs(); const sx=ev.clientX, sy=ev.clientY;
+    const starts=group.map(g=>({g:g, x:g.x||0, y:g.y||0})); let moved=false;
+    const mv=e=>{ moved=true; const dx=(e.clientX-sx)/_slideScale, dy=(e.clientY-sy)/_slideScale;
+      starts.forEach(s=>{ s.g.x=Math.round(s.x+dx); s.g.y=Math.round(s.y+dy);
+        const eln=$('#bssSlide').querySelector('.bss-ov[data-id="'+s.g.id+'"]'); if(eln){ eln.style.left=s.g.x+'px'; eln.style.top=s.g.y+'px'; } }); };
     const up=()=>{ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); if(moved) commit(); };
     document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
   });
@@ -889,17 +946,29 @@ function attachOverlayHandlers(el,o){
 }
 function _curList(){ const k=curKey(); return k?(OVL[k]||(OVL[k]=[])):null; }
 function _selObj(){ const l=_curList(); return l&&_sel?l.find(o=>o.id===_sel):null; }
-function selectOverlay(id){ _sel=id; $('#bssSlide').querySelectorAll('.bss-ov').forEach(e=>e.classList.toggle('sel', e.dataset.id===id)); showSelBar(); }
-function deselect(){ _sel=null; $('#bssSlide').querySelectorAll('.bss-ov.sel').forEach(e=>e.classList.remove('sel')); showSelBar(); }
-function deleteSelected(){ const l=_curList(); if(!l||!_sel)return; const i=l.findIndex(o=>o.id===_sel); if(i>=0){ l.splice(i,1); _sel=null; renderOverlays(); showSelBar(); commit(); } }
+function _selObjs(){ const l=_curList(); return l?l.filter(o=>_msel.has(o.id)):[]; }
+function _paintSel(){ $('#bssSlide').querySelectorAll('.bss-ov').forEach(e=>e.classList.toggle('sel', _msel.has(e.dataset.id))); }
+/* additive=true (Shift/Ctrl+click) toggles the overlay in/out of the multi-selection */
+function selectOverlay(id, additive){
+  if(additive){
+    if(_msel.has(id)){ _msel.delete(id); if(_sel===id){ const a=[..._msel]; _sel=a.length?a[a.length-1]:null; } }
+    else { _msel.add(id); _sel=id; }
+  } else { _msel=new Set(id!=null?[id]:[]); _sel=(id!=null?id:null); }
+  _paintSel(); showSelBar();
+}
+function deselect(){ _sel=null; _msel.clear(); $('#bssSlide').querySelectorAll('.bss-ov.sel').forEach(e=>e.classList.remove('sel')); showSelBar(); }
+function deleteSelected(){ const l=_curList(); if(!l||!_msel.size)return; for(const id of _msel){ const i=l.findIndex(o=>o.id===id); if(i>=0)l.splice(i,1); } _sel=null; _msel.clear(); renderOverlays(); showSelBar(); commit(); }
 const _nid=()=>'o'+Math.random().toString(36).slice(2,9);
 function _add(o){ const l=_curList(); if(!l)return; l.push(o); renderOverlays(); selectOverlay(o.id); commit(); }
-function copyOverlay(){ const l=_curList(), o=_selObj(); if(!l||!o)return; const c=JSON.parse(JSON.stringify(o)); c.id=_nid(); c.x=(o.x||0)+24; c.y=(o.y||0)+24; l.push(c); renderOverlays(); selectOverlay(c.id); commit(); }
-/* paste a copied overlay onto the CURRENT slide (offset when it's the same
-   slide it came from, so the clone doesn't stack invisibly) */
-function _pasteOverlay(o,fromKey){ const l=_curList(); if(!l||!o)return; const c=JSON.parse(JSON.stringify(o)); c.id=_nid();
-  if(curKey()===fromKey){ c.x=(c.x||0)+24; c.y=(c.y||0)+24; }
-  l.push(c); renderOverlays(); selectOverlay(c.id); commit(); }
+function copyOverlay(){ const l=_curList(), list=_selObjs(); if(!l||!list.length)return; const ids=[];
+  list.forEach(o=>{ const c=JSON.parse(JSON.stringify(o)); c.id=_nid(); c.x=(o.x||0)+24; c.y=(o.y||0)+24; l.push(c); ids.push(c.id); });
+  renderOverlays(); _msel=new Set(ids); _sel=ids[ids.length-1]; _paintSel(); showSelBar(); commit(); }
+/* paste copied overlay(s) onto the CURRENT slide — relative positions kept;
+   offset when pasting back onto the source slide so clones don't stack invisibly */
+function _pasteOverlays(list,fromKey){ const l=_curList(); if(!l||!list||!list.length)return;
+  const off=(curKey()===fromKey)?24:0; const ids=[];
+  list.forEach(o=>{ const c=JSON.parse(JSON.stringify(o)); c.id=_nid(); if(off){ c.x=(c.x||0)+off; c.y=(c.y||0)+off; } l.push(c); ids.push(c.id); });
+  renderOverlays(); _msel=new Set(ids); _sel=ids[ids.length-1]; _paintSel(); showSelBar(); commit(); }
 /* paste EXTERNAL text (copied outside the tool) as a new editable text overlay.
    Plain text only — foreign fonts/styles are stripped; newlines become <br>.
    Ink color adapts to the slide background so it never lands invisible. */
@@ -976,6 +1045,15 @@ const WEIGHTS=[['Light',300],['Regular',400],['Medium',500],['Semibold',600],['B
 function showSelBar(){
   const bar=$('#bssSelBar'); const o=_selObj();
   if(!EDIT||!o){ bar.hidden=true; bar.innerHTML=''; if(document.body.classList.contains('bss-panel-open')){ document.body.classList.remove('bss-panel-open'); fitSlide(); } return; }
+  if(_msel.size>1){   /* multi-selection → compact group panel */
+    bar.innerHTML='<div class="bp-title">'+_msel.size+' selected</div>'
+      +'<div class="bp-note" style="margin-top:8px">Shift+click adds/removes an item. Drag any selected item to move the group. Ctrl+C, flip page, Ctrl+V copies the group there.</div>'
+      +'<div class="bp-actions"><button class="bp-copy" data-mt="slides">Copy to slides…</button><button class="bp-del" data-mt="del">Delete</button></div>';
+    bar.hidden=false;
+    if(!document.body.classList.contains('bss-panel-open')){ document.body.classList.add('bss-panel-open'); fitSlide(); }
+    bar.querySelectorAll('[data-mt]').forEach(b=>b.addEventListener('click',()=>{ if(b.dataset.mt==='del')deleteSelected(); else openCopySlides(); }));
+    return;
+  }
   let h='';
   if(o.type==='text'){
     h+='<div class="bp-title">Text</div>';
@@ -1129,16 +1207,16 @@ async function applyCopyTo(){
 /* Copy the SELECTED text box onto other slides in this same deck (repeating
    headers/footers). Each target gets an independent clone. */
 function slideTitleAt(i){ const m=((DECK[i]&&DECK[i].html)||'').match(/<h2[^>]*>([^<]*)<\/h2>/); return m?m[1].trim():('Slide '+(i+1)); }
-function openCopySlides(){ const o=_selObj(); if(!o)return; const m=$('#bssSlidesModal');   /* any overlay type: text, shape, image */
+function openCopySlides(){ if(!_msel.size)return; const m=$('#bssSlidesModal');   /* any overlay type(s) — single or multi-selection */
   $('#csList').innerHTML=DECK.map((d,i)=> i===state.idx ? '' : '<label class="cm-item"><input type="checkbox" value="'+i+'"> '+(i+1)+'. '+esc(slideTitleAt(i))+'</label>').join('');
   $('#csAll').checked=false; m.hidden=false;
 }
-function applyCopySlides(){ const o=_selObj(); const m=$('#bssSlidesModal');
-  if(!o){ m.hidden=true; return; }
+function applyCopySlides(){ const list=_selObjs(); const m=$('#bssSlidesModal');
+  if(!list.length){ m.hidden=true; return; }
   const idxs=Array.from($('#csList').querySelectorAll('input:checked')).map(i=>+i.value);
-  idxs.forEach(i=>{ const key=DECK[i].key; if(!key)return; const clone=JSON.parse(JSON.stringify(o)); clone.id=_nid(); (OVL[key]||(OVL[key]=[])).push(clone); });
+  idxs.forEach(i=>{ const key=DECK[i].key; if(!key)return; list.forEach(o=>{ const clone=JSON.parse(JSON.stringify(o)); clone.id=_nid(); (OVL[key]||(OVL[key]=[])).push(clone); }); });
   m.hidden=true;
-  if(idxs.length){ renderOverlays(); commit(); const what=o.type==='text'?'text box':o.type==='image'?'image':'shape'; alert('Copied this '+what+' to '+idxs.length+' slide'+(idxs.length===1?'':'s')+'.'); }
+  if(idxs.length){ renderOverlays(); commit(); const what=list.length>1?(list.length+' items'):(list[0].type==='text'?'text box':list[0].type==='image'?'image':'shape'); alert('Copied '+(list.length>1?'these ':'this ')+what+' to '+idxs.length+' slide'+(idxs.length===1?'':'s')+'.'); }
 }
 function setupEditor(){
   $('#bssCopyTo').addEventListener('click',openCopyModal);
@@ -1195,8 +1273,8 @@ function setupEditor(){
        handled entirely by the 'paste' listener. */
     else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='c' && !inField){
       const sel=window.getSelection&&window.getSelection(); if(sel&&String(sel).length) return;   /* copying actual text → native */
-      const o=_selObj(); if(!o) return;
-      _clip={ o:JSON.parse(JSON.stringify(o)), key:curKey() };
+      const list=_selObjs(); if(!list.length) return;
+      _clip={ os:JSON.parse(JSON.stringify(list)), key:curKey() };
     } });
   /* system-clipboard bridge: internal overlay copies travel as a custom data
      type; anything else (text copied OUTSIDE the tool) pastes in as a NEW
@@ -1205,9 +1283,9 @@ function setupEditor(){
     if(!EDIT) return; const t=e.target;
     if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||(t.classList&&t.classList.contains('editing')))) return;
     const sel=window.getSelection&&window.getSelection(); if(sel&&String(sel).length) return;
-    const o=_selObj(); if(!o||!e.clipboardData) return;
-    e.clipboardData.setData('application/x-bss-overlay', JSON.stringify({o:o,key:curKey()}));
-    e.clipboardData.setData('text/plain','[Buying/Selling '+o.type+' — paste inside the slides tool]');
+    const list=_selObjs(); if(!list.length||!e.clipboardData) return;
+    e.clipboardData.setData('application/x-bss-overlay', JSON.stringify({os:list,key:curKey()}));
+    e.clipboardData.setData('text/plain','[Buying/Selling '+(list.length>1?(list.length+' overlays'):list[0].type)+' — paste inside the slides tool]');
     e.preventDefault();
   });
   document.addEventListener('paste',e=>{
@@ -1219,10 +1297,10 @@ function setupEditor(){
       return;
     }
     const ovl=e.clipboardData.getData('application/x-bss-overlay');
-    if(ovl){ e.preventDefault(); try{ const c0=JSON.parse(ovl); _pasteOverlay(c0.o,c0.key); }catch(err){ if(_clip)_pasteOverlay(_clip.o,_clip.key); } return; }
+    if(ovl){ e.preventDefault(); try{ const c0=JSON.parse(ovl); _pasteOverlays(c0.os||[c0.o],c0.key); }catch(err){ if(_clip)_pasteOverlays(_clip.os||[_clip.o],_clip.key); } return; }
     const txt=e.clipboardData.getData('text/plain');
     if(txt&&txt.trim()){ e.preventDefault(); _pasteTextOverlay(txt); return; }
-    if(_clip){ e.preventDefault(); _pasteOverlay(_clip.o,_clip.key); }   /* in-memory fallback */
+    if(_clip){ e.preventDefault(); _pasteOverlays(_clip.os||[_clip.o],_clip.key); }   /* in-memory fallback */
   });
 }
 
