@@ -3710,7 +3710,19 @@ document.addEventListener('keydown', (ev) => {
          which made offline accurate but online wrong. One location prompt per
          user per site; deny → IP fallback still paints weather. */
       var loc=null;
-      try{ loc=await geoloc(); }catch(e){}
+      /* Reuse the last known coordinates for 12h — most hub opens then make NO
+         geolocation call at all (no prompt, no address-bar chip). When a fresh
+         fix IS needed, wait 5s first: at cold browser start the profile's
+         saved permission grants hydrate a moment after launch, so asking
+         immediately re-prompts even though the site is allowed (Van's verified
+         workaround 2026-07-18, built in — weather paints from cache meanwhile). */
+      try{ var c2=JSON.parse(localStorage.getItem(CK)||'null');
+        if(c2&&c2.ts&&c2.lat!=null&&(Date.now()-c2.ts)<43200000) loc={lat:c2.lat,lon:c2.lon,city:c2.city||''};
+      }catch(e){}
+      if(!loc){
+        await new Promise(function(r){setTimeout(r,5000);});
+        try{ loc=await geoloc(); }catch(e){}
+      }
       if(!loc){ try{ var g=await fetch('https://ipwho.is/').then(function(r){return r.json();});
            if(g&&g.success!==false&&g.latitude!=null) loc={lat:g.latitude,lon:g.longitude,city:g.city||''}; }catch(e){} }
       if(!loc) return;
@@ -3722,7 +3734,7 @@ document.addEventListener('keydown', (ev) => {
         var u='https://api.open-meteo.com/v1/forecast?latitude='+loc.lat+'&longitude='+loc.lon+'&current=temperature_2m,weather_code';
         var m=await fetch(u).then(function(r){return r.json();});
         if(!m||!m.current) return;
-        var w={temp:m.current.temperature_2m,code:m.current.weather_code,city:loc.city||'',ts:Date.now()};
+        var w={temp:m.current.temperature_2m,code:m.current.weather_code,city:loc.city||'',lat:loc.lat,lon:loc.lon,ts:Date.now()};
         try{localStorage.setItem(CK,JSON.stringify(w));}catch(e){}
         paint(w);
       }catch(e){/* stays hidden */}
