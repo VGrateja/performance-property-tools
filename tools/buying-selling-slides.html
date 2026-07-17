@@ -92,6 +92,7 @@ body{margin:0;font-family:'Figtree','DM Sans',sans-serif;background:var(--bg,#0b
 .bss-stub .src{font-size:14px;background:rgba(0,160,180,.14);color:var(--bss-cyan);padding:4px 12px;border-radius:20px;font-weight:700}
 /* native report chart area */
 .bss-chart{flex:1;min-height:0;margin-top:4px;position:relative}
+.bss-chartpanel{padding:4px}   /* median entry slides — transparent (chart sits on the slide background; Van 2026-07-17) */
 .bss-chartload{display:flex;align-items:center;justify-content:center;height:100%;color:var(--bss-mut);font-size:16px}
 .bss-img{flex:1;min-height:0;margin-top:4px;display:flex;align-items:center;justify-content:center;position:relative}
 .bss-imgup{flex:1;min-height:0;margin-top:4px;display:flex;align-items:center;justify-content:center;position:relative}
@@ -222,6 +223,7 @@ body.bss-present .bss-presd{display:flex}
       <button class="bss-btn" data-add="shape">+ Shape</button>
       <button class="bss-btn" data-add="image">+ Image</button>
       <button class="bss-btn" data-add="page">+ Page</button>
+      <button class="bss-btn" id="bssEntry" title="This region's market-entry data: year, entry MHP/MUP, thesis % — feeds the median-price slides' red entry line and the {entry_*}/{thesis}/growth tokens">Entry…</button>
       <button class="bss-btn" id="bssCopyTo" title="Copy this deck's layout (text/shapes/images/backgrounds/pages) to other regions">⧉ Copy to…</button>
     </span>
     <input type="file" id="bssImgIn" accept="image/*" hidden>
@@ -241,6 +243,17 @@ body.bss-present .bss-presd{display:flex}
 <!-- selected-overlay mini toolbar + background popover (edit mode) -->
 <div class="bss-selbar" id="bssSelBar" hidden></div>
 <div class="bss-ctx" id="bssCtx" hidden><button data-c="copy">Copy</button><button data-c="slides">Copy to slides…</button><button data-c="del">Delete</button></div>
+<div class="bss-modal" id="bssEntryModal" hidden>
+  <div class="bss-modal-card" style="max-width:380px">
+    <div class="bp-title">Market entry — <span id="emRegion"></span></div>
+    <p class="cm-note">Per-region constants (stored once, mode-independent): when Performance Property entered this market, at what median prices, and the growth thesis. They power the red entry line on the median slides and the tokens {entry_year} {entry_mhp} {entry_mup} {thesis} {mhp_growth} {mup_growth}.</p>
+    <label class="bp-l">Entry year</label><input class="bp-num" id="emYear" placeholder="2015" style="width:100%">
+    <label class="bp-l">Entry median HOUSE price ($)</label><input class="bp-num" id="emMhp" placeholder="430000" style="width:100%">
+    <label class="bp-l">Entry median UNIT price ($)</label><input class="bp-num" id="emMup" placeholder="—" style="width:100%">
+    <label class="bp-l">Thesis growth (%)</label><input class="bp-num" id="emThesis" placeholder="60" style="width:100%">
+    <div class="cm-actions"><span class="grow"></span><button class="bss-btn" data-em="cancel">Cancel</button><button class="bss-btn primary" data-em="save">Save</button></div>
+  </div>
+</div>
 <div class="bss-modal" id="bssCopyModal" hidden>
   <div class="bss-modal-card">
     <div class="bp-title">Copy this deck's edits to…</div>
@@ -516,6 +529,85 @@ async function mountRanking(slideEl, slug){
     +(latest.v<avg?'A higher position than usual — often a sign the market is nearing a cyclical peak.':'Around or below its long-run standing.')+'</p>';
 }
 function chartSlide(kicker,title){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="bss-chart"></div></div>'); }
+/* Headless chart slide — no built-in heading/rule; Van authors the title +
+   disclaimer via overlays (same treatment as slides 1-3). Headroom matches
+   slide 3 so the authored header sits identically across pages. bottomPad
+   reserves space for a narrative text overlay under the chart. */
+function chartSlideBare(bottomPad){ return chrome('<div class="pad" style="padding:128px 48px '+(bottomPad||30)+'px"><div class="bss-chart bss-chartpanel"></div></div>'); }   /* 48px sides = measured from the sample (chart spans nearly edge-to-edge) */
+
+/* ── Market-entry data + live median prices (median-price slides + tokens) ──
+   ENTRY  = per-region constants stored ONCE in reports_state row
+            'bss-<slug>-entry' {year, mhp, mup, thesis} — mode-independent and
+            deliberately outside the deck payloads so layout copies can never
+            clobber a region's own entry data.
+   PRICES = latest medians live from the Forge report feed (auto-updates as
+            Forge publishes). */
+let ENTRY=null, PRICES=null;
+async function loadEntryAndPrices(){
+  ENTRY=null; PRICES=null;
+  try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
+  try{
+    await whenChartsReady();
+    const payload=await getFeed(state.slug);
+    if(payload&&window.ForgeReportAdapter){
+      const raw=window.ForgeReportAdapter.forgeRegionToFeed(payload,state.slug);
+      const H=_orAlign(raw.year,raw.medianHousePrice), U=_orAlign(raw.year,raw.medianUnitPrice);
+      PRICES={ mhp:H.values.length?H.values[H.values.length-1]:null, mup:U.values.length?U.values[U.values.length-1]:null };
+    }
+  }catch(e){}
+}
+function _fmtMoney(v){ return (v==null||!isFinite(v))?'—':('$'+Math.round(v).toLocaleString()); }
+function _fmtGrowth(cur,ent){ return (cur&&ent&&isFinite(cur)&&isFinite(ent))?(Math.round((cur/ent-1)*100)+'%'):'—'; }
+
+/* Median-price slide with the market-entry story (sample deck look): single
+   smooth teal series, NO growth/correction bands, NO crisis markers; a red
+   vertical bar at the entry year labelled with the (stored) entry price; the
+   live latest price labelled at the end of the curve. kind 'h'|'u'. */
+function mountMedianEntry(el,slug,kind){ const host=el.querySelector('.bss-chart'); if(host) _mountMedianEntry(host,slug,kind); }
+async function _mountMedianEntry(host,slug,kind){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const payload=await getFeed(slug);
+  if(!payload){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
+  let years=[],vals=[];
+  try{ const raw=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug);
+    const A=_orAlign(raw.year, kind==='u'?raw.medianUnitPrice:raw.medianHousePrice); years=A.years; vals=A.values; }catch(e){}
+  if(!years.length){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  const name=(DB.meta[slug]&&DB.meta[slug].name)||slug;
+  const seriesName=(kind==='u'?'Unit':'House')+' Median Price';
+  const entName='Performance Property enters '+name;
+  const ent=ENTRY||{}, eYear=parseInt(ent.year,10), ePrice=Number(kind==='u'?ent.mup:ent.mhp);
+  const eIdx=Number.isFinite(eYear)?years.indexOf(eYear):-1;
+  const cur=vals[vals.length-1];
+  /* markPoint coords use CATEGORY INDICES (year numbers would be read as indices and land off-plot — same trap as the markLine) */
+  const marks=[{ coord:[years.length-1,cur], value:_fmtMoney(cur) }];
+  if(eIdx>=0&&isFinite(ePrice)&&ePrice>0) marks.push({ coord:[eIdx,Number(ePrice)], value:_fmtMoney(ePrice) });
+  const series=[
+    /* legend chip only — the actual red line is a markLine so it spans the full
+       plot height WITHOUT inflating the y-axis (a data bar was pushing the axis
+       up a tick and then not reaching the new top) */
+    { name:entName, type:'bar', data:[], itemStyle:{color:'#E72347'} },
+    { name:seriesName, type:'line', data:vals, smooth:true, symbol:'none', z:2,
+      lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
+      markPoint:{ symbol:'circle', symbolSize:1, label:{show:true,position:'top',distance:8,fontWeight:700,color:'#222',fontSize:13}, data:marks },   /* labels centred above their data point */
+      markLine:(eIdx>=0)?{ silent:true, symbol:'none', label:{show:false},
+        lineStyle:{color:'#E72347',width:9,type:'solid'}, data:[{xAxis:eIdx}], z:1 }:undefined }   /* xAxis takes the CATEGORY INDEX — a year number would be read as an index and land off-plot */
+  ];
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'line'}, confine:true,
+      valueFormatter:function(v){ return (v==null)?'—':('$'+Math.round(v).toLocaleString()); } },
+    legend:{ top:2, itemWidth:12, itemHeight:12, icon:'rect', textStyle:{color:'#333',fontSize:11,fontWeight:700}, data:[entName,seriesName] },
+    grid:{left:58,right:28,top:40,bottom:40},   /* measured against the sheet chart: plot ≈ x110-1200, y172-564 in slide px */
+    xAxis:{ type:'category', data:years, axisLabel:{rotate:90,color:'#444',fontSize:10}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', splitNumber:10, axisLabel:{color:'#444',fontSize:10,formatter:function(v){return '$'+v.toLocaleString();}}, splitLine:{lineStyle:{color:'#e8e8e8'}} },
+    series:series };
+  host.innerHTML=''; const box=document.createElement('div'); box.style.cssText='width:100%;height:100%'; host.appendChild(box);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
+  }); });
+}
 function narrSlide(kicker,title,cls){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="'+cls+'" style="flex:1"></div></div>'); }
 function mountChart(slideEl, slug, recipeKey){ const host=slideEl.querySelector('.bss-chart'); if(host) renderReportChart(host, slug, recipeKey); }
 function mountRatio(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderRatioChart(host, slug); }
@@ -590,7 +682,7 @@ const SLIDE_DEFS = [
   { render: slideTitle },
   { render: slideTitle },   /* slide 2 blanked (was head('Timing','Market Positions Clock')) — Van authors it via overlays, like slide 1 */
   { render: c=>chrome('<div class="pad" style="padding:128px 80px 30px"><div class="bss-img"></div></div>'), mount:(el,c)=>mountAutoClock(el) },   /* slide 3: heading/rule stripped (Van authors via overlays); slim margins so the LIVE clock spans nearly full width, ~105px headroom for the title/disclaimer */
-  { render: c=>chartSlide('Value','Median House Price'), mount:(el,c)=>mountChart(el,c.slug,'p3') },
+  { render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'h') },   /* slide 4 Median HOUSE Price: entry-story chart (red entry line, live endpoint); bottom space for the narrative overlay */
   { render: c=>narrSlide('Supply & Demand','Vacancy Rate Forecast','bss-vrbody'), mount:(el,c)=>mountVRForecast(el,c.slug) },
   { render: c=>stub('Value','Replacement Cost','land + build cost input') },
   { render: c=>chartSlide('Affordability','Affordability Index'), mount:(el,c)=>mountChart(el,c.slug,'p16') },
@@ -602,6 +694,7 @@ const SLIDE_DEFS = [
   { render: slideForecastPop },
   { render: c=>slideSensitivity(c,'h') },
   { render: c=>slideSensitivity(c,'u') },
+  { render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'u') },   /* Median UNIT Price twin (appended last — inserting mid-deck would shift every slide's saved overlays) */
 ];
 
 /* ── render + nav ── */
@@ -645,6 +738,7 @@ async function loadDeckState(){
   OVL={}; BGS={}; CUSTOM=[]; _sel=null; _hist=[]; _hi=-1;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region',edKey()).maybeSingle();
     const p=(data&&data.payload)||{}; OVL=p.overlays||{}; BGS=p.bgs||{}; CUSTOM=Array.isArray(p.customPages)?p.customPages:[]; }catch(e){}
+  await loadEntryAndPrices();   /* region entry data + live medians — feeds the median slides + tokens */
   _hist=[JSON.stringify(_edPayload())]; _hi=0;
 }
 function saveDeckState(){ if(!_bsCanEdit) return; clearTimeout(_saveT); const key=edKey(), pl=JSON.parse(JSON.stringify(_edPayload()));
@@ -671,7 +765,13 @@ function _tokenMap(){
   const kind=state.mode==='buy'?'Buying':'Selling';
   const d=new Date(), mon=MONTHS[d.getMonth()];
   return { region:name, REGION:String(name).toUpperCase(), kind:kind, KIND:kind.toUpperCase(),
-    year:String(d.getFullYear()), month:mon, MONTH:String(mon).toUpperCase(), state:st, STATE:String(st).toUpperCase() };
+    year:String(d.getFullYear()), month:mon, MONTH:String(mon).toUpperCase(), state:st, STATE:String(st).toUpperCase(),
+    /* live from Forge (refresh on data updates) */
+    mhp:_fmtMoney(PRICES&&PRICES.mhp), mup:_fmtMoney(PRICES&&PRICES.mup),
+    mhp_growth:_fmtGrowth(PRICES&&PRICES.mhp, ENTRY&&ENTRY.mhp), mup_growth:_fmtGrowth(PRICES&&PRICES.mup, ENTRY&&ENTRY.mup),
+    /* permanent per-region entry data (Entry… button) */
+    entry_mhp:_fmtMoney(ENTRY&&ENTRY.mhp), entry_mup:_fmtMoney(ENTRY&&ENTRY.mup),
+    entry_year:(ENTRY&&ENTRY.year)?String(ENTRY.year):'—', thesis:(ENTRY&&ENTRY.thesis!=null&&ENTRY.thesis!=='')?ENTRY.thesis+'%':'—' };
 }
 function resolveTokens(s){ if(!s || s.indexOf('{')<0) return s; const map=_tokenMap(); return s.replace(/\{(\w+)\}/g,(mm,k)=> (map[k]!=null?map[k]:mm)); }
 /* Tokens are STORED as literal placeholders ({region}, {year}, …) and only
@@ -756,6 +856,21 @@ function deleteSelected(){ const l=_curList(); if(!l||!_sel)return; const i=l.fi
 const _nid=()=>'o'+Math.random().toString(36).slice(2,9);
 function _add(o){ const l=_curList(); if(!l)return; l.push(o); renderOverlays(); selectOverlay(o.id); commit(); }
 function copyOverlay(){ const l=_curList(), o=_selObj(); if(!l||!o)return; const c=JSON.parse(JSON.stringify(o)); c.id=_nid(); c.x=(o.x||0)+24; c.y=(o.y||0)+24; l.push(c); renderOverlays(); selectOverlay(c.id); commit(); }
+/* paste a copied overlay onto the CURRENT slide (offset when it's the same
+   slide it came from, so the clone doesn't stack invisibly) */
+function _pasteOverlay(o,fromKey){ const l=_curList(); if(!l||!o)return; const c=JSON.parse(JSON.stringify(o)); c.id=_nid();
+  if(curKey()===fromKey){ c.x=(c.x||0)+24; c.y=(c.y||0)+24; }
+  l.push(c); renderOverlays(); selectOverlay(c.id); commit(); }
+/* paste EXTERNAL text (copied outside the tool) as a new editable text overlay.
+   Plain text only — foreign fonts/styles are stripped; newlines become <br>.
+   Ink color adapts to the slide background so it never lands invisible. */
+function _bgIsLight(){ const bg=BGS[curKey()]||''; const m=String(bg).match(/#([0-9a-fA-F]{6})/); if(!m) return false;
+  const n=parseInt(m[1],16), r=(n>>16)&255, g=(n>>8)&255, b=n&255; return (0.2126*r+0.7152*g+0.0722*b)>140; }
+function _pasteTextOverlay(txt){ const l=_curList(); if(!l)return;
+  const html=esc(String(txt).replace(/\r\n?/g,'\n').trim()).replace(/\n/g,'<br>');
+  const o={ id:_nid(), type:'text', x:150, y:150, w:640, html:html, fontSize:20,
+    fontFamily:"'Montserrat',sans-serif", color:_bgIsLight()?'#171B24':'#ffffff' };
+  l.push(o); renderOverlays(); selectOverlay(o.id); commit(); }
 function addText(){ _add({id:_nid(),type:'text',x:130,y:130,text:'New text',fontSize:34,color:'#ffffff',bold:false}); }
 /* Shapes render as inline SVG sized to the overlay box (viewBox = w×h,
    preserveAspectRatio="none"), stroke via non-scaling-stroke so it stays a
@@ -835,7 +950,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first). Tokens: {region} {REGION} {kind} {year} {month} {state}.</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first). Tokens: {region} {REGION} {kind} {year} {month} {state} · live: {mhp} {mup} {mhp_growth} {mup_growth} · entry: {entry_year} {entry_mhp} {entry_mup} {thesis}.</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
@@ -988,6 +1103,19 @@ function applyCopySlides(){ const o=_selObj(); const m=$('#bssSlidesModal');
 }
 function setupEditor(){
   $('#bssCopyTo').addEventListener('click',openCopyModal);
+  $('#bssEntry').addEventListener('click',()=>{ if(!_bsCanEdit)return; const m=$('#bssEntryModal');
+    $('#emRegion').textContent=(DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug;
+    $('#emYear').value=(ENTRY&&ENTRY.year)||''; $('#emMhp').value=(ENTRY&&ENTRY.mhp)||'';
+    $('#emMup').value=(ENTRY&&ENTRY.mup)||''; $('#emThesis').value=(ENTRY&&ENTRY.thesis!=null?ENTRY.thesis:'');
+    m.hidden=false; });
+  $('#bssEntryModal').addEventListener('click',async e=>{
+    if(e.target.id==='bssEntryModal'){ e.currentTarget.hidden=true; return; }
+    const b=e.target.closest('[data-em]'); if(!b)return;
+    if(b.dataset.em==='cancel'){ $('#bssEntryModal').hidden=true; return; }
+    const num=v=>{ v=String(v||'').replace(/[$,\s%]/g,''); return v===''?null:Number(v); };
+    const pl={ year:num($('#emYear').value), mhp:num($('#emMhp').value), mup:num($('#emMup').value), thesis:num($('#emThesis').value) };
+    try{ await window.sb.from('reports_state').upsert({region:'bss-'+state.slug+'-entry',payload:pl},{onConflict:'region'}); ENTRY=pl; }catch(e2){ alert('Save failed — are you signed in as dev/admin?'); }
+    $('#bssEntryModal').hidden=true; render(); });
   $('#csAll').addEventListener('change',e=>{ $('#csList').querySelectorAll('input').forEach(i=>i.checked=e.target.checked); });
   $('#bssSlidesModal').addEventListener('click',e=>{ if(e.target.id==='bssSlidesModal'){ $('#bssSlidesModal').hidden=true; return; } const b=e.target.closest('[data-cs]'); if(!b)return; if(b.dataset.cs==='cancel')$('#bssSlidesModal').hidden=true; else if(b.dataset.cs==='apply')applyCopySlides(); });
   $('#cmAll').addEventListener('change',e=>{ $('#cmList').querySelectorAll('input').forEach(i=>i.checked=e.target.checked); });
@@ -1021,22 +1149,42 @@ function setupEditor(){
     if((e.key==='Delete'||e.key==='Backspace') && _sel && !inField){ e.preventDefault(); deleteSelected(); }
     else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){ e.preventDefault(); e.shiftKey?redo():undo(); }
     else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){ e.preventDefault(); redo(); }
-    /* Ctrl+C / Ctrl+V — copy the SELECTED overlay, flip pages (arrows), paste.
-       Never hijacked while typing in a field/text box or when real text is
-       selected (native copy/paste keeps working there). Clipboard is in-memory,
-       so it survives page switches — and even region/mode switches. */
+    /* Ctrl+C — remember the SELECTED overlay in-memory; the document 'copy'
+       listener below also writes it to the SYSTEM clipboard (custom type), so
+       overlay-vs-external-text recency is resolved by the OS clipboard itself.
+       No preventDefault here — that would suppress the copy event. Paste is
+       handled entirely by the 'paste' listener. */
     else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='c' && !inField){
       const sel=window.getSelection&&window.getSelection(); if(sel&&String(sel).length) return;   /* copying actual text → native */
       const o=_selObj(); if(!o) return;
-      _clip={ o:JSON.parse(JSON.stringify(o)), key:curKey() }; e.preventDefault();
-    }
-    else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='v' && !inField){
-      if(!_clip) return; e.preventDefault();
-      const l=_curList(); if(!l) return;
-      const c=JSON.parse(JSON.stringify(_clip.o)); c.id=_nid();
-      if(curKey()===_clip.key){ c.x=(c.x||0)+24; c.y=(c.y||0)+24; }   /* same slide → offset so it doesn't stack invisibly */
-      l.push(c); renderOverlays(); selectOverlay(c.id); commit();
+      _clip={ o:JSON.parse(JSON.stringify(o)), key:curKey() };
     } });
+  /* system-clipboard bridge: internal overlay copies travel as a custom data
+     type; anything else (text copied OUTSIDE the tool) pastes in as a NEW
+     editable text overlay. */
+  document.addEventListener('copy',e=>{
+    if(!EDIT) return; const t=e.target;
+    if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||(t.classList&&t.classList.contains('editing')))) return;
+    const sel=window.getSelection&&window.getSelection(); if(sel&&String(sel).length) return;
+    const o=_selObj(); if(!o||!e.clipboardData) return;
+    e.clipboardData.setData('application/x-bss-overlay', JSON.stringify({o:o,key:curKey()}));
+    e.clipboardData.setData('text/plain','[Buying/Selling '+o.type+' — paste inside the slides tool]');
+    e.preventDefault();
+  });
+  document.addEventListener('paste',e=>{
+    if(!EDIT||!e.clipboardData) return; const t=e.target;
+    if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT')) return;   /* panel fields → native */
+    if(_edEl){   /* pasting INTO a text box → strip foreign formatting, insert as plain text at the caret (stays clean + editable) */
+      const txt=e.clipboardData.getData('text/plain'); if(!txt) return;
+      e.preventDefault(); try{ document.execCommand('insertText',false,txt); }catch(err){}
+      return;
+    }
+    const ovl=e.clipboardData.getData('application/x-bss-overlay');
+    if(ovl){ e.preventDefault(); try{ const c0=JSON.parse(ovl); _pasteOverlay(c0.o,c0.key); }catch(err){ if(_clip)_pasteOverlay(_clip.o,_clip.key); } return; }
+    const txt=e.clipboardData.getData('text/plain');
+    if(txt&&txt.trim()){ e.preventDefault(); _pasteTextOverlay(txt); return; }
+    if(_clip){ e.preventDefault(); _pasteOverlay(_clip.o,_clip.key); }   /* in-memory fallback */
+  });
 }
 
 /* ── wire up ── */
