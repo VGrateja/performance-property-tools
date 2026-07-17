@@ -146,10 +146,6 @@ table.mc-t{width:100%;border-collapse:collapse;font-size:13px}
 .mc-trendcard .sub{font-size:10.5px;color:var(--mc-mut);margin:2px 0 6px;min-height:14px}
 .mc-trend{height:238px}
 
-/* ── as-of month picker ── */
-.mc-asofsel{font:600 12.5px 'Montserrat',sans-serif;color:var(--mc-ink);background:var(--mc-solid);border:1px solid var(--mc-border-2);border-radius:10px;padding:9px 8px;width:158px;cursor:pointer}
-.mc-asofsel option{background:var(--mc-solid);color:var(--mc-ink)}
-
 /* ── present mode: full-screen client view, controls hidden ── */
 .mc-exit{display:none;position:fixed;top:14px;right:16px;z-index:60}
 body.mc-present .mc-exit{display:inline-flex}
@@ -182,7 +178,6 @@ body.mc-present .mc-cards{grid-template-columns:repeat(auto-fit,minmax(290px,1fr
     <span class="mc-pick" id="mcPicks"></span>
     <button class="mc-add" id="mcAdd">+ Add market</button>
     <span class="mc-right">
-      <select id="mcAsofSel" class="mc-asofsel" title="Demand-snapshot month"></select>
       <span class="mc-seg" id="mcType">
         <button data-t="h" class="on">Houses</button>
         <button data-t="u">Units</button>
@@ -260,7 +255,6 @@ const DASH='—';
 
 const state={ markets:['brisbane','melbourne'], type:'h', flip:false };
 let REG={}, RW={}, CFG=null, SNAP=null, CLOCK=null, TL=null, FEED={}, ENTRY={}, CAPS=new Set();
-let SNAPS=[], SNAP_CACHE={};   /* month-versioned demand-snapshot history (as-of compare) */
 let _profile=null;
 
 /* ── boot ── */
@@ -272,40 +266,29 @@ let _profile=null;
     $('#mcCards').innerHTML='<div class="mc-note">Market compare is available to Performance Property staff.</div>';
     $('#mcTable').innerHTML=''; $('#mcSens').innerHTML=''; $('#mcControls').hidden=true; return;
   }
-  const [reg,rw,cfg,snap,snaps,clock]=await Promise.all([
+  const [reg,rw,cfg,snap,clock]=await Promise.all([
     window.sb.from('rdp_regions').select('slug,name,state,cluster'),
     window.sb.from('rdp_runway').select('region_slug,payload'),
     window.sb.from('rdp_runway_config').select('key,value'),
     window.sb.from('forge_demand_snapshots').select('version,label,data').not('version','like','rvd-%').order('version',{ascending:false}).limit(1),
-    window.sb.from('forge_demand_snapshots').select('version,label').not('version','like','rvd-%').order('version',{ascending:false}).limit(24),
     window.sb.from('clock_state').select('payload').eq('id',1).maybeSingle(),
   ]);
   (reg.data||[]).forEach(r=>{ REG[r.slug]=r; if(r.cluster==='capital'&&r.slug!=='australia') CAPS.add(r.slug); });
   (rw.data||[]).forEach(r=>{ RW[r.region_slug]=r.payload||{}; });
   CFG=Object.fromEntries((cfg.data||[]).map(r=>[r.key,r.value]));
   SNAP=(snap.data&&snap.data[0])||null;
-  if(SNAP) SNAP_CACHE[SNAP.version]=SNAP;
-  SNAPS=snaps.data||[];
   CLOCK=(clock.data&&clock.data.payload)||null;
 
-  /* deep link: ?markets=a,b[,c]&type=h|u&flip=1&asof=YYYY-MM */
-  let asofQ=null;
+  /* deep link: ?markets=a,b[,c]&type=h|u&flip=1 */
   try{
     const q=new URLSearchParams(location.search);
     const mk=(q.get('markets')||'').split(',').map(s=>s.trim()).filter(s=>RW[s]);
     if(mk.length>=2) state.markets=mk.slice(0,3);
     if(q.get('type')==='u') state.type='u';
     if(q.get('flip')==='1') state.flip=true;
-    asofQ=q.get('asof');
   }catch(e){}
   state.markets=state.markets.filter(s=>RW[s]);
   if(state.markets.length<2){ const all=marketSlugs(); state.markets=[all[0],all[1]]; }
-  if(asofQ&&SNAPS.some(s=>s.version===asofQ)&&(!SNAP||SNAP.version!==asofQ)) await loadSnapshot(asofQ);
-
-  /* as-of month picker (options are static for the session) */
-  $('#mcAsofSel').innerHTML=SNAPS.map((s,i)=>
-    '<option value="'+esc(s.version)+'">'+(i===0?'Latest · ':'As of · ')+esc(s.label||s.version)+'</option>').join('');
-  if(SNAP) $('#mcAsofSel').value=SNAP.version;
 
   wireControls();
   await ensureFeeds(state.markets);
@@ -314,14 +297,6 @@ let _profile=null;
      fill in when ready */
   try{ if(window.PP_TL_ENGINE){ TL=await window.PP_TL_ENGINE.assembleTrafficLights(window.sb); renderCards(); } }catch(e){}
 })();
-
-async function loadSnapshot(version){
-  if(SNAP_CACHE[version]){ SNAP=SNAP_CACHE[version]; return; }
-  const {data}=await window.sb.from('forge_demand_snapshots').select('version,label,data').eq('version',version).limit(1);
-  if(data&&data[0]){ SNAP_CACHE[version]=data[0]; SNAP=data[0]; }
-}
-/* URL fragment for a non-latest snapshot month (empty when viewing latest) */
-function asofParam(){ return (SNAP&&SNAPS.length&&SNAP.version!==SNAPS[0].version)?'&asof='+SNAP.version:''; }
 
 function marketSlugs(){
   return Object.keys(RW).filter(s=>REG[s])
@@ -497,7 +472,7 @@ function renderAll(){ syncURL(); renderAsOf(); renderControls(); renderDir(); co
 
 function renderAsOf(){
   const bits=[];
-  if(SNAP) bits.push('Demand data · '+esc(SNAP.label||SNAP.version)+(asofParam()?' · historical':''));
+  if(SNAP) bits.push('Demand data · '+esc(SNAP.label||SNAP.version));
   const y=state.markets.length?latest(state.markets[0],'mp_'+T()).y:null;
   if(y) bits.push('Feed metrics · '+y);
   bits.push('Signals & clock · live');
@@ -779,7 +754,6 @@ function wireControls(){
     state.markets.push(next); await ensureFeeds([next]); renderAll();
   });
   $('#mcSwap').addEventListener('click',()=>{ state.flip=!state.flip; renderAll(); });
-  $('#mcAsofSel').addEventListener('change',async e=>{ await loadSnapshot(e.target.value); renderAll(); });
   /* present mode — fullscreen client view; ESC or the floating button exits */
   const exitPresent=()=>{ document.body.classList.remove('mc-present');
     if(document.fullscreenElement){ try{ document.exitFullscreen(); }catch(e){} }
@@ -793,7 +767,7 @@ function wireControls(){
   document.addEventListener('fullscreenchange',()=>{ if(!document.fullscreenElement) exitPresent(); });
   $('#mcPin').addEventListener('click',()=>{
     if(!window.PP_PINS){ alert('Pins unavailable.'); return; }
-    const url='tools/market-compare.html?markets='+state.markets.join(',')+'&type='+state.type+(state.flip?'&flip=1':'')+asofParam();
+    const url='tools/market-compare.html?markets='+state.markets.join(',')+'&type='+state.type+(state.flip?'&flip=1':'');
     const label='Compare: '+state.markets.map(nameOf).join(' vs ');
     if(PP_PINS.has(p=>p.url===url)){ flashPin('Already pinned'); return; }
     PP_PINS.add({ kind:'link', label:label, url:url, a1:'#7E8CF1', a2:'#233AE7',
@@ -803,7 +777,7 @@ function wireControls(){
 }
 function flashPin(t){ const b=$('#mcPin'); const old=b.innerHTML; b.innerHTML=esc(t); setTimeout(()=>{ b.innerHTML=old; },1500); }
 function syncURL(){
-  try{ history.replaceState(null,'','?markets='+state.markets.join(',')+'&type='+state.type+(state.flip?'&flip=1':'')+asofParam()); }catch(e){}
+  try{ history.replaceState(null,'','?markets='+state.markets.join(',')+'&type='+state.type+(state.flip?'&flip=1':'')); }catch(e){}
 }
 </script>
 </body>
