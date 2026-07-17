@@ -736,7 +736,7 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
           return { ok: true, message: 'Switched to ' + page + ' page' };
         }
         const hash = (target === 'main') ? '' : '#' + target;
-        window.location.href = '/index.html' + hash;
+        window.location.href = '/' + hash;
         return { ok: true, message: 'Returning to hub ' + page + ' page' };
       },
       openTool({ tool }) {

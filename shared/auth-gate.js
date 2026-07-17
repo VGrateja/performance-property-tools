@@ -43,7 +43,7 @@
     const path = window.location.pathname.replace(/[^/]+$/, '');
     const parts = path.split('/').filter(Boolean);
     const up = parts[parts.length - 1] === 'tools' ? '../' : './';
-    window.location.replace(up + 'index.html');
+    window.location.replace(up);
     throw new Error('auth-gate: not signed in, redirecting…');
   }
 

@@ -132,7 +132,7 @@
      cfg.section  key of SECTIONS (required) — sets accents + chip + glyph
      cfg.glyph    override glyph key or raw '<svg…>' markup
      cfg.a1/a2    override accents
-     cfg.backHref default '../index.html'
+     cfg.backHref default '../'
      cfg.backLabel default 'Desktop'
      cfg.actions  [{id, label, svg, primary, title, onClick}] — optional buttons
      cfg.wall     inject the scrimmed wallpaper div (default true)
@@ -159,7 +159,7 @@
         (a.svg || '') + (a.label ? '<span>' + esc(a.label) + '</span>' : '') + '</button>';
     }).join('');
     bar.innerHTML =
-      '<a class="ab-back" href="' + esc(cfg.backHref || '../index.html') + '"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>' + esc(cfg.backLabel || 'Desktop') + '</a>' +
+      '<a class="ab-back" href="' + esc(cfg.backHref || '../') + '"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>' + esc(cfg.backLabel || 'Desktop') + '</a>' +
       '<div class="ab-id">' +
         '<span class="ab-icon">' + glyph + '</span>' +
         '<span class="nm">' + esc(cfg.name || doc.title) + '</span>' +
