@@ -187,6 +187,24 @@ body.bss-landing-open .bss-land-glow{display:block;}
 .bss-toc-item .num{flex:0 0 auto;font-weight:700;font-size:11px;color:rgba(92,200,224,0.95);font-variant-numeric:tabular-nums;}
 [data-theme="light"] .bss-toc-item.active .num{color:#086470;}
 .bss-toc-item .lbl{overflow:hidden;text-overflow:ellipsis;}
+/* edit-mode TOC features (ported from the reports editor): drag-to-reorder
+   with cyan drop stripes, hover ✎/× actions, inline rename */
+.bss-toc-item{position:relative;cursor:pointer;user-select:none;}
+body.bss-edit .bss-toc-item{cursor:grab;}
+body.bss-edit .bss-toc-item:active{cursor:grabbing;}
+.bss-toc-item.dragging{opacity:0.4;}
+.bss-toc-item.drag-over-top::before{content:"";position:absolute;left:0;right:0;top:-2px;height:2px;background:#5cc8e0;border-radius:1px;}
+.bss-toc-item.drag-over-bot::after{content:"";position:absolute;left:0;right:0;bottom:-2px;height:2px;background:#5cc8e0;border-radius:1px;}
+.bss-toc-actions{display:none;position:absolute;top:50%;right:4px;transform:translateY(-50%);flex-direction:row;gap:2px;background:rgba(20,35,50,0.92);padding:2px;border-radius:4px;}
+body.bss-edit .bss-toc-item:hover .bss-toc-actions{display:flex;}
+.bss-toc-item.renaming .bss-toc-actions{display:none!important;}
+.bss-toc-actions button{background:rgba(255,255,255,0.10);border:none;color:#fff;width:18px;height:18px;border-radius:3px;cursor:pointer;font-size:11px;line-height:1;padding:0;}
+.bss-toc-actions button:hover{background:rgba(92,200,224,0.55);}
+.bss-toc-actions button.danger:hover{background:rgba(231,98,98,0.7);}
+[data-theme="light"] .bss-toc-actions{background:rgba(255,255,255,0.95);}
+[data-theme="light"] .bss-toc-actions button{background:rgba(23,27,36,0.08);color:#1a2236;}
+.bss-toc-item .lbl.editing{background:rgba(92,200,224,0.18);border:1px solid #5cc8e0;border-radius:3px;padding:1px 4px;outline:none;overflow:visible;}
+
 /* two-phase collapse cascade (copied from the reports TOC): .items-hidden
    fades rows out with per-row transition-delay set in JS (bottom→top on hide,
    top→bottom on show); .collapsed shrinks the column after/before the fade */
@@ -1026,8 +1044,16 @@ const SLIDE_DEFS = [
 /* ── render + nav ── */
 function ctx(){ const m=DB.meta[state.slug]; return { slug:state.slug, name:(m&&m.name)||state.slug, mode:state.mode }; }
 function buildDeck(){ const c=ctx();
-  DECK = SLIDE_DEFS.map((d,i)=>({ html:d.render(c), mount:d.mount, c:c, key:'f'+i, t:d.t }));
-  (CUSTOM||[]).forEach((id,n)=>DECK.push({ html:chrome('<div class="pad"></div>'), key:id, custom:true, t:'Custom page '+(n+1) }));   // +Page blank slides
+  let list = SLIDE_DEFS.map((d,i)=>({ html:d.render(c), mount:d.mount, c:c, key:'f'+i, t:TITLES['f'+i]||d.t }));
+  (CUSTOM||[]).forEach((id,n)=>list.push({ html:chrome('<div class="pad"></div>'), key:id, custom:true, t:TITLES[id]||('Custom page '+(n+1)) }));   // +Page blank slides
+  /* apply the saved drag-reorder: listed keys first (in that order), any
+     unlisted keys keep their default position at the end */
+  if(ORDER&&ORDER.length){
+    const by={}; list.forEach(d=>{ by[d.key]=d; });
+    const seen=new Set(ORDER);
+    list=ORDER.map(k=>by[k]).filter(Boolean).concat(list.filter(d=>!seen.has(d.key)));
+  }
+  DECK=list;
   if(state.idx>=DECK.length)state.idx=DECK.length-1; if(state.idx<0)state.idx=0;
 }
 function fitSlide(){
@@ -1109,11 +1135,119 @@ function _watchScroll(){
 function renderToc(){
   const toc=$('#bssToc'); if(!toc) return;
   toc.hidden = $('#bssLanding').classList.contains('show');
-  $('#bssTocList').innerHTML = DECK.map((d,i)=>
-    '<button class="bss-toc-item'+(i===state.idx?' active':'')+'" data-i="'+i+'">'
-    +'<span class="num">'+(i+1)+'</span><span class="lbl">'+esc(d.t||('Slide '+(i+1)))+'</span></button>').join('');
+  const wrap=$('#bssTocList'); wrap.innerHTML='';
+  DECK.forEach((d,i)=>{
+    const row=document.createElement('div');
+    row.className='bss-toc-item'+(i===state.idx?' active':'');
+    row.dataset.i=i; row.dataset.key=d.key;
+    row.setAttribute('role','button'); row.tabIndex=0;
+    row.innerHTML='<span class="num">'+(i+1)+'</span><span class="lbl">'+esc(d.t||('Slide '+(i+1)))+'</span>'
+      +(_bsCanEdit?('<span class="bss-toc-actions">'
+        +'<button class="ren" type="button" title="Rename this slide">✎</button>'
+        +(d.custom?'<button class="del danger" type="button" title="Delete this page">×</button>':'')
+        +'</span>'):'');
+    if(_bsCanEdit){
+      row.draggable=true;
+      row.querySelector('.ren').addEventListener('click',ev=>{ ev.stopPropagation(); renameSlide(row,d.key); });
+      const del=row.querySelector('.del');
+      if(del) del.addEventListener('click',ev=>{ ev.stopPropagation(); deleteCustomPage(d.key); });
+      row.addEventListener('dragstart',tocDragStart); row.addEventListener('dragend',tocDragEnd);
+      row.addEventListener('dragenter',tocDragEnter); row.addEventListener('dragover',tocDragOver);
+      row.addEventListener('dragleave',tocDragLeave); row.addEventListener('drop',tocDragDrop);
+    }
+    wrap.appendChild(row);
+  });
 }
-$('#bssTocList').addEventListener('click',e=>{ const b=e.target.closest('.bss-toc-item'); if(b) go(+b.dataset.i); });
+$('#bssTocList').addEventListener('click',e=>{
+  if(e.target.closest('.bss-toc-actions')) return;
+  const b=e.target.closest('.bss-toc-item');
+  if(b&&!b.classList.contains('renaming')) go(+b.dataset.i);
+});
+
+/* ═══ TOC drag-to-reorder (ported from the reports editor) — edit mode only.
+   The saved ORDER travels in the deck payload, so Copy-to replicates it. ═══ */
+let _tocDragSrc=null;
+function tocDragStart(ev){
+  if(!EDIT){ ev.preventDefault(); return; }
+  _tocDragSrc=this;
+  this.classList.add('dragging');
+  ev.dataTransfer.effectAllowed='move';
+  try{ ev.dataTransfer.setData('text/plain',this.dataset.key); }catch(_){}
+}
+function tocDragEnd(){
+  this.classList.remove('dragging');
+  document.querySelectorAll('.bss-toc-item').forEach(it=>it.classList.remove('drag-over-top','drag-over-bot'));
+  _tocDragSrc=null;
+}
+function tocDragEnter(ev){ if(!_tocDragSrc||_tocDragSrc===this) return; ev.preventDefault(); }
+function tocDragOver(ev){
+  if(!_tocDragSrc||_tocDragSrc===this) return;
+  ev.preventDefault(); ev.dataTransfer.dropEffect='move';
+  const rect=this.getBoundingClientRect();
+  const before=(ev.clientY-rect.top)<rect.height/2;
+  this.classList.toggle('drag-over-top',before);
+  this.classList.toggle('drag-over-bot',!before);
+}
+function tocDragLeave(){ this.classList.remove('drag-over-top','drag-over-bot'); }
+function tocDragDrop(ev){
+  ev.preventDefault();
+  if(!_tocDragSrc||_tocDragSrc===this) return;
+  const rect=this.getBoundingClientRect();
+  const before=(ev.clientY-rect.top)<rect.height/2;
+  if(before) this.parentNode.insertBefore(_tocDragSrc,this);
+  else this.parentNode.insertBefore(_tocDragSrc,this.nextSibling);
+  const activeKey=(DECK[state.idx]||{}).key;
+  ORDER=Array.from(document.querySelectorAll('#bssTocList .bss-toc-item')).map(r=>r.dataset.key);
+  commit();
+  buildDeck();
+  state.idx=Math.max(0,DECK.findIndex(d=>d.key===activeKey));
+  render();
+}
+
+/* ═══ Inline rename (ported from the reports editor) ═══ */
+function renameSlide(row,key){
+  if(!EDIT) return;
+  const lbl=row.querySelector('.lbl'); if(!lbl) return;
+  const original=lbl.textContent;
+  let cancelled=false;
+  row.classList.add('renaming');
+  lbl.classList.add('editing');
+  lbl.contentEditable='true';
+  lbl.focus();
+  const range=document.createRange(); range.selectNodeContents(lbl);
+  const sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  const onKeydown=ev=>{
+    ev.stopPropagation();
+    if(ev.key==='Enter'){ ev.preventDefault(); lbl.blur(); }
+    else if(ev.key==='Escape'){ ev.preventDefault(); cancelled=true; lbl.blur(); }
+  };
+  const onBlur=()=>{
+    lbl.removeEventListener('keydown',onKeydown);
+    lbl.removeEventListener('blur',onBlur);
+    lbl.contentEditable='false';
+    lbl.classList.remove('editing');
+    row.classList.remove('renaming');
+    if(cancelled){ lbl.textContent=original; return; }
+    const next=(lbl.textContent||'').trim();
+    if(!next||next===original){ lbl.textContent=original; return; }
+    TITLES[key]=next;
+    commit();
+    buildDeck(); render();
+  };
+  lbl.addEventListener('keydown',onKeydown);
+  lbl.addEventListener('blur',onBlur);
+}
+
+/* ═══ Delete a custom +Page (template slides can't be deleted) ═══ */
+function deleteCustomPage(key){
+  if(!EDIT) return;
+  if(!confirm('Delete this page and everything on it?')) return;
+  CUSTOM=CUSTOM.filter(id=>id!==key);
+  delete OVL[key]; delete BGS[key]; delete TITLES[key];
+  ORDER=ORDER.filter(k=>k!==key);
+  commit();
+  buildDeck(); render();
+}
 /* two-phase cascading toggle — same timings as the reports TOC */
 (function setupBssTocToggle(){
   const btn=$('#bssTocToggle'), toc=$('#bssToc');
@@ -1156,20 +1290,21 @@ document.addEventListener('fullscreenchange',()=>{ if(!document.fullscreenElemen
    the report editor's UX. Coordinates are 1280×720 slide px; drag/resize divide
    screen deltas by _slideScale so they track the cursor under transform:scale.
    State per deck (region+mode) in reports_state under 'bss-<slug>-<mode>'. */
+let ORDER=[], TITLES={};   /* per-deck slide order (keys) + custom TOC labels — persisted with the layout */
 function edKey(){ return 'bss-'+state.slug+'-'+state.mode; }
 function curKey(){ const d=DECK[state.idx]; return d?d.key:null; }
-function _edPayload(){ return { overlays:OVL, bgs:BGS, customPages:CUSTOM }; }
+function _edPayload(){ return { overlays:OVL, bgs:BGS, customPages:CUSTOM, order:ORDER, titles:TITLES }; }
 async function loadDeckState(){
   OVL={}; BGS={}; CUSTOM=[]; _sel=null; _msel=new Set(); _hist=[]; _hi=-1;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region',edKey()).maybeSingle();
-    const p=(data&&data.payload)||{}; OVL=p.overlays||{}; BGS=p.bgs||{}; CUSTOM=Array.isArray(p.customPages)?p.customPages:[]; }catch(e){}
+    const p=(data&&data.payload)||{}; OVL=p.overlays||{}; BGS=p.bgs||{}; CUSTOM=Array.isArray(p.customPages)?p.customPages:[]; ORDER=Array.isArray(p.order)?p.order:[]; TITLES=p.titles||{}; }catch(e){}
   await loadEntryAndPrices();   /* region entry data + live medians — feeds the median slides + tokens */
   _hist=[JSON.stringify(_edPayload())]; _hi=0;
 }
 function saveDeckState(){ if(!_bsCanEdit) return; clearTimeout(_saveT); const key=edKey(), pl=JSON.parse(JSON.stringify(_edPayload()));
   _saveT=setTimeout(async()=>{ try{ await window.sb.from('reports_state').upsert({region:key,payload:pl},{onConflict:'region'}); }catch(e){} },700); }
 function commit(){ _hist=_hist.slice(0,_hi+1); _hist.push(JSON.stringify(_edPayload())); if(_hist.length>60)_hist.shift(); _hi=_hist.length-1; saveDeckState(); }
-function _applyHist(){ const s=_hist[_hi]; if(!s)return; const p=JSON.parse(s); OVL=p.overlays||{}; BGS=p.bgs||{}; CUSTOM=p.customPages||[]; _sel=null; _msel=new Set(); buildDeck(); render(); saveDeckState(); }
+function _applyHist(){ const s=_hist[_hi]; if(!s)return; const p=JSON.parse(s); OVL=p.overlays||{}; BGS=p.bgs||{}; CUSTOM=p.customPages||[]; ORDER=Array.isArray(p.order)?p.order:[]; TITLES=p.titles||{}; _sel=null; _msel=new Set(); buildDeck(); render(); saveDeckState(); }
 function undo(){ if(_hi>0){ _hi--; _applyHist(); } }
 function redo(){ if(_hi<_hist.length-1){ _hi++; _applyHist(); } }
 
