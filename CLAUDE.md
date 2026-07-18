@@ -137,6 +137,15 @@ docs/                   BUG.md, CADENCE.md, ONLINE_REPORTS_RENDERER.md, etc.
 
 - **Answer short and direct.** Keep explanations simple and to the point —
   no long or complicated write-ups unless the user asks for detail.
+- **Challenge before building (Van's standing request, 2026-07-18).** When a
+  requested approach has a materially better alternative, a hidden cost, a
+  security/perf/data risk, or conflicts with an earlier decision or rule —
+  say so FIRST in a short paragraph (what you'd do instead and why), then
+  follow Van's call without sulking. Don't rubber-stamp; equally, don't
+  relitigate settled decisions (check history first) and don't nag on
+  trivial/reversible choices — just build those. A one-line "going with X;
+  considered Y, rejected because Z" is often enough. For a deep on-demand
+  stress-test of a specific decision, Van can run `/challenge-decision`.
 - **Never `git push` without an explicit go-ahead** ("push it" / "ship it" /
   "go live"). Local commits are fine on request, but the user previews changes
   in their offline copy first. Don't auto-commit or auto-prompt to ship after
