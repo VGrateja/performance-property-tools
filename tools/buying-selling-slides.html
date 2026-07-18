@@ -300,7 +300,7 @@ body.bss-present .bss-slidewrap.cur{display:block;}
 .bss-stub .src{font-size:14px;background:rgba(0,160,180,.14);color:var(--bss-cyan);padding:4px 12px;border-radius:20px;font-weight:700}
 /* native report chart area */
 .bss-chart{flex:1;min-height:0;margin-top:4px;position:relative}
-.bss-chartpanel{padding:4px}   /* median entry slides — transparent (chart sits on the slide background; Van 2026-07-17) */
+.bss-chartpanel{padding:4px;position:relative}   /* median entry slides — transparent (chart sits on the slide background; Van 2026-07-17) */
 .bss-chartload{display:flex;align-items:center;justify-content:center;height:100%;color:var(--bss-mut);font-size:16px}
 .bss-img{flex:1;min-height:0;margin-top:4px;display:flex;align-items:center;justify-content:center;position:relative}
 .bss-imgup{flex:1;min-height:0;margin-top:4px;display:flex;align-items:center;justify-content:center;position:relative}
@@ -785,19 +785,41 @@ async function renderRatioChart(host, slug){
 const RANK={};
 async function getRanking(slug){ if(RANK[slug]!==undefined) return RANK[slug]; try{ const {data}=await window.sb.from('rdp_raw_series').select('period,value').eq('metric','ranking_h').eq('region_slug',slug).order('period'); RANK[slug]=(data||[]).map(r=>({y:+String(r.period).slice(0,4),v:Math.round(r.value)})).filter(r=>r.v>0); }catch(e){ RANK[slug]=null; } return RANK[slug]; }
 const _ord=n=>{ const s=['th','st','nd','rd'],v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); };
+/* Page 9: Ranking as Most Expensive — sample-deck look (Van 2026-07-18):
+   single teal smooth line of the yearly house-price ranking (2005→) with
+   integer labels, 0–30 axis in 5s, vertical year labels. The black stat card
+   + title/narrative/disclaimer are authored via overlays; the card's numbers
+   come from the live ranking tokens {rank_current} {rank_average} {rank_years}
+   (hydrated in loadEntryAndPrices, resolved in _tokenMap). */
 async function mountRanking(slideEl, slug){
-  const host=slideEl.querySelector('.bss-rankbody'); if(!host) return;
+  const host=slideEl.querySelector('.bss-chart'); if(!host) return;
   host.innerHTML='<div class="bss-chartload">Loading…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
   const rows=await getRanking(slug);
   if(!rows||!rows.length){ host.innerHTML='<div class="bss-chartload">No ranking data for this region.</div>'; return; }
-  const latest=rows[rows.length-1], last20=rows.filter(r=>r.y>latest.y-20);
-  const avg=Math.round(last20.reduce((a,b)=>a+b.v,0)/last20.length);
-  const name=(DB.meta[slug]&&DB.meta[slug].name)||slug;
-  host.innerHTML='<div class="bss-cards">'
-    +'<div class="bss-card"><div class="k">Current ranking</div><div class="v">'+_ord(latest.v)+'</div><div class="k" style="margin-top:4px">most expensive region · '+latest.y+'</div></div>'
-    +'<div class="bss-card"><div class="k">'+Math.min(20,last20.length)+'-year average</div><div class="v">'+_ord(avg)+'</div></div></div>'
-    +'<p class="body" style="margin-top:24px">'+esc(name)+' currently ranks as the <span class="num">'+_ord(latest.v)+'</span> most expensive region we research, against a long-run average of <span class="num">'+_ord(avg)+'</span>. '
-    +(latest.v<avg?'A higher position than usual — often a sign the market is nearing a cyclical peak.':'Around or below its long-run standing.')+'</p>';
+  const data=rows.filter(r=>r.y>=2005);   /* the sample starts 2005 */
+  if(!data.length){ host.innerHTML='<div class="bss-chartload">No ranking data for this region.</div>'; return; }
+  const years=data.map(r=>r.y), vals=data.map(r=>r.v);
+  const axMax=Math.max(30, Math.ceil(Math.max.apply(null,vals)/5)*5);
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', confine:true, valueFormatter:v=>(v==null?'—':_ord(Math.round(v))) },
+    grid:{left:44,right:28,top:36,bottom:46},
+    xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:9,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', min:0, max:axMax, interval:5, axisLabel:{color:'#444',fontSize:9}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
+    series:[{ name:'Ranking', type:'line', data:vals, smooth:true, symbol:'circle', symbolSize:1,
+      lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
+      label:{show:true,position:'top',fontSize:9,color:'#555',formatter:p=>String(p.value)} }] };
+  host.innerHTML='';
+  /* the black stat card is AUTHORED as a text overlay (tokens {rank_current}
+     {rank_average} {rank_years} resolve live) — not injected here */
+  const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
+  host.appendChild(box);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    if(!box.isConnected||!window.echarts) return;
+    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
+  }); });
 }
 function chartSlide(kicker,title){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="bss-chart"></div></div>'); }
 /* Headless chart slide — no built-in heading/rule; Van authors the title +
@@ -813,10 +835,13 @@ function chartSlideBare(bottomPad){ return chrome('<div class="pad" style="paddi
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null;
+let ENTRY=null, PRICES=null, RANKINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null;
+  ENTRY=null; PRICES=null; RANKINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
+  try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
+    if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
+      RANKINFO={ cur:latest.v, avg:Math.round(win.reduce((a,b)=>a+b.v,0)/win.length), years:win.length }; } }catch(e){}
   try{
     await whenChartsReady();
     const payload=await getFeed(state.slug);
@@ -1077,7 +1102,7 @@ const SLIDE_DEFS = [
   { t:'Replacement Cost', render: c=>stub('Value','Replacement Cost','land + build cost input') },
   { t:'Affordability Index', render: c=>chartSlideBare(112), mount:(el,c)=>mountAfford(el,c.slug) }   /* Affordability Index — custom sample-look chart (black labelled bars + teal line, one axis, red entry) */,
   { t:'Price to Income', render: c=>chartSlideBare(112), mount:(el,c)=>mountP2I(el,c.slug) }   /* Price to Income — custom sample-look chart (teal house + black unit, labelled) */,
-  { t:'Most Expensive Ranking', render: c=>narrSlide('Value','Ranking as Most Expensive','bss-rankbody'), mount:(el,c)=>mountRanking(el,c.slug) },
+  { t:'Most Expensive Ranking', render: c=>chartSlideBare(112), mount:(el,c)=>mountRanking(el,c.slug) }   /* Ranking — custom sample-look chart (teal line + live black stat card) */,
   { t:'% of Peer City', render: c=>chartSlideBare(112), mount:(el,c)=>mountRatio(el,c.slug) }   /* % of peer — headless */,
   { t:'Stock v Days on Market', render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p5') }   /* SOM v ADOM — headless */,
   { t:'Vacancy v Rent', render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p10') }   /* VR v Rent — headless */,
@@ -1379,7 +1404,10 @@ function _tokenMap(){
     mhp_growth:_fmtGrowth(PRICES&&PRICES.mhp, ENTRY&&ENTRY.mhp), mup_growth:_fmtGrowth(PRICES&&PRICES.mup, ENTRY&&ENTRY.mup),
     /* permanent per-region entry data (Entry… button) */
     entry_mhp:_fmtMoney(ENTRY&&ENTRY.mhp), entry_mup:_fmtMoney(ENTRY&&ENTRY.mup),
-    entry_year:(ENTRY&&ENTRY.year)?String(ENTRY.year):'—', thesis:(ENTRY&&ENTRY.thesis!=null&&ENTRY.thesis!=='')?ENTRY.thesis+'%':'—' };
+    entry_year:(ENTRY&&ENTRY.year)?String(ENTRY.year):'—', thesis:(ENTRY&&ENTRY.thesis!=null&&ENTRY.thesis!=='')?ENTRY.thesis+'%':'—',
+    /* live most-expensive ranking (rdp ranking_h — same series as the ranking slide) */
+    rank_current:RANKINFO?_ord(RANKINFO.cur):'—', rank_average:RANKINFO?_ord(RANKINFO.avg):'—',
+    rank_years:RANKINFO?String(RANKINFO.years):'—' };
 }
 function resolveTokens(s){ if(!s || s.indexOf('{')<0) return s; const map=_tokenMap(); return s.replace(/\{(\w+)\}/g,(mm,k)=> (map[k]!=null?map[k]:mm)); }
 /* Tokens are STORED as literal placeholders ({region}, {year}, …) and only
@@ -1585,7 +1613,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first). Tokens: {region} {REGION} {kind} {year} {month} {state} · live: {mhp} {mup} {mhp_growth} {mup_growth} · entry: {entry_year} {entry_mhp} {entry_mup} {thesis}.</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first). Tokens: {region} {REGION} {kind} {year} {month} {state} · live: {mhp} {mup} {mhp_growth} {mup_growth} · entry: {entry_year} {entry_mhp} {entry_mup} {thesis} · ranking: {rank_current} {rank_average} {rank_years}.</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
