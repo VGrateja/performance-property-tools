@@ -896,76 +896,11 @@ function showMain() {
 window.showMain = showMain;
 
 /* ═══ HUB WIDGETS ═══
-   Four "At a glance" stats on the hub. Resolution rules:
-     - hs-history (Months of History): pure calendar math from
-       Jan 2025 to current month, inclusive. Counts up automatically
-       on the 1st of every month.
-     - hs-edition (Current Edition): "Q{1-4} · YYYY" derived from
-       the current calendar quarter. Flips Jan / Apr / Jul / Oct.
-     - hs-latest (Latest Data): latest month displayed by the
-       Runway tool. Cached to localStorage as ppa-runway-latest
-       whenever Runway loads. Falls back to "previous month name"
-       calendar formula if no cache yet (close enough on first visit).
-     - hs-regions (Regions Tracked): live count from Demand Score's
-       markets array. Cached to localStorage as ppa-demand-markets
-       whenever Demand Score loads. Falls back to PP_HUB_STATS.regions
-       (still hand-maintained as the safety net).
-   */
-const _MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-function _hubMonthsOfHistory() {
-  /* Inclusive count from Jan 2025 (the start of our published data
-     coverage) to the current month. Apr 2026 → 16, May 2026 → 17. */
-  const start = new Date(2025, 0, 1);
-  const now = new Date();
-  return (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth()) + 1;
-}
-function _hubCurrentEdition() {
-  const now = new Date();
-  const q = Math.floor(now.getMonth() / 3) + 1;   // 0-2→Q1, 3-5→Q2, 6-8→Q3, 9-11→Q4
-  return 'Q' + q + ' · ' + now.getFullYear();
-}
-function _hubLatestMonthFromCacheOrFormula() {
-  /* Prefer the cached Runway latest month; fall back to "previous
-     month" since Runway data typically lags the calendar by ~1
-     month (May data lands in June, etc.). */
-  try {
-    const cached = localStorage.getItem('ppa-runway-latest');
-    if (cached) return cached;
-  } catch (e) {}
-  const d = new Date();
-  d.setMonth(d.getMonth() - 1);
-  return _MONTH_NAMES[d.getMonth()] + ' ' + d.getFullYear();
-}
-function _hubRegionsFromCacheOrFallback(fallback) {
-  try {
-    const cached = parseInt(localStorage.getItem('ppa-demand-markets'), 10);
-    if (cached > 0) return cached;
-  } catch (e) {}
-  return (fallback != null) ? fallback : '—';
-}
-
+   The "At a glance" stat card (hs-* ids) was removed in the 2026-07 hub
+   redesign; its stats logic + the hand-maintained PP_HUB_STATS fallback
+   were deleted 2026-07-18. What remains is the identity pill's tier label. */
 function populateHubWidgets() {
   try {
-    const fallback = (typeof window !== 'undefined' && window.PP_HUB_STATS) || {};
-
-    /* Regions Tracked — live count from Demand Score, with the
-       PP_HUB_STATS hand-maintained number as the safety net. */
-    const regEl = document.getElementById('hs-regions');
-    if (regEl) regEl.textContent = _hubRegionsFromCacheOrFallback(fallback.regions);
-
-    /* Latest Data — cached from Runway (or calendar previous-month
-       fallback). */
-    const latestEl = document.getElementById('hs-latest');
-    if (latestEl) latestEl.textContent = _hubLatestMonthFromCacheOrFormula();
-
-    /* Months of History — calendar math, no cache needed. */
-    const histEl = document.getElementById('hs-history');
-    if (histEl) histEl.textContent = _hubMonthsOfHistory();
-
-    /* Current Edition — current calendar quarter, no cache needed. */
-    const editionEl = document.getElementById('hs-edition');
-    if (editionEl) editionEl.textContent = _hubCurrentEdition();
-
     const tierEl = document.getElementById('hubIdentityTier');
     if (tierEl) {
       const labels = {

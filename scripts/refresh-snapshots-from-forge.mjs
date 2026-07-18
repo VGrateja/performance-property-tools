@@ -36,7 +36,9 @@ for (const cl of ['capital', 'qld', 'nsw', 'vicwatas']) {
 const [{ data: no }, rdpNat, st, { data: arr }, { data: pyr }, { data: rv }] = await Promise.all([
   sb.from('forge_national_only').select('data').eq('id', 'latest').maybeSingle(),
   page(f => sb.from('rdp_raw_series').select('metric,period,value,freq').eq('region_slug', 'australia').in('freq', ['A', 'M', 'Q']).order('metric').order('period').range(f, f + 999)),
-  sb.from('rdp_raw_series').select('region_slug,metric,period,value').in('region_slug', ['st-nsw', 'st-vic', 'st-qld', 'st-sa', 'st-wa']).in('metric', ['nim', 'nom']).eq('freq', 'A'),
+  /* NB: the adapter re-checks r.freq==='A' — freq MUST be in the select or every
+     state row is silently skipped (national p25/p26 rendered empty in snapshots). */
+  sb.from('rdp_raw_series').select('region_slug,metric,period,value,freq').in('region_slug', ['st-nsw', 'st-vic', 'st-qld', 'st-sa', 'st-wa']).in('metric', ['nim', 'nom']).eq('freq', 'A'),
   sb.from('forge_arrears').select('data').eq('id', 'latest').maybeSingle(),
   sb.from('forge_population_pyramid').select('data').eq('id', 'latest').maybeSingle(),
   sb.from('forge_cotality').select('data').eq('id', 'rentvacancy').maybeSingle(),
