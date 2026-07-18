@@ -199,15 +199,52 @@
 
 <script>
 /* ═══════════════════════════════════════════════════════════════════════
-   Results tool — PROTOTYPE. Two areas: Results Publications (a PDF library)
-   and the Appraisal Hub (monthly property list → appraisals → masterfile
-   summary). Persistence is localStorage for now so the whole flow is
-   clickable offline; a `store` seam keeps the swap to Supabase clean later.
+   Results tool. Two areas: Results Publications (a report library) and the
+   Appraisal Hub (monthly property list → appraisals → masterfile summary).
+   Persistence: localStorage is the instant cache; Supabase `results_state`
+   (mig 080, one row per key, staff-shared) is the cross-device copy —
+   reads paint from cache then hydrate from cloud, writes hit the cache
+   synchronously and debounce an upsert per key.
    ═══════════════════════════════════════════════════════════════════════ */
 const store = {
   get(key, def){ try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch(_){ return def; } },
-  set(key, val){ try { localStorage.setItem(key, JSON.stringify(val)); } catch(_){} },
+  set(key, val){
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch(_){}
+    _cloudQueue(key, val);
+  },
 };
+/* localStorage key → results_state row key */
+const CLOUD_KEYS = { 'ppa-results-publications': 'publications', 'ppa-results-appraisals': 'appraisals' };
+const _cloudTimers = {};
+function _cloudQueue(key, val){
+  const row = CLOUD_KEYS[key]; if (!row) return;
+  clearTimeout(_cloudTimers[row]);
+  _cloudTimers[row] = setTimeout(async () => {
+    try {
+      if (!window.sb) return;                       /* not ready yet — the next edit retries */
+      const { error } = await window.sb.from('results_state')
+        .upsert({ key: row, payload: val }, { onConflict: 'key' });
+      if (error) console.warn('results cloud save (' + row + '):', error.message || error);
+    } catch (e) { console.warn('results cloud save failed:', e); }
+  }, 800);
+}
+/* boot hydrate: cloud copy wins over the local cache, then repaint the open view */
+async function _cloudHydrate(){
+  for (let i = 0; i < 80 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
+  if (!window.sb) return;
+  try {
+    const { data, error } = await window.sb.from('results_state').select('key,payload');
+    if (error || !data){ if (error) console.warn('results cloud load:', error.message || error); return; }
+    for (const r of data){
+      if (r.key === 'publications' && Array.isArray(r.payload)){ pubs = r.payload; try { localStorage.setItem(PUB_KEY, JSON.stringify(pubs)); } catch(_){} }
+      if (r.key === 'appraisals' && r.payload && r.payload.months){ appr = r.payload; try { localStorage.setItem(APPR_KEY, JSON.stringify(appr)); } catch(_){} }
+    }
+    if (curMonth && !appr.months[curMonth]) curMonth = '';
+    const vis = VIEWS.find(v => { const el = document.getElementById('rs' + v.charAt(0).toUpperCase() + v.slice(1)); return el && !el.hidden; });
+    if (vis === 'publications') renderPubs();
+    if (vis === 'appraisal') renderAppraisal();
+  } catch (e) { console.warn('results cloud load failed:', e); }
+}
 const PUB_KEY = 'ppa-results-publications';
 const APPR_KEY = 'ppa-results-appraisals';
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -379,6 +416,7 @@ function delMonth(){ if (!curMonth || !confirm('Delete ' + monthLabel(curMonth) 
 document.querySelectorAll('.rs-modal').forEach(m => m.addEventListener('click', e => { if (e.target === m) m.classList.remove('show'); }));
 
 showView('home');
+_cloudHydrate();
 </script>
 
 <script src="../shared/supabase-client.js?v=fe17cd23"></script>
