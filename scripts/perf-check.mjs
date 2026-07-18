@@ -17,6 +17,9 @@ const IMGS = [
   { path: '/assets/Reports/global-coverpage.jpg', w: 1920 },
   { path: '/assets/Reports/market-position-clock.png', w: 1280 },
   { path: '/assets/Reports/white-circle-logo.png', w: 1280 },
+  { path: '/assets/Reports/Contact-Us-Background.jpg', w: 1920 },
+  { path: '/assets/Reports/client-case-studies.jpg', w: 1920 },
+  { path: '/assets/leaderboard-scrabble.jpg', w: 828 },
 ];
 
 const kb = n => n ? (n / 1024).toFixed(n > 1024 * 512 ? 0 : 1) + ' KB' : '—';

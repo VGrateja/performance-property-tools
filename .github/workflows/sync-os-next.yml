@@ -1,0 +1,58 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# sync-os-next.yml — daily auto-sync of the Vercel environment branch.
+#
+# Merges main → os-next every evening so the Vercel deployment never drifts
+# behind Pages even when nobody remembers to sync. After a real sync it waits
+# for Vercel's auto-deploy, then runs the perf gate (scripts/perf-check.mjs):
+# HTML must be byte-identical across hosts and images lighter on Vercel — a
+# regression fails the job, which emails the repo owner.
+#
+# No-op (green, skips the gate) when os-next already contains main.
+# Manual run: Actions → "Sync os-next with main" → Run workflow.
+# Retire this workflow at DNS cutover (Vercel prod branch flips to main then).
+# ═══════════════════════════════════════════════════════════════════════════
+name: Sync os-next with main
+
+on:
+  schedule:
+    - cron: '0 14 * * *'   # 14:00 UTC = 10pm Manila / midnight AEST — end of day
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-os-next
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: os-next
+          fetch-depth: 0
+
+      - name: Merge main into os-next
+        id: merge
+        run: |
+          git fetch origin main
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git merge-base --is-ancestor origin/main HEAD; then
+            echo "os-next already contains main — nothing to sync."
+            echo "synced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git merge origin/main -m "Auto-sync os-next with main (daily)"
+          git push origin os-next
+          echo "synced=true" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the Vercel deploy
+        if: steps.merge.outputs.synced == 'true'
+        run: sleep 90
+
+      - name: Perf gate — Pages vs Vercel (on-par-or-lighter)
+        if: steps.merge.outputs.synced == 'true'
+        run: node scripts/perf-check.mjs
