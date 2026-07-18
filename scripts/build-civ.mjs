@@ -1,5 +1,10 @@
 // =============================================================================
 // build-civ.mjs  —  L2 mart builder for rdp_civ (Current Investment Value).
+// RETIRED 2026-07-18 (audit): rdp_civ has ZERO readers — no tool queries it
+// (only the architecture-map diagram names it). Same write-only dead-end
+// pattern as the retired rdp_demand_score. Kept for reference; do not
+// schedule. Revive only if a consumer actually wants the CIV mart.
+//
 //
 // civ = the latest-year snapshot of each region: current median price (H/U),
 // current rent (H/U), gross yield (H/U). Derived from rdp_report_feed's most
