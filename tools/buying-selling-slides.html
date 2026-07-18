@@ -893,15 +893,16 @@ function chartSlideBare(bottomPad){ return chrome('<div class="pad" style="paddi
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
     if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
       RANKINFO={ cur:latest.v, avg:Math.round(win.reduce((a,b)=>a+b.v,0)/win.length), years:win.length }; } }catch(e){}
   try{ const D=await computeRatio(state.slug);   /* same series as the %-of-peer slide (cached) */
     if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
+  try{ VRINFO=await getVRAdjusted(state.slug); }catch(e){}   /* same figures as the slide-5 cards (cached) */
   try{
     await whenChartsReady();
     const payload=await getFeed(state.slug);
@@ -1019,19 +1020,20 @@ async function mountMarketClock(slideEl, slug){
    new households + new properties over the next year, and the forecast VR. */
 const VRF={};
 async function getVRF(slug){ if(VRF[slug]!==undefined) return VRF[slug]; try{ const {data}=await window.sb.from('rdp_vr_forecast').select('payload').eq('region_slug',slug).maybeSingle(); VRF[slug]=(data&&data.payload)||null; }catch(e){ VRF[slug]=null; } return VRF[slug]; }
-async function mountVRForecast(slideEl, slug){
-  const host=slideEl.querySelector('.bss-vrbody'); if(!host) return;
-  host.innerHTML='<div class="bss-chartload">Loading…</div>';
+/* Buying/Selling shows the COTALITY vacancy rate (Van 2026-07-17); the
+   pipeline's currentVR is the SQM weekly feed (payload.vrSource 'forge_sqm')
+   which belongs to the Demand Score Dashboard only. Current VR here = latest
+   rdp 'vacancy_rate' — NOTE its source tag reads 'sqm' but that's a legacy
+   sheet-header label: the recent values ARE Van's monthly Cotality upload
+   (rentvacancy vacHouse → sync-cotality-medians). Forecasted VR keeps the
+   pipeline's supply/demand DELTA re-based onto the Cotality figure (workbook
+   floor 0.1%). Falls back to the pipeline numbers if unavailable.
+   Shared by the slide-5 cards AND the {vr_*} tokens. */
+const VRADJ={};
+async function getVRAdjusted(slug){
+  if(VRADJ[slug]!==undefined) return VRADJ[slug];
   const p0=await getVRF(slug);
-  if(!p0){ host.innerHTML='<div class="bss-chartload">No VR forecast in Forge for this region.</div>'; return; }
-  /* Buying/Selling shows the COTALITY vacancy rate (Van 2026-07-17); the
-     pipeline's currentVR is the SQM weekly feed (payload.vrSource 'forge_sqm')
-     which belongs to the Demand Score Dashboard only. Current VR here = latest
-     rdp 'vacancy_rate' — NOTE its source tag reads 'sqm' but that's a legacy
-     sheet-header label: the recent values ARE Van's monthly Cotality upload
-     (rentvacancy vacHouse → sync-cotality-medians). Forecasted VR keeps the
-     pipeline's supply/demand DELTA re-based onto the Cotality figure (workbook
-     floor 0.1%). Falls back to the pipeline numbers if unavailable. */
+  if(!p0) return (VRADJ[slug]=null);
   const p={...p0};
   try{
     const {data:cv}=await window.sb.from('rdp_raw_series').select('value,period')
@@ -1043,7 +1045,15 @@ async function mountVRForecast(slideEl, slug){
       p.forecastVR=Math.max(0.001, p0.forecastVR+(cot-p0.currentVR));
     }
   }catch(e){}
-  const pctv=v=>v==null?'—':(v*100).toFixed(2)+'%', intv=v=>v==null?'—':Math.round(v).toLocaleString();
+  return (VRADJ[slug]=p);
+}
+const _vrPct=v=>v==null?'—':(v*100).toFixed(2)+'%', _vrInt=v=>v==null?'—':Math.round(v).toLocaleString();
+async function mountVRForecast(slideEl, slug){
+  const host=slideEl.querySelector('.bss-vrbody'); if(!host) return;
+  host.innerHTML='<div class="bss-chartload">Loading…</div>';
+  const p=await getVRAdjusted(slug);
+  if(!p){ host.innerHTML='<div class="bss-chartload">No VR forecast in Forge for this region.</div>'; return; }
+  const pctv=_vrPct, intv=_vrInt;
   const easing = (p.forecastVR!=null && p.currentVR!=null && p.forecastVR>=p.currentVR);
   host.innerHTML='<div class="bss-vrcards">'
     +'<div class="bss-vrcard"><div class="k">Current VR</div><div class="v">'+pctv(p.currentVR)+'</div></div>'
@@ -1472,7 +1482,11 @@ function _tokenMap(){
     peer:RATIOINFO?RATIOINFO.peer:'—', PEER:RATIOINFO?String(RATIOINFO.peer).toUpperCase():'—',
     peer_avg:RATIOINFO?RATIOINFO.avg+'%':'—',
     peer_current:RATIOINFO?RATIOINFO.cur+'%':'—',
-    peer_value:RATIOINFO?(RATIOINFO.cur>RATIOINFO.avg?'less value':RATIOINFO.cur<RATIOINFO.avg?'more value':'similar value'):'—' };
+    peer_value:RATIOINFO?(RATIOINFO.cur>RATIOINFO.avg?'less value':RATIOINFO.cur<RATIOINFO.avg?'more value':'similar value'):'—',
+    /* live VR forecast (same figures as the slide-5 cards) */
+    vr_current:_vrPct(VRINFO&&VRINFO.currentVR), vr_forecast:_vrPct(VRINFO&&VRINFO.forecastVR),
+    vr_households:_vrInt(VRINFO&&VRINFO.expNewHouseholds), vr_properties:_vrInt(VRINFO&&VRINFO.expProperties),
+    vr_trend:(VRINFO&&VRINFO.currentVR!=null&&VRINFO.forecastVR!=null)?(VRINFO.forecastVR>=VRINFO.currentVR?'easing':'tightening'):'—' };
 }
 function resolveTokens(s){ if(!s || s.indexOf('{')<0) return s; const map=_tokenMap(); return s.replace(/\{(\w+)\}/g,(mm,k)=> (map[k]!=null?map[k]:mm)); }
 /* Tokens are STORED as literal placeholders ({region}, {year}, …) and only
@@ -1678,7 +1692,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
