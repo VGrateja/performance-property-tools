@@ -720,7 +720,6 @@ const OR_RECIPES = {
   p3: function(raw){ const H=_orAlign(raw.year,raw.medianHousePrice), U=_orAlign(raw.year,raw.medianUnitPrice); if(!H.years.length||!U.years.length)return null; const start=Math.max(H.years[0],U.years[0]), end=Math.min(H.years[H.years.length-1],U.years[U.years.length-1]); const years=[],house=[],unit=[]; for(let y=start;y<=end;y++){ const hi=H.years.indexOf(y),ui=U.years.indexOf(y); if(hi<0||ui<0)continue; years.push(y); house.push(H.values[hi]); unit.push(U.values[ui]); } if(!years.length)return null; return {module:'median-price',grid:{bottom:55},data:{medianPrice:{years,house,unit},crises:OR_CRISES,bands:OR_BANDS}}; },
   p16: function(raw){ const a=_orAlignCols(raw.year,[raw.aiHouseStateIncome,raw.houseYoY],{mode:'strict'}); if(!a.keys.length)return null; const pct=v=>Math.round(v*1e4)/100; return {module:'affordability-house',data:{affordabilityHouse:{years:a.keys,ai:a.cols[0].map(pct),priceMovement:a.cols[1].map(pct)}}}; },
   p9: function(raw){ const d=_orSeries(raw.year,[{name:'House',col:raw.priceToIncomeHouse},{name:'Unit',col:raw.priceToIncomeUnit}]); if(!d.x.length)return null; return {module:'price-to-income',data:{priceToIncome:{years:d.x.map(Number),house:d.series[0].values,unit:d.series[1].values},crises:OR_CRISES}}; },
-  p5: function(raw){ const yArr=raw.year||[],somH=raw.somHouse||[],somU=raw.somUnit||[],adomH=raw.adomHouse||[]; const years=[],house=[],unit=[],dom=[]; const len=Math.min(yArr.length,somH.length,somU.length,adomH.length); for(let i=0;i<len;i++){ if(somH[i]===''||somH[i]==null)continue; if(somU[i]===''||somU[i]==null)continue; if(adomH[i]===''||adomH[i]==null)continue; years.push(parseInt(yArr[i],10)); house.push(Math.round(Number(somH[i]))); unit.push(Math.round(Number(somU[i]))); dom.push(Math.round(Number(adomH[i]))); } if(!years.length)return null; return {module:'stock-dom',data:{stockVsDom:{years,house,unit,dom}}}; },
   p10: function(raw){ const a=_orAlignCols(raw.year,[raw.medianRentHouse,raw.medianRentUnit,raw.vacancyRate],{mode:'strict'}); const i0=a.keys.findIndex(y=>y>=2000); if(i0<0)return null; return {module:'vacancy-vs-rent',data:{vacancyVsRent:{years:a.keys.slice(i0),rentHouse:a.cols[0].slice(i0).map(v=>Math.round(v)),rentUnit:a.cols[1].slice(i0).map(v=>Math.round(v)),vacancy:a.cols[2].slice(i0).map(v=>Math.round(v*1e4)/100)}}}; },
 };
 const FEED = {};   // per-region rdp_report_feed payload cache
@@ -829,6 +828,70 @@ async function renderRatioChart(host, slug){
       { name:D.pName, type:'bar', data:D.peerH, itemStyle:{color:'#c6c6c6'} },
       { name:'% Difference', type:'line', yAxisIndex:1, data:D.diff, smooth:true, showSymbol:false, symbol:'circle', symbolSize:1,
         lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'} } ] };
+  host.innerHTML='';
+  const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
+  host.appendChild(box);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    if(!box.isConnected||!window.echarts) return;
+    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
+  }); });
+}
+/* Page 11: Stock on Market v ADOM — sample-deck look (Van 2026-07-19):
+   House bars near-black + Unit bars grey with comma value labels above each
+   bar (left "Stock on Market" axis), smooth teal House-Days-on-Market line
+   with small point labels (right "Days on Market" axis), legend top center.
+   Data straight from the mart (rdp_raw_series: sqm som_h/som_u, corelogic
+   adom_h — one source tag each, all 36 regions) because the report adapter
+   deliberately CLIPS adomHouse to 2017 (STARTS rule for Online Reports) while
+   the sample shows the full ADOM history from 2010. Axis years = the stock
+   bars' span; the line is null-padded where ADOM has no year. */
+const SOMDOM={};
+async function getSomDom(slug){
+  if(SOMDOM[slug]!==undefined) return SOMDOM[slug];
+  try{
+    const q=(src,met)=>window.sb.from('rdp_raw_series').select('period,value').eq('source',src).eq('metric',met).eq('region_slug',slug).order('period');
+    const [h,u,d]=await Promise.all([q('sqm','som_h'),q('sqm','som_u'),q('corelogic','adom_h')]);
+    const toMap=r=>{ const m={}; ((r&&r.data)||[]).forEach(x=>{ const v=Number(x.value); if(isFinite(v)&&v>0) m[+String(x.period).slice(0,4)]=Math.round(v); }); return m; };
+    const H=toMap(h),U=toMap(u),D=toMap(d);
+    const years=Object.keys(H).map(Number).filter(y=>U[y]!=null).sort((a,b)=>a-b);
+    if(!years.length) return (SOMDOM[slug]=null);
+    SOMDOM[slug]={ years, house:years.map(y=>H[y]), unit:years.map(y=>U[y]), dom:years.map(y=>D[y]!=null?D[y]:null) };
+  }catch(e){ SOMDOM[slug]=null; }
+  return SOMDOM[slug];
+}
+function mountStockDom(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderStockDomChart(host, slug); }
+async function renderStockDomChart(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const D=await getSomDom(slug);
+  if(!D){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  const cm=v=>Number(v).toLocaleString();
+  const sMax=Math.max.apply(null,D.house.concat(D.unit));
+  const sStep=[500,1000,2000,2500,5000].find(s=>sMax/s<=9)||5000;
+  const sTop=Math.ceil((sMax*1.08)/sStep)*sStep;   /* headroom so bar labels clear the frame */
+  const dTop=Math.ceil((Math.max.apply(null,D.dom.filter(v=>v!=null))*1.15)/10)*10;
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
+      formatter:params=>{ return '<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.seriesType==='line'?(p.value==null?'—':p.value+' days'):cm(p.value))+'</b>').join('<br>'); } },
+    legend:{ top:2, left:'center', itemWidth:9, itemHeight:9, itemGap:14, textStyle:{fontSize:9,color:'#222'},
+      data:[{name:'House',icon:'rect'},{name:'Unit',icon:'rect'},{name:'House - Days on Market',icon:'circle'}] },
+    grid:{left:64,right:52,top:44,bottom:46},
+    xAxis:{ type:'category', data:D.years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:[
+      { type:'value', min:0, max:sTop, interval:sStep, axisLabel:{color:'#444',fontSize:9,formatter:cm}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+        name:'Stock on Market', nameLocation:'middle', nameGap:50, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
+      { type:'value', min:0, max:dTop, interval:10, axisLabel:{color:'#444',fontSize:9}, splitLine:{show:false},
+        name:'Days on Market', nameLocation:'middle', nameGap:38, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} } ],
+    series:[
+      { name:'House', type:'bar', data:D.house, itemStyle:{color:'#171B24'}, barGap:'10%', barCategoryGap:'35%',
+        label:{show:true,position:'top',fontSize:8,color:'#333',formatter:p=>cm(p.value)} },
+      { name:'Unit', type:'bar', data:D.unit, itemStyle:{color:'#c6c6c6'},
+        label:{show:true,position:'top',fontSize:8,color:'#555',formatter:p=>cm(p.value)} },
+      { name:'House - Days on Market', type:'line', yAxisIndex:1, data:D.dom, smooth:true, symbol:'circle', symbolSize:1,   /* labels attach to symbols — showSymbol:false would hide them, so keep invisible 1px dots */
+        lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
+        label:{show:true,position:'bottom',fontSize:8,color:'#333',textBorderColor:'#fff',textBorderWidth:2,formatter:p=>(p.value==null?'':String(p.value))} } ] };   /* white stroke keeps the day counts readable when they land on the black House bars */
   host.innerHTML='';
   const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
   host.appendChild(box);
@@ -1174,7 +1237,7 @@ const SLIDE_DEFS = [
   { t:'Price to Income', render: c=>chartSlideBare(112), mount:(el,c)=>mountP2I(el,c.slug) }   /* Price to Income — custom sample-look chart (teal house + black unit, labelled) */,
   { t:'Most Expensive Ranking', render: c=>chartSlideBare(112), mount:(el,c)=>mountRanking(el,c.slug) }   /* Ranking — custom sample-look chart (teal line + live black stat card) */,
   { t:'% of Peer City', render: c=>chartSlideBare(112), mount:(el,c)=>mountRatio(el,c.slug) }   /* % of peer — headless */,
-  { t:'Stock v Days on Market', render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p5') }   /* SOM v ADOM — headless */,
+  { t:'Stock v Days on Market', render: c=>chartSlideBare(112), mount:(el,c)=>mountStockDom(el,c.slug) }   /* SOM v ADOM — custom sample-look chart */,
   { t:'Vacancy v Rent', render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p10') }   /* VR v Rent — headless */,
   { t:'Forecasted Population', render: slideForecastPop },
   { t:'Sensitivity — Houses', render: c=>slideSensitivity(c,'h') },
@@ -1232,10 +1295,14 @@ function setActive(i){
   const pc=$('#bssPCount'); if(pc) pc.textContent=(i+1)+' / '+DECK.length;
   const bc=$('#bssBarCount'); if(bc) bc.textContent=(i+1)+' / '+DECK.length;
 }
+/* Jump-scroll to the active slide CENTERED in the viewport — block:'start'
+   parks the slide top under the fixed app bar and clips the title (Van
+   2026-07-19). */
+function _scrollToCur(smooth){ const w=document.querySelector('.bss-slidewrap.cur'); if(w) w.scrollIntoView({behavior:smooth?'smooth':'auto',block:'center'}); }
 function go(i){
   setActive(i);
   if(document.body.classList.contains('bss-present')){ fitSlide(); }
-  else { const w=document.querySelector('.bss-slidewrap.cur'); if(w) w.scrollIntoView({behavior:'smooth',block:'start'}); }
+  else { _scrollToCur(true); }
 }
 function rebuild(){ buildDeck(); render(); }
 /* ── loading overlay (reports mechanics: min-visible so it never flashes) ── */
@@ -1423,7 +1490,7 @@ function syncURL(){ try{ history.replaceState(null,'','?region='+state.slug+'&mo
 
 /* ── present mode ── */
 function enterPresent(){ document.body.classList.add('bss-present'); const el=document.querySelector('.bss-stage'); if(el.requestFullscreen)el.requestFullscreen().catch(()=>{}); fitSlide(); }
-function exitPresent(){ document.body.classList.remove('bss-present'); if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{}); fitSlide(); const w=document.querySelector('.bss-slidewrap.cur'); if(w) w.scrollIntoView({block:'start'}); }
+function exitPresent(){ document.body.classList.remove('bss-present'); if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{}); fitSlide(); _scrollToCur(false); }
 document.addEventListener('fullscreenchange',()=>{ if(!document.fullscreenElement) document.body.classList.remove('bss-present'); fitSlide(); });
 
 /* ───────────────────────── Slide editor ─────────────────────────
@@ -2103,9 +2170,7 @@ function switchRegion(dir){
   /* keep the CURRENT slide index — the point of the shortcut is comparing the
      same slide across regions */
   reloadDeck().then(()=>{
-    if(!document.body.classList.contains('bss-present')){
-      const w=document.querySelector('.bss-slidewrap.cur'); if(w) w.scrollIntoView({block:'start'});
-    }
+    if(!document.body.classList.contains('bss-present')) _scrollToCur(false);
   });
 }
 window.addEventListener('resize',fitSlide);
