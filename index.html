@@ -3692,41 +3692,45 @@ document.addEventListener('keydown', (ev) => {
       el.style.display='';
     }
     try{var c=JSON.parse(localStorage.getItem(CK)||'null'); if(c&&c.ts&&(Date.now()-c.ts)<7200000) paint(c);}catch(e){}
-    function geoloc(){ return new Promise(function(res){
+    /* NEVER-prompt precise location (Van 2026-07-18): resolve coordinates only
+       once the geolocation grant is VISIBLE — the Permissions API query never
+       asks. At cold browser start saved grants hydrate a few seconds after
+       launch (the cause of the every-reopen prompt, all browsers), so we watch
+       the state (onchange + 3s re-checks, up to 90s) and read silently the
+       moment it flips to granted. Never granted → the IP city stands. */
+    function waitGranted(ms){ return new Promise(function(res){
       if(!navigator.geolocation){ res(null); return; }
-      /* no artificial race — wait for the user to answer the permission prompt
-         (the old 3.5s timeout fired before "Allow" was clicked, losing the fix) */
-      navigator.geolocation.getCurrentPosition(
-        function(p){ res({lat:p.coords.latitude,lon:p.coords.longitude,city:''}); },
-        function(){ res(null); },
-        {enableHighAccuracy:false, timeout:20000, maximumAge:3600000}
-      );
-    }); }
-    (async function(){
-      /* PRECISE FIRST (Van 2026-07-16): browser geolocation leads, IP is the
-         fallback. IP city is only as good as the ISP's exit point (can be a
-         whole province off), and whether the IP lookup even runs varied by
-         origin (privacy extensions often skip/allowlist the company domain) —
-         which made offline accurate but online wrong. One location prompt per
-         user per site; deny → IP fallback still paints weather. */
-      var loc=null;
-      /* Reuse the last known coordinates for 12h — most hub opens then make NO
-         geolocation call at all (no prompt, no address-bar chip). When a fresh
-         fix IS needed, wait 5s first: at cold browser start the profile's
-         saved permission grants hydrate a moment after launch, so asking
-         immediately re-prompts even though the site is allowed (Van's verified
-         workaround 2026-07-18, built in — weather paints from cache meanwhile). */
-      try{ var c2=JSON.parse(localStorage.getItem(CK)||'null');
-        if(c2&&c2.ts&&c2.lat!=null&&(Date.now()-c2.ts)<43200000) loc={lat:c2.lat,lon:c2.lon,city:c2.city||''};
-      }catch(e){}
-      if(!loc){
-        await new Promise(function(r){setTimeout(r,5000);});
-        try{ loc=await geoloc(); }catch(e){}
+      var done=false;
+      function finish(v){ if(!done){ done=true; res(v); } }
+      function fire(){
+        if(done) return;
+        navigator.geolocation.getCurrentPosition(
+          function(p){ try{localStorage.setItem('pp-geo-ok','1');}catch(e){} finish({lat:p.coords.latitude,lon:p.coords.longitude,city:'',precise:true}); },
+          function(){ finish(null); },
+          {enableHighAccuracy:false, timeout:20000, maximumAge:3600000}
+        );
       }
-      if(!loc){ try{ var g=await fetch('https://ipwho.is/').then(function(r){return r.json();});
-           if(g&&g.success!==false&&g.latitude!=null) loc={lat:g.latitude,lon:g.longitude,city:g.city||''}; }catch(e){} }
-      if(!loc) return;
-      if(!loc.city){ try{   // geolocation returns coordinates only → reverse-geocode to a city (keyless, CORS)
+      if(navigator.permissions&&navigator.permissions.query){
+        var giveup=setTimeout(function(){ finish(null); }, ms);
+        var check=function(state){ if(state==='granted'&&!done){ clearTimeout(giveup); fire(); } };
+        navigator.permissions.query({name:'geolocation'}).then(function(st){
+          check(st.state);
+          try{ st.onchange=function(){ check(st.state); }; }catch(e){}
+          var iv=setInterval(function(){
+            if(done){ clearInterval(iv); return; }
+            navigator.permissions.query({name:'geolocation'}).then(function(s2){ check(s2.state); }).catch(function(){});
+          },3000);
+        }).catch(function(){ clearTimeout(giveup); finish(null); });
+      } else {
+        /* no Permissions API: only read if this browser has succeeded before */
+        var ok=false; try{ ok=localStorage.getItem('pp-geo-ok')==='1'; }catch(e){}
+        if(ok) fire(); else finish(null);
+      }
+    }); }
+    /* reverse-geocode + current conditions + paint + cache, for one coordinate fix */
+    async function renderFor(loc){
+      if(!loc||loc.lat==null) return;
+      if(!loc.city){ try{   // coordinates only → reverse-geocode to a city (keyless, CORS)
         var rg=await fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude='+loc.lat+'&longitude='+loc.lon+'&localityLanguage=en').then(function(r){return r.json();});
         loc.city=(rg&&(rg.city||rg.locality||rg.principalSubdivision))||'';
       }catch(e){} }
@@ -3734,10 +3738,28 @@ document.addEventListener('keydown', (ev) => {
         var u='https://api.open-meteo.com/v1/forecast?latitude='+loc.lat+'&longitude='+loc.lon+'&current=temperature_2m,weather_code';
         var m=await fetch(u).then(function(r){return r.json();});
         if(!m||!m.current) return;
-        var w={temp:m.current.temperature_2m,code:m.current.weather_code,city:loc.city||'',lat:loc.lat,lon:loc.lon,ts:Date.now()};
+        var w={temp:m.current.temperature_2m,code:m.current.weather_code,city:loc.city||'',ts:Date.now()};
+        if(loc.precise){ w.lat=loc.lat; w.lon=loc.lon; }   /* only precise coords are reused across visits */
         try{localStorage.setItem(CK,JSON.stringify(w));}catch(e){}
         paint(w);
       }catch(e){/* stays hidden */}
+    }
+    (async function(){
+      /* PRECISE FIRST (Van 2026-07-16), never-prompt (2026-07-18): reuse the
+         last precise coordinates for 12h (no location read at all); otherwise
+         give the silent precise read 1.5s to win, fall back to painting the IP
+         city fast, and UPGRADE in place when the grant becomes visible. */
+      try{ var c2=JSON.parse(localStorage.getItem(CK)||'null');
+        if(c2&&c2.ts&&c2.lat!=null&&(Date.now()-c2.ts)<43200000){ renderFor({lat:c2.lat,lon:c2.lon,city:c2.city||'',precise:true}); return; }
+      }catch(e){}
+      var pending=waitGranted(90000);
+      var first=await Promise.race([pending, new Promise(function(r){setTimeout(function(){r('slow');},1500);})]);
+      if(first&&first!=='slow'){ renderFor(first); return; }
+      try{ var g=await fetch('https://ipwho.is/').then(function(r){return r.json();});
+        if(g&&g.success!==false&&g.latitude!=null) renderFor({lat:g.latitude,lon:g.longitude,city:g.city||''});
+      }catch(e){}
+      var pos=await pending;
+      if(pos) renderFor(pos);
     })();
   }catch(e){}
 })();
