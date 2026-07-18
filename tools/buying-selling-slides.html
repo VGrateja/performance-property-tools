@@ -757,28 +757,83 @@ function _drawChart(host, spec){
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to render.</div>'; }
   }); });
 }
-/* Region as % of a peer capital (the sample: Adelaide vs Melbourne). Forge's
-   built-in benchmark is Sydney, so we pull the peer's OWN median from Forge and
-   compute the ratio ourselves; peer = Melbourne (or Sydney when the region IS
-   Melbourne). Renders via the report's sydney-vs-melbourne module. */
-function ratioPeer(slug){ return slug==='melbourne' ? 'sydney' : 'melbourne'; }
+/* Page 10: Region as % of a peer capital — sample-deck look (Van 2026-07-18):
+   region bars near-black, peer bars grey on a $ "Median Price" left axis;
+   smooth teal "% Difference" line on a 0-based % right axis; full common
+   history (Forge starts 1980) with vertical year labels. Forge's built-in
+   benchmark is Sydney, so we pull the peer's OWN median from Forge and compute
+   the ratio ourselves. Peer rule (Van 2026-07-18): regionals compare to THEIR
+   OWN capital (rdp_regions state → cluster='capital'); capitals compare to
+   Sydney like Online Reports (Sydney itself → Melbourne) EXCEPT Adelaide →
+   Melbourne (the sample deck's choice). The graph and the tokens {peer}/{PEER}
+   {peer_avg} {peer_current} {peer_value} all read this one function, so
+   authored text ("{REGION} AS % OF {PEER} (H)") always matches the graph. */
+function ratioPeer(slug){
+  const m=DB.meta[slug]||{};
+  if(m.cluster!=='capital'){
+    for(const s in DB.meta){ const r=DB.meta[s]; if(r.cluster==='capital'&&r.state===m.state&&s!==slug) return s; }
+  }
+  if(slug==='adelaide') return 'melbourne';
+  return slug==='sydney' ? 'melbourne' : 'sydney';
+}
+const RATIO={};
+async function computeRatio(slug){
+  if(RATIO[slug]!==undefined) return RATIO[slug];
+  try{
+    await whenChartsReady();
+    if(!window.ForgeReportAdapter) return (RATIO[slug]=null);
+    const peer=ratioPeer(slug);
+    const [rp,pp]=await Promise.all([getFeed(slug),getFeed(peer)]);
+    if(!rp||!pp) return (RATIO[slug]=null);
+    const rf=window.ForgeReportAdapter.forgeRegionToFeed(rp,slug), pf=window.ForgeReportAdapter.forgeRegionToFeed(pp,peer);
+    const R=_orAlign(rf.year,rf.medianHousePrice), P=_orAlign(pf.year,pf.medianHousePrice);
+    const ry={}; R.years.forEach((y,i)=>ry[y]=R.values[i]); const py={}; P.years.forEach((y,i)=>py[y]=P.values[i]);
+    const y0=Math.max(R.years[0]||9999,P.years[0]||9999), y1=Math.min(R.years[R.years.length-1]||0,P.years[P.years.length-1]||0);
+    const years=[],regionH=[],peerH=[],diff=[];
+    for(let y=y0;y<=y1;y++){ if(ry[y]!=null&&py[y]!=null){ years.push(y); regionH.push(Math.round(ry[y])); peerH.push(Math.round(py[y])); diff.push(Math.round(ry[y]/py[y]*1000)/10); } }
+    if(!years.length) return (RATIO[slug]=null);
+    const lta=Math.round(diff.reduce((a,b)=>a+b,0)/diff.length);
+    RATIO[slug]={ years, regionH, peerH, diff, lta, cur:Math.round(diff[diff.length-1]),
+      rName:(DB.meta[slug]&&DB.meta[slug].name)||slug, pName:(DB.meta[peer]&&DB.meta[peer].name)||peer };
+  }catch(e){ RATIO[slug]=null; }
+  return RATIO[slug];
+}
 async function renderRatioChart(host, slug){
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
   await whenChartsReady();
-  if(!window.PresentChart||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
-  const peer=ratioPeer(slug);
-  const [rp,pp]=await Promise.all([getFeed(slug),getFeed(peer)]);
-  if(!rp||!pp){ host.innerHTML='<div class="bss-chartload">No report data for the comparison.</div>'; return; }
-  const rf=window.ForgeReportAdapter.forgeRegionToFeed(rp,slug), pf=window.ForgeReportAdapter.forgeRegionToFeed(pp,peer);
-  const R=_orAlign(rf.year,rf.medianHousePrice), P=_orAlign(pf.year,pf.medianHousePrice);
-  const ry={}; R.years.forEach((y,i)=>ry[y]=R.values[i]); const py={}; P.years.forEach((y,i)=>py[y]=P.values[i]);
-  const y0=Math.max(1990,R.years[0]||1990,P.years[0]||1990), y1=Math.min(R.years[R.years.length-1]||0,P.years[P.years.length-1]||0);
-  const years=[],regionH=[],peerH=[]; for(let y=y0;y<=y1;y++){ if(ry[y]!=null&&py[y]!=null){ years.push(y); regionH.push(Math.round(ry[y])); peerH.push(Math.round(py[y])); } }
-  if(!years.length){ host.innerHTML='<div class="bss-chartload">Not enough data for the comparison.</div>'; return; }
-  const diff=regionH.map((v,i)=> peerH[i]?Math.round(v/peerH[i]*1000)/10:null);
-  const valid=diff.filter(v=>v!=null); const lta=valid.length?Math.round(valid.reduce((a,b)=>a+b,0)/valid.length*10)/10:null;
-  const rName=(DB.meta[slug]&&DB.meta[slug].name)||slug, pName=(DB.meta[peer]&&DB.meta[peer].name)||peer;
-  _drawChart(host,{module:'sydney-vs-melbourne',data:{sydneyVsMelbourne:{years,sydneyHouse:regionH,melbourneHouse:peerH,difference:diff,longTermAvg:lta,regionLabel:rName,peerLabel:pName}}});
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const D=await computeRatio(slug);
+  if(!D){ host.innerHTML='<div class="bss-chartload">No report data for the comparison.</div>'; return; }
+  const money=v=>'$'+Number(v).toLocaleString();
+  const pMax=Math.max.apply(null,D.regionH.concat(D.peerH));
+  const step=[50000,100000,200000,250000,500000].find(s=>pMax/s<=10)||500000;
+  const pTop=Math.ceil(pMax/step)*step;
+  const dTop=Math.ceil((Math.max.apply(null,D.diff)*1.15)/10)*10;   /* headroom so the line never touches the frame */
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
+      formatter:params=>{ return '<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.seriesName==='% Difference'?(p.value==null?'—':p.value+'%'):money(p.value))+'</b>').join('<br>'); } },
+    legend:{ top:2, left:'center', itemWidth:9, itemHeight:9, itemGap:14, textStyle:{fontSize:9,color:'#222'},
+      data:[{name:D.rName,icon:'rect'},{name:D.pName,icon:'rect'},{name:'% Difference',icon:'circle'}] },
+    grid:{left:74,right:58,top:40,bottom:46},
+    xAxis:{ type:'category', data:D.years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:[
+      { type:'value', min:0, max:pTop, interval:step, axisLabel:{color:'#444',fontSize:9,formatter:money}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+        name:'Median Price', nameLocation:'middle', nameGap:60, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
+      { type:'value', min:0, max:dTop, interval:10, axisLabel:{color:'#444',fontSize:9,formatter:v=>v+'%'}, splitLine:{show:false},
+        name:'% Difference', nameLocation:'middle', nameGap:46, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} } ],
+    series:[
+      { name:D.rName, type:'bar', data:D.regionH, itemStyle:{color:'#171B24'}, barGap:'10%', barCategoryGap:'40%' },
+      { name:D.pName, type:'bar', data:D.peerH, itemStyle:{color:'#c6c6c6'} },
+      { name:'% Difference', type:'line', yAxisIndex:1, data:D.diff, smooth:true, showSymbol:false, symbol:'circle', symbolSize:1,
+        lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'} } ] };
+  host.innerHTML='';
+  const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
+  host.appendChild(box);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    if(!box.isConnected||!window.echarts) return;
+    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
+  }); });
 }
 /* Ranking (most-expensive) — narrative + cards from rdp_raw_series ranking_h
    (per-year integer rank, 1 = most expensive). No chart module exists. */
@@ -835,13 +890,15 @@ function chartSlideBare(bottomPad){ return chrome('<div class="pad" style="paddi
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
     if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
       RANKINFO={ cur:latest.v, avg:Math.round(win.reduce((a,b)=>a+b.v,0)/win.length), years:win.length }; } }catch(e){}
+  try{ const D=await computeRatio(state.slug);   /* same series as the %-of-peer slide (cached) */
+    if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
   try{
     await whenChartsReady();
     const payload=await getFeed(state.slug);
@@ -1407,7 +1464,12 @@ function _tokenMap(){
     entry_year:(ENTRY&&ENTRY.year)?String(ENTRY.year):'—', thesis:(ENTRY&&ENTRY.thesis!=null&&ENTRY.thesis!=='')?ENTRY.thesis+'%':'—',
     /* live most-expensive ranking (rdp ranking_h — same series as the ranking slide) */
     rank_current:RANKINFO?_ord(RANKINFO.cur):'—', rank_average:RANKINFO?_ord(RANKINFO.avg):'—',
-    rank_years:RANKINFO?String(RANKINFO.years):'—' };
+    rank_years:RANKINFO?String(RANKINFO.years):'—',
+    /* live %-of-peer ratio (same series as the %-of-peer slide) */
+    peer:RATIOINFO?RATIOINFO.peer:'—', PEER:RATIOINFO?String(RATIOINFO.peer).toUpperCase():'—',
+    peer_avg:RATIOINFO?RATIOINFO.avg+'%':'—',
+    peer_current:RATIOINFO?RATIOINFO.cur+'%':'—',
+    peer_value:RATIOINFO?(RATIOINFO.cur>RATIOINFO.avg?'less value':RATIOINFO.cur<RATIOINFO.avg?'more value':'similar value'):'—' };
 }
 function resolveTokens(s){ if(!s || s.indexOf('{')<0) return s; const map=_tokenMap(); return s.replace(/\{(\w+)\}/g,(mm,k)=> (map[k]!=null?map[k]:mm)); }
 /* Tokens are STORED as literal placeholders ({region}, {year}, …) and only
@@ -1613,7 +1675,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first). Tokens: {region} {REGION} {kind} {year} {month} {state} · live: {mhp} {mup} {mhp_growth} {mup_growth} · entry: {entry_year} {entry_mhp} {entry_mup} {thesis} · ranking: {rank_current} {rank_average} {rank_years}.</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first). Tokens: {region} {REGION} {kind} {year} {month} {state} · live: {mhp} {mup} {mhp_growth} {mup_growth} · entry: {entry_year} {entry_mhp} {entry_mup} {thesis} · ranking: {rank_current} {rank_average} {rank_years} · peer: {peer} {PEER} {peer_avg} {peer_current} {peer_value}.</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
