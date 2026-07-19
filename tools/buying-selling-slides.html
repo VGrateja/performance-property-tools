@@ -675,7 +675,6 @@ const esc = s => String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt
    (+ Text, tokens ok) via the editor. */
 function chrome(inner){ return inner; }
 function head(kicker,title){ return '<div class="kicker">'+esc(kicker)+'</div><h2>'+esc(title)+'</h2><div class="rule"></div>'; }
-function stub(kicker,title,source){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="bss-stub"><div class="big">'+esc(title)+'</div><div class="src">Phase 2 · '+esc(source)+'</div></div></div>'); }
 
 /* Blank title slide — add your own text via the editor (use tokens like
    {region} {kind} {year} so it auto-fills per region + year). */
@@ -766,13 +765,15 @@ async function renderVacRentChart(host, slug){
     if(a.keys.length) D={ years:a.keys, house:a.cols[0].map(v=>Math.round(v)), unit:a.cols[1].map(v=>Math.round(v)), vr:a.cols[2].map(v=>Math.round(v*1e4)/100) };
   }catch(e){}
   if(!D){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
-  /* Head-trim: SQM'\''s first datapoints are tiny-sample junk (2004-05 spikes of
-     12-37% across ~30 regions — the raw mart rows, not an adapter bug; Adelaide
-     is one of the few clean series). Drop leading years until two consecutive
-     plausible (≤8%) values; genuine mid-series highs (Gladstone/Mackay mining
-     bust ~9%) sit later so they survive. No-op once the mart gets cleaned. */
-  { let i0=0;
-    while(i0<D.vr.length-1 && !(D.vr[i0]<=8 && D.vr[i0+1]<=8)) i0++;
+  /* Head-trim: SQM'\''s first datapoints are tiny-sample junk in BOTH directions
+     (2004-05 spikes of 12-37% across ~30 regions; Sydney 2002-03 = 0.03%/0.25%
+     — raw mart rows, not an adapter bug). Drop leading years until two
+     consecutive plausible (0.5%-8%) values; genuine mid-series extremes
+     (Gladstone/Mackay mining bust ~9%, 2021+ sub-0.5% tight markets) sit later
+     so they survive. Mart cleaned 2026-07-19 (scratch/clean-vr-junk.mjs) —
+     this guard stays as insurance against future junk ingests. */
+  { const ok=x=>x>=0.5&&x<=8; let i0=0;
+    while(i0<D.vr.length-1 && !(ok(D.vr[i0])&&ok(D.vr[i0+1]))) i0++;
     if(i0>0 && i0<D.vr.length-1) D={ years:D.years.slice(i0), house:D.house.slice(i0), unit:D.unit.slice(i0), vr:D.vr.slice(i0) };
   }
   const dollars=v=>'$'+Number(v).toLocaleString();
@@ -1285,8 +1286,9 @@ const SLIDE_DEFS = [
   { t:'Market Position', render: slideTitle },   /* slide 2 blanked (was head('Timing','Market Positions Clock')) — Van authors it via overlays, like slide 1 */
   { t:'Property Clock', render: c=>chrome('<div class="pad" style="padding:128px 80px 30px"><div class="bss-img"></div></div>'), mount:(el,c)=>mountAutoClock(el) },   /* slide 3: heading/rule stripped (Van authors via overlays); slim margins so the LIVE clock spans nearly full width, ~105px headroom for the title/disclaimer */
   { t:'Median House Price', render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'h') },   /* slide 4 Median HOUSE Price: entry-story chart (red entry line, live endpoint); bottom space for the narrative overlay */
-  { t:'Vacancy Rate Forecast', render: c=>chrome('<div class="pad" style="padding:128px 48px 112px"><div class="bss-vrbody" style="flex:1"></div></div>'), mount:(el,c)=>mountVRForecast(el,c.slug) },   /* slide 5 VR Forecast: headless — authored via overlays; live cards + note stay */
-  { t:'Replacement Cost', render: c=>stub('Value','Replacement Cost','land + build cost input') },
+  { t:'Median Unit Price', render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'u') },   /* slide 5 Median UNIT Price twin — MOVED here from last (Van 2026-07-19) with a key migration (scratch/bss-move-unit-page.mjs): old f15→f4, old f4..f14→f5..f15. NEVER reorder SLIDE_DEFS without migrating keys. */
+  { t:'Vacancy Rate Forecast', render: c=>chrome('<div class="pad" style="padding:128px 48px 112px"><div class="bss-vrbody" style="flex:1"></div></div>'), mount:(el,c)=>mountVRForecast(el,c.slug) },   /* VR Forecast: headless — authored via overlays; live cards + note stay */
+  { t:'Replacement Cost', render: c=>chrome('<div class="pad" style="display:flex;align-items:center;justify-content:center;height:100%"><div style="font-family:\'Montserrat\',sans-serif;font-weight:800;font-size:64px;color:#d21f1f;letter-spacing:1px">Coming Soon</div></div>') }   /* Van 2026-07-19: blank until the land/build cost source lands */,
   { t:'Affordability Index', render: c=>chartSlideBare(112), mount:(el,c)=>mountAfford(el,c.slug) }   /* Affordability Index — custom sample-look chart (black labelled bars + teal line, one axis, red entry) */,
   { t:'Price to Income', render: c=>chartSlideBare(112), mount:(el,c)=>mountP2I(el,c.slug) }   /* Price to Income — custom sample-look chart (teal house + black unit, labelled) */,
   { t:'Most Expensive Ranking', render: c=>chartSlideBare(112), mount:(el,c)=>mountRanking(el,c.slug) }   /* Ranking — custom sample-look chart (teal line + live black stat card) */,
@@ -1296,7 +1298,6 @@ const SLIDE_DEFS = [
   { t:'Forecasted Population', render: c=>chartSlideBare(220), mount:(el,c)=>mountPopForecast(el,c.slug) }   /* custom sample-look chart; 220px bottom pad reserves room for the authored {pop_*} summary + separator line */,
   { t:'Sensitivity — Houses', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'h') }   /* sample-look table; summary authored via tokens */,
   { t:'Sensitivity — Units', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'u') },
-  { t:'Median Unit Price', render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'u') },   /* Median UNIT Price twin (appended last — inserting mid-deck would shift every slide's saved overlays) */
 ];
 
 /* ── render + nav ── */
