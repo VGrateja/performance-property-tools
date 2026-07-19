@@ -706,57 +706,73 @@ function slideSensitivity(ctx, type){
     + '<table class="bss-tbl"><thead><tr><th>Cash Rate</th><th>Ceiling Price</th><th>Growth from '+mLab+'</th><th>% Growth</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
 }
 
-/* ── Native report charts from Forge ──────────────────────────────────────
+/* ── Chart data from Forge ────────────────────────────────────────────────
    rdp_report_feed(payload) → ForgeReportAdapter.forgeRegionToFeed() (flat feed
-   shape) → an OR_RECIPES mapper → PresentChart.create(). The recipes + helpers
-   below are copied verbatim from the online-reports/presentation chart code so
-   a slide chart is pixel-identical to the report. */
+   shape) → bespoke ECharts options per slide (sample-deck look). The last
+   PresentChart module renderer left with page 12 (2026-07-19) — every chart
+   slide is now a custom mount. */
 function _orAlign(yearCol, valueCol){ const years=[],values=[]; const yc=yearCol||[],vc=valueCol||[]; for(let i=0;i<yc.length;i++){ const y=parseInt(yc[i],10); const v=vc[i]; if(!Number.isFinite(y))continue; if(v===''||v==null||(typeof v==='number'&&isNaN(v)))continue; years.push(y); values.push(Number(v)); } return {years,values}; }
-function _orSeries(yearCol, defs, transform){ const yc=yearCol||[]; const rows=[]; for(let i=0;i<yc.length;i++){ const y=parseInt(yc[i],10); if(!Number.isFinite(y))continue; const vals=defs.map(d=>{ const v=(d.col||[])[i]; if(v===''||v==null||(typeof v==='number'&&isNaN(v)))return null; return transform?transform(Number(v)):Number(v); }); if(vals.every(v=>v==null))continue; rows.push({y,vals}); } return { x:rows.map(r=>String(r.y)), series:defs.map((d,i)=>({name:d.name,values:rows.map(r=>r.vals[i])})) }; }
 function _orAlignCols(keyCol, valCols, opts){ opts=opts||{}; const mode=opts.mode||'strict'; const kp=k=>{const n=parseInt(k,10);return Number.isFinite(n)?n:null;}; const kc=keyCol||[]; const keys=[],cols=valCols.map(()=>[]); for(let i=0;i<kc.length;i++){ const k=kp(kc[i]); if(k==null||k==='')continue; const vals=valCols.map(vc=>{const v=(vc||[])[i]; if(v===''||v==null||(typeof v==='number'&&isNaN(v)))return null; return Number(v);}); const present=vals.filter(v=>v!=null).length; if(present===0)continue; if(mode==='strict'&&present<valCols.length)continue; keys.push(k); vals.forEach((v,j)=>cols[j].push(v)); } return {keys,cols}; }
-const OR_CRISES = [{year:1982,label:'Severe Recession'},{year:1991,label:'Major Recession'},{year:2001,label:'Dot Com Crash'},{year:2008,label:'GFC'},{year:2020,label:'Covid-19'}];
-const OR_BANDS = [{from:1982,to:1985,type:'correct'},{from:1985,to:1991,type:'growth'},{from:1991,to:1996,type:'correct'},{from:1996,to:2004,type:'growth'},{from:2004,to:2009,type:'correct'},{from:2009,to:2020,type:'growth'},{from:2020,to:2022,type:'correct'},{from:2022,to:2026,type:'growth'}];
-const OR_RECIPES = {
-  p3: function(raw){ const H=_orAlign(raw.year,raw.medianHousePrice), U=_orAlign(raw.year,raw.medianUnitPrice); if(!H.years.length||!U.years.length)return null; const start=Math.max(H.years[0],U.years[0]), end=Math.min(H.years[H.years.length-1],U.years[U.years.length-1]); const years=[],house=[],unit=[]; for(let y=start;y<=end;y++){ const hi=H.years.indexOf(y),ui=U.years.indexOf(y); if(hi<0||ui<0)continue; years.push(y); house.push(H.values[hi]); unit.push(U.values[ui]); } if(!years.length)return null; return {module:'median-price',grid:{bottom:55},data:{medianPrice:{years,house,unit},crises:OR_CRISES,bands:OR_BANDS}}; },
-  p16: function(raw){ const a=_orAlignCols(raw.year,[raw.aiHouseStateIncome,raw.houseYoY],{mode:'strict'}); if(!a.keys.length)return null; const pct=v=>Math.round(v*1e4)/100; return {module:'affordability-house',data:{affordabilityHouse:{years:a.keys,ai:a.cols[0].map(pct),priceMovement:a.cols[1].map(pct)}}}; },
-  p9: function(raw){ const d=_orSeries(raw.year,[{name:'House',col:raw.priceToIncomeHouse},{name:'Unit',col:raw.priceToIncomeUnit}]); if(!d.x.length)return null; return {module:'price-to-income',data:{priceToIncome:{years:d.x.map(Number),house:d.series[0].values,unit:d.series[1].values},crises:OR_CRISES}}; },
-  p10: function(raw){ const a=_orAlignCols(raw.year,[raw.medianRentHouse,raw.medianRentUnit,raw.vacancyRate],{mode:'strict'}); const i0=a.keys.findIndex(y=>y>=2000); if(i0<0)return null; return {module:'vacancy-vs-rent',data:{vacancyVsRent:{years:a.keys.slice(i0),rentHouse:a.cols[0].slice(i0).map(v=>Math.round(v)),rentUnit:a.cols[1].slice(i0).map(v=>Math.round(v)),vacancy:a.cols[2].slice(i0).map(v=>Math.round(v*1e4)/100)}}}; },
-};
 const FEED = {};   // per-region rdp_report_feed payload cache
 async function getFeed(slug){ if(FEED[slug]!==undefined) return FEED[slug]; try{ const {data}=await window.sb.from('rdp_report_feed').select('payload').eq('region_slug',slug).maybeSingle(); FEED[slug]=(data&&data.payload)||null; }catch(e){ FEED[slug]=null; } return FEED[slug]; }
 function whenChartsReady(){ return new Promise(res=>{ let n=0; (function chk(){ if((window.PresentChart&&window.ForgeReportAdapter&&window.PpaCharts&&window.PpaCharts.registry)||++n>120) return res(); setTimeout(chk,50); })(); }); }
-async function renderReportChart(host, slug, recipeKey){
-  host.innerHTML = '<div class="bss-chartload">Loading chart…</div>';
+let _liveCharts=[];   /* ECharts instances for the current render — disposed in render() before the next rebuild wipes the DOM, else each chart-slide visit leaks an instance */
+/* Page 12: Vacancy Rate v Rent — sample-deck look (Van 2026-07-19): Rent House
+   bars near-black + Rent Unit bars grey with $ labels above each bar (right
+   $ axis), smooth teal Vacancy Rate line with white-stroked % labels (LEFT
+   % axis — the sample swaps the axes vs the old module), legend top center.
+   VR SOURCE NOTE (verified 2026-07-17): the feed's vacancyRate = rdp metric
+   'vacancy_rate' whose source tag reads 'sqm' — a LEGACY LABEL from the old
+   Google-Sheet block header. Its recent values come from Van's monthly
+   COTALITY upload (forge_cotality 'rentvacancy' → sync-cotality-medians).
+   So this chart is already Cotality — do NOT "fix" it to
+   corelogic/vacancy_rate_h (that's the older data-dump vintage). */
+function mountVacRent(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderVacRentChart(host, slug); }
+async function renderVacRentChart(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
   await whenChartsReady();
-  if(!window.PresentChart||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
-  const payload = await getFeed(slug);
+  if(!window.echarts||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const payload=await getFeed(slug);
   if(!payload){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
-  let spec=null; try{ const feed=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug); spec=OR_RECIPES[recipeKey](feed); }catch(e){}
-  /* VR SOURCE NOTE (verified 2026-07-17): the feed's vacancyRate = rdp metric
-     'vacancy_rate' whose source tag reads 'sqm' — a LEGACY LABEL from the old
-     Google-Sheet block header. Its recent values come from Van's monthly
-     COTALITY upload (forge_cotality 'rentvacancy' → sync-cotality-medians).
-     So the VR-v-Rent chart is already Cotality — do NOT "fix" it to
-     corelogic/vacancy_rate_h (that's the older data-dump vintage). */
-  if(!spec){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
-  _drawChart(host, spec);
-}
-/* Two frames so the (transform-scaled) host has real dimensions before
-   echarts.init, then advance through every build step to draw the chart FULLY
-   — the static render the reports/presentation thumbnails use (play() only arms
-   the animation; next()-to-complete actually paints it). */
-let _liveCharts=[];   /* ECharts controllers for the current slide — disposed in render() before the next slide wipes the DOM, else each chart-slide visit leaks an instance */
-function _drawChart(host, spec){
-  host.innerHTML=''; const box=document.createElement('div'); box.style.width='100%'; box.style.height='100%'; host.appendChild(box);
+  let D=null;
+  try{
+    const raw=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug);
+    const a=_orAlignCols(raw.year,[raw.medianRentHouse,raw.medianRentUnit,raw.vacancyRate],{mode:'strict'});
+    if(a.keys.length) D={ years:a.keys, house:a.cols[0].map(v=>Math.round(v)), unit:a.cols[1].map(v=>Math.round(v)), vr:a.cols[2].map(v=>Math.round(v*1e4)/100) };
+  }catch(e){}
+  if(!D){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  const dollars=v=>'$'+Number(v).toLocaleString();
+  const rMax=Math.max.apply(null,D.house.concat(D.unit));
+  const rStep=[50,100,200,250,500].find(s=>rMax/s<=9)||500;
+  const rTop=Math.ceil((rMax*1.08)/rStep)*rStep;   /* headroom so bar labels clear the frame */
+  const vTop=Math.ceil((Math.max.apply(null,D.vr)*1.15)/0.25)*0.25;
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
+      formatter:params=>{ return '<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.seriesType==='line'?(p.value==null?'—':Number(p.value).toFixed(2)+'%'):dollars(p.value))+'</b>').join('<br>'); } },
+    legend:{ top:2, left:'center', itemWidth:9, itemHeight:9, itemGap:14, textStyle:{fontSize:9,color:'#222'},
+      data:[{name:'Rent House',icon:'rect'},{name:'Rent Unit',icon:'rect'},{name:'Vacancy Rate',icon:'circle'}] },
+    grid:{left:64,right:64,top:44,bottom:46},
+    xAxis:{ type:'category', data:D.years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:[
+      { type:'value', min:0, max:vTop, interval:0.25, axisLabel:{color:'#444',fontSize:9,formatter:v=>v.toFixed(2)+'%'}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+        name:'Vacancy Rate', nameLocation:'middle', nameGap:50, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
+      { type:'value', min:0, max:rTop, interval:rStep, axisLabel:{color:'#444',fontSize:9,formatter:dollars}, splitLine:{show:false},
+        name:'Rent House | Rent Unit', nameLocation:'middle', nameGap:48, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} } ],
+    series:[
+      { name:'Rent House', type:'bar', yAxisIndex:1, data:D.house, itemStyle:{color:'#171B24'}, barGap:'10%', barCategoryGap:'35%',
+        label:{show:true,position:'top',fontSize:8,color:'#333',formatter:p=>dollars(p.value)} },
+      { name:'Rent Unit', type:'bar', yAxisIndex:1, data:D.unit, itemStyle:{color:'#c6c6c6'},
+        label:{show:true,position:'top',fontSize:8,color:'#555',formatter:p=>dollars(p.value)} },
+      { name:'Vacancy Rate', type:'line', yAxisIndex:0, data:D.vr, smooth:true, symbol:'circle', symbolSize:1,   /* labels attach to symbols — keep invisible 1px dots */
+        lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
+        label:{show:true,position:'top',fontSize:8,color:'#333',textBorderColor:'#fff',textBorderWidth:2,formatter:p=>(p.value==null?'':Number(p.value).toFixed(2)+'%')} } ] };
+  host.innerHTML='';
+  const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
+  host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
-    if(!box.isConnected||!window.PresentChart) return;   /* navigated away before paint → don't spawn an orphan instance */
-    try{ var ctrl=window.PresentChart.create(box,spec); if(ctrl)_liveCharts.push(ctrl); var g=0; while(ctrl&&!ctrl.isComplete()&&g++<1000) ctrl.next();
-      /* page-4 treatment for every module chart: transparent bg + axis tooltip
-         (the controller hides its ECharts instance; the global registry doesn't) */
-      try{ var inst=window.echarts&&echarts.getInstanceByDom(box.querySelector('div')||box)||echarts.getInstanceByDom(box);
-        if(inst) inst.setOption({backgroundColor:'transparent', tooltip:{show:true,trigger:'axis',confine:true}}); }catch(e2){}
-    }
-    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to render.</div>'; }
+    if(!box.isConnected||!window.echarts) return;
+    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
 /* Page 10: Region as % of a peer capital — sample-deck look (Van 2026-07-18):
@@ -1029,7 +1045,6 @@ async function _mountMedianEntry(host,slug,kind){
   }); });
 }
 function narrSlide(kicker,title,cls){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="'+cls+'" style="flex:1"></div></div>'); }
-function mountChart(slideEl, slug, recipeKey){ const host=slideEl.querySelector('.bss-chart'); if(host) renderReportChart(host, slug, recipeKey); }
 function mountRatio(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderRatioChart(host, slug); }
 /* Property Clock — Timing: the auto-updating National Property Clock. The Clock
    tool uploads national-clock.jpg to the PUBLIC clock-image bucket on every Save
@@ -1238,7 +1253,7 @@ const SLIDE_DEFS = [
   { t:'Most Expensive Ranking', render: c=>chartSlideBare(112), mount:(el,c)=>mountRanking(el,c.slug) }   /* Ranking — custom sample-look chart (teal line + live black stat card) */,
   { t:'% of Peer City', render: c=>chartSlideBare(112), mount:(el,c)=>mountRatio(el,c.slug) }   /* % of peer — headless */,
   { t:'Stock v Days on Market', render: c=>chartSlideBare(112), mount:(el,c)=>mountStockDom(el,c.slug) }   /* SOM v ADOM — custom sample-look chart */,
-  { t:'Vacancy v Rent', render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p10') }   /* VR v Rent — headless */,
+  { t:'Vacancy v Rent', render: c=>chartSlideBare(112), mount:(el,c)=>mountVacRent(el,c.slug) }   /* VR v Rent — custom sample-look chart */,
   { t:'Forecasted Population', render: slideForecastPop },
   { t:'Sensitivity — Houses', render: c=>slideSensitivity(c,'h') },
   { t:'Sensitivity — Units', render: c=>slideSensitivity(c,'u') },
