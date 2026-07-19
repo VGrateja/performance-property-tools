@@ -18,7 +18,7 @@
 <!-- Supabase: read the data-point health + the gathered population data -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=79207e52"></script>
-<script src="../shared/tool-registry.js?v=30329f05"></script>
+<script src="../shared/tool-registry.js?v=5dbcbed4"></script>
 <script src="../shared/traffic-lights-engine.js?v=bb260093"></script>
 <style>
   /* PERFORMANCE OS SKIN (redesign Session 5): Vault violet accent pair; the OS
@@ -325,7 +325,7 @@
       <div class="df-note" style="font-size:.82rem;line-height:1.75;color:var(--text)">
         <b>What to grab:</b> the monthly CoreLogic / Cotality exports — <b>Market Trends</b> (.xlsx: median prices, sales, days-on-market) and <b>Vacancy Rate &amp; Asking Rent</b> (two .csv: vacancy %, median asking rent), covering all capital cities + the 28 LGA regions.<br>
         <b>Where:</b> your <a href="https://www.cotality.com.au" target="_blank" rel="noopener" style="color:#00A3CC;font-weight:700">CoreLogic / Cotality</a> subscription (the RP Data platform) — run the monthly Market Trends export, plus the Vacancy &amp; Asking Rent exports (Capital Cities + LGA). It’s a paid feed, so there’s no API.<br>
-        <b>Why this one matters most:</b> a single drop here feeds median prices, rents and gross yields, the <b>CIV</b> card, and auto-appends <b>Monthly Median Price</b> — so several cards refresh from this one upload.<br>
+        <b>Why this one matters most:</b> a single drop here feeds median prices, rents and gross yields, the <b>CIV</b> card, auto-appends <b>Monthly Median Price</b>, and records the national <b>CL Suburb Data</b> store (feeding Suburb Scoring + Suburb Selection) — so several cards refresh from this one upload.<br>
         <b>Then apply it:</b> drop the Market Trends <b>.xlsx</b> in box ① below, and the two <b>.csv</b> files in box ② — once a month; each drop merges in the new month.
       </div>
     </div>
@@ -517,6 +517,20 @@
     </div>
   </section>
 
+  <!-- ── CL SUBURB DATA (DERIVED from the Cotality drop — no separate upload) ── -->
+  <section id="dfClsuburbs" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div class="df-card" style="margin-bottom:14px"><h2>CL Suburb Data <span class="count">national suburb + LGA + capital Market Trends, recorded month-by-month</span></h2>
+      <div class="df-note" style="font-size:.82rem;line-height:1.75;color:var(--text)">
+        Auto-recorded by the <b>Cotality</b> card's Market Trends drop (box ①) — no separate upload. Each monthly file adds its month to the store
+        (upsert-only: history is never deleted), keyed by the file's own <b>Month end</b> date. ~31,000 rows per month across
+        Suburbs / LGA / CapitalCities with 28 metrics each (medians, changes, 5/10/20yr CAGRs, AVM, stock &amp; listings, days on market,
+        asking rents, yields). This is the Forge source that will feed <b>Suburb Scoring</b> and <b>Suburb Selection Data</b>.
+      </div>
+    </div>
+    <div id="dfClsubOut"><div class="df-note">Loading…</div></div>
+  </section>
+
   <!-- ── CURRENT INVESTMENT VALUE (DERIVED from Cotality — no upload) ── -->
   <section id="dfCiv" hidden>
     <button class="df-back" data-home>← All data points</button>
@@ -617,9 +631,10 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCpi','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfSensitivity','dfPopforecast','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfRanking','dfComputed','dfCommercial','dfDemandinputs']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCpi','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfSensitivity','dfPopforecast','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfRanking','dfComputed','dfCommercial','dfDemandinputs','dfClsuburbs']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
+  if (name === 'clsuburbs') loadClSuburbs();
   if (name === 'population') loadPopulation();
   if (name === 'income') loadIncome();
   if (name === 'lending') loadLending();
@@ -736,6 +751,7 @@ const CLUSTERS = [
   { key:'national_only', icon:'🇦🇺', ingest:'hybrid', label:'National Only', desc:'National Online Report series: work done, federal budget, govt debt-to-GDP, household debt-to-income, GDP &amp; debt by country, cash rate, household composition. 4 API (ABS/IMF/RBA) + 3 SEEDED needing hand updates (Budget each May/MYEFO · Govt net debt each Data Dump/Budget · Household composition next Census).', view:'natonly' },
   { key:'commercial', icon:'🏢', ingest:'hybrid', label:'Commercial Report', desc:'All Commercial report data (23 tabs). 6 API tabs (retail turnover, building approvals, corporate bond, population growth, term deposits, govt bonds) auto-refresh from rdp_raw_series on the 10th (GATHER → PUBLISH); the rest (freight, office vacancy, cash-rate/inflation, population pyramid, WFH, e-commerce, health, etc.) are subscription/manual and need a Looker export re-seed. The Commercial report reads this store.', view:'commercial' },
   { key:'monthly_price', icon:'📈', ingest:'derived', label:'Monthly Median Price', desc:'Monthly median price (house &amp; unit) per region, 2004→present. Seeded from the report cluster sheets; the monthly CoreLogic drop in the Cotality card appends each new month.', view:'monthlyprice' },
+  { key:'cl_suburbs', icon:'🏘️', ingest:'derived', label:'CL Suburb Data', desc:'National suburb + LGA + capital Market Trends (~31k rows/month, 28 metrics) — recorded month-by-month by the Cotality drop. The Forge source for Suburb Scoring and Suburb Selection.', view:'clsuburbs' },
   { key:'ranking', icon:'🏆', ingest:'derived', label:'Median Price Ranking (H/U)', desc:'Rank of every region by median price (house &amp; unit) each year, 2004→present — rank&nbsp;1 = the highest median price that year. Derived from the Monthly Median Price point; feeds the Traffic Lights Value indicator (latest rank vs long-run average). Rebuild with <code>build-ranking.mjs</code>.', view:'ranking' },
   { key:'computed_metrics', icon:'🧮', ingest:'derived', label:'Computed Metrics', desc:'Calculated report metrics per region — CAGR, price/rent-to-income, affordability index, P&amp;I repayments, gross yields, YoY growth. Derived from the raw data (research mart) — a preview of what the reports compute.', view:'computed' },
   { key:'inflation', icon:'📉', ingest:'api', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
@@ -773,6 +789,13 @@ function freshInfo(c, st, manualDates){
   // Recomputed by the PUBLISH mart rebuild — no forge_data_status row of its own,
   // so without this exemption it rendered a phantom "no date / stale".
   if (c.key === 'computed_metrics') return { cls: 'neutral', chip: '<span class="df-fresh neutral" title="Recomputed from the raw data by the PUBLISH mart rebuild — freshness follows the raw points">live</span>' };
+  if (c.key === 'cl_suburbs') {
+    // recorded by the Cotality drop — show the latest recorded data month + how long ago
+    const iso = manualDates.cl_suburbs, mon = manualDates.cl_suburbs_month, d = ageDays(iso);
+    if (!mon) return { cls: 'stale', chip: '<span class="df-fresh stale" title="Nothing recorded yet — drop the Market Trends .xlsx on the Cotality card (needs migration 083)">no data</span>' };
+    const cls = d == null ? 'stale' : d <= 40 ? 'ok' : d <= 75 ? 'aging' : 'stale';
+    return { cls, chip: '<span class="df-fresh ' + cls + '" title="Latest recorded data month ' + mon + ' — auto-recorded by the Cotality drop' + (d != null ? ' ' + d + ' days ago' : '') + '">' + mon + (d != null ? ' · ' + d + 'd' : '') + '</span>' };
+  }
   // A manual "no new data" check (076) resets the freshness clock without changing
   // the data — treat the check date as a refresh signal alongside the real one.
   // The check itself EXPIRES after 40 days: an old ✓ must not keep a card looking
@@ -895,16 +918,20 @@ async function loadStatus(){
   // manual stores carry their freshness on the store row (not always forge_data_status)
   const manualDates = {};
   try {
-    const [ct, ar, co, ind, dsi] = await Promise.all([
+    const [ct, ar, co, ind, dsi, cls] = await Promise.all([
       window.sb.from('forge_cotality').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_arrears').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_commercial').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_industry').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_demand_inputs').select('updated_at').eq('id', 'latest').maybeSingle(),
+      window.sb.from('forge_cotality').select('data,updated_at').eq('id', 'cl_suburbs_meta').maybeSingle(),
     ]);
     manualDates.cotality = ct.data && ct.data.updated_at; manualDates.arrears = ar.data && ar.data.updated_at;
     manualDates.commercial = co.data && co.data.updated_at; manualDates.industry = ind.data && ind.data.updated_at;
     manualDates.demand_inputs = dsi.data && dsi.data.updated_at;
+    manualDates.cl_suburbs = cls.data && cls.data.updated_at;
+    const clm = cls.data && cls.data.data && cls.data.data.months;
+    manualDates.cl_suburbs_month = clm ? Object.keys(clm).sort().reverse()[0] : null;
   } catch (e) {}
   const agingPts = [], stalePts = [];   // card LABELS, so the banner can say WHICH data
   const cardHtml = (c) => {
@@ -3232,10 +3259,143 @@ async function importXlsx(file){
     renderCotality(result);
     saveCotality(result);
     appendMonthlyFromCotality(result);   // append this month's median into forge_monthly_price
+    recordClSuburbs(wb, file.name);      // record the FULL national suburb/LGA/capital store (forge_cl_suburbs, month-versioned)
   } catch(err){
     console.warn('xlsx import failed', err);
     out.innerHTML = card('Error', '<div class="df-empty">Could not read that file: ' + esc(err.message || err) + '</div>');
   }
+}
+
+/* ── CL SUBURB DATA — the national store recorded from the same drop ──────
+   Parses all three Market Trends sheets with RAW typed values, maps ~28
+   metrics by header NAME (column re-ordering never breaks it), derives the
+   month from the file's own "Month end" Excel serial, and chunk-upserts into
+   forge_cl_suburbs (mig 083, upsert-only month history). A summary lands in
+   forge_cotality id='cl_suburbs_meta' so the home card + view read O(1). */
+const CL_SUB_MAP = [
+  ['total number of properties','props'],['sales turnover','turnover'],
+  ['# of sales last 12 months','sales12'],['# of sales last 3 months','sales3'],
+  ['median sales price last 12','med12'],['median sales price last 6','med6'],['median sales price last 3','med3'],
+  ['3 month change in median sales','medChg3'],['12 month change in median sales','medChg12'],
+  ['36 month change in median sales','medChg36'],['60 month change in median sales','medChg60'],
+  ['5 year annual compound','cagr5'],['10 year annual compound','cagr10'],['20 year annual compound','cagr20'],
+  ['25th percentile','p25'],['75th percentile','p75'],
+  ['median avm value','avm'],['% stock on market','stockPct'],
+  ['# of listings last 12','listings12'],['# of listings last 1','listings1'],
+  ['median days on market','dom'],['median vendor discount','discount'],
+  ['# of rental listings','rentListings'],['median asking rent','rent'],
+  ['12 month change in median asking rent','rentChg12'],
+  ['median rental yield','yield'],['avm rental yield','avmYield'],['average hold period','holdPeriod'],
+];
+function clSubMapHeaders(hdr){
+  const out = {};
+  hdr.forEach((h, i) => { const n = String(h || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    for (const [pat, key] of CL_SUB_MAP){ if (n.startsWith(pat) && out[key] == null){ out[key] = i; return; } } });
+  return out;
+}
+function clSerialToMonth(v){
+  // Excel date serial → 'YYYY-MM' (1899-12-30 epoch + ROUND, per the repo rule)
+  if (v == null || v === '') return null;
+  if (typeof v === 'number' && isFinite(v)){ const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000); return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0'); }
+  const m = String(v).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);   // dd/mm/yyyy fallback
+  return m ? (m[3] + '-' + m[2].padStart(2, '0')) : null;
+}
+async function recordClSuburbs(wb, fileName){
+  const out = document.getElementById('dfOut');
+  const status = document.createElement('div');
+  status.className = 'df-note';
+  status.innerHTML = '🏘️ Recording the national suburb store…';
+  out.appendChild(status);
+  try {
+    const SHEETS = [
+      { find: ['market trends','suburb'],  level: 'suburb'  },
+      { find: ['market trends','lga'],     level: 'lga'     },
+      { find: ['market trends','capital'], level: 'capital' },
+    ];
+    const all = []; const counts = {}; let month = null;
+    for (const s of SHEETS){
+      const name = findSheet(wb, s.find); if (!name) { counts[s.level] = 0; continue; }
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null });
+      const hr = findHeaderRow(rows.map(r => (r || []).map(c => c == null ? '' : c)));
+      const hdr = (rows[hr] || []).map(c => String(c == null ? '' : c));
+      const map = clSubMapHeaders(hdr);
+      const iState = hdr.findIndex(h => /^state$/i.test(h.trim()));
+      const iName = s.level === 'suburb' ? hdr.findIndex(h => /^suburb$/i.test(h.trim()))
+        : s.level === 'lga' ? hdr.findIndex(h => /^lga name$/i.test(h.trim()))
+        : hdr.findIndex(h => /^capital city$/i.test(h.trim()));
+      const iPtype = hdr.findIndex(h => /^property type$/i.test(h.trim()));
+      const iMonth = hdr.findIndex(h => /month end/i.test(h));
+      const iPc = hdr.findIndex(h => /^postcode$/i.test(h.trim()));
+      const iLga = s.level === 'suburb' ? hdr.findIndex(h => /^lga name$/i.test(h.trim())) : -1;
+      if (iState < 0 || iName < 0 || iPtype < 0){ counts[s.level] = 0; continue; }
+      let n = 0;
+      for (let i = hr + 1; i < rows.length; i++){
+        const r = rows[i] || [];
+        const nm = r[iName] != null ? String(r[iName]).trim() : '';
+        const pt = r[iPtype] != null ? String(r[iPtype]).trim().toUpperCase() : '';
+        if (!nm || (pt !== 'H' && pt !== 'U')) continue;
+        if (!month && iMonth >= 0) month = clSerialToMonth(r[iMonth]);
+        const metrics = {};
+        for (const k in map){ const v = r[map[k]]; if (v != null && v !== '' && isFinite(Number(v))) metrics[k] = Number(v); }
+        const pc = iPc >= 0 && r[iPc] != null ? String(r[iPc]).trim() : null;
+        all.push({
+          level: s.level, ptype: pt,
+          state: r[iState] != null ? String(r[iState]).trim().toUpperCase() : '',
+          name: nm, postcode: pc,
+          lga: iLga >= 0 && r[iLga] != null ? String(r[iLga]).trim() : null,
+          name_key: nm.toUpperCase() + (s.level === 'suburb' ? '|' + (pc || '') : ''),
+          metrics,
+        });
+        n++;
+      }
+      counts[s.level] = n;
+    }
+    if (!month){ status.innerHTML = '🏘️ Suburb store skipped — no "Month end" date found in the file.'; return; }
+    if (!all.length){ status.innerHTML = '🏘️ Suburb store skipped — no rows parsed.'; return; }
+    // dedupe on the PK — a repeated (level,ptype,state,name_key) INSIDE one
+    // upsert chunk would make Postgres reject the whole chunk
+    { const seen = new Set(); for (let i = all.length - 1; i >= 0; i--){ const r = all[i]; const k = [r.level, r.ptype, r.state, r.name_key].join('§'); if (seen.has(k)) all.splice(i, 1); else seen.add(k); } }
+    let email = null;
+    try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch {}
+    const stamp = new Date().toISOString();
+    const CHUNK = 500; let done = 0;
+    for (let k = 0; k < all.length; k += CHUNK){
+      const chunk = all.slice(k, k + CHUNK).map(r => Object.assign({ month, uploaded_at: stamp, uploaded_by: email }, r));
+      const { error } = await window.sb.from('forge_cl_suburbs').upsert(chunk, { onConflict: 'month,level,ptype,state,name_key' });
+      if (error) throw error;
+      done += chunk.length;
+      status.innerHTML = '🏘️ Recording the national suburb store… ' + done.toLocaleString() + ' / ' + all.length.toLocaleString() + ' rows (' + month + ')';
+      await new Promise(r => setTimeout(r, 0));
+    }
+    // O(1) summary for the home card + the CL Suburb Data view
+    let meta = {};
+    try { const { data } = await window.sb.from('forge_cotality').select('data').eq('id', 'cl_suburbs_meta').maybeSingle(); meta = (data && data.data) || {}; } catch {}
+    meta.months = meta.months || {};
+    meta.months[month] = { suburb: counts.suburb || 0, lga: counts.lga || 0, capital: counts.capital || 0, fileName, at: stamp };
+    await window.sb.from('forge_cotality').upsert({ id: 'cl_suburbs_meta', data: meta, file_name: fileName, uploaded_at: stamp, updated_at: stamp, uploaded_by: email }, { onConflict: 'id' });
+    status.innerHTML = '🏘️ <b>Suburb store recorded for ' + month + '</b> — ' + (counts.suburb || 0).toLocaleString() + ' suburbs · '
+      + (counts.lga || 0).toLocaleString() + ' LGAs · ' + (counts.capital || 0) + ' capitals (upsert-only history; see the CL Suburb Data card).';
+  } catch (err){
+    console.warn('cl_suburbs record failed', err);
+    status.innerHTML = '🏘️ Suburb store failed: ' + esc(err.message || err) + (String(err.message || '').includes('forge_cl_suburbs') ? ' — is migration 083 applied?' : '');
+  }
+}
+// the CL Suburb Data view — recorded months from the O(1) meta row
+async function loadClSuburbs(){
+  const out = document.getElementById('dfClsubOut');
+  out.innerHTML = '<div class="df-note">Loading…</div>';
+  let meta = null, row = null;
+  try { const { data } = await window.sb.from('forge_cotality').select('data,updated_at,uploaded_by,file_name').eq('id', 'cl_suburbs_meta').maybeSingle(); row = data; meta = data && data.data; } catch {}
+  if (!meta || !meta.months || !Object.keys(meta.months).length){
+    out.innerHTML = card('No months recorded yet', '<div class="df-empty">Drop the monthly Market Trends .xlsx on the <b>Cotality</b> card — the suburb store records automatically (needs migration 083).</div>');
+    return;
+  }
+  const months = Object.keys(meta.months).sort().reverse();
+  const rows = months.map(m => { const x = meta.months[m];
+    return '<tr><td><b>' + esc(m) + '</b></td><td>' + (x.suburb || 0).toLocaleString() + '</td><td>' + (x.lga || 0).toLocaleString() + '</td><td>' + (x.capital || 0) + '</td><td>' + esc(x.fileName || '—') + '</td><td>' + fmtDate(x.at) + '</td></tr>'; }).join('');
+  out.innerHTML = card('Recorded months <span class="count">' + months.length + ' month' + (months.length === 1 ? '' : 's') + ' · latest ' + esc(months[0]) + '</span>',
+    '<div class="df-tablewrap"><table class="df-table"><thead><tr><th>Month</th><th>Suburb rows</th><th>LGA rows</th><th>Capital rows</th><th>File</th><th>Recorded</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<div class="df-note" style="margin-top:10px">Upsert-only history — re-dropping a month refreshes it, never deletes others. Query it via <code>forge_cl_suburbs</code> (month · level · ptype · state · name).</div>');
 }
 
 // render the filtered Cotality result (from a fresh drop or the saved snapshot)

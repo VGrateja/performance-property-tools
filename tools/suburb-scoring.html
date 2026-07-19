@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Suburb Scoring &mdash; Performance Property</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
+<!-- OS chrome: mode/period/shade + legacy data-theme bridge -->
+<script src="../shared/os-chrome.js?v=f66c69d4"></script>
+<link rel="stylesheet" href="../shared/os-theme.css?v=735d2efb"/>
+<!-- SheetJS for the dev/admin ingest drop-zone (monthly market workbooks) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   SUBURB SCORING — in-hub replacement for the Looker Studio "Suburbs Scoring
+   Interface". Lobby (market → suburb) first, then a suburb dashboard with the
+   Looker-parity tiles + a "How it's scored" methodology breakdown. Data =
+   suburb_scores rows (migration 082), ingested from the monthly market
+   workbooks via shared/suburb-scoring-parse.js. Brand: Montserrat, sanctioned
+   hexes only, both themes, no backdrop-filter beyond the shared chrome.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root{
+  --ss-ink:#F4F6F8; --ss-ink2:#C6CCD6; --ss-mut:var(--mut,#8B93A1);
+  --ss-surface:rgba(255,255,255,0.045); --ss-surface-2:rgba(255,255,255,0.025);
+  --ss-solid:#1A2130;
+  --ss-border:rgba(255,255,255,0.10); --ss-border-2:rgba(255,255,255,0.16);
+  --ss-teal:#00A0B4; --ss-teal-deep:#0083A3; --ss-navy:#171B24;
+  --ss-good:#71B357; --ss-warn:#FFA91F; --ss-bad:#E72347;
+  --ss-good-soft:rgba(113,179,87,0.16); --ss-warn-soft:rgba(255,169,31,0.14);
+  --ss-bad-soft:rgba(231,35,71,0.12); --ss-teal-soft:rgba(0,160,180,0.14);
+  --ss-tile-ink:#F4F6F8;
+}
+[data-theme="light"]{
+  --ss-ink:#171B24; --ss-ink2:#3F4650;
+  --ss-surface:#ffffff; --ss-surface-2:#F7F9FA;
+  --ss-solid:#ffffff;
+  --ss-border:rgba(23,27,36,0.12); --ss-border-2:rgba(23,27,36,0.20);
+  --ss-good-soft:#F0F7ED; --ss-warn-soft:#FFF6E8; --ss-bad-soft:#FDECEF; --ss-teal-soft:#E8F7FA;
+  --ss-tile-ink:#171B24;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Montserrat',system-ui,sans-serif;color:var(--ss-ink);-webkit-font-smoothing:antialiased}
+.ss-wrap{max-width:1340px;margin:0 auto;padding:24px 28px 70px}
+.ss-eyebrow{font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--ss-teal)}
+h1{font-size:28px;font-weight:800;letter-spacing:-0.02em;margin:4px 0 2px}
+.ss-sub{font-size:12.5px;color:var(--ss-mut);margin:0;line-height:1.5}
+
+/* ── lobby (market → suburb) — B/S landing pattern ── */
+.ss-lobby{display:none;position:fixed;inset:0;z-index:9100;overflow:auto;background:var(--shade-bg,rgba(10,14,22,0.86));backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.ss-lobby.show{display:flex;align-items:flex-start;justify-content:center}
+body.ss-lobby-open .ss-main{display:none}
+.ss-lobby-inner{width:min(1080px,94vw);margin:56px 0 60px}
+.ss-lob-head{margin-bottom:18px}
+.ss-lob-head h1{color:#F4F6F8}
+.ss-lob-head .ss-sub{color:rgba(220,228,240,0.75);max-width:720px}
+.ss-groups{display:flex;flex-direction:column;gap:18px}
+.ss-ghead{font-size:10.5px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:rgba(220,228,240,0.55);margin:2px 0 -8px}
+.ss-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:12px}
+.ss-tile{position:relative;text-align:left;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);border-radius:14px;padding:15px 16px 13px;cursor:pointer;color:#F4F6F8;font-family:inherit;transition:border-color .15s,transform .15s}
+.ss-tile:hover{border-color:var(--ss-teal);transform:translateY(-2px)}
+.ss-tile .nm{font-size:15.5px;font-weight:800;letter-spacing:-0.01em}
+.ss-tile .meta{font-size:11px;color:rgba(220,228,240,0.65);margin-top:5px}
+.ss-tile .kinds{position:absolute;top:13px;right:13px;font-size:9.5px;font-weight:800;letter-spacing:.08em;color:var(--ss-teal)}
+.ss-tile.off{opacity:.45;cursor:default}
+.ss-tile.off:hover{border-color:rgba(255,255,255,0.14);transform:none}
+/* step 2: suburb picker */
+.ss-picker{display:none}
+.ss-picker.show{display:block}
+.ss-step1.hide{display:none}
+.ss-back{border:1px solid rgba(255,255,255,0.2);background:transparent;color:#F4F6F8;border-radius:999px;padding:7px 15px;font:700 11px 'Montserrat',sans-serif;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;margin-bottom:14px}
+.ss-back:hover{border-color:var(--ss-teal)}
+.ss-pick-panel{background:rgba(16,21,32,0.92);border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:18px}
+.ss-pick-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.ss-pick-head .t{font-size:19px;font-weight:800;color:#F4F6F8;margin-right:auto}
+.ss-search{flex:1 1 260px;max-width:420px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:#141A28;color:#F4F6F8;padding:10px 13px;font:600 13px 'Montserrat',sans-serif;outline:none}
+.ss-search:focus{border-color:var(--ss-teal)}
+.ss-search::placeholder{color:rgba(200,214,236,0.4)}
+.ss-pick-list{max-height:56vh;overflow:auto;border-top:1px solid rgba(255,255,255,0.1)}
+.ss-pick-row{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,0.07);padding:10px 8px;color:#EDF1F7;cursor:pointer;font-family:inherit}
+.ss-pick-row:hover{background:rgba(0,160,180,0.12)}
+.ss-pick-row .s{font-size:13.5px;font-weight:700;flex:1;min-width:0}
+.ss-pick-row .l{font-size:11.5px;color:rgba(210,220,236,0.6);flex:1;min-width:0}
+.ss-pick-row .r{font-size:11.5px;font-weight:700;color:var(--ss-teal);flex:0 0 66px;text-align:right}
+
+/* quality chips (shared) */
+.ss-q{display:inline-block;font-size:10px;font-weight:800;letter-spacing:.06em;border-radius:6px;padding:2px 7px;line-height:1.5}
+.ss-q.qAAA{background:var(--ss-good-soft);color:var(--ss-good)}
+.ss-q.qBBB{background:var(--ss-teal-soft);color:var(--ss-teal)}
+.ss-q.qCCC{background:var(--ss-warn-soft);color:var(--ss-warn)}
+.ss-q.qDDD{background:var(--ss-bad-soft);color:var(--ss-bad)}
+
+/* ── main two-pane view ── */
+.ss-main{display:none}
+.ss-main.show{display:block}
+.ss-topbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:2px 0 16px}
+.ss-topbar .crumb{font-size:12px;color:var(--ss-mut);font-weight:600}
+.ss-topbar .crumb b{color:var(--ss-ink)}
+.ss-seg{display:inline-flex;border:1px solid var(--ss-border-2);border-radius:999px;overflow:hidden;margin-left:auto}
+.ss-seg button{border:none;background:transparent;color:var(--ss-ink2);font:700 11.5px 'Montserrat',sans-serif;letter-spacing:.06em;text-transform:uppercase;padding:8px 18px;cursor:pointer}
+.ss-seg button.on{background:var(--ss-teal);color:#fff}
+.ss-btn{border:1px solid var(--ss-border-2);background:transparent;color:var(--ss-ink);border-radius:999px;padding:8px 15px;font:700 11px 'Montserrat',sans-serif;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
+.ss-btn:hover{border-color:var(--ss-teal);color:var(--ss-teal)}
+.ss-cols{display:grid;grid-template-columns:340px 1fr;gap:18px;align-items:start}
+@media(max-width:900px){.ss-cols{grid-template-columns:1fr}}
+
+/* left rail */
+.ss-rail{border:1px solid var(--ss-border);background:var(--ss-surface);border-radius:14px;padding:12px;position:sticky;top:76px}
+.ss-rail .ss-search{max-width:none;width:100%;background:var(--ss-surface-2);color:var(--ss-ink);border-color:var(--ss-border-2)}
+.ss-chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+.ss-chip{border:1px solid var(--ss-border-2);background:transparent;color:var(--ss-ink2);border-radius:999px;padding:4px 11px;font:700 10.5px 'Montserrat',sans-serif;cursor:pointer}
+.ss-chip.on{background:var(--ss-teal);border-color:var(--ss-teal);color:#fff}
+.ss-sort{width:100%;border-radius:9px;border:1px solid var(--ss-border-2);background:var(--ss-surface-2);color:var(--ss-ink);padding:7px 9px;font:600 12px 'Montserrat',sans-serif;margin-bottom:10px}
+.ss-sort option{background:var(--ss-solid);color:var(--ss-ink)}
+.ss-list{max-height:60vh;overflow:auto;border-top:1px solid var(--ss-border)}
+.ss-row{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:transparent;border:none;border-bottom:1px solid var(--ss-border);padding:9px 6px;color:var(--ss-ink);cursor:pointer;font-family:inherit}
+.ss-row:hover{background:var(--ss-teal-soft)}
+.ss-row.cur{background:var(--ss-teal-soft);box-shadow:inset 3px 0 0 var(--ss-teal)}
+.ss-row .s{font-size:12.5px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ss-row .l{font-size:10.5px;color:var(--ss-mut);flex:0 1 88px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ss-row .r{font-size:11px;font-weight:800;color:var(--ss-teal);flex:0 0 58px;text-align:right}
+.ss-row.bench{background:var(--ss-surface-2);border-bottom:2px solid var(--ss-border-2)}
+.ss-count{font-size:10.5px;color:var(--ss-mut);margin-top:8px;text-align:right}
+
+/* detail panel */
+.ss-detail{min-width:0}
+.ss-head-card{display:flex;align-items:center;gap:16px;flex-wrap:wrap;border:1px solid var(--ss-border);background:var(--ss-surface);border-radius:14px;padding:16px 18px;margin-bottom:14px}
+.ss-head-card .who{min-width:0;margin-right:auto}
+.ss-head-card h2{margin:0;font-size:24px;font-weight:800;letter-spacing:-0.02em}
+.ss-head-card .path{font-size:12px;color:var(--ss-mut);font-weight:600;margin-top:3px}
+.ss-bigq{font-size:26px;font-weight:800;letter-spacing:.02em;border-radius:12px;padding:10px 20px}
+.ss-bigq.qAAA{background:var(--ss-good-soft);color:var(--ss-good)}
+.ss-bigq.qBBB{background:var(--ss-teal-soft);color:var(--ss-teal)}
+.ss-bigq.qCCC{background:var(--ss-warn-soft);color:var(--ss-warn)}
+.ss-bigq.qDDD{background:var(--ss-bad-soft);color:var(--ss-bad)}
+.ss-tgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:10px}
+.ss-t{border:1px solid var(--ss-border);border-radius:12px;padding:13px 15px;background:var(--ss-surface)}
+.ss-t .k{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--ss-mut);display:flex;align-items:center;gap:5px}
+.ss-t .v{font-size:21px;font-weight:800;letter-spacing:-0.01em;margin-top:5px}
+.ss-t .n{font-size:10.5px;color:var(--ss-mut);margin-top:3px}
+.ss-t.navy{background:var(--ss-navy);border-color:var(--ss-navy)}
+.ss-t.navy .k{color:rgba(220,228,240,0.6)}
+.ss-t.navy .v{color:#F4F6F8}
+.ss-t.teal{background:var(--ss-teal);border-color:var(--ss-teal)}
+.ss-t.teal .k{color:rgba(255,255,255,0.75)}
+.ss-t.teal .v{color:#fff}
+.ss-t.good .v{color:var(--ss-good)} .ss-t.warn .v{color:var(--ss-warn)} .ss-t.bad .v{color:var(--ss-bad)}
+.ss-t.rec .v{font-size:17.5px;color:var(--ss-teal)}
+/* tooltips */
+.ss-tip{position:relative;display:inline-flex;width:13px;height:13px;border:1px solid var(--ss-border-2);border-radius:50%;color:var(--ss-mut);font:700 8.5px/11px 'Montserrat',sans-serif;justify-content:center;cursor:help;flex:0 0 auto}
+.ss-tip:hover::after{content:attr(data-tip);position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);width:280px;background:var(--ss-solid);border:1px solid var(--ss-border-2);border-radius:10px;padding:10px 12px;font:500 11px/1.5 'Montserrat',sans-serif;letter-spacing:0;text-transform:none;color:var(--ss-ink);z-index:60;box-shadow:0 10px 30px rgba(0,0,0,0.35);white-space:normal}
+/* breakdown */
+.ss-break{border:1px solid var(--ss-border);background:var(--ss-surface);border-radius:14px;margin-top:14px;overflow:hidden}
+.ss-break summary{list-style:none;cursor:pointer;padding:14px 18px;font:800 12px 'Montserrat',sans-serif;letter-spacing:.1em;text-transform:uppercase;color:var(--ss-teal);display:flex;align-items:center;gap:8px}
+.ss-break summary::-webkit-details-marker{display:none}
+.ss-break summary .ar{transition:transform .18s}
+.ss-break[open] summary .ar{transform:rotate(90deg)}
+.ss-break-body{padding:2px 18px 16px}
+.ss-flow{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:9px;margin-bottom:12px}
+.ss-f{border:1px dashed var(--ss-border-2);border-radius:11px;padding:11px 13px;background:var(--ss-surface-2)}
+.ss-f .k{font-size:9.5px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--ss-mut);display:flex;gap:5px;align-items:center}
+.ss-f .v{font-size:16.5px;font-weight:800;margin-top:4px}
+.ss-f .n{font-size:10px;color:var(--ss-mut);margin-top:2px}
+.ss-ref{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px}
+.ss-ref th{font-size:9.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ss-mut);text-align:left;padding:6px 8px;border-bottom:1px solid var(--ss-border-2)}
+.ss-ref td{padding:6px 8px;border-bottom:1px solid var(--ss-border)}
+.ss-ref tr.hit td{background:var(--ss-teal-soft);font-weight:700}
+.ss-note{font-size:11px;color:var(--ss-mut);margin-top:10px;line-height:1.5}
+
+/* ── ingest (dev/admin) ── */
+.ss-ingest{margin-top:26px;border:1px solid rgba(255,255,255,0.14);border-radius:16px;background:rgba(16,21,32,0.92);padding:16px 18px;color:#EDF1F7}
+.ss-ingest h3{margin:0 0 4px;font-size:14px;font-weight:800}
+.ss-ingest .hint{font-size:11.5px;color:rgba(210,220,236,0.65);margin:0 0 12px;line-height:1.5}
+.ss-drop{border:2px dashed rgba(255,255,255,0.25);border-radius:12px;padding:22px;text-align:center;font:600 12.5px 'Montserrat',sans-serif;color:rgba(220,228,240,0.75);cursor:pointer}
+.ss-drop.over{border-color:var(--ss-teal);background:rgba(0,160,180,0.1)}
+.ss-drop.lock{cursor:default;opacity:.6}
+.ss-review{margin-top:12px;font-size:12px;line-height:1.7}
+.ss-review .ok{color:var(--ss-good)} .ss-review .warn{color:var(--ss-warn)}
+.ss-savebar{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.ss-save{border:none;background:var(--ss-teal);color:#fff;border-radius:999px;padding:10px 22px;font:800 12px 'Montserrat',sans-serif;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
+.ss-save[disabled]{opacity:.5;cursor:default}
+.ss-month{border-radius:9px;border:1px solid rgba(255,255,255,0.2);background:#141A28;color:#F4F6F8;padding:9px 11px;font:600 12px 'Montserrat',sans-serif;width:110px}
+.ss-empty{border:1px dashed var(--ss-border-2);border-radius:14px;padding:40px;text-align:center;color:var(--ss-mut);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wall scrim" aria-hidden="true"></div>
+
+<!-- ══════════ LOBBY: market → suburb ══════════ -->
+<div class="ss-lobby" id="ssLobby">
+  <div class="ss-lobby-inner">
+    <div class="ss-step1" id="ssStep1">
+      <div class="ss-lob-head">
+        <div class="ss-eyebrow">The Vault · Research</div>
+        <h1>Suburb Scoring</h1>
+        <p class="ss-sub">Pick a market, then a suburb — long-term quality, remaining runway, value scores and the buying recommendation, straight from the research database.</p>
+      </div>
+      <div class="ss-groups" id="ssMarketGroups"></div>
+      <div class="ss-ingest" id="ssIngest" hidden>
+        <h3>Update data</h3>
+        <p class="hint">Drop the monthly <b>Simple Suburb Scoring</b> market workbooks (one or many at once). Each file replaces that market's House + Unit snapshots after you review the parse summary.</p>
+        <div class="ss-drop" id="ssDrop">Drop workbooks here or click to choose…</div>
+        <input type="file" id="ssFile" accept=".xlsx,.xls" multiple hidden>
+        <div class="ss-review" id="ssReview"></div>
+        <div class="ss-savebar" id="ssSaveBar" hidden>
+          <label style="font-size:11px;font-weight:700;letter-spacing:.06em">SOURCE MONTH <input type="month" class="ss-month" id="ssMonth"></label>
+          <button class="ss-save" id="ssSaveBtn">Save to database</button>
+          <span id="ssSaveMsg" style="font-size:12px"></span>
+        </div>
+      </div>
+    </div>
+    <div class="ss-picker" id="ssStep2">
+      <button class="ss-back" id="ssBack">&larr; Markets</button>
+      <div class="ss-pick-panel">
+        <div class="ss-pick-head">
+          <span class="t" id="ssPickTitle">Market</span>
+          <div class="ss-seg" id="ssPickSeg">
+            <button data-kind="h" class="on">Houses</button>
+            <button data-kind="u">Units</button>
+          </div>
+          <input class="ss-search" id="ssPickSearch" placeholder="Search suburbs…" autocomplete="off">
+        </div>
+        <div class="ss-pick-list" id="ssPickList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ MAIN: list + detail ══════════ -->
+<div class="ss-wrap ss-main" id="ssMain">
+  <div class="ss-topbar">
+    <span class="crumb" id="ssCrumb">—</span>
+    <div class="ss-seg" id="ssKindSeg">
+      <button data-kind="h" class="on">Houses</button>
+      <button data-kind="u">Units</button>
+    </div>
+    <button class="ss-btn" id="ssPinBtn" title="Pin this suburb to the hub desktop">Pin</button>
+  </div>
+  <div class="ss-cols">
+    <aside class="ss-rail">
+      <input class="ss-search" id="ssListSearch" placeholder="Search suburbs…" autocomplete="off">
+      <div class="ss-chips" id="ssQualChips">
+        <button class="ss-chip on" data-q="">All</button>
+        <button class="ss-chip" data-q="AAA">AAA</button>
+        <button class="ss-chip" data-q="BBB">BBB</button>
+        <button class="ss-chip" data-q="CCC">CCC</button>
+        <button class="ss-chip" data-q="DDD">DDD</button>
+      </div>
+      <select class="ss-sort" id="ssSort">
+        <option value="name">Sort · A to Z</option>
+        <option value="runway">Sort · Runway left</option>
+        <option value="scoreValue">Sort · Value score</option>
+        <option value="yield">Sort · Yield</option>
+        <option value="price">Sort · Current price</option>
+      </select>
+      <div class="ss-list" id="ssList"></div>
+      <div class="ss-count" id="ssListCount"></div>
+    </aside>
+    <section class="ss-detail" id="ssDetail"><div class="ss-empty">Pick a suburb from the list.</div></section>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../shared/supabase-client.js?v=79207e52"></script>
+<script src="../shared/tool-registry.js?v=5dbcbed4"></script>
+<script src="../shared/suburb-scoring-parse.js?v=19391c96"></script>
+<script src="../shared/desktop-pins.js?v=e2416017"></script>
+<script src="../shared/auth.js?v=6f88fa92"></script>
+<script src="../shared/auth-gate.js?v=003cdc01"></script>
+<script src="../shared/fit-screen.js?v=5e41a716"></script>
+<script>
+'use strict';
+PP_OS.initChrome({ name: 'Suburb Scoring', section: 'vault', backHref: '../',
+  actions: [{ id: 'ss-markets-btn', label: 'Markets',
+    svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>' }] });
+
+/* ── methodology definitions (extracted from the master DOCUMENTATION workbook) ── */
+const SS_DEFS = {
+  'Current Rent': 'Median asking rent over the last 12 months. Basis for rental growth and yield.',
+  'Current Price': 'Median sales price in the past 3 months (R90). Reference point for capital growth and affordability.',
+  'Price at start of stagnation': 'Median price at the beginning of the stagnation period (e.g. 2018) — baseline for how much prices have moved since.',
+  'Rent at start of stagnation': 'Rent level at the beginning of the stagnation period — baseline for rental recovery and demand trends.',
+  'LT Growth': 'CAGR of median prices from earliest available data to the start of the current stagnation. Long-term capital growth performance, excluding the stagnation so it does not skew the score.',
+  'Fixed Suburb Quality': 'Tiered rating from LT Growth: AAA above 7%, BBB above 6%, CCC above 5%, DDD at or below 5%. Classifies suburbs by their historical ability to generate capital growth.',
+  'Top Median Price': 'Projected cycle ceiling. Capital city: from the runway model (IC rate + wage growth). Suburb/LGA: the capital’s floor-to-ceiling growth applied to the local floor price, adjusted by value.',
+  'Runway left': '(Top Median Price − Current Price) ÷ Current Price. How far prices can still rise before the projected ceiling — higher is better.',
+  'Recommendation': 'Buying strategy derived from Runway Left — how much of this cycle’s upside remains.',
+  'Value Score': 'Stagnation Score + Rental Score. Combines capital and rental growth signals into one number.',
+  'Adjusted value score': '(Value Score of the suburb − Value Score of the capital) — how much better or worse it is performing than the capital on combined price + rental recovery.',
+  'Adjustment': 'Adjusted value score mapped to ±0.30 in 0.10 steps; suburbs are assumed to track within ±30% of the greater region, shifted by the value they are showing.',
+  'Stagnation Rental Growth': '(Current Rent − Rent at start) ÷ Rent at start. Rental growth during stagnation — higher is better.',
+  'Rental score': '0–10 from Stagnation Rental Growth thresholds. Higher = stronger rental demand.',
+  'Stagnation price growth': '(Current Price − Price at start) ÷ Price at start. Lower is better — value not yet realised.',
+  'Stagnation Score': '0–10 from Stagnation Price Growth thresholds. Higher = the suburb has not run yet, more upside.',
+  'Yield': 'Annualised Current Rent ÷ Current Price. Rental return on investment.',
+  'Days on Market': 'Average days a listing takes to sell — the demand pulse behind the Demand label.',
+  'Demand': 'Demand read derived from Days on Market — Strong, Neutral or Soft.'
+};
+
+/* ── state ── */
+const state = { market: null, kind: 'h', suburb: null, q: '', qual: '', sort: 'name' };
+const META = {};          /* key → {label, market_slug, kind, source_month, computed_at, meta} */
+const DATA = {};          /* key → payload (lazy) */
+let MARKET_LIST = [];     /* [{slug,label,kinds:{h:meta,u:meta}}] capitals-first */
+const CAPITALS = ['melbourne','adelaide','sydney','perth','brisbane','darwin'];
+const $ = s => document.querySelector(s);
+const money = v => (v == null || !isFinite(v)) ? '—' : '$' + Math.round(v).toLocaleString();
+const pct = (v, dp) => (v == null || !isFinite(v)) ? '—' : (v * 100).toFixed(dp == null ? 2 : dp) + '%';
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const keyOf = (m, k) => m + '-' + k;
+const tip = name => SS_DEFS[name] ? '<span class="ss-tip" data-tip="' + esc(SS_DEFS[name]) + '">i</span>' : '';
+
+/* ── boot ── */
+async function boot() {
+  let guard = 0; while (!window.sb && guard++ < 80) await new Promise(r => setTimeout(r, 100));
+  if (!window.sb) return;
+  try {
+    const { data, error } = await sb.from('suburb_scores')
+      .select('key,label,market_slug,kind,source_month,computed_at, meta:payload->meta');
+    if (error) throw error;
+    (data || []).forEach(r => { META[r.key] = r; });
+  } catch (e) {
+    $('#ssMarketGroups').innerHTML = '<div class="ss-empty" style="color:rgba(220,228,240,.7)">No data yet — apply migration 082 and load the market workbooks below (or run the seed script).</div>';
+  }
+  buildMarketList();
+  renderLobbyTiles();
+  wireUi();
+  initIngestGate();
+  const q = new URLSearchParams(location.search);
+  const m = q.get('market'), k = q.get('kind') === 'u' ? 'u' : 'h', sub = q.get('suburb');
+  if (m && META[keyOf(m, k)]) {
+    await openMarket(m, k, sub, true);
+  } else {
+    openLobby();
+  }
+}
+
+function buildMarketList() {
+  const bySlug = {};
+  Object.values(META).forEach(r => {
+    (bySlug[r.market_slug] = bySlug[r.market_slug] || { slug: r.market_slug, label: r.label, kinds: {} }).kinds[r.kind] = r;
+  });
+  const caps = [], regs = [];
+  Object.values(bySlug).forEach(m => (CAPITALS.includes(m.slug) ? caps : regs).push(m));
+  const byName = (a, b) => a.label.localeCompare(b.label);
+  MARKET_LIST = caps.sort(byName).concat(regs.sort(byName));
+}
+
+function renderLobbyTiles() {
+  const host = $('#ssMarketGroups');
+  if (!MARKET_LIST.length) return;
+  const tile = m => {
+    const hM = m.kinds.h && m.kinds.h.meta, uM = m.kinds.u && m.kinds.u.meta;
+    const n = (hM && hM.suburbs) || 0, nu = (uM && uM.suburbs) || 0;
+    const kinds = [m.kinds.h ? 'H' : null, m.kinds.u ? 'U' : null].filter(Boolean).join(' · ');
+    return '<button type="button" class="ss-tile" data-m="' + m.slug + '">'
+      + '<span class="kinds">' + kinds + '</span>'
+      + '<div class="nm">' + esc(m.label) + '</div>'
+      + '<div class="meta">' + n + ' house · ' + nu + ' unit suburbs</div></button>';
+  };
+  const caps = MARKET_LIST.filter(m => CAPITALS.includes(m.slug));
+  const regs = MARKET_LIST.filter(m => !CAPITALS.includes(m.slug));
+  host.innerHTML =
+    (caps.length ? '<div class="ss-ghead">Capital cities</div><div class="ss-tiles">' + caps.map(tile).join('') + '</div>' : '')
+    + (regs.length ? '<div class="ss-ghead">Regional markets</div><div class="ss-tiles">' + regs.map(tile).join('') + '</div>' : '');
+  host.querySelectorAll('.ss-tile').forEach(b => b.addEventListener('click', () => showPicker(b.dataset.m)));
+}
+
+/* ── lobby flow ── */
+function openLobby() {
+  document.body.classList.add('ss-lobby-open');
+  $('#ssLobby').classList.add('show');
+  $('#ssStep1').classList.remove('hide');
+  $('#ssStep2').classList.remove('show');
+}
+function closeLobby() {
+  document.body.classList.remove('ss-lobby-open');
+  $('#ssLobby').classList.remove('show');
+}
+async function showPicker(slug) {
+  const m = MARKET_LIST.find(x => x.slug === slug); if (!m) return;
+  state.market = slug;
+  if (!m.kinds[state.kind]) state.kind = m.kinds.h ? 'h' : 'u';
+  $('#ssStep1').classList.add('hide');
+  $('#ssStep2').classList.add('show');
+  $('#ssPickTitle').textContent = m.label;
+  $('#ssPickSearch').value = '';
+  syncSegs();
+  $('#ssPickList').innerHTML = '<div style="padding:16px;font-size:12px;color:rgba(210,220,236,.6)">Loading…</div>';
+  await ensureData(slug, state.kind);
+  renderPickList();
+  $('#ssPickSearch').focus();
+}
+function renderPickList() {
+  const d = DATA[keyOf(state.market, state.kind)];
+  const host = $('#ssPickList');
+  if (!d) { host.innerHTML = '<div style="padding:16px;font-size:12px">No ' + (state.kind === 'h' ? 'house' : 'unit') + ' data for this market.</div>'; return; }
+  const q = $('#ssPickSearch').value.trim().toLowerCase();
+  const rows = d.rows.filter(r => !q || (r.suburb + ' ' + r.lga).toLowerCase().includes(q));
+  host.innerHTML = '<button type="button" class="ss-pick-row" data-s="__bench">'
+    + '<span class="s">' + esc(d.benchmark.suburb) + '</span><span class="l">Benchmark</span>'
+    + '<span class="r">' + pct(d.benchmark.runway) + '</span></button>'
+    + rows.slice(0, 400).map(r => '<button type="button" class="ss-pick-row" data-s="' + esc(r.suburb) + '">'
+      + '<span class="s">' + esc(r.suburb) + '</span><span class="l">' + esc(r.lga) + '</span>'
+      + '<span class="r">' + pct(r.runway) + '</span></button>').join('')
+    + (rows.length > 400 ? '<div style="padding:10px;font-size:11px;color:rgba(210,220,236,.55)">' + (rows.length - 400) + ' more — keep typing to narrow.</div>' : '');
+  host.querySelectorAll('.ss-pick-row').forEach(b => b.addEventListener('click', () => {
+    const s = b.dataset.s;
+    closeLobby();
+    enterMain(s === '__bench' ? null : s);
+  }));
+}
+
+/* ── main view ── */
+async function openMarket(slug, kind, suburb, fromBoot) {
+  state.market = slug; state.kind = kind;
+  await ensureData(slug, kind);
+  closeLobby();
+  enterMain(suburb || null, fromBoot);
+}
+function enterMain(suburb, skipUrl) {
+  $('#ssMain').classList.add('show');
+  const d = DATA[keyOf(state.market, state.kind)];
+  state.suburb = suburb && d && (d.rows.some(r => r.suburb === suburb)) ? suburb : null;
+  syncSegs();
+  renderList();
+  renderDetail();
+  if (!skipUrl) syncURL();
+}
+function syncSegs() {
+  document.querySelectorAll('#ssKindSeg button, #ssPickSeg button').forEach(b => b.classList.toggle('on', b.dataset.kind === state.kind));
+  const m = MARKET_LIST.find(x => x.slug === state.market);
+  document.querySelectorAll('#ssKindSeg button, #ssPickSeg button').forEach(b => {
+    const avail = m && m.kinds[b.dataset.kind];
+    b.disabled = !avail; b.style.opacity = avail ? '' : '.4';
+  });
+  if (m) $('#ssCrumb').innerHTML = '<b>' + esc(m.label) + '</b> · ' + (state.kind === 'h' ? 'Houses' : 'Units')
+    + (META[keyOf(state.market, state.kind)] && META[keyOf(state.market, state.kind)].source_month ? ' · ' + esc(META[keyOf(state.market, state.kind)].source_month) : '');
+}
+function curRows() {
+  const d = DATA[keyOf(state.market, state.kind)];
+  if (!d) return [];
+  let rows = d.rows;
+  if (state.qual) rows = rows.filter(r => (r.quality || '').toUpperCase() === state.qual);
+  if (state.q) { const q = state.q.toLowerCase(); rows = rows.filter(r => (r.suburb + ' ' + r.lga).toLowerCase().includes(q)); }
+  const s = state.sort;
+  rows = rows.slice().sort(s === 'name'
+    ? (a, b) => a.suburb.localeCompare(b.suburb)
+    : (a, b) => ((b[s] == null ? -Infinity : b[s]) - (a[s] == null ? -Infinity : a[s])));
+  return rows;
+}
+function renderList() {
+  const d = DATA[keyOf(state.market, state.kind)];
+  const host = $('#ssList');
+  if (!d) { host.innerHTML = '<div class="ss-empty">No data.</div>'; $('#ssListCount').textContent = ''; return; }
+  const rows = curRows();
+  const row = (r, cls) => '<button type="button" class="ss-row ' + cls + (state.suburb === r.suburb ? ' cur' : (cls !== 'bench' || state.suburb ? '' : ' cur')) + '" data-s="' + esc(r.suburb) + '">'
+    + '<span class="s">' + esc(r.suburb) + '</span>'
+    + '<span class="l">' + esc(cls === 'bench' ? 'Benchmark' : r.lga) + '</span>'
+    + '<span class="ss-q q' + esc((r.quality || '').toUpperCase()) + '">' + esc(r.quality || '—') + '</span>'
+    + '<span class="r">' + pct(r.runway, 1) + '</span></button>';
+  host.innerHTML = row(d.benchmark, 'bench') + rows.map(r => row(r, '')).join('');
+  $('#ssListCount').textContent = rows.length + ' of ' + d.rows.length + ' suburbs';
+  host.querySelectorAll('.ss-row').forEach(b => b.addEventListener('click', () => {
+    state.suburb = b.classList.contains('bench') ? null : b.dataset.s;
+    renderList(); renderDetail(); syncURL();
+  }));
+}
+function tile(k, v, cls, note, defName) {
+  return '<div class="ss-t ' + (cls || '') + '"><div class="k">' + esc(k) + (defName ? tip(defName) : '') + '</div>'
+    + '<div class="v">' + v + '</div>' + (note ? '<div class="n">' + note + '</div>' : '') + '</div>';
+}
+function renderDetail() {
+  const d = DATA[keyOf(state.market, state.kind)];
+  const host = $('#ssDetail');
+  if (!d) { host.innerHTML = '<div class="ss-empty">No data for this market.</div>'; return; }
+  const m = MARKET_LIST.find(x => x.slug === state.market);
+  const r = state.suburb ? d.rows.find(x => x.suburb === state.suburb) : d.benchmark;
+  if (!r) { host.innerHTML = '<div class="ss-empty">Pick a suburb from the list.</div>'; return; }
+  const bench = d.benchmark;
+  const isBench = r === bench;
+  const qual = (r.quality || '').toUpperCase();
+  const demandCls = /strong/i.test(r.demand || '') ? 'good' : /soft/i.test(r.demand || '') ? 'bad' : 'warn';
+  const kindWord = state.kind === 'h' ? 'house' : 'unit';
+  host.innerHTML =
+    '<div class="ss-head-card"><div class="who"><h2>' + esc(r.suburb) + '</h2>'
+    + '<div class="path">' + esc(isBench ? 'Market benchmark' : ('LGA · ' + r.lga)) + ' &nbsp;·&nbsp; ' + esc(m.label) + ' ' + (state.kind === 'h' ? 'Houses' : 'Units') + '</div></div>'
+    + '<span class="ss-bigq q' + qual + '" title="Fixed Suburb Quality">' + esc(qual || '—') + '</span></div>'
+    + '<div class="ss-tgrid">'
+    + (isBench ? '' : tile('LGA', esc(r.lga), 'navy'))
+    + tile('Fixed Suburb Quality', esc(qual || '—'), qual === 'AAA' ? 'good' : qual === 'DDD' ? 'bad' : '', null, 'Fixed Suburb Quality')
+    + tile('Recommendation', esc(r.rec || '—'), 'rec', null, 'Recommendation')
+    + tile('Demand', esc(r.demand || '—'), demandCls, (r.dom != null ? Math.round(r.dom) + ' days on market' : null), 'Demand')
+    + tile(esc(bench.suburb) + ' runway', pct(bench.runway), '', 'market ceiling headroom', 'Runway left')
+    + tile((isBench ? 'Runway left' : (r.isLga ? 'LGA runway' : 'Suburb runway')), pct(r.runway), (r.runway != null && r.runway < 0 ? 'bad' : ''), null, 'Runway left')
+    + tile('Current price', money(r.price), 'teal', null, 'Current Price')
+    + tile('Current rent', money(r.rent) + (r.rent != null ? '/wk' : ''), 'teal', null, 'Current Rent')
+    + tile('Price CAGR since stagnation', pct(r.cagrPrice), '', 'from ' + money(r.price0), 'Stagnation price growth')
+    + tile('Rent CAGR since stagnation', pct(r.cagrRent), '', 'from ' + money(r.rent0) + '/wk', 'Stagnation Rental Growth')
+    + tile('Fixed ' + kindWord + ' LT CAGR', pct(r.lt), '', 'to start of stagnation', 'LT Growth')
+    + tile('Yield', pct(r.yield), '', null, 'Yield')
+    + '</div>'
+    + renderBreakdown(r, bench, d);
+  $('#ssPinBtn').onclick = () => pinCurrent(r);
+}
+function renderBreakdown(r, bench, d) {
+  const adjBand = (d.scoringRef || []).find(x => x.applied != null && r.runway != null && Math.abs(x.applied - r.runway) < 0.0005);
+  const f = (k, v, note, defName) => '<div class="ss-f"><div class="k">' + esc(k) + (defName ? tip(defName) : '') + '</div><div class="v">' + v + '</div>' + (note ? '<div class="n">' + esc(note) + '</div>' : '') + '</div>';
+  return '<details class="ss-break"><summary><span class="ar">▶</span> How it’s scored</summary><div class="ss-break-body">'
+    + '<div class="ss-flow">'
+    + f('Rental score', (r.scoreRent != null ? r.scoreRent + ' / 10' : '—'), 'rent recovery since stagnation', 'Rental score')
+    + f('Price score', (r.scorePrice != null ? r.scorePrice + ' / 10' : '—'), 'higher = price has not run yet', 'Stagnation Score')
+    + f('Value score', (r.scoreValue != null ? String(r.scoreValue) : '—'), 'rental + price scores', 'Value Score')
+    + f('vs ' + esc(bench.suburb), (r.adjValue != null ? (r.adjValue > 0 ? '+' : '') + r.adjValue : '—'), 'value-score gap to the benchmark', 'Adjusted value score')
+    + f('Top median price', money(r.topPrice), 'projected cycle ceiling', 'Top Median Price')
+    + f('Runway left', pct(r.runway), 'to the projected ceiling', 'Runway left')
+    + '</div>'
+    + ((d.scoringRef || []).length ?
+      '<table class="ss-ref"><thead><tr><th>Value-score gap ' + tip('Adjustment') + '</th><th>Adjustment</th><th>Runway applied</th></tr></thead><tbody>'
+      + d.scoringRef.map(x => '<tr' + (adjBand === x ? ' class="hit"' : '') + '><td>' + esc(x.band) + '</td><td>' + (x.adj > 0 ? '+' : '') + x.adj.toFixed(2) + '</td><td>' + pct(x.applied) + '</td></tr>').join('')
+      + '</tbody></table>' : '')
+    + '<div class="ss-note">Baselines: rent ' + money(r.rent0) + '/wk and price ' + money(r.price0) + ' at the start of stagnation. '
+    + 'Suburbs are assumed to track within ±30% of the greater market’s runway, shifted by the value they are showing. Hover any ⓘ for the full definition.</div>'
+    + '</div></details>';
+}
+function pinCurrent(r) {
+  if (!window.PP_PINS) return;
+  const url = 'tools/suburb-scoring.html?market=' + encodeURIComponent(state.market) + '&kind=' + state.kind + (state.suburb ? '&suburb=' + encodeURIComponent(state.suburb) : '');
+  PP_PINS.add({ kind: 'link', label: r.suburb + ' · Scoring', url: url, sec: 'vault', a1: '#7E8CF1', a2: '#233AE7',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.5-5.4-6.5-10a6.5 6.5 0 0113 0c0 4.6-6.5 10-6.5 10z"/><path d="M9.5 11l2 2 3.5-4"/></svg>' });
+  const b = $('#ssPinBtn'); b.textContent = 'Pinned ✓'; setTimeout(() => { b.textContent = 'Pin'; }, 1600);
+}
+function syncURL() {
+  const p = '?market=' + encodeURIComponent(state.market || '') + '&kind=' + state.kind + (state.suburb ? '&suburb=' + encodeURIComponent(state.suburb) : '');
+  history.replaceState(null, '', p);
+}
+
+/* ── data ── */
+async function ensureData(slug, kind) {
+  const key = keyOf(slug, kind);
+  if (DATA[key] !== undefined) return DATA[key];
+  try {
+    const { data } = await sb.from('suburb_scores').select('payload').eq('key', key).maybeSingle();
+    DATA[key] = (data && data.payload && data.payload.rows) ? data.payload : null;
+  } catch (e) { DATA[key] = null; }
+  return DATA[key];
+}
+
+/* ── UI wiring ── */
+function wireUi() {
+  $('#ssBack').addEventListener('click', () => { $('#ssStep2').classList.remove('show'); $('#ssStep1').classList.remove('hide'); });
+  $('#ssPickSearch').addEventListener('input', renderPickList);
+  document.querySelectorAll('#ssPickSeg button').forEach(b => b.addEventListener('click', async () => {
+    if (b.disabled) return; state.kind = b.dataset.kind; syncSegs();
+    await ensureData(state.market, state.kind); renderPickList();
+  }));
+  document.querySelectorAll('#ssKindSeg button').forEach(b => b.addEventListener('click', async () => {
+    if (b.disabled) return; state.kind = b.dataset.kind;
+    await ensureData(state.market, state.kind);
+    const d = DATA[keyOf(state.market, state.kind)];
+    if (state.suburb && d && !d.rows.some(r => r.suburb === state.suburb)) state.suburb = null;   /* suburb not tracked for this kind */
+    syncSegs(); renderList(); renderDetail(); syncURL();
+  }));
+  $('#ssListSearch').addEventListener('input', e => { state.q = e.target.value.trim(); renderList(); });
+  document.querySelectorAll('#ssQualChips .ss-chip').forEach(c => c.addEventListener('click', () => {
+    state.qual = c.dataset.q;
+    document.querySelectorAll('#ssQualChips .ss-chip').forEach(x => x.classList.toggle('on', x === c));
+    renderList();
+  }));
+  $('#ssSort').addEventListener('change', e => { state.sort = e.target.value; renderList(); });
+  const mb = document.getElementById('ss-markets-btn');
+  if (mb) mb.addEventListener('click', openLobby);
+  $('#ssLobby').addEventListener('click', e => {
+    /* clicking the dim outside the panels closes the lobby ONLY when a market is loaded behind it */
+    if (e.target === $('#ssLobby') && state.market && DATA[keyOf(state.market, state.kind)]) closeLobby();
+  });
+}
+
+/* ── ingest (dev/admin, DENY by default; RLS is the real boundary) ── */
+let _ssCanWrite = false;
+const _pending = [];   /* [{marketSlug,label,kinds,warnings,fileName}] */
+async function initIngestGate() {
+  try {
+    let guard = 0; while (!window.sb && guard++ < 50) await new Promise(r => setTimeout(r, 100));
+    const prof = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null;
+    const realWriter = !!prof && (prof.tier === 'dev' || prof.tier === 'admin');
+    const va = (typeof getViewAsLevel === 'function') ? getViewAsLevel() : '';
+    _ssCanWrite = realWriter && (va === 'dev' || va === 'admin');
+  } catch (e) { _ssCanWrite = false; }
+  $('#ssIngest').hidden = !_ssCanWrite;
+  if (!_ssCanWrite) return;
+  const drop = $('#ssDrop'), file = $('#ssFile');
+  drop.addEventListener('click', () => file.click());
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); handleFiles(e.dataTransfer.files); });
+  file.addEventListener('change', () => handleFiles(file.files));
+  const now = new Date();
+  $('#ssMonth').value = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+  $('#ssSaveBtn').addEventListener('click', saveIngest);
+}
+async function handleFiles(list) {
+  if (!list || !list.length) return;
+  const rev = $('#ssReview');
+  rev.innerHTML = 'Parsing…';
+  _pending.length = 0;
+  const lines = [];
+  for (const f of list) {
+    try {
+      const buf = await f.arrayBuffer();
+      await new Promise(r => setTimeout(r, 15));
+      const wb = XLSX.read(buf, { type: 'array' });
+      const res = PP_SSCORE.parseWorkbook(XLSX, wb, f.name);
+      if (!res.marketSlug) { lines.push('<div class="warn">⚠ ' + esc(f.name) + ' — market not recognized (name the file "Simple Suburb Scoring _ <Market>").</div>'); continue; }
+      _pending.push(Object.assign(res, { fileName: f.name }));
+      const cnt = k => res.kinds[k] ? res.kinds[k].rows.length : 0;
+      lines.push('<div class="ok">✓ ' + esc(res.label) + ' — ' + cnt('h') + ' house rows · ' + cnt('u') + ' unit rows'
+        + (res.warnings.length ? ' <span class="warn">(' + res.warnings.length + ' warnings)</span>' : '') + '</div>');
+      res.warnings.forEach(w => lines.push('<div class="warn">&nbsp;&nbsp;⚠ ' + esc(w) + '</div>'));
+    } catch (e) { lines.push('<div class="warn">⚠ ' + esc(f.name) + ' — parse failed: ' + esc(e.message || e) + '</div>'); }
+  }
+  rev.innerHTML = lines.join('');
+  $('#ssSaveBar').hidden = !_pending.length;
+  $('#ssSaveMsg').textContent = '';
+}
+async function saveIngest() {
+  if (!_ssCanWrite || !_pending.length) return;
+  const btn = $('#ssSaveBtn'), msg = $('#ssSaveMsg');
+  btn.disabled = true;
+  const month = $('#ssMonth').value || null;
+  const prof = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null;
+  const stamp = new Date().toISOString();
+  let n = 0, fails = 0;
+  for (const res of _pending) {
+    for (const k of ['h', 'u']) {
+      const ds = res.kinds[k]; if (!ds) continue;
+      const payload = {
+        meta: { suburbs: ds.rows.filter(r => !r.isLga).length, lgas: ds.rows.filter(r => r.isLga).length, rows: ds.rows.length },
+        benchmark: ds.benchmark, rows: ds.rows, scoringRef: ds.scoringRef
+      };
+      msg.textContent = 'Saving ' + res.label + ' ' + k.toUpperCase() + '…';
+      const { error } = await sb.from('suburb_scores').upsert({
+        key: keyOf(res.marketSlug, k), market_slug: res.marketSlug, kind: k, label: res.label,
+        payload, source_month: month, computed_at: stamp, computed_by: (prof && prof.id) || null
+      }, { onConflict: 'key' });
+      if (error) { fails++; msg.textContent = res.label + ' ' + k + ' failed: ' + error.message; }
+      else { n++; DATA[keyOf(res.marketSlug, k)] = payload; META[keyOf(res.marketSlug, k)] = { key: keyOf(res.marketSlug, k), label: res.label, market_slug: res.marketSlug, kind: k, source_month: month, computed_at: stamp, meta: payload.meta }; }
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  btn.disabled = false;
+  msg.textContent = fails ? ('Saved ' + n + ', ' + fails + ' failed.') : ('✓ Saved ' + n + ' snapshots.');
+  buildMarketList(); renderLobbyTiles();
+}
+
+boot();
+</script>
+</body>
+</html>

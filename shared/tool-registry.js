@@ -37,6 +37,7 @@
     'market-compare':   { sec: 'vault',     file: 'market-compare.html',         label: 'Market Compare' },
     'bs-slides':        { sec: 'vault',     file: 'buying-selling-slides.html',  label: 'Buying/Selling Slides' },
     'suburb-data':      { sec: 'vault',     file: 'suburb-selection-data.html',  label: 'Suburb Selection Data' },
+    'suburb-scoring':   { sec: 'vault',     file: 'suburb-scoring.html',         label: 'Suburb Scoring' },
     'data-map':         { sec: 'vault',     file: 'data-architecture.html',      label: 'Data Architecture Map' },
     'reports-lite':     { sec: 'vault',     file: 'online-reports.html',         label: 'Lite Online Reports' },
     'lite-links':       { sec: 'vault',     file: 'lite-report-links.html',      label: 'Lite Report Links' },
