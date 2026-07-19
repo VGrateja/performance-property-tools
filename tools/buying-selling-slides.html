@@ -643,7 +643,8 @@ function forecastPop(slug, nYears){
     p += g; rows.push({ y, label:(y-1)+'-'+String(y).slice(-2), pop:p });
   }
   const finalPop = rows[rows.length-1].pop, growth = finalPop - base;
-  return { base, rows, finalPop, growth, growthPct: growth/base*100 };
+  const baseLabel = (years[0]-2)+'-'+String(years[0]-1).slice(-2);   /* the FY before the first projection year, e.g. 2024-25 */
+  return { base, baseLabel, rows, finalPop, growth, growthPct: growth/base*100 };
 }
 
 /* Sensitivity ladder for one region/type. years = 1 (sell) / 5 (buy). */
@@ -672,19 +673,39 @@ function stub(kicker,title,source){ return chrome('<div class="pad">'+head(kicke
 /* Blank title slide — add your own text via the editor (use tokens like
    {region} {kind} {year} so it auto-fills per region + year). */
 function slideTitle(ctx){ return chrome('<div class="pad"></div>'); }
-function slideForecastPop(ctx){
-  const f = forecastPop(ctx.slug, 3);
-  if (!f) return stub('Forecast','Forecasted Population','population.gov.au + Forge');
-  const rows = f.rows.map(r=>'<tr><td>By '+r.label+'</td><td>'+Math.round(r.pop).toLocaleString()+'</td></tr>').join('');
-  return chrome('<div class="pad">'+head('Forecast','Forecasted Population')
-    + '<div class="bss-cards">'
-    + '<div class="bss-card"><div class="k">Current (2024-25)</div><div class="v">'+Math.round(f.base).toLocaleString()+'</div></div>'
-    + '<div class="bss-card"><div class="k">By '+f.rows[f.rows.length-1].label+'</div><div class="v">'+Math.round(f.finalPop).toLocaleString()+'</div></div>'
-    + '<div class="bss-card"><div class="k">Forecasted 3-Year Growth</div><div class="v bss-pos">+'+Math.round(f.growth).toLocaleString()+'</div><div class="k" style="margin-top:4px">('+pct(f.growthPct)+')</div></div>'
-    + '</div>'
-    + '<table class="bss-tbl" style="margin-top:26px;max-width:520px"><thead><tr><th>Year</th><th>Population</th></tr></thead><tbody>'
-    + '<tr><td>Current (2024-25)</td><td>'+Math.round(f.base).toLocaleString()+'</td></tr>'+rows+'</tbody></table>'
-    + '<div class="bss-note">Base population live from Forge; components from the population.gov.au projections.</div></div>');
+/* Page 13: Forecasted Population — sample-deck look (Van 2026-07-19): four
+   simple bars (grey current FY + teal forecast years), comma value labels
+   above, category labels only (no axes/gridlines); the y-range is compressed
+   around the data so 3-year growth reads visually. The summary line under the
+   chart is AUTHORED via the {pop_*} tokens. */
+function mountPopForecast(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderPopForecastChart(host, slug); }
+async function renderPopForecastChart(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const f=forecastPop(slug,3);
+  if(!f){ host.innerHTML='<div class="bss-chartload">No population projection for this region.</div>'; return; }
+  const cm=v=>Math.round(v).toLocaleString();
+  const cats=['Current ('+f.baseLabel+')'].concat(f.rows.map(r=>r.label));
+  const vals=[f.base].concat(f.rows.map(r=>r.pop));
+  const lo=Math.min.apply(null,vals), hi=Math.max.apply(null,vals), span=Math.max(hi-lo,1);
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
+      formatter:params=>{ const p=params[0]; return '<b>'+p.axisValue+'</b><br>'+p.marker+'Population: <b>'+cm(p.value)+'</b>'; } },
+    grid:{left:28,right:28,top:56,bottom:34},
+    xAxis:{ type:'category', data:cats, axisLabel:{color:'#444',fontSize:9.5}, axisTick:{show:false}, axisLine:{show:false} },
+    yAxis:{ type:'value', min:Math.max(0,lo-span*2.3), max:hi+span*0.25, show:false },
+    series:[{ type:'bar', barCategoryGap:'32%',
+      data:vals.map((v,i)=>({value:v,itemStyle:{color:i===0?'#c6c6c6':'#00A0B4'}})),
+      label:{show:true,position:'top',fontSize:9.5,color:'#333',formatter:p=>cm(p.value)} }] };
+  host.innerHTML='';
+  const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
+  host.appendChild(box);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    if(!box.isConnected||!window.echarts) return;
+    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
+  }); });
 }
 function slideSensitivity(ctx, type){
   const s = sensitivity(ctx.slug, type, ctx.mode==='buy'?5:1);
@@ -972,9 +993,9 @@ function chartSlideBare(bottomPad){ return chrome('<div class="pad" style="paddi
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
     if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
@@ -982,6 +1003,7 @@ async function loadEntryAndPrices(){
   try{ const D=await computeRatio(state.slug);   /* same series as the %-of-peer slide (cached) */
     if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
   try{ VRINFO=await getVRAdjusted(state.slug); }catch(e){}   /* same figures as the slide-5 cards (cached) */
+  try{ POPINFO=forecastPop(state.slug,3); }catch(e){}   /* same figures as the pop-forecast chart */
   try{
     await whenChartsReady();
     const payload=await getFeed(state.slug);
@@ -1254,7 +1276,7 @@ const SLIDE_DEFS = [
   { t:'% of Peer City', render: c=>chartSlideBare(112), mount:(el,c)=>mountRatio(el,c.slug) }   /* % of peer — headless */,
   { t:'Stock v Days on Market', render: c=>chartSlideBare(112), mount:(el,c)=>mountStockDom(el,c.slug) }   /* SOM v ADOM — custom sample-look chart */,
   { t:'Vacancy v Rent', render: c=>chartSlideBare(112), mount:(el,c)=>mountVacRent(el,c.slug) }   /* VR v Rent — custom sample-look chart */,
-  { t:'Forecasted Population', render: slideForecastPop },
+  { t:'Forecasted Population', render: c=>chartSlideBare(220), mount:(el,c)=>mountPopForecast(el,c.slug) }   /* custom sample-look chart; 220px bottom pad reserves room for the authored {pop_*} summary + separator line */,
   { t:'Sensitivity — Houses', render: c=>slideSensitivity(c,'h') },
   { t:'Sensitivity — Units', render: c=>slideSensitivity(c,'u') },
   { t:'Median Unit Price', render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'u') },   /* Median UNIT Price twin (appended last — inserting mid-deck would shift every slide's saved overlays) */
@@ -1568,7 +1590,14 @@ function _tokenMap(){
     /* live VR forecast (same figures as the slide-5 cards) */
     vr_current:_vrPct(VRINFO&&VRINFO.currentVR), vr_forecast:_vrPct(VRINFO&&VRINFO.forecastVR),
     vr_households:_vrInt(VRINFO&&VRINFO.expNewHouseholds), vr_properties:_vrInt(VRINFO&&VRINFO.expProperties),
-    vr_trend:(VRINFO&&VRINFO.currentVR!=null&&VRINFO.forecastVR!=null)?(VRINFO.forecastVR>=VRINFO.currentVR?'easing':'tightening'):'—' };
+    vr_trend:(VRINFO&&VRINFO.currentVR!=null&&VRINFO.forecastVR!=null)?(VRINFO.forecastVR>=VRINFO.currentVR?'easing':'tightening'):'—',
+    /* live population forecast (same figures as the pop-forecast chart) */
+    pop_current:POPINFO?Math.round(POPINFO.base).toLocaleString():'—',
+    pop_target:POPINFO?Math.round(POPINFO.finalPop).toLocaleString():'—',
+    pop_growth:POPINFO?((POPINFO.growth>=0?'+':'')+Math.round(POPINFO.growth).toLocaleString()):'—',
+    pop_growth_pct:POPINFO?pct(POPINFO.growthPct):'—',
+    pop_current_fy:POPINFO?POPINFO.baseLabel:'—',
+    pop_target_fy:POPINFO?POPINFO.rows[POPINFO.rows.length-1].label:'—' };
 }
 function resolveTokens(s){ if(!s || s.indexOf('{')<0) return s; const map=_tokenMap(); return s.replace(/\{(\w+)\}/g,(mm,k)=> (map[k]!=null?map[k]:mm)); }
 /* Tokens are STORED as literal placeholders ({region}, {year}, …) and only
@@ -1774,7 +1803,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
