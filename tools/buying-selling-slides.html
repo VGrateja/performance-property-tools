@@ -766,11 +766,24 @@ async function renderVacRentChart(host, slug){
     if(a.keys.length) D={ years:a.keys, house:a.cols[0].map(v=>Math.round(v)), unit:a.cols[1].map(v=>Math.round(v)), vr:a.cols[2].map(v=>Math.round(v*1e4)/100) };
   }catch(e){}
   if(!D){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  /* Head-trim: SQM'\''s first datapoints are tiny-sample junk (2004-05 spikes of
+     12-37% across ~30 regions — the raw mart rows, not an adapter bug; Adelaide
+     is one of the few clean series). Drop leading years until two consecutive
+     plausible (≤8%) values; genuine mid-series highs (Gladstone/Mackay mining
+     bust ~9%) sit later so they survive. No-op once the mart gets cleaned. */
+  { let i0=0;
+    while(i0<D.vr.length-1 && !(D.vr[i0]<=8 && D.vr[i0+1]<=8)) i0++;
+    if(i0>0 && i0<D.vr.length-1) D={ years:D.years.slice(i0), house:D.house.slice(i0), unit:D.unit.slice(i0), vr:D.vr.slice(i0) };
+  }
   const dollars=v=>'$'+Number(v).toLocaleString();
   const rMax=Math.max.apply(null,D.house.concat(D.unit));
   const rStep=[50,100,200,250,500].find(s=>rMax/s<=9)||500;
   const rTop=Math.ceil((rMax*1.08)/rStep)*rStep;   /* headroom so bar labels clear the frame */
-  const vTop=Math.ceil((Math.max.apply(null,D.vr)*1.15)/0.25)*0.25;
+  /* dynamic tick step — a fixed 0.25% smears the axis into dozens of labels
+     whenever the data peaks high */
+  const vMax=Math.max.apply(null,D.vr);
+  let vStep=5, vTop=Math.ceil((vMax*1.15)/5)*5;
+  for(const s of [0.25,0.5,1,2,2.5,5]){ const t=Math.ceil((vMax*1.15)/s)*s; if(t/s<=12){ vStep=s; vTop=t; break; } }
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
       formatter:params=>{ return '<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.seriesType==='line'?(p.value==null?'—':Number(p.value).toFixed(2)+'%'):dollars(p.value))+'</b>').join('<br>'); } },
@@ -779,7 +792,7 @@ async function renderVacRentChart(host, slug){
     grid:{left:64,right:64,top:44,bottom:46},
     xAxis:{ type:'category', data:D.years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
     yAxis:[
-      { type:'value', min:0, max:vTop, interval:0.25, axisLabel:{color:'#444',fontSize:9,formatter:v=>v.toFixed(2)+'%'}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+      { type:'value', min:0, max:vTop, interval:vStep, axisLabel:{color:'#444',fontSize:9,formatter:v=>v.toFixed(2)+'%'}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
         name:'Vacancy Rate', nameLocation:'middle', nameGap:50, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
       { type:'value', min:0, max:rTop, interval:rStep, axisLabel:{color:'#444',fontSize:9,formatter:dollars}, splitLine:{show:false},
         name:'Rent House | Rent Unit', nameLocation:'middle', nameGap:48, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} } ],
