@@ -11,7 +11,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="shared/supabase-client.js?v=fe17cd23"></script>
+<script src="shared/supabase-client.js?v=79207e52"></script>
+<script src="shared/tool-registry.js?v=30329f05"></script>
 <script src="shared/error-reporter.js?v=b0f8f8c9"></script>
 <link rel="stylesheet" href="shared/common.css?v=fffe58f7"/>
 <style>
@@ -241,6 +242,9 @@
         <span>Pending</span>
         <span class="hub-pending-count" id="hubPendingCount">0</span>
       </button>
+      <button class="mb-ic" id="hubGroupsBtn" type="button" hidden title="Groups — assign people & tools (dev)" aria-label="Groups admin" onclick="openGroupsAdminModal()">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9.5" r="2.2"/><path d="M4 19c.9-3.4 2.8-5.1 5-5.1s4.1 1.7 5 5.1"/><path d="M15.5 19c.4-2 1.4-3.3 2.9-3.7"/></svg>
+      </button>
       <button class="mb-ic" id="pposModeBtn" type="button" title="Appearance — Day / Night"><svg id="pposModeIco" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
       <span class="mb-clock" id="mbClock">—</span>
       <div class="mb-id" id="hubIdentityPill">
@@ -281,6 +285,68 @@
     </div>
   </div>
 
+  <!-- ══════════ GROUPS ADMIN MODAL (dev only — migration 081) ══════════
+       Visibility-only staff groups: assign people to a group and tick which
+       tools each group sees (union with the Company Baseline). Rights are
+       untouched — this changes what the hub SHOWS, never what RLS allows.
+       Reuses the pending-modal frame; content injected by loadGroupsAdmin(). -->
+  <div id="groupsAdminModal" class="pending-modal" aria-hidden="true" onclick="if(event.target===this) closeGroupsAdminModal()">
+    <div class="pending-modal-inner groups-admin-inner" role="dialog" aria-labelledby="ga-title">
+      <button class="pending-modal-close" onclick="closeGroupsAdminModal()" aria-label="Close">×</button>
+      <div class="pending-modal-eyebrow">Dev · Groups</div>
+      <h2 class="pending-modal-title" id="ga-title">Staff groups</h2>
+      <p class="pending-modal-sub">Each group sees its own tools plus the Company Baseline. Visibility only — edit rights are unchanged.</p>
+      <div class="ga-tabs">
+        <button type="button" class="ga-tab on" id="gaTabGroups" onclick="gaShowTab('groups')">Groups &amp; tools</button>
+        <button type="button" class="ga-tab" id="gaTabPeople" onclick="gaShowTab('people')">People</button>
+      </div>
+      <div id="gaGroupsView" class="ga-view">
+        <div class="ga-cols">
+          <div class="ga-glist" id="gaGroupList"></div>
+          <div class="ga-tools" id="gaToolList"></div>
+        </div>
+      </div>
+      <div id="gaPeopleView" class="ga-view" hidden>
+        <div class="pending-modal-list" id="gaPeopleList"></div>
+      </div>
+      <div class="pending-modal-empty" id="gaEmpty" hidden>
+        <div class="pending-modal-empty-icon">⛭</div>
+        <div class="pending-modal-empty-text" id="gaEmptyText">Apply migration 081 to enable Groups.</div>
+      </div>
+    </div>
+  </div>
+  <style>
+    /* ── Groups admin modal (dev) — extends the pending-modal frame ── */
+    .groups-admin-inner{max-width:940px;width:min(940px,94vw)}
+    .ga-tabs{display:flex;gap:8px;margin:12px 0 14px}
+    .ga-tab{border:1px solid rgba(160,180,220,.25);background:transparent;color:inherit;font:700 11px/1 'Montserrat',sans-serif;letter-spacing:1px;text-transform:uppercase;padding:8px 14px;border-radius:999px;cursor:pointer;opacity:.75}
+    .ga-tab.on{background:#00A0B4;border-color:#00A0B4;color:#fff;opacity:1}
+    .ga-cols{display:grid;grid-template-columns:250px 1fr;gap:14px;align-items:start}
+    .ga-glist{display:flex;flex-direction:column;gap:6px;max-height:56vh;overflow:auto}
+    .ga-grow{display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;border:1px solid rgba(160,180,220,.18);background:rgba(128,150,190,.07);color:inherit;padding:9px 12px;border-radius:10px;cursor:pointer;font:600 12.5px/1.25 'Figtree',sans-serif}
+    .ga-grow.on{border-color:#00A0B4;background:rgba(0,160,180,.14)}
+    .ga-grow .n{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .ga-grow .c{font-size:10.5px;opacity:.6;flex:0 0 auto}
+    .ga-tools{max-height:56vh;overflow:auto;border:1px solid rgba(160,180,220,.14);border-radius:12px;padding:12px 14px}
+    .ga-sec{font:800 10px/1 'Montserrat',sans-serif;letter-spacing:1.6px;text-transform:uppercase;opacity:.55;margin:12px 0 6px}
+    .ga-sec:first-child{margin-top:0}
+    .ga-tool{display:flex;align-items:center;gap:9px;padding:5px 2px;font:500 13px/1.3 'Figtree',sans-serif;cursor:pointer}
+    .ga-tool input{accent-color:#00A0B4;width:15px;height:15px;flex:0 0 auto;cursor:pointer}
+    .ga-tool.base{opacity:.55;cursor:default}
+    .ga-tool .b{font-size:10px;opacity:.65;border:1px solid rgba(160,180,220,.3);border-radius:999px;padding:1px 7px;margin-left:auto;flex:0 0 auto}
+    .ga-note{font-size:11.5px;opacity:.6;margin:10px 2px 0}
+    .ga-person{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid rgba(160,180,220,.12)}
+    .ga-person .who{min-width:0;flex:1}
+    .ga-person .who .nm{font:600 13px/1.2 'Figtree',sans-serif}
+    .ga-person .who .em{font-size:11px;opacity:.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .ga-person .fixed{font:700 10.5px/1 'Montserrat',sans-serif;letter-spacing:.8px;text-transform:uppercase;opacity:.55;flex:0 0 auto}
+    .ga-person select{flex:0 0 250px;width:250px;border-radius:8px;border:1px solid rgba(160,180,220,.3);padding:7px 9px;font:600 12px 'Figtree',sans-serif;background:#141a28;color:#e8edf7}
+    .ga-person select option{background:#141a28;color:#e8edf7}
+    [data-theme="light"] .ga-person select{background:#ffffff;color:#171B24}
+    [data-theme="light"] .ga-person select option{background:#ffffff;color:#171B24}
+    @media (max-width:760px){ .ga-cols{grid-template-columns:1fr} .ga-glist{flex-direction:row;flex-wrap:wrap;max-height:none} }
+  </style>
+
   
 
 
@@ -289,10 +355,11 @@
   <!-- ══════════ OS DESKTOP (replaces the 4-page hub carousel) ══════════
        Widgets + dock are STATIC markup so the boot path is identical for
        every tier (the hub-freeze rule): all seven section icons parse for
-       everyone; PM + Vault are hidden per-tier by CSS below and their
-       openWin() is nav-gated via the existing _hubIsStaff(). Section
-       windows are built on demand by the desktop engine at the bottom of
-       this file. -->
+       everyone; PM + Vault are hidden per-tier by CSS below (group-liftable
+       via data-grp-on since 081) and openWin() is nav-gated via
+       ppSectionAllowed (legacy _hubIsStaff behavior when unresolved).
+       Section windows are built on demand by the desktop engine at the
+       bottom of this file. -->
   <main class="desktop" id="ppDesktop">
     <!-- ── LIVING LOGO — decorative time-of-day lockup (Van 2026-07-12).
          Ported from pp-logo-living.html minus its stage/chrome: the three
@@ -899,11 +966,12 @@
      CADENCE_EMAILS and toggles body.cadence-allowed. */
   .cadence-card { display: none !important; }
   body.cadence-allowed .cadence-card { display: flex !important; }
-  /* PM/Cadence is dev/admin/leads only — hide the tile for everyone else even
-     though cadence-allowed stays set for all signed-in users (the class must
-     stay symmetric to avoid the boot freeze; the RESTRICTION is CSS + the nav
-     gate). Higher specificity than the reveal rule above, so it wins. */
-  body:not(.tier-dev):not(.tier-admin):not(.tier-leads) .cadence-card { display: none !important; }
+  /* PM/Cadence is dev/admin/leads by default — hide the tile for everyone
+     else even though cadence-allowed stays set for all signed-in users (the
+     class must stay symmetric to avoid the boot freeze; the RESTRICTION is
+     CSS + the nav gate). GROUPS (081) lift it per-user via .grp-on (a row
+     class openWin/buildFly add when the user's group allows the tool). */
+  body:not(.tier-dev):not(.tier-admin):not(.tier-leads) .cadence-card:not(.grp-on) { display: none !important; }
 
   /* Arena is now generally available to the three staff tiers
      (dev / admin / company) — same posture as Cadence. The
@@ -1315,7 +1383,7 @@
      tier class yet means every :not() matches, so it stays hidden until a
      matching tier class is set by applyAccessRestrictions()). The card's data
      is separately locked per-person by RLS (migration 073). */
-  body:not(.tier-dev):not(.tier-admin):not(.tier-leads):not(.tier-company) .scorecards-card { display: none !important; }
+  body:not(.tier-dev):not(.tier-admin):not(.tier-leads):not(.tier-company) .scorecards-card:not(.grp-on) { display: none !important; }
   /* Subtle distinction so the Lite pill blends but reads as its own
      thing — the badge gets a slightly warmer accent so it doesn't
      compete with the cyan badges above it. */
@@ -1939,6 +2007,152 @@ document.addEventListener('pp-users-changed', () => {
   if (m && m.classList.contains('show')) renderPendingApprovals();
 });
 
+/* ══════════ GROUPS ADMIN (dev only — migration 081) ══════════
+   Visibility-only staff groups. Two tabs: per-group tool ticks (saved to
+   hub_groups.tools; checkboxes save instantly) and people→group assignment
+   (via the dev-only set_user_team RPC). The client-side isDev() guards are
+   UX only — RLS + the RPC are the real gate. */
+let _gaGroups = null, _gaPeople = null, _gaSel = null;
+
+function openGroupsAdminModal() {
+  if (typeof isDev !== 'function' || !isDev()) return;
+  const m = document.getElementById('groupsAdminModal');
+  if (!m) return;
+  m.classList.add('show');
+  m.setAttribute('aria-hidden', 'false');
+  loadGroupsAdmin();
+}
+function closeGroupsAdminModal() {
+  const m = document.getElementById('groupsAdminModal');
+  if (!m) return;
+  m.classList.remove('show');
+  m.setAttribute('aria-hidden', 'true');
+}
+function gaShowTab(which) {
+  document.getElementById('gaTabGroups').classList.toggle('on', which === 'groups');
+  document.getElementById('gaTabPeople').classList.toggle('on', which === 'people');
+  document.getElementById('gaGroupsView').hidden = which !== 'groups';
+  document.getElementById('gaPeopleView').hidden = which !== 'people';
+}
+async function loadGroupsAdmin() {
+  const empty = document.getElementById('gaEmpty');
+  try {
+    const [g, p] = await Promise.all([
+      window.sb.from('hub_groups').select('key,name,tools,sort').order('sort'),
+      window.sb.from('profiles').select('id,email,full_name,tier,team').order('email')
+    ]);
+    if (g.error) throw g.error;
+    _gaGroups = g.data || [];
+    _gaPeople = (p.data || []);
+    if (!_gaGroups.length) throw new Error('no groups');
+    if (!_gaSel || !_gaGroups.some(r => r.key === _gaSel)) _gaSel = _gaGroups[0].key;
+    empty.hidden = true;
+    renderGaGroups();
+    renderGaPeople();
+  } catch (e) {
+    _gaGroups = null;
+    document.getElementById('gaGroupList').innerHTML = '';
+    document.getElementById('gaToolList').innerHTML = '';
+    document.getElementById('gaPeopleList').innerHTML = '';
+    document.getElementById('gaEmptyText').textContent = 'Apply migration 081 (hub_groups) to enable Groups.';
+    empty.hidden = false;
+  }
+}
+function renderGaGroups() {
+  const list = document.getElementById('gaGroupList');
+  const membersOf = k => _gaPeople.filter(u => u.team === k).length;   /* any tier — admins/leads are assignable too */
+  list.innerHTML = _gaGroups.map(r => {
+    const cnt = r.key === 'company_baseline' ? (r.tools || []).length + ' tools'
+      : membersOf(r.key) + ' ppl';
+    return '<button type="button" class="ga-grow' + (r.key === _gaSel ? ' on' : '') + '" onclick="gaSelectGroup(\'' + r.key + '\')">'
+      + '<span class="n">' + escGA(r.name) + '</span><span class="c">' + cnt + '</span></button>';
+  }).join('');
+  renderGaTools();
+}
+function gaSelectGroup(k) { _gaSel = k; renderGaGroups(); }
+function renderGaTools() {
+  const host = document.getElementById('gaToolList');
+  const REG = window.PP_TOOL_REGISTRY;
+  const row = _gaGroups.find(r => r.key === _gaSel);
+  if (!REG || !row) { host.innerHTML = ''; return; }
+  const baseline = (_gaGroups.find(r => r.key === 'company_baseline') || {}).tools || [];
+  const isBaseRow = row.key === 'company_baseline';
+  const own = new Set(row.tools || []);
+  const SECS = { analytics: 'Analytics', vault: 'The Vault', pm: 'Property Management', arena: 'Arena', docs: 'Documents & Reports', present: 'Presentations', people: 'People & Culture' };
+  let html = '';
+  Object.keys(SECS).forEach(sec => {
+    const keys = Object.keys(REG.TOOLS).filter(k => REG.TOOLS[k].sec === sec);
+    if (!keys.length) return;
+    html += '<div class="ga-sec">' + SECS[sec] + '</div>';
+    keys.forEach(k => {
+      const inherited = !isBaseRow && baseline.indexOf(k) >= 0;
+      const checked = inherited || own.has(k);
+      html += '<label class="ga-tool' + (inherited ? ' base' : '') + '">'
+        + '<input type="checkbox" data-tool="' + k + '"' + (checked ? ' checked' : '') + (inherited ? ' disabled' : '')
+        + ' onchange="gaToggleTool(this)">'
+        + '<span>' + escGA(REG.TOOLS[k].label) + '</span>'
+        + (inherited ? '<span class="b">baseline</span>' : '')
+        + '</label>';
+    });
+  });
+  html += '<div class="ga-note">' + (isBaseRow
+    ? 'The Company Baseline is what EVERY staff member sees, on top of their group.'
+    : 'Ticks save instantly. Baseline tools are inherited — edit them on the Company Baseline row.') + '</div>';
+  host.innerHTML = html;
+}
+async function gaToggleTool(input) {
+  const row = _gaGroups.find(r => r.key === _gaSel);
+  if (!row) return;
+  const k = input.getAttribute('data-tool');
+  const tools = new Set(row.tools || []);
+  if (input.checked) tools.add(k); else tools.delete(k);
+  const next = Array.from(tools);
+  input.disabled = true;
+  const { error } = await window.sb.from('hub_groups').update({ tools: next }).eq('key', row.key);
+  input.disabled = false;
+  if (error) { alert('Save failed: ' + error.message); input.checked = !input.checked; return; }
+  row.tools = next;
+  gaRefreshVisibility();
+}
+function renderGaPeople() {
+  const host = document.getElementById('gaPeopleList');
+  const opts = _gaGroups.filter(r => r.key !== 'company_baseline');   /* every group is assignable, incl. Admins + Leads */
+  host.innerHTML = _gaPeople.map(u => {
+    let right;
+    if (u.tier === 'dev') right = '<span class="fixed">Developer · all access</span>';
+    else if (u.tier === 'client' || u.tier === 'guest') right = '<span class="fixed">External · ' + escGA(u.tier) + '</span>';
+    else {
+      /* admins + leads + staff are all assignable (Van 2026-07-19); only the
+         "unassigned" meaning differs per tier */
+      const unassigned = u.tier === 'admin' ? 'Unassigned — sees everything'
+        : u.tier === 'leads' ? 'Unassigned — baseline + Leads tools'
+        : 'Unassigned — baseline only';
+      right = '<select onchange="gaAssign(\'' + u.id + '\', this)">'
+        + '<option value=""' + (!u.team ? ' selected' : '') + '>' + unassigned + '</option>'
+        + opts.map(r => '<option value="' + r.key + '"' + (u.team === r.key ? ' selected' : '') + '>' + escGA(r.name) + '</option>').join('')
+        + '</select>';
+    }
+    return '<div class="ga-person"><div class="who"><div class="nm">' + escGA(u.full_name || '—') + '</div>'
+      + '<div class="em">' + escGA(u.email) + '</div></div>' + right + '</div>';
+  }).join('');
+}
+async function gaAssign(userId, sel) {
+  sel.disabled = true;
+  const { error } = await window.sb.rpc('set_user_team', { target_user: userId, new_team: sel.value || null });
+  sel.disabled = false;
+  if (error) { alert('Assignment failed: ' + error.message); loadGroupsAdmin(); return; }
+  const u = _gaPeople.find(x => x.id === userId);
+  if (u) u.team = sel.value || null;
+  renderGaGroups();   /* member counts */
+  gaRefreshVisibility();
+}
+function gaRefreshVisibility() {
+  /* a save can change what Van's current view-as sees — re-resolve live */
+  try { sessionStorage.removeItem('pp_allowed_tools_v1'); } catch (e) {}
+  if (typeof ppResolveAllowedTools === 'function') ppResolveAllowedTools(true).catch(() => {});
+}
+function escGA(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
 /* Sync the Property Clock card's edition badge with whatever
    subtitle the clock currently has saved (HDR.subtitleL — e.g.
    "EDITION 3 – 2026"). Falls back silently to the hardcoded
@@ -2008,6 +2222,29 @@ function applyVaultVisibility() {
   const allowed = !!sessionStorage.getItem('pp_auth');
   document.body.classList.toggle('vault-allowed', !!allowed);
 }
+/* ─── Group (team) visibility — migration 081 ───
+   SYMMETRIC like the functions around it (runs for every tier, no per-tier
+   early returns — the May-2026 freeze rule). Kicks the async resolver once,
+   then applies the CURRENT allowed-state to the dock icons as data-grp-on/off
+   ATTRIBUTES (never body classes: watchHubReveal's MutationObserver watches
+   body[class] only, so attribute writes can't re-trigger it). Card/fly-out
+   rows get their .grp-on class at build time in openWin()/buildFly(). */
+let _grpKicked = false;
+function applyGroupVisibility() {
+  if (!sessionStorage.getItem('pp_auth')) return;
+  if (!_grpKicked && typeof ppResolveAllowedTools === 'function') {
+    _grpKicked = true;
+    ppResolveAllowedTools().catch(() => {});
+  }
+  const st = (typeof ppAllowedState === 'function') && ppAllowedState();
+  if (!st || st.mode === 'external') return;   /* externals + pre-resolution: the tier CSS gates govern, exactly today */
+  document.querySelectorAll('#ppDock .dicon').forEach(ic => {
+    const on = (typeof ppSectionAllowed === 'function') && ppSectionAllowed(ic.dataset.sec);
+    ic.toggleAttribute('data-grp-on', on);
+    ic.toggleAttribute('data-grp-off', !on);
+  });
+}
+document.addEventListener('pp-allowed-tools-changed', () => { try { applyGroupVisibility(); } catch (e) {} });
 function navigateToCadence() {
   /* Cadence — board picker + schema-driven table + card CRUD, admin
      UI for board schemas (Phase 2), audit log (Phase 4), and email
@@ -2909,6 +3146,7 @@ function navigateToResults() {
       safe('applyCadenceVisibility', () => applyCadenceVisibility());
       safe('applyArenaVisibility', () => applyArenaVisibility());
       safe('applyVaultVisibility', () => applyVaultVisibility());
+      safe('applyGroupVisibility', () => applyGroupVisibility());
     }
     /* Idempotent — strips onclick + sets disabled on every fire.
        Subsequent calls are no-ops (attributes already gone). Catches
@@ -3374,7 +3612,7 @@ document.addEventListener('keydown', (ev) => {
   </div>
 </div>
 
-<script src="shared/auth.js?v=02373ed7"></script>
+<script src="shared/auth.js?v=6f88fa92"></script>
 <script src="shared/desktop-pins.js?v=e2416017"></script>
 <script>
 /* Hub greeting weather line — approximate location via a keyless IP lookup,
@@ -3653,24 +3891,24 @@ function navigateToTool(url, label) {
      handler the card's onclick calls, so access gating + the loading
      transition are unchanged. */
   const TOOLS = [
-    { label: 'Online Reports',        kw: 'research regions capital regional residential', icon: '📊', run: () => openOnlineReports({ lite: false }) },
-    { label: 'Property Clock',         kw: 'cycle market timing phase', icon: '🕑', run: () => navigateToTool('tools/property-clock.html', 'Property Clock') },
-    { label: 'Runway v Demand',        kw: 'supply pipeline absorption', icon: '🛫', run: () => navigateToTool('tools/runway-demand.html', 'Runway v Demand') },
-    { label: 'Market Compare',         kw: 'compare markets side by side versus sell buy switch sensitivity story vault', icon: '<svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6H4v12h5"/><path d="M15 6h5v12h-5"/><path d="M9 12h6"/></svg>', run: () => navigateToTool('tools/market-compare.html', 'Market Compare') },
-    { label: 'Buying/Selling Slides',  kw: 'buying selling slides deck region present sensitivity entry vault', icon: '<svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M7 13l3-3 2.5 2 4-4.5"/><path d="M9 20h6"/></svg>', run: () => openBsSlides() },
-    { label: 'Presentations',          kw: 'decks slides advisor client builder library', icon: '🖥️', run: () => openPresentations() },
-    { label: 'Documents',              kw: 'whitepapers strategies research links folders', icon: '📁', run: () => navigateToTool('tools/whitepapers-strategies.html', 'Documents') },
-    { label: 'Cadence',                kw: 'workflow board tasks pm requests', icon: '🗂️', run: () => navigateToCadence() },
-    { label: 'Arena',                  kw: 'games leaderboard results scores', icon: '🏆', run: () => navigateToTool('tools/arena.html', 'Performance Arena') },
-    { label: 'Typing Test',            kw: 'arena game typing speed', icon: '⌨️', run: () => navigateToTool('tools/arena-typing.html', 'Typing Test') },
-    { label: 'Chess',                  kw: 'arena game chess multiplayer', icon: '♟️', run: () => navigateToTool('tools/arena-chess.html', 'Chess') },
-    { label: 'Scrabble',               kw: 'arena game scrabble words multiplayer', icon: '🔡', run: () => navigateToTool('tools/arena-scrabble.html', 'Scrabble') },
-    { label: 'Runway Workbook',        kw: 'scenario modelling affordability ceiling', icon: '📒', run: () => navigateToTool('tools/runway-workbook.html', 'Runway Workbook') },
-    { label: 'Demand Score Dashboard', kw: 'demand score dashboard vault', icon: '📈', run: () => navigateToTool('tools/demand-score.html', 'Demand Score Dashboard') },
-    { label: 'Vacancy Rate Projection', kw: 'vacancy rate projection forecast rental supply demand vr vault', icon: '🏚️', run: () => navigateToTool('tools/vr-projection.html', 'Vacancy Rate Projection') },
-    { label: 'Data Forge',             kw: 'gather filter data corelogic import vault reports', icon: '⚗️', run: () => navigateToTool('tools/data-forge.html', 'Data Forge') },
-    { label: 'Suburb Selection Data',  kw: 'suburb selection advisor dashboard regions corelogic vault', icon: '🏘️', run: () => navigateToTool('tools/suburb-selection-data.html', 'Suburb Selection Data') },
-    { label: 'Data Architecture Map',  kw: 'data architecture map pipeline database flow diagram vault', icon: '🗺️', run: () => navigateToTool('tools/data-architecture.html', 'Data Architecture Map') },
+    { key: 'online-reports', label: 'Online Reports',        kw: 'research regions capital regional residential', icon: '📊', run: () => openOnlineReports({ lite: false }) },
+    { key: 'clock', label: 'Property Clock',         kw: 'cycle market timing phase', icon: '🕑', run: () => navigateToTool('tools/property-clock.html', 'Property Clock') },
+    { key: 'runway-demand', label: 'Runway v Demand',        kw: 'supply pipeline absorption', icon: '🛫', run: () => navigateToTool('tools/runway-demand.html', 'Runway v Demand') },
+    { key: 'market-compare', label: 'Market Compare',         kw: 'compare markets side by side versus sell buy switch sensitivity story vault', icon: '<svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6H4v12h5"/><path d="M15 6h5v12h-5"/><path d="M9 12h6"/></svg>', run: () => navigateToTool('tools/market-compare.html', 'Market Compare') },
+    { key: 'bs-slides', label: 'Buying/Selling Slides',  kw: 'buying selling slides deck region present sensitivity entry vault', icon: '<svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M7 13l3-3 2.5 2 4-4.5"/><path d="M9 20h6"/></svg>', run: () => openBsSlides() },
+    { secGate: 'present', label: 'Presentations',          kw: 'decks slides advisor client builder library', icon: '🖥️', run: () => openPresentations() },
+    { key: 'documents', label: 'Documents',              kw: 'whitepapers strategies research links folders', icon: '📁', run: () => navigateToTool('tools/whitepapers-strategies.html', 'Documents') },
+    { key: 'cadence', label: 'Cadence',                kw: 'workflow board tasks pm requests', icon: '🗂️', run: () => navigateToCadence() },
+    { key: 'arena', label: 'Arena',                  kw: 'games leaderboard results scores', icon: '🏆', run: () => navigateToTool('tools/arena.html', 'Performance Arena') },
+    { key: 'arena-typing', label: 'Typing Test',            kw: 'arena game typing speed', icon: '⌨️', run: () => navigateToTool('tools/arena-typing.html', 'Typing Test') },
+    { key: 'arena-chess', label: 'Chess',                  kw: 'arena game chess multiplayer', icon: '♟️', run: () => navigateToTool('tools/arena-chess.html', 'Chess') },
+    { key: 'arena-scrabble', label: 'Scrabble',               kw: 'arena game scrabble words multiplayer', icon: '🔡', run: () => navigateToTool('tools/arena-scrabble.html', 'Scrabble') },
+    { key: 'runway-workbook', label: 'Runway Workbook',        kw: 'scenario modelling affordability ceiling', icon: '📒', run: () => navigateToTool('tools/runway-workbook.html', 'Runway Workbook') },
+    { key: 'demand-score', label: 'Demand Score Dashboard', kw: 'demand score dashboard vault', icon: '📈', run: () => navigateToTool('tools/demand-score.html', 'Demand Score Dashboard') },
+    { key: 'vr-projection', label: 'Vacancy Rate Projection', kw: 'vacancy rate projection forecast rental supply demand vr vault', icon: '🏚️', run: () => navigateToTool('tools/vr-projection.html', 'Vacancy Rate Projection') },
+    { key: 'forge', label: 'Data Forge',             kw: 'gather filter data corelogic import vault reports', icon: '⚗️', run: () => navigateToTool('tools/data-forge.html', 'Data Forge') },
+    { key: 'suburb-data', label: 'Suburb Selection Data',  kw: 'suburb selection advisor dashboard regions corelogic vault', icon: '🏘️', run: () => navigateToTool('tools/suburb-selection-data.html', 'Suburb Selection Data') },
+    { key: 'data-map', label: 'Data Architecture Map',  kw: 'data architecture map pipeline database flow diagram vault', icon: '🗺️', run: () => navigateToTool('tools/data-architecture.html', 'Data Architecture Map') },
   ];
 
   /* Report regions — flattened from the REGION_CLUSTERS catalogue, routed
@@ -3681,6 +3919,9 @@ function navigateToTool(url, label) {
     Object.keys(REGION_CLUSTERS).forEach(ck => {
       const c = REGION_CLUSTERS[ck];
       (c.regions || []).forEach(r => {
+        /* group gate: research pages (own url) ride 'research-reports',
+           regional reports ride 'online-reports' */
+        if (typeof ppToolAllowed === 'function' && !ppToolAllowed(r.url ? 'research-reports' : 'online-reports')) return;
         const url = r.url
           ? r.url
           : ('tools/online-reports.html?cluster=' + encodeURIComponent(ck) + '&region=' + encodeURIComponent(r.slug));
@@ -3696,7 +3937,14 @@ function navigateToTool(url, label) {
   }
 
   function buildIndex() {
-    const tools = TOOLS.map(t => ({ ...t, type: 'Tool', sub: t.sub || 'Tool', search: (t.label + ' ' + t.kw).toLowerCase() }));
+    /* group visibility: rebuilt on every palette open, so this reads the
+       freshest allowed-set (hidden means hidden — search included) */
+    const visible = TOOLS.filter(t => {
+      if (typeof ppToolAllowed !== 'function') return true;
+      if (t.secGate) return (typeof ppSectionAllowed === 'function') ? ppSectionAllowed(t.secGate) : true;
+      return ppToolAllowed(t.key);
+    });
+    const tools = visible.map(t => ({ ...t, type: 'Tool', sub: t.sub || 'Tool', search: (t.label + ' ' + t.kw).toLowerCase() }));
     const reports = reportEntries().map(r => ({ ...r, search: (r.label + ' ' + r.kw).toLowerCase() }));
     return tools.concat(reports);
   }
@@ -4043,12 +4291,15 @@ function navigateToTool(url, label) {
   .dicon:focus-visible .sq{outline:2px solid var(--tx);outline-offset:3px}
   .dock-warn{position:absolute;top:-3px;right:-3px;width:12px;height:12px;border-radius:50%;background:#E72347;
     border:2px solid var(--dockbg);box-shadow:0 0 8px rgba(231,35,71,.8)}
-  /* PM + Vault are dev/admin/leads only — same fail-closed CSS gate the old
-     hub used; nav is also gated in openWin() via _hubIsStaff(). */
-  body:not(.tier-dev):not(.tier-admin) .dicon[data-sec="pm"],
-  body:not(.tier-dev):not(.tier-admin) .dicon[data-sec="vault"]{display:none !important}
-  /* People & Culture: tiers 0/1/2 only (Van 2026-07-13) */
-  body:not(.tier-dev):not(.tier-admin):not(.tier-leads) .dicon[data-sec="people"]{display:none !important}
+  /* PM + Vault: dev/admin by default — the fail-closed gate for externals and
+     for the pre-resolution boot state. GROUPS (081) can LIFT it per-user via
+     data-grp-on (applyGroupVisibility), so e.g. a PM-team staff member gets
+     the PM icon. data-grp-off is the group system's own hide. */
+  body:not(.tier-dev):not(.tier-admin) .dicon[data-sec="pm"]:not([data-grp-on]),
+  body:not(.tier-dev):not(.tier-admin) .dicon[data-sec="vault"]:not([data-grp-on]){display:none !important}
+  /* People & Culture: tiers 0/1/2 by default, group-liftable */
+  body:not(.tier-dev):not(.tier-admin):not(.tier-leads) .dicon[data-sec="people"]:not([data-grp-on]){display:none !important}
+  .dicon[data-grp-off]{display:none !important}
   @media(max-width:720px){.dockwrap{bottom:8px;overflow-x:auto;justify-content:flex-start;padding:0 8px}
     .dock{gap:8px}.dicon{width:46px;height:46px}}
 
@@ -4210,57 +4461,57 @@ function navigateToTool(url, label) {
     { id: 'analytics', full: 'Analytics Hub', g: 'pulse', a1: '#ED5A75', a2: '#CA1637',
       desc: 'Client-facing intelligence — where every Australian market sits on the cycle.',
       tools: [
-        { n: 'National Property Clock', icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>', tagId: 'clockEditionBadge', t: 'Edition · 2026', d: 'Every capital & major region on the property cycle — houses and units side by side.', run: function () { navigateToTool('tools/property-clock.html', 'Property Clock'); } },
-        { n: 'Runway v Demand Score', icon: '<svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 7-8"/><path d="M14 7h6v6"/></svg>', t: '2026 Series', d: 'Supply runway against demand score, month over month.', run: function () { navigateToTool('tools/runway-demand.html', 'Runway v Demand'); } },
-        { n: 'Runway Workbook', icon: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 4v16"/></svg>', t: 'Live', d: 'Affordability-ceiling analysis across every market, recomputed live from the research database.', run: function () { navigateToTool('tools/runway-workbook.html', 'Runway Workbook'); } },
-        { n: 'Vacancy Rate Projection', icon: '<svg viewBox="0 0 24 24"><path d="M19 5L5 19"/><circle cx="7.5" cy="7.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/></svg>', t: 'Research', d: 'Where each market’s vacancy rate is heading over the next 1–2 years.', run: function () { navigateToTool('tools/vr-projection.html', 'Vacancy Rate Projection'); } },
-        { n: 'Results', icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="5"/><path d="M9 13.5L7.5 21l4.5-2.5L16.5 21 15 13.5"/></svg>', t: 'Draft', d: 'Performance publications and the monthly Appraisal Hub.', cls: 'results-card', run: function () { navigateToResults(); } }
+        { key: 'clock', n: 'National Property Clock', icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>', tagId: 'clockEditionBadge', t: 'Edition · 2026', d: 'Every capital & major region on the property cycle — houses and units side by side.', run: function () { navigateToTool('tools/property-clock.html', 'Property Clock'); } },
+        { key: 'runway-demand', n: 'Runway v Demand Score', icon: '<svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 7-8"/><path d="M14 7h6v6"/></svg>', t: '2026 Series', d: 'Supply runway against demand score, month over month.', run: function () { navigateToTool('tools/runway-demand.html', 'Runway v Demand'); } },
+        { key: 'runway-workbook', n: 'Runway Workbook', icon: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 4v16"/></svg>', t: 'Live', d: 'Affordability-ceiling analysis across every market, recomputed live from the research database.', run: function () { navigateToTool('tools/runway-workbook.html', 'Runway Workbook'); } },
+        { key: 'vr-projection', n: 'Vacancy Rate Projection', icon: '<svg viewBox="0 0 24 24"><path d="M19 5L5 19"/><circle cx="7.5" cy="7.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/></svg>', t: 'Research', d: 'Where each market’s vacancy rate is heading over the next 1–2 years.', run: function () { navigateToTool('tools/vr-projection.html', 'Vacancy Rate Projection'); } },
+        { key: 'results', n: 'Results', icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="5"/><path d="M9 13.5L7.5 21l4.5-2.5L16.5 21 15 13.5"/></svg>', t: 'Draft', d: 'Performance publications and the monthly Appraisal Hub.', cls: 'results-card', run: function () { navigateToResults(); } }
       ] },
     { id: 'vault', full: 'The Vault', g: 'lock', a1: '#7E8CF1', a2: '#233AE7', staff: true,
       desc: 'Internal research utilities — the workshop behind the client pages.',
       tools: [
-        { n: 'Data Forge', icon: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7" ry="2.8"/><path d="M5 5.5v13c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-13"/><path d="M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8"/></svg>', t: 'Internal', warn: 'forge', d: 'One card per data point behind the online reports — health, freshness, and the monthly GATHER → PUBLISH pipeline.', run: function () { navigateToTool('tools/data-forge.html', 'Data Forge'); } },
-        { n: 'Traffic Lights', icon: '<svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="18" rx="3"/><circle cx="12" cy="7" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="17" r="1.4"/></svg>', t: 'Live', d: 'Red / amber / green market signals per capital — Supply & Demand, Value, Confidence, with forecasts.', run: function () { navigateToTool('tools/traffic-lights.html', 'Traffic Lights'); } },
-        { n: 'Demand Score Dashboard', icon: '<svg viewBox="0 0 24 24"><path d="M4 15a8 8 0 0116 0"/><path d="M12 15l4-5"/><circle cx="12" cy="15" r="1.5"/></svg>', t: 'Live · Monthly', d: 'Live demand scores with benchmarks, movement flags and month-vs-month compare.', run: function () { navigateToTool('tools/demand-score.html', 'Demand Score Dashboard'); } },
-        { n: 'Market Compare', icon: '<svg viewBox="0 0 24 24"><path d="M9 6H4v12h5"/><path d="M15 6h5v12h-5"/><path d="M9 12h6"/></svg>', t: 'New', d: 'Two or three markets side by side — cycle position, demand, affordability and sensitivity, story-first.', run: function () { navigateToTool('tools/market-compare.html', 'Market Compare'); } },
-        { n: 'Buying/Selling Slides', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M7 13l3-3 2.5 2 4-4.5"/><path d="M9 20h6"/></svg>', t: 'New', d: 'Region-by-region buying and selling decks — 16:9 slides built live from the research data, with Present mode.', run: function () { openBsSlides(); } },
-        { n: 'Suburb Selection Data', icon: '<svg viewBox="0 0 24 24"><path d="M12 21s-6.5-5.4-6.5-10a6.5 6.5 0 0113 0c0 4.6-6.5 10-6.5 10z"/><circle cx="12" cy="11" r="2.3"/></svg>', t: 'Internal', d: 'Advisor dashboards computed from the monthly CoreLogic file.', run: function () { navigateToTool('tools/suburb-selection-data.html', 'Suburb Selection Data'); } },
-        { n: 'Data Architecture Map', icon: '<svg viewBox="0 0 24 24"><circle cx="5.5" cy="6" r="2.2"/><circle cx="18.5" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M7 7.6l3.8 8.4M17 7.6l-3.8 8.4M7.7 6h8.6"/></svg>', t: 'Reference', d: 'Interactive map of how research data flows, end to end.', run: function () { navigateToTool('tools/data-architecture.html', 'Data Architecture Map'); } },
-        { n: 'Lite Online Reports', icon: '<svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M13 11l-3 4h4l-3 4"/></svg>', t: 'Lite', d: 'The streamlined preview edition of the research reports.', run: function () { openOnlineReports({ lite: true }); } },
-        { n: 'Lite Report Links', icon: '<svg viewBox="0 0 24 24"><path d="M9.5 13.5a3.5 3.5 0 004.9 0l2.6-2.6a3.5 3.5 0 00-4.9-4.9l-1.2 1.2"/><path d="M14.5 10.5a3.5 3.5 0 00-4.9 0l-2.6 2.6a3.5 3.5 0 004.9 4.9l1.2-1.2"/></svg>', t: 'Copy', d: 'Fast-copy shareable Google-Cloud links for every Lite report.', run: function () { navigateToTool('tools/lite-report-links.html', 'Lite Report Links'); } }
+        { key: 'forge', n: 'Data Forge', icon: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7" ry="2.8"/><path d="M5 5.5v13c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-13"/><path d="M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8"/></svg>', t: 'Internal', warn: 'forge', d: 'One card per data point behind the online reports — health, freshness, and the monthly GATHER → PUBLISH pipeline.', run: function () { navigateToTool('tools/data-forge.html', 'Data Forge'); } },
+        { key: 'traffic-lights', n: 'Traffic Lights', icon: '<svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="18" rx="3"/><circle cx="12" cy="7" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="17" r="1.4"/></svg>', t: 'Live', d: 'Red / amber / green market signals per capital — Supply & Demand, Value, Confidence, with forecasts.', run: function () { navigateToTool('tools/traffic-lights.html', 'Traffic Lights'); } },
+        { key: 'demand-score', n: 'Demand Score Dashboard', icon: '<svg viewBox="0 0 24 24"><path d="M4 15a8 8 0 0116 0"/><path d="M12 15l4-5"/><circle cx="12" cy="15" r="1.5"/></svg>', t: 'Live · Monthly', d: 'Live demand scores with benchmarks, movement flags and month-vs-month compare.', run: function () { navigateToTool('tools/demand-score.html', 'Demand Score Dashboard'); } },
+        { key: 'market-compare', n: 'Market Compare', icon: '<svg viewBox="0 0 24 24"><path d="M9 6H4v12h5"/><path d="M15 6h5v12h-5"/><path d="M9 12h6"/></svg>', t: 'New', d: 'Two or three markets side by side — cycle position, demand, affordability and sensitivity, story-first.', run: function () { navigateToTool('tools/market-compare.html', 'Market Compare'); } },
+        { key: 'bs-slides', n: 'Buying/Selling Slides', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M7 13l3-3 2.5 2 4-4.5"/><path d="M9 20h6"/></svg>', t: 'New', d: 'Region-by-region buying and selling decks — 16:9 slides built live from the research data, with Present mode.', run: function () { openBsSlides(); } },
+        { key: 'suburb-data', n: 'Suburb Selection Data', icon: '<svg viewBox="0 0 24 24"><path d="M12 21s-6.5-5.4-6.5-10a6.5 6.5 0 0113 0c0 4.6-6.5 10-6.5 10z"/><circle cx="12" cy="11" r="2.3"/></svg>', t: 'Internal', d: 'Advisor dashboards computed from the monthly CoreLogic file.', run: function () { navigateToTool('tools/suburb-selection-data.html', 'Suburb Selection Data'); } },
+        { key: 'data-map', n: 'Data Architecture Map', icon: '<svg viewBox="0 0 24 24"><circle cx="5.5" cy="6" r="2.2"/><circle cx="18.5" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M7 7.6l3.8 8.4M17 7.6l-3.8 8.4M7.7 6h8.6"/></svg>', t: 'Reference', d: 'Interactive map of how research data flows, end to end.', run: function () { navigateToTool('tools/data-architecture.html', 'Data Architecture Map'); } },
+        { key: 'reports-lite', n: 'Lite Online Reports', icon: '<svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M13 11l-3 4h4l-3 4"/></svg>', t: 'Lite', d: 'The streamlined preview edition of the research reports.', run: function () { openOnlineReports({ lite: true }); } },
+        { key: 'lite-links', n: 'Lite Report Links', icon: '<svg viewBox="0 0 24 24"><path d="M9.5 13.5a3.5 3.5 0 004.9 0l2.6-2.6a3.5 3.5 0 00-4.9-4.9l-1.2 1.2"/><path d="M14.5 10.5a3.5 3.5 0 00-4.9 0l-2.6 2.6a3.5 3.5 0 004.9 4.9l1.2-1.2"/></svg>', t: 'Copy', d: 'Fast-copy shareable Google-Cloud links for every Lite report.', run: function () { navigateToTool('tools/lite-report-links.html', 'Lite Report Links'); } }
       ] },
     { id: 'pm', full: 'Property Management', g: 'check', a1: '#5DAC96', a2: '#3E7967', staff: true,
       desc: 'Workflow trackers and recurring-rhythm tools for the PM team.',
       tools: [
-        { n: 'Cadence', icon: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="4.5" height="16" rx="1.2"/><rect x="10" y="4" width="4.5" height="10" rx="1.2"/><rect x="16" y="4" width="4.5" height="13" rx="1.2"/></svg>', t: 'Board', d: 'Inspections, maintenance, lease renewals — the recurring rhythms of the portfolio.', cls: 'cadence-card', run: function () { navigateToCadence(); } },
-        { n: 'Tenant Application Summary', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="2"/><path d="M5.8 15.8c.5-1.6 1.6-2.4 2.7-2.4s2.2.8 2.7 2.4"/><path d="M14 9.5h5M14 13h5"/></svg>', t: 'New', d: 'Turn a rental application into a clean, branded one-pager for the owner.', run: function () { navigateToTool('tools/tenant-summary.html', 'Tenant Application Summary'); } }
+        { key: 'cadence', n: 'Cadence', icon: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="4.5" height="16" rx="1.2"/><rect x="10" y="4" width="4.5" height="10" rx="1.2"/><rect x="16" y="4" width="4.5" height="13" rx="1.2"/></svg>', t: 'Board', d: 'Inspections, maintenance, lease renewals — the recurring rhythms of the portfolio.', cls: 'cadence-card', run: function () { navigateToCadence(); } },
+        { key: 'tenant-summary', n: 'Tenant Application Summary', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="2"/><path d="M5.8 15.8c.5-1.6 1.6-2.4 2.7-2.4s2.2.8 2.7 2.4"/><path d="M14 9.5h5M14 13h5"/></svg>', t: 'New', d: 'Turn a rental application into a clean, branded one-pager for the owner.', run: function () { navigateToTool('tools/tenant-summary.html', 'Tenant Application Summary'); } }
       ] },
     { id: 'arena', full: 'Performance Arena', g: 'game', a1: '#D373D3', a2: '#AB36AB', arena: true,
       desc: 'Quick games and friendly competition — staff only.',
       tools: [
-        { n: 'Typing Test', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="11" rx="2"/><path d="M7 11h.01M11 11h.01M15 11h.01M17 11h.01M7 14.5h10"/></svg>', t: 'Live', d: 'Monkeytype-style speed runs with a real-estate word list.', statId: 'hub-tool-stat-typing', run: function () { navigateToTool('tools/arena-typing.html', 'Typing Test'); } },
-        { n: 'Chess', icon: '<svg viewBox="0 0 24 24"><path d="M4.5 17L6 8.5l3 3.2L12 5l3 6.7 3-3.2L19.5 17z"/><path d="M6.5 20.5h11"/></svg>', t: 'Live', d: 'Office ladder with live online matches.', statId: 'hub-tool-stat-chess', run: function () { navigateToTool('tools/arena-chess.html', 'Chess'); } },
-        { n: 'Scrabble', icon: '<svg viewBox="0 0 24 24"><rect x="4" y="11" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="11" width="6.5" height="6.5" rx="1"/><rect x="8.75" y="4" width="6.5" height="6.5" rx="1"/></svg>', t: 'Live', d: 'Online multiplayer Scrabble with a points ladder.', statId: 'hub-tool-stat-scrabble', run: function () { navigateToTool('tools/arena-scrabble.html', 'Scrabble'); } }
+        { key: 'arena-typing', n: 'Typing Test', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="11" rx="2"/><path d="M7 11h.01M11 11h.01M15 11h.01M17 11h.01M7 14.5h10"/></svg>', t: 'Live', d: 'Monkeytype-style speed runs with a real-estate word list.', statId: 'hub-tool-stat-typing', run: function () { navigateToTool('tools/arena-typing.html', 'Typing Test'); } },
+        { key: 'arena-chess', n: 'Chess', icon: '<svg viewBox="0 0 24 24"><path d="M4.5 17L6 8.5l3 3.2L12 5l3 6.7 3-3.2L19.5 17z"/><path d="M6.5 20.5h11"/></svg>', t: 'Live', d: 'Office ladder with live online matches.', statId: 'hub-tool-stat-chess', run: function () { navigateToTool('tools/arena-chess.html', 'Chess'); } },
+        { key: 'arena-scrabble', n: 'Scrabble', icon: '<svg viewBox="0 0 24 24"><rect x="4" y="11" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="11" width="6.5" height="6.5" rx="1"/><rect x="8.75" y="4" width="6.5" height="6.5" rx="1"/></svg>', t: 'Live', d: 'Online multiplayer Scrabble with a points ladder.', statId: 'hub-tool-stat-scrabble', run: function () { navigateToTool('tools/arena-scrabble.html', 'Scrabble'); } }
       ] },
     { id: 'docs', full: 'Documents & Reports', g: 'book', a1: '#FFB947', a2: '#E08A00',
       desc: 'Research links, whitepapers and the in-depth online reports.',
       tools: [
-        { n: 'Documents', icon: '<svg viewBox="0 0 24 24"><path d="M3.5 7a2 2 0 012-2h4l2 2.5h7a2 2 0 012 2V17a2 2 0 01-2 2h-13a2 2 0 01-2-2z"/></svg>', t: 'Library', d: 'Research links, whitepapers & strategies by folder.', run: function () { navigateToTool('tools/whitepapers-strategies.html', 'Documents'); } },
-        { n: 'Online Reports', icon: '<svg viewBox="0 0 24 24"><path d="M12 6c-2-1.8-4.7-2.2-8-2v14c3.3-.2 6 .2 8 2 2-1.8 4.7-2.2 8-2V4c-3.3-.2-6 .2-8 2z"/><path d="M12 6v14"/></svg>', t: 'Quarterly', d: 'In-depth reports for every capital & major region — pick a cluster, then a region.', run: function () { openOnlineReports({ lite: false }); } }
+        { key: 'documents', n: 'Documents', icon: '<svg viewBox="0 0 24 24"><path d="M3.5 7a2 2 0 012-2h4l2 2.5h7a2 2 0 012 2V17a2 2 0 01-2 2h-13a2 2 0 01-2-2z"/></svg>', t: 'Library', d: 'Research links, whitepapers & strategies by folder.', run: function () { navigateToTool('tools/whitepapers-strategies.html', 'Documents'); } },
+        { key: 'online-reports', n: 'Online Reports', icon: '<svg viewBox="0 0 24 24"><path d="M12 6c-2-1.8-4.7-2.2-8-2v14c3.3-.2 6 .2 8 2 2-1.8 4.7-2.2 8-2V4c-3.3-.2-6 .2-8 2z"/><path d="M12 6v14"/></svg>', t: 'Quarterly', d: 'In-depth reports for every capital & major region — pick a cluster, then a region.', run: function () { openOnlineReports({ lite: false }); } }
       ] },
     { id: 'present', full: 'Presentations', g: 'present', a1: '#54A6DE', a2: '#2478BC',
       desc: 'Advisor-to-client decks with live research embedded.',
       tools: [
-        { n: 'Create a Presentation', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 7.5v5M9.5 10h5"/><path d="M9 20l3-2 3 2"/></svg>', t: 'New deck', d: 'A fresh deck with live tool embeds — Clock and Runway v Demand stay current.', run: function () { navigateToTool('tools/presentation.html?new=1', 'Presentation'); } },
-        { n: 'Performance Property Presentations', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 12.5l3-3 2 2 4-4.5"/><path d="M9 20l3-2 3 2"/></svg>', t: 'Company', d: 'The team’s shared decks everyone can present from.', run: function () { navigateToTool('tools/presentation.html?view=company', 'Presentation'); } },
-        { n: 'My Presentations', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><circle cx="12" cy="8.5" r="1.8"/><path d="M9 13.5c.6-1.3 1.7-2 3-2s2.4.7 3 2"/><path d="M9 20l3-2 3 2"/></svg>', t: 'Yours', d: 'Your own private decks.', run: function () { navigateToTool('tools/presentation.html?view=mine', 'Presentation'); } },
+        { key: 'present-new', n: 'Create a Presentation', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 7.5v5M9.5 10h5"/><path d="M9 20l3-2 3 2"/></svg>', t: 'New deck', d: 'A fresh deck with live tool embeds — Clock and Runway v Demand stay current.', run: function () { navigateToTool('tools/presentation.html?new=1', 'Presentation'); } },
+        { key: 'present-company', n: 'Performance Property Presentations', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 12.5l3-3 2 2 4-4.5"/><path d="M9 20l3-2 3 2"/></svg>', t: 'Company', d: 'The team’s shared decks everyone can present from.', run: function () { navigateToTool('tools/presentation.html?view=company', 'Presentation'); } },
+        { key: 'present-mine', n: 'My Presentations', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><circle cx="12" cy="8.5" r="1.8"/><path d="M9 13.5c.6-1.3 1.7-2 3-2s2.4.7 3 2"/><path d="M9 20l3-2 3 2"/></svg>', t: 'Yours', d: 'Your own private decks.', run: function () { navigateToTool('tools/presentation.html?view=mine', 'Presentation'); } },
         { n: 'Users Presentations', icon: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.6"/><circle cx="16.5" cy="9.5" r="2"/><path d="M4.5 18.5c.8-3.2 2.5-4.8 4.5-4.8s3.7 1.6 4.5 4.8"/><path d="M15 18.5c.4-1.8 1.3-3 2.6-3.4"/></svg>', t: 'Dev · Admin', d: 'Every deck owned by another user, tagged with its owner.', cls: 'rcm-tile-staff', run: function () { navigateToTool('tools/presentation.html?view=users', 'Presentation'); } },
-        { n: 'Library', icon: '<svg viewBox="0 0 24 24"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8z"/><path d="M3.5 13l8.5 4.5L20.5 13"/></svg>', t: 'Slides', d: 'Buying/selling slides, strategy decks, client + partner decks.', run: function () { navigateToTool('tools/presentations-library.html', 'Presentations'); } }
+        { key: 'present-library', n: 'Library', icon: '<svg viewBox="0 0 24 24"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8z"/><path d="M3.5 13l8.5 4.5L20.5 13"/></svg>', t: 'Slides', d: 'Buying/selling slides, strategy decks, client + partner decks.', run: function () { navigateToTool('tools/presentations-library.html', 'Presentations'); } }
       ] },
     { id: 'people', full: 'People & Culture', g: 'people', a1: '#47DAFF', a2: '#00A3CC', leadsPlus: true,
       desc: 'Scorecards and publications that keep the team aligned.',
       tools: [
-        { n: 'Performance Scorecards', icon: '<svg viewBox="0 0 24 24"><rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 3.5V6h6V3.5"/><path d="M9 11.5l2 2 4-4.5"/><path d="M9 17h6"/></svg>', t: '70 / 30', d: 'Monthly KPI scorecards with live rating bands and three-party sign-off.', cls: 'scorecards-card', run: function () { navigateToTool('tools/scorecards.html', 'Performance Scorecards'); } }
+        { key: 'scorecards', n: 'Performance Scorecards', icon: '<svg viewBox="0 0 24 24"><rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 3.5V6h6V3.5"/><path d="M9 11.5l2 2 4-4.5"/><path d="M9 17h6"/></svg>', t: '70 / 30', d: 'Monthly KPI scorecards with live rating bands and three-party sign-off.', cls: 'scorecards-card', run: function () { navigateToTool('tools/scorecards.html', 'Performance Scorecards'); } }
       ] }
   ];
 
@@ -4299,7 +4550,10 @@ function navigateToTool(url, label) {
     var tag = t.tagId ? '<span class="tag" id="' + t.tagId + '">' + esc(t.t) + '</span>'
                       : (t.t ? '<span class="tag">' + esc(t.t) + '</span>' : '');
     var stat = t.statId ? '<span class="ad" id="' + t.statId + '">Loading…</span>' : '<span class="ad">' + esc(t.d) + '</span>';
-    return '<button class="app' + (t.cls ? ' ' + t.cls : '') + '" data-k="' + k + '">' +
+    /* grp-on lifts the per-card tier CSS gates (.cadence-card etc.) when the
+       user's GROUP allows the tool (081 visibility system) */
+    var grp = (t.key && typeof ppToolAllowed === 'function' && ppToolAllowed(t.key)) ? ' grp-on' : '';
+    return '<button class="app' + (t.cls ? ' ' + t.cls : '') + grp + '" data-k="' + k + '">' +
       (t.warn ? '<span class="app-warn" data-warn="' + t.warn + '"' + (window.__forgeBad ? '' : ' hidden') + ' title="A data point had an issue — open to check"></span>' : '') +
       '<span class="aicon">' + (t.icon || '<span>' + String(k + 1).padStart(2, '0') + '</span>') + '</span>' +
       '<span style="min-width:0"><span class="anm">' + esc(t.n) + tag + '</span><br>' + stat + '</span>' +
@@ -4309,14 +4563,25 @@ function navigateToTool(url, label) {
     var a = null;
     for (var i = 0; i < APPS.length; i++) if (APPS[i].id === id) a = APPS[i];
     if (!a) return;
-    /* Same nav gate the old hub pages used — PM + Vault are staff-only. */
-    if (a.staff && typeof _hubIsStaff === 'function' && !_hubIsStaff()) return;
-    if (a.leadsPlus && typeof _hubIsLeadsPlus === 'function' && !_hubIsLeadsPlus()) return;
+    /* Nav gate: GROUP-aware (081) — ppSectionAllowed's legacy branch
+       reproduces the old _hubIsStaff/_hubIsLeadsPlus gates exactly when no
+       group state is resolved, so pre-migration behavior is unchanged. */
+    if (typeof ppSectionAllowed === 'function') { if (!ppSectionAllowed(id)) return; }
+    else {
+      if (a.staff && typeof _hubIsStaff === 'function' && !_hubIsStaff()) return;
+      if (a.leadsPlus && typeof _hubIsLeadsPlus === 'function' && !_hubIsLeadsPlus()) return;
+    }
     if (wins[id]) { wins[id].el.style.display = ''; wins[id].min = false; focusWin(id); return; }
     var el = document.createElement('section');
     el.className = 'win spawn';
     el.style.zIndex = ++z;
-    var rowsHtml = a.tools.map(function (t, k) { return rowHtml(t, k); }).join('');
+    /* group-filter the rows — k stays the ORIGINAL index (the .wbody click
+       handler resolves a.tools[data-k]) */
+    var _visN = 0;
+    var rowsHtml = a.tools.map(function (t, k) {
+      if (t.key && typeof ppToolAllowed === 'function' && !ppToolAllowed(t.key)) return '';
+      _visN++; return rowHtml(t, k);
+    }).join('');
     var extra = '';
     if (id === 'arena') {
       /* 2x2 quadrant layout (Van 2026-07-12): Games | Top of the
@@ -4342,7 +4607,7 @@ function navigateToTool(url, label) {
           '<button class="lt z" data-act="max" aria-label="Zoom"></button>' +
         '</div>' +
         '<span class="tt"><span class="mini">' + (GLYPH[a.g] || '') + '</span>' + esc(a.full) + '</span>' +
-        '<span class="cnt">' + a.tools.length + ' tools</span>' +
+        '<span class="cnt">' + _visN + ' tools</span>' +
       '</div>' +
       '<div class="wbody" style="--a1:' + a.a1 + ';--a2:' + a.a2 + '">' +
         '<p class="wdesc">' + esc(a.desc) + '</p>' +
@@ -4437,9 +4702,15 @@ function navigateToTool(url, label) {
       var openT = null, hideT = null, curId = null, curIcon = null;
 
       function buildFly(a, glyph) {
+        /* group-filter like openWin — k stays the ORIGINAL index (the click
+           handler resolves a.tools[data-k]); grp-on lifts per-card CSS gates */
+        var visN = 0;
         var rows = a.tools.map(function (t, k) {
+          if (t.key && typeof ppToolAllowed === 'function' && !ppToolAllowed(t.key)) return '';
+          visN++;
+          var grp = (t.key && typeof ppToolAllowed === 'function' && ppToolAllowed(t.key)) ? ' grp-on' : '';
           var tag = t.t ? '<span class="ofr-tag">' + esc(t.t) + '</span>' : '';
-          return '<button type="button" class="os-fly-row' + (t.cls ? ' ' + t.cls : '') + '" data-k="' + k + '">' +
+          return '<button type="button" class="os-fly-row' + (t.cls ? ' ' + t.cls : '') + grp + '" data-k="' + k + '">' +
             '<span class="ofr-ic" style="--a1:' + a.a1 + ';--a2:' + a.a2 + '">' + (t.icon || '') + '</span>' +
             '<span class="ofr-bd"><span class="ofr-nm">' + esc(t.n) + tag + '</span>' +
             '<span class="ofr-ds">' + esc(t.d) + '</span></span>' +
@@ -4450,7 +4721,7 @@ function navigateToTool(url, label) {
             '<span class="ofr-hic">' + (glyph || '') + '</span>' +
             '<span class="ofr-htx"><span class="ofr-hnm">' + esc(a.full) + '</span>' +
             '<span class="ofr-hds">' + esc(a.desc) + '</span></span>' +
-            '<span class="ofr-hcnt">' + a.tools.length + ' tools</span></div>' +
+            '<span class="ofr-hcnt">' + visN + ' tools</span></div>' +
           '<div class="ofr-sep"></div>' + rows;
       }
       function positionFly(iconEl) {
@@ -4663,10 +4934,17 @@ function navigateToTool(url, label) {
         placeUnplaced();
         layer.innerHTML = '';
         PP_PINS.get().forEach(function (p) {
-          if (p.kind === 'tool' && !appTool(p.sec, p.n)) return;   // stale / not-visible tool → skip
+          if (p.kind === 'tool') {
+            var hit = appTool(p.sec, p.n);
+            if (!hit) return;   // stale / not-visible tool → skip
+            /* group visibility (081): hide pins to tools outside the user's
+               group — kept in storage, so a reassignment brings them back */
+            if (hit.t.key && typeof ppToolAllowed === 'function' && !ppToolAllowed(hit.t.key)) return;
+          }
           layer.appendChild(makePinEl(p));
         });
       }
+      document.addEventListener('pp-allowed-tools-changed', function () { try { render(); } catch (e) {} });
       window.ppOsPinTool = function (sec, n) {
         if (PP_PINS.has(function (p) { return p.kind === 'tool' && p.sec === sec && p.n === n; })) return false;
         var cell = defaultCell();
@@ -5037,7 +5315,7 @@ function navigateToTool(url, label) {
      logic live in shared/concierge.js (also loaded on every signed-in
      /tools/*.html page so the chat follows the user wherever they
      go). Styles are in shared/concierge.css linked from <head>. -->
-<script src="shared/concierge.js?v=b1cd52da"></script>
+<script src="shared/concierge.js?v=c62e7378"></script>
 
 <style>
   /* Health mark on a section-window tool card — mirrors the dock badge so the

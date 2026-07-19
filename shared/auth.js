@@ -88,6 +88,10 @@ function _setSessionMirror(profile) {
     sessionStorage.removeItem('pp_view_as');
     sessionStorage.removeItem('pp_user_email');
     sessionStorage.removeItem('pp_user_name');
+    sessionStorage.removeItem('pp_user_team');
+    sessionStorage.removeItem('pp_user_team_name');
+    sessionStorage.removeItem('pp_view_team');
+    sessionStorage.removeItem('pp_allowed_tools_v1');
     return;
   }
   sessionStorage.setItem('pp_auth', '1');
@@ -97,6 +101,7 @@ function _setSessionMirror(profile) {
   }
   sessionStorage.setItem('pp_user_email', profile.email || '');
   sessionStorage.setItem('pp_user_name',  profile.full_name || '');
+  sessionStorage.setItem('pp_user_team',  profile.team || '');   /* GROUPS visibility axis (081); '' = unassigned → baseline */
 }
 
 /* ═══ ACCESS LEVEL HELPERS (sync) ═══ */
@@ -125,6 +130,100 @@ window.isGuest        = isGuest;
 window.isLimitedUser  = isLimitedUser;
 window.isViewOnly     = isViewOnly;
 
+/* ═══ GROUP (team) TOOL VISIBILITY — resolver for migration 081 ═══
+   Visibility-only axis on top of tiers: `hub_groups` rows hold tool-key
+   arrays (shared/tool-registry.js); a staff member sees
+   union(company_baseline, their group). Rights are untouched.
+   State shape: { mode:'all'|'external'|'set', keys:Set, team, fallback }.
+   'all' = dev/admin · 'external' = client/guest (legacy gating) ·
+   'set' = leads/company. Missing state = not resolved yet → helpers in
+   tool-registry.js fail open to the legacy tier gates.
+   Resolution is NON-BLOCKING (fired after profile hydrate); results are
+   cached in sessionStorage 'pp_allowed_tools_v1' so revisits + tool pages
+   read it synchronously. */
+let _ppAllowed = null;
+let _ppAllowedPromise = null;
+window._ppHubGroupsCache = window._ppHubGroupsCache || null;   /* rows for the switcher + Groups panel */
+
+function getViewAsTeam() { return isDev() ? (sessionStorage.getItem('pp_view_team') || '') : ''; }
+window.getViewAsTeam = getViewAsTeam;
+
+window.ppAllowedState = function () {
+  if (_ppAllowed) return _ppAllowed;
+  try {
+    const raw = sessionStorage.getItem('pp_allowed_tools_v1');
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    _ppAllowed = { mode: p.mode, keys: new Set(p.keys || []), team: p.team || '', fallback: !!p.fallback };
+    return _ppAllowed;
+  } catch (e) { return null; }
+};
+
+function _ppSetAllowed(st) {
+  _ppAllowed = st;
+  try {
+    sessionStorage.setItem('pp_allowed_tools_v1', JSON.stringify({
+      mode: st.mode, keys: Array.from(st.keys || []), team: st.team || '', fallback: !!st.fallback, ts: Date.now()
+    }));
+  } catch (e) {}
+  try { if (typeof populateHubWidgets === 'function') populateHubWidgets(); } catch (e) {}
+  try { if (typeof initTierSwitcher === 'function') initTierSwitcher(); } catch (e) {}
+  try { document.dispatchEvent(new CustomEvent('pp-allowed-tools-changed')); } catch (e) {}
+}
+
+window.ppResolveAllowedTools = function (force) {
+  if (!force && _ppAllowed && !_ppAllowed.fallback) return Promise.resolve(_ppAllowed);
+  if (_ppAllowedPromise) return _ppAllowedPromise;
+  _ppAllowedPromise = (async () => {
+    const lvl = getViewAsLevel();
+    const REG = window.PP_TOOL_REGISTRY;
+    let team = getViewAsTeam() || sessionStorage.getItem('pp_user_team') || '';
+    /* dev = Van: always everything. Everyone else is ASSIGNABLE to any group
+       (Van 2026-07-19), including the 'admins' and 'leads' group rows. Safe
+       defaults while unassigned: admin → sees everything; tier='leads' →
+       auto-applies the 'leads' row (today's reach). */
+    if (lvl === 'leads' && !team) team = 'leads';
+    if (lvl === 'dev' || (lvl === 'admin' && !team)) {
+      /* the Group Switcher needs the group names even though dev/admin skip
+         resolution — backfill the cache non-blocking, then re-render it */
+      if (isDev() && !window._ppHubGroupsCache && window.sb) {
+        window.sb.from('hub_groups').select('key,name,tools,sort').order('sort')
+          .then(({ data }) => { if (data && data.length) { window._ppHubGroupsCache = data; try { initTierSwitcher(); } catch (e) {} } })
+          .catch(() => {});
+      }
+      const st = { mode: 'all', keys: new Set() }; _ppSetAllowed(st); return st;
+    }
+    if (lvl === 'client' || lvl === 'guest' || !lvl) { const st = { mode: 'external', keys: new Set() }; _ppSetAllowed(st); return st; }
+    if (!REG) { const st = { mode: 'external', keys: new Set() }; _ppSetAllowed(st); return st; }   /* no registry on this page → legacy gates */
+    try {
+      const { data, error } = await window.sb.from('hub_groups').select('key,name,tools,sort').order('sort');
+      if (error || !data || !data.length) throw (error || new Error('empty'));
+      window._ppHubGroupsCache = data;
+      const by = {}; data.forEach(r => { by[r.key] = r; });
+      const keys = new Set(((by.company_baseline || {}).tools) || []);
+      if (team && by[team]) (by[team].tools || []).forEach(k => keys.add(k));
+      /* real team's display name for the identity chip (identity, not view-as) */
+      const realTeam = sessionStorage.getItem('pp_user_team') || '';
+      sessionStorage.setItem('pp_user_team_name', (realTeam && by[realTeam]) ? by[realTeam].name : '');
+      const st = { mode: 'set', keys, team };
+      _ppSetAllowed(st);
+      return st;
+    } catch (e) {
+      /* hub_groups missing (081 not applied) or offline → today's UI exactly.
+         A grouped ADMIN fails open to see-all (their pre-081 behavior). */
+      if (lvl === 'admin') { const st = { mode: 'all', keys: new Set(), fallback: true }; _ppSetAllowed(st); return st; }
+      const keys = new Set(REG.DEFAULT_BASELINE);
+      if (lvl === 'leads') REG.DEFAULT_LEADS_EXTRA.forEach(k => keys.add(k));
+      const st = { mode: 'set', keys, team: '', fallback: true };
+      _ppSetAllowed(st);
+      return st;
+    } finally {
+      _ppAllowedPromise = null;
+    }
+  })();
+  return _ppAllowedPromise;
+};
+
 /* ═══ TIER SWITCHER (dev only) — unchanged from previous build ═══ */
 window._pp_currentView = window._pp_currentView || '';
 
@@ -150,7 +249,7 @@ function _ppBuildTierSwitcher() {
 
   const btn = document.createElement('button');
   btn.type = 'button'; btn.id = 'ts-toggle-btn';
-  btn.setAttribute('title', 'View as tier — dev tool');
+  btn.setAttribute('title', 'View as — dev tool (groups + roles)');
   const btnStyles = {
     'display':'flex','align-items':'center','gap':'8px','background':'rgba(21,25,38,0.72)','color':'#ffffff',
     'backdrop-filter':'blur(20px) saturate(1.5)','-webkit-backdrop-filter':'blur(20px) saturate(1.5)',
@@ -162,7 +261,7 @@ function _ppBuildTierSwitcher() {
   for (const [k,v] of Object.entries(btnStyles)) btn.style.setProperty(k, v, 'important');
   btn.innerHTML = '<span style="font-size:13px;line-height:1">&#128065;</span>'
                 + '<span style="opacity:.6">View as:&nbsp;</span>'
-                + '<span id="ts-current-label-js" style="color:#ffffff">TIER 0</span>';
+                + '<span id="ts-current-label-js" style="color:#ffffff">DEV</span>';
   btn.addEventListener('click', function (e) {
     e.stopPropagation();
     const m = document.getElementById('ts-menu-js');
@@ -190,31 +289,48 @@ function _ppBuildTierSwitcher() {
   for (const [k,v] of Object.entries(hdrStyles)) header.style.setProperty(k, v, 'important');
   menu.appendChild(header);
 
-  const tiers = [
-    ['dev',    'TIER 0', 'Dev / Full access'],
-    ['admin',  'TIER 1', 'Admin'],
-    ['leads',  'TIER 2', 'Leads — Staff access + Vault & PM'],
-    ['company','TIER 3', 'Staff'],
-    ['client', 'TIER 4', 'Client (no edits, no downloads)'],
-    ['guest',  'TIER 5', 'Lite — Contact Us blur wall']
+  /* GROUP SWITCHER (Van 2026-07-19): one flat list, no "TIER n" wording —
+     Dev · Admin · Leads · each staff group · Client · Guest. Group rows come
+     from the hub_groups cache (backfilled for dev by the resolver); the
+     'admins'/'leads' GROUP rows are skipped because the Admin/Leads entries
+     already preview those perspectives. */
+  const entries = [
+    { tier: 'dev',   label: 'Dev',   sub: 'Full access' },
+    { tier: 'admin', label: 'Admin', sub: 'Full edit + download' },
+    { tier: 'leads', label: 'Leads', sub: 'Baseline + Leads tools' }
   ];
-  tiers.forEach(([tier, label, sub]) => {
+  (window._ppHubGroupsCache || [])
+    .filter(r => r.key !== 'company_baseline' && r.key !== 'admins' && r.key !== 'leads')
+    .forEach(r => entries.push({ team: r.key, label: r.name, sub: 'Staff group' }));
+  entries.push(
+    { tier: 'client', label: 'Client', sub: 'No edits, no downloads' },
+    { tier: 'guest',  label: 'Guest',  sub: 'Lite — Contact Us blur wall' }
+  );
+
+  entries.forEach(en => {
     const b = document.createElement('button');
-    b.type = 'button'; b.setAttribute('data-tier', tier);
+    b.type = 'button';
+    if (en.team) b.setAttribute('data-team', en.team); else b.setAttribute('data-tier', en.tier);
     const bs = {
-      'display':'block','width':'100%','text-align':'left','padding':'11px 14px','border':'none',
+      'display':'block','width':'100%','text-align':'left','padding':'10px 14px','border':'none',
       'border-bottom':'1px solid rgba(255,255,255,0.07)','background':'transparent','font-family':'inherit',
       'font-size':'11.5px','font-weight':'700','color':'#e8edf7','cursor':'pointer','letter-spacing':'0.3px'
     };
     for (const [k,v] of Object.entries(bs)) b.style.setProperty(k, v, 'important');
-    b.innerHTML = label + ' <span style="display:block;font-size:9.5px;font-weight:600;opacity:.7;margin-top:2px;letter-spacing:.5px">' + sub + '</span>';
+    b.innerHTML = en.label + ' <span style="display:block;font-size:9.5px;font-weight:600;opacity:.7;margin-top:2px;letter-spacing:.5px">' + en.sub + '</span>';
+    const isActive = () => en.team
+      ? (getViewAsLevel() === 'company' && getViewAsTeam() === en.team)
+      : (getViewAsLevel() === en.tier && !(en.tier === 'company' && getViewAsTeam()));
     b.addEventListener('mouseenter', () => b.style.setProperty('background', 'rgba(255,255,255,0.08)', 'important'));
     b.addEventListener('mouseleave', () => {
-      const active = b.getAttribute('data-tier') === getViewAsLevel();
+      const active = isActive();
       b.style.setProperty('background', active ? '#e8edf7' : 'transparent', 'important');
       b.style.setProperty('color',      active ? '#10131c' : '#e8edf7', 'important');
     });
-    b.addEventListener('click', function (e) { e.stopPropagation(); setViewAs(tier); });
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (en.team) setViewAs('company', en.team); else setViewAs(en.tier);
+    });
     menu.appendChild(b);
   });
   host.appendChild(menu);
@@ -238,11 +354,24 @@ function initTierSwitcher() {
   _ppBuildTierSwitcher();
   try {
     const va = getViewAsLevel();
-    const labels = { dev:'TIER 0', admin:'TIER 1', leads:'TIER 2', company:'TIER 3', client:'TIER 4', guest:'TIER 5' };
+    const vTeam = getViewAsTeam();
+    const labels = { dev:'DEV', admin:'ADMIN', leads:'LEADS', company:'STAFF', client:'CLIENT', guest:'GUEST' };
     const lbl = document.getElementById('ts-current-label-js');
-    if (lbl) lbl.textContent = labels[va] || 'TIER 0';
+    if (lbl) {
+      let text = labels[va] || 'DEV';
+      if (va === 'company' && vTeam) {
+        const row = (window._ppHubGroupsCache || []).find(r => r.key === vTeam);
+        text = ((row && row.name) || vTeam).toUpperCase();
+      }
+      lbl.textContent = text;
+    }
     document.querySelectorAll('#ts-menu-js button[data-tier]').forEach(b => {
-      const active = b.getAttribute('data-tier') === va;
+      const active = b.getAttribute('data-tier') === va && !(va === 'company' && vTeam);
+      b.style.setProperty('background', active ? '#e8edf7' : 'transparent', 'important');
+      b.style.setProperty('color',      active ? '#10131c' : '#e8edf7', 'important');
+    });
+    document.querySelectorAll('#ts-menu-js button[data-team]').forEach(b => {
+      const active = va === 'company' && b.getAttribute('data-team') === vTeam;
       b.style.setProperty('background', active ? '#e8edf7' : 'transparent', 'important');
       b.style.setProperty('color',      active ? '#10131c' : '#e8edf7', 'important');
     });
@@ -250,10 +379,16 @@ function initTierSwitcher() {
 }
 window.initTierSwitcher = initTierSwitcher;
 
-function setViewAs(tier) {
+function setViewAs(tier, teamKey) {
   if (!isDev()) return;
   if (!['dev','admin','leads','company','client','guest'].includes(tier)) return;
   sessionStorage.setItem('pp_view_as', tier);
+  /* pp_view_as stays a PLAIN TIER string (arena gates, report gates and
+     applyAccessRestrictions all parse it) — a group preview rides a second
+     dev-only key that only the visibility resolver reads. */
+  if (tier === 'company' && teamKey) sessionStorage.setItem('pp_view_team', teamKey);
+  else sessionStorage.removeItem('pp_view_team');
+  sessionStorage.removeItem('pp_allowed_tools_v1');   /* re-resolve for the new perspective */
   location.reload();
 }
 window.setViewAs = setViewAs;
@@ -448,7 +583,7 @@ async function _hydrateFromSession() {
   }
   const { data: profile, error } = await window.sb
     .from('profiles')
-    .select('id, email, full_name, tier, status')
+    .select('*')   /* schema-tolerant: `team` (migration 081) appears when applied; an explicit column list 400s pre-migration and breaks login */
     .eq('id', sess.session.user.id)
     .single();
   if (error || !profile) {
@@ -457,6 +592,8 @@ async function _hydrateFromSession() {
     return null;
   }
   _setSessionMirror(profile);
+  /* resolve group tool visibility in the background — never blocks login */
+  try { if (typeof window.ppResolveAllowedTools === 'function') window.ppResolveAllowedTools().catch(() => {}); } catch (e) {}
   /* Pre-warm the pending-approvals cache for admin/dev so the hub pill
      reflects pending-count on first paint without an extra event. */
   if (profile.tier === 'admin' || profile.tier === 'dev') {
@@ -912,8 +1049,16 @@ function populateHubWidgets() {
         guest:  'Tier 5 · Lite'
       };
       const lvl = getAuthLevel();
-      tierEl.textContent = labels[lvl] || '—';
+      /* staff in a GROUP (081) show the group name instead of the tier label
+         — identity, not view-as; applies to company/leads/admin (all
+         assignable), never dev/externals */
+      const teamName = (lvl === 'company' || lvl === 'leads' || lvl === 'admin')
+        ? (sessionStorage.getItem('pp_user_team_name') || '') : '';
+      tierEl.textContent = teamName || labels[lvl] || '—';
     }
+    /* dev-only Groups panel button (symmetric: a boolean set for every tier) */
+    const gbtn = document.getElementById('hubGroupsBtn');
+    if (gbtn) gbtn.hidden = !isDev();
   } catch (e) {}
 }
 window.populateHubWidgets = populateHubWidgets;

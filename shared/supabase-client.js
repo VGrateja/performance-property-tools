@@ -68,7 +68,7 @@
       if (!sess || !sess.session) return null;
       const { data, error } = await window.sb
         .from('profiles')
-        .select('id, email, full_name, tier, status')
+        .select('*')   /* schema-tolerant: `team` (migration 081) appears when applied; an explicit column list 400s pre-migration and breaks login */
         .eq('id', sess.session.user.id)
         .single();
       if (error) {
