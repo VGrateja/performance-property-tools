@@ -197,9 +197,22 @@ body.ss-lobby-open .ss-main{display:none}
         <p class="ss-sub">Pick a market, then a suburb — long-term quality, remaining runway, value scores and the buying recommendation, straight from the research database.</p>
       </div>
       <div class="ss-groups" id="ssMarketGroups"></div>
+      <div class="ss-ingest" id="ssForge" hidden>
+        <h3>Update from Forge <span id="ssForgeMonth" style="font-weight:600;opacity:.65;font-size:12px"></span></h3>
+        <p class="hint">Refreshes every market's <b>current rent, price and days-on-market</b> from the Forge CL Suburb Data store (recorded by the monthly Cotality drop) and recomputes the whole scoring chain — the sheet formulas, ported and workbook-verified. Constants (stagnation baselines, LT growth, quality) never change.</p>
+        <div class="ss-savebar" style="margin-top:4px">
+          <button class="ss-save" id="ssForgeBtn" disabled>⟳ Recompute all markets</button>
+          <span id="ssForgeMsg" style="font-size:12px"></span>
+        </div>
+        <div class="ss-review" id="ssForgeReview"></div>
+        <div class="ss-savebar" id="ssForgeSaveBar" hidden>
+          <button class="ss-save" id="ssForgeSaveBtn">Save all markets</button>
+          <span id="ssForgeSaveMsg" style="font-size:12px"></span>
+        </div>
+      </div>
       <div class="ss-ingest" id="ssIngest" hidden>
-        <h3>Update data</h3>
-        <p class="hint">Drop the monthly <b>Simple Suburb Scoring</b> market workbooks (one or many at once). Each file replaces that market's House + Unit snapshots after you review the parse summary.</p>
+        <h3>Reseed constants — market workbooks</h3>
+        <p class="hint">Only needed when the methodology's <b>constants</b> change (stagnation baselines, LT growth, quality) or a new market is added: drop the <b>Simple Suburb Scoring</b> workbooks to replace that market's snapshots. Monthly updates come from Forge above.</p>
         <div class="ss-drop" id="ssDrop">Drop workbooks here or click to choose…</div>
         <input type="file" id="ssFile" accept=".xlsx,.xls" multiple hidden>
         <div class="ss-review" id="ssReview"></div>
@@ -265,6 +278,7 @@ body.ss-lobby-open .ss-main{display:none}
 <script src="../shared/supabase-client.js?v=79207e52"></script>
 <script src="../shared/tool-registry.js?v=5dbcbed4"></script>
 <script src="../shared/suburb-scoring-parse.js?v=19391c96"></script>
+<script src="../shared/suburb-scoring-engine.js?v=e38da22b"></script>
 <script src="../shared/desktop-pins.js?v=e2416017"></script>
 <script src="../shared/auth.js?v=6f88fa92"></script>
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
@@ -589,7 +603,9 @@ async function initIngestGate() {
     _ssCanWrite = realWriter && (va === 'dev' || va === 'admin');
   } catch (e) { _ssCanWrite = false; }
   $('#ssIngest').hidden = !_ssCanWrite;
+  $('#ssForge').hidden = !_ssCanWrite;
   if (!_ssCanWrite) return;
+  initForgeUpdate();
   const drop = $('#ssDrop'), file = $('#ssFile');
   drop.addEventListener('click', () => file.click());
   drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
@@ -653,6 +669,127 @@ async function saveIngest() {
   msg.textContent = fails ? ('Saved ' + n + ', ' + fails + ' failed.') : ('✓ Saved ' + n + ' snapshots.');
   buildMarketList(); renderLobbyTiles();
 }
+
+/* ── Update from Forge (stage 3) — monthly refresh via the scoring engine ──
+   Matches every payload row to its forge_cl_suburbs row (2026-07-19 audit:
+   99.9% coverage; unmatched rows keep their stored values and are counted),
+   feeds fresh {rent, price, dom} into PP_SSCORE_ENGINE.recomputePayload
+   (workbook-verified formulas; constants untouched), review → Save. */
+const SS_STATE = { melbourne:'VIC', adelaide:'SA', sydney:'NSW', perth:'WA', brisbane:'QLD', darwin:'NT',
+  ballarat:'VIC', bendigo:'VIC', geelong:'VIC', rockhampton:'QLD', rockingham:'WA', townsville:'QLD', toowoomba:'QLD' };
+const SS_BENCH = { melbourne:['capital','Melbourne'], adelaide:['capital','Adelaide'], sydney:['capital','Sydney'],
+  perth:['capital','Perth'], brisbane:['capital','Brisbane'], darwin:['capital','Darwin'],
+  ballarat:['lga','Ballarat'], bendigo:['lga','Greater Bendigo'], geelong:['lga','Greater Geelong'],
+  rockhampton:['lga','Rockhampton'], rockingham:['lga','Rockingham'], townsville:['lga','Townsville'], toowoomba:['lga','Toowoomba'] };
+const ssNorm = s => String(s || '').toLowerCase().replace(/\s*lga$/, '').replace(/[^a-z0-9]/g, '');
+let _ssForgePending = null;   /* { month, updates:[{key, label, kind, payload, matched, total, missing, bench}] } */
+
+async function initForgeUpdate() {
+  const btn = $('#ssForgeBtn');
+  try {
+    const { data } = await sb.from('forge_cotality').select('data,updated_at').eq('id', 'cl_suburbs_meta').maybeSingle();
+    const months = data && data.data && data.data.months ? Object.keys(data.data.months).sort() : [];
+    if (!months.length) { $('#ssForgeMonth').textContent = '· store empty — drop the Market Trends file in Data Forge first'; return; }
+    const month = months[months.length - 1];
+    $('#ssForgeMonth').textContent = '· data month ' + month;
+    btn.disabled = false;
+    btn.onclick = () => runForgeRecompute(month);
+  } catch (e) { $('#ssForgeMonth').textContent = '· store unavailable (apply migration 083)'; }
+}
+async function fetchForgeMonth(month, onN) {
+  const all = [];
+  for (let pg = 0; ; pg++) {
+    /* ORDER = full PK — anything less can drop rows at page seams */
+    const { data, error } = await sb.from('forge_cl_suburbs')
+      .select('level,ptype,state,name,lga,metrics')
+      .eq('month', month)
+      .order('level').order('ptype').order('state').order('name_key')
+      .range(pg * 1000, pg * 1000 + 999);
+    if (error) throw error;
+    all.push(...(data || []));
+    if (onN) onN(all.length);
+    if (!data || data.length < 1000) break;
+  }
+  return all;
+}
+async function runForgeRecompute(month) {
+  const btn = $('#ssForgeBtn'), msg = $('#ssForgeMsg'), rev = $('#ssForgeReview');
+  btn.disabled = true; _ssForgePending = null; $('#ssForgeSaveBar').hidden = true;
+  try {
+    msg.textContent = 'Fetching the Forge store…';
+    const cl = await fetchForgeMonth(month, n => { msg.textContent = 'Fetching the Forge store… ' + n.toLocaleString() + ' rows'; });
+    const updates = []; const lines = [];
+    const keys = Object.keys(META).sort();
+    for (const key of keys) {
+      const m = META[key]; if (!m) continue;
+      msg.textContent = 'Recomputing ' + m.label + ' ' + m.kind.toUpperCase() + '…';
+      await new Promise(r => setTimeout(r, 0));
+      const payload = await ensureData(m.market_slug, m.kind);
+      if (!payload) continue;
+      const st = SS_STATE[m.market_slug], PT = m.kind.toUpperCase();
+      const bref = SS_BENCH[m.market_slug];
+      const lgaBy = {}, subBy = {};
+      let benchRow = null;
+      for (const r of cl) {
+        if (r.ptype !== PT) continue;
+        if (bref && r.level === bref[0] && ssNorm(r.name) === ssNorm(bref[1]) && !benchRow) benchRow = r;
+        if (r.state !== st) continue;
+        if (r.level === 'lga') lgaBy[ssNorm(r.name)] = r;
+        else if (r.level === 'suburb') (subBy[ssNorm(r.name)] = subBy[ssNorm(r.name)] || []).push(r);
+      }
+      let matched = 0; const missing = [];
+      const hitOf = (row, isBench) => {
+        if (isBench) return benchRow;
+        if (row.isLga) return lgaBy[ssNorm(row.suburb)] || null;
+        const cands = subBy[ssNorm(row.suburb)] || [];
+        return cands.length > 1 ? (cands.find(c => ssNorm(c.lga) === ssNorm(row.lga)) || cands[0]) : (cands[0] || null);
+      };
+      const currentOf = (row, isBench) => {
+        const hit = hitOf(row, isBench);
+        if (!hit) { if (!isBench) missing.push(row.suburb); return null; }
+        if (!isBench) matched++;
+        const mm = hit.metrics || {};
+        const price = mm.med3 != null ? mm.med3 : (mm.med6 != null ? mm.med6 : (mm.med12 != null ? mm.med12 : undefined));
+        return { rent: mm.rent != null ? mm.rent : undefined, price: price, dom: mm.dom != null ? mm.dom : null };
+      };
+      const next = PP_SSCORE_ENGINE.recomputePayload(key, payload, currentOf, { benchRunwayMode: 'derive' });
+      next.meta = Object.assign({}, payload.meta, { forgeMonth: month, unmatched: missing.length });
+      updates.push({ key, label: m.label, kind: PT, payload: next, matched, total: payload.rows.length, missing, bench: !!benchRow });
+      lines.push('<div class="' + (missing.length ? 'warn' : 'ok') + '">' + (missing.length ? '⚠' : '✓') + ' ' + esc(m.label) + ' ' + PT
+        + ' — ' + matched + ' / ' + payload.rows.length + ' matched' + (benchRow ? '' : ' · <b>no benchmark!</b>')
+        + (missing.length ? ' · kept stored values for: ' + esc(missing.slice(0, 5).join(', ')) + (missing.length > 5 ? ' +' + (missing.length - 5) : '') : '') + '</div>');
+    }
+    rev.innerHTML = lines.join('');
+    _ssForgePending = { month, updates };
+    $('#ssForgeSaveBar').hidden = !updates.length;
+    $('#ssForgeSaveMsg').textContent = '';
+    msg.textContent = 'Review, then save — this republishes all ' + updates.length + ' snapshots for ' + month + '.';
+  } catch (e) { msg.textContent = 'Failed: ' + (e.message || e); }
+  btn.disabled = false;
+}
+$('#ssForgeSaveBtn').addEventListener('click', async () => {
+  if (!_ssForgePending || !_ssCanWrite) return;
+  const btn = $('#ssForgeSaveBtn'), msg = $('#ssForgeSaveMsg');
+  btn.disabled = true;
+  const prof = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null;
+  const stamp = new Date().toISOString();
+  let n = 0, fails = 0;
+  for (const u of _ssForgePending.updates) {
+    msg.textContent = 'Saving ' + u.label + ' ' + u.kind + '…';
+    await new Promise(r => setTimeout(r, 0));
+    const { error } = await sb.from('suburb_scores').upsert({
+      key: u.key, market_slug: META[u.key].market_slug, kind: META[u.key].kind, label: u.label,
+      payload: u.payload, source_month: 'forge · ' + _ssForgePending.month,
+      computed_at: stamp, computed_by: (prof && prof.id) || null
+    }, { onConflict: 'key' });
+    if (error) { fails++; msg.textContent = u.label + ' failed: ' + error.message; }
+    else { n++; DATA[u.key] = u.payload; if (META[u.key]) { META[u.key].source_month = 'forge · ' + _ssForgePending.month; META[u.key].computed_at = stamp; META[u.key].meta = u.payload.meta; } }
+  }
+  btn.disabled = false;
+  msg.textContent = fails ? ('Saved ' + n + ', ' + fails + ' failed.') : ('✓ Published ' + n + ' snapshots for ' + _ssForgePending.month + '.');
+  buildMarketList(); renderLobbyTiles();
+  if (state.market) { syncSegs(); renderList(); renderDetail(); }
+});
 
 boot();
 </script>
