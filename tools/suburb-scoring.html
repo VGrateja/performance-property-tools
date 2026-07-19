@@ -682,6 +682,11 @@ const SS_BENCH = { melbourne:['capital','Melbourne'], adelaide:['capital','Adela
   ballarat:['lga','Ballarat'], bendigo:['lga','Greater Bendigo'], geelong:['lga','Greater Geelong'],
   rockhampton:['lga','Rockhampton'], rockingham:['lga','Rockingham'], townsville:['lga','Townsville'], toowoomba:['lga','Toowoomba'] };
 const ssNorm = s => String(s || '').toLowerCase().replace(/\s*lga$/, '').replace(/[^a-z0-9]/g, '');
+/* LGA-SCORED markets (TRACKER "Average of LGAs"): the workbook scores at LGA
+   level and suburb rows COPY their LGA's values — so their current data must
+   come from the CL LGA row, not per-suburb rows (also covers apartment-only
+   suburbs like Docklands that have no house row in CL). */
+const SS_LGA_SCORED = { melbourne: true, adelaide: true };
 let _ssForgePending = null;   /* { month, updates:[{key, label, kind, payload, matched, total, missing, bench}] } */
 
 async function initForgeUpdate() {
@@ -737,12 +742,19 @@ async function runForgeRecompute(month) {
         if (r.level === 'lga') lgaBy[ssNorm(r.name)] = r;
         else if (r.level === 'suburb') (subBy[ssNorm(r.name)] = subBy[ssNorm(r.name)] || []).push(r);
       }
-      let matched = 0; const missing = [];
+      let matched = 0; const missing = []; const viaLga = [];
       const hitOf = (row, isBench) => {
         if (isBench) return benchRow;
         if (row.isLga) return lgaBy[ssNorm(row.suburb)] || null;
+        if (SS_LGA_SCORED[m.market_slug]) return lgaBy[ssNorm(row.lga)] || null;   /* suburb mirrors its LGA */
         const cands = subBy[ssNorm(row.suburb)] || [];
-        return cands.length > 1 ? (cands.find(c => ssNorm(c.lga) === ssNorm(row.lga)) || cands[0]) : (cands[0] || null);
+        const own = cands.length > 1 ? (cands.find(c => ssNorm(c.lga) === ssNorm(row.lga)) || cands[0]) : (cands[0] || null);
+        if (own) return own;
+        /* CoreLogic omits low-activity suburb×type rows some months — fall
+           back to the suburb's LGA row (current LGA-wide data beats stale) */
+        const lgaHit = lgaBy[ssNorm(row.lga)] || null;
+        if (lgaHit) viaLga.push(row.suburb);
+        return lgaHit;
       };
       const currentOf = (row, isBench) => {
         const hit = hitOf(row, isBench);
@@ -757,7 +769,9 @@ async function runForgeRecompute(month) {
       updates.push({ key, label: m.label, kind: PT, payload: next, matched, total: payload.rows.length, missing, bench: !!benchRow });
       lines.push('<div class="' + (missing.length ? 'warn' : 'ok') + '">' + (missing.length ? '⚠' : '✓') + ' ' + esc(m.label) + ' ' + PT
         + ' — ' + matched + ' / ' + payload.rows.length + ' matched' + (benchRow ? '' : ' · <b>no benchmark!</b>')
-        + (missing.length ? ' · kept stored values for: ' + esc(missing.slice(0, 5).join(', ')) + (missing.length > 5 ? ' +' + (missing.length - 5) : '') : '') + '</div>');
+        + (viaLga.length ? ' · ' + viaLga.length + ' via LGA data (no suburb-level rows this month)' : '')
+        + (missing.length ? ' · no ' + esc(month) + ' CoreLogic data for ' + missing.length + ' suburb' + (missing.length === 1 ? '' : 's') + ' (kept last values): '
+          + esc(missing.slice(0, 5).join(', ')) + (missing.length > 5 ? ' +' + (missing.length - 5) : '') : '') + '</div>');
     }
     rev.innerHTML = lines.join('');
     _ssForgePending = { month, updates };
