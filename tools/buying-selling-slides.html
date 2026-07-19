@@ -301,6 +301,13 @@ body.bss-present .bss-slidewrap.cur{display:block;}
 /* native report chart area */
 .bss-chart{flex:1;min-height:0;margin-top:4px;position:relative}
 .bss-chartpanel{padding:4px;position:relative}   /* median entry slides — transparent (chart sits on the slide background; Van 2026-07-17) */
+/* sensitivity table — sample-deck look: black header band, white cells, thin
+   grey borders; .cur row bold, .fc (forecast cash rate) row red bold */
+.bss-senst{width:100%;border-collapse:collapse;font-family:'Montserrat',sans-serif;background:transparent}
+.bss-senst th{background:#000;color:#fff;font-weight:800;text-transform:uppercase;font-size:16px;line-height:1.25;letter-spacing:.3px;padding:9px 14px;border:2px solid #fff;text-align:center}
+.bss-senst td{background:transparent;color:#171B24;font-size:15px;font-weight:500;text-align:center;padding:6px 12px;border:1px solid #8a8a8a}
+.bss-senst tr.cur td{font-weight:800}
+.bss-senst tr.fc td{color:#d21f1f;font-weight:800}
 .bss-chartload{display:flex;align-items:center;justify-content:center;height:100%;color:var(--bss-mut);font-size:16px}
 .bss-img{flex:1;min-height:0;margin-top:4px;display:flex;align-items:center;justify-content:center;position:relative}
 .bss-imgup{flex:1;min-height:0;margin-top:4px;display:flex;align-items:center;justify-content:center;position:relative}
@@ -576,10 +583,11 @@ body.bss-present .bss-presd{display:flex}
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="../shared/supabase-client.js?v=fe17cd23"></script>
+<script src="../shared/supabase-client.js?v=79207e52"></script>
+<script src="../shared/tool-registry.js?v=5dbcbed4"></script>
 <script src="../shared/desktop-pins.js?v=e2416017"></script>
-<script src="../shared/auth.js?v=02373ed7"></script>
-<script src="../shared/auth-gate.js?v=0393d7d5"></script>
+<script src="../shared/auth.js?v=6f88fa92"></script>
+<script src="../shared/auth-gate.js?v=003cdc01"></script>
 <script>
 /* ─────────────────────────── Buying/Selling Slides ───────────────────────────
    Phase 1: Forge-driven deck framework + Present Mode. Live slides: title,
@@ -643,7 +651,8 @@ function forecastPop(slug, nYears){
     p += g; rows.push({ y, label:(y-1)+'-'+String(y).slice(-2), pop:p });
   }
   const finalPop = rows[rows.length-1].pop, growth = finalPop - base;
-  return { base, rows, finalPop, growth, growthPct: growth/base*100 };
+  const baseLabel = (years[0]-2)+'-'+String(years[0]-1).slice(-2);   /* the FY before the first projection year, e.g. 2024-25 */
+  return { base, baseLabel, rows, finalPop, growth, growthPct: growth/base*100 };
 }
 
 /* Sensitivity ladder for one region/type. years = 1 (sell) / 5 (buy). */
@@ -667,97 +676,143 @@ const esc = s => String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt
    (+ Text, tokens ok) via the editor. */
 function chrome(inner){ return inner; }
 function head(kicker,title){ return '<div class="kicker">'+esc(kicker)+'</div><h2>'+esc(title)+'</h2><div class="rule"></div>'; }
-function stub(kicker,title,source){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="bss-stub"><div class="big">'+esc(title)+'</div><div class="src">Phase 2 · '+esc(source)+'</div></div></div>'); }
 
 /* Blank title slide — add your own text via the editor (use tokens like
    {region} {kind} {year} so it auto-fills per region + year). */
 function slideTitle(ctx){ return chrome('<div class="pad"></div>'); }
-function slideForecastPop(ctx){
-  const f = forecastPop(ctx.slug, 3);
-  if (!f) return stub('Forecast','Forecasted Population','population.gov.au + Forge');
-  const rows = f.rows.map(r=>'<tr><td>By '+r.label+'</td><td>'+Math.round(r.pop).toLocaleString()+'</td></tr>').join('');
-  return chrome('<div class="pad">'+head('Forecast','Forecasted Population')
-    + '<div class="bss-cards">'
-    + '<div class="bss-card"><div class="k">Current (2024-25)</div><div class="v">'+Math.round(f.base).toLocaleString()+'</div></div>'
-    + '<div class="bss-card"><div class="k">By '+f.rows[f.rows.length-1].label+'</div><div class="v">'+Math.round(f.finalPop).toLocaleString()+'</div></div>'
-    + '<div class="bss-card"><div class="k">Forecasted 3-Year Growth</div><div class="v bss-pos">+'+Math.round(f.growth).toLocaleString()+'</div><div class="k" style="margin-top:4px">('+pct(f.growthPct)+')</div></div>'
-    + '</div>'
-    + '<table class="bss-tbl" style="margin-top:26px;max-width:520px"><thead><tr><th>Year</th><th>Population</th></tr></thead><tbody>'
-    + '<tr><td>Current (2024-25)</td><td>'+Math.round(f.base).toLocaleString()+'</td></tr>'+rows+'</tbody></table>'
-    + '<div class="bss-note">Base population live from Forge; components from the population.gov.au projections.</div></div>');
+/* Page 13: Forecasted Population — sample-deck look (Van 2026-07-19): four
+   simple bars (grey current FY + teal forecast years), comma value labels
+   above, category labels only (no axes/gridlines); the y-range is compressed
+   around the data so 3-year growth reads visually. The summary line under the
+   chart is AUTHORED via the {pop_*} tokens. */
+function mountPopForecast(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderPopForecastChart(host, slug); }
+async function renderPopForecastChart(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const f=forecastPop(slug,3);
+  if(!f){ host.innerHTML='<div class="bss-chartload">No population projection for this region.</div>'; return; }
+  const cm=v=>Math.round(v).toLocaleString();
+  const cats=['Current ('+f.baseLabel+')'].concat(f.rows.map(r=>r.label));
+  const vals=[f.base].concat(f.rows.map(r=>r.pop));
+  const lo=Math.min.apply(null,vals), hi=Math.max.apply(null,vals), span=Math.max(hi-lo,1);
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
+      formatter:params=>{ const p=params[0]; return '<b>'+p.axisValue+'</b><br>'+p.marker+'Population: <b>'+cm(p.value)+'</b>'; } },
+    grid:{left:28,right:28,top:56,bottom:34},
+    xAxis:{ type:'category', data:cats, axisLabel:{color:'#444',fontSize:9.5}, axisTick:{show:false}, axisLine:{show:false} },
+    yAxis:{ type:'value', min:Math.max(0,lo-span*2.3), max:hi+span*0.25, show:false },
+    series:[{ type:'bar', barCategoryGap:'32%',
+      data:vals.map((v,i)=>({value:v,itemStyle:{color:i===0?'#c6c6c6':'#00A0B4'}})),
+      label:{show:true,position:'top',fontSize:9.5,color:'#333',formatter:p=>cm(p.value)} }] };
+  host.innerHTML='';
+  const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
+  host.appendChild(box);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    if(!box.isConnected||!window.echarts) return;
+    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
+  }); });
 }
-function slideSensitivity(ctx, type){
-  const s = sensitivity(ctx.slug, type, ctx.mode==='buy'?5:1);
-  const tName = type==='h'?'HOUSE':'UNIT', mLab = type==='h'?'MHP':'MUP';
-  if (!s) return stub('Scenario','Sensitivity Analysis - '+tName,'Runway (Forge)');
-  const wy = ctx.mode==='buy'?'5 year':'1 year';
-  const narr = ctx.mode==='buy'
-    ? 'We aim to buy while the market is near the bottom of its cycle, before demand returns. The table below shows the affordability ceiling at each cash rate — the room for growth as rates fall.'
-    : 'We aim to sell as the market approaches the top, not after it has hit the top, as there is downside risk once demand leaves the market. The main risk to this forecast is that interest rates drop further than predicted, resulting in more upside.';
-  const rows = s.ceilRows.map(r=>'<tr class="'+((r.isCur||r.isFc)?'hl':'')+'"><td>'+(r.cash*100).toFixed(2)+'%'
-    +(r.isCur?'<span class="tag">current</span>':r.isFc?'<span class="tag">forecast</span>':'')+'</td>'
-    +'<td>$'+Math.round(r.ceil).toLocaleString()+'</td>'
-    +'<td class="'+(r.g>=0?'bss-pos':'bss-neg')+'">'+money(r.g)+'</td>'
-    +'<td class="'+(r.g>=0?'bss-pos':'bss-neg')+'">'+pct(r.gp)+'</td></tr>').join('');
-  return chrome('<div class="pad">'+head('Scenario','Sensitivity Analysis - '+tName)
-    + '<p class="body" style="font-size:16px;margin-bottom:12px">'+narr+'</p>'
-    + '<div class="bss-note" style="margin:0 0 10px">Current '+mLab+': <span class="num">$'+Math.round(s.median).toLocaleString()+'</span>'
-    + ' &nbsp;·&nbsp; '+wy+' wage growth &nbsp;·&nbsp; forecast cash rate: <span class="num">'+(s.fcCash*100).toFixed(2)+'%</span></div>'
-    + '<table class="bss-tbl"><thead><tr><th>Cash Rate</th><th>Ceiling Price</th><th>Growth from '+mLab+'</th><th>% Growth</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
+/* Pages 14-15: Sensitivity Analysis — sample-deck look (Van 2026-07-19):
+   headless slide, live TABLE only (black header band, white cells, thin grey
+   borders; CURRENT cash-rate row bold, FORECAST row red bold — no +/- colour
+   coding). Title/narrative/summary are authored via overlays; the summary
+   numbers come from {mhp}/{mup} {wage_years} {cash_current} {cash_forecast}. */
+function sensSlideBare(){ return chrome('<div class="pad" style="padding:228px 90px 50px"><div class="bss-senshost"></div></div>'); }
+function mountSens(slideEl, c, type){
+  const host=slideEl.querySelector('.bss-senshost'); if(!host) return;
+  const s=sensitivity(c.slug, type, c.mode==='buy'?5:1);
+  if(!s){ host.innerHTML='<div class="bss-chartload">No runway inputs for this region yet.</div>'; return; }
+  const mLab=type==='h'?'MHP':'MUP';
+  const smoney=v=>{ const r=Math.round(v); return (r<0?'-':'')+'$'+Math.abs(r).toLocaleString(); };
+  const rows=s.ceilRows.map(r=>'<tr class="'+(r.isFc?'fc':(r.isCur?'cur':''))+'">'
+    +'<td>'+(r.cash*100).toFixed(2)+'%</td><td>'+smoney(r.ceil)+'</td><td>'+smoney(r.g)+'</td><td>'+r.gp.toFixed(2)+'%</td></tr>').join('');
+  host.innerHTML='<table class="bss-senst"><thead><tr><th>Cash Rate</th><th>Ceiling Price</th><th>Growth from<br>Current '+mLab+'</th><th>% Growth</th></tr></thead><tbody>'+rows+'</tbody></table>';
 }
 
-/* ── Native report charts from Forge ──────────────────────────────────────
+/* ── Chart data from Forge ────────────────────────────────────────────────
    rdp_report_feed(payload) → ForgeReportAdapter.forgeRegionToFeed() (flat feed
-   shape) → an OR_RECIPES mapper → PresentChart.create(). The recipes + helpers
-   below are copied verbatim from the online-reports/presentation chart code so
-   a slide chart is pixel-identical to the report. */
+   shape) → bespoke ECharts options per slide (sample-deck look). The last
+   PresentChart module renderer left with page 12 (2026-07-19) — every chart
+   slide is now a custom mount. */
 function _orAlign(yearCol, valueCol){ const years=[],values=[]; const yc=yearCol||[],vc=valueCol||[]; for(let i=0;i<yc.length;i++){ const y=parseInt(yc[i],10); const v=vc[i]; if(!Number.isFinite(y))continue; if(v===''||v==null||(typeof v==='number'&&isNaN(v)))continue; years.push(y); values.push(Number(v)); } return {years,values}; }
-function _orSeries(yearCol, defs, transform){ const yc=yearCol||[]; const rows=[]; for(let i=0;i<yc.length;i++){ const y=parseInt(yc[i],10); if(!Number.isFinite(y))continue; const vals=defs.map(d=>{ const v=(d.col||[])[i]; if(v===''||v==null||(typeof v==='number'&&isNaN(v)))return null; return transform?transform(Number(v)):Number(v); }); if(vals.every(v=>v==null))continue; rows.push({y,vals}); } return { x:rows.map(r=>String(r.y)), series:defs.map((d,i)=>({name:d.name,values:rows.map(r=>r.vals[i])})) }; }
 function _orAlignCols(keyCol, valCols, opts){ opts=opts||{}; const mode=opts.mode||'strict'; const kp=k=>{const n=parseInt(k,10);return Number.isFinite(n)?n:null;}; const kc=keyCol||[]; const keys=[],cols=valCols.map(()=>[]); for(let i=0;i<kc.length;i++){ const k=kp(kc[i]); if(k==null||k==='')continue; const vals=valCols.map(vc=>{const v=(vc||[])[i]; if(v===''||v==null||(typeof v==='number'&&isNaN(v)))return null; return Number(v);}); const present=vals.filter(v=>v!=null).length; if(present===0)continue; if(mode==='strict'&&present<valCols.length)continue; keys.push(k); vals.forEach((v,j)=>cols[j].push(v)); } return {keys,cols}; }
-const OR_CRISES = [{year:1982,label:'Severe Recession'},{year:1991,label:'Major Recession'},{year:2001,label:'Dot Com Crash'},{year:2008,label:'GFC'},{year:2020,label:'Covid-19'}];
-const OR_BANDS = [{from:1982,to:1985,type:'correct'},{from:1985,to:1991,type:'growth'},{from:1991,to:1996,type:'correct'},{from:1996,to:2004,type:'growth'},{from:2004,to:2009,type:'correct'},{from:2009,to:2020,type:'growth'},{from:2020,to:2022,type:'correct'},{from:2022,to:2026,type:'growth'}];
-const OR_RECIPES = {
-  p3: function(raw){ const H=_orAlign(raw.year,raw.medianHousePrice), U=_orAlign(raw.year,raw.medianUnitPrice); if(!H.years.length||!U.years.length)return null; const start=Math.max(H.years[0],U.years[0]), end=Math.min(H.years[H.years.length-1],U.years[U.years.length-1]); const years=[],house=[],unit=[]; for(let y=start;y<=end;y++){ const hi=H.years.indexOf(y),ui=U.years.indexOf(y); if(hi<0||ui<0)continue; years.push(y); house.push(H.values[hi]); unit.push(U.values[ui]); } if(!years.length)return null; return {module:'median-price',grid:{bottom:55},data:{medianPrice:{years,house,unit},crises:OR_CRISES,bands:OR_BANDS}}; },
-  p16: function(raw){ const a=_orAlignCols(raw.year,[raw.aiHouseStateIncome,raw.houseYoY],{mode:'strict'}); if(!a.keys.length)return null; const pct=v=>Math.round(v*1e4)/100; return {module:'affordability-house',data:{affordabilityHouse:{years:a.keys,ai:a.cols[0].map(pct),priceMovement:a.cols[1].map(pct)}}}; },
-  p9: function(raw){ const d=_orSeries(raw.year,[{name:'House',col:raw.priceToIncomeHouse},{name:'Unit',col:raw.priceToIncomeUnit}]); if(!d.x.length)return null; return {module:'price-to-income',data:{priceToIncome:{years:d.x.map(Number),house:d.series[0].values,unit:d.series[1].values},crises:OR_CRISES}}; },
-  p5: function(raw){ const yArr=raw.year||[],somH=raw.somHouse||[],somU=raw.somUnit||[],adomH=raw.adomHouse||[]; const years=[],house=[],unit=[],dom=[]; const len=Math.min(yArr.length,somH.length,somU.length,adomH.length); for(let i=0;i<len;i++){ if(somH[i]===''||somH[i]==null)continue; if(somU[i]===''||somU[i]==null)continue; if(adomH[i]===''||adomH[i]==null)continue; years.push(parseInt(yArr[i],10)); house.push(Math.round(Number(somH[i]))); unit.push(Math.round(Number(somU[i]))); dom.push(Math.round(Number(adomH[i]))); } if(!years.length)return null; return {module:'stock-dom',data:{stockVsDom:{years,house,unit,dom}}}; },
-  p10: function(raw){ const a=_orAlignCols(raw.year,[raw.medianRentHouse,raw.medianRentUnit,raw.vacancyRate],{mode:'strict'}); const i0=a.keys.findIndex(y=>y>=2000); if(i0<0)return null; return {module:'vacancy-vs-rent',data:{vacancyVsRent:{years:a.keys.slice(i0),rentHouse:a.cols[0].slice(i0).map(v=>Math.round(v)),rentUnit:a.cols[1].slice(i0).map(v=>Math.round(v)),vacancy:a.cols[2].slice(i0).map(v=>Math.round(v*1e4)/100)}}}; },
-};
 const FEED = {};   // per-region rdp_report_feed payload cache
 async function getFeed(slug){ if(FEED[slug]!==undefined) return FEED[slug]; try{ const {data}=await window.sb.from('rdp_report_feed').select('payload').eq('region_slug',slug).maybeSingle(); FEED[slug]=(data&&data.payload)||null; }catch(e){ FEED[slug]=null; } return FEED[slug]; }
 function whenChartsReady(){ return new Promise(res=>{ let n=0; (function chk(){ if((window.PresentChart&&window.ForgeReportAdapter&&window.PpaCharts&&window.PpaCharts.registry)||++n>120) return res(); setTimeout(chk,50); })(); }); }
-async function renderReportChart(host, slug, recipeKey){
-  host.innerHTML = '<div class="bss-chartload">Loading chart…</div>';
+let _liveCharts=[];   /* ECharts instances for the current render — disposed in render() before the next rebuild wipes the DOM, else each chart-slide visit leaks an instance */
+/* Page 12: Vacancy Rate v Rent — sample-deck look (Van 2026-07-19): Rent House
+   bars near-black + Rent Unit bars grey with $ labels above each bar (right
+   $ axis), smooth teal Vacancy Rate line with white-stroked % labels (LEFT
+   % axis — the sample swaps the axes vs the old module), legend top center.
+   VR SOURCE NOTE (verified 2026-07-17): the feed's vacancyRate = rdp metric
+   'vacancy_rate' whose source tag reads 'sqm' — a LEGACY LABEL from the old
+   Google-Sheet block header. Its recent values come from Van's monthly
+   COTALITY upload (forge_cotality 'rentvacancy' → sync-cotality-medians).
+   So this chart is already Cotality — do NOT "fix" it to
+   corelogic/vacancy_rate_h (that's the older data-dump vintage). */
+function mountVacRent(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderVacRentChart(host, slug); }
+async function renderVacRentChart(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
   await whenChartsReady();
-  if(!window.PresentChart||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
-  const payload = await getFeed(slug);
+  if(!window.echarts||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const payload=await getFeed(slug);
   if(!payload){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
-  let spec=null; try{ const feed=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug); spec=OR_RECIPES[recipeKey](feed); }catch(e){}
-  /* VR SOURCE NOTE (verified 2026-07-17): the feed's vacancyRate = rdp metric
-     'vacancy_rate' whose source tag reads 'sqm' — a LEGACY LABEL from the old
-     Google-Sheet block header. Its recent values come from Van's monthly
-     COTALITY upload (forge_cotality 'rentvacancy' → sync-cotality-medians).
-     So the VR-v-Rent chart is already Cotality — do NOT "fix" it to
-     corelogic/vacancy_rate_h (that's the older data-dump vintage). */
-  if(!spec){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
-  _drawChart(host, spec);
-}
-/* Two frames so the (transform-scaled) host has real dimensions before
-   echarts.init, then advance through every build step to draw the chart FULLY
-   — the static render the reports/presentation thumbnails use (play() only arms
-   the animation; next()-to-complete actually paints it). */
-let _liveCharts=[];   /* ECharts controllers for the current slide — disposed in render() before the next slide wipes the DOM, else each chart-slide visit leaks an instance */
-function _drawChart(host, spec){
-  host.innerHTML=''; const box=document.createElement('div'); box.style.width='100%'; box.style.height='100%'; host.appendChild(box);
+  let D=null;
+  try{
+    const raw=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug);
+    const a=_orAlignCols(raw.year,[raw.medianRentHouse,raw.medianRentUnit,raw.vacancyRate],{mode:'strict'});
+    if(a.keys.length) D={ years:a.keys, house:a.cols[0].map(v=>Math.round(v)), unit:a.cols[1].map(v=>Math.round(v)), vr:a.cols[2].map(v=>Math.round(v*1e4)/100) };
+  }catch(e){}
+  if(!D){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  /* Head-trim: SQM'\''s first datapoints are tiny-sample junk in BOTH directions
+     (2004-05 spikes of 12-37% across ~30 regions; Sydney 2002-03 = 0.03%/0.25%
+     — raw mart rows, not an adapter bug). Drop leading years until two
+     consecutive plausible (0.5%-8%) values; genuine mid-series extremes
+     (Gladstone/Mackay mining bust ~9%, 2021+ sub-0.5% tight markets) sit later
+     so they survive. Mart cleaned 2026-07-19 (scratch/clean-vr-junk.mjs) —
+     this guard stays as insurance against future junk ingests. */
+  { const ok=x=>x>=0.5&&x<=8; let i0=0;
+    while(i0<D.vr.length-1 && !(ok(D.vr[i0])&&ok(D.vr[i0+1]))) i0++;
+    if(i0>0 && i0<D.vr.length-1) D={ years:D.years.slice(i0), house:D.house.slice(i0), unit:D.unit.slice(i0), vr:D.vr.slice(i0) };
+  }
+  const dollars=v=>'$'+Number(v).toLocaleString();
+  const rMax=Math.max.apply(null,D.house.concat(D.unit));
+  const rStep=[50,100,200,250,500].find(s=>rMax/s<=9)||500;
+  const rTop=Math.ceil((rMax*1.08)/rStep)*rStep;   /* headroom so bar labels clear the frame */
+  /* dynamic tick step — a fixed 0.25% smears the axis into dozens of labels
+     whenever the data peaks high */
+  const vMax=Math.max.apply(null,D.vr);
+  let vStep=5, vTop=Math.ceil((vMax*1.15)/5)*5;
+  for(const s of [0.25,0.5,1,2,2.5,5]){ const t=Math.ceil((vMax*1.15)/s)*s; if(t/s<=12){ vStep=s; vTop=t; break; } }
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
+      formatter:params=>{ return '<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.seriesType==='line'?(p.value==null?'—':Number(p.value).toFixed(2)+'%'):dollars(p.value))+'</b>').join('<br>'); } },
+    legend:{ top:2, left:'center', itemWidth:9, itemHeight:9, itemGap:14, textStyle:{fontSize:9,color:'#222'},
+      data:[{name:'Rent House',icon:'rect'},{name:'Rent Unit',icon:'rect'},{name:'Vacancy Rate',icon:'circle'}] },
+    grid:{left:64,right:64,top:44,bottom:46},
+    xAxis:{ type:'category', data:D.years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:[
+      { type:'value', min:0, max:vTop, interval:vStep, axisLabel:{color:'#444',fontSize:9,formatter:v=>v.toFixed(2)+'%'}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+        name:'Vacancy Rate', nameLocation:'middle', nameGap:50, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
+      { type:'value', min:0, max:rTop, interval:rStep, axisLabel:{color:'#444',fontSize:9,formatter:dollars}, splitLine:{show:false},
+        name:'Rent House | Rent Unit', nameLocation:'middle', nameGap:48, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} } ],
+    series:[
+      { name:'Rent House', type:'bar', yAxisIndex:1, data:D.house, itemStyle:{color:'#171B24'}, barGap:'10%', barCategoryGap:'35%',
+        label:{show:true,position:'top',fontSize:8,color:'#333',formatter:p=>dollars(p.value)} },
+      { name:'Rent Unit', type:'bar', yAxisIndex:1, data:D.unit, itemStyle:{color:'#c6c6c6'},
+        label:{show:true,position:'top',fontSize:8,color:'#555',formatter:p=>dollars(p.value)} },
+      { name:'Vacancy Rate', type:'line', yAxisIndex:0, data:D.vr, smooth:true, symbol:'circle', symbolSize:1,   /* labels attach to symbols — keep invisible 1px dots */
+        lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
+        label:{show:true,position:'top',fontSize:8,color:'#333',textBorderColor:'#fff',textBorderWidth:2,formatter:p=>(p.value==null?'':Number(p.value).toFixed(2)+'%')} } ] };
+  host.innerHTML='';
+  const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
+  host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
-    if(!box.isConnected||!window.PresentChart) return;   /* navigated away before paint → don't spawn an orphan instance */
-    try{ var ctrl=window.PresentChart.create(box,spec); if(ctrl)_liveCharts.push(ctrl); var g=0; while(ctrl&&!ctrl.isComplete()&&g++<1000) ctrl.next();
-      /* page-4 treatment for every module chart: transparent bg + axis tooltip
-         (the controller hides its ECharts instance; the global registry doesn't) */
-      try{ var inst=window.echarts&&echarts.getInstanceByDom(box.querySelector('div')||box)||echarts.getInstanceByDom(box);
-        if(inst) inst.setOption({backgroundColor:'transparent', tooltip:{show:true,trigger:'axis',confine:true}}); }catch(e2){}
-    }
-    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to render.</div>'; }
+    if(!box.isConnected||!window.echarts) return;
+    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
 /* Page 10: Region as % of a peer capital — sample-deck look (Van 2026-07-18):
@@ -838,6 +893,70 @@ async function renderRatioChart(host, slug){
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
+/* Page 11: Stock on Market v ADOM — sample-deck look (Van 2026-07-19):
+   House bars near-black + Unit bars grey with comma value labels above each
+   bar (left "Stock on Market" axis), smooth teal House-Days-on-Market line
+   with small point labels (right "Days on Market" axis), legend top center.
+   Data straight from the mart (rdp_raw_series: sqm som_h/som_u, corelogic
+   adom_h — one source tag each, all 36 regions) because the report adapter
+   deliberately CLIPS adomHouse to 2017 (STARTS rule for Online Reports) while
+   the sample shows the full ADOM history from 2010. Axis years = the stock
+   bars' span; the line is null-padded where ADOM has no year. */
+const SOMDOM={};
+async function getSomDom(slug){
+  if(SOMDOM[slug]!==undefined) return SOMDOM[slug];
+  try{
+    const q=(src,met)=>window.sb.from('rdp_raw_series').select('period,value').eq('source',src).eq('metric',met).eq('region_slug',slug).order('period');
+    const [h,u,d]=await Promise.all([q('sqm','som_h'),q('sqm','som_u'),q('corelogic','adom_h')]);
+    const toMap=r=>{ const m={}; ((r&&r.data)||[]).forEach(x=>{ const v=Number(x.value); if(isFinite(v)&&v>0) m[+String(x.period).slice(0,4)]=Math.round(v); }); return m; };
+    const H=toMap(h),U=toMap(u),D=toMap(d);
+    const years=Object.keys(H).map(Number).filter(y=>U[y]!=null).sort((a,b)=>a-b);
+    if(!years.length) return (SOMDOM[slug]=null);
+    SOMDOM[slug]={ years, house:years.map(y=>H[y]), unit:years.map(y=>U[y]), dom:years.map(y=>D[y]!=null?D[y]:null) };
+  }catch(e){ SOMDOM[slug]=null; }
+  return SOMDOM[slug];
+}
+function mountStockDom(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderStockDomChart(host, slug); }
+async function renderStockDomChart(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const D=await getSomDom(slug);
+  if(!D){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  const cm=v=>Number(v).toLocaleString();
+  const sMax=Math.max.apply(null,D.house.concat(D.unit));
+  const sStep=[500,1000,2000,2500,5000].find(s=>sMax/s<=9)||5000;
+  const sTop=Math.ceil((sMax*1.08)/sStep)*sStep;   /* headroom so bar labels clear the frame */
+  const dTop=Math.ceil((Math.max.apply(null,D.dom.filter(v=>v!=null))*1.15)/10)*10;
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
+      formatter:params=>{ return '<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.seriesType==='line'?(p.value==null?'—':p.value+' days'):cm(p.value))+'</b>').join('<br>'); } },
+    legend:{ top:2, left:'center', itemWidth:9, itemHeight:9, itemGap:14, textStyle:{fontSize:9,color:'#222'},
+      data:[{name:'House',icon:'rect'},{name:'Unit',icon:'rect'},{name:'House - Days on Market',icon:'circle'}] },
+    grid:{left:64,right:52,top:44,bottom:46},
+    xAxis:{ type:'category', data:D.years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:[
+      { type:'value', min:0, max:sTop, interval:sStep, axisLabel:{color:'#444',fontSize:9,formatter:cm}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+        name:'Stock on Market', nameLocation:'middle', nameGap:50, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
+      { type:'value', min:0, max:dTop, interval:10, axisLabel:{color:'#444',fontSize:9}, splitLine:{show:false},
+        name:'Days on Market', nameLocation:'middle', nameGap:38, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} } ],
+    series:[
+      { name:'House', type:'bar', data:D.house, itemStyle:{color:'#171B24'}, barGap:'10%', barCategoryGap:'35%',
+        label:{show:true,position:'top',fontSize:8,color:'#333',formatter:p=>cm(p.value)} },
+      { name:'Unit', type:'bar', data:D.unit, itemStyle:{color:'#c6c6c6'},
+        label:{show:true,position:'top',fontSize:8,color:'#555',formatter:p=>cm(p.value)} },
+      { name:'House - Days on Market', type:'line', yAxisIndex:1, data:D.dom, smooth:true, symbol:'circle', symbolSize:1,   /* labels attach to symbols — showSymbol:false would hide them, so keep invisible 1px dots */
+        lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
+        label:{show:true,position:'bottom',fontSize:8,color:'#333',textBorderColor:'#fff',textBorderWidth:2,formatter:p=>(p.value==null?'':String(p.value))} } ] };   /* white stroke keeps the day counts readable when they land on the black House bars */
+  host.innerHTML='';
+  const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
+  host.appendChild(box);
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    if(!box.isConnected||!window.echarts) return;
+    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
+  }); });
+}
 /* Ranking (most-expensive) — narrative + cards from rdp_raw_series ranking_h
    (per-year integer rank, 1 = most expensive). No chart module exists. */
 const RANK={};
@@ -893,9 +1012,9 @@ function chartSlideBare(bottomPad){ return chrome('<div class="pad" style="paddi
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
     if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
@@ -903,6 +1022,7 @@ async function loadEntryAndPrices(){
   try{ const D=await computeRatio(state.slug);   /* same series as the %-of-peer slide (cached) */
     if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
   try{ VRINFO=await getVRAdjusted(state.slug); }catch(e){}   /* same figures as the slide-5 cards (cached) */
+  try{ POPINFO=forecastPop(state.slug,3); }catch(e){}   /* same figures as the pop-forecast chart */
   try{
     await whenChartsReady();
     const payload=await getFeed(state.slug);
@@ -966,7 +1086,6 @@ async function _mountMedianEntry(host,slug,kind){
   }); });
 }
 function narrSlide(kicker,title,cls){ return chrome('<div class="pad">'+head(kicker,title)+'<div class="'+cls+'" style="flex:1"></div></div>'); }
-function mountChart(slideEl, slug, recipeKey){ const host=slideEl.querySelector('.bss-chart'); if(host) renderReportChart(host, slug, recipeKey); }
 function mountRatio(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderRatioChart(host, slug); }
 /* Property Clock — Timing: the auto-updating National Property Clock. The Clock
    tool uploads national-clock.jpg to the PUBLIC clock-image bucket on every Save
@@ -1168,18 +1287,18 @@ const SLIDE_DEFS = [
   { t:'Market Position', render: slideTitle },   /* slide 2 blanked (was head('Timing','Market Positions Clock')) — Van authors it via overlays, like slide 1 */
   { t:'Property Clock', render: c=>chrome('<div class="pad" style="padding:128px 80px 30px"><div class="bss-img"></div></div>'), mount:(el,c)=>mountAutoClock(el) },   /* slide 3: heading/rule stripped (Van authors via overlays); slim margins so the LIVE clock spans nearly full width, ~105px headroom for the title/disclaimer */
   { t:'Median House Price', render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'h') },   /* slide 4 Median HOUSE Price: entry-story chart (red entry line, live endpoint); bottom space for the narrative overlay */
-  { t:'Vacancy Rate Forecast', render: c=>chrome('<div class="pad" style="padding:128px 48px 112px"><div class="bss-vrbody" style="flex:1"></div></div>'), mount:(el,c)=>mountVRForecast(el,c.slug) },   /* slide 5 VR Forecast: headless — authored via overlays; live cards + note stay */
-  { t:'Replacement Cost', render: c=>stub('Value','Replacement Cost','land + build cost input') },
+  { t:'Median Unit Price', render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'u') },   /* slide 5 Median UNIT Price twin — MOVED here from last (Van 2026-07-19) with a key migration (scratch/bss-move-unit-page.mjs): old f15→f4, old f4..f14→f5..f15. NEVER reorder SLIDE_DEFS without migrating keys. */
+  { t:'Vacancy Rate Forecast', render: c=>chrome('<div class="pad" style="padding:128px 48px 112px"><div class="bss-vrbody" style="flex:1"></div></div>'), mount:(el,c)=>mountVRForecast(el,c.slug) },   /* VR Forecast: headless — authored via overlays; live cards + note stay */
+  { t:'Replacement Cost', render: c=>chrome('<div class="pad" style="display:flex;align-items:center;justify-content:center;height:100%"><div style="font-family:\'Montserrat\',sans-serif;font-weight:800;font-size:64px;color:#d21f1f;letter-spacing:1px">Coming Soon</div></div>') }   /* Van 2026-07-19: blank until the land/build cost source lands */,
   { t:'Affordability Index', render: c=>chartSlideBare(112), mount:(el,c)=>mountAfford(el,c.slug) }   /* Affordability Index — custom sample-look chart (black labelled bars + teal line, one axis, red entry) */,
-  { t:'Price to Income', render: c=>chartSlideBare(112), mount:(el,c)=>mountP2I(el,c.slug) }   /* Price to Income — custom sample-look chart (teal house + black unit, labelled) */,
-  { t:'Most Expensive Ranking', render: c=>chartSlideBare(112), mount:(el,c)=>mountRanking(el,c.slug) }   /* Ranking — custom sample-look chart (teal line + live black stat card) */,
-  { t:'% of Peer City', render: c=>chartSlideBare(112), mount:(el,c)=>mountRatio(el,c.slug) }   /* % of peer — headless */,
-  { t:'Stock v Days on Market', render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p5') }   /* SOM v ADOM — headless */,
-  { t:'Vacancy v Rent', render: c=>chartSlideBare(112), mount:(el,c)=>mountChart(el,c.slug,'p10') }   /* VR v Rent — headless */,
-  { t:'Forecasted Population', render: slideForecastPop },
-  { t:'Sensitivity — Houses', render: c=>slideSensitivity(c,'h') },
-  { t:'Sensitivity — Units', render: c=>slideSensitivity(c,'u') },
-  { t:'Median Unit Price', render: c=>chartSlideBare(112), mount:(el,c)=>mountMedianEntry(el,c.slug,'u') },   /* Median UNIT Price twin (appended last — inserting mid-deck would shift every slide's saved overlays) */
+  { t:'Price to Income', render: c=>chartSlideBare(84), mount:(el,c)=>mountP2I(el,c.slug) }   /* Price to Income — custom sample-look chart (teal house + black unit, labelled) */,
+  { t:'Most Expensive Ranking', render: c=>chartSlideBare(84), mount:(el,c)=>mountRanking(el,c.slug) }   /* Ranking — custom sample-look chart (teal line + live black stat card) */,
+  { t:'% of Peer City', render: c=>chartSlideBare(84), mount:(el,c)=>mountRatio(el,c.slug) }   /* % of peer — headless */,
+  { t:'Stock v Days on Market', render: c=>chartSlideBare(60), mount:(el,c)=>mountStockDom(el,c.slug) }   /* SOM v ADOM — custom sample-look chart */,
+  { t:'Vacancy v Rent', render: c=>chartSlideBare(60), mount:(el,c)=>mountVacRent(el,c.slug) }   /* VR v Rent — custom sample-look chart */,
+  { t:'Forecasted Population', render: c=>chartSlideBare(196), mount:(el,c)=>mountPopForecast(el,c.slug) }   /* custom sample-look chart; bottom pad ends just above the authored separator line (y=532) + {pop_*} summary */,
+  { t:'Sensitivity — Houses', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'h') }   /* sample-look table; summary authored via tokens */,
+  { t:'Sensitivity — Units', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'u') },
 ];
 
 /* ── render + nav ── */
@@ -1232,10 +1351,28 @@ function setActive(i){
   const pc=$('#bssPCount'); if(pc) pc.textContent=(i+1)+' / '+DECK.length;
   const bc=$('#bssBarCount'); if(bc) bc.textContent=(i+1)+' / '+DECK.length;
 }
+/* Jump-scroll to the active slide CENTERED in the viewport — block:'start'
+   parks the slide top under the fixed app bar and clips the title (Van
+   2026-07-19). While a programmatic jump is in flight the scroll-spy is MUTED
+   (_spyMute) — otherwise it fires on slides passing by mid-animation and the
+   TOC indicator flickers to the wrong page before settling. The mute extends
+   200ms past the last scroll event, so it self-clears whatever the distance. */
+let _spyMute=0, _lastGoTs=0;
+window.addEventListener('scroll',()=>{ if(_spyMute) _spyMute=Date.now()+200; },{passive:true});
+function _scrollToCur(smooth){
+  const w=document.querySelector('.bss-slidewrap.cur'); if(!w) return;
+  _spyMute=Date.now()+450;
+  w.scrollIntoView({behavior:smooth?'smooth':'auto',block:'center'});
+}
 function go(i){
   setActive(i);
   if(document.body.classList.contains('bss-present')){ fitSlide(); }
-  else { const w=document.querySelector('.bss-slidewrap.cur'); if(w) w.scrollIntoView({behavior:'smooth',block:'start'}); }
+  else {
+    /* quick scanning (keys <400ms apart) snaps instantly — restarting a smooth
+       animation on every press is what felt glitchy */
+    const now=Date.now(), rapid=now-_lastGoTs<400; _lastGoTs=now;
+    _scrollToCur(!rapid);
+  }
 }
 function rebuild(){ buildDeck(); render(); }
 /* ── loading overlay (reports mechanics: min-visible so it never flashes) ── */
@@ -1265,6 +1402,7 @@ function _watchScroll(){
   if(!window.IntersectionObserver) return;
   _scrollIO=new IntersectionObserver(es=>{
     if(document.body.classList.contains('bss-present')) return;
+    if(_spyMute){ if(Date.now()<_spyMute) return; _spyMute=0; }   /* jump in flight — the keyed target owns the TOC highlight */
     let best=null;
     es.forEach(en=>{ if(en.isIntersecting&&(!best||en.intersectionRatio>best.intersectionRatio)) best=en; });
     if(best) setActive(+best.target.dataset.i);
@@ -1423,7 +1561,7 @@ function syncURL(){ try{ history.replaceState(null,'','?region='+state.slug+'&mo
 
 /* ── present mode ── */
 function enterPresent(){ document.body.classList.add('bss-present'); const el=document.querySelector('.bss-stage'); if(el.requestFullscreen)el.requestFullscreen().catch(()=>{}); fitSlide(); }
-function exitPresent(){ document.body.classList.remove('bss-present'); if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{}); fitSlide(); const w=document.querySelector('.bss-slidewrap.cur'); if(w) w.scrollIntoView({block:'start'}); }
+function exitPresent(){ document.body.classList.remove('bss-present'); if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen().catch(()=>{}); fitSlide(); _scrollToCur(false); }
 document.addEventListener('fullscreenchange',()=>{ if(!document.fullscreenElement) document.body.classList.remove('bss-present'); fitSlide(); });
 
 /* ───────────────────────── Slide editor ─────────────────────────
@@ -1486,7 +1624,18 @@ function _tokenMap(){
     /* live VR forecast (same figures as the slide-5 cards) */
     vr_current:_vrPct(VRINFO&&VRINFO.currentVR), vr_forecast:_vrPct(VRINFO&&VRINFO.forecastVR),
     vr_households:_vrInt(VRINFO&&VRINFO.expNewHouseholds), vr_properties:_vrInt(VRINFO&&VRINFO.expProperties),
-    vr_trend:(VRINFO&&VRINFO.currentVR!=null&&VRINFO.forecastVR!=null)?(VRINFO.forecastVR>=VRINFO.currentVR?'easing':'tightening'):'—' };
+    vr_trend:(VRINFO&&VRINFO.currentVR!=null&&VRINFO.forecastVR!=null)?(VRINFO.forecastVR>=VRINFO.currentVR?'easing':'tightening'):'—',
+    /* live population forecast (same figures as the pop-forecast chart) */
+    pop_current:POPINFO?Math.round(POPINFO.base).toLocaleString():'—',
+    pop_target:POPINFO?Math.round(POPINFO.finalPop).toLocaleString():'—',
+    pop_growth:POPINFO?((POPINFO.growth>=0?'+':'')+Math.round(POPINFO.growth).toLocaleString()):'—',
+    pop_growth_pct:POPINFO?pct(POPINFO.growthPct):'—',
+    pop_current_fy:POPINFO?POPINFO.baseLabel:'—',
+    pop_target_fy:POPINFO?POPINFO.rows[POPINFO.rows.length-1].label:'—',
+    /* rates + wage-growth horizon (sensitivity slides; live from rdp_runway_config) */
+    cash_current:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.current.cash*100).toFixed(2)+'%':'—',
+    cash_forecast:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.forecast.cash*100).toFixed(2)+'%':'—',
+    wage_years:state.mode==='buy'?'5':'1' };
 }
 function resolveTokens(s){ if(!s || s.indexOf('{')<0) return s; const map=_tokenMap(); return s.replace(/\{(\w+)\}/g,(mm,k)=> (map[k]!=null?map[k]:mm)); }
 /* Tokens are STORED as literal placeholders ({region}, {year}, …) and only
@@ -1692,7 +1841,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
@@ -2103,9 +2252,7 @@ function switchRegion(dir){
   /* keep the CURRENT slide index — the point of the shortcut is comparing the
      same slide across regions */
   reloadDeck().then(()=>{
-    if(!document.body.classList.contains('bss-present')){
-      const w=document.querySelector('.bss-slidewrap.cur'); if(w) w.scrollIntoView({block:'start'});
-    }
+    if(!document.body.classList.contains('bss-present')) _scrollToCur(false);
   });
 }
 window.addEventListener('resize',fitSlide);

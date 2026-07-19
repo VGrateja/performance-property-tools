@@ -134,7 +134,7 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
       name: 'explainTier',
       description: "Explain access tiers. Use for 'why can't I edit?', 'what's my tier?', 'who can see this?'.",
       parameters: { type: 'object', properties: {
-        tier: { type: 'string', enum: ['dev','admin','company','client','guest','all'], default: 'all' },
+        tier: { type: 'string', enum: ['dev','admin','leads','company','client','guest','all'], default: 'all' },
       } }
     }},
     { type: 'function', function: {
@@ -238,11 +238,12 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
   };
 
   const TIER_DESCRIPTIONS = {
-    dev:     "Tier 0 (dev). Vandolf only. Full edit + download. Can switch view-as to test other tiers.",
+    dev:     "Tier 0 (dev). Vandolf only. Full edit + download. Can switch view-as to test other tiers, and manages the staff Groups (who sees which tools).",
     admin:   "Tier 1 (admin). Saskia, Shaene, Paul, D. Robbins. Full edit + download.",
-    company: "Tier 2 (company). Other @performanceproperty.com.au staff. View + download, no edit.",
-    client:  "Tier 3 (client). Approved external viewers. View everything, no edit, no download.",
-    guest:   "Tier 4 (guest). Self-registered viewers. View everything, no edit, no download.",
+    leads:   "Tier 2 (leads). Marilou. Staff rights plus People/Scorecards; writes only inside Scorecards.",
+    company: "Tier 3 (Staff). Other @performanceproperty.com.au staff. View + download, no edit. Staff may belong to a GROUP (e.g. Property Management Team) that decides which tools their hub shows on top of the company baseline.",
+    client:  "Tier 4 (client). Approved external viewers. View everything, no edit, no download.",
+    guest:   "Tier 5 (guest/Lite). Self-registered viewers. View everything, no edit, no download.",
   };
 
   /* Live market data — computed from Forge (Supabase), the SAME source and

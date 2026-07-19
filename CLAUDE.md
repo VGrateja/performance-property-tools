@@ -55,6 +55,36 @@ that alone, not the site.
   even though README/old comments sometimes say "Tier 0–4". Display numbering
   is Dev 0 · Admin 1 · Leads 2 · Staff 3 (=`company`) · Client 4 · Guest 5.
 
+### Staff GROUPS (teams) — visibility axis on top of tiers (mig 081)
+
+- `hub_groups` table (key/name/tools jsonb/sort) + `profiles.team` drive
+  **which tools the hub shows** — cards, dock icons, search, pins, and a
+  deep-link bounce in `auth-gate.js`. **Rights are untouched**: tier keeps
+  doing writes/RLS exactly as above. Allowed set =
+  `union(company_baseline, group tools)`; dev always sees all; ADMINS and
+  LEADS are assignable too (an assigned admin sees their group's toolset;
+  unassigned admin = all; leads always adds the `leads` row on top of any
+  team); `team` null company = baseline only; client/guest keep the legacy
+  tier gating.
+- Registry of tool keys: `shared/tool-registry.js` (`PP_TOOL_REGISTRY`).
+  Its `DEFAULT_BASELINE` is the pre-migration fallback and must stay in
+  LOCKSTEP with the 081 `company_baseline` seed. New tool = add a registry
+  key + `key:` on its APPS entry; Van ticks it into groups via the panel.
+- Dev-only **Groups panel** in the hub menubar (`openGroupsAdminModal`):
+  assign people (`set_user_team` RPC, dev-only) + tick tools per group.
+- Resolver: `ppResolveAllowedTools()` in `shared/auth.js` (non-blocking,
+  sessionStorage-cached `pp_allowed_tools_v1`); sync reads via
+  `ppAllowedState()` / `ppToolAllowed(key)` / `ppSectionAllowed(sec)`.
+  Everything FAILS OPEN to the legacy tier gates when unresolved — the hub
+  renders today's UI pre-migration and for externals.
+- Group visibility application must stay SYMMETRIC (the hub-freeze rule):
+  `applyGroupVisibility()` runs for every tier and writes dock-icon
+  ATTRIBUTES (`data-grp-on/off`), never body classes. Card rows get
+  `.grp-on` at build time to lift the per-card tier CSS gates.
+- Dev view-as supports groups (`setViewAs('company', teamKey)` →
+  `pp_view_team`); `pp_view_as` itself stays a plain tier string — tools
+  parse it.
+
 ## The tools (`tools/`)
 
 Hub (`index.html`) is 4 swipeable pages: **analytics** (default), **pm**,

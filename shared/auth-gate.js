@@ -62,4 +62,40 @@
       if (typeof applyAccessRestrictions === 'function') applyAccessRestrictions();
     } catch (e) { console.warn('applyAccessRestrictions failed:', e); }
   });
+
+  /* ── GROUP deep-link gate (081, "hidden means hidden") ────────────────────
+     If this tool page isn't in the signed-in staff member's group, bounce
+     back to the hub. Visibility-only + FAIL-OPEN by design: RLS already
+     protects the data, so any doubt (no registry, resolver error, tool page
+     unknown, dev/admin/external mode) means "let it load".
+     • exportMode/lite requests skip entirely — the monthly pdf-renderer
+       (company tier, no team) deep-links every report with those params.
+     • Async on purpose: the page may paint briefly before bouncing; that is
+       accepted (the alternative — blocking paint on a network fetch — is
+       worse, and the data was never exposed either way). */
+  onReady(function () {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      if (q.get('exportMode') === '1' || q.get('lite') === '1') return;
+      const REG = window.PP_TOOL_REGISTRY;
+      if (!REG || typeof REG.keysForFile !== 'function') return;
+      const basename = (window.location.pathname.split('/').pop() || '').toLowerCase();
+      const keys = REG.keysForFile(basename);
+      if (!keys.length) return;                      /* unregistered page → allow */
+      const decide = function (st) {
+        if (!st || st.mode !== 'set' || !st.keys) return;   /* all/external/unresolved → allow */
+        const ok = keys.some(function (k) { return st.keys.has(k); });
+        if (!ok) {
+          const path = window.location.pathname.replace(/[^/]+$/, '');
+          const parts = path.split('/').filter(Boolean);
+          window.location.replace(parts[parts.length - 1] === 'tools' ? '../' : './');
+        }
+      };
+      const cached = (typeof window.ppAllowedState === 'function') && window.ppAllowedState();
+      if (cached) { decide(cached); return; }
+      if (typeof window.ppResolveAllowedTools === 'function') {
+        window.ppResolveAllowedTools().then(decide).catch(function () {});
+      }
+    } catch (e) { /* fail open */ }
+  });
 })();
