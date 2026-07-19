@@ -186,16 +186,22 @@ async function latestForgeMonth(){
   try {
     const { data } = await window.sb.from('forge_cotality').select('data,updated_at').eq('id','cl_suburbs_meta').maybeSingle();
     const months = data && data.data && data.data.months ? Object.keys(data.data.months).sort() : [];
-    return months.length ? { month: months[months.length-1], at: data.updated_at } : null;
+    if (!months.length) return null;
+    const month = months[months.length-1];
+    const info = data.data.months[month] || {};
+    return { month, at: data.updated_at, fileName: info.fileName || null, recordedAt: info.at || null };
   } catch(e){ return null; }
 }
 async function fetchNationalFromForge(month, onProgress){
   const all = [];
   for (let pg = 0; ; pg++){
+    /* ORDER = the full PK (month is fixed) — anything less is non-deterministic
+       across pages and can drop/duplicate a row at a page seam (bit Sydney:
+       H/U twins of one suburb tied in the sort → 1 unmatched). */
     const { data, error } = await window.sb.from('forge_cl_suburbs')
       .select('level,ptype,state,name,postcode,lga,metrics')
       .eq('month', month).in('level', ['suburb','lga'])
-      .order('level').order('state').order('name_key')
+      .order('level').order('ptype').order('state').order('name_key')
       .range(pg*1000, pg*1000+999);
     if (error) throw error;
     all.push(...(data || []));
@@ -213,11 +219,16 @@ async function _refreshForgeMeta(){
     if (note) note.innerHTML = 'Nothing recorded yet — drop the monthly Market Trends .xlsx on the <b>Data Forge → Cotality</b> card first (needs migration 083).';
     return;
   }
-  if (meta) meta.textContent = 'store latest: ' + latest.month;
+  /* the store is keyed by the file's OWN "Month end" (CoreLogic's data month
+     runs ~3 months behind the export date) — show both so an April data-month
+     from a July drop never reads as stale */
+  const dropped = latest.recordedAt ? new Date(latest.recordedAt).toLocaleDateString('en-AU', { month: 'short', year: 'numeric' }) : null;
+  if (meta) meta.textContent = 'data month ' + latest.month + (dropped ? ' · dropped ' + dropped : '');
   let pub = null;
   try { const { data } = await window.sb.from('region_dashboard').select('source_month').limit(1); pub = data && data[0] && data[0].source_month; } catch(e){}
   const behind = pub && !String(pub).includes(latest.month);
-  if (note) note.innerHTML = 'Recomputes every region from the Forge store (month <b>' + esc(latest.month) + '</b>).'
+  if (note) note.innerHTML = 'Recomputes every region from the Forge store — data month <b>' + esc(latest.month) + '</b>'
+    + (latest.fileName ? ' (the file’s own “Month end”; recorded from <b>' + esc(latest.fileName) + '</b>)' : '') + '.'
     + (pub ? ' Dashboards last published from <b>' + esc(pub) + '</b>' + (behind ? ' — <span style="color:#E08A00;font-weight:700">recompute to catch up</span>.' : ' ✓') : '');
   if (btn && _ssCanEdit) btn.disabled = false;
 }
