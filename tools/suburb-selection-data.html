@@ -13,8 +13,10 @@
 <script src="../shared/os-chrome.js?v=f66c69d4"></script>
 <link rel="stylesheet" href="../shared/os-theme.css?v=735d2efb"/>
 <script src="../shared/fit-screen.js?v=5e41a716"></script>
-<!-- SheetJS: in-browser .xlsx parsing — the CoreLogic file never leaves the browser -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Forge-fed since 2026-07-19: the national CoreLogic data comes from
+     forge_cl_suburbs (recorded by the Data Forge Cotality drop) — no local
+     .xlsx parsing here anymore, so SheetJS is gone. -->
+
 <style>
   /* PERFORMANCE OS SKIN (redesign Session 4): Vault violet accent; the OS
      wallpaper owns the background (common.css vars keep following the
@@ -89,14 +91,14 @@
 <div id="ssApp">
   <div class="ss-head">
     <h1>Suburb Selection Data</h1>
-    <div class="sub">Drop the monthly CoreLogic file once — it recomputes <strong>every region's</strong> advisor dashboard from its seeded suburb selection. Review the matches, then <strong>Save</strong> to publish them all. Parsed in your browser.</div>
-    <div class="ss-stage">Regional advisor dashboards · one drop updates all</div>
+    <div class="sub">Recomputes <strong>every region's</strong> advisor dashboard from the Forge <strong>CL Suburb Data</strong> store (recorded automatically by the monthly Cotality drop in Data Forge). Review the matches, then <strong>Save</strong> to publish them all.</div>
+    <div class="ss-stage">Regional advisor dashboards · Forge-fed</div>
   </div>
 
-  <div class="df-drop" id="rdDrop">
-    <input type="file" id="rdFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden/>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:1em;height:1em;vertical-align:-.12em"><path d="M5 20v-6M10 20V8M15 20v-4M20 20V11"/><path d="M3.5 20h17"/></svg> <strong>Drop the national CoreLogic .xlsx</strong> (or click)
-    <span class="sub">Computes <strong>all regions</strong> at once — review, then Save.</span>
+  <div class="df-card" id="rdForgeCard" style="margin-top:18px">
+    <h2>Update from Forge <span class="count" id="rdForgeMeta">checking the store…</span></h2>
+    <div class="df-note" id="rdForgeNote" style="margin-top:0">The national suburb store is recorded once a month by the Cotality drop on the Data Forge card — no file needed here.</div>
+    <div style="margin-top:12px"><button class="rd-btn" id="rdRecompute" disabled>⟳ Recompute all regions</button></div>
   </div>
 
   <div class="rd-bar">
@@ -116,29 +118,14 @@
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const card = (title, body) => '<div class="df-card"><h2>' + title + '</h2>' + body + '</div>';
 const loadingHtml = msg => '<div class="rd-loading"><div class="rd-spinner"></div><div>' + esc(msg) + '</div></div>';
-const num = v => { if (typeof v==='number') return isFinite(v)?v:null; if (v==null||v==='') return null; const n=Number(String(v).replace(/[$,%\s]/g,'')); return isFinite(n)?n:null; };
 const U   = s => String(s==null?'':s).trim().toUpperCase();
-function colToIdx(letter){ let n=0; for (const ch of letter.toUpperCase()) n = n*26 + (ch.charCodeAt(0)-64); return n-1; }
-function findSheet(wb, terms){ return wb.SheetNames.find(n => { const ln = n.toLowerCase(); return terms.every(t => ln.includes(t)); }); }
-function findHeaderRow(rows){
-  for (let i=0; i<Math.min(rows.length,12); i++){
-    const cells = (rows[i]||[]).map(c => String(c).trim().toLowerCase());
-    if (cells.includes('property type') || cells.includes('state') || cells.includes('lga')) return i;
-  }
-  return 0;
-}
 const STATE_CANON = { NEWSOUTHWALES:'NSW', VICTORIA:'VIC', QUEENSLAND:'QLD', WESTERNAUSTRALIA:'WA', TASMANIA:'TAS', SOUTHAUSTRALIA:'SA', NORTHERNTERRITORY:'NT', AUSTRALIANCAPITALTERRITORY:'ACT' };
 function normState(s){ const u = String(s).toUpperCase().replace(/[^A-Z]/g,''); return STATE_CANON[u] || u; }
 
-const rdRegion = document.getElementById('rdRegion'), rdDrop = document.getElementById('rdDrop'),
-      rdFile = document.getElementById('rdFile'), rdOut = document.getElementById('rdOut');
+const rdRegion = document.getElementById('rdRegion'), rdOut = document.getElementById('rdOut');
 let pendingUpdate = null;   // { results:[{region,label,data,subFound,subTotal,...}], source } — computed, awaiting Save
 
-rdDrop.addEventListener('click', () => rdFile.click());
-rdDrop.addEventListener('dragover', e => { e.preventDefault(); rdDrop.classList.add('over'); });
-rdDrop.addEventListener('dragleave', () => rdDrop.classList.remove('over'));
-rdDrop.addEventListener('drop', e => { e.preventDefault(); rdDrop.classList.remove('over'); if (e.dataTransfer.files[0]) computeAllRegions(e.dataTransfer.files[0]); });
-rdFile.addEventListener('change', () => { if (rdFile.files[0]) computeAllRegions(rdFile.files[0]); });
+document.getElementById('rdRecompute').addEventListener('click', () => computeAllRegions());
 rdRegion.addEventListener('change', () => loadSaved(rdRegion.value));
 
 /* ── Access gate ── Updating the data (dropping the CoreLogic file) is
@@ -152,12 +139,10 @@ function _ssGuard() {
   return false;
 }
 function _ssApplyAccess() {
-  if (_ssCanEdit) return;
-  const d = document.getElementById('rdDrop');
-  if (d) {
-    d.classList.add('df-drop-locked');
-    d.innerHTML = '🔒 <strong>View only</strong><span class="sub">Updating data is restricted to dev / admin.</span>';
-  }
+  if (_ssCanEdit) { _refreshForgeMeta(); return; }
+  const b = document.getElementById('rdRecompute');
+  if (b) { b.disabled = true; b.textContent = '🔒 View only — dev / admin recompute'; }
+  _refreshForgeMeta();
 }
 (function _ssGate() {
   let n = 0;
@@ -192,13 +177,49 @@ async function loadRegions(){
 // duplicate suburb/LGA names across states in the national file.
 function regionStateOf(slug){ const m = String(slug).match(/-(act|nsw|nt|qld|sa|tas|vic|wa)$/i); return m ? m[1].toUpperCase() : null; }
 
-// Parse the national workbook ONCE into raw row arrays (reused for every region).
-function parseNational(wb){
-  const lgaName = findSheet(wb, ['market trends','lga']);
-  const subName = findSheet(wb, ['market trends','suburb']);
-  const lgaArr = lgaName ? XLSX.utils.sheet_to_json(wb.Sheets[lgaName], { header:1, raw:true, defval:'' }) : [];
-  const subArr = subName ? XLSX.utils.sheet_to_json(wb.Sheets[subName], { header:1, raw:true, defval:'' }) : [];
-  return { lgaArr, lhr: findHeaderRow(lgaArr), subArr, shr: findHeaderRow(subArr) };
+/* ── Forge store (forge_cl_suburbs, mig 083) ─────────────────────────────
+   The national CoreLogic data now lives in Forge — recorded month-by-month
+   by the Cotality drop in Data Forge. fetchNationalFromForge() pulls the
+   latest month ONCE (paginated past the 1000-row read cap) into the same
+   shape buildCurrentForRegion consumes. */
+async function latestForgeMonth(){
+  try {
+    const { data } = await window.sb.from('forge_cotality').select('data,updated_at').eq('id','cl_suburbs_meta').maybeSingle();
+    const months = data && data.data && data.data.months ? Object.keys(data.data.months).sort() : [];
+    return months.length ? { month: months[months.length-1], at: data.updated_at } : null;
+  } catch(e){ return null; }
+}
+async function fetchNationalFromForge(month, onProgress){
+  const all = [];
+  for (let pg = 0; ; pg++){
+    const { data, error } = await window.sb.from('forge_cl_suburbs')
+      .select('level,ptype,state,name,postcode,lga,metrics')
+      .eq('month', month).in('level', ['suburb','lga'])
+      .order('level').order('state').order('name_key')
+      .range(pg*1000, pg*1000+999);
+    if (error) throw error;
+    all.push(...(data || []));
+    if (onProgress) onProgress(all.length);
+    if (!data || data.length < 1000) break;
+  }
+  return all;
+}
+/* freshness note on the Update-from-Forge card */
+async function _refreshForgeMeta(){
+  const meta = document.getElementById('rdForgeMeta'), note = document.getElementById('rdForgeNote'), btn = document.getElementById('rdRecompute');
+  const latest = await latestForgeMonth();
+  if (!latest){
+    if (meta) meta.textContent = 'store empty';
+    if (note) note.innerHTML = 'Nothing recorded yet — drop the monthly Market Trends .xlsx on the <b>Data Forge → Cotality</b> card first (needs migration 083).';
+    return;
+  }
+  if (meta) meta.textContent = 'store latest: ' + latest.month;
+  let pub = null;
+  try { const { data } = await window.sb.from('region_dashboard').select('source_month').limit(1); pub = data && data[0] && data[0].source_month; } catch(e){}
+  const behind = pub && !String(pub).includes(latest.month);
+  if (note) note.innerHTML = 'Recomputes every region from the Forge store (month <b>' + esc(latest.month) + '</b>).'
+    + (pub ? ' Dashboards last published from <b>' + esc(pub) + '</b>' + (behind ? ' — <span style="color:#E08A00;font-weight:700">recompute to catch up</span>.' : ' ✓') : '');
+  if (btn && _ssCanEdit) btn.disabled = false;
 }
 
 // Workbook suburb labels that differ from CoreLogic's national names — either a
@@ -212,30 +233,48 @@ const SUBURB_ALIASES = {
   'TOOWOOMBA (R)':   { name:'Toowoomba City', pc:'4350' },
 };
 
-// Build a region's current-month maps from the pre-parsed national arrays,
-// filtered to the region's state + property type (H/U). Keys match the calculator
-// (LGA: normLga; suburb: UPPER name).
-function buildCurrentForRegion(nat, regionState, propType){
+// Build a region's current-month maps from the fetched Forge rows, filtered to
+// the region's state + property type (H/U). Keys match the calculator
+// (LGA: normLga; suburb: UPPER name). Field mapping = the same columns the old
+// file parse read, now by metric key (see data-forge.html CL_SUB_MAP).
+function buildCurrentForRegion(rows, regionState, propType, regionLgas){
   const NL = RegionDashboardCalc.normLga;
-  const lgaCurrent = new Map(), suburbCurrent = new Map();
-  for (let i=nat.lhr+1; i<nat.lgaArr.length; i++){ const r=nat.lgaArr[i]; const nm=String(r[colToIdx('B')]||'').trim(); if(!nm) continue;
-    if (regionState && normState(r[colToIdx('A')])!==regionState) continue;
-    if (U(r[colToIdx('C')])!==propType) continue;
-    lgaCurrent.set(NL(nm), { s12:num(r[colToIdx('H')]), s6:num(r[colToIdx('I')]), s3:num(r[colToIdx('J')]),
-      m12:num(r[colToIdx('O')]), m6:num(r[colToIdx('P')]), m3:num(r[colToIdx('Q')]),
-      yld:num(r[colToIdx('AU')]), rentChg:num(r[colToIdx('AS')]), props:num(r[colToIdx('F')]),
-      stock:num(r[colToIdx('AI')]), days:num(r[colToIdx('AO')]) }); }
+  const lgaCurrent = new Map(), suburbCands = new Map();
   const byNamePc = new Map();   // "<NAME>|<postcode>" -> record, to disambiguate duplicate suburb names
-  for (let i=nat.shr+1; i<nat.subArr.length; i++){ const r=nat.subArr[i]; const nm=String(r[colToIdx('F')]||'').trim(); if(!nm) continue;
-    if (regionState && normState(r[colToIdx('A')])!==regionState) continue;
-    if (U(r[colToIdx('G')])!==propType) continue;
-    const rec = { lga:String(r[colToIdx('D')]||'').trim(), s12:num(r[colToIdx('L')]), s6:num(r[colToIdx('M')]), s3:num(r[colToIdx('N')]),
-      m12:num(r[colToIdx('S')]), m6:num(r[colToIdx('T')]), m3:num(r[colToIdx('U')]),
-      yld:num(r[colToIdx('AY')]), avmYld:num(r[colToIdx('AZ')]), rentChg:num(r[colToIdx('AW')]),
-      props:num(r[colToIdx('J')]), stock:num(r[colToIdx('AM')]), days:num(r[colToIdx('AS')]),
-      sepHouse:num(r[colToIdx('BO')]), ownFull:num(r[colToIdx('BS')]), ownBuy:num(r[colToIdx('BT')]), income:num(r[colToIdx('BG')]) };
-    const key=U(nm); if (!suburbCurrent.has(key)) suburbCurrent.set(key, rec);   // first-wins for plain names
-    const pc=String(r[colToIdx('E')]||'').trim(); if (pc) byNamePc.set(key+'|'+pc, rec); }
+  const g = (m, k) => (m && m[k] != null ? m[k] : null);
+  for (const r of rows){
+    if (regionState && r.state !== regionState) continue;
+    if (r.ptype !== propType) continue;
+    const m = r.metrics || {};
+    if (r.level === 'lga'){
+      lgaCurrent.set(NL(r.name), { s12:g(m,'sales12'), s6:g(m,'sales6'), s3:g(m,'sales3'),
+        m12:g(m,'med12'), m6:g(m,'med6'), m3:g(m,'med3'),
+        yld:g(m,'yield'), rentChg:g(m,'rentChg12'), props:g(m,'props'),
+        stock:g(m,'stockPct'), days:g(m,'dom') });
+    } else {
+      const rec = { lga:String(r.lga||'').trim(), s12:g(m,'sales12'), s6:g(m,'sales6'), s3:g(m,'sales3'),
+        m12:g(m,'med12'), m6:g(m,'med6'), m3:g(m,'med3'),
+        yld:g(m,'yield'), avmYld:g(m,'avmYield'), rentChg:g(m,'rentChg12'),
+        props:g(m,'props'), stock:g(m,'stockPct'), days:g(m,'dom'),
+        sepHouse:g(m,'sepHouse'), ownFull:g(m,'ownFull'), ownBuy:g(m,'ownBuy'), income:g(m,'income') };
+      const key = U(r.name);
+      if (!suburbCands.has(key)) suburbCands.set(key, []);
+      suburbCands.get(key).push(rec);
+      if (r.postcode) byNamePc.set(key + '|' + String(r.postcode).trim(), rec);
+    }
+  }
+  /* Duplicate suburb NAMES within a state (two Hillgroves in NSW, Killara in
+     Wodonga AND Glenelg, …): prefer the candidate whose LGA belongs to THIS
+     region's seeded LGA list. The old file parse took whichever appeared
+     first in the file — pure file-order luck, which silently picked the
+     wrong-region row in a few cases (e.g. Wollongong's Willow Vale got the
+     Wingecarribee one instead of Kiama's). Region-aware wins; otherwise the
+     first candidate (deterministic: rows arrive ordered by name_key). */
+  const suburbCurrent = new Map();
+  for (const [key, cands] of suburbCands){
+    const hit = (regionLgas && cands.length > 1) ? cands.find(c => regionLgas.has(NL(c.lga))) : null;
+    suburbCurrent.set(key, hit || cands[0]);
+  }
   // Resolve workbook-specific labels to their national row (name+postcode), so
   // duplicate-named suburbs land in the right LGA instead of going unmatched.
   for (const [selName, a] of Object.entries(SUBURB_ALIASES)){
@@ -245,17 +284,18 @@ function buildCurrentForRegion(nat, regionState, propType){
   return { lgaCurrent, suburbCurrent };
 }
 
-// Drop the national file once → recompute EVERY region into memory (nothing saved yet).
-async function computeAllRegions(file){
+// Recompute EVERY region from the Forge store's latest month (nothing saved yet).
+async function computeAllRegions(){
   if (!_ssGuard()) return;
   if (!window.sb){ rdOut.innerHTML = card('Not connected', '<div class="df-empty">Sign in to update regions.</div>'); return; }
   pendingUpdate = null;
-  rdOut.innerHTML = loadingHtml('Reading “' + file.name + '” …');
+  const latest = await latestForgeMonth();
+  if (!latest){ rdOut.innerHTML = card('No Forge data', '<div class="df-empty">Nothing recorded in forge_cl_suburbs yet — drop the monthly Market Trends .xlsx on the Data Forge → Cotality card first.</div>'); return; }
+  rdOut.innerHTML = loadingHtml('Fetching the Forge suburb store (' + latest.month + ') …');
   try {
-    const buf = new Uint8Array(await file.arrayBuffer());
-    await new Promise(r => setTimeout(r, 20));               // let the spinner paint before the parse blocks the thread
-    const wb = XLSX.read(buf, { type:'array' });
-    const nat = parseNational(wb);                            // parse the national file ONCE
+    const nat = await fetchNationalFromForge(latest.month, n => {
+      rdOut.innerHTML = loadingHtml('Fetching the Forge suburb store (' + latest.month + ') … ' + n.toLocaleString() + ' rows');
+    });
     const { data: regions, error } = await window.sb.from('region_dashboard_reference').select('region,label').order('label');
     if (error || !regions || !regions.length){ rdOut.innerHTML = card('Error', '<div class="df-empty">Could not load the region list' + (error ? ': ' + esc(error.message) : '') + '.</div>'); return; }
     const currentYear = new Date().getFullYear();
@@ -268,7 +308,8 @@ async function computeAllRegions(file){
         const { data: refRow, error: rerr } = await window.sb.from('region_dashboard_reference').select('reference').eq('region', reg.region).maybeSingle();
         if (rerr || !refRow) throw new Error(rerr ? rerr.message : 'no reference');
         const ref = refRow.reference;
-        const { lgaCurrent, suburbCurrent } = buildCurrentForRegion(nat, regionStateOf(reg.region), (ref.propertyType || 'H').toUpperCase());
+        const regionLgas = new Set((ref.selection && ref.selection.lgas || []).map(RegionDashboardCalc.normLga));
+        const { lgaCurrent, suburbCurrent } = buildCurrentForRegion(nat, regionStateOf(reg.region), (ref.propertyType || 'H').toUpperCase(), regionLgas);
         const data = RegionDashboardCalc.computeRegionDashboard({
           config: ref.config, lgaThresh: ref.lgaThresh, selection: ref.selection, price: ref.price,
           lgaCurrent, suburbCurrent, currentYear
@@ -278,7 +319,7 @@ async function computeAllRegions(file){
         results.push({ region: reg.region, label: reg.label || reg.region, data, lgas: data.lgaRows.length, subs: data.suburbRows.length, subFound, subTotal });
       } catch(e){ results.push({ region: reg.region, label: reg.label || reg.region, error: e.message }); }
     }
-    pendingUpdate = { results, source: file.name };
+    pendingUpdate = { results, source: 'forge_cl_suburbs · ' + latest.month };
     renderUpdateSummary(false);
   } catch(err){ console.warn('compute-all failed', err); rdOut.innerHTML = card('Error', '<div class="df-empty">' + esc(err.message || err) + '</div>'); }
 }
@@ -305,6 +346,7 @@ async function saveAllRegions(){
   pendingUpdate.saved = saved; pendingUpdate.saveFailed = failed;
   renderUpdateSummary(true);
   loadRegions();                                              // refresh the dropdown labels
+  _refreshForgeMeta();                                        // the ✓ note reflects the new publish
 }
 
 function renderUpdateSummary(saved){
@@ -382,7 +424,7 @@ async function loadSaved(slug){
   rdOut.innerHTML = loadingHtml('Loading saved dashboard …');
   const { data, error } = await window.sb.from('region_dashboard').select('data,label,source_month,computed_at').eq('region', slug).maybeSingle();
   if (error){ rdOut.innerHTML = card('Error', '<div class="df-empty">' + esc(error.message) + '</div>'); return; }
-  if (!data){ rdOut.innerHTML = '<div class="df-note">No saved dashboard for this region yet — drop the national CoreLogic file to update all regions.</div>'; return; }
+  if (!data){ rdOut.innerHTML = '<div class="df-note">No saved dashboard for this region yet — hit “Recompute all regions” above to build them from the Forge store.</div>'; return; }
   const when = data.computed_at ? new Date(data.computed_at).toLocaleString('en-AU') : '—';
   const banner = '<div class="df-qc">'
     + '<span class="df-pill ok">Saved dashboard</span>'
