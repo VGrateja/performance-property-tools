@@ -65,24 +65,9 @@ body.ss-lobby-open .ss-main{display:none}
 .ss-tile .kinds{position:absolute;top:13px;right:13px;font-size:9.5px;font-weight:800;letter-spacing:.08em;color:var(--ss-teal)}
 .ss-tile.off{opacity:.45;cursor:default}
 .ss-tile.off:hover{border-color:rgba(255,255,255,0.14);transform:none}
-/* step 2: suburb picker */
-.ss-picker{display:none}
-.ss-picker.show{display:block}
-.ss-step1.hide{display:none}
-.ss-back{border:1px solid rgba(255,255,255,0.2);background:transparent;color:#F4F6F8;border-radius:999px;padding:7px 15px;font:700 11px 'Montserrat',sans-serif;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;margin-bottom:14px}
-.ss-back:hover{border-color:var(--ss-teal)}
-.ss-pick-panel{background:rgba(16,21,32,0.92);border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:18px}
-.ss-pick-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
-.ss-pick-head .t{font-size:19px;font-weight:800;color:#F4F6F8;margin-right:auto}
 .ss-search{flex:1 1 260px;max-width:420px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:#141A28;color:#F4F6F8;padding:10px 13px;font:600 13px 'Montserrat',sans-serif;outline:none}
 .ss-search:focus{border-color:var(--ss-teal)}
 .ss-search::placeholder{color:rgba(200,214,236,0.4)}
-.ss-pick-list{max-height:56vh;overflow:auto;border-top:1px solid rgba(255,255,255,0.1)}
-.ss-pick-row{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,0.07);padding:10px 8px;color:#EDF1F7;cursor:pointer;font-family:inherit}
-.ss-pick-row:hover{background:rgba(0,160,180,0.12)}
-.ss-pick-row .s{font-size:13.5px;font-weight:700;flex:1;min-width:0}
-.ss-pick-row .l{font-size:11.5px;color:rgba(210,220,236,0.6);flex:1;min-width:0}
-.ss-pick-row .r{font-size:11.5px;font-weight:700;color:var(--ss-teal);flex:0 0 66px;text-align:right}
 
 /* quality chips (shared) */
 .ss-q{display:inline-block;font-size:10px;font-weight:800;letter-spacing:.06em;border-radius:6px;padding:2px 7px;line-height:1.5}
@@ -221,20 +206,6 @@ body.ss-lobby-open .ss-main{display:none}
           <button class="ss-save" id="ssSaveBtn">Save to database</button>
           <span id="ssSaveMsg" style="font-size:12px"></span>
         </div>
-      </div>
-    </div>
-    <div class="ss-picker" id="ssStep2">
-      <button class="ss-back" id="ssBack">&larr; Markets</button>
-      <div class="ss-pick-panel">
-        <div class="ss-pick-head">
-          <span class="t" id="ssPickTitle">Market</span>
-          <div class="ss-seg" id="ssPickSeg">
-            <button data-kind="h" class="on">Houses</button>
-            <button data-kind="u">Units</button>
-          </div>
-          <input class="ss-search" id="ssPickSearch" placeholder="Search suburbs…" autocomplete="off">
-        </div>
-        <div class="ss-pick-list" id="ssPickList"></div>
       </div>
     </div>
   </div>
@@ -378,52 +349,25 @@ function renderLobbyTiles() {
   host.innerHTML =
     (caps.length ? '<div class="ss-ghead">Capital cities</div><div class="ss-tiles">' + caps.map(tile).join('') + '</div>' : '')
     + (regs.length ? '<div class="ss-ghead">Regional markets</div><div class="ss-tiles">' + regs.map(tile).join('') + '</div>' : '');
-  host.querySelectorAll('.ss-tile').forEach(b => b.addEventListener('click', () => showPicker(b.dataset.m)));
+  /* a market tile opens the dashboard directly (benchmark selected) — the
+     suburb search + rail live there, so the old step-2 picker is gone */
+  host.querySelectorAll('.ss-tile').forEach(b => b.addEventListener('click', async () => {
+    const m = MARKET_LIST.find(x => x.slug === b.dataset.m); if (!m) return;
+    const kind = m.kinds[state.kind] ? state.kind : (m.kinds.h ? 'h' : 'u');
+    b.style.opacity = '.6';
+    await openMarket(m.slug, kind, null);
+    b.style.opacity = '';
+  }));
 }
 
 /* ── lobby flow ── */
 function openLobby() {
   document.body.classList.add('ss-lobby-open');
   $('#ssLobby').classList.add('show');
-  $('#ssStep1').classList.remove('hide');
-  $('#ssStep2').classList.remove('show');
 }
 function closeLobby() {
   document.body.classList.remove('ss-lobby-open');
   $('#ssLobby').classList.remove('show');
-}
-async function showPicker(slug) {
-  const m = MARKET_LIST.find(x => x.slug === slug); if (!m) return;
-  state.market = slug;
-  if (!m.kinds[state.kind]) state.kind = m.kinds.h ? 'h' : 'u';
-  $('#ssStep1').classList.add('hide');
-  $('#ssStep2').classList.add('show');
-  $('#ssPickTitle').textContent = m.label;
-  $('#ssPickSearch').value = '';
-  syncSegs();
-  $('#ssPickList').innerHTML = '<div style="padding:16px;font-size:12px;color:rgba(210,220,236,.6)">Loading…</div>';
-  await ensureData(slug, state.kind);
-  renderPickList();
-  $('#ssPickSearch').focus();
-}
-function renderPickList() {
-  const d = DATA[keyOf(state.market, state.kind)];
-  const host = $('#ssPickList');
-  if (!d) { host.innerHTML = '<div style="padding:16px;font-size:12px">No ' + (state.kind === 'h' ? 'house' : 'unit') + ' data for this market.</div>'; return; }
-  const q = $('#ssPickSearch').value.trim().toLowerCase();
-  const rows = d.rows.filter(r => !q || (r.suburb + ' ' + r.lga).toLowerCase().includes(q));
-  host.innerHTML = '<button type="button" class="ss-pick-row" data-s="__bench">'
-    + '<span class="s">' + esc(d.benchmark.suburb) + '</span><span class="l">Benchmark</span>'
-    + '<span class="r">' + pct(d.benchmark.runway) + '</span></button>'
-    + rows.slice(0, 400).map(r => '<button type="button" class="ss-pick-row" data-s="' + esc(r.suburb) + '">'
-      + '<span class="s">' + esc(r.suburb) + '</span><span class="l">' + esc(r.lga) + '</span>'
-      + '<span class="r">' + pct(r.runway) + '</span></button>').join('')
-    + (rows.length > 400 ? '<div style="padding:10px;font-size:11px;color:rgba(210,220,236,.55)">' + (rows.length - 400) + ' more — keep typing to narrow.</div>' : '');
-  host.querySelectorAll('.ss-pick-row').forEach(b => b.addEventListener('click', () => {
-    const s = b.dataset.s;
-    closeLobby();
-    enterMain(s === '__bench' ? null : s);
-  }));
 }
 
 /* ── main view ── */
@@ -443,9 +387,9 @@ function enterMain(suburb, skipUrl) {
   if (!skipUrl) syncURL();
 }
 function syncSegs() {
-  document.querySelectorAll('#ssKindSeg button, #ssPickSeg button').forEach(b => b.classList.toggle('on', b.dataset.kind === state.kind));
+  document.querySelectorAll('#ssKindSeg button').forEach(b => b.classList.toggle('on', b.dataset.kind === state.kind));
   const m = MARKET_LIST.find(x => x.slug === state.market);
-  document.querySelectorAll('#ssKindSeg button, #ssPickSeg button').forEach(b => {
+  document.querySelectorAll('#ssKindSeg button').forEach(b => {
     const avail = m && m.kinds[b.dataset.kind];
     b.disabled = !avail; b.style.opacity = avail ? '' : '.4';
   });
@@ -563,12 +507,6 @@ async function ensureData(slug, kind) {
 
 /* ── UI wiring ── */
 function wireUi() {
-  $('#ssBack').addEventListener('click', () => { $('#ssStep2').classList.remove('show'); $('#ssStep1').classList.remove('hide'); });
-  $('#ssPickSearch').addEventListener('input', renderPickList);
-  document.querySelectorAll('#ssPickSeg button').forEach(b => b.addEventListener('click', async () => {
-    if (b.disabled) return; state.kind = b.dataset.kind; syncSegs();
-    await ensureData(state.market, state.kind); renderPickList();
-  }));
   document.querySelectorAll('#ssKindSeg button').forEach(b => b.addEventListener('click', async () => {
     if (b.disabled) return; state.kind = b.dataset.kind;
     await ensureData(state.market, state.kind);
