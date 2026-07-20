@@ -20,6 +20,7 @@
 <script src="../shared/supabase-client.js?v=79207e52"></script>
 <script src="../shared/tool-registry.js?v=5dbcbed4"></script>
 <script src="../shared/traffic-lights-engine.js?v=bb260093"></script>
+<script src="../shared/replacement-cost-parse.js?v=a8e1969f"></script>
 <style>
   /* PERFORMANCE OS SKIN (redesign Session 5): Vault violet accent pair; the OS
      wallpaper owns the background (orbs retired). Status/health colors
@@ -290,6 +291,24 @@
   .dsi-ingest select{ font:inherit; padding:5px 8px; border-radius:7px; border:1px solid var(--border); background:var(--panel); color:var(--text); }
   .dsi-ingest select option{ background:var(--panel); color:var(--text); }
   .dsi-bm{ display:inline-flex; align-items:center; gap:7px; font-weight:800; font-size:.85rem; padding:9px 15px; border-radius:10px; border:1px solid var(--pp-cyan); background:var(--panel2); color:var(--pp-cyan); text-decoration:none; cursor:grab; }
+  /* ── Replacement Cost card ── */
+  .rc-grid tbody tr{ cursor:pointer; }
+  .rc-grid td.rc-empty{ color:var(--muted); font-style:italic; }
+  .rc-pct-disc{ color:#4C947F; font-weight:800; }
+  .rc-pct-prem{ color:#E08A00; font-weight:800; }
+  .rc-in{ font:inherit; width:110px; padding:5px 8px; border-radius:7px; border:1px solid var(--border); background:var(--panel2); color:var(--text); font-variant-numeric:tabular-nums; }
+  .rc-in.rc-wide{ width:230px; }
+  .rc-in.rc-narrow{ width:66px; }
+  select.rc-in{ width:auto; }
+  .rc-x{ border:0; background:none; color:var(--muted); cursor:pointer; font-size:1rem; padding:2px 6px; }
+  .rc-x:hover{ color:#e0655a; }
+  .rc-secthead{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 10px; }
+  .rc-secthead h2{ margin:0; }
+  .rc-avgline{ font-size:.8rem; color:var(--muted); margin-top:8px; font-variant-numeric:tabular-nums; }
+  .rc-summary{ display:flex; gap:14px; flex-wrap:wrap; }
+  .rc-tile{ background:var(--panel2); border:1px solid var(--border); border-radius:12px; padding:12px 16px; min-width:150px; }
+  .rc-tile .lab{ font-size:.66rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:800; }
+  .rc-tile .val{ font-size:1.15rem; font-weight:800; margin-top:3px; font-variant-numeric:tabular-nums; }
   .dsi-bm:hover{ filter:brightness(1.08); }
   .dsi-bm-code{ display:block; width:100%; margin-top:8px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.72rem; line-height:1.4; padding:9px; border-radius:8px; border:1px solid var(--border); background:var(--panel2); color:var(--text); resize:vertical; }
 
@@ -619,6 +638,12 @@
     <button class="df-back" data-home>← All data points</button>
     <div id="dsiOut"></div>
   </section>
+
+  <!-- ── REPLACEMENT COST (per-region research: land + ABS build vs comparable new build) ── -->
+  <section id="dfReplcost" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="rcOut"></div>
+  </section>
 </div>
 
 <script>
@@ -631,7 +656,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCpi','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfSensitivity','dfPopforecast','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfRanking','dfComputed','dfCommercial','dfDemandinputs','dfClsuburbs']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCpi','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfSensitivity','dfPopforecast','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfRanking','dfComputed','dfCommercial','dfDemandinputs','dfClsuburbs','dfReplcost']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'clsuburbs') loadClSuburbs();
@@ -668,6 +693,7 @@ function showView(name){
   if (name === 'computed') loadComputed();
   if (name === 'commercial') loadCommercial();
   if (name === 'demandinputs') loadDemandInputs();
+  if (name === 'replcost') loadReplCost();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -720,6 +746,7 @@ const DF_EMG = {
   "🔀": '<svg class="emg" viewBox="0 0 24 24"><path d="M3 7h4.5L16 17h5"/><path d="M18 14l3 3-3 3"/><path d="M3 17h4.5l2.3-2.8M13.2 9.8L16 7h5"/><path d="M18 4l3 3-3 3"/></svg>',
   "🔗": '<svg class="emg" viewBox="0 0 24 24"><path d="M10 13.5a4.5 4.5 0 0 0 6.8.5l2.7-2.7a4.5 4.5 0 0 0-6.4-6.4l-1.5 1.5"/><path d="M14 10.5a4.5 4.5 0 0 0-6.8-.5l-2.7 2.7a4.5 4.5 0 0 0 6.4 6.4l1.5-1.5"/></svg>',
   "💧": '<svg class="emg" viewBox="0 0 24 24"><path d="M12 3.5c3.5 4 6 7.2 6 10.2a6 6 0 0 1-12 0c0-3 2.5-6.2 6-10.2z"/></svg>',
+  "🧱": '<svg class="emg" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13"/><path d="M3 12h18M9.5 5.5V12M14.5 5.5V12M6.5 12v6.5M12 12v6.5M17.5 12v6.5"/></svg>',
 };
 function dfIcon(e){ e = String(e || '').replace(/\uFE0F/g, ''); return DF_EMG[e] || e; }
 
@@ -751,7 +778,7 @@ const CLUSTERS = [
   { key:'national_only', icon:'🇦🇺', ingest:'hybrid', label:'National Only', desc:'National Online Report series: work done, federal budget, govt debt-to-GDP, household debt-to-income, GDP &amp; debt by country, cash rate, household composition. 4 API (ABS/IMF/RBA) + 3 SEEDED needing hand updates (Budget each May/MYEFO · Govt net debt each Data Dump/Budget · Household composition next Census).', view:'natonly' },
   { key:'commercial', icon:'🏢', ingest:'hybrid', label:'Commercial Report', desc:'All Commercial report data (23 tabs). 6 API tabs (retail turnover, building approvals, corporate bond, population growth, term deposits, govt bonds) auto-refresh from rdp_raw_series on the 10th (GATHER → PUBLISH); the rest (freight, office vacancy, cash-rate/inflation, population pyramid, WFH, e-commerce, health, etc.) are subscription/manual and need a Looker export re-seed. The Commercial report reads this store.', view:'commercial' },
   { key:'monthly_price', icon:'📈', ingest:'derived', label:'Monthly Median Price', desc:'Monthly median price (house &amp; unit) per region, 2004→present. Seeded from the report cluster sheets; the monthly CoreLogic drop in the Cotality card appends each new month.', view:'monthlyprice' },
-  { key:'cl_suburbs', icon:'🏘️', ingest:'derived', label:'CL Suburb Data', desc:'National suburb + LGA + capital Market Trends (~31k rows/month, 28 metrics) — recorded month-by-month by the Cotality drop. The Forge source for Suburb Scoring and Suburb Selection.', view:'clsuburbs' },
+  { key:'cl_suburbs', icon:'🏘️', ingest:'derived', label:'CL Suburb Data', desc:'National suburb + LGA + capital Market Trends (~31k rows/month, 30+ metrics incl. GPO distance) — recorded month-by-month by the Cotality drop. The Forge source for Suburb Scoring, Suburb Selection and Replacement Cost banding.', view:'clsuburbs' },
   { key:'ranking', icon:'🏆', ingest:'derived', label:'Median Price Ranking (H/U)', desc:'Rank of every region by median price (house &amp; unit) each year, 2004→present — rank&nbsp;1 = the highest median price that year. Derived from the Monthly Median Price point; feeds the Traffic Lights Value indicator (latest rank vs long-run average). Rebuild with <code>build-ranking.mjs</code>.', view:'ranking' },
   { key:'computed_metrics', icon:'🧮', ingest:'derived', label:'Computed Metrics', desc:'Calculated report metrics per region — CAGR, price/rent-to-income, affordability index, P&amp;I repayments, gross yields, YoY growth. Derived from the raw data (research mart) — a preview of what the reports compute.', view:'computed' },
   { key:'inflation', icon:'📉', ingest:'api', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
@@ -759,6 +786,7 @@ const CLUSTERS = [
   { key:'cash_rate', icon:'🏦', ingest:'api', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'api', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
   { key:'demand_inputs', icon:'🎯', ingest:'hybrid', label:'Demand Score Dashboard Data', desc:'The Demand Score engine inputs that aren’t elsewhere in Forge: REA listings (house &amp; unit) entered by hand / bookmarklet (REA has no API), plus SQM house &amp; unit rents and SQM vacancy rate auto-fetched from SQM Research — per region.', view:'demandinputs' },
+  { key:'replacement_cost', icon:'🧱', ingest:'hybrid', label:'Replacement Cost', desc:'Discount to replacement cost per region — recent vacant-land sales (RP Data / REA research) + build cost (ABS avg completed-home cost chained by the construction cost index, +5% other costs) vs the comparable new-build MHP. Build-cost leg auto-prefills from ABS; land &amp; comps are researched per region (workbook or CSV drop). Feeds B/S Slides page 6.', view:'replcost' },
 ];
 
 function badge(status){
@@ -795,6 +823,15 @@ function freshInfo(c, st, manualDates){
     if (!mon) return { cls: 'stale', chip: '<span class="df-fresh stale" title="Nothing recorded yet — drop the Market Trends .xlsx on the Cotality card (needs migration 083)">no data</span>' };
     const cls = d == null ? 'stale' : d <= 40 ? 'ok' : d <= 75 ? 'aging' : 'stale';
     return { cls, chip: '<span class="df-fresh ' + cls + '" title="Latest DATA month ' + mon + ' (the file&#39;s own Month end — CoreLogic data runs ~3 months behind the export) — recorded by the Cotality drop' + (d != null ? ' ' + d + ' days ago' : '') + '">data ' + mon + (d != null ? ' · ' + d + 'd' : '') + '</span>' };
+  }
+  if (c.key === 'replacement_cost') {
+    // ad-hoc research, not a monthly feed — freshness thresholds are wider,
+    // and the chip reports coverage (regions filled) + newest research month
+    const n = manualDates.replacement_cost_n || 0, mon = manualDates.replacement_cost_month;
+    const d = ageDays(manualDates.replacement_cost);
+    if (!n) return { cls: 'stale', chip: '<span class="df-fresh stale" title="No regions filled yet — open the card to add research (needs migration 084)">no data</span>' };
+    const cls = d == null ? 'stale' : d <= 120 ? 'ok' : d <= 240 ? 'aging' : 'stale';
+    return { cls, chip: '<span class="df-fresh ' + cls + '" title="' + n + ' region' + (n === 1 ? '' : 's') + ' with research · newest research data ' + esc(mon || '?') + (d != null ? ' · last saved ' + d + ' days ago' : '') + ' — ad-hoc research cadence, not a monthly feed">' + n + ' regions · ' + esc(mon || '') + '</span>' };
   }
   // A manual "no new data" check (076) resets the freshness clock without changing
   // the data — treat the check date as a refresh signal alongside the real one.
@@ -867,6 +904,9 @@ function _forgeApplyAccess() {
      render time; if perms resolved after it rendered, re-render with the right
      state (writer inputs enabled / viewer locked). */
   try { if (typeof renderDemandInputs === 'function' && typeof DSI_DATA !== 'undefined' && DSI_DATA) { const s = document.getElementById('dfDemandinputs'); if (s && !s.hidden) renderDemandInputs(); } } catch (e) {}
+  /* same race for the Replacement Cost view: a ?view=replcost deep-link can
+     render before the writer gate resolves — re-render with the right state */
+  try { if (typeof renderRcGrid === 'function' && RC_ROWS) { const s = document.getElementById('dfReplcost'); if (s && !s.hidden) { if (RC_SLUG && RC_EDIT) renderRcEditor(); else renderRcGrid(); } } } catch (e) {}
   if (_forgeCanEdit) return;
   document.body.classList.add('df-readonly');
   document.querySelectorAll('.df-drop').forEach(d => {
@@ -918,13 +958,14 @@ async function loadStatus(){
   // manual stores carry their freshness on the store row (not always forge_data_status)
   const manualDates = {};
   try {
-    const [ct, ar, co, ind, dsi, cls] = await Promise.all([
+    const [ct, ar, co, ind, dsi, cls, rc] = await Promise.all([
       window.sb.from('forge_cotality').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_arrears').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_commercial').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_industry').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_demand_inputs').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_cotality').select('data,updated_at').eq('id', 'cl_suburbs_meta').maybeSingle(),
+      window.sb.from('forge_replacement_cost').select('region_slug,as_of,computed_at').order('computed_at', { ascending: false }),
     ]);
     manualDates.cotality = ct.data && ct.data.updated_at; manualDates.arrears = ar.data && ar.data.updated_at;
     manualDates.commercial = co.data && co.data.updated_at; manualDates.industry = ind.data && ind.data.updated_at;
@@ -932,11 +973,15 @@ async function loadStatus(){
     manualDates.cl_suburbs = cls.data && cls.data.updated_at;
     const clm = cls.data && cls.data.data && cls.data.data.months;
     manualDates.cl_suburbs_month = clm ? Object.keys(clm).sort().reverse()[0] : null;
+    const rcRows = (rc && rc.data) || [];
+    manualDates.replacement_cost = rcRows.length ? rcRows[0].computed_at : null;
+    manualDates.replacement_cost_n = new Set(rcRows.map(r => r.region_slug)).size;
+    manualDates.replacement_cost_month = rcRows.length ? rcRows.map(r => r.as_of).sort().reverse()[0] : null;
   } catch (e) {}
   const agingPts = [], stalePts = [];   // card LABELS, so the banner can say WHICH data
   const cardHtml = (c) => {
     const st = statusMap[c.key] || {};
-    const status = (c.key === 'civ' || c.key === 'monthly_price' || c.key === 'sensitivity' || c.key === 'pop_forecast') ? 'derived' : (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears' || c.key === 'demand_inputs') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
+    const status = (c.key === 'civ' || c.key === 'monthly_price' || c.key === 'sensitivity' || c.key === 'pop_forecast') ? 'derived' : (c.key === 'cotality' || c.key === 'industry' || c.key === 'arrears' || c.key === 'demand_inputs' || c.key === 'replacement_cost') ? (st.status === 'error' ? 'error' : 'manual') : (st.status || 'ok');
     const isErr = status === 'error';
     const meta = c.key === 'civ' ? 'Computed live from Cotality'
       : c.key === 'pop_forecast' ? 'Forge pop + population.gov.au projections'
@@ -3286,6 +3331,8 @@ const CL_SUB_MAP = [
   ['# of rental listings','rentListings'],['median asking rent','rent'],
   ['12 month change in median asking rent','rentChg12'],
   ['median rental yield','yield'],['avm rental yield','avmYield'],['average hold period','holdPeriod'],
+  /* km from the GPO — drives Inner/Middle/Outer banding in Replacement Cost */
+  ['average distance from general post office','dist'],
   /* census columns (suburb sheet only) — consumed by Suburb Selection Data */
   ['average gross weekly income households','income'],['dwelling type: separate house','sepHouse'],
   ['tenure: fully owned','ownFull'],['tenure: being purchased','ownBuy'],
@@ -3559,6 +3606,552 @@ function tableHtml(rows){
   return '<div class="df-tablewrap"><table class="df-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
 }
 
+/* ═══════════════════════ Replacement Cost (per-region research) ═══════════════════════
+   The "Discount to Replacement Cost" model from the REPLACEMENT COST TEMPLATE
+   workbooks: replacement = land (400sqm × outer-band $/sqm from recent
+   vacant-land sales) + build (ABS state avg completed-home cost chained by
+   the quarterly construction cost index +5% other) vs the Comparable
+   new-build MHP (sales hand-tagged Inferior/Comparable/Superior).
+   Stored per region per data month in forge_replacement_cost (mig 084,
+   upsert-only history). % is SIGNED: (mhp − replacement)/replacement —
+   negative = established trades BELOW replacement cost (a discount).
+   Data lands three ways: filled workbook drop (shared/replacement-cost-parse.js),
+   RP Data CSV / paste into the editor, or plain manual entry. */
+const RC_REGIONS = DSI_REGIONS.filter(r => r.slug !== 'australia');
+
+/* ABS prefills for the build-cost leg (fetched 2026-07; sources below).
+   Base = avg cost of completed new houses FY 2024-25 (ABS Building Activity
+   "Average cost of new dwellings" cube, Dec qtr 2025 release, Apr 2026).
+   Quarterly chain = PPI 6427.0 TABLE 18 "INPUT to the House construction
+   industry" by state capital (the series the team's workbooks use — their %
+   changes reconcile with it exactly), from the FY-end anchor 2025 Q2 to
+   2026 Q1 (Mar qtr 2026 release, 1 May 2026). Table 18 has NO Darwin or
+   Canberra series → NT/ACT chain by PPI Table 17 OUTPUT house construction
+   (state) instead; NT's output index is repriced infrequently (often flat). */
+const RC_STATE_BUILD = {
+  fyBase: '2019-20', fy: '2024-25',
+  states: {
+    NSW: { base2019: 399478, cost: 565749, idxSrc: 'PPI T18 input · Sydney',    q: [['2025 Q2', 162.7], ['2025 Q3', 163.8], ['2025 Q4', 163.9], ['2026 Q1', 164.6]] },
+    VIC: { base2019: 345201, cost: 485292, idxSrc: 'PPI T18 input · Melbourne', q: [['2025 Q2', 164.1], ['2025 Q3', 165.4], ['2025 Q4', 166.2], ['2026 Q1', 166.6]] },
+    QLD: { base2019: 312857, cost: 458868, idxSrc: 'PPI T18 input · Brisbane',  q: [['2025 Q2', 166.6], ['2025 Q3', 168.5], ['2025 Q4', 168.0], ['2026 Q1', 170.1]] },
+    SA:  { base2019: 279083, cost: 389949, idxSrc: 'PPI T18 input · Adelaide',  q: [['2025 Q2', 160.8], ['2025 Q3', 162.3], ['2025 Q4', 162.3], ['2026 Q1', 164.7]] },
+    WA:  { base2019: 316846, cost: 407114, idxSrc: 'PPI T18 input · Perth',     q: [['2025 Q2', 154.8], ['2025 Q3', 156.0], ['2025 Q4', 156.4], ['2026 Q1', 157.7]] },
+    TAS: { base2019: 302974, cost: 420756, idxSrc: 'PPI T18 input · Hobart',    q: [['2025 Q2', 159.4], ['2025 Q3', 158.7], ['2025 Q4', 158.2], ['2026 Q1', 161.9]] },
+    NT:  { base2019: 354256, cost: 475310, idxSrc: 'PPI T17 OUTPUT · NT (no input series; repriced infrequently)', q: [['2025 Q2', 126.8], ['2025 Q3', 130.8], ['2025 Q4', 130.8], ['2026 Q1', 130.8]] },
+    ACT: { base2019: 450478, cost: 645052, idxSrc: 'PPI T17 OUTPUT · ACT (no input series)', q: [['2025 Q2', 160.3], ['2025 Q3', 161.1], ['2025 Q4', 163.5], ['2026 Q1', 163.6]] },
+  },
+};
+
+const rcFmtM = v => (v == null || isNaN(v)) ? '—' : '$' + Math.round(v).toLocaleString();
+const rcFmtPct = v => (v == null || isNaN(v)) ? '—' : (v * 100).toFixed(2) + '%';
+function rcPctHtml(v){
+  if (v == null || isNaN(v)) return '—';
+  const s = Math.abs(v * 100).toFixed(2) + '%';
+  return v < 0 ? '<span class="rc-pct-disc">' + s + ' below</span>' : '<span class="rc-pct-prem">' + s + ' above</span>';
+}
+const rcCurMonth = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
+function rcRegionOf(slug){ return RC_REGIONS.find(r => r.slug === slug) || null; }
+/* research areas beyond the 36 report regions (bespoke advisor territories) */
+const RC_EXTRA = { 'east-melbourne': { label: 'East Melbourne', state: 'VIC' } };
+function rcLabelOf(slug, payload){
+  const r = rcRegionOf(slug); if (r) return r.label;
+  const x = RC_EXTRA[slug];
+  return ((x && x.label) || (payload && payload.label) || slug) + ' (custom)';
+}
+function rcStateOf(slug){ const r = rcRegionOf(slug); return r ? r.state : (RC_EXTRA[slug] ? RC_EXTRA[slug].state : null); }
+
+let RC_ROWS = null, RC_SLUG = null, RC_EDIT = null, RC_ASOF = null;
+
+async function loadReplCost(){
+  const out = document.getElementById('rcOut');
+  out.innerHTML = '<div class="df-note">Loading…</div>';
+  let rows = [];
+  try {
+    const { data, error } = await window.sb.from('forge_replacement_cost')
+      .select('region_slug,as_of,computed_at,summary:payload->summary,dialect:payload->>dialect,label:payload->>label')
+      .order('as_of', { ascending: false });
+    if (error) throw error;
+    rows = data || [];
+  } catch (e) {
+    out.innerHTML = '<div class="df-banner err">Could not load forge_replacement_cost: ' + esc(e.message || e) + (String(e.message || '').includes('forge_replacement_cost') ? ' — is migration 084 applied?' : '') + '</div>';
+    return;
+  }
+  const latest = {};
+  rows.forEach(r => { if (!latest[r.region_slug]) latest[r.region_slug] = r; });   // rows sorted desc → first = newest
+  RC_ROWS = latest;
+  RC_SLUG = null; RC_EDIT = null;
+  renderRcGrid();
+}
+
+function renderRcGrid(){
+  const out = document.getElementById('rcOut');
+  const ro = !_forgeCanEdit;
+  const slugs = RC_REGIONS.map(r => r.slug);
+  const extras = Object.keys(RC_ROWS).filter(s => !slugs.includes(s)).sort();
+  const filled = Object.keys(RC_ROWS).length;
+  let h = '<div class="df-hero"><div class="df-eyebrow">Research inputs · per region</div>'
+    + '<div class="df-title">Replacement Cost</div>'
+    + '<div class="df-sub"><span class="df-statuspill ' + (filled ? 'ok' : '') + '">' + (filled ? filled + ' region' + (filled === 1 ? '' : 's') + ' filled' : 'No data yet') + '</span> '
+    + '<span>Replacement cost = land (400sqm, outer band) + ABS build cost, compared with what a comparable completed new build actually sells for. Open a region to view or update its research; % is the gap to buy established vs rebuild.</span></div></div>';
+  h += '<div class="df-card"><div class="dsi-tablewrap"><table class="dsi-table rc-grid"><thead><tr>'
+    + '<th>Region</th><th>State</th><th>Data</th><th class="dsi-num">Land (400sqm)</th><th class="dsi-num">Build</th><th class="dsi-num">Replacement</th><th class="dsi-num">Comparable MHP</th><th class="dsi-num">Established vs replacement</th></tr></thead><tbody>';
+  const rowHtml = (slug, label, state) => {
+    const row = RC_ROWS[slug], s = row && row.summary || null;
+    if (!s) return '<tr data-slug="' + slug + '"><td class="dsi-region">' + esc(label) + '</td><td>' + esc(state || '') + '</td>'
+      + '<td class="rc-empty" colspan="6">no research yet' + (ro ? '' : ' — click to add') + '</td></tr>';
+    return '<tr data-slug="' + slug + '"><td class="dsi-region">' + esc(label) + '</td><td>' + esc(state || '') + '</td>'
+      + '<td>' + esc(row.as_of) + (row.dialect === 'banded' ? ' <span title="Banded workbook — INNER / MID / OUTER blocks; the OUTER block is the canonical summary">▦</span>' : '') + '</td>'
+      + '<td class="dsi-num">' + rcFmtM(s.landCost) + '</td><td class="dsi-num">' + rcFmtM(s.buildCost) + '</td>'
+      + '<td class="dsi-num"><b>' + rcFmtM(s.replacementCost) + '</b></td><td class="dsi-num">' + rcFmtM(s.comparableMhp) + '</td>'
+      + '<td class="dsi-num">' + rcPctHtml(s.pctDiscount) + '</td></tr>';
+  };
+  RC_REGIONS.forEach(r => { h += rowHtml(r.slug, r.label, r.state); });
+  extras.forEach(s => { h += rowHtml(s, rcLabelOf(s, RC_ROWS[s]), rcStateOf(s) || ''); });
+  h += '</tbody></table></div>'
+    + '<div class="df-note">“X% below” = established stock sells under what it would cost to rebuild (land + build) — a discount to replacement; “above” = a premium. Banded regions (▦) carry INNER / MID / OUTER detail inside.</div></div>';
+  h += ro
+    ? '<div class="df-drop df-drop-locked">🔒 <strong>View only</strong><span class="sub" style="display:block;margin-top:6px;font-size:.76rem;">Adding data is restricted to dev / admin.</span></div>'
+    : '<div class="df-drop" id="rcDrop"><input type="file" id="rcFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden/>'
+      + 'Drop filled <strong>Replacement Cost workbook(s)</strong> here (the REPLACEMENT COST TEMPLATE format) — or click to browse. Regions are detected from the file name; each drop saves a fresh row for its research month.</div>';
+  out.innerHTML = h;
+  out.querySelectorAll('.rc-grid tbody tr[data-slug]').forEach(tr => tr.addEventListener('click', () => rcOpen(tr.dataset.slug)));
+  const drop = document.getElementById('rcDrop');
+  if (drop){
+    const file = document.getElementById('rcFile');
+    drop.addEventListener('click', () => file.click());
+    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+    drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files.length) rcImportWorkbooks([...e.dataTransfer.files]); });
+    file.addEventListener('change', () => { if (file.files.length) rcImportWorkbooks([...file.files]); });
+  }
+}
+
+async function rcImportWorkbooks(files){
+  if (!_forgeGuard()) return;
+  const out = document.getElementById('rcOut');
+  const status = document.createElement('div');
+  status.className = 'df-banner ok'; status.textContent = 'Importing…';
+  out.prepend(status);
+  let email = null, uid = null;
+  try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; uid = p && p.id; } catch {}
+  const done = [], failed = [];
+  for (const f of files){
+    try {
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array', cellFormula: true });
+      const res = window.PP_RCOST.parseWorkbook(XLSX, wb, f.name);
+      if (!res.payload) throw new Error(res.warnings.join('; '));
+      let slug = res.regionGuess;
+      if (!slug) slug = (prompt('Region not recognised for "' + f.name + '" — enter the region slug (e.g. brisbane):') || '').trim().toLowerCase();
+      if (!slug) throw new Error('no region');
+      res.payload.label = rcLabelOf(slug, res.payload).replace(' (custom)', '');
+      const { error } = await window.sb.from('forge_replacement_cost').upsert({
+        region_slug: slug, as_of: res.asOf || rcCurMonth(), payload: res.payload,
+        computed_at: new Date().toISOString(), computed_by: uid,
+      }, { onConflict: 'region_slug,as_of' });
+      if (error) throw error;
+      done.push(slug + '@' + (res.asOf || rcCurMonth()) + (res.warnings.length ? ' (⚠ ' + res.warnings.length + ')' : ''));
+    } catch (e){ failed.push(f.name + ': ' + (e.message || e)); }
+  }
+  status.className = 'df-banner ' + (failed.length ? 'err' : 'ok');
+  status.innerHTML = (done.length ? '✓ Saved ' + done.map(esc).join(', ') : '') + (failed.length ? (done.length ? ' · ' : '') + '✗ ' + failed.map(esc).join(' · ') : '');
+  await loadReplCost();
+  out.prepend(status);
+  setTimeout(loadStatus, 400);
+}
+
+/* ── editor ── */
+async function rcOpen(slug){
+  const out = document.getElementById('rcOut');
+  out.innerHTML = '<div class="df-note">Loading ' + esc(slug) + '…</div>';
+  let row = null;
+  try { const { data } = await window.sb.from('forge_replacement_cost').select('*').eq('region_slug', slug).order('as_of', { ascending: false }).limit(1).maybeSingle(); row = data; } catch {}
+  RC_SLUG = slug;
+  RC_ASOF = (row && row.as_of) || rcCurMonth();
+  RC_EDIT = (row && row.payload) || {
+    label: rcLabelOf(slug, null).replace(' (custom)', ''), dialect: 'simple',
+    land: { lotSize: 400, band: 'outer', bands: {}, rules: {}, sales: [] },
+    build: { baseFrom: null, baseFromCost: null, baseTo: null, baseCost: null, chain: [], chained: null, otherPct: 0.05, other: null, cost: null },
+    comps: { banded: false, avgs: {}, bandAvgs: {}, sales: [], mhp: null },
+    summary: {}, source: { kind: 'editor', file: null },
+  };
+  if (!RC_EDIT.land.rulesKm) RC_EDIT.land.rulesKm = rcRulesFromText(RC_EDIT.land.rules);
+  rcRecalc();
+  renderRcEditor();
+}
+
+/* band km cutoffs from the workbook's rule labels ('Inner - 15 km or less',
+   'Middle - 16 to 25 km') — fall back to 10 / 20 */
+function rcRulesFromText(rules){
+  const nums = s => (String(s || '').match(/\d+(?:\.\d+)?/g) || []).map(Number);
+  const inner = nums(rules && rules.inner), middle = nums(rules && rules.middle);
+  return { inner: inner.length ? Math.max(...inner) : 10, middle: middle.length ? Math.max(...middle) : 20 };
+}
+
+function rcRecalc(){
+  const p = RC_EDIT; if (!p) return;
+  const land = p.land, build = p.build, comps = p.comps;
+  /* land bands — the workbook way: avg(sqm) & avg(price) per band, then
+     $/sqm = avgPrice / avgSqm (NOT the mean of per-sale $/sqm) */
+  const bands = {};
+  ['inner', 'middle', 'outer'].forEach(b => {
+    const rows = land.sales.filter(s => s.band === b && s.price != null && s.sqm != null && s.sqm > 0);
+    if (!rows.length){ if (land.bands[b] && !land.sales.length) bands[b] = land.bands[b]; return; }   // keep stored aggregates only when there are no sales rows at all
+    const sqm = rows.reduce((a, s) => a + s.sqm, 0) / rows.length;
+    const price = rows.reduce((a, s) => a + s.price, 0) / rows.length;
+    const perSqm = sqm ? price / sqm : null;
+    bands[b] = { n: rows.length, sqm, price, perSqm, cost: perSqm != null ? perSqm * (land.lotSize || 400) : null };
+  });
+  land.bands = bands;
+  land.cost = bands[land.band] ? bands[land.band].cost : null;
+  /* build chain */
+  let v = build.baseCost;
+  (build.chain || []).forEach(step => {
+    if (step.override && step.value != null){ v = step.value; return; }
+    v = (v != null && step.pct != null) ? v * (1 + step.pct) : v;
+    step.value = v;
+  });
+  build.chained = v != null ? v : build.chained;
+  build.other = (build.chained != null) ? build.chained * (build.otherPct != null ? build.otherPct : 0.05) : null;
+  build.cost = (build.chained != null && build.other != null) ? build.chained + build.other : build.cost;
+  /* comps averages */
+  const banded = comps.sales.some(s => s.band);
+  comps.banded = banded;
+  const avgOf = rows => { const qs = {}; ['Inferior', 'Comparable', 'Superior'].forEach(q => { const r = rows.filter(s => s.quality === q && s.price != null); qs[q.toLowerCase()] = r.length ? r.reduce((a, s) => a + s.price, 0) / r.length : null; }); return qs; };
+  if (comps.sales.length){
+    comps.avgs = avgOf(banded ? comps.sales.filter(s => s.band === 'outer' || !s.band) : comps.sales);
+    if (banded){ comps.bandAvgs = {}; ['inner', 'middle', 'outer'].forEach(b => { const r = comps.sales.filter(s => s.band === b); if (r.length) comps.bandAvgs[b] = avgOf(r); }); }
+  }
+  comps.mhp = banded ? (comps.bandAvgs.outer || {}).comparable : comps.avgs.comparable;
+  /* summary (canonical = the band in land.band, comps outer) */
+  const s = p.summary = p.summary || {};
+  s.landCost = land.cost; s.buildCost = build.cost;
+  s.replacementCost = (land.cost != null && build.cost != null) ? land.cost + build.cost : null;
+  s.comparableMhp = comps.mhp != null ? comps.mhp : s.comparableMhp;
+  s.discount = (s.replacementCost != null && s.comparableMhp != null) ? s.replacementCost - s.comparableMhp : null;
+  s.pctDiscount = (s.replacementCost != null && s.comparableMhp != null && s.replacementCost) ? (s.comparableMhp - s.replacementCost) / s.replacementCost : null;
+  s.medAdjusted = (s.medPrice != null && s.pctDiscount != null) ? s.medPrice * (1 + s.pctDiscount) : s.medAdjusted;
+  /* per-band summaries when the research is banded */
+  if (banded && bands.inner && bands.middle && bands.outer && build.cost != null){
+    p.bandSummaries = {};
+    ['inner', 'middle', 'outer'].forEach(b => {
+      const lc = bands[b] ? bands[b].cost : null;
+      const mhp = (comps.bandAvgs[b] || {}).comparable;
+      const rc = (lc != null) ? lc + build.cost : null;
+      p.bandSummaries[b] = { landCost: lc, buildCost: build.cost, replacementCost: rc, comparableMhp: mhp,
+        discount: (rc != null && mhp != null) ? rc - mhp : null,
+        pctDiscount: (rc != null && mhp != null && rc) ? (mhp - rc) / rc : null,
+        medPrice: s.medPrice, medAdjusted: (s.medPrice != null && rc != null && mhp != null) ? s.medPrice * (1 + (mhp - rc) / rc) : null };
+    });
+    p.dialect = 'banded';
+  }
+}
+
+function renderRcEditor(){
+  const out = document.getElementById('rcOut');
+  const p = RC_EDIT, ro = !_forgeCanEdit;
+  const dis = ro ? ' disabled' : '';
+  const state = rcStateOf(RC_SLUG) || '';
+  let h = '<div class="df-hero"><div class="df-eyebrow">Replacement Cost · region research</div>'
+    + '<div class="df-title">' + esc(rcLabelOf(RC_SLUG, p)) + ' <span style="font-size:.9rem;color:var(--muted);font-weight:600">' + esc(state) + '</span></div>'
+    + '<div class="df-sub"><button class="df-btn" id="rcBack">← All regions</button> '
+    + '<label style="margin-left:10px">Data month <input type="month" id="rcAsof" class="rc-in" value="' + esc(RC_ASOF) + '"' + dis + '></label> '
+    + (ro ? '<span class="df-note" style="margin:0 0 0 10px">🔒 View only</span>'
+          : '<button class="df-btn" id="rcSave" style="margin-left:10px">Save</button> <span id="rcMsg" class="df-note" style="margin:0 0 0 8px"></span>')
+    + '</div></div>';
+
+  /* ── summary tiles ── */
+  const s = p.summary || {};
+  h += '<div class="df-card"><div class="rc-summary">'
+    + '<div class="rc-tile"><div class="lab">Land (' + (p.land.lotSize || 400) + 'sqm · ' + esc(p.land.band) + ')</div><div class="val">' + rcFmtM(s.landCost) + '</div></div>'
+    + '<div class="rc-tile"><div class="lab">Build cost</div><div class="val">' + rcFmtM(s.buildCost) + '</div></div>'
+    + '<div class="rc-tile"><div class="lab">Replacement cost</div><div class="val">' + rcFmtM(s.replacementCost) + '</div></div>'
+    + '<div class="rc-tile"><div class="lab">Comparable MHP (H+L)</div><div class="val">' + rcFmtM(s.comparableMhp) + '</div></div>'
+    + '<div class="rc-tile"><div class="lab">Established vs replacement</div><div class="val">' + rcPctHtml(s.pctDiscount) + '</div></div>'
+    + '<div class="rc-tile"><div class="lab">Med price → adjusted</div><div class="val"><input type="number" id="rcMed" class="rc-in" value="' + (s.medPrice != null ? s.medPrice : '') + '" placeholder="median"' + dis + '> → ' + rcFmtM(s.medAdjusted) + '</div></div>'
+    + '</div>'
+    + (p.bandSummaries ? '<div class="rc-avgline">' + ['inner', 'middle', 'outer'].map(b => { const v = p.bandSummaries[b] || {}; return '<b>' + b + '</b>: repl ' + rcFmtM(v.replacementCost) + ' vs ' + rcFmtM(v.comparableMhp) + ' → ' + rcPctHtml(v.pctDiscount); }).join(' · ') + '</div>' : '')
+    + '</div>';
+
+  /* ── land ── */
+  const L = p.land, rk = L.rulesKm || { inner: 10, middle: 20 };
+  h += '<div class="df-card"><div class="rc-secthead"><h2>Land <span class="count">' + L.sales.length + ' sales</span></h2>'
+    + '<label>Lot size <input type="number" id="rcLot" class="rc-in rc-narrow" value="' + (L.lotSize || 400) + '"' + dis + '></label>'
+    + '<label>Use band <select id="rcBandUse" class="rc-in"' + dis + '>' + ['outer', 'middle', 'inner'].map(b => '<option' + (L.band === b ? ' selected' : '') + '>' + b + '</option>').join('') + '</select></label>'
+    + '<label>Inner ≤ <input type="number" id="rcKmInner" class="rc-in rc-narrow" value="' + rk.inner + '"' + dis + '> km</label>'
+    + '<label>Middle ≤ <input type="number" id="rcKmMiddle" class="rc-in rc-narrow" value="' + rk.middle + '"' + dis + '> km</label>'
+    + (ro ? '' : '<button class="df-btn" id="rcAutoBand" title="Bands each sale by its suburb’s distance from the GPO (from the CL suburb store) or a (Nkm) tag in its notes">Auto-band</button>')
+    + '</div>';
+  h += '<div class="dsi-tablewrap"><table class="dsi-table"><thead><tr><th>Band</th><th>Date</th><th class="dsi-num">SQM</th><th class="dsi-num">Price</th><th class="dsi-num">$/sqm</th><th>Suburb / notes</th><th></th></tr></thead><tbody>';
+  L.sales.forEach((sale, i) => {
+    h += '<tr><td><select class="rc-in rc-land" data-i="' + i + '" data-f="band"' + dis + '><option value="">—</option>' + ['inner', 'middle', 'outer'].map(b => '<option' + (sale.band === b ? ' selected' : '') + '>' + b + '</option>').join('') + '</select></td>'
+      + '<td><input class="rc-in rc-land" data-i="' + i + '" data-f="date" value="' + esc(sale.date || '') + '" placeholder="YYYY-MM-DD"' + dis + '></td>'
+      + '<td class="dsi-num"><input type="number" class="rc-in rc-narrow rc-land" data-i="' + i + '" data-f="sqm" value="' + (sale.sqm != null ? sale.sqm : '') + '"' + dis + '></td>'
+      + '<td class="dsi-num"><input type="number" class="rc-in rc-land" data-i="' + i + '" data-f="price" value="' + (sale.price != null ? sale.price : '') + '"' + dis + '></td>'
+      + '<td class="dsi-num">' + (sale.price != null && sale.sqm ? Math.round(sale.price / sale.sqm).toLocaleString() : '—') + '</td>'
+      + '<td>' + (sale.url ? '<a href="' + esc(sale.url) + '" target="_blank" rel="noopener">↗</a> ' : '') + '<input class="rc-in rc-wide rc-land" data-i="' + i + '" data-f="note" value="' + esc(sale.note || '') + '"' + dis + '></td>'
+      + '<td>' + (ro ? '' : '<button class="rc-x rc-land-del" data-i="' + i + '" title="Remove">✕</button>') + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+  h += '<div class="rc-avgline">' + ['inner', 'middle', 'outer'].map(b => { const v = L.bands[b]; return '<b>' + b + '</b>: ' + (v ? (v.n || 0) + ' sales · avg ' + (v.sqm != null ? Math.round(v.sqm) : '—') + 'sqm · avg ' + rcFmtM(v.price) + ' · ' + (v.perSqm != null ? '$' + Math.round(v.perSqm).toLocaleString() : '—') + '/sqm → <b>' + rcFmtM(v.cost) + '</b>' : '—'); }).join(' &nbsp;·&nbsp; ') + '</div>';
+  if (!ro) h += '<div style="margin-top:10px"><button class="df-btn" id="rcLandAdd">+ Add sale</button> <button class="df-btn" id="rcLandCsv">Import CSV / paste…</button></div>'
+    + '<div id="rcLandImp" hidden style="margin-top:10px"><input type="file" id="rcLandFile" accept=".csv,text/csv,.txt"> or paste rows (RP Data export — suburb, sale date, price, land size):<textarea id="rcLandPaste" rows="4" style="width:100%;margin-top:6px;font:inherit;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px"></textarea>'
+    + '<button class="df-btn" id="rcLandImpGo" style="margin-top:6px">Add rows</button></div>';
+  h += '<div class="df-note">The model uses the workbook method: per band, $/sqm = average price ÷ average size; land cost = $/sqm × lot size. The summary uses the <b>' + esc(L.band) + '</b> band. Research source: RP Data / REA sold vacant-land listings (~20 recent sales).</div></div>';
+
+  /* ── build ── */
+  const B = p.build;
+  h += '<div class="df-card"><div class="rc-secthead"><h2>Build cost</h2>'
+    + (ro ? '' : '<button class="df-btn" id="rcAbs" title="' + esc('ABS avg completed-home cost FY ' + RC_STATE_BUILD.fy + ' (' + state + ') chained by the quarterly construction index to ' + (RC_STATE_BUILD.states[state] ? RC_STATE_BUILD.states[state].q[RC_STATE_BUILD.states[state].q.length - 1][0] : '') + '. ' + (RC_STATE_BUILD.states[state] ? RC_STATE_BUILD.states[state].idxSrc : '')) + '">Prefill from ABS (' + esc(state || '?') + ')</button>')
+    + '</div>';
+  h += '<div class="rc-secthead" style="gap:16px">'
+    + '<label>Base FY <input class="rc-in rc-narrow" id="rcFy" value="' + esc(B.baseTo || '') + '"' + dis + '></label>'
+    + '<label>Base cost <input type="number" class="rc-in" id="rcBase" value="' + (B.baseCost != null ? B.baseCost : '') + '"' + dis + '></label>'
+    + '<label>Other costs % <input type="number" step="0.01" class="rc-in rc-narrow" id="rcOtherPct" value="' + ((B.otherPct != null ? B.otherPct : 0.05) * 100) + '"' + dis + '></label>'
+    + '</div>';
+  h += '<div class="dsi-tablewrap"><table class="dsi-table"><thead><tr><th>Quarter</th><th class="dsi-num">Index % change</th><th class="dsi-num">Chained</th><th>Override</th><th></th></tr></thead><tbody>';
+  (B.chain || []).forEach((c, i) => {
+    h += '<tr><td><input class="rc-in rc-narrow rc-chain" data-i="' + i + '" data-f="q" value="' + esc(c.q || '') + '"' + dis + '></td>'
+      + '<td class="dsi-num"><input type="number" step="0.001" class="rc-in rc-narrow rc-chain" data-i="' + i + '" data-f="pct" value="' + (c.pct != null ? (c.pct * 100).toFixed(3).replace(/\.?0+$/, '') : '') + '"' + dis + '>%</td>'
+      + '<td class="dsi-num">' + (c.override ? '<input type="number" class="rc-in rc-chain" data-i="' + i + '" data-f="value" value="' + (c.value != null ? Math.round(c.value) : '') + '"' + dis + '>' : (c.value != null ? Math.round(c.value).toLocaleString() : '—')) + '</td>'
+      + '<td><input type="checkbox" class="rc-chain-ovr" data-i="' + i + '"' + (c.override ? ' checked' : '') + dis + ' title="Hand-set this quarter’s value instead of chaining"></td>'
+      + '<td>' + (ro ? '' : '<button class="rc-x rc-chain-del" data-i="' + i + '">✕</button>') + '</td></tr>';
+  });
+  h += '</tbody></table></div>'
+    + (ro ? '' : '<div style="margin-top:8px"><button class="df-btn" id="rcChainAdd">+ Add quarter</button></div>')
+    + '<div class="rc-avgline">Chained ' + rcFmtM(B.chained) + ' + other costs ' + rcFmtM(B.other) + ' (' + ((B.otherPct != null ? B.otherPct : 0.05) * 100).toFixed(0) + '%) = <b>' + rcFmtM(B.cost) + '</b>'
+    + (B.baseFrom ? ' &nbsp;·&nbsp; FY ' + esc(B.baseFrom) + ' base was ' + rcFmtM(B.baseFromCost) : '') + '</div>'
+    + '<div class="df-note">ABS average cost of completed new houses (state), chained forward by the quarterly construction cost index (PPI 6427.0 — the workbooks use Table 18, input to house construction). “Prefill from ABS” loads the latest base year + quarters; NT/ACT chain by the output index (no input series exists).</div></div>';
+
+  /* ── comps ── */
+  const C = p.comps;
+  h += '<div class="df-card"><div class="rc-secthead"><h2>Comparable new builds <span class="count">' + C.sales.length + ' sales</span></h2></div>';
+  h += '<div class="dsi-tablewrap"><table class="dsi-table"><thead><tr>' + (C.banded ? '<th>Band</th>' : '') + '<th>Quality</th><th>Date</th><th class="dsi-num">Price</th><th class="dsi-num">Land sqm</th><th>Address / notes</th><th></th></tr></thead><tbody>';
+  C.sales.forEach((sale, i) => {
+    h += '<tr>'
+      + (C.banded ? '<td><select class="rc-in rc-comp" data-i="' + i + '" data-f="band"' + dis + '><option value="">—</option>' + ['inner', 'middle', 'outer'].map(b => '<option' + (sale.band === b ? ' selected' : '') + '>' + b + '</option>').join('') + '</select></td>' : '')
+      + '<td><select class="rc-in rc-comp" data-i="' + i + '" data-f="quality"' + dis + '><option value="">—</option>' + ['Inferior', 'Comparable', 'Superior'].map(q => '<option' + (sale.quality === q ? ' selected' : '') + '>' + q + '</option>').join('') + '</select></td>'
+      + '<td><input class="rc-in rc-comp" data-i="' + i + '" data-f="date" value="' + esc(sale.date || '') + '" placeholder="YYYY-MM-DD"' + dis + '></td>'
+      + '<td class="dsi-num"><input type="number" class="rc-in rc-comp" data-i="' + i + '" data-f="price" value="' + (sale.price != null ? sale.price : '') + '"' + dis + '></td>'
+      + '<td class="dsi-num"><input type="number" class="rc-in rc-narrow rc-comp" data-i="' + i + '" data-f="land" value="' + (sale.land != null ? sale.land : '') + '"' + dis + '></td>'
+      + '<td>' + (sale.url ? '<a href="' + esc(sale.url) + '" target="_blank" rel="noopener">↗</a> ' : '') + '<input class="rc-in rc-wide rc-comp" data-i="' + i + '" data-f="addr" value="' + esc(sale.addr || sale.notes || '') + '"' + dis + '></td>'
+      + '<td>' + (ro ? '' : '<button class="rc-x rc-comp-del" data-i="' + i + '">✕</button>') + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+  h += '<div class="rc-avgline">Inferior ' + rcFmtM(C.avgs.inferior) + ' · <b>Comparable ' + rcFmtM(C.avgs.comparable) + '</b> · Superior ' + rcFmtM(C.avgs.superior)
+    + (C.banded ? ' &nbsp;(outer band drives the summary)' : '') + '</div>';
+  if (!ro) h += '<div style="margin-top:10px"><button class="df-btn" id="rcCompAdd">+ Add sale</button> <button class="df-btn" id="rcCompCsv">Import CSV / paste…</button></div>'
+    + '<div id="rcCompImp" hidden style="margin-top:10px"><input type="file" id="rcCompFile" accept=".csv,text/csv,.txt"> or paste rows (address, sale date, price, land size) — then tag each row’s quality:<textarea id="rcCompPaste" rows="4" style="width:100%;margin-top:6px;font:inherit;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px"></textarea>'
+    + '<button class="df-btn" id="rcCompImpGo" style="margin-top:6px">Add rows</button></div>';
+  h += '<div class="df-note">Recently built products tagged against the BUILT RANKING GUIDE: <b>Comparable</b> = outer-suburb mid-range 4-bed/2-bath (drives the MHP); Superior = high-quality/bigger; Inferior = basic or older. The average of the Comparable tags is the “Comparable MHP (completed H+L package)”.</div></div>';
+
+  out.innerHTML = h;
+
+  /* wiring */
+  document.getElementById('rcBack').addEventListener('click', () => { loadReplCost(); });
+  const on = (id, ev, fn) => { const el = document.getElementById(id); if (el) el.addEventListener(ev, fn); };
+  on('rcAsof', 'change', e => { RC_ASOF = e.target.value || rcCurMonth(); });
+  on('rcSave', 'click', rcSaveRow);
+  on('rcMed', 'change', e => { RC_EDIT.summary.medPrice = e.target.value === '' ? null : Number(e.target.value); RC_EDIT.summary.medAdjusted = null; rcRecalc(); renderRcEditor(); });
+  on('rcLot', 'change', e => { RC_EDIT.land.lotSize = Number(e.target.value) || 400; rcRecalc(); renderRcEditor(); });
+  on('rcBandUse', 'change', e => { RC_EDIT.land.band = e.target.value; rcRecalc(); renderRcEditor(); });
+  on('rcKmInner', 'change', e => { (RC_EDIT.land.rulesKm = RC_EDIT.land.rulesKm || {}).inner = Number(e.target.value) || 10; });
+  on('rcKmMiddle', 'change', e => { (RC_EDIT.land.rulesKm = RC_EDIT.land.rulesKm || {}).middle = Number(e.target.value) || 20; });
+  on('rcAutoBand', 'click', rcAutoBand);
+  on('rcFy', 'change', e => { RC_EDIT.build.baseTo = e.target.value; });
+  on('rcBase', 'change', e => { RC_EDIT.build.baseCost = e.target.value === '' ? null : Number(e.target.value); rcRecalc(); renderRcEditor(); });
+  on('rcOtherPct', 'change', e => { RC_EDIT.build.otherPct = (Number(e.target.value) || 0) / 100; rcRecalc(); renderRcEditor(); });
+  on('rcAbs', 'click', rcPrefillAbs);
+  on('rcChainAdd', 'click', () => { RC_EDIT.build.chain.push({ q: '', pct: null, value: null }); renderRcEditor(); });
+  on('rcLandAdd', 'click', () => { RC_EDIT.land.sales.push({ url: null, date: null, band: RC_EDIT.land.band, sqm: null, price: null, note: '' }); renderRcEditor(); });
+  on('rcCompAdd', 'click', () => { RC_EDIT.comps.sales.push({ band: RC_EDIT.comps.banded ? 'outer' : null, url: null, date: null, price: null, quality: null, land: null, notes: null, addr: '' }); renderRcEditor(); });
+  on('rcLandCsv', 'click', () => { document.getElementById('rcLandImp').hidden = false; });
+  on('rcCompCsv', 'click', () => { document.getElementById('rcCompImp').hidden = false; });
+  on('rcLandImpGo', 'click', () => rcImportRows('land'));
+  on('rcCompImpGo', 'click', () => rcImportRows('comps'));
+  document.querySelectorAll('.rc-land').forEach(el => el.addEventListener('change', () => {
+    const s2 = RC_EDIT.land.sales[Number(el.dataset.i)]; if (!s2) return;
+    const f = el.dataset.f, v = el.value;
+    s2[f] = (f === 'sqm' || f === 'price') ? (v === '' ? null : Number(v)) : (v || null);
+    rcRecalc(); renderRcEditor();
+  }));
+  document.querySelectorAll('.rc-land-del').forEach(el => el.addEventListener('click', () => { RC_EDIT.land.sales.splice(Number(el.dataset.i), 1); rcRecalc(); renderRcEditor(); }));
+  document.querySelectorAll('.rc-comp').forEach(el => el.addEventListener('change', () => {
+    const s2 = RC_EDIT.comps.sales[Number(el.dataset.i)]; if (!s2) return;
+    const f = el.dataset.f, v = el.value;
+    s2[f] = (f === 'price' || f === 'land') ? (v === '' ? null : Number(v)) : (v || null);
+    rcRecalc(); renderRcEditor();
+  }));
+  document.querySelectorAll('.rc-comp-del').forEach(el => el.addEventListener('click', () => { RC_EDIT.comps.sales.splice(Number(el.dataset.i), 1); rcRecalc(); renderRcEditor(); }));
+  document.querySelectorAll('.rc-chain').forEach(el => el.addEventListener('change', () => {
+    const c = RC_EDIT.build.chain[Number(el.dataset.i)]; if (!c) return;
+    const f = el.dataset.f, v = el.value;
+    if (f === 'pct') c.pct = v === '' ? null : Number(v) / 100;
+    else if (f === 'value') c.value = v === '' ? null : Number(v);
+    else c.q = v;
+    rcRecalc(); renderRcEditor();
+  }));
+  document.querySelectorAll('.rc-chain-ovr').forEach(el => el.addEventListener('change', () => {
+    const c = RC_EDIT.build.chain[Number(el.dataset.i)]; if (!c) return;
+    c.override = el.checked; if (!el.checked) c.value = null;
+    rcRecalc(); renderRcEditor();
+  }));
+  document.querySelectorAll('.rc-chain-del').forEach(el => el.addEventListener('click', () => { RC_EDIT.build.chain.splice(Number(el.dataset.i), 1); rcRecalc(); renderRcEditor(); }));
+}
+
+function rcPrefillAbs(){
+  const state = rcStateOf(RC_SLUG);
+  const sb2 = state && RC_STATE_BUILD.states[state];
+  if (!sb2){ alert('No ABS prefill for state "' + state + '".'); return; }
+  const B = RC_EDIT.build;
+  B.baseFrom = RC_STATE_BUILD.fyBase; B.baseFromCost = sb2.base2019;
+  B.baseTo = RC_STATE_BUILD.fy; B.baseCost = sb2.cost;
+  B.chain = sb2.q.slice(1).map((e, i) => ({ q: e[0], pct: (e[1] - sb2.q[i][1]) / sb2.q[i][1], value: null }));
+  B.otherPct = B.otherPct != null ? B.otherPct : 0.05;
+  B.absSrc = sb2.idxSrc + ' · base FY ' + RC_STATE_BUILD.fy;
+  rcRecalc(); renderRcEditor();
+}
+
+/* tolerant CSV / TSV / paste parser for RP Data-style sale exports */
+function rcParseTable(text){
+  const lines = String(text || '').replace(/\r/g, '').split('\n').filter(l => l.trim());
+  if (lines.length < 2) return { rows: [], err: 'need a header row + data rows' };
+  const delim = lines[0].includes('\t') ? '\t' : (lines[0].split(';').length > lines[0].split(',').length ? ';' : ',');
+  const split = l => {
+    const outc = []; let cur = '', q = false;
+    for (let i = 0; i < l.length; i++){
+      const ch = l[i];
+      if (q){ if (ch === '"'){ if (l[i + 1] === '"'){ cur += '"'; i++; } else q = false; } else cur += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === delim){ outc.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    outc.push(cur); return outc.map(s2 => s2.trim());
+  };
+  const hdr = split(lines[0]).map(s2 => s2.toLowerCase());
+  const find = (...pats) => { for (const p2 of pats){ const i = hdr.findIndex(h2 => p2.test(h2)); if (i >= 0) return i; } return -1; };
+  const iSub = find(/^(suburb|locality)$/, /suburb/);
+  const iPc = find(/^post\s*code$/, /postcode/);
+  const iAddr = find(/^(street\s*)?address$/, /address/, /^property$/);
+  const iDate = find(/(contract|sale|sold|settlement)\s*date/, /^date$/);
+  const iPrice = find(/^(sale|sold|contract|purchase)\s*price/, /^price$/, /price/);
+  const iLand = find(/land\s*(size|area)/, /^area\s*\(?m/, /^land\b/, /\bm2\b|\bsqm\b/);
+  if (iPrice < 0) return { rows: [], err: 'no price column found (headers: ' + hdr.join(', ') + ')' };
+  const numOf = v => { const n = Number(String(v).replace(/[$,\s]/g, '').replace(/m2|sqm|m²/gi, '')); return isFinite(n) && n > 0 ? n : null; };
+  const dateOf = v => {
+    const s2 = String(v || '').trim(); if (!s2) return null;
+    let m = s2.match(/^(\d{4})-(\d{2})-(\d{2})/); if (m) return s2.slice(0, 10);
+    m = s2.match(/^(\d{1,2})[\/.](\d{1,2})[\/.](\d{2,4})/);
+    if (m){ const y = m[3].length === 2 ? '20' + m[3] : m[3]; return y + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'); }
+    const n = Number(s2); if (isFinite(n) && n > 20000 && n < 60000) return new Date(Date.UTC(1899, 11, 30) + Math.round(n) * 86400000).toISOString().slice(0, 10);
+    return null;
+  };
+  const rows = [];
+  for (let li = 1; li < lines.length; li++){
+    const c = split(lines[li]);
+    const price = numOf(c[iPrice]); if (price == null) continue;
+    rows.push({
+      suburb: iSub >= 0 ? (c[iSub] || null) : null,
+      postcode: iPc >= 0 ? (c[iPc] || null) : null,
+      addr: iAddr >= 0 ? (c[iAddr] || null) : null,
+      date: iDate >= 0 ? dateOf(c[iDate]) : null,
+      price, sqm: iLand >= 0 ? numOf(c[iLand]) : null,
+    });
+  }
+  return { rows, err: rows.length ? null : 'no data rows parsed' };
+}
+
+async function rcImportRows(target){
+  const fileEl = document.getElementById(target === 'land' ? 'rcLandFile' : 'rcCompFile');
+  const pasteEl = document.getElementById(target === 'land' ? 'rcLandPaste' : 'rcCompPaste');
+  let text = pasteEl.value;
+  if (!text.trim() && fileEl.files[0]) text = await fileEl.files[0].text();
+  if (!text.trim()){ alert('Choose a CSV file or paste rows first.'); return; }
+  const { rows, err } = rcParseTable(text);
+  if (err){ alert('Import: ' + err); return; }
+  if (target === 'land'){
+    rows.forEach(r => RC_EDIT.land.sales.push({ url: null, date: r.date, band: null, sqm: r.sqm, price: r.price, note: [r.addr, r.suburb, r.postcode].filter(Boolean).join(', '), suburb: r.suburb || null }));
+  } else {
+    rows.forEach(r => RC_EDIT.comps.sales.push({ band: RC_EDIT.comps.banded ? null : null, url: null, date: r.date, price: r.price, quality: null, land: r.sqm, notes: null, addr: [r.addr, r.suburb, r.postcode].filter(Boolean).join(', '), suburb: r.suburb || null }));
+  }
+  rcRecalc(); renderRcEditor();
+  if (target === 'land') alert(rows.length + ' land sale(s) added — now Auto-band (or set bands by hand).');
+  else alert(rows.length + ' comp sale(s) added — tag each row’s quality (Comparable drives the MHP).');
+}
+
+/* band land sales by GPO distance: a "(N km)" tag in the note wins; otherwise
+   the suburb's distance from the CL suburb store (needs the dist field —
+   present from the 2026-07 re-backfill onward) */
+async function rcAutoBand(){
+  const L = RC_EDIT.land, rk = L.rulesKm || { inner: 10, middle: 20 };
+  const state = rcStateOf(RC_SLUG);
+  const need = L.sales.filter(s => !s.band);
+  if (!need.length){ alert('All sales already have a band.'); return; }
+  const kmOf = s => { const m = String(s.note || s.addr || '').match(/\(?\s*([\d.]+)\s*km\s*\)?/i); return m ? Number(m[1]) : null; };
+  let dists = null;
+  const suburbOf = s => {
+    if (s.suburb) return s.suburb.toUpperCase();
+    const m = String(s.note || '').match(/,\s*([A-Za-z .'-]+?),?\s+(?:NSW|VIC|QLD|SA|WA|TAS|NT|ACT)\b/i);
+    return m ? m[1].trim().toUpperCase() : null;
+  };
+  /* the CL store's dist = km from the STATE CAPITAL's GPO — only valid banding
+     for capital regions (and East Melbourne). Regional cities band around their
+     own centre: there, use "(N km)" tags in the notes or set bands by hand. */
+  const RC_GPO_OK = ['sydney', 'melbourne', 'brisbane', 'adelaide', 'perth', 'hobart', 'darwin', 'canberra', 'east-melbourne'];
+  const wantLookup = RC_GPO_OK.includes(RC_SLUG) && need.some(s => kmOf(s) == null && suburbOf(s));
+  if (wantLookup && state){
+    try {
+      let meta = null;
+      const { data } = await window.sb.from('forge_cotality').select('data').eq('id', 'cl_suburbs_meta').maybeSingle();
+      meta = data && data.data && data.data.months;
+      const month = meta ? Object.keys(meta).sort().reverse()[0] : null;
+      if (month){
+        dists = {};
+        for (let from = 0; ; from += 1000){
+          const { data: page, error } = await window.sb.from('forge_cl_suburbs')
+            .select('name,postcode,metrics').eq('month', month).eq('level', 'suburb').eq('state', state).eq('ptype', 'H')
+            .order('name_key').range(from, from + 999);
+          if (error) throw error;
+          (page || []).forEach(r => { const d2 = r.metrics && r.metrics.dist; if (d2 != null && dists[r.name.toUpperCase()] == null) dists[r.name.toUpperCase()] = d2; });
+          if (!page || page.length < 1000) break;
+        }
+      }
+    } catch (e){ console.warn('rcAutoBand lookup failed', e); }
+  }
+  let done = 0, misses = [];
+  need.forEach(s => {
+    let km = kmOf(s);
+    if (km == null && dists){ const sub = suburbOf(s); if (sub && dists[sub] != null) km = dists[sub]; }
+    if (km == null){ misses.push(suburbOf(s) || (s.note || '').slice(0, 30) || 'row'); return; }
+    s.band = km <= rk.inner ? 'inner' : km <= rk.middle ? 'middle' : 'outer';
+    done++;
+  });
+  rcRecalc(); renderRcEditor();
+  alert('Auto-band: ' + done + ' banded' + (misses.length ? ' · ' + misses.length + ' need a manual band (' + misses.slice(0, 5).join(', ') + (misses.length > 5 ? '…' : '') + ')'
+    + (!RC_GPO_OK.includes(RC_SLUG) ? ' — regional cities band around their own centre, so add "(N km)" to each note or set bands by hand' : '')
+    + (dists && !Object.keys(dists).length ? ' — the suburb store has no GPO distances yet; re-drop the Market Trends file' : '') : ''));
+}
+
+async function rcSaveRow(){
+  if (!_forgeGuard()) return;
+  const msg = document.getElementById('rcMsg');
+  rcRecalc();
+  const p = RC_EDIT;
+  p.source = p.source || {};
+  if (p.source.kind !== 'workbook') p.source = { kind: 'editor', file: null };
+  let uid = null;
+  try { const pr = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; uid = pr && pr.id; } catch {}
+  if (msg) msg.textContent = 'Saving…';
+  try {
+    const { error } = await window.sb.from('forge_replacement_cost').upsert({
+      region_slug: RC_SLUG, as_of: RC_ASOF || rcCurMonth(), payload: p,
+      computed_at: new Date().toISOString(), computed_by: uid,
+    }, { onConflict: 'region_slug,as_of' });
+    if (error) throw error;
+    if (msg) msg.textContent = '✓ Saved ' + RC_SLUG + ' @ ' + RC_ASOF;
+    setTimeout(loadStatus, 400);
+  } catch (e){ if (msg) msg.textContent = '✗ ' + (e.message || 'save failed'); }
+}
+
 /* ───────────────────────── boot ───────────────────────── */
 // Arriving from the hub cluster modal carries ?view=cotality|population — open
 // straight into that data point; otherwise show the in-tool landing.
@@ -3570,7 +4163,7 @@ function routeInitial(){
     return;
   }
   const v = q.get('view');
-  if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron','mining','commodities','natonly','monthlyprice','ranking','cpi','computed','commercial','demandinputs'].includes(v)) showView(v);
+  if (['population','cotality','income','lending','investor','retail','business','fhb','natinc','nim','nom','jobcreation','natvac','inflation','cashrate','bankrate','unemployment','approvals','industry','popPyramid','arrears','civ','iron','mining','commodities','natonly','monthlyprice','ranking','cpi','computed','commercial','demandinputs','replcost'].includes(v)) showView(v);
 }
 (function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); loadStatus(); routeInitial(); } else if (++n > 60){ clearInterval(t); loadStatus(); routeInitial(); } }, 100); })();
 </script>
