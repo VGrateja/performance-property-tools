@@ -57,6 +57,10 @@ h1{font-size:30px;font-weight:800;letter-spacing:-0.02em;margin:6px 0 2px}
 .mc-add[disabled]{opacity:.4;cursor:default}
 .mc-seg{display:inline-flex;border:1px solid var(--mc-border-2);border-radius:10px;overflow:hidden}
 .mc-seg[hidden]{display:none}
+/* per-column houses/units mini-seg (sits beside each market picker) */
+.mc-minihu{display:inline-flex;border:1px solid var(--mc-border-2);border-radius:8px;overflow:hidden;vertical-align:middle}
+.mc-minihu button{font:700 11px 'Montserrat',sans-serif;padding:8px 9px;border:none;background:none;color:var(--mc-mut);cursor:pointer}
+.mc-minihu button.on{background:var(--mc-teal);color:#fff}
 .mc-h2row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:3px}
 .mc-h2row .mc-h2{margin:0}
 .mc-seg-sm button{padding:6px 11px;font-size:11px}
@@ -264,7 +268,10 @@ const pct=(v,dp)=>(v==null||!isFinite(v))?'—':((v*100).toFixed(dp==null?2:dp)+
 const num=v=>(v==null||!isFinite(v))?'—':Math.round(v).toLocaleString();
 const DASH='—';
 
-const state={ markets:['brisbane','melbourne'], type:'h', flip:false, sensHorizon:'sell' };   /* sensHorizon: 3-market-mode ladder horizon */
+/* ktypes = per-column property type ('h'|'u') — lets one comparison mix houses
+   and units (the "same region, houses vs units" ask). state.type stays as the
+   default for new columns + the global seg's uniform state. */
+const state={ markets:['brisbane','melbourne'], ktypes:['h','h'], type:'h', flip:false, sensHorizon:'sell' };   /* sensHorizon: 3-market-mode ladder horizon */
 let REG={}, RW={}, CFG=null, SNAP=null, CLOCK=null, TL=null, FEED={}, ENTRY={}, CAPS=new Set();
 let _profile=null;
 
@@ -290,16 +297,20 @@ let _profile=null;
   SNAP=(snap.data&&snap.data[0])||null;
   CLOCK=(clock.data&&clock.data.payload)||null;
 
-  /* deep link: ?markets=a,b[,c]&type=h|u&flip=1 */
+  /* deep link: ?markets=a,b[,c]&types=h,u[,h]&flip=1 (&type=h|u legacy, uniform) */
   try{
     const q=new URLSearchParams(location.search);
     const mk=(q.get('markets')||'').split(',').map(s=>s.trim()).filter(s=>RW[s]);
     if(mk.length>=2) state.markets=mk.slice(0,3);
     if(q.get('type')==='u') state.type='u';
+    const tys=(q.get('types')||'').split(',').map(s=>s.trim()==='u'?'u':'h');
+    state.ktypes=state.markets.map((_,i)=>(q.get('types')?tys[i]:state.type)||state.type);
     if(q.get('flip')==='1') state.flip=true;
   }catch(e){}
   state.markets=state.markets.filter(s=>RW[s]);
   if(state.markets.length<2){ const all=marketSlugs(); state.markets=[all[0],all[1]]; }
+  while(state.ktypes.length<state.markets.length) state.ktypes.push(state.type);
+  state.ktypes.length=state.markets.length;
 
   wireControls();
   await ensureFeeds(state.markets);
@@ -315,6 +326,11 @@ function marketSlugs(){
 }
 const nameOf=s=>(REG[s]&&REG[s].name)||s;
 const stateOf=s=>(REG[s]&&REG[s].state)||'';
+/* per-column type helpers */
+const mixedTypes=()=>new Set(state.markets.map((_,i)=>T(i))).size>1;
+const typeWord=t=>t==='u'?'Units':'Houses';
+/* column display name — carries the type whenever the comparison mixes them */
+const colName=i=>nameOf(state.markets[i])+(mixedTypes()?' — '+typeWord(T(i)):'');
 
 async function ensureFeeds(slugs){
   const need=slugs.filter(s=>FEED[s]===undefined);
@@ -339,15 +355,16 @@ function latest(slug,key){
   return {v:null,y:null};
 }
 
-/* ── demand score / tier / quadrant (thresholds ported from demand-score.html) ── */
-function dsOf(slug){
+/* ── demand score / tier / quadrant (thresholds ported from demand-score.html) ──
+   All type-dependent accessors take an explicit 'h'|'u' (per column). */
+function dsOf(slug,t){
   if(!SNAP||!SNAP.data) return null;
-  const map=state.type==='u'?SNAP.data.units:SNAP.data.houses;
+  const map=t==='u'?SNAP.data.units:SNAP.data.houses;
   return (map&&map[slug])||null;
 }
-function dsRank(slug){
+function dsRank(slug,t){
   if(!SNAP||!SNAP.data) return null;
-  const map=state.type==='u'?SNAP.data.units:SNAP.data.houses; if(!map||!map[slug]) return null;
+  const map=t==='u'?SNAP.data.units:SNAP.data.houses; if(!map||!map[slug]) return null;
   const sorted=Object.entries(map).filter(([,m])=>m&&m.ds!=null).sort((a,b)=>b[1].ds-a[1].ds);
   const i=sorted.findIndex(([k])=>k===slug);
   return i<0?null:{rank:i+1,of:sorted.length};
@@ -360,15 +377,15 @@ const roleOf=i=>(state.markets.length===2 && i===(state.flip?0:1))?'buy':'sell';
    (build-runway forecast_wg_pct). Wage growth only scales income and the ceiling is
    linear in income, so income cancels and the 1-yr figure derives exactly:
    rw1 = (rw5+1)/(1+wg)^4 − 1 — the same formula Runway v Demand uses. */
-function rw1(slug){
-  const m=dsOf(slug); if(!m||m.rw==null) return null;
+function rw1(slug,t){
+  const m=dsOf(slug,t); if(!m||m.rw==null) return null;
   const wg=CAPS.has(slug)?((CFG&&CFG.wage_growth&&CFG.wage_growth.capital)||0.03)
                          :((CFG&&CFG.wage_growth&&CFG.wage_growth.regional)||0.02);
   return (m.rw+1)/Math.pow(1+wg,4)-1;
 }
 function rwOf(slug,i){
-  const m=dsOf(slug); if(!m||m.rw==null) return null;
-  return roleOf(i)==='buy'?m.rw:rw1(slug);
+  const m=dsOf(slug,T(i)); if(!m||m.rw==null) return null;
+  return roleOf(i)==='buy'?m.rw:rw1(slug,T(i));
 }
 /* ── market type + entry bars ── the house methodology (Runway v Demand's own
    axis midpoints, confirmed by research): SMOOTH markets are approved for
@@ -376,9 +393,9 @@ function rwOf(slug,i){
    undersells smooth markets (Melbourne at 52% is well clear of its bar) and
    oversells workforce ones. Type comes from the Property Clock (per h/u). */
 const ENTRY_BAR={smooth:0.40,workforce:0.70};
-function typeOf(slug){
+function typeOf(slug,t){
   if(!CLOCK) return 'smooth';
-  const list=state.type==='u'?(CLOCK.units||[]):(CLOCK.houses||[]);
+  const list=t==='u'?(CLOCK.units||[]):(CLOCK.houses||[]);
   const nm=nameOf(slug).toUpperCase();
   const hit=list.find(m=>String(m.name||'').toUpperCase()===nm&&m.vis!==false);
   return (hit&&hit.type==='workforce')?'workforce':'smooth';
@@ -443,9 +460,9 @@ function quadrantOf(ds,rw,type){
 }
 
 /* ── cycle position from the Property Clock ── */
-function clockOf(slug){
+function clockOf(slug,t){
   if(!CLOCK) return null;
-  const list=state.type==='u'?(CLOCK.units||[]):(CLOCK.houses||[]);
+  const list=t==='u'?(CLOCK.units||[]):(CLOCK.houses||[]);
   const nm=nameOf(slug).toUpperCase();
   const hit=list.find(m=>String(m.name||'').toUpperCase()===nm&&m.vis!==false);
   if(!hit||hit.hour==null) return null;
@@ -506,33 +523,35 @@ function tlOf(slug){
 }
 
 /* ═══ EVIDENCE TABLE ═══ */
-const T=()=>state.type;  /* 'h' | 'u' */
-/* rebuilt per render — the runway row(s) depend on how many markets are compared */
+const T=i=>(i==null?state.type:(state.ktypes[i]||state.type));  /* per-column 'h' | 'u' */
+/* rebuilt per render — the runway row(s) depend on how many markets are compared.
+   Every getter receives (slug, columnIndex) so mixed h/u comparisons resolve
+   each column against its own property type. */
 function ROWS(){ return [
   {group:'Price & growth'},
-  {l:'Median price',      kind:'text', tip:'Latest annual median from the research feed.', get:s=>latest(s,'mp_'+T()).v, fmt:money},
-  {l:'12-month growth',   kind:'high', tip:'Year-on-year change in the median.', get:s=>latest(s, T()==='u'?'unit_yoy':'house_yoy').v, fmt:v=>pct(v,1)},
-  {l:'3-year CAGR',       kind:'high', tip:'Compound annual growth over the last 3 years.', get:s=>latest(s,'cagr_'+T()+'_3').v, fmt:v=>pct(v,1)},
-  {l:'10-year CAGR',      kind:'high', tip:'Compound annual growth over the last 10 years.', get:s=>latest(s,'cagr_'+T()+'_10').v, fmt:v=>pct(v,1)},
+  {l:'Median price',      kind:'text', tip:'Latest annual median from the research feed.', get:(s,i)=>latest(s,'mp_'+T(i)).v, fmt:money},
+  {l:'12-month growth',   kind:'high', tip:'Year-on-year change in the median.', get:(s,i)=>latest(s, T(i)==='u'?'unit_yoy':'house_yoy').v, fmt:v=>pct(v,1)},
+  {l:'3-year CAGR',       kind:'high', tip:'Compound annual growth over the last 3 years.', get:(s,i)=>latest(s,'cagr_'+T(i)+'_3').v, fmt:v=>pct(v,1)},
+  {l:'10-year CAGR',      kind:'high', tip:'Compound annual growth over the last 10 years.', get:(s,i)=>latest(s,'cagr_'+T(i)+'_10').v, fmt:v=>pct(v,1)},
   {group:'Affordability'},
-  {l:'AI P&I loan',       kind:'low',  tip:'Annual P&I repayment on an 80% loan at the bank rate, as a share of income. Lower = more affordable.', get:s=>latest(s,'ai_pi_'+(T()==='u'?'unit':'house')).v, fmt:v=>pct(v,1)},
-  {l:'Price to income',   kind:'low',  tip:'Median price as a multiple of annual income. Lower = more affordable.', get:s=>latest(s,'p2i_'+(T()==='u'?'unit':'house')).v, fmt:v=>(v==null?DASH:v.toFixed(1)+'×')},
-  {l:'P&I repayments',    kind:'low',  tip:'Annual principal-and-interest repayments at the current bank rate (80% LVR, 30 years).', get:s=>latest(s,'pi_'+(T()==='u'?'unit':'house')).v, fmt:money},
+  {l:'AI P&I loan',       kind:'low',  tip:'Annual P&I repayment on an 80% loan at the bank rate, as a share of income. Lower = more affordable.', get:(s,i)=>latest(s,'ai_pi_'+(T(i)==='u'?'unit':'house')).v, fmt:v=>pct(v,1)},
+  {l:'Price to income',   kind:'low',  tip:'Median price as a multiple of annual income. Lower = more affordable.', get:(s,i)=>latest(s,'p2i_'+(T(i)==='u'?'unit':'house')).v, fmt:v=>(v==null?DASH:v.toFixed(1)+'×')},
+  {l:'P&I repayments',    kind:'low',  tip:'Annual principal-and-interest repayments at the current bank rate (80% LVR, 30 years).', get:(s,i)=>latest(s,'pi_'+(T(i)==='u'?'unit':'house')).v, fmt:money},
   {group:'Rental'},
-  {l:'Weekly rent',       kind:'text', tip:'Latest median weekly rent.', get:s=>latest(s,'rent_'+T()).v, fmt:v=>(v==null?DASH:'$'+Math.round(v))},
-  {l:'Rent to income',    kind:'low',  tip:'Rent as a share of income — tenant affordability.', get:s=>latest(s,'rent2inc_'+(T()==='u'?'unit':'house')).v, fmt:v=>pct(v,1)},
-  {l:'Gross yield',       kind:'high', tip:'Annual rent ÷ median price.', get:s=>latest(s,'yield_'+(T()==='u'?'unit':'house')).v, fmt:v=>pct(v,2)},
+  {l:'Weekly rent',       kind:'text', tip:'Latest median weekly rent.', get:(s,i)=>latest(s,'rent_'+T(i)).v, fmt:v=>(v==null?DASH:'$'+Math.round(v))},
+  {l:'Rent to income',    kind:'low',  tip:'Rent as a share of income — tenant affordability.', get:(s,i)=>latest(s,'rent2inc_'+(T(i)==='u'?'unit':'house')).v, fmt:v=>pct(v,1)},
+  {l:'Gross yield',       kind:'high', tip:'Annual rent ÷ median price.', get:(s,i)=>latest(s,'yield_'+(T(i)==='u'?'unit':'house')).v, fmt:v=>pct(v,2)},
   {l:'Vacancy rate',      kind:'low',  tip:'Cotality vacancy rate — how tight the rental market is. Lower = tighter.', get:s=>latest(s,'vacancy_rate').v, fmt:v=>pct(v,2)},
   {group:'Supply & demand'},
-  {l:'Demand score',      kind:'high', tip:'Performance Property demand engine score (0–100).', get:s=>{const m=dsOf(s);return m?m.ds:null;}, fmt:v=>(v==null?DASH:v.toFixed(1))},
-  {l:'Demand rank',       kind:'text', tip:'Rank across all tracked markets in this snapshot.', get:s=>{const r=dsRank(s);return r?r.rank:null;}, fmt:v=>(v==null?DASH:'#'+v)},
+  {l:'Demand score',      kind:'high', tip:'Performance Property demand engine score (0–100).', get:(s,i)=>{const m=dsOf(s,T(i));return m?m.ds:null;}, fmt:v=>(v==null?DASH:v.toFixed(1))},
+  {l:'Demand rank',       kind:'text', tip:'Rank across all tracked markets in this snapshot.', get:(s,i)=>{const r=dsRank(s,T(i));return r?r.rank:null;}, fmt:v=>(v==null?DASH:'#'+v)},
   ...(state.markets.length===2?[
-    {l:'Runway',          kind:'high', tip:'Affordability headroom before the market hits its ceiling, on this market’s direction horizon — selling 1-yr / buying 5-yr wage growth.', get:s=>rwOf(s,state.markets.indexOf(s)), fmt:v=>pct(v,0)},
+    {l:'Runway',          kind:'high', tip:'Affordability headroom before the market hits its ceiling, on this market’s direction horizon — selling 1-yr / buying 5-yr wage growth.', get:(s,i)=>rwOf(s,i), fmt:v=>pct(v,0)},
   ]:[
-    {l:'Runway · 1yr wg', kind:'high', tip:'Affordability headroom with income grown one year — the selling horizon.', get:s=>rw1(s), fmt:v=>pct(v,0)},
-    {l:'Runway · 5yr wg', kind:'high', tip:'Affordability headroom with income grown five years — the buying horizon (the figure the Demand Score Dashboard shows).', get:s=>{const m=dsOf(s);return m?m.rw:null;}, fmt:v=>pct(v,0)},
+    {l:'Runway · 1yr wg', kind:'high', tip:'Affordability headroom with income grown one year — the selling horizon.', get:(s,i)=>rw1(s,T(i)), fmt:v=>pct(v,0)},
+    {l:'Runway · 5yr wg', kind:'high', tip:'Affordability headroom with income grown five years — the buying horizon (the figure the Demand Score Dashboard shows).', get:(s,i)=>{const m=dsOf(s,T(i));return m?m.rw:null;}, fmt:v=>pct(v,0)},
   ]),
-  {l:'Rental growth 36m', kind:'high', tip:'Three-year rental growth from the demand snapshot.', get:s=>{const m=dsOf(s);return (m&&m.rg!=null)?m.rg/100:null;}, fmt:v=>pct(v,1)},
+  {l:'Rental growth 36m', kind:'high', tip:'Three-year rental growth from the demand snapshot.', get:(s,i)=>{const m=dsOf(s,T(i));return (m&&m.rg!=null)?m.rg/100:null;}, fmt:v=>pct(v,1)},
   {group:'People'},
   {l:'Population',        kind:'text', tip:'Metro population.', get:s=>latest(s,'pop_metro').v, fmt:num},
   {l:'Population growth', kind:'high', tip:'Annual metro population growth.', get:s=>latest(s,'pct_change_metro').v, fmt:v=>pct(v,2)},
@@ -543,7 +562,7 @@ function winners(){
   const res={best:{},worst:{},wins:state.markets.map(()=>0),comparable:0};
   ROWS().forEach((r,ri)=>{
     if(!r.get||r.kind==='text') return;
-    const vals=state.markets.map(s=>{ const v=r.get(s); return (v==null||!isFinite(v))?null:v; });
+    const vals=state.markets.map((s,i)=>{ const v=r.get(s,i); return (v==null||!isFinite(v))?null:v; });
     const have=vals.filter(v=>v!=null);
     if(have.length<2) return;
     const best=r.kind==='high'?Math.max.apply(null,have):Math.min.apply(null,have);
@@ -563,7 +582,7 @@ function renderAll(){ syncURL(); renderAsOf(); renderControls(); renderDir(); co
 function renderAsOf(){
   const bits=[];
   if(SNAP) bits.push('Demand data · '+esc(SNAP.label||SNAP.version));
-  const y=state.markets.length?latest(state.markets[0],'mp_'+T()).y:null;
+  const y=state.markets.length?latest(state.markets[0],'mp_'+T(0)).y:null;
   if(y) bits.push('Feed metrics · '+y);
   bits.push('Signals & clock · live');
   $('#mcAsOf').innerHTML=bits.map(b=>'<span>'+b+'</span>').join('');
@@ -578,16 +597,31 @@ function renderControls(){
   };
   $('#mcPicks').innerHTML=state.markets.map((s,i)=>
     '<select data-i="'+i+'">'+opts(s)+'</select>'
+    +'<span class="mc-minihu" data-hu="'+i+'" title="Houses or units for this column">'
+      +'<button data-t="h"'+(T(i)==='h'?' class="on"':'')+'>H</button>'
+      +'<button data-t="u"'+(T(i)==='u'?' class="on"':'')+'>U</button></span>'
     +(state.markets.length>2?'<button class="mc-x" data-x="'+i+'" title="Remove">×</button>':'')
   ).join('');
   $('#mcAdd').style.display=state.markets.length>=3?'none':'';
+  /* global H/U seg mirrors the columns: lit only while they all agree */
+  $('#mcType').querySelectorAll('button').forEach(x=>x.classList.toggle('on',!mixedTypes()&&x.dataset.t===T(0)));
   $('#mcPicks').querySelectorAll('select').forEach(el=>el.addEventListener('change',async e=>{
     const i=+e.target.dataset.i, v=e.target.value;
-    if(state.markets.includes(v)&&state.markets[i]!==v){ e.target.value=state.markets[i]; return; }   /* no duplicates */
+    /* same region twice is allowed — that's the houses-vs-units compare. If the
+       pick collides with an identical slug+type column, flip THIS column's type
+       so choosing the same region instantly gives H vs U. */
+    const dup=state.markets.some((o,oi)=>oi!==i&&o===v&&T(oi)===T(i));
+    if(dup) state.ktypes[i]=T(i)==='u'?'h':'u';
     state.markets[i]=v; await ensureFeeds([v]); renderAll();
   }));
+  $('#mcPicks').querySelectorAll('.mc-minihu button').forEach(el=>el.addEventListener('click',()=>{
+    const i=+el.parentElement.dataset.hu;
+    if(T(i)===el.dataset.t) return;
+    state.ktypes[i]=el.dataset.t;
+    renderAll();
+  }));
   $('#mcPicks').querySelectorAll('.mc-x').forEach(el=>el.addEventListener('click',()=>{
-    state.markets.splice(+el.dataset.x,1); renderAll();
+    state.markets.splice(+el.dataset.x,1); state.ktypes.splice(+el.dataset.x,1); renderAll();
   }));
 }
 
@@ -596,8 +630,8 @@ function renderDir(){
   $('#mcDir').hidden=!two;
   if(!two) return;
   const a=state.flip?1:0;
-  $('#mcDirA').textContent=nameOf(state.markets[a]);
-  $('#mcDirB').textContent=nameOf(state.markets[1-a]);
+  $('#mcDirA').textContent=colName(a);
+  $('#mcDirB').textContent=colName(1-a);
 }
 
 function renderVerdict(w){
@@ -605,10 +639,10 @@ function renderVerdict(w){
   if(state.markets.length!==2){ el.innerHTML=''; return; }
   const ai=state.flip?1:0, bi=1-ai;
   const A=state.markets[ai], B=state.markets[bi];
-  const an=nameOf(A), bn=nameOf(B);
-  const ca=clockOf(A), cb=clockOf(B);
-  const da=dsOf(A), db=dsOf(B);
-  const qa=quadrantOf(da&&da.ds, da&&da.rw, typeOf(A)), qb=quadrantOf(db&&db.ds, db&&db.rw, typeOf(B));
+  const an=colName(ai), bn=colName(bi);
+  const ca=clockOf(A,T(ai)), cb=clockOf(B,T(bi));
+  const da=dsOf(A,T(ai)), db=dsOf(B,T(bi));
+  const qa=quadrantOf(da&&da.ds, da&&da.rw, typeOf(A,T(ai))), qb=quadrantOf(db&&db.ds, db&&db.rw, typeOf(B,T(bi)));
   let line;
   const sa=ca?stageOf(ca.label):0, sb=cb?stageOf(cb.label):0;
   if(sa===3&&sb===1){
@@ -637,17 +671,17 @@ function renderVerdict(w){
 function renderCards(w){
   w=w||winners();
   $('#mcCards').innerHTML=state.markets.map((s,i)=>{
-    const m=dsOf(s), ck=clockOf(s), rwv=rwOf(s,i), mt=typeOf(s), q=quadrantOf(m&&m.ds, m&&m.rw, mt), tier=tierOf(m&&m.ds, m&&m.rw, mt);
+    const m=dsOf(s,T(i)), ck=clockOf(s,T(i)), rwv=rwOf(s,i), mt=typeOf(s,T(i)), q=quadrantOf(m&&m.ds, m&&m.rw, mt), tier=tierOf(m&&m.ds, m&&m.rw, mt);
     const tl=tlOf(s);
     const ent=ENTRY[s];
-    const rank=dsRank(s);
+    const rank=dsRank(s,T(i));
     const entHtml=(()=>{ if(!ent||!ent.year) return '';
-      const eP=T()==='u'?ent.mup:ent.mhp; const cur=latest(s,'mp_'+T()).v;
+      const eP=T(i)==='u'?ent.mup:ent.mhp; const cur=latest(s,'mp_'+T(i)).v;
       if(!eP||!cur) return '';
       const g=Math.round((cur/eP-1)*100);
       return '<div class="mc-entrychip">Performance Property entered <b>'+esc(String(ent.year))+'</b> at <b>'+money(eP)+'</b> → now <b>'+money(cur)+'</b> (<b>'+(g>=0?'+':'')+g+'%</b>).</div>'; })();
     return '<div class="mc-card">'
-      +'<div class="nm"><b>'+esc(nameOf(s))+'</b><span>'+esc(stateOf(s))+'</span></div>'
+      +'<div class="nm"><b>'+esc(nameOf(s))+'</b><span>'+esc(stateOf(s))+(mixedTypes()?' · '+typeWord(T(i)):'')+'</span></div>'
       +'<div class="mc-clockrow">'+dialSVG(ck)
         +'<div class="mc-phase"><div class="w">'+esc(ck?phaseWord(ck.label):'No clock position')+'</div>'
         +'<div class="p">'+esc(q?q.label+' — '+q.phrase:'')+'</div></div></div>'
@@ -671,11 +705,11 @@ function renderCards(w){
 }
 
 function renderTable(w){
-  const heads='<tr><th class="metric">Metric</th>'+state.markets.map(s=>'<th>'+esc(nameOf(s))+'</th>').join('')+'</tr>';
+  const heads='<tr><th class="metric">Metric</th>'+state.markets.map((s,i)=>'<th>'+esc(colName(i))+'</th>').join('')+'</tr>';
   const body=ROWS().map((r,ri)=>{
     if(r.group) return '<tr class="mc-group"><td colspan="'+(state.markets.length+1)+'">'+esc(r.group)+'</td></tr>';
     const cells=state.markets.map((s,i)=>{
-      const v=r.get(s); const disp=r.fmt?r.fmt(v):String(v==null?DASH:v);
+      const v=r.get(s,i); const disp=r.fmt?r.fmt(v):String(v==null?DASH:v);
       const cls=(w.best[ri]===i)?' class="best"':(w.worst[ri]===i?' class="worst"':'');
       return '<td'+cls+'>'+disp+'</td>';
     }).join('');
@@ -718,10 +752,12 @@ async function renderTrends(){
       .observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
   }
   _charts.forEach(c=>{ try{c.dispose();}catch(e){} }); _charts=[];
+  /* keyFor(t): each series resolves the metric against ITS column's type, so a
+     houses-vs-units comparison charts the right series side by side */
   const defs=[
-    {title:'Median price — indexed', key:'mp_'+T(), mode:'idx', sub:''},
-    {title:'AI P&I loan', key:'ai_pi_'+(T()==='u'?'unit':'house'), mode:'pct', sub:'Repayments as a share of income — lower is more affordable'},
-    {title:'Vacancy rate', key:'vacancy_rate', mode:'pct', sub:'Cotality, market-wide — lower means a tighter rental market'},
+    {title:'Median price — indexed', keyFor:t=>'mp_'+t, mode:'idx', sub:''},
+    {title:'AI P&I loan', keyFor:t=>'ai_pi_'+(t==='u'?'unit':'house'), mode:'pct', sub:'Repayments as a share of income — lower is more affordable'},
+    {title:'Vacancy rate', keyFor:()=>'vacancy_rate', mode:'pct', sub:'Cotality, market-wide — lower means a tighter rental market'},
   ];
   box.innerHTML=defs.map((d,i)=>
     '<div class="mc-trendcard"><div class="hd">'+esc(d.title)+'</div>'
@@ -733,7 +769,7 @@ async function renderTrends(){
   const solid=(css.getPropertyValue('--mc-solid')||'').trim()||'#1A2130';
   defs.forEach((d,ci)=>{
     const el=document.getElementById('mcTr'+ci); if(!el) return;
-    const maps=state.markets.map(s=>seriesRows(s,d.key));
+    const maps=state.markets.map((s,i)=>seriesRows(s,d.keyFor(T(i))));
     const allYears=[...new Set(maps.reduce((a,m)=>a.concat(Object.keys(m).map(Number)),[]))].sort((a,b)=>a-b);
     if(!allYears.length){ el.innerHTML='<div class="mc-skel">No data for this measure.</div>'; return; }
     const maxY=allYears[allYears.length-1];
@@ -745,7 +781,7 @@ async function renderTrends(){
       $('#mcTrSub'+ci).textContent='Base 100 at '+base+' — actual dollars in the tooltip';
     }
     const series=state.markets.map((s,i)=>({
-      name:nameOf(s), type:'line', showSymbol:false, connectNulls:true,
+      name:colName(i), type:'line', showSymbol:false, connectNulls:true,
       lineStyle:{width:2.5}, emphasis:{focus:'series'},
       data:years.map(y=>{
         const v=maps[i][y]; if(v==null) return null;
@@ -766,7 +802,7 @@ async function renderTrends(){
           const lines=params.map(p=>{
             if(p.value==null) return null;
             let val=d.mode==='idx'?Number(p.value).toFixed(0):Number(p.value).toFixed(2)+'%';
-            if(d.mode==='idx'){ const raw=seriesRows(state.markets[p.seriesIndex],d.key)[+yr]; if(raw!=null) val+=' · '+money(raw); }
+            if(d.mode==='idx'){ const raw=seriesRows(state.markets[p.seriesIndex],d.keyFor(T(p.seriesIndex)))[+yr]; if(raw!=null) val+=' · '+money(raw); }
             return p.marker+' '+esc(p.seriesName)+'  <b>'+val+'</b>';
           }).filter(Boolean);
           return '<b>'+esc(String(yr))+'</b><br>'+lines.join('<br>');
@@ -798,10 +834,10 @@ function renderSens(){
   $('#mcSensHz').hidden=two;   /* horizon toggle only matters without a declared direction */
   box.innerHTML=state.markets.map((s,i)=>{
     const p=RW[s]||{}, inp=p.inputs||{}, ceil=p.ai_ceiling||{};
-    const aiv=T()==='u'?ceil.u:ceil.h;
-    const median=T()==='u'?inp.median_u:inp.median_h;
+    const aiv=T(i)==='u'?ceil.u:ceil.h;
+    const median=T(i)==='u'?inp.median_u:inp.median_h;
     if(inp.income==null||aiv==null||median==null)
-      return '<div class="mc-senscard"><div class="hd"><b>'+esc(nameOf(s))+'</b></div><div class="mc-skel">No runway inputs for this market.</div></div>';
+      return '<div class="mc-senscard"><div class="hd"><b>'+esc(colName(i))+'</b></div><div class="mc-skel">No runway inputs for this market.</div></div>';
     const role=two?roleOf(i):state.sensHorizon, yrs=role==='buy'?5:1;
     const wg=CAPS.has(s)?((CFG.wage_growth&&CFG.wage_growth.capital)||0.03):((CFG.wage_growth&&CFG.wage_growth.regional)||0.02);
     const income=inp.income*Math.pow(1+wg,yrs);
@@ -816,7 +852,7 @@ function renderSens(){
         +'<td class="'+dir+'">'+(gp>=0?'+':'')+gp.toFixed(2)+'%</td></tr>';
     }).join('');
     return '<div class="mc-senscard">'
-      +'<div class="hd"><b>'+esc(nameOf(s))+'</b><span class="mc-purpose">'+(role==='buy'?'Buying · 5yr':'Selling · 1yr')+'</span></div>'
+      +'<div class="hd"><b>'+esc(colName(i))+'</b><span class="mc-purpose">'+(role==='buy'?'Buying · 5yr':'Selling · 1yr')+'</span></div>'
       +'<div class="inc">Median '+money(median)+' · income '+money(Math.round(income))+'/wk after '+yrs+'yr wage growth</div>'
       +'<table><thead><tr><th>Cash rate</th><th>Ceiling</th><th>Growth vs median</th><th>% growth</th></tr></thead><tbody>'+rows+'</tbody></table>'
       +'</div>';
@@ -835,17 +871,18 @@ function renderProv(){
 
 /* ── controls wiring ── */
 function wireControls(){
+  /* global seg = master switch: sets every column's type (per-column mini
+     segs in the picker row override individually) */
   $('#mcType').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
-    if(state.type===b.dataset.t) return;
     state.type=b.dataset.t;
-    $('#mcType').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    state.ktypes=state.markets.map(()=>b.dataset.t);
     renderAll();
   }));
   $('#mcAdd').addEventListener('click',async ()=>{
     if(state.markets.length>=3) return;
     const next=marketSlugs().find(s=>!state.markets.includes(s));
     if(!next) return;
-    state.markets.push(next); await ensureFeeds([next]); renderAll();
+    state.markets.push(next); state.ktypes.push(state.type); await ensureFeeds([next]); renderAll();
   });
   $('#mcSwap').addEventListener('click',()=>{ state.flip=!state.flip; renderAll(); });
   $('#mcSensHz').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
@@ -867,8 +904,8 @@ function wireControls(){
   document.addEventListener('fullscreenchange',()=>{ if(!document.fullscreenElement) exitPresent(); });
   $('#mcPin').addEventListener('click',()=>{
     if(!window.PP_PINS){ alert('Pins unavailable.'); return; }
-    const url='tools/market-compare.html?markets='+state.markets.join(',')+'&type='+state.type+(state.flip?'&flip=1':'');
-    const label='Compare: '+state.markets.map(nameOf).join(' vs ');
+    const url='tools/market-compare.html?markets='+state.markets.join(',')+'&types='+state.markets.map((_,i)=>T(i)).join(',')+(state.flip?'&flip=1':'');
+    const label='Compare: '+state.markets.map((_,i)=>colName(i)).join(' vs ');
     if(PP_PINS.has(p=>p.url===url)){ flashPin('Already pinned'); return; }
     PP_PINS.add({ kind:'link', label:label, url:url, a1:'#7E8CF1', a2:'#233AE7',
       icon:'<svg viewBox="0 0 24 24"><path d="M9 6H4v12h5"/><path d="M15 6h5v12h-5"/><path d="M9 12h6"/></svg>' });
@@ -877,7 +914,7 @@ function wireControls(){
 }
 function flashPin(t){ const b=$('#mcPin'); const old=b.innerHTML; b.innerHTML=esc(t); setTimeout(()=>{ b.innerHTML=old; },1500); }
 function syncURL(){
-  try{ history.replaceState(null,'','?markets='+state.markets.join(',')+'&type='+state.type+(state.flip?'&flip=1':'')); }catch(e){}
+  try{ history.replaceState(null,'','?markets='+state.markets.join(',')+'&types='+state.markets.map((_,i)=>T(i)).join(',')+(state.flip?'&flip=1':'')); }catch(e){}
 }
 </script>
 </body>
