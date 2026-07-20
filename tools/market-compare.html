@@ -370,21 +370,76 @@ function rwOf(slug,i){
   const m=dsOf(slug); if(!m||m.rw==null) return null;
   return roleOf(i)==='buy'?m.rw:rw1(slug);
 }
-const TIERS=[
-  {min:40,label:'Strong buy',color:'#4D7F39'},
-  {min:25,label:'Buy',       color:'#3E7967'},
-  {min:15,label:'Hold',      color:'#E08A00'},
-  {min:5, label:'Watch',     color:'#F59700'},
-  {min:-1e9,label:'Avoid',   color:'#CA1637'},
-];
-const tierOf=ds=>ds==null?null:TIERS.find(t=>ds>=t.min);
-function quadrantOf(ds,rw){
+/* ── market type + entry bars ── the house methodology (Runway v Demand's own
+   axis midpoints, confirmed by research): SMOOTH markets are approved for
+   trading at 40% runway, WORKFORCE markets at 70%. A flat runway line badly
+   undersells smooth markets (Melbourne at 52% is well clear of its bar) and
+   oversells workforce ones. Type comes from the Property Clock (per h/u). */
+const ENTRY_BAR={smooth:0.40,workforce:0.70};
+function typeOf(slug){
+  if(!CLOCK) return 'smooth';
+  const list=state.type==='u'?(CLOCK.units||[]):(CLOCK.houses||[]);
+  const nm=nameOf(slug).toUpperCase();
+  const hit=list.find(m=>String(m.name||'').toUpperCase()===nm&&m.vis!==false);
+  return (hit&&hit.type==='workforce')?'workforce':'smooth';
+}
+/* tier = the Demand Score Dashboard's 4-quadrant shape, with the runway axis
+   NORMALISED against the market's entry bar (nb = rw / bar; 1.0 = approved).
+   Replaces both the old ds-only ladder (printed "Strong buy" at a peak) and
+   the flat 60% line (called smooth markets low-runway when they were clear
+   of their 40% bar). Uses the standard 5-yr runway, like the dashboard. */
+const TIER_DEFS={
+  strong:{label:'Strong buy',color:'#4D7F39'},
+  buy:   {label:'Buy',       color:'#3E7967'},
+  hold:  {label:'Hold',      color:'#E08A00'},
+  watch: {label:'Watch',     color:'#F59700'},
+  avoid: {label:'Avoid',     color:'#CA1637'},
+};
+function tierOf(ds,rw,type){
+  if(ds==null) return null;
+  if(rw==null){                                  // runway unknown → ds-only fallback
+    return TIER_DEFS[ds>=40?'strong':ds>=25?'buy':ds>=15?'hold':ds>=5?'watch':'avoid'];
+  }
+  const nb=rw/ENTRY_BAR[type==='workforce'?'workforce':'smooth'];
+  const highDemand=ds>=25, approved=nb>=1;
+  if(!highDemand&&approved){                     // GREEN — demand yet to build, runway approved
+    if(nb>=1.5||(nb>=1.15&&ds>=15)) return TIER_DEFS.strong;
+    return TIER_DEFS.buy;
+  }
+  if(highDemand&&approved){                      // BLUE — strong demand above the entry bar
+    if(ds>=45&&nb>=1.25) return TIER_DEFS.strong;
+    return TIER_DEFS.buy;
+  }
+  if(highDemand&&!approved){                     // YELLOW — demand there, runway below the bar
+    if(nb>=0.5) return TIER_DEFS.hold;
+    return TIER_DEFS.watch;
+  }
+  if(ds<0||nb<0.17) return TIER_DEFS.avoid;      // RED — neither
+  if(ds<10&&nb<0.5) return TIER_DEFS.avoid;
+  return TIER_DEFS.watch;
+}
+/* graded, data-aware cycle wording — speaks in entry-bar terms with the
+   actual numbers inline, so each card explains its own verdict. Uses the
+   standard 5-yr runway (the tier's input), independent of which basis the
+   card displays. */
+function quadrantOf(ds,rw,type){
   if(ds==null||rw==null) return null;
-  const hd=ds>=25, hr=rw>=0.6;
-  if(hd&&!hr) return {key:'peak', label:'Peaking',      phrase:'demand is strong but the affordability runway is nearly used up' };
-  if(hd&&hr)  return {key:'rise', label:'Rising',       phrase:'strong demand with genuine room left to run' };
-  if(!hd&&hr) return {key:'early',label:'Early value',  phrase:'affordability headroom is there — demand has yet to build' };
-  return        {key:'cool', label:'Cooling',       phrase:'demand is soft and the headroom is limited' };
+  type=type==='workforce'?'workforce':'smooth';
+  const bar=ENTRY_BAR[type], nb=rw/bar, barPct=Math.round(bar*100), pct=Math.round(rw*100);
+  const dTxt = ds>=50?'demand is running hot':ds>=35?'demand is strong':ds>=25?'demand is firm'
+             : ds>=15?'demand is moderate':ds>=5?'demand is soft':'demand is weak';
+  const rTxt = rw<0   ? 'prices already sit above the affordability ceiling'
+             : nb>=1.4? pct+'% runway — well clear of the '+barPct+'% '+type+'-market entry bar'
+             : nb>=1  ? pct+'% runway clears the '+barPct+'% '+type+'-market entry bar'
+             : nb>=0.8? pct+'% runway sits just under the '+barPct+'% '+type+'-market entry bar'
+             : nb>=0.5? pct+'% runway is well short of the '+barPct+'% '+type+'-market entry bar'
+             :          'only '+pct+'% runway remains against the '+barPct+'% '+type+'-market entry bar';
+  const hot=ds>=35, cold=ds<15, roomy=nb>=1, tight=nb<0.6;
+  const label = hot&&tight ? 'Peaking' : hot&&roomy ? 'Rising'
+              : cold&&roomy ? 'Early value' : cold&&tight ? 'Cooling' : 'Mid-cycle';
+  const opposing=(hot&&!roomy)||(cold&&roomy);
+  const key = label==='Peaking'?'peak':label==='Rising'?'rise':label==='Early value'?'early':label==='Cooling'?'cool':'mid';
+  return {key, label, phrase: dTxt+(opposing?' but ':' and ')+rTxt};
 }
 
 /* ── cycle position from the Property Clock ── */
@@ -553,7 +608,7 @@ function renderVerdict(w){
   const an=nameOf(A), bn=nameOf(B);
   const ca=clockOf(A), cb=clockOf(B);
   const da=dsOf(A), db=dsOf(B);
-  const qa=quadrantOf(da&&da.ds, rwOf(A,ai)), qb=quadrantOf(db&&db.ds, rwOf(B,bi));
+  const qa=quadrantOf(da&&da.ds, da&&da.rw, typeOf(A)), qb=quadrantOf(db&&db.ds, db&&db.rw, typeOf(B));
   let line;
   const sa=ca?stageOf(ca.label):0, sb=cb?stageOf(cb.label):0;
   if(sa===3&&sb===1){
@@ -582,7 +637,7 @@ function renderVerdict(w){
 function renderCards(w){
   w=w||winners();
   $('#mcCards').innerHTML=state.markets.map((s,i)=>{
-    const m=dsOf(s), ck=clockOf(s), rwv=rwOf(s,i), q=quadrantOf(m&&m.ds, rwv), tier=tierOf(m&&m.ds);
+    const m=dsOf(s), ck=clockOf(s), rwv=rwOf(s,i), mt=typeOf(s), q=quadrantOf(m&&m.ds, m&&m.rw, mt), tier=tierOf(m&&m.ds, m&&m.rw, mt);
     const tl=tlOf(s);
     const ent=ENTRY[s];
     const rank=dsRank(s);
