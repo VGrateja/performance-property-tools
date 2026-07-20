@@ -10,15 +10,14 @@
 <!-- OS chrome: mode/period/shade + legacy data-theme bridge -->
 <script src="../shared/os-chrome.js?v=f66c69d4"></script>
 <link rel="stylesheet" href="../shared/os-theme.css?v=735d2efb"/>
-<!-- SheetJS for the dev/admin ingest drop-zone (monthly market workbooks) -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 /* ═══════════════════════════════════════════════════════════════════════════
    SUBURB SCORING — in-hub replacement for the Looker Studio "Suburbs Scoring
    Interface". Lobby (market → suburb) first, then a suburb dashboard with the
    Looker-parity tiles + a "How it's scored" methodology breakdown. Data =
-   suburb_scores rows (migration 082), ingested from the monthly market
-   workbooks via shared/suburb-scoring-parse.js. Brand: Montserrat, sanctioned
+   suburb_scores rows (migration 082) — refreshed monthly from Forge only
+   (the workbook drop-zone was retired 2026-07-20; constants reseed via the
+   scratch pipelines). Brand: Montserrat, sanctioned
    hexes only, both themes, no backdrop-filter beyond the shared chrome.
    ═══════════════════════════════════════════════════════════════════════════ */
 :root{
@@ -157,15 +156,11 @@ body.ss-lobby-open .ss-main{display:none}
 .ss-ingest{margin-top:26px;border:1px solid rgba(255,255,255,0.14);border-radius:16px;background:rgba(16,21,32,0.92);padding:16px 18px;color:#EDF1F7}
 .ss-ingest h3{margin:0 0 4px;font-size:14px;font-weight:800}
 .ss-ingest .hint{font-size:11.5px;color:rgba(210,220,236,0.65);margin:0 0 12px;line-height:1.5}
-.ss-drop{border:2px dashed rgba(255,255,255,0.25);border-radius:12px;padding:22px;text-align:center;font:600 12.5px 'Montserrat',sans-serif;color:rgba(220,228,240,0.75);cursor:pointer}
-.ss-drop.over{border-color:var(--ss-teal);background:rgba(0,160,180,0.1)}
-.ss-drop.lock{cursor:default;opacity:.6}
 .ss-review{margin-top:12px;font-size:12px;line-height:1.7}
 .ss-review .ok{color:var(--ss-good)} .ss-review .warn{color:var(--ss-warn)}
 .ss-savebar{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
 .ss-save{border:none;background:var(--ss-teal);color:#fff;border-radius:999px;padding:10px 22px;font:800 12px 'Montserrat',sans-serif;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
 .ss-save[disabled]{opacity:.5;cursor:default}
-.ss-month{border-radius:9px;border:1px solid rgba(255,255,255,0.2);background:#141A28;color:#F4F6F8;padding:9px 11px;font:600 12px 'Montserrat',sans-serif;width:110px}
 .ss-empty{border:1px dashed var(--ss-border-2);border-radius:14px;padding:40px;text-align:center;color:var(--ss-mut);font-size:13px}
 </style>
 </head>
@@ -193,18 +188,6 @@ body.ss-lobby-open .ss-main{display:none}
         <div class="ss-savebar" id="ssForgeSaveBar" hidden>
           <button class="ss-save" id="ssForgeSaveBtn">Save all markets</button>
           <span id="ssForgeSaveMsg" style="font-size:12px"></span>
-        </div>
-      </div>
-      <div class="ss-ingest" id="ssIngest" hidden>
-        <h3>Reseed constants — market workbooks</h3>
-        <p class="hint">Only needed when the methodology's <b>constants</b> change (stagnation baselines, LT growth, quality) or a new market is added: drop the <b>Simple Suburb Scoring</b> workbooks to replace that market's snapshots. Monthly updates come from Forge above.</p>
-        <div class="ss-drop" id="ssDrop">Drop workbooks here or click to choose…</div>
-        <input type="file" id="ssFile" accept=".xlsx,.xls" multiple hidden>
-        <div class="ss-review" id="ssReview"></div>
-        <div class="ss-savebar" id="ssSaveBar" hidden>
-          <label style="font-size:11px;font-weight:700;letter-spacing:.06em">SOURCE MONTH <input type="month" class="ss-month" id="ssMonth"></label>
-          <button class="ss-save" id="ssSaveBtn">Save to database</button>
-          <span id="ssSaveMsg" style="font-size:12px"></span>
         </div>
       </div>
     </div>
@@ -248,7 +231,6 @@ body.ss-lobby-open .ss-main{display:none}
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=79207e52"></script>
 <script src="../shared/tool-registry.js?v=5dbcbed4"></script>
-<script src="../shared/suburb-scoring-parse.js?v=19391c96"></script>
 <script src="../shared/suburb-scoring-engine.js?v=e38da22b"></script>
 <script src="../shared/desktop-pins.js?v=e2416017"></script>
 <script src="../shared/auth.js?v=6f88fa92"></script>
@@ -529,9 +511,10 @@ function wireUi() {
   });
 }
 
-/* ── ingest (dev/admin, DENY by default; RLS is the real boundary) ── */
+/* ── writer gate (dev/admin, DENY by default; RLS is the real boundary) ──
+   Data flows from FORGE only (workbook drop-zone retired 2026-07-20 —
+   constants reseed via the scratch pipelines, monthly data via the card). */
 let _ssCanWrite = false;
-const _pending = [];   /* [{marketSlug,label,kinds,warnings,fileName}] */
 async function initIngestGate() {
   try {
     let guard = 0; while (!window.sb && guard++ < 50) await new Promise(r => setTimeout(r, 100));
@@ -540,72 +523,9 @@ async function initIngestGate() {
     const va = (typeof getViewAsLevel === 'function') ? getViewAsLevel() : '';
     _ssCanWrite = realWriter && (va === 'dev' || va === 'admin');
   } catch (e) { _ssCanWrite = false; }
-  $('#ssIngest').hidden = !_ssCanWrite;
   $('#ssForge').hidden = !_ssCanWrite;
   if (!_ssCanWrite) return;
   initForgeUpdate();
-  const drop = $('#ssDrop'), file = $('#ssFile');
-  drop.addEventListener('click', () => file.click());
-  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
-  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); handleFiles(e.dataTransfer.files); });
-  file.addEventListener('change', () => handleFiles(file.files));
-  const now = new Date();
-  $('#ssMonth').value = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
-  $('#ssSaveBtn').addEventListener('click', saveIngest);
-}
-async function handleFiles(list) {
-  if (!list || !list.length) return;
-  const rev = $('#ssReview');
-  rev.innerHTML = 'Parsing…';
-  _pending.length = 0;
-  const lines = [];
-  for (const f of list) {
-    try {
-      const buf = await f.arrayBuffer();
-      await new Promise(r => setTimeout(r, 15));
-      const wb = XLSX.read(buf, { type: 'array' });
-      const res = PP_SSCORE.parseWorkbook(XLSX, wb, f.name);
-      if (!res.marketSlug) { lines.push('<div class="warn">⚠ ' + esc(f.name) + ' — market not recognized (name the file "Simple Suburb Scoring _ <Market>").</div>'); continue; }
-      _pending.push(Object.assign(res, { fileName: f.name }));
-      const cnt = k => res.kinds[k] ? res.kinds[k].rows.length : 0;
-      lines.push('<div class="ok">✓ ' + esc(res.label) + ' — ' + cnt('h') + ' house rows · ' + cnt('u') + ' unit rows'
-        + (res.warnings.length ? ' <span class="warn">(' + res.warnings.length + ' warnings)</span>' : '') + '</div>');
-      res.warnings.forEach(w => lines.push('<div class="warn">&nbsp;&nbsp;⚠ ' + esc(w) + '</div>'));
-    } catch (e) { lines.push('<div class="warn">⚠ ' + esc(f.name) + ' — parse failed: ' + esc(e.message || e) + '</div>'); }
-  }
-  rev.innerHTML = lines.join('');
-  $('#ssSaveBar').hidden = !_pending.length;
-  $('#ssSaveMsg').textContent = '';
-}
-async function saveIngest() {
-  if (!_ssCanWrite || !_pending.length) return;
-  const btn = $('#ssSaveBtn'), msg = $('#ssSaveMsg');
-  btn.disabled = true;
-  const month = $('#ssMonth').value || null;
-  const prof = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null;
-  const stamp = new Date().toISOString();
-  let n = 0, fails = 0;
-  for (const res of _pending) {
-    for (const k of ['h', 'u']) {
-      const ds = res.kinds[k]; if (!ds) continue;
-      const payload = {
-        meta: { suburbs: ds.rows.filter(r => !r.isLga).length, lgas: ds.rows.filter(r => r.isLga).length, rows: ds.rows.length },
-        benchmark: ds.benchmark, rows: ds.rows, scoringRef: ds.scoringRef
-      };
-      msg.textContent = 'Saving ' + res.label + ' ' + k.toUpperCase() + '…';
-      const { error } = await sb.from('suburb_scores').upsert({
-        key: keyOf(res.marketSlug, k), market_slug: res.marketSlug, kind: k, label: res.label,
-        payload, source_month: month, computed_at: stamp, computed_by: (prof && prof.id) || null
-      }, { onConflict: 'key' });
-      if (error) { fails++; msg.textContent = res.label + ' ' + k + ' failed: ' + error.message; }
-      else { n++; DATA[keyOf(res.marketSlug, k)] = payload; META[keyOf(res.marketSlug, k)] = { key: keyOf(res.marketSlug, k), label: res.label, market_slug: res.marketSlug, kind: k, source_month: month, computed_at: stamp, meta: payload.meta }; }
-      await new Promise(r => setTimeout(r, 0));
-    }
-  }
-  btn.disabled = false;
-  msg.textContent = fails ? ('Saved ' + n + ', ' + fails + ' failed.') : ('✓ Saved ' + n + ' snapshots.');
-  buildMarketList(); renderLobbyTiles();
 }
 
 /* ── Update from Forge (stage 3) — monthly refresh via the scoring engine ──
