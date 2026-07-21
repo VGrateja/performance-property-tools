@@ -744,7 +744,8 @@ function forecastPop(slug, nYears){
   }
   const finalPop = rows[rows.length-1].pop, growth = finalPop - base;
   const baseLabel = (years[0]-2)+'-'+String(years[0]-1).slice(-2);   /* the FY before the first projection year, e.g. 2024-25 */
-  return { base, baseLabel, rows, finalPop, growth, growthPct: growth/base*100 };
+  const cagr = (Math.pow(finalPop/base, 1/rows.length)-1)*100;
+  return { base, baseLabel, rows, finalPop, growth, growthPct: growth/base*100, cagr };
 }
 
 /* Sensitivity ladder for one region/type. years = 1 (sell) / 5 (buy). */
@@ -772,11 +773,12 @@ function head(kicker,title){ return '<div class="kicker">'+esc(kicker)+'</div><h
 /* Blank title slide — add your own text via the editor (use tokens like
    {region} {kind} {year} so it auto-fills per region + year). */
 function slideTitle(ctx){ return chrome('<div class="pad"></div>'); }
-/* Page 13: Forecasted Population — sample-deck look (Van 2026-07-19): four
-   simple bars (grey current FY + teal forecast years), comma value labels
-   above, category labels only (no axes/gridlines); the y-range is compressed
-   around the data so 3-year growth reads visually. The summary line under the
-   chart is AUTHORED via the {pop_*} tokens. */
+/* Page 9: Forecasted Population — matches the Online Reports chart (Van
+   2026-07-21): full population history (teal) + current FY (black) + 3
+   forecast years (grey), a real y-axis with gridlines. ALL data from Forge —
+   `rdp_raw_series` population history + `pop_proj_*` projection (NOT the
+   Google Sheet). Footer summary (Current / By / Growth / CAGR + source) is
+   AUTHORED under the chart via the {pop_*} tokens. */
 function mountPopForecast(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderPopForecastChart(host, slug); }
 async function renderPopForecastChart(host, slug){
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
@@ -785,18 +787,23 @@ async function renderPopForecastChart(host, slug){
   const f=forecastPop(slug,3);
   if(!f){ host.innerHTML='<div class="bss-chartload">No population projection for this region.</div>'; return; }
   const cm=v=>Math.round(v).toLocaleString();
-  const cats=['Current ('+f.baseLabel+')'].concat(f.rows.map(r=>r.label));
-  const vals=[f.base].concat(f.rows.map(r=>r.pop));
-  const lo=Math.min.apply(null,vals), hi=Math.max.apply(null,vals), span=Math.max(hi-lo,1);
+  const fyLabel=y=>(y-1)+'-'+String(y).slice(-2);   /* pop year-key Y → FY label (2025 → "2024-25") */
+  const yrs=Object.keys(DB.pop[slug]||{}).map(Number).sort((a,b)=>a-b);
+  const curY=yrs.length?yrs[yrs.length-1]:null;      /* latest ERP year = current FY (= f.base) */
+  const histYears=yrs.filter(y=>y>curY-11);          /* last 10 historical years + the current FY */
+  const TEAL='#00A0B4', BLACK='#171B24', GREY='#c2c6cc';
+  const cats=[], vals=[], colors=[];
+  histYears.forEach(y=>{ const isCur=(y===curY);
+    cats.push(fyLabel(y)+(isCur?' (Current)':'')); vals.push(DB.pop[slug][String(y)]); colors.push(isCur?BLACK:TEAL); });
+  f.rows.forEach(r=>{ cats.push(r.label); vals.push(r.pop); colors.push(GREY); });   /* 3 forecast years, grey */
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
       formatter:params=>{ const p=params[0]; return '<b>'+p.axisValue+'</b><br>'+p.marker+'Population: <b>'+cm(p.value)+'</b>'; } },
-    grid:{left:28,right:28,top:56,bottom:34},
-    xAxis:{ type:'category', data:cats, axisLabel:{color:'#444',fontSize:9.5}, axisTick:{show:false}, axisLine:{show:false} },
-    yAxis:{ type:'value', min:Math.max(0,lo-span*2.3), max:hi+span*0.25, show:false },
-    series:[{ type:'bar', barCategoryGap:'32%',
-      data:vals.map((v,i)=>({value:v,itemStyle:{color:i===0?'#c6c6c6':'#00A0B4'}})),
-      label:{show:true,position:'top',fontSize:9.5,color:'#333',formatter:p=>cm(p.value)} }] };
+    grid:{left:74,right:24,top:24,bottom:28},
+    xAxis:{ type:'category', data:cats, axisLabel:{color:'#555',fontSize:9,interval:0}, axisTick:{show:false}, axisLine:{lineStyle:{color:'#cfd4da'}} },
+    yAxis:{ type:'value', min:0, axisLabel:{color:'#7a7f87',fontSize:10,formatter:v=>v.toLocaleString()}, axisLine:{show:false}, axisTick:{show:false}, splitLine:{lineStyle:{color:'#e4e7ec'}} },
+    series:[{ type:'bar', barCategoryGap:'28%',
+      data:vals.map((v,i)=>({value:v,itemStyle:{color:colors[i]}})) }] };
   host.innerHTML='';
   const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
   host.appendChild(box);
@@ -2322,6 +2329,7 @@ function _tokenMap(){
     pop_growth_pct:POPINFO?pct(POPINFO.growthPct):'—',
     pop_current_fy:POPINFO?POPINFO.baseLabel:'—',
     pop_target_fy:POPINFO?POPINFO.rows[POPINFO.rows.length-1].label:'—',
+    pop_cagr:(POPINFO&&POPINFO.cagr!=null)?POPINFO.cagr.toFixed(2)+'%':'—',
     /* rates + wage-growth horizon (sensitivity slides; live from rdp_runway_config) */
     cash_current:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.current.cash*100).toFixed(2)+'%':'—',
     cash_forecast:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.forecast.cash*100).toFixed(2)+'%':'—',
