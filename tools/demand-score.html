@@ -839,7 +839,8 @@ const fmtPrice = n => n >= 1e6 ? "$"+(n/1e6).toFixed(2)+"M" : n >= 1e3 ? "$"+Mat
  *  ─────────┼─────────────────────────────┼──────────────────────────────
  *  DS < 25  │  Low Demand / Low Runway    │  Low Demand / High Runway
  *  (LOW)    │  → Watch / Avoid (red)      │  → Buy / Strong Buy (green)
- *           │         RW < 0.6            │         RW ≥ 0.6
+ *           │      RW below entry bar     │      RW at/above entry bar
+ *  Entry bar = 40% for smooth markets, 70% for workforce (not a flat 60%).
  *
  *  Secondary axis: Possible Rental Growth (right y-axis on chart)
  *    DS 60+ ≈ 10%+,  DS 40 ≈ 5%+,  DS 25 ≈ CPI+,  DS 0 ≈ 0%,  DS < 0 ≈ negative
@@ -852,7 +853,15 @@ const TIERS = {
   avoid:  { key:"avoid",  label:"Avoid",      color:"#CA1637", bg:"#fef2f2", ring:"#fecaca" },
 };
 
-function getTier(ds, rw) {
+/* Market ENTRY BARS (house methodology, same as Runway v Demand's axis + Market
+   Compare): a market is "approved" for trading at 40% runway if SMOOTH, 70% if
+   WORKFORCE. Replaces the old flat 60% line — which under-rated smooth markets
+   and over-rated workforce ones. The runway is NORMALISED against the bar
+   (nb = rw / bar; 1.0 = at the bar) so a single set of thresholds works for
+   both types. NOTE: this only changes the VERDICT/quadrant labels — the demand
+   score itself is unchanged, and Runway v Demand is a separate tool untouched. */
+const ENTRY_BAR = { smooth: 0.40, workforce: 0.70 };
+function getTier(ds, rw, type) {
   // rw may be undefined in scoreBar-only contexts; fall back to ds-only logic
   if (rw === undefined) {
     if (ds >= 40) return TIERS.strong;
@@ -861,41 +870,36 @@ function getTier(ds, rw) {
     if (ds >= 5)  return TIERS.watch;
     return TIERS.avoid;
   }
+  const nb = rw / ENTRY_BAR[type === "workforce" ? "workforce" : "smooth"];   // 1.0 = at the entry bar
+  const highDemand = ds >= 25, approved = nb >= 1;
 
-  const highDemand = ds >= 25;
-  const highRunway = rw >= 0.6;
-
-  if (!highDemand && highRunway) {
-    // GREEN — Low Demand / High Runway → Strong Buy or Buy
-    if (rw >= 0.9 || (rw >= 0.7 && ds >= 15)) return TIERS.strong;
+  if (!highDemand && approved) {
+    // GREEN — demand yet to build, runway clears the bar → Strong Buy or Buy
+    if (nb >= 1.5 || (nb >= 1.15 && ds >= 15)) return TIERS.strong;
     return TIERS.buy;
   }
-
-  if (highDemand && highRunway) {
-    // BLUE — High Demand / High Runway → Buy or Hold
-    if (ds >= 45 && rw >= 0.8) return TIERS.strong;
-    if (ds >= 35 || rw >= 0.8) return TIERS.buy;
-    return TIERS.hold;
+  if (highDemand && approved) {
+    // BLUE — strong demand above the bar → Strong Buy or Buy
+    if (ds >= 45 && nb >= 1.25) return TIERS.strong;
+    return TIERS.buy;
   }
-
-  if (highDemand && !highRunway) {
-    // YELLOW — High Demand / Low Runway → Hold or Watch
-    if (ds >= 40 && rw >= 0.3) return TIERS.hold;
-    if (ds >= 30 || rw >= 0.4) return TIERS.hold;
+  if (highDemand && !approved) {
+    // YELLOW — demand there, runway below the bar → Hold or Watch
+    if (nb >= 0.5) return TIERS.hold;
     return TIERS.watch;
   }
-
-  // RED — Low Demand / Low Runway → Watch or Avoid
-  if (ds < 0 || rw < 0.1) return TIERS.avoid;
-  if (ds < 10 && rw < 0.3) return TIERS.avoid;
+  // RED — neither
+  if (ds < 0 || nb < 0.17) return TIERS.avoid;
+  if (ds < 10 && nb < 0.5) return TIERS.avoid;
   return TIERS.watch;
 }
 
-function getQuadrant(ds, rw) {
-  const highDemand = ds >= 25, highRunway = (rw || 0) >= 0.6;
-  if (highDemand && !highRunway) return { label:"High Demand / Low Runway", color:"#B87100", bg:"#fefce833" };
-  if (highDemand && highRunway)  return { label:"High Demand / High Runway", color:"#318DD8", bg:"#318DD822" };
-  if (!highDemand && !highRunway) return { label:"Low Demand / Low Runway", color:"#E72347", bg:"#E7234722" };
+function getQuadrant(ds, rw, type) {
+  const bar = ENTRY_BAR[type === "workforce" ? "workforce" : "smooth"];
+  const highDemand = ds >= 25, approved = (rw || 0) >= bar;
+  if (highDemand && !approved) return { label:"High Demand / Low Runway", color:"#B87100", bg:"#fefce833" };
+  if (highDemand && approved)  return { label:"High Demand / High Runway", color:"#318DD8", bg:"#318DD822" };
+  if (!highDemand && !approved) return { label:"Low Demand / Low Runway", color:"#E72347", bg:"#E7234722" };
   return { label:"Low Demand / High Runway", color:"#22c55e", bg:"#22c55e22" };
 }
 
@@ -930,9 +934,9 @@ function icon(name, size) {
 /* ============================================================================
    PRIMITIVES
    ============================================================================ */
-function scoreBar(value, runway) {
+function scoreBar(value, runway, type) {
   const pct = Math.max(0, Math.min(100, ((value + 15) / 75) * 100));
-  const tier = getTier(value, runway);
+  const tier = getTier(value, runway, type);
   return h("div", { style: { display:"flex", alignItems:"center", gap:"8px" } },
     h("div", { style: { width:"110px", height:"5px", borderRadius:"3px", background:"var(--ds-surface-3)", overflow:"hidden" } },
       h("div", { style: { width: pct+"%", height:"100%", borderRadius:"3px",
@@ -1147,8 +1151,8 @@ function australiaMap(allMarkets, filteredMarkets, accentColor) {
   container.appendChild(infoPanel);
 
   function showMapInfo(m) {
-    const tier = getTier(m.demandScore, m.runway);
-    const quad = getQuadrant(m.demandScore, m.runway);
+    const tier = getTier(m.demandScore, m.runway, m.marketType);
+    const quad = getQuadrant(m.demandScore, m.runway, m.marketType);
     infoPanel.innerHTML = "";
     infoPanel.className = "map-info-panel visible";
 
@@ -1262,8 +1266,8 @@ function australiaMap(allMarkets, filteredMarkets, accentColor) {
       const geo = MARKET_GEO[m.name];
       if (!geo) return;
       const [lat, lng, radius] = geo;
-      const tier = getTier(m.demandScore, m.runway);
-      const quad = getQuadrant(m.demandScore, m.runway);
+      const tier = getTier(m.demandScore, m.runway, m.marketType);
+      const quad = getQuadrant(m.demandScore, m.runway, m.marketType);
       const isActive = filteredNames.has(m.name);
       const isDimmed = hasFilter && !isActive;
 
@@ -1341,7 +1345,7 @@ function australiaMap(allMarkets, filteredMarkets, accentColor) {
 function detailPanel() {
   const mk = state.selected;
   if (!mk) return null;
-  const tier = getTier(mk.demandScore, mk.runway);
+  const tier = getTier(mk.demandScore, mk.runway, mk.marketType);
   const pt = state.tab;
   const ac = pt === "Houses" ? "var(--ds-houses)" : "var(--ds-units)";
   const acChipBg = pt === "Houses" ? "var(--ds-houses-bg)" : "var(--ds-units-bg)";
@@ -1404,11 +1408,11 @@ function detailPanel() {
         ),
         h("div", { style:{
           fontSize:"10px", fontWeight:"600", padding:"4px 10px", borderRadius:"5px", marginBottom:"10px",
-          background: getQuadrant(mk.demandScore, mk.runway).bg,
-          color: getQuadrant(mk.demandScore, mk.runway).color,
-          border: `1px solid ${getQuadrant(mk.demandScore, mk.runway).color}33`,
+          background: getQuadrant(mk.demandScore, mk.runway, mk.marketType).bg,
+          color: getQuadrant(mk.demandScore, mk.runway, mk.marketType).color,
+          border: `1px solid ${getQuadrant(mk.demandScore, mk.runway, mk.marketType).color}33`,
           display:"inline-block"
-        } }, getQuadrant(mk.demandScore, mk.runway).label),
+        } }, getQuadrant(mk.demandScore, mk.runway, mk.marketType).label),
         h("h2", { style:{
           fontSize:"28px", fontWeight:"800", color:"var(--ds-fg-2)",
           fontFamily:"var(--ds-font-display)", lineHeight:"1.1"
@@ -1543,8 +1547,8 @@ function compareModal() {
 
   const metrics = [
     { l:"State",              key:"state",          kind:"text" },
-    { l:"Tier",               fn: m => getTier(m.demandScore, m.runway).label, kind:"text" },
-    { l:"Quadrant",           fn: m => getQuadrant(m.demandScore, m.runway).label, kind:"text" },
+    { l:"Tier",               fn: m => getTier(m.demandScore, m.runway, m.marketType).label, kind:"text" },
+    { l:"Quadrant",           fn: m => getQuadrant(m.demandScore, m.runway, m.marketType).label, kind:"text" },
     { l:"Demand Score",       key:"demandScore",    kind:"score-high" },
     { l:"Rank",               key:"dsRank",         kind:"num-low",  fmt: v => "#"+v },
     { l:"Runway",             fn: m => m.runway*100, kind:"num-high", fmt: v => v.toFixed(2)+"%" },
@@ -1620,7 +1624,7 @@ function compareModal() {
               textTransform:"uppercase", color:"var(--ds-fg-dim)",
               borderBottom:"1px solid var(--ds-surface-4)", position:"sticky", left:"0", background:"var(--ds-surface-2)", zIndex:"1" } }, "Metric"),
             ...items.map(m => {
-              const tier = getTier(m.demandScore, m.runway);
+              const tier = getTier(m.demandScore, m.runway, m.marketType);
               return h("th", { style: { textAlign:"right", padding:"8px 12px 10px",
                 fontSize:"12px", fontWeight:"800", color:"var(--ds-fg-1)",
                 borderBottom:"1px solid var(--ds-surface-4)", whiteSpace:"nowrap" } },
@@ -1674,7 +1678,7 @@ function getFiltered() {
   if (!markets) return [];
   return markets.filter(m => {
     if (state.sf !== "All" && m.state !== state.sf) return false;
-    if (state.tf !== "All" && getTier(m.demandScore, m.runway).label !== state.tf) return false;
+    if (state.tf !== "All" && getTier(m.demandScore, m.runway, m.marketType).label !== state.tf) return false;
     if (state.mf !== "All" && m.marketType !== state.mf) return false;
     if (state.search && !m.name.toLowerCase().includes(state.search.toLowerCase())) return false;
     return true;
@@ -1917,7 +1921,7 @@ function render() {
         gap:"10px", margin:"20px 0" }
     });
     top5.forEach((m, i) => {
-      const tier = getTier(m.demandScore, m.runway);
+      const tier = getTier(m.demandScore, m.runway, m.marketType);
       topGrid.appendChild(h("div", {
         style:{
           background:"linear-gradient(135deg, var(--ds-surface-3) 0%, var(--ds-surface-2) 100%)",
@@ -2124,7 +2128,7 @@ function render() {
 
       const tbody = h("tbody", {});
       filtered.forEach((m, i) => {
-        const tier = getTier(m.demandScore, m.runway);
+        const tier = getTier(m.demandScore, m.runway, m.marketType);
         const bg = i % 2 === 0 ? "var(--ds-surface-2)" : "var(--ds-surface-1)";
         const row = h("tr", {
           className: "row-hover",
@@ -2139,7 +2143,7 @@ function render() {
           } }),
           m.name));
         row.appendChild(h("td", { style:{ padding:"9px 12px", color: ac, fontWeight:"700", fontSize:"11px", letterSpacing:"0.04em" } }, m.state));
-        row.appendChild(h("td", { style:{ padding:"9px 12px" } }, scoreBar(m.demandScore, m.runway)));
+        row.appendChild(h("td", { style:{ padding:"9px 12px" } }, scoreBar(m.demandScore, m.runway, m.marketType)));
         row.appendChild(h("td", { style:{ padding:"9px 12px" } }, badge(tier)));
         row.appendChild(h("td", { style:{ padding:"9px 12px", textAlign:"right" } }, delta(m.dsDiff)));
         row.appendChild(h("td", { style:{ padding:"9px 12px", textAlign:"right" } },
@@ -2184,7 +2188,7 @@ function render() {
         display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))", gap:"12px"
       } });
       filtered.forEach(m => {
-        const tier = getTier(m.demandScore, m.runway);
+        const tier = getTier(m.demandScore, m.runway, m.marketType);
         const inCmp = state.compare.includes(m.name);
         grid.appendChild(h("div", {
           style:{
