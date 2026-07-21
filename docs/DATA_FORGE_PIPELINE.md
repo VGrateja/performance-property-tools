@@ -8,7 +8,9 @@ Anything the audit could not fully confirm from the repo is marked **(verify)**.
 
 ## 1. Purpose & principle
 
-**Data Forge is the intended single source of truth for research data.** Every number that feeds the Online Reports, National report, Commercial report, Runway Workbook, VR Projection, and Demand Score Dashboard is meant to originate in Data Forge's isolated stores and marts, then be published outward to the tools — never edited directly in the consuming tools.
+**Data Forge is the single source of truth for research data.** Every number that feeds the Online Reports, National report, Commercial report, Runway Workbook, VR Projection, Demand Score Dashboard, and Buying/Selling Slides originates in Data Forge's isolated stores and marts, then is published outward to the tools — never edited directly in the consuming tools.
+
+**The rule (owner, 2026-07-21): any tool that needs data reads it from this pipeline. Forge updates → owner deploys (PUBLISH) → every tool's data updates.** A new data-consuming tool is wired to the `rdp_*` marts (or the isolated `forge_*` stores), never to a private feed or a hand-entered number — so there is exactly one place to refresh and one deploy step that propagates everywhere.
 
 Three principles hold the design together:
 
@@ -175,6 +177,7 @@ The run's outcome is recorded to `forge_data_status` as **`pipeline_publish`** (
 | **VR Projection** | `rdp_vr_forecast` (+ `rdp_regions`, `forge_demand_inputs` for freshness) | Forge-native only (no toggle) | none | Native from start |
 | **Demand Score Dashboard** | `forge_demand_inputs` + `rdp_vr_forecast` + `rdp_runway` + `forge_monthly_price` + `rdp_raw_series` + `forge_cotality` + `rdp_runway_config`; score computed **client-side** (no `rdp_demand_score` read) | Forge-native only (no toggle) | none; versioned `forge_demand_snapshots` for compare | Native, but off the central mart path (manual seed lineage) |
 | **Runway v Demand** (`runway-demand.html`) | `forge_demand_snapshots` (`rvd-*` push mirrors) merged over the hardcoded `RAW` baseline; localStorage = same-month manual override | Forge-native merge (no toggle) | localStorage → baseline `RAW` | **Ported 2026-07-10** — the Demand Score "Push" now mirrors to Forge, so every machine/deck sees pushed months; Manage→Delete removes the Forge copy too |
+| **Buying/Selling Slides** (`buying-selling-slides.html`, Vault) | `rdp_raw_series` (At-a-Glance headline stats + the median/yield/P2I/population/finance chart slides), `rdp_report_feed` (via `getFeed`), `rdp_runway` + `rdp_vr_forecast` (Traffic-Lights + VR-projection slides, via the shared engines), `forge_demand_snapshots` (the embedded Runway v Demand slide), `clock_state` (direction/type) | Forge-native only (no toggle) | none — reads the marts live on each deck load (in-session per-region cache only) | **Native from start** (added 2026-07). The deck is as fresh as the last PUBLISH: property medians/rent/vacancy/DOM/yield reach `rdp_raw_series` only via PUBLISH step 2 (`sync-cotality-medians-to-rdp`); the runway/VR/feed slides read PUBLISH-computed marts. Only the per-deck header chrome (title/disclaimer/rule/logo overlays) lives in `reports_state` — never data. |
 
 Notes:
 - The Forge path on Online Reports **bypasses the snapshot/cache** — every page load hits `rdp_report_feed` live; the cache/snapshot only engage on a Forge failure (via `liveDataFetch`).

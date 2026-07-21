@@ -3123,7 +3123,7 @@
         if (typeof _activeDeck === 'undefined' || !_activeDeck || !_activeDeck.id) return;
         var url = 'tools/presentation.html?deck=' + _activeDeck.id;
         if (!PP_PINS.has(function (p) { return p.url === url; })) {
-          PP_PINS.add({ kind: 'link', label: _activeDeck.title || 'Presentation', url: url, a1: '#54A6DE', a2: '#2478BC',
+          PP_PINS.add({ kind: 'link', type: 'deck', label: _activeDeck.title || 'Presentation', url: url, a1: '#54A6DE', a2: '#2478BC',
             icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 12l3-3 2 2 4-4.5"/><path d="M9 20l3-2 3 2"/></svg>' });
           btn.title = 'Pinned to desktop';
         } else { btn.title = 'Already on your desktop'; }
@@ -13553,6 +13553,25 @@ async function _persistDeckRow(deck) {
   const visibility = deck._visibility === 'company' ? 'company' : 'private';
   const title      = (deck.title || 'Untitled presentation').toString().slice(0, 300);
   if (deck._rowId) {
+    /* ── ANTI-WIPE GUARD ────────────────────────────────────────────────────
+       A deck's overlays (its real content) are cached per-browser-ORIGIN in
+       localStorage (_overlays). A stale/empty cache — the SAME deck open on a
+       2nd origin (offline localhost + online), a hard-refresh before hydrate,
+       or localStorage eviction — would otherwise save overlays:{} and clobber a
+       populated cloud deck (this wiped the "Stage 4" deck 2026-07-21). So if THIS
+       save carries no overlays for the deck but the cloud row still has some,
+       SKIP it rather than clear the content. */
+    if (Object.keys(payload.overlays || {}).length === 0) {
+      try {
+        const { data: cur } = await window.sb.from('presentation_decks').select('payload').eq('id', deck._rowId).maybeSingle();
+        const curOv = cur && cur.payload && cur.payload.overlays;
+        if (curOv && Object.keys(curOv).length > 0) {
+          console.warn('[presentation] anti-wipe: skipped a save that would have cleared', Object.keys(curOv).length, 'overlays on deck', deck._rowId, '— likely a stale / second-origin cache. Reload the deck before editing.');
+          if (typeof showPresToast === 'function') showPresToast('Save skipped — this tab has no content cached for this deck (open elsewhere?). Reload before editing so it isn’t overwritten.');
+          return;
+        }
+      } catch (_) { /* guard read failed → fall through to the normal save */ }
+    }
     const { error } = await window.sb.from('presentation_decks')
       .update({ title: title, payload: payload, visibility: visibility })
       .eq('id', deck._rowId);
