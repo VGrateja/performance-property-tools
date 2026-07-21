@@ -37,7 +37,7 @@ const stateSlug = c => 'st-' + c.toLowerCase();
 const SLUGS = new Set([
   'australia','sydney','melbourne','brisbane','perth','adelaide','canberra','hobart','darwin',
   'mackay','bundaberg','ipswich','rockhampton','gladstone','cairns','townsville','sunshine-coast','toowoomba','gold-coast',
-  'albury','central-coast','coffs-harbour','newcastle','orange','port-macquarie','tamworth','wagga-wagga','wollongong','dubbo',
+  'albury','central-coast','coffs-harbour','newcastle','orange','port-macquarie','tamworth','wagga-wagga','wollongong',
   'ballarat','bendigo','geelong','wodonga','mildura','mandurah','rockingham','bunbury','launceston',
 ]);
 
