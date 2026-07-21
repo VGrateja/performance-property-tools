@@ -387,6 +387,18 @@ body.bss-present .bss-slidewrap.cur{display:block;}
    they read like the sample's light-grey content slides (kept slides keep their
    own authored backgrounds). */
 .bss-light{background:#f4f5f7;color:#171B24;}
+/* Runway v Demand LIVE embed (pages 4+5 merged) — iframes runway-demand.html
+   ?embed=1 (its own HOUSE/UNIT tabs kept). Lazy-loaded when the slide is
+   reached so the deck stays light on open. */
+/* host centres the stage (flex) + clips overflow — centring is pure CSS so it
+   can't fall back to left-aligned regardless of JS timing/Present mode. */
+.bss-rvd-embed{flex:1;min-height:0;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;background:transparent}   /* transparent so the side margins blend with the slide bg and don't cover the logo */
+/* stage = the tool's content box at its base 1136x754. The embedded tool hides
+   its OS app bar in embed mode (runway-demand.html body.embed-mode .appbar), so
+   no cropping is needed here — just scale-to-fit + flex-centre. */
+.bss-rvd-stage{width:1136px;height:754px;flex:0 0 auto;position:relative;overflow:hidden;transform-origin:center center}
+.bss-rvd-stage iframe{position:absolute;top:0;left:0;width:1136px;height:754px;border:0;display:block}
+.bss-rvd-ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#9aa2ad;font-size:14px;font-family:'Figtree',sans-serif}
 .bss-img{flex:1;min-height:0;margin-top:4px;display:flex;align-items:center;justify-content:center;position:relative}
 .bss-imgup{flex:1;min-height:0;margin-top:4px;display:flex;align-items:center;justify-content:center;position:relative}
 .bss-imgbtn{position:absolute;top:6px;right:6px;font:inherit;font-size:12px;font-weight:700;padding:6px 12px;border-radius:8px;border:1px solid var(--bss-line);background:rgba(8,20,38,.72);color:var(--bss-ink);cursor:pointer}
@@ -1484,6 +1496,32 @@ function chartSlideBare(bottomPad){ return chrome('<div class="pad" style="paddi
 function lightChartSlide(bottomPad){ return chrome('<div class="pad bss-light" style="padding:128px 48px '+(bottomPad||30)+'px"><div class="bss-chart bss-chartpanel"></div></div>'); }
 /* "Coming Soon" stub for a slot whose per-region data source is still pending */
 function stubSlide(title){ return chrome('<div class="pad bss-light" style="display:flex;align-items:center;justify-content:center;text-align:center"><div style="font-family:\'Montserrat\',sans-serif"><div style="font-size:20px;font-weight:700;color:#63666A;letter-spacing:.08em;text-transform:uppercase">'+esc(title)+'</div><div style="margin-top:16px;font-size:44px;font-weight:800;color:#cfd4db">Coming soon</div><div style="margin-top:10px;font-size:13px;color:#9aa2ad">Data source pending</div></div></div>'); }
+/* Runway v Demand — pages 4+5 merged into ONE live embed (same iframe the
+   Presentation tool uses: runway-demand.html?embed=1, HOUSE/UNIT tabs kept).
+   LAZY: the iframe is only created when the slide scrolls into view (or is
+   presented), so opening the deck never loads the heavy tool up front. Full
+   interactivity preserved. Region-agnostic (national scatter, all markets). */
+function rvdEmbedSlide(){ return chrome('<div class="pad bss-light" style="padding:128px 40px 34px"><div class="bss-rvd-embed"><div class="bss-rvd-ph">Loading Runway v Demand…</div></div></div>'); }
+function mountRvdEmbed(slideEl){
+  const host=slideEl.querySelector('.bss-rvd-embed'); if(!host || host.dataset.loaded) return;
+  const SW=1136, SH=754;   /* stage = the tool's base size; its OS app bar is hidden in embed mode, so no crop */
+  const load=()=>{ if(host.dataset.loaded) return; host.dataset.loaded='1';
+    const stage=document.createElement('div'); stage.className='bss-rvd-stage';
+    const f=document.createElement('iframe'); f.src='runway-demand.html?embed=1&view=house'; f.title='Runway v Demand'; f.setAttribute('scrolling','no'); f.setAttribute('loading','lazy');
+    stage.appendChild(f);
+    const ph=host.querySelector('.bss-rvd-ph'); if(ph) ph.remove();
+    host.appendChild(stage);
+    /* only the SCALE is JS — crop + centring are CSS, so a bad/late measure can't
+       un-centre it or reveal the app bar; worst case is a wrong size, still centred. */
+    const fit=()=>{ const cw=host.clientWidth, ch=host.clientHeight; if(!cw||!ch) return; stage.style.transform='scale('+Math.min(cw/SW, ch/SH)+')'; };
+    fit(); requestAnimationFrame(fit); requestAnimationFrame(function(){ requestAnimationFrame(fit); });
+    f.addEventListener('load', function(){ fit(); setTimeout(fit,150); });
+    if('ResizeObserver' in window){ try{ new ResizeObserver(fit).observe(host); }catch(e){} }
+    window.addEventListener('resize', fit);
+  };
+  try{ const io=new IntersectionObserver(function(es){ for(const e of es){ if(e.isIntersecting){ load(); io.disconnect(); break; } } }, { threshold:0.05 }); io.observe(host); }
+  catch(e){ load(); }
+}
 
 /* ── Market-entry data + live median prices (median-price slides + tokens) ──
    ENTRY  = per-region constants stored ONCE in reports_state row
@@ -1899,8 +1937,7 @@ const SLIDE_DEFS = [
   { key:'f0',  t:'Coverpage', render: slideTitle },
   { key:'f1',  t:'Market Positions Clock', render: slideTitle },   /* blank template — Van authors via overlays */
   { key:'f2',  t:'Property Clock', render: c=>chrome('<div class="pad" style="padding:128px 80px 30px"><div class="bss-img"></div></div>'), mount:(el,c)=>mountAutoClock(el) },
-  { key:'demand_h', t:'Demand vs Runway (Houses)', render: c=>lightChartSlide(60), mount:(el,c)=>mountDemandRunway(el,'h') },
-  { key:'demand_u', t:'Demand vs Runway (Units)', render: c=>lightChartSlide(60), mount:(el,c)=>mountDemandRunway(el,'u') },
+  { key:'demand_h', t:'Demand vs Runway', render: c=>rvdEmbedSlide(), mount:(el,c)=>mountRvdEmbed(el) },   /* pages 4+5 MERGED into one live Runway-v-Demand embed (H/U tabs inside, lazy-loaded); demand_u dropped — its chrome overlays go unused. mountDemandRunway kept as dead code. */
   { key:'tl_before', t:'Traffic Lights — Before Entering', render: c=>tlSlide('Traffic Lights: What people want to see before entering the market'), mount:(el,c)=>mountTL(el,c.slug) },
   { key:'tl_best', t:'Traffic Lights — Best Time', render: c=>tlSlide('Traffic Lights: The best time to invest'), mount:(el,c)=>mountTL(el,c.slug) },
   { key:'glance', t:'At a Glance', render: c=>glanceSlide(), mount:(el,c)=>mountGlance(el,c.slug) },
