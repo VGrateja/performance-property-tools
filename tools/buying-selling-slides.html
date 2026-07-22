@@ -1852,6 +1852,14 @@ function _stagBands(vals){
   const bands=[]; for(const b of raw){ const last=bands[bands.length-1]; if(last && b.s-last.e<=1) last.e=b.e; else bands.push({s:b.s,e:b.e}); }   /* merge adjacent plateaus into one band */
   return bands;
 }
+/* Workbook-marked stagnation periods per region [startYear, endYear|null] —
+   null end = ongoing ("Present"). Overrides the derived _stagBands() when a
+   region is listed. Seed from the sample decks / runway workbook as they land;
+   Melbourne verified against the sample (2026-07-22). Duration shown is
+   inclusive (end-start+1), so [1990,1996] renders "7 years (1990 - 1996)". */
+const STAG_PERIODS = {
+  melbourne: [[1990,1996],[2010,2014],[2019,null]],
+};
 function mountMedianCombined(el,slug){ const host=el.querySelector('.bss-chart'); if(host) renderMedianCombined(host,slug); }
 async function renderMedianCombined(host,slug){
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
@@ -1864,18 +1872,28 @@ async function renderMedianCombined(host,slug){
     const a=_orAlignCols(raw.year,[raw.medianHousePrice,raw.medianUnitPrice],{mode:'loose'});
     years=a.keys; h=a.cols[0].map(v=>v==null?null:Math.round(v)); u=a.cols[1].map(v=>v==null?null:Math.round(v)); }catch(e){}
   if(!years.length){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  /* start at 1980 like the sample deck (drops the sparse pre-1980 Cotality tail) */
+  { const i0=years.findIndex(y=>y>=1980); if(i0>0){ years=years.slice(i0); h=h.slice(i0); u=u.slice(i0); } }
   const money=v=>'$'+Number(v).toLocaleString();
-  const bands=_stagBands(h);
   const lastY=years[years.length-1];
-  const areaData=bands.map(b=>{ const dur=years[b.e]-years[b.s]; const endLab=(years[b.e]>=lastY)?'Present':String(years[b.e]);
-    return [{xAxis:b.s, itemStyle:{color:'rgba(120,120,120,0.16)'}, label:{show:true,position:'insideTop',color:'#666',fontSize:9,fontWeight:600,formatter:dur+' years ('+years[b.s]+'-'+endLab+')'}}, {xAxis:b.e}]; });
+  /* per-region workbook periods (STAG_PERIODS) when known, else the algorithmic
+     stand-in. Duration is inclusive (end-start+1) to match the sample decks. */
+  let bands;
+  const cfgStag=STAG_PERIODS[slug];
+  if(cfgStag&&cfgStag.length){
+    bands=cfgStag.map(p=>{ const s=years.indexOf(p[0]); let e=(p[1]==null)?years.length-1:years.indexOf(p[1]);
+      if(e<0)e=years.length-1; return s<0?null:{s,e}; }).filter(Boolean);
+  } else { bands=_stagBands(h); }
+  const areaData=bands.map(b=>{ const dur=years[b.e]-years[b.s]+1; const endLab=(years[b.e]>=lastY)?'Present':String(years[b.e]);
+    return [{xAxis:b.s, itemStyle:{color:'rgba(120,120,120,0.16)'}, label:{show:true,position:'insideTop',color:'#666',fontSize:9,fontWeight:600,formatter:dur+' years ('+years[b.s]+' - '+endLab+')'}}, {xAxis:b.e}]; });
   const hLastIdx=(function(){ for(let i=h.length-1;i>=0;i--) if(h[i]!=null) return i; return -1; })();
   const uLastIdx=(function(){ for(let i=u.length-1;i>=0;i--) if(u[i]!=null) return i; return -1; })();
   const marks=[]; if(hLastIdx>=0) marks.push({coord:[hLastIdx,h[hLastIdx]],value:money(h[hLastIdx]),label:{color:'#00838f'}});
   if(uLastIdx>=0) marks.push({coord:[uLastIdx,u[uLastIdx]],value:money(u[uLastIdx]),label:{color:'#171B24'}});
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true, valueFormatter:v=>(v==null?'—':money(v)) },
-    legend:{ top:2, left:'center', icon:'circle', itemWidth:9, itemHeight:9, textStyle:{color:'#333',fontSize:11,fontWeight:700}, data:['House Median Price','Unit Median Price'] },
+    legend:{ top:2, left:'center', icon:'circle', itemWidth:9, itemHeight:9, textStyle:{color:'#333',fontSize:11,fontWeight:700},
+      data:['House Median Price','Unit Median Price',{name:'Stagnation Period', icon:'rect'}] },
     grid:{left:64,right:44,top:40,bottom:46},
     xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
     yAxis:{ type:'value', splitNumber:10, axisLabel:{color:'#444',fontSize:9,formatter:v=>'$'+v.toLocaleString()}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
@@ -1883,7 +1901,8 @@ async function renderMedianCombined(host,slug){
       { name:'House Median Price', type:'line', data:h, smooth:true, symbol:'none', connectNulls:true, z:3, lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
         markArea:areaData.length?{silent:true,data:areaData}:undefined,
         markPoint:{ symbol:'circle', symbolSize:1, label:{show:true,position:'top',distance:8,fontWeight:700,fontSize:12}, data:marks } },
-      { name:'Unit Median Price', type:'line', data:u, smooth:true, symbol:'none', connectNulls:true, z:2, lineStyle:{color:'#171B24',width:3}, itemStyle:{color:'#171B24'} } ] };
+      { name:'Unit Median Price', type:'line', data:u, smooth:true, symbol:'none', connectNulls:true, z:2, lineStyle:{color:'#171B24',width:3}, itemStyle:{color:'#171B24'} },
+      { name:'Stagnation Period', type:'line', data:[], silent:true, itemStyle:{color:'#c9c9c9'}, lineStyle:{opacity:0} } ] };   /* legend-only proxy for the grey stagnation bands (markArea can't legend itself) */
   _drawEChart(host, option);
 }
 /* ── Price to Income + peer (slide 19) — {region} House/Unit vs {peer} House/Unit
