@@ -733,19 +733,29 @@ const shareOf = (m,slug,st) => { const a=latestVal(m[slug]), b=latestVal(m[st]);
 const popSeries = slug => (DB.popG && DB.popG[slug]) ? DB.popG[slug] : DB.pop[slug];
 
 /* Forecasted population for one region, nYears ahead. Capital → gov projection
-   direct; region → state projection × live Forge share. */
+   direct. Region → state projection × live Forge share for Natural Increase +
+   NOM (both stable, and matching the research sheet), but Net Internal Migration
+   is carried from the region's OWN recent history, NOT scaled off the state's net
+   figure: a state's net interstate migration nets out intra-state moves
+   (e.g. Melbourne→Geelong), so it's tiny/unstable and dividing by it makes the
+   share explode — the sheet's own %NIM hits 744% for Geelong / −87% for Mildura,
+   giving impossible ±30-40% forecasts. Using the region's own NIM matches the
+   sheet where its net figure is sizable (QLD/NSW/WA) and stays sane where it isn't
+   (VIC/TAS). See memory project_buying_selling_slides + the FORECAST-Regions CSV. */
 function forecastPop(slug, nYears){
   const st = DB.meta[slug] && DB.meta[slug].state ? 'st-'+DB.meta[slug].state.toLowerCase() : null;
   const isCap = DB.meta[slug] && DB.meta[slug].cluster==='capital';
   const base = latestVal(popSeries(slug)); if (base==null) return null;
   const years = Object.keys(DB.pni[isCap?slug:st]||{}).map(Number).sort((a,b)=>a-b).slice(0,nYears);
   if (!years.length) return null;
-  const sh = isCap ? null : { ni:shareOf(DB.ni,slug,st), nom:shareOf(DB.nom,slug,st), nim:shareOf(DB.nim,slug,st) };
+  const sh = isCap ? null : { ni:shareOf(DB.ni,slug,st), nom:shareOf(DB.nom,slug,st) };
+  /* region's own recent net internal migration (avg of the last ≤3 years), held flat forward */
+  const ownNIM = isCap ? 0 : (() => { const a=Object.keys(DB.nim[slug]||{}).sort().slice(-3).map(k=>DB.nim[slug][k]).filter(v=>v!=null&&isFinite(v)); return a.length ? a.reduce((s,v)=>s+v,0)/a.length : 0; })();
   let p = base; const rows=[];
   for (const y of years){ const ys=String(y);
     const g = isCap
       ? ((DB.pni[slug]||{})[ys]||0)+((DB.pnom[slug]||{})[ys]||0)+((DB.pnim[slug]||{})[ys]||0)
-      : ((DB.pni[st]||{})[ys]||0)*sh.ni + ((DB.pnom[st]||{})[ys]||0)*sh.nom + ((DB.pnim[st]||{})[ys]||0)*sh.nim;
+      : ((DB.pni[st]||{})[ys]||0)*sh.ni + ((DB.pnom[st]||{})[ys]||0)*sh.nom + ownNIM;
     p += g; rows.push({ y, label:(y-1)+'-'+String(y).slice(-2), pop:p });
   }
   const finalPop = rows[rows.length-1].pop, growth = finalPop - base;
