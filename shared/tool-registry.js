@@ -32,6 +32,7 @@
     'results':          { sec: 'analytics', file: 'results.html',                label: 'Results' },
     /* vault */
     'forge':            { sec: 'vault',     file: 'data-forge.html',             label: 'Data Forge' },
+    'data-extractor':   { sec: 'vault',     file: 'data-extractor.html',         label: 'Data Extractor' },
     'traffic-lights':   { sec: 'vault',     file: 'traffic-lights.html',         label: 'Traffic Lights' },
     'demand-score':     { sec: 'vault',     file: 'demand-score.html',           label: 'Demand Score Dashboard' },
     'market-compare':   { sec: 'vault',     file: 'market-compare.html',         label: 'Market Compare' },

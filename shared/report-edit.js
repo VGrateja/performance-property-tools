@@ -4403,7 +4403,7 @@ const REGIONAL_PAGEDROPS = {
   toowoomba: _PP_DROPS_26P, townsville: _PP_DROPS_26P,
   /* NSW regions */
   albury: _PP_DROPS_26P, 'central-coast': _PP_DROPS_26P, 'coffs-harbour': _PP_DROPS_26P,
-  dubbo: _PP_DROPS_26P, newcastle: _PP_DROPS_26P, orange: ['p7', ..._PP_DROPS_26P],
+  newcastle: _PP_DROPS_26P, orange: ['p7', ..._PP_DROPS_26P],
   'port-macquarie': _PP_DROPS_26P, tamworth: _PP_DROPS_26P,
   'wagga-wagga': _PP_DROPS_26P, wollongong: _PP_DROPS_26P,
   /* VIC / WA / TAS regions */

@@ -676,7 +676,7 @@ body.bss-present .bss-presd{display:flex}
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=79207e52"></script>
-<script src="../shared/tool-registry.js?v=5dbcbed4"></script>
+<script src="../shared/tool-registry.js?v=a13a56ea"></script>
 <script src="../shared/desktop-pins.js?v=e2416017"></script>
 <script src="../shared/auth.js?v=6f88fa92"></script>
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
@@ -710,36 +710,52 @@ async function loadForge(){
   if (!window.sb) throw new Error('No database connection.');
   const pull = async metric => { let all=[],from=0; for(;;){ const {data,error}=await window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric',metric).range(from,from+999); if(error)throw error; all=all.concat(data||[]); if(!data||data.length<1000)break; from+=1000; } return all; };
   const idx = rows => { const m={}; for(const r of rows){ (m[r.region_slug]||={})[String(r.period).slice(0,4)]=r.value; } return m; };
-  const [reg, runway, cfgRows, POP, NI, NOM, NIM, PNI, PNOM, PNIM] = await Promise.all([
+  const [reg, runway, cfgRows, POP, POPG, NI, NOM, NIM, PNI, PNOM, PNIM] = await Promise.all([
     window.sb.from('rdp_regions').select('slug,name,state,cluster'),
     window.sb.from('rdp_runway').select('region_slug,payload'),
     window.sb.from('rdp_runway_config').select('key,value'),
-    pull('population'), pull('natural_increase'), pull('nom'), pull('nim'),
+    pull('population'), pull('population_gccsa'), pull('natural_increase'), pull('nom'), pull('nim'),
     pull('pop_proj_ni'), pull('pop_proj_nom'), pull('pop_proj_nim'),
   ]);
   const cfg = Object.fromEntries((cfgRows.data||[]).map(r=>[r.key,r.value]));
   const runwayBy = {}; for (const r of (runway.data||[])) if (r.payload && r.payload.inputs && r.payload.inputs.income!=null) runwayBy[r.region_slug]=r.payload;
   const meta = {}; for (const r of (reg.data||[])) meta[r.slug] = r;
   DB = { meta, runway:runwayBy, cfg,
-    pop:idx(POP), ni:idx(NI), nom:idx(NOM), nim:idx(NIM), pni:idx(PNI), pnom:idx(PNOM), pnim:idx(PNIM) };
+    pop:idx(POP), popG:idx(POPG), ni:idx(NI), nom:idx(NOM), nim:idx(NIM), pni:idx(PNI), pnom:idx(PNOM), pnim:idx(PNIM) };
 }
 const latestVal = o => { if(!o) return null; const y=Object.keys(o).sort(); return y.length?o[y[y.length-1]]:null; };
 const shareOf = (m,slug,st) => { const a=latestVal(m[slug]), b=latestVal(m[st]); return (a==null||!b)?0:a/b; };
 
+/* Population series for the FORECAST slide only: capitals use GCCSA (Greater
+   Capital City — what the sales decks + the Centre-for-Population projections
+   are built on); regionals have no GCCSA so fall back to SUA. The At-a-Glance
+   "Population" stat stays SUA `population` everywhere (Van 2026-07-21). */
+const popSeries = slug => (DB.popG && DB.popG[slug]) ? DB.popG[slug] : DB.pop[slug];
+
 /* Forecasted population for one region, nYears ahead. Capital → gov projection
-   direct; region → state projection × live Forge share. */
+   direct. Region → state projection × live Forge share for Natural Increase +
+   NOM (both stable, and matching the research sheet), but Net Internal Migration
+   is carried from the region's OWN recent history, NOT scaled off the state's net
+   figure: a state's net interstate migration nets out intra-state moves
+   (e.g. Melbourne→Geelong), so it's tiny/unstable and dividing by it makes the
+   share explode — the sheet's own %NIM hits 744% for Geelong / −87% for Mildura,
+   giving impossible ±30-40% forecasts. Using the region's own NIM matches the
+   sheet where its net figure is sizable (QLD/NSW/WA) and stays sane where it isn't
+   (VIC/TAS). See memory project_buying_selling_slides + the FORECAST-Regions CSV. */
 function forecastPop(slug, nYears){
   const st = DB.meta[slug] && DB.meta[slug].state ? 'st-'+DB.meta[slug].state.toLowerCase() : null;
   const isCap = DB.meta[slug] && DB.meta[slug].cluster==='capital';
-  const base = latestVal(DB.pop[slug]); if (base==null) return null;
+  const base = latestVal(popSeries(slug)); if (base==null) return null;
   const years = Object.keys(DB.pni[isCap?slug:st]||{}).map(Number).sort((a,b)=>a-b).slice(0,nYears);
   if (!years.length) return null;
-  const sh = isCap ? null : { ni:shareOf(DB.ni,slug,st), nom:shareOf(DB.nom,slug,st), nim:shareOf(DB.nim,slug,st) };
+  const sh = isCap ? null : { ni:shareOf(DB.ni,slug,st), nom:shareOf(DB.nom,slug,st) };
+  /* region's own recent net internal migration (avg of the last ≤3 years), held flat forward */
+  const ownNIM = isCap ? 0 : (() => { const a=Object.keys(DB.nim[slug]||{}).sort().slice(-3).map(k=>DB.nim[slug][k]).filter(v=>v!=null&&isFinite(v)); return a.length ? a.reduce((s,v)=>s+v,0)/a.length : 0; })();
   let p = base; const rows=[];
   for (const y of years){ const ys=String(y);
     const g = isCap
       ? ((DB.pni[slug]||{})[ys]||0)+((DB.pnom[slug]||{})[ys]||0)+((DB.pnim[slug]||{})[ys]||0)
-      : ((DB.pni[st]||{})[ys]||0)*sh.ni + ((DB.pnom[st]||{})[ys]||0)*sh.nom + ((DB.pnim[st]||{})[ys]||0)*sh.nim;
+      : ((DB.pni[st]||{})[ys]||0)*sh.ni + ((DB.pnom[st]||{})[ys]||0)*sh.nom + ownNIM;
     p += g; rows.push({ y, label:(y-1)+'-'+String(y).slice(-2), pop:p });
   }
   const finalPop = rows[rows.length-1].pop, growth = finalPop - base;
@@ -788,13 +804,14 @@ async function renderPopForecastChart(host, slug){
   if(!f){ host.innerHTML='<div class="bss-chartload">No population projection for this region.</div>'; return; }
   const cm=v=>Math.round(v).toLocaleString();
   const fyLabel=y=>(y-1)+'-'+String(y).slice(-2);   /* pop year-key Y → FY label (2025 → "2024-25") */
-  const yrs=Object.keys(DB.pop[slug]||{}).map(Number).sort((a,b)=>a-b);
+  const S=popSeries(slug)||{};                       /* GCCSA for capitals, SUA for regionals */
+  const yrs=Object.keys(S).map(Number).sort((a,b)=>a-b);
   const curY=yrs.length?yrs[yrs.length-1]:null;      /* latest ERP year = current FY (= f.base) */
   const histYears=yrs.filter(y=>y>curY-11);          /* last 10 historical years + the current FY */
   const TEAL='#00A0B4', BLACK='#171B24', GREY='#c2c6cc';
   const cats=[], vals=[], colors=[];
   histYears.forEach(y=>{ const isCur=(y===curY);
-    cats.push(fyLabel(y)+(isCur?' (Current)':'')); vals.push(DB.pop[slug][String(y)]); colors.push(isCur?BLACK:TEAL); });
+    cats.push(fyLabel(y)+(isCur?' (Current)':'')); vals.push(S[String(y)]); colors.push(isCur?BLACK:TEAL); });
   f.rows.forEach(r=>{ cats.push(r.label); vals.push(r.pop); colors.push(GREY); });   /* 3 forecast years, grey */
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
@@ -1254,7 +1271,7 @@ const GLANCE={};
 async function getGlance(slug){
   if(GLANCE[slug]!==undefined) return GLANCE[slug];
   try{
-    const mets=['population','vacancy_rate','unemployment','jci','som_h','som_u','mp_h','mp_u','rent_h','rent_u','adom_h','adom_u'];
+    const mets=['population','population_gccsa','vacancy_rate','unemployment','jci','som_h','som_u','mp_h','mp_u','rent_h','rent_u','adom_h','adom_u'];
     const {data}=await window.sb.from('rdp_raw_series').select('metric,period,value').eq('region_slug',slug).in('metric',mets).order('period');
     const S={}; mets.forEach(m=>S[m]=[]);
     (data||[]).forEach(r=>{ const v=Number(r.value); if(isFinite(v)) (S[r.metric]||(S[r.metric]=[])).push({y:String(r.period).slice(0,7), v}); });
@@ -1265,9 +1282,10 @@ async function getGlance(slug){
     const yoy=a=>{ const m=annual(a),ys=Object.keys(m).sort(); if(ys.length<2)return null; const ly=ys[ys.length-1],py=ys[ys.length-2]; return m[py]?m[ly]/m[py]-1:null; };
     const yld=(rent,price)=>{ const rp=last(rent),pp=last(price); return (rp&&pp)?rp*52/pp:null; };
     const som=last(S.som_h);   /* top "Stock on Market" card = houses stock (matches the sample deck) */
+    const popA=(S.population_gccsa&&S.population_gccsa.length)?S.population_gccsa:S.population;   /* GCCSA for capitals, SUA for regionals — B/S-only until the Aug deploy flips the shared `population` metric */
     GLANCE[slug]={
-      stats:{ pop:last(S.population), popG:yoy(S.population), vr:last(S.vacancy_rate), unemp:last(S.unemployment), jci:last(S.jci), som:som,
-        popSpark:vals(S.population).slice(-16), vrSpark:vals(S.vacancy_rate).slice(-28), unempSpark:vals(S.unemployment).slice(-28), jciSpark:vals(S.jci).slice(-28), somSpark:vals(S.som_h).slice(-28) },
+      stats:{ pop:last(popA), popG:yoy(popA), vr:last(S.vacancy_rate), unemp:last(S.unemployment), jci:last(S.jci), som:som,
+        popSpark:vals(popA).slice(-16), vrSpark:vals(S.vacancy_rate).slice(-28), unempSpark:vals(S.unemployment).slice(-28), jciSpark:vals(S.jci).slice(-28), somSpark:vals(S.som_h).slice(-28) },
       h:{ price:last(S.mp_h), adom:last(S.adom_h), c3:cagr(S.mp_h,3), c10:cagr(S.mp_h,10), rent:last(S.rent_h), yld:yld(S.rent_h,S.mp_h),
           priceSpark:vals(S.mp_h).slice(-28), adomSpark:vals(S.adom_h).slice(-28), rentSpark:vals(S.rent_h).slice(-28) },
       u:{ price:last(S.mp_u), adom:last(S.adom_u), c3:cagr(S.mp_u,3), c10:cagr(S.mp_u,10), rent:last(S.rent_u), yld:yld(S.rent_u,S.mp_u),
@@ -1834,6 +1852,14 @@ function _stagBands(vals){
   const bands=[]; for(const b of raw){ const last=bands[bands.length-1]; if(last && b.s-last.e<=1) last.e=b.e; else bands.push({s:b.s,e:b.e}); }   /* merge adjacent plateaus into one band */
   return bands;
 }
+/* Workbook-marked stagnation periods per region [startYear, endYear|null] —
+   null end = ongoing ("Present"). Overrides the derived _stagBands() when a
+   region is listed. Seed from the sample decks / runway workbook as they land;
+   Melbourne verified against the sample (2026-07-22). Duration shown is
+   inclusive (end-start+1), so [1990,1996] renders "7 years (1990 - 1996)". */
+const STAG_PERIODS = {
+  melbourne: [[1990,1996],[2010,2014],[2019,null]],
+};
 function mountMedianCombined(el,slug){ const host=el.querySelector('.bss-chart'); if(host) renderMedianCombined(host,slug); }
 async function renderMedianCombined(host,slug){
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
@@ -1846,18 +1872,28 @@ async function renderMedianCombined(host,slug){
     const a=_orAlignCols(raw.year,[raw.medianHousePrice,raw.medianUnitPrice],{mode:'loose'});
     years=a.keys; h=a.cols[0].map(v=>v==null?null:Math.round(v)); u=a.cols[1].map(v=>v==null?null:Math.round(v)); }catch(e){}
   if(!years.length){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  /* start at 1980 like the sample deck (drops the sparse pre-1980 Cotality tail) */
+  { const i0=years.findIndex(y=>y>=1980); if(i0>0){ years=years.slice(i0); h=h.slice(i0); u=u.slice(i0); } }
   const money=v=>'$'+Number(v).toLocaleString();
-  const bands=_stagBands(h);
   const lastY=years[years.length-1];
-  const areaData=bands.map(b=>{ const dur=years[b.e]-years[b.s]; const endLab=(years[b.e]>=lastY)?'Present':String(years[b.e]);
-    return [{xAxis:b.s, itemStyle:{color:'rgba(120,120,120,0.16)'}, label:{show:true,position:'insideTop',color:'#666',fontSize:9,fontWeight:600,formatter:dur+' years ('+years[b.s]+'-'+endLab+')'}}, {xAxis:b.e}]; });
+  /* per-region workbook periods (STAG_PERIODS) when known, else the algorithmic
+     stand-in. Duration is inclusive (end-start+1) to match the sample decks. */
+  let bands;
+  const cfgStag=STAG_PERIODS[slug];
+  if(cfgStag&&cfgStag.length){
+    bands=cfgStag.map(p=>{ const s=years.indexOf(p[0]); let e=(p[1]==null)?years.length-1:years.indexOf(p[1]);
+      if(e<0)e=years.length-1; return s<0?null:{s,e}; }).filter(Boolean);
+  } else { bands=_stagBands(h); }
+  const areaData=bands.map(b=>{ const dur=years[b.e]-years[b.s]+1; const endLab=(years[b.e]>=lastY)?'Present':String(years[b.e]);
+    return [{xAxis:b.s, itemStyle:{color:'rgba(120,120,120,0.16)'}, label:{show:true,position:'insideTop',color:'#666',fontSize:9,fontWeight:600,formatter:dur+' years ('+years[b.s]+' - '+endLab+')'}}, {xAxis:b.e}]; });
   const hLastIdx=(function(){ for(let i=h.length-1;i>=0;i--) if(h[i]!=null) return i; return -1; })();
   const uLastIdx=(function(){ for(let i=u.length-1;i>=0;i--) if(u[i]!=null) return i; return -1; })();
   const marks=[]; if(hLastIdx>=0) marks.push({coord:[hLastIdx,h[hLastIdx]],value:money(h[hLastIdx]),label:{color:'#00838f'}});
   if(uLastIdx>=0) marks.push({coord:[uLastIdx,u[uLastIdx]],value:money(u[uLastIdx]),label:{color:'#171B24'}});
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true, valueFormatter:v=>(v==null?'—':money(v)) },
-    legend:{ top:2, left:'center', icon:'circle', itemWidth:9, itemHeight:9, textStyle:{color:'#333',fontSize:11,fontWeight:700}, data:['House Median Price','Unit Median Price'] },
+    legend:{ top:2, left:'center', icon:'circle', itemWidth:9, itemHeight:9, textStyle:{color:'#333',fontSize:11,fontWeight:700},
+      data:['House Median Price','Unit Median Price',{name:'Stagnation Period', icon:'rect'}] },
     grid:{left:64,right:44,top:40,bottom:46},
     xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
     yAxis:{ type:'value', splitNumber:10, axisLabel:{color:'#444',fontSize:9,formatter:v=>'$'+v.toLocaleString()}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
@@ -1865,7 +1901,8 @@ async function renderMedianCombined(host,slug){
       { name:'House Median Price', type:'line', data:h, smooth:true, symbol:'none', connectNulls:true, z:3, lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
         markArea:areaData.length?{silent:true,data:areaData}:undefined,
         markPoint:{ symbol:'circle', symbolSize:1, label:{show:true,position:'top',distance:8,fontWeight:700,fontSize:12}, data:marks } },
-      { name:'Unit Median Price', type:'line', data:u, smooth:true, symbol:'none', connectNulls:true, z:2, lineStyle:{color:'#171B24',width:3}, itemStyle:{color:'#171B24'} } ] };
+      { name:'Unit Median Price', type:'line', data:u, smooth:true, symbol:'none', connectNulls:true, z:2, lineStyle:{color:'#171B24',width:3}, itemStyle:{color:'#171B24'} },
+      { name:'Stagnation Period', type:'line', data:[], silent:true, itemStyle:{color:'#c9c9c9'}, lineStyle:{opacity:0} } ] };   /* legend-only proxy for the grey stagnation bands (markArea can't legend itself) */
   _drawEChart(host, option);
 }
 /* ── Price to Income + peer (slide 19) — {region} House/Unit vs {peer} House/Unit
@@ -1962,7 +1999,7 @@ const SLIDE_DEFS = [
   { key:'div_demand', t:'DEMAND (divider)', render: c=>'' },   /* dividers are bare slides (default slide bg) — Van authors the watermark/word/rule/disclaimer as overlays */
   { key:'f13', t:'Forecasted Population', render: c=>chartSlideBare(196), mount:(el,c)=>mountPopForecast(el,c.slug) },
   { key:'pop_move', t:'Population Movement', render: c=>lightChartSlide(60), mount:(el,c)=>mountPopMovement(el,c.slug) },
-  { key:'f12', t:'Vacancy v Rent', render: c=>chartSlideBare(60), mount:(el,c)=>mountVacRent(el,c.slug) },
+  { key:'f12', t:'Vacancy v Rent', render: c=>chartSlideBare(120), mount:(el,c)=>mountVacRent(el,c.slug) },   /* 120 bottom-pad = chart ends ~y600, just above the authored narrative (y615) which sits above the logo (y665) + source line (y692) — Van's layout */
   { key:'vr_proj', t:'Vacancy Rate Projection', render: c=>vrProjSlide(), mount:(el,c)=>mountVRProjection(el,c.slug) },
   { key:'stub_dwellings', t:'Total Dwellings', render: c=>stubSlide('Total Dwellings') },
   { key:'stub_bonds', t:'RTBA Rental Bonds Held', render: c=>stubSlide('RTBA Rental Bonds Held') },
