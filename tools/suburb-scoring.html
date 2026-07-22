@@ -67,6 +67,10 @@ body.ss-lobby-open .ss-main{display:none}
 .ss-search{flex:1 1 260px;max-width:420px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:#141A28;color:#F4F6F8;padding:10px 13px;font:600 13px 'Montserrat',sans-serif;outline:none}
 .ss-search:focus{border-color:var(--ss-teal)}
 .ss-search::placeholder{color:rgba(200,214,236,0.4)}
+.ss-lobsearch{margin:4px 0 20px}
+.ss-lobsearch .ss-search{max-width:none;width:min(520px,100%)}
+.ss-lobsearch-hint{font-size:11.5px;font-weight:700;letter-spacing:.02em;color:rgba(220,228,240,0.55);margin-top:8px;min-height:14px}
+.ss-tile .hit{font-size:11.5px;color:var(--ss-teal);margin-top:5px;font-weight:800}
 
 /* quality chips (shared) */
 .ss-q{display:inline-block;font-size:10px;font-weight:800;letter-spacing:.06em;border-radius:6px;padding:2px 7px;line-height:1.5}
@@ -183,6 +187,10 @@ body.ss-lobby-open .ss-main{display:none}
         <h1>Suburb Scoring</h1>
         <p class="ss-sub">Pick a market, then a suburb — long-term quality, remaining runway, value scores and the buying recommendation, straight from the research database.</p>
       </div>
+      <div class="ss-lobsearch">
+        <input type="search" class="ss-search" id="ssLobSearch" placeholder="Search any market or suburb — e.g. Gladstone, or Sun Valley" autocomplete="off" spellcheck="false">
+        <div class="ss-lobsearch-hint" id="ssLobHint"></div>
+      </div>
       <div class="ss-groups" id="ssMarketGroups"></div>
       <div class="ss-ingest" id="ssForge" hidden>
         <h3>Update from Forge <span id="ssForgeMonth" style="font-weight:600;opacity:.65;font-size:12px"></span></h3>
@@ -277,6 +285,8 @@ const state = { market: null, kind: 'h', suburb: null, q: '', qual: '', sort: 'n
 const META = {};          /* key → {label, market_slug, kind, source_month, computed_at, meta} */
 const DATA = {};          /* key → payload (lazy) */
 let MARKET_LIST = [];     /* [{slug,label,kinds:{h:meta,u:meta}}] capitals-first */
+const SS_SUBIDX = {};     /* market_slug → [suburb names] (from the suburb_market_index view) — powers the lobby suburb search */
+let lobbyQuery = '';      /* current lobby search text (matches LGA label OR any suburb inside it) */
 const CAPITALS = ['melbourne','adelaide','sydney','perth','brisbane','darwin','hobart','canberra'];
 const $ = s => document.querySelector(s);
 const money = v => (v == null || !isFinite(v)) ? '—' : '$' + Math.round(v).toLocaleString();
@@ -300,6 +310,8 @@ async function boot() {
   buildMarketList();
   renderLobbyTiles();
   wireUi();
+  wireLobbySearch();
+  loadSubIndex();
   initIngestGate();
   const q = new URLSearchParams(location.search);
   const m = q.get('market'), k = q.get('kind') === 'u' ? 'u' : 'h', sub = q.get('suburb');
@@ -324,29 +336,63 @@ function buildMarketList() {
 function renderLobbyTiles() {
   const host = $('#ssMarketGroups');
   if (!MARKET_LIST.length) return;
-  const tile = m => {
+  const q = lobbyQuery.trim().toLowerCase();
+  /* a market shows if its LGA name matches OR it contains a matching suburb */
+  const info = m => {
+    if (!q) return { show: true, subs: [], labelHit: false };
+    const labelHit = m.label.toLowerCase().includes(q);
+    const subs = (SS_SUBIDX[m.slug] || []).filter(s => s.toLowerCase().includes(q));
+    return { show: labelHit || subs.length > 0, subs, labelHit };
+  };
+  const tile = (m, nfo) => {
     const hM = m.kinds.h && m.kinds.h.meta, uM = m.kinds.u && m.kinds.u.meta;
     const n = (hM && hM.suburbs) || 0, nu = (uM && uM.suburbs) || 0;
     const kinds = [m.kinds.h ? 'H' : null, m.kinds.u ? 'U' : null].filter(Boolean).join(' · ');
-    return '<button type="button" class="ss-tile" data-m="' + m.slug + '">'
+    /* matched by suburb (not the LGA name) → surface the matching suburb(s) so the
+       user sees WHY this market showed up; a single match deep-links to it on click */
+    const showSubs = q && nfo.subs.length && !nfo.labelHit;
+    const meta = showSubs
+      ? '<div class="hit">' + esc(nfo.subs.slice(0, 3).join(' · ')) + (nfo.subs.length > 3 ? ' +' + (nfo.subs.length - 3) + ' more' : '') + '</div>'
+      : '<div class="meta">' + n + ' house · ' + nu + ' unit suburbs</div>';
+    const dataSub = showSubs && nfo.subs.length === 1 ? ' data-sub="' + esc(nfo.subs[0]) + '"' : '';
+    return '<button type="button" class="ss-tile" data-m="' + m.slug + '"' + dataSub + '>'
       + '<span class="kinds">' + kinds + '</span>'
-      + '<div class="nm">' + esc(m.label) + '</div>'
-      + '<div class="meta">' + n + ' house · ' + nu + ' unit suburbs</div></button>';
+      + '<div class="nm">' + esc(m.label) + '</div>' + meta + '</button>';
   };
-  const caps = MARKET_LIST.filter(m => CAPITALS.includes(m.slug));
-  const regs = MARKET_LIST.filter(m => !CAPITALS.includes(m.slug));
-  host.innerHTML =
-    (caps.length ? '<div class="ss-ghead">Capital cities</div><div class="ss-tiles">' + caps.map(tile).join('') + '</div>' : '')
-    + (regs.length ? '<div class="ss-ghead">Regional markets</div><div class="ss-tiles">' + regs.map(tile).join('') + '</div>' : '');
-  /* a market tile opens the dashboard directly (benchmark selected) — the
-     suburb search + rail live there, so the old step-2 picker is gone */
+  const shown = MARKET_LIST.map(m => ({ m, nfo: info(m) })).filter(x => x.nfo.show);
+  const caps = shown.filter(x => CAPITALS.includes(x.m.slug));
+  const regs = shown.filter(x => !CAPITALS.includes(x.m.slug));
+  const grp = (title, arr) => arr.length ? '<div class="ss-ghead">' + title + '</div><div class="ss-tiles">' + arr.map(x => tile(x.m, x.nfo)).join('') + '</div>' : '';
+  host.innerHTML = grp('Capital cities', caps) + grp('Regional markets', regs)
+    + (q && !shown.length ? '<div class="ss-empty" style="color:rgba(220,228,240,.7);padding:22px 2px">No market or suburb matches “' + esc(lobbyQuery.trim()) + '”.</div>' : '');
+  /* a market tile opens the dashboard directly (benchmark selected, or the matched suburb) */
   host.querySelectorAll('.ss-tile').forEach(b => b.addEventListener('click', async () => {
     const m = MARKET_LIST.find(x => x.slug === b.dataset.m); if (!m) return;
     const kind = m.kinds[state.kind] ? state.kind : (m.kinds.h ? 'h' : 'u');
     b.style.opacity = '.6';
-    await openMarket(m.slug, kind, null);
+    await openMarket(m.slug, kind, b.dataset.sub || null);
     b.style.opacity = '';
   }));
+  const hint = $('#ssLobHint');
+  if (hint) hint.textContent = q ? (shown.length + ' market' + (shown.length === 1 ? '' : 's') + ' match') : '';
+}
+
+/* Suburb→market index for the lobby search (one lightweight row per market from
+   the suburb_market_index view). Loaded once, non-blocking; LGA-name search works
+   without it, suburb search lights up once it lands. */
+async function loadSubIndex() {
+  try {
+    const { data, error } = await sb.from('suburb_market_index').select('market_slug,suburbs');
+    if (error) throw error;
+    (data || []).forEach(r => { SS_SUBIDX[r.market_slug] = r.suburbs || []; });
+    if (lobbyQuery) renderLobbyTiles();
+  } catch (e) { /* suburb search stays a no-op; market-name search still works */ }
+}
+function wireLobbySearch() {
+  const input = $('#ssLobSearch'); if (!input) return;
+  let t = null;
+  input.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { lobbyQuery = input.value || ''; renderLobbyTiles(); }, 110); });
+  input.addEventListener('keydown', e => { if (e.key === 'Escape') { input.value = ''; lobbyQuery = ''; renderLobbyTiles(); } });
 }
 
 /* ── lobby flow ── */
