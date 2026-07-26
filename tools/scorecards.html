@@ -341,7 +341,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=79207e52"></script>
 <script src="../shared/tool-registry.js?v=a13a56ea"></script>
-<script src="../shared/auth.js?v=6f88fa92"></script>
+<script src="../shared/auth.js?v=d653ab09"></script>
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
 <script src="../shared/fit-screen.js?v=5e41a716"></script>
 <script>
@@ -468,18 +468,23 @@ function rollup(emp, idxFrom, idxTo) {
   return { months, rated: rated.length, predominant, avg, counts };
 }
 
+/* ── scorecard writer check (tiers + the ROLES axis, mig 089) ──
+   Writers = global Editors (dev/admin) OR holders of the per-tool
+   'scorecards' editor role in tool_roles (e.g. Marilou — the retired
+   'leads' tier ported to a role). RLS grants the same via
+   scorecard_can_write() = is_writer() OR has_tool_role('scorecards').
+   View-as still de-writes a dev previewing a non-writer tier. */
+function scWriter() {
+  const WRITER_TIERS = ['dev', 'admin'];
+  const real = (S.profile && WRITER_TIERS.includes(S.profile.tier)) || !!S.toolEditor;
+  const view = (typeof getViewAsLevel === 'function') ? getViewAsLevel() : null;
+  return !!real && (!view || WRITER_TIERS.includes(view));
+}
+
 /* ── role of the signed-in user for an employee row ─────────── */
 function roleFor(emp) {
   const uid = S.profile && S.profile.id;
-  /* Writer needs the real account to be dev/admin/leads AND, when a dev
-     previews another tier via view-as, that tier to also be a writer tier —
-     so company preview stays read-only, matching a real such user. In
-     Scorecards ONLY, 'leads' gets full writer rights (RLS grants the same via
-     scorecard_can_write()); everywhere else leads is a non-writer. */
-  const WRITER_TIERS = ['dev', 'admin', 'leads'];
-  const realWriter = S.profile && WRITER_TIERS.includes(S.profile.tier);
-  const view = (typeof getViewAsLevel === 'function') ? getViewAsLevel() : null;
-  const writer = !!realWriter && (!view || WRITER_TIERS.includes(view));
+  const writer = scWriter();
   /* Which rating SECTION a user can fill is strictly their linked role —
      manager→KPIs, P&C→behaviours, employee→self — with NO cross-role override
      (not even dev). A writer can open/see a card, but can only answer the
@@ -628,7 +633,7 @@ function renderDash() {
   const empty = $('#dashEmpty');
   if (!S.employees.length) {
     empty.hidden = false;
-    const writer = S.profile && ['dev', 'admin', 'leads'].includes(S.profile.tier);
+    const writer = scWriter();
     empty.innerHTML = '<div class="big">📋</div><h3>No scorecards yet for this year</h3><p>' +
       (writer ? 'Add your first team member — their KPIs are set once and every month inherits them automatically.' :
         'Nothing has been assigned to you yet. Your manager will add you to a scorecard.') + '</p>' +
@@ -1226,7 +1231,16 @@ async function saveCfg() {
 /* ═══ boot ════════════════════════════════════════════════════ */
 async function boot() {
   try { S.profile = await sbCurrentProfile(); } catch (_) {}
-  const writer = S.profile && ['dev', 'admin', 'leads'].includes(S.profile.tier);
+  /* per-tool role (mig 089): does this user hold the scorecards editor role? */
+  S.toolEditor = false;
+  if (S.profile) {
+    try {
+      const { data } = await sb.from('tool_roles').select('role')
+        .eq('user_id', S.profile.id).eq('tool_key', 'scorecards').eq('role', 'editor');
+      S.toolEditor = !!(data && data.length);
+    } catch (_) {}
+  }
+  const writer = scWriter();
   /* Use style.display, not the `hidden` attribute: #settingsBtn has class .btn
      (display:inline-flex), an author rule that overrides the UA [hidden] rule,
      so `hidden` alone wouldn't actually hide it for non-writers (staff). */

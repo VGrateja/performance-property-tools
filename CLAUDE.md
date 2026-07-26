@@ -31,29 +31,49 @@ that alone, not the site.
   into `sessionStorage` so the rest of the code can gate UI synchronously;
   `shared/auth-gate.js` redirects un-signed-in users off tool pages.
 
-## Access tiers (`shared/auth.js`, `public.profiles.tier`)
+## Access model — two axes (recalibrated 2026-07-25, mig 089)
 
-| tier | who | rights |
+**GROUPS = access** (which tools your hub shows) · **ROLES = permission**
+(can you edit or only view). Both sit on `public.profiles`.
+
+### Roles (`profiles.tier` + `public.tool_roles`)
+
+| tier | who | default role |
 |---|---|---|
-| `dev` | Vandolf | full edit + download + view-as switcher |
-| `admin` | Saskia / Shaene / Paul / D.Robbins | full edit + download |
-| `leads` | assigned manually (like dev) | Staff rights **+ Vault & PM hub pages**; no edit |
-| `company` (labelled "Staff") | other `@performanceproperty.com.au` | view + download, no edit |
-| `client` / `guest` | external | view only, no edit, no download |
+| `dev` | Vandolf | Editor everywhere + view-as + Groups/Roles panel |
+| `admin` | Saskia / Shaene / Paul | **Editor** (global writer) |
+| `company` (labelled "Staff") | other `@performanceproperty.com.au` | **Viewer** (view + download, no edit) |
+| `client` / `guest` | external | dormant — **zero members**; view-only if ever used |
 
-- `leads` sits between `admin` and `company`: same data rights as company
-  (view + download, **not** a writer — `is_writer()` stays dev/admin), but
-  `_hubIsStaff()` (index.html) also lets it reach the Vault + PM (Cadence)
-  pages. Its extra reach is client-side gating only; RLS is unchanged.
-
-- DB writes require `is_writer()` (dev/admin) — enforced by RLS, so a UI
-  bug or leaked anon key can't write.
+- **Per-tool exceptions live in `public.tool_roles`** (`user_id`, `tool_key`,
+  `role='editor'`): a Viewer can be granted Editor *inside one tool* without
+  becoming a global admin. SQL check: `public.has_tool_role(tool, role)`.
+  Example: Marilou = Viewer + `scorecards:editor` (RLS via
+  `scorecard_can_write() = is_writer() OR has_tool_role('scorecards')`;
+  the tool's client gate is `scWriter()` in scorecards.html).
+  Reads: own rows or writers; writes: **dev only** (like `set_user_team`).
+  Managed from the dev-only Groups/Roles panel (People tab role chips).
+- **Default-role changes** (Dev ↔ Admin ↔ Staff) also happen in that panel via
+  the dev-only `set_user_tier` RPC (mig 090). Internal tiers only; the DB
+  refuses to demote the **last remaining developer** (lockout guard).
+- **The `leads` tier is RETIRED** (mig 089): its visibility became a group
+  (Marilou `team='leads'` → baseline + Scorecards) and its Scorecards write
+  became the `tool_roles` grant above. The string is still legal in the CHECK
+  constraint but nothing assigns it; legacy `leads` branches in auth.js /
+  index.html / mig 080 are dead-but-harmless fallbacks.
+- **D.Robbins is `company` (Staff), NOT admin** — he declined the admin role
+  (2026-06-29). Never list him among the admins; the live DB (profile tier,
+  `handle_new_user` trigger, `is_writer()`) is already correct.
+- Global writes require `is_writer()` (dev/admin) — enforced by RLS, so a UI
+  bug or leaked anon key can't write. Tool-scoped writes go through a
+  tool-scoped predicate (the `scorecard_can_write()` pattern) — copy that
+  pattern when a new tool needs role-based editing.
 - `tier1-only` CSS class hides elements for tier 2+; `applyAccessRestrictions()`
   applies it on load. `isViewOnly()` = client/guest.
 - **Registration is OFF** (`REGISTRATION_ENABLED = false`) — internal tool.
-- Tier names are strings (`dev`/`admin`/`leads`/`company`/`client`/`guest`),
-  even though README/old comments sometimes say "Tier 0–4". Display numbering
-  is Dev 0 · Admin 1 · Leads 2 · Staff 3 (=`company`) · Client 4 · Guest 5.
+- Tier names are strings; display language is now **Editor/Viewer** (roles),
+  but DB strings stay `dev`/`admin`/`company`/`client`/`guest` on purpose —
+  renaming them would churn RLS, the signup trigger, view-as and CSS classes.
 
 ### Staff GROUPS (teams) — visibility axis on top of tiers (mig 081)
 

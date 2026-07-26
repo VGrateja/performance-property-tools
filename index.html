@@ -353,6 +353,20 @@
     .ga-person select option{background:#141a28;color:#e8edf7}
     [data-theme="light"] .ga-person select{background:#ffffff;color:#171B24}
     [data-theme="light"] .ga-person select option{background:#ffffff;color:#171B24}
+    /* ROLES line (mig 089): default-permission label + per-tool editor chips */
+    .ga-person{flex-wrap:wrap}
+    .ga-person select.ga-tier{flex:0 0 150px;width:150px}   /* default-role selector (090) sits beside the group select */
+    .ga-roles{width:100%;display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 0 0 2px}
+    .ga-rdef{font:700 9.5px/1 'Montserrat',sans-serif;letter-spacing:.7px;text-transform:uppercase;opacity:.45}
+    .ga-rdef.ed{color:#00C4F5;opacity:.85}
+    .ga-rchip{display:inline-flex;align-items:center;gap:4px;font:600 10.5px 'Figtree',sans-serif;background:rgba(0,160,180,.16);border:1px solid rgba(0,160,180,.4);color:#7EE0EE;border-radius:999px;padding:2px 4px 2px 9px}
+    [data-theme="light"] .ga-rchip{background:#E0F4F7;border-color:#B8E4EA;color:#00636f}
+    .ga-rchip button{background:none;border:none;color:inherit;cursor:pointer;font-size:12px;line-height:1;padding:0 4px;opacity:.7}
+    .ga-rchip button:hover{opacity:1}
+    select.ga-radd{flex:0 0 auto;width:auto;max-width:150px;padding:3px 6px;font:600 10.5px 'Figtree',sans-serif;border-radius:999px;opacity:.75;background:#141a28;color:#e8edf7;border:1px dashed rgba(160,180,220,.35)}
+    select.ga-radd option{background:#141a28;color:#e8edf7}
+    [data-theme="light"] select.ga-radd{background:#ffffff;color:#171B24}
+    [data-theme="light"] select.ga-radd option{background:#ffffff;color:#171B24}
     @media (max-width:760px){ .ga-cols{grid-template-columns:1fr} .ga-glist{flex-direction:row;flex-wrap:wrap;max-height:none} }
   </style>
 
@@ -2021,7 +2035,7 @@ document.addEventListener('pp-users-changed', () => {
    hub_groups.tools; checkboxes save instantly) and people→group assignment
    (via the dev-only set_user_team RPC). The client-side isDev() guards are
    UX only — RLS + the RPC are the real gate. */
-let _gaGroups = null, _gaPeople = null, _gaSel = null;
+let _gaGroups = null, _gaPeople = null, _gaSel = null, _gaRoles = [];
 
 function openGroupsAdminModal() {
   if (typeof isDev !== 'function' || !isDev()) return;
@@ -2046,13 +2060,15 @@ function gaShowTab(which) {
 async function loadGroupsAdmin() {
   const empty = document.getElementById('gaEmpty');
   try {
-    const [g, p] = await Promise.all([
+    const [g, p, r] = await Promise.all([
       window.sb.from('hub_groups').select('key,name,tools,sort').order('sort'),
-      window.sb.from('profiles').select('id,email,full_name,tier,team').order('email')
+      window.sb.from('profiles').select('id,email,full_name,tier,team').order('email'),
+      window.sb.from('tool_roles').select('user_id,tool_key,role')   /* ROLES axis (mig 089); empty pre-migration */
     ]);
     if (g.error) throw g.error;
     _gaGroups = g.data || [];
     _gaPeople = (p.data || []);
+    _gaRoles = (r && !r.error && r.data) ? r.data : [];
     if (!_gaGroups.length) throw new Error('no groups');
     if (!_gaSel || !_gaGroups.some(r => r.key === _gaSel)) _gaSel = _gaGroups[0].key;
     empty.hidden = true;
@@ -2132,24 +2148,72 @@ function renderGaPeople() {
   const shown = !_gaPeopleQuery ? _gaPeople : _gaPeople.filter(u =>
     ((u.full_name || '') + ' ' + (u.email || '') + ' ' + (u.tier || '') + ' ' + gname(u.team || '')).toLowerCase().includes(_gaPeopleQuery));
   if (!shown.length) { host.innerHTML = '<div class="ga-noresults">No one matches "' + escGA(_gaPeopleQuery) + '".</div>'; return; }
+  const REG = window.PP_TOOL_REGISTRY;
   host.innerHTML = shown.map(u => {
     let right;
-    if (u.tier === 'dev') right = '<span class="fixed">Developer · all access</span>';
+    /* default-role (tier) selector — dev-only via the set_user_tier RPC
+       (090); promote/demote between Developer / Admin / Staff. Externals
+       (client/guest, dormant) stay read-only here. */
+    const tierSel = (u.tier === 'dev' || u.tier === 'admin' || u.tier === 'company')
+      ? '<select class="ga-tier" onchange="gaSetTier(\'' + u.id + '\', this)">'
+        + '<option value="dev"' + (u.tier === 'dev' ? ' selected' : '') + '>Developer</option>'
+        + '<option value="admin"' + (u.tier === 'admin' ? ' selected' : '') + '>Admin — Editor</option>'
+        + '<option value="company"' + (u.tier === 'company' ? ' selected' : '') + '>Staff — Viewer</option>'
+        + '</select>'
+      : '';
+    if (u.tier === 'dev') right = tierSel + '<span class="fixed">all access</span>';
     else if (u.tier === 'client' || u.tier === 'guest') right = '<span class="fixed">External · ' + escGA(u.tier) + '</span>';
     else {
-      /* admins + leads + staff are all assignable (Van 2026-07-19); only the
+      /* admins + staff are all assignable (Van 2026-07-19); only the
          "unassigned" meaning differs per tier */
       const unassigned = u.tier === 'admin' ? 'Unassigned — sees everything'
-        : u.tier === 'leads' ? 'Unassigned — baseline + Leads tools'
         : 'Unassigned — baseline only';
-      right = '<select onchange="gaAssign(\'' + u.id + '\', this)">'
+      right = tierSel + '<select onchange="gaAssign(\'' + u.id + '\', this)">'
         + '<option value=""' + (!u.team ? ' selected' : '') + '>' + unassigned + '</option>'
         + opts.map(r => '<option value="' + r.key + '"' + (u.team === r.key ? ' selected' : '') + '>' + escGA(r.name) + '</option>').join('')
         + '</select>';
     }
+    /* ── ROLES line (mig 089): default from tier + per-tool editor chips ──
+       Groups = which tools you SEE · Roles = whether you can EDIT them.
+       dev/admin are global Editors; company defaults to Viewer with
+       optional per-tool exceptions (tool_roles). External tiers: none. */
+    let rolesLine = '';
+    if (u.tier === 'admin' || u.tier === 'company') {
+      const mine = _gaRoles.filter(x => x.user_id === u.id);
+      const defRole = u.tier === 'admin' ? 'Editor (all tools)' : 'Viewer';
+      const chips = mine.map(x => {
+        const lbl = (REG && REG.TOOLS[x.tool_key]) ? REG.TOOLS[x.tool_key].label : x.tool_key;
+        return '<span class="ga-rchip" title="Editor inside this tool only">' + escGA(lbl)
+          + ' <button type="button" onclick="gaRemoveRole(\'' + u.id + '\',\'' + escGA(x.tool_key) + '\')" title="Revoke">×</button></span>';
+      }).join('');
+      const addSel = (u.tier === 'company' && REG)
+        ? '<select class="ga-radd" onchange="gaAddRole(\'' + u.id + '\', this)">'
+          + '<option value="">＋ editor role…</option>'
+          + Object.keys(REG.TOOLS).filter(k => !mine.some(x => x.tool_key === k))
+              .map(k => '<option value="' + k + '">' + escGA(REG.TOOLS[k].label) + '</option>').join('')
+          + '</select>'
+        : '';
+      rolesLine = '<div class="ga-roles"><span class="ga-rdef' + (u.tier === 'admin' ? ' ed' : '') + '">' + defRole + '</span>' + chips + addSel + '</div>';
+    }
     return '<div class="ga-person"><div class="who"><div class="nm">' + escGA(u.full_name || '—') + '</div>'
-      + '<div class="em">' + escGA(u.email) + '</div></div>' + right + '</div>';
+      + '<div class="em">' + escGA(u.email) + '</div></div>' + right + rolesLine + '</div>';
   }).join('');
+}
+/* dev-only writes (RLS enforces; the modal's isDev() gate is UX) */
+async function gaAddRole(userId, sel) {
+  const k = sel.value; if (!k) return;
+  sel.disabled = true;
+  const { error } = await window.sb.from('tool_roles').insert({ user_id: userId, tool_key: k, role: 'editor' });
+  sel.disabled = false; sel.value = '';
+  if (error) { alert('Grant failed: ' + error.message); return; }
+  _gaRoles.push({ user_id: userId, tool_key: k, role: 'editor' });
+  renderGaPeople();
+}
+async function gaRemoveRole(userId, toolKey) {
+  const { error } = await window.sb.from('tool_roles').delete().eq('user_id', userId).eq('tool_key', toolKey);
+  if (error) { alert('Revoke failed: ' + error.message); return; }
+  _gaRoles = _gaRoles.filter(x => !(x.user_id === userId && x.tool_key === toolKey));
+  renderGaPeople();
 }
 async function gaAssign(userId, sel) {
   sel.disabled = true;
@@ -2159,6 +2223,23 @@ async function gaAssign(userId, sel) {
   const u = _gaPeople.find(x => x.id === userId);
   if (u) u.team = sel.value || null;
   renderGaGroups();   /* member counts */
+  gaRefreshVisibility();
+}
+/* default-role (tier) change — dev-only RPC (090); the DB refuses to demote
+   the last developer, so the panel can never lock itself out */
+async function gaSetTier(userId, sel) {
+  const LBL = { dev: 'Developer', admin: 'Admin — Editor', company: 'Staff — Viewer' };
+  const u = _gaPeople.find(x => x.id === userId);
+  const prev = u ? u.tier : null, next = sel.value;
+  if (!u || next === prev) return;
+  if (!confirm('Change ' + (u.full_name || u.email) + ' from ' + LBL[prev] + ' to ' + LBL[next] + '?')) { sel.value = prev; return; }
+  sel.disabled = true;
+  const { error } = await window.sb.rpc('set_user_tier', { target_user: userId, new_tier: next });
+  sel.disabled = false;
+  if (error) { alert('Change failed: ' + error.message); sel.value = prev; return; }
+  u.tier = next;
+  renderGaPeople();   /* row shape follows the new role (group select, chips) */
+  renderGaGroups();
   gaRefreshVisibility();
 }
 function gaRefreshVisibility() {
@@ -3627,7 +3708,7 @@ document.addEventListener('keydown', (ev) => {
   </div>
 </div>
 
-<script src="shared/auth.js?v=6f88fa92"></script>
+<script src="shared/auth.js?v=d653ab09"></script>
 <script src="shared/desktop-pins.js?v=e2416017"></script>
 <script>
 /* Hub greeting weather line — approximate location via a keyless IP lookup,
@@ -5544,7 +5625,7 @@ function navigateToTool(url, label) {
      logic live in shared/concierge.js (also loaded on every signed-in
      /tools/*.html page so the chat follows the user wherever they
      go). Styles are in shared/concierge.css linked from <head>. -->
-<script src="shared/concierge.js?v=c62e7378"></script>
+<script src="shared/concierge.js?v=dac998dd"></script>
 
 <style>
   /* Health mark on a section-window tool card — mirrors the dock badge so the

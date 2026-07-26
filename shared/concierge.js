@@ -62,7 +62,7 @@ Research Reports cluster (sits alongside the 35 Online Reports under the same pi
 
 36 Online Reports markets, grouped: Capitals (Adelaide, Brisbane, Canberra, Darwin, Hobart, Melbourne, Perth, Sydney); QLD (Bundaberg, Cairns, Gladstone, Gold Coast, Ipswich, Mackay, Rockhampton, Sunshine Coast, Toowoomba, Townsville); NSW (Albury, Central Coast, Coffs Harbour, Newcastle, Orange, Port Macquarie, Tamworth, Wagga Wagga, Wollongong); Other (Ballarat, Bendigo, Geelong, Mildura, Wodonga, Bunbury, Rockingham, Mandurah, Launceston).
 
-Access tiers — internal-only tool, every signed-in user can VIEW everything: Tier 0 (dev, Vandolf), Tier 1 (admin, Saskia/Shaene/Paul/D.Robbins) can edit + download. Tier 2 (company, other @performanceproperty.com.au) can download but not edit. Tier 3 (client) + Tier 4 (guest) can view everything but cannot edit OR download.
+Access model — two axes. GROUPS control which tools a person's hub shows (their team). ROLES control permissions: dev (Vandolf) and admins (Saskia/Shaene/Paul) are Editors everywhere; other @performanceproperty.com.au staff are Viewers (view + download, no edit) unless they hold a per-tool editor role (e.g. Marilou edits Scorecards only). client/guest are dormant external view-only tiers with no members.
 
 Three libraries to disambiguate: Documents (Whitepapers & Strategies — folder library of research links + training material), Presentations Library (folder library of pre-made slide decks), Presentation Builder (the slide-deck editor itself).
 
@@ -238,12 +238,12 @@ CRITICAL OUTPUT FORMAT: When you need to invoke a tool, USE THE NATIVE TOOL_CALL
   };
 
   const TIER_DESCRIPTIONS = {
-    dev:     "Tier 0 (dev). Vandolf only. Full edit + download. Can switch view-as to test other tiers, and manages the staff Groups (who sees which tools).",
-    admin:   "Tier 1 (admin). Saskia, Shaene, Paul, D. Robbins. Full edit + download.",
-    leads:   "Tier 2 (leads). Marilou. Staff rights plus People/Scorecards; writes only inside Scorecards.",
-    company: "Tier 3 (Staff). Other @performanceproperty.com.au staff. View + download, no edit. Staff may belong to a GROUP (e.g. Property Management Team) that decides which tools their hub shows on top of the company baseline.",
-    client:  "Tier 4 (client). Approved external viewers. View everything, no edit, no download.",
-    guest:   "Tier 5 (guest/Lite). Self-registered viewers. View everything, no edit, no download.",
+    dev:     "Developer. Vandolf only. Editor everywhere + view-as switcher; manages Groups (which tools people see) and Roles (who can edit what).",
+    admin:   "Admin — a global Editor. Saskia, Shaene, Paul. Full edit + download in every tool. (D. Robbins is Staff, not admin — he declined the role.)",
+    leads:   "Retired tier (2026-07-25, mig 089). Its powers were split into the two axes: visibility became a Group, and the Scorecards write became a per-tool editor ROLE (Marilou holds it).",
+    company: "Staff — a Viewer by default. View + download, no edit. Their GROUP (team) decides which tools the hub shows on top of the company baseline, and a per-tool editor ROLE can grant edit rights inside one specific tool (e.g. Marilou edits Scorecards only).",
+    client:  "Client (dormant external tier, no members). View only, no edit, no download.",
+    guest:   "Guest (dormant external tier, no members). View only, no edit, no download.",
   };
 
   /* Live market data — computed from Forge (Supabase), the SAME source and

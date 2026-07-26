@@ -66,6 +66,9 @@ const DEV_EMAILS = [
    To re-enable: flip this to true AND remove the inline display:none
    on the showRegisterBtn wrapper in index.html. */
 const REGISTRATION_ENABLED = false;
+/* Welcome-overlay greeting names — NOT a rights roster (it includes
+   non-admins: David is company/Staff, Marilou is leads). Tiers live in
+   public.profiles.tier; writers are decided by is_writer() in the DB. */
 const ADMIN_NAMES = {
   'saskia@performanceproperty.com.au':    'Saskia',
   'shaene@performanceproperty.com.au':    'Shaene',
