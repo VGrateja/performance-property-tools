@@ -1962,6 +1962,47 @@ async function renderP2IPeer(host,slug){
 /* ── Yield v Variable Rate (slide 20) — Interest Rate (black, bank_rate 1980→) +
       House Yield (teal) + Unit Yield (grey), left % axis. Yields = rent×52/price
       per year from the feed. ── */
+/* Long rent history for the yield lines: the report feed's rents are the
+   SQM-tagged series (2003+), but 18 regions (incl. the capitals) carry the
+   CoreLogic annual rents in rdp_raw_series (Melbourne/Sydney from 1991,
+   most capitals 2001, Hobart 2008). Use that WHOLE series when present (no
+   per-year source mixing with the feed — level differences would kink the
+   line); feed rents otherwise. The pre-CoreLogic decade(s) come from the
+   'abelson' source: an HONEST BACK-CAST seeded 2026-07-27 (Van's call) —
+   each capital's earliest CoreLogic rent walked back to 1980 with the
+   national ABS CPI rent index from Abelson & Joyeux (2023), TTPI WP
+   14/2023, Table C.1 (the deck's source line credits it). The splice is
+   continuous by construction (anchored at the CoreLogic start). Implied
+   1980 house yields land at 8-11%, matching the paper's own "fallen from
+   8% in the 1980s" — NOT the old sample deck's ~14%, which was roughly 2×
+   and unexplained by the credited source. */
+const CLRENT={};
+async function getCLRents(slug){
+  if(CLRENT[slug]!==undefined) return CLRENT[slug];
+  try{
+    const {data}=await window.sb.from('rdp_raw_series').select('metric,source,period,value')
+      .eq('region_slug',slug).in('source',['corelogic','abelson']).in('metric',['rent_h','rent_u']);
+    const m={h:{},u:{}};
+    /* abelson first so a (theoretical) same-year CoreLogic row wins */
+    (data||[]).sort((a,b)=>(a.source==='abelson'?0:1)-(b.source==='abelson'?0:1))
+      .forEach(r=>{ const y=String(r.period).slice(0,4), v=Number(r.value); if(isFinite(v)) m[r.metric==='rent_h'?'h':'u'][y]=v; });
+    /* Drop transcription glitches from the Data Dump's CLRent block (e.g.
+       adelaide rent_h 2003=$80 / 2004=$36 amid ~$200 neighbours): a median
+       weekly rent >40% off its ±2yr rolling median is not a market move.
+       connectNulls on the yield series bridges the dropped year(s). */
+    ['h','u'].forEach(k=>{
+      const ys=Object.keys(m[k]).sort();
+      const bad=ys.filter((y,i)=>{
+        const win=ys.slice(Math.max(0,i-2),i+3).map(x=>m[k][x]).sort((a,b)=>a-b);
+        const med=win[Math.floor(win.length/2)];
+        return win.length>=3&&med>0&&Math.abs(m[k][y]-med)/med>0.4;
+      });
+      bad.forEach(y=>{ delete m[k][y]; });
+    });
+    CLRENT[slug]=(Object.keys(m.h).length||Object.keys(m.u).length)?m:null;
+  }catch(e){ CLRENT[slug]=null; }
+  return CLRENT[slug];
+}
 let _RATES=null,_ratP=null;
 async function getRateSeries(){
   if(_RATES) return _RATES; if(_ratP) return _ratP;
@@ -1977,24 +2018,30 @@ async function renderYieldRate(host,slug){
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
   await whenChartsReady();
   if(!window.echarts||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
-  const [payload, rates]=await Promise.all([getFeed(slug), getRateSeries()]);
+  const [payload, rates, cl]=await Promise.all([getFeed(slug), getRateSeries(), getCLRents(slug)]);
   if(!payload){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
   let years=[],hy=[],uy=[],ir=[];
   try{ const raw=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug);
     const a=_orAlignCols(raw.year,[raw.medianRentHouse,raw.medianHousePrice,raw.medianRentUnit,raw.medianUnitPrice],{mode:'loose'});
-    a.keys.forEach((y,i)=>{ const rh=a.cols[0][i],ph=a.cols[1][i],ru=a.cols[2][i],pu=a.cols[3][i];
+    a.keys.forEach((y,i)=>{ if(y<1980) return;   /* sample deck starts 1980 */
+      const rh=cl?cl.h[String(y)]:a.cols[0][i], ru=cl?cl.u[String(y)]:a.cols[2][i];
+      const ph=a.cols[1][i], pu=a.cols[3][i];
       years.push(y);
       hy.push((rh&&ph)?+(rh*52/ph*100).toFixed(2):null);
       uy.push((ru&&pu)?+(ru*52/pu*100).toFixed(2):null);
       const rr=rates?rates[String(y)]:null; ir.push(rr!=null?+((rr<=1.5?rr*100:rr)).toFixed(2):null); });
   }catch(e){}
   if(!years.length){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  /* sample-deck axis: every 1% labelled, top just clear of the peak (17.2%
+     1989 rate → 20%) */
+  const maxV=Math.max.apply(null,ir.concat(hy,uy).filter(v=>v!=null));
+  const yTop=Math.max(2,Math.ceil(maxV*1.15));
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true, valueFormatter:v=>(v==null?'—':Number(v).toFixed(2)+'%') },
-    legend:{ top:2, left:'center', icon:'circle', itemWidth:9, itemHeight:9, textStyle:{color:'#333',fontSize:11,fontWeight:700}, data:['Interest Rate','House Yield','Unit Yield'] },
+    legend:{ top:2, left:'center', icon:'rect', itemWidth:10, itemHeight:3, textStyle:{color:'#333',fontSize:11,fontWeight:700}, data:['Interest Rate','House Yield','Unit Yield'] },   /* dash markers like the sample */
     grid:{left:46,right:28,top:40,bottom:46},
     xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
-    yAxis:{ type:'value', min:0, axisLabel:{color:'#444',fontSize:9,formatter:v=>v+'%'}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
+    yAxis:{ type:'value', min:0, max:yTop, interval:1, axisLabel:{color:'#444',fontSize:9,formatter:v=>Math.round(v)+'%'}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
     series:[
       { name:'Interest Rate', type:'line', data:ir, smooth:true, showSymbol:false, connectNulls:true, lineStyle:{color:'#171B24',width:2.6}, itemStyle:{color:'#171B24'} },
       { name:'House Yield', type:'line', data:hy, smooth:true, showSymbol:false, connectNulls:true, lineStyle:{color:'#00A0B4',width:2.6}, itemStyle:{color:'#00A0B4'} },
