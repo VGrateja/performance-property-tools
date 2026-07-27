@@ -1525,29 +1525,41 @@ async function renderHousingFinance(host, slug){
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
   await whenChartsReady();
   if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
-  const m=DB.meta[slug]||{}; const st=m.state?('st-'+String(m.state).toLowerCase()):null;
-  if(!st){ host.innerHTML='<div class="bss-chartload">No state mapping for this region.</div>'; return; }
+  /* NATIONAL series (2026-07-27 sample): the sample's magnitudes (~$19B OO
+     peaks) are Australia-wide — the old per-state st-XX pull was ~2.5× short
+     for VIC, which is also why the workbook's "VIC Housing Finance" sheet
+     never reconciled (it was national data mislabelled). Same chart on every
+     deck, like Capital Cities Yield. NOTE the Forge 'australia' series runs
+     ~20-25% ABOVE the old sample chart (Forge includes refinancing; the old
+     workbook plotted ex-refinancing) — same shape, higher level. */
   let rows=null;
-  try{ const {data}=await window.sb.from('rdp_raw_series').select('metric,period,value').eq('region_slug',st).in('metric',['owner_occupier','investor']).order('period'); rows=data||[]; }catch(e){}
-  if(!rows||!rows.length){ host.innerHTML='<div class="bss-chartload">No housing-finance data for this state.</div>'; return; }
+  try{ const {data}=await window.sb.from('rdp_raw_series').select('metric,period,value').eq('region_slug','australia').in('metric',['owner_occupier','investor']).order('period'); rows=data||[]; }catch(e){}
+  if(!rows||!rows.length){ host.innerHTML='<div class="bss-chartload">No housing-finance data.</div>'; return; }
   const oo={},inv={},pset=new Set();
   rows.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return; const p=String(r.period).slice(0,7); pset.add(p); (r.metric==='investor'?inv:oo)[p]=v; });
-  let periods=Array.from(pset).sort();
-  if(periods.length>82) periods=periods.slice(-82);   /* match the sample deck's window (~Sep 2019 → present) */
-  const fmtP=p=>{ const [y,mo]=p.split('-'); return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+mo-1]+'-'+y.slice(2); };
+  /* QUARTERLY resample (quarter-end months): the sample's curve bends once per
+     quarter — plotting the monthly series shows seasonal notches it never had */
+  let periods=Array.from(pset).sort().filter(p=>['03','06','09','12'].indexOf(p.slice(5,7))>=0);
+  const from=periods.filter(p=>p>='2019-09');   /* the sample window starts Sep-2019 */
+  if(from.length>=8) periods=from;
+  const fmtP=p=>{ const [y,mo]=p.split('-'); return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+mo-1]+'-'+y; };
   const OO=periods.map(p=>oo[p]!=null?Math.round(oo[p]):null), INV=periods.map(p=>inv[p]!=null?Math.round(inv[p]):null);
   const money=v=>v==null?'—':'$'+Number(v).toLocaleString()+'M';
+  const maxV=Math.max.apply(null,OO.concat(INV).filter(v=>v!=null));
+  const yTop=Math.ceil(maxV/5000)*5000;
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true, formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+money(p.value)+'</b>').join('<br>') },
-    legend:{ top:2, left:'center', itemWidth:9, itemHeight:9, itemGap:16, textStyle:{fontSize:10,color:'#222'},
-      data:[{name:'Owner Occupiers',icon:'circle'},{name:'Investors',icon:'circle'}] },
-    grid:{left:60,right:24,top:40,bottom:52},
-    xAxis:{ type:'category', data:periods.map(fmtP), axisLabel:{color:'#444',fontSize:7.5,interval:2,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
-    yAxis:{ type:'value', axisLabel:{color:'#444',fontSize:9,formatter:v=>'$'+Number(v).toLocaleString()}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
-      name:'in $ Millions', nameLocation:'middle', nameGap:46, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
+    legend:{ top:6, left:'center', itemWidth:9, itemHeight:9, itemGap:16, textStyle:{fontSize:10,color:'#222'},
+      data:[{name:'Owner Occupiers',icon:'path://M0,0h24v4h-24z'},{name:'Investors',icon:'path://M0,0h24v4h-24z'}] },
+    grid:{left:74,right:30,top:44,bottom:64},
+    xAxis:{ type:'category', data:periods.map(fmtP), axisLabel:{color:'#444',fontSize:8.5,rotate:90,interval:0}, axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', min:0, max:yTop, interval:5000, axisLabel:{color:'#444',fontSize:9,formatter:v=>'$'+Number(v).toLocaleString()}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+      axisLine:{show:true,lineStyle:{color:'#999'}}, axisTick:{show:true,lineStyle:{color:'#999'}},
+      name:'in $ Millions', nameLocation:'middle', nameGap:56, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
     series:[
-      { name:'Owner Occupiers', type:'line', data:OO, smooth:true, showSymbol:false, lineStyle:{color:'#00A0B4',width:2.6}, itemStyle:{color:'#00A0B4'} },
-      { name:'Investors', type:'line', data:INV, smooth:true, showSymbol:false, lineStyle:{color:'#171B24',width:2.6}, itemStyle:{color:'#171B24'} } ] };
+      { name:'Owner Occupiers', type:'line', data:OO, smooth:true, showSymbol:false, lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'} },
+      { name:'Investors', type:'line', data:INV, smooth:true, showSymbol:false, lineStyle:{color:'#171B24',width:2.8}, itemStyle:{color:'#171B24'} } ] };
+  host.style.border='1px solid #63666A';   /* the sample frames this chart panel */
   _drawEChart(host, option);
 }
 /* ── Vacancy Rate Projection (slide 13) — the richer VR viewer: Current → 1yr →
