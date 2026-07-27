@@ -1092,12 +1092,17 @@ async function renderStockDomChart(host, slug){
 const RANK={};
 async function getRanking(slug){ if(RANK[slug]!==undefined) return RANK[slug]; try{ const {data}=await window.sb.from('rdp_raw_series').select('period,value').eq('metric','ranking_h').eq('region_slug',slug).order('period'); RANK[slug]=(data||[]).map(r=>({y:+String(r.period).slice(0,4),v:Math.round(r.value)})).filter(r=>r.v>0); }catch(e){ RANK[slug]=null; } return RANK[slug]; }
 const _ord=n=>{ const s=['th','st','nd','rd'],v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); };
-/* Page 9: Ranking as Most Expensive — sample-deck look (Van 2026-07-18):
-   single teal smooth line of the yearly house-price ranking (2005→) with
-   integer labels, 0–30 axis in 5s, vertical year labels. The black stat card
-   + title/narrative/disclaimer are authored via overlays; the card's numbers
-   come from the live ranking tokens {rank_current} {rank_average} {rank_years}
-   (hydrated in loadEntryAndPrices, resolved in _tokenMap). */
+/* Page 22: Ranking as Most Expensive — 2026-07-27 sample look: single teal
+   smooth line (2005→) with integer point labels, legend "<Region> Ranking as
+   Most Expensive (MHP)", axis lines + ticks everywhere, y ladder 0-15/1 for
+   capital-grade ranks and 2s/5s for deeper-ranked regionals (ranks run 1-37).
+   The black stat card is DRAWN BY THE CHART, not an overlay (Van 2026-07-27):
+   ranks range so widely across regions that no fixed overlay spot is safe —
+   Mildura's line hugs the top band, Sydney's the bottom, Melbourne's dips
+   through the middle. The card auto-places itself in a line-free pocket
+   (candidate spots scored against the drawn polyline incl. point labels).
+   Its numbers use the EXACT RANKINFO formula so it can never disagree with
+   the {rank_current}/{rank_average}/{rank_years} tokens. */
 async function mountRanking(slideEl, slug){
   const host=slideEl.querySelector('.bss-chart'); if(!host) return;
   host.innerHTML='<div class="bss-chartload">Loading…</div>';
@@ -1108,23 +1113,61 @@ async function mountRanking(slideEl, slug){
   const data=rows.filter(r=>r.y>=2005);   /* the sample starts 2005 */
   if(!data.length){ host.innerHTML='<div class="bss-chartload">No ranking data for this region.</div>'; return; }
   const years=data.map(r=>r.y), vals=data.map(r=>r.v);
-  const axMax=Math.max(30, Math.ceil(Math.max.apply(null,vals)/5)*5);
+  const name=(DB.meta[slug]&&DB.meta[slug].name)||slug;
+  const dataMax=Math.max.apply(null,vals);
+  let yTop,intv;
+  if(dataMax<=13){ yTop=15; intv=1; }
+  else if(dataMax<=26){ yTop=Math.ceil((dataMax+2)/2)*2; intv=2; }
+  else { yTop=Math.ceil((dataMax+3)/5)*5; intv=5; }
+  const legName=name+' Ranking as Most Expensive (MHP)';
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true, valueFormatter:v=>(v==null?'—':_ord(Math.round(v))) },
+    legend:{ top:2, left:'center', itemWidth:9, itemHeight:9, textStyle:{fontSize:10,color:'#222'},
+      data:[{name:legName,icon:'path://M0,0h24v4h-24z'}] },
     grid:{left:44,right:28,top:36,bottom:46},
-    xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:9,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
-    yAxis:{ type:'value', min:0, max:axMax, interval:5, axisLabel:{color:'#444',fontSize:9}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
-    series:[{ name:'Ranking', type:'line', data:vals, smooth:true, symbol:'circle', symbolSize:1,
+    xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:9,interval:0,rotate:90}, axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', min:0, max:yTop, interval:intv, axisLabel:{color:'#444',fontSize:9}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+      axisLine:{show:true,lineStyle:{color:'#999'}}, axisTick:{show:true,lineStyle:{color:'#999'}} },
+    series:[{ name:legName, type:'line', data:vals, smooth:true, symbol:'circle', symbolSize:1,
       lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
-      label:{show:true,position:'top',fontSize:9,color:'#555',formatter:p=>String(p.value)} }] };
+      label:{show:true,position:'top',fontSize:10,color:'#333',formatter:p=>String(p.value)} }] };
   host.innerHTML='';
-  /* the black stat card is AUTHORED as a text overlay (tokens {rank_current}
-     {rank_average} {rank_years} resolve live) — not injected here */
+  host.style.position='relative';
   const box=document.createElement('div'); box.style.cssText='width:100%;height:100%';
   host.appendChild(box);
+  /* stat card — same copy/styling as the old authored overlay, numbers via the
+     RANKINFO formula (latest + 20yr window over the FULL series) */
+  const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
+  const avg=Math.round(win.reduce((a,b)=>a+b.v,0)/win.length);
+  const card=document.createElement('div');
+  card.style.cssText="position:absolute;width:354px;box-sizing:border-box;padding:10px 14px;background:#171b24;color:#fff;text-align:center;font:400 16px/1.35 'Raleway',sans-serif;z-index:2;pointer-events:none;visibility:hidden";
+  card.innerHTML='Currently, '+name+' ranks as the <b>'+_ord(latest.v)+' most expensive region in Australia</b>. Over the past '+win.length+' years, '+name+"'s average ranking has been <b>"+_ord(avg)+'</b>.';
+  host.appendChild(card);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
     if(!box.isConnected||!window.echarts) return;
-    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    try{
+      const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch);
+      /* place the card in a line-free pocket: candidate spots (3 x-anchors × 8
+         vertical bands, upper-middle preferred like the sample) scored against
+         the polyline points + their labels + segment midpoints */
+      const W=box.clientWidth,H=box.clientHeight, plotL=44,plotR=W-28,plotT=36,plotB=H-46;
+      const cw=354, chh=card.offsetHeight||110;
+      const pts=[]; vals.forEach((v,i)=>{ const p=ch.convertToPixel({seriesIndex:0},[i,v]); if(p){ pts.push(p); } });
+      for(let i=pts.length-1;i>0;i--) pts.push([(pts[i][0]+pts[i-1][0])/2,(pts[i][1]+pts[i-1][1])/2]);
+      const cx=(plotL+plotR)/2;
+      const xs=[cx-cw/2, plotR-cw-30, plotL+30];   /* centre (sample), right pocket, left pocket */
+      const yPref=plotT+(plotB-plotT)*0.16;
+      const ys=[]; for(let k=0;k<8;k++) ys.push(plotT+8+k*((plotB-chh-16-plotT)/7));
+      ys.sort((a,b)=>Math.abs(a-yPref)-Math.abs(b-yPref));
+      /* a point's label sits ABOVE it — a point below the card needs the bigger margin */
+      const clearance=(x,y)=>{ let m=1e9; pts.forEach(p=>{ if(p[0]>=x-16&&p[0]<=x+cw+16){ const d=p[1]<y?y-14-p[1]:(p[1]>y+chh?p[1]-(y+chh+28):-1); m=Math.min(m,d); } }); return m; };
+      let best=null,bestC=-1e9;
+      outer: for(const y of ys){ for(const x of xs){ const c=clearance(x,y);
+        if(c>=0){ best=[x,y]; break outer; }
+        if(c>bestC){ bestC=c; best=[x,y]; } } }
+      card.style.left=Math.round(best[0])+'px'; card.style.top=Math.round(best[1])+'px';
+      card.style.visibility='visible';
+    }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
@@ -2101,7 +2144,7 @@ const SLIDE_DEFS = [
   { key:'yield_rate', t:'Yield v Variable Rate', render: c=>lightChartSlide(60), mount:(el,c)=>mountYieldRate(el,c.slug) },
   { key:'cap_yield', t:'Capital Cities Yield', render: c=>lightChartSlide(84), mount:(el,c)=>mountCapitalYield(el,c.slug) },
   { key:'f10', t:'% of Sydney', render: c=>chartSlideBare(56), mount:(el,c)=>mountRatio(el,c.slug) },   /* 56: narrative overlay removed (Van 2026-07-27) — chart fills down to the logo strip */
-  { key:'f9', t:'Most Expensive Ranking', render: c=>chartSlideBare(84), mount:(el,c)=>mountRanking(el,c.slug) },
+  { key:'f9', t:'Most Expensive Ranking', render: c=>chartSlideBare(56), mount:(el,c)=>mountRanking(el,c.slug) },   /* 56: chart fills to the logo strip like f10 */
   { key:'f6', t:'Replacement Cost PSQM (U)', render: c=>stubSlide('Replacement Cost psqm (Units)') },   /* keeps f6 (was the Replacement Cost 'Coming Soon' slot) */
   { key:'f14', t:'Sensitivity — Houses', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'h') },
   { key:'f15', t:'Sensitivity — Units', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'u') },
