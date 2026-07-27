@@ -1566,9 +1566,9 @@ function mountRvdEmbed(slideEl){
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
     if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
@@ -1584,6 +1584,18 @@ async function loadEntryAndPrices(){
       const raw=window.ForgeReportAdapter.forgeRegionToFeed(payload,state.slug);
       const H=_orAlign(raw.year,raw.medianHousePrice), U=_orAlign(raw.year,raw.medianUnitPrice);
       PRICES={ mhp:H.values.length?H.values[H.values.length-1]:null, mup:U.values.length?U.values[U.values.length-1]:null };
+      /* {p2ih_year}/{p2iu_year} — the FIRST year price-to-income reached (or
+         exceeded) today's level, same series + 1980 start as the page-18
+         chart. Melbourne on live data: houses → 2017 (8.87 vs 8.69 today;
+         the sample deck said 2016 but 2016 was 7.95 — authored on older
+         data), units → 2009 (6.17 vs 6.06 — matches the sample). At an
+         all-time high this returns the current year — reword those decks. */
+      const firstAt=(al)=>{ const ys=[],vs=[]; for(let i=0;i<al.years.length;i++){ if(al.years[i]>=1980&&al.values[i]!=null){ ys.push(al.years[i]); vs.push(al.values[i]); } }
+        if(!vs.length) return null; const cur=vs[vs.length-1];
+        for(let i=0;i<vs.length;i++){ if(vs[i]>=cur) return ys[i]; } return ys[ys.length-1]; };
+      const PH=_orAlign(raw.year,raw.priceToIncomeHouse), PU=_orAlign(raw.year,raw.priceToIncomeUnit);
+      const hy=firstAt(PH), uy=firstAt(PU);
+      if(hy!=null||uy!=null) P2IINFO={ hYear:hy, uYear:uy };
     }
   }catch(e){}
 }
@@ -1917,19 +1929,22 @@ async function renderP2IPeer(host,slug){
   if(!rp){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
   const pick=(payload,who)=>{ try{ const raw=window.ForgeReportAdapter.forgeRegionToFeed(payload,who); const a=_orAlignCols(raw.year,[raw.priceToIncomeHouse,raw.priceToIncomeUnit],{mode:'loose'}); const m={}; a.keys.forEach((k,i)=>{ m[k]={h:a.cols[0][i],u:a.cols[1][i]}; }); return m; }catch(e){ return {}; } };
   const R=pick(rp,slug), P=pp?pick(pp,peer):{};
-  const years=Object.keys(R).map(Number).filter(y=>y>=1983).sort((a,b)=>a-b);
+  const years=Object.keys(R).map(Number).filter(y=>y>=1980).sort((a,b)=>a-b);   /* sample deck starts 1980 */
   if(!years.length){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
   const r2=v=>(v==null?null:Math.round(v*100)/100);
   const rH=years.map(y=>r2(R[y]&&R[y].h)), rU=years.map(y=>r2(R[y]&&R[y].u)), pH=years.map(y=>r2(P[y]&&P[y].h)), pU=years.map(y=>r2(P[y]&&P[y].u));
   const rName=(DB.meta[slug]&&DB.meta[slug].name)||slug, pName=(DB.meta[peer]&&DB.meta[peer].name)||peer;
   const maxV=Math.max.apply(null,rH.concat(rU,pH,pU).filter(v=>v!=null));
+  /* sample-deck axis: 1.5-unit ladder, top = next 1.5-multiple above the data,
+     labels rounded to whole numbers (→ the sample's 2,3,5,6,8,9,11,12,14,15) */
+  const yTop=Math.max(1.5,Math.ceil(maxV/1.5)*1.5);
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true, valueFormatter:v=>(v==null?'—':Number(v).toFixed(2)) },
     legend:{ top:2, left:'center', icon:'circle', itemWidth:9, itemHeight:9, textStyle:{color:'#333',fontSize:10,fontWeight:700},
       data:[rName+' - House', rName+' - Unit', pName+' - House', pName+' - Unit'] },
     grid:{left:44,right:28,top:40,bottom:46},
     xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
-    yAxis:{ type:'value', min:0, max:Math.ceil(maxV*1.05), interval:1, axisLabel:{color:'#444',fontSize:9}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
+    yAxis:{ type:'value', min:0, max:yTop, interval:1.5, axisLabel:{color:'#444',fontSize:9,formatter:v=>String(Math.round(v))}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
     series:[
       { name:rName+' - House', type:'line', data:rH, smooth:true, showSymbol:false, connectNulls:true, lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'} },
       { name:rName+' - Unit', type:'line', data:rU, smooth:true, showSymbol:false, connectNulls:true, lineStyle:{color:'#171B24',width:2.6}, itemStyle:{color:'#171B24'} },
@@ -2006,7 +2021,7 @@ const SLIDE_DEFS = [
   { key:'div_value', t:'VALUE (divider)', render: c=>'' },
   { key:'median_combined', t:'Median Price', render: c=>lightChartSlide(60), mount:(el,c)=>mountMedianCombined(el,c.slug) },
   { key:'house_unit', t:'House v Unit', render: c=>lightChartSlide(60), mount:(el,c)=>mountHouseUnit(el,c.slug) },
-  { key:'f8', t:'Price to Income', render: c=>lightChartSlide(84), mount:(el,c)=>mountP2IPeer(el,c.slug) },   /* keeps f8 so the old Price-to-Income overlays follow; now the +peer chart */
+  { key:'f8', t:'Price to Income', render: c=>lightChartSlide(88), mount:(el,c)=>mountP2IPeer(el,c.slug) },   /* keeps f8 so the old Price-to-Income overlays follow; now the +peer chart. 88 bottom-pad ends the chart ~y632, just above the authored narrative (Van's placement: y642) + source line (y692) */
   { key:'yield_rate', t:'Yield v Variable Rate', render: c=>lightChartSlide(60), mount:(el,c)=>mountYieldRate(el,c.slug) },
   { key:'cap_yield', t:'Capital Cities Yield', render: c=>lightChartSlide(84), mount:(el,c)=>mountCapitalYield(el,c.slug) },
   { key:'f10', t:'% of Sydney', render: c=>chartSlideBare(84), mount:(el,c)=>mountRatio(el,c.slug) },
@@ -2367,6 +2382,9 @@ function _tokenMap(){
     pop_current_fy:POPINFO?POPINFO.baseLabel:'—',
     pop_target_fy:POPINFO?POPINFO.rows[POPINFO.rows.length-1].label:'—',
     pop_cagr:(POPINFO&&POPINFO.cagr!=null)?POPINFO.cagr.toFixed(2)+'%':'—',
+    /* live price-to-income "back to" years (page 18 narrative) */
+    p2ih_year:(P2IINFO&&P2IINFO.hYear!=null)?String(P2IINFO.hYear):'—',
+    p2iu_year:(P2IINFO&&P2IINFO.uYear!=null)?String(P2IINFO.uYear):'—',
     /* rates + wage-growth horizon (sensitivity slides; live from rdp_runway_config) */
     cash_current:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.current.cash*100).toFixed(2)+'%':'—',
     cash_forecast:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.forecast.cash*100).toFixed(2)+'%':'—',
