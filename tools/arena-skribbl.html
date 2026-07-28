@@ -100,6 +100,14 @@
   .sk-bar > i{ display:block; height:100%; background:#D373D3; width:100%; transition:width .95s linear; }
   .sk-clock.low .sk-bar > i{ background:#E72347; }
 
+  /* void-request banner */
+  .sk-void{ display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    padding:11px 16px; border-radius:12px; margin-bottom:12px;
+    background:rgba(255,169,31,.14); border:1px solid rgba(255,169,31,.45); }
+  .sk-void[hidden]{ display:none; }
+  .sk-void .msg{ flex:1; font-size:12.5px; font-weight:600; }
+  .sk-void .cd{ font-variant-numeric:tabular-nums; font-weight:800; opacity:.7; font-size:12px; }
+
   /* players */
   .sk-players{ display:flex; flex-direction:column; gap:7px; }
   .sk-pl{ display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:11px;
@@ -267,6 +275,12 @@
             <h3>Your game</h3>
             <div id="myLobbyBody"></div>
           </div>
+
+          <!-- who else has the game open right now (realtime presence) -->
+          <div class="sk-panel" id="onlinePanel" style="margin-top:16px">
+            <h3>Online now <span class="sk-chip" id="onlineCount" hidden></span></h3>
+            <div id="onlineList"><div class="sk-empty">Looking around…</div></div>
+          </div>
         </div>
       </div>
       <p class="sk-note">Every player draws once per round · 2–12 players · points carry to the Arena leaderboard</p>
@@ -280,11 +294,23 @@
         <div class="sk-clock" id="gClock"><div class="sk-bar"><i id="gBar"></i></div><span class="n" id="gTime">0</span></div>
       </div>
 
+      <!-- void request — same rules as Scrabble: everyone still in must agree
+           within 60s, a decline costs the asker a 5-minute cooldown -->
+      <div class="sk-void" id="voidBanner" hidden>
+        <span class="msg" id="voidMsg"></span>
+        <span class="cd" id="voidCount"></span>
+        <span id="voidBtns" hidden>
+          <button class="sk-btn sm" id="btnVoidYes">Agree</button>
+          <button class="sk-btn ghost sm" id="btnVoidNo">Decline</button>
+        </span>
+      </div>
+
       <div class="sk-game">
         <div class="sk-panel" style="padding:12px">
           <h3 style="margin-bottom:10px">Players</h3>
           <div class="sk-players" id="gPlayers"></div>
-          <button class="sk-btn ghost sm" id="btnLeave" style="width:100%;margin-top:12px">Leave game</button>
+          <button class="sk-btn ghost sm" id="btnVoid" style="width:100%;margin-top:12px">Void game</button>
+          <button class="sk-btn ghost sm" id="btnLeave" style="width:100%;margin-top:7px">Leave game</button>
         </div>
 
         <div>
@@ -381,6 +407,9 @@
   }
 
   var me = { id: null, email: null, name: null };
+  var online = new Map();  // email → {email,name,userId} — realtime presence
+  var presenceChan = null;
+  var myLobbyPlayers = [];  // rows for MY lobby, so the online list knows who's already in
   var lobby = null;        // my lobby row
   var game = null;         // current game row
   var players = [];        // game_players rows
@@ -626,7 +655,11 @@
 
   function renderMyLobby(byLobby) {
     var box = $('#myLobby'), body = $('#myLobbyBody');
-    if (!lobby) { box.hidden = true; $('#createPanel').hidden = false; return; }
+    if (!lobby) {
+      box.hidden = true; $('#createPanel').hidden = false;
+      myLobbyPlayers = []; renderOnline();   /* drop the Invite buttons */
+      return;
+    }
     box.hidden = false; $('#createPanel').hidden = true;
     var mem = (byLobby && byLobby[lobby.id]) || [];
     var host = lobby.host_user_id === me.id;
@@ -634,8 +667,10 @@
     window.sb.from('arena_skribbl_lobby_players').select('*').eq('lobby_id', lobby.id)
       .then(function (res) {
         var rows = res.data || [];
+        myLobbyPlayers = rows; renderOnline();   /* keep Invite buttons in step */
         var joined = rows.filter(function (r) { return r.status === 'joined'; });
         var reqs   = rows.filter(function (r) { return r.status === 'requested'; });
+        var invited = rows.filter(function (r) { return r.status === 'invited'; });
         var html = '<div class="meta" style="font-size:11.5px;opacity:.6;margin-bottom:10px">' +
           esc(topicLabel(lobby.topic)) + ' · ' + esc(lobby.difficulty) + ' · ' + lobby.rounds +
           ' rounds · ' + lobby.draw_seconds + 's</div>';
@@ -648,6 +683,14 @@
             '</div>';
         });
         html += '</div>';
+        if (host && invited.length) {
+          html += '<h3 style="margin:14px 0 8px">Invited</h3>';
+          invited.forEach(function (p) {
+            html += '<div class="sk-lobby" style="padding:8px 11px;margin-bottom:6px"><div class="grow">' +
+              '<div class="who">' + esc(p.name || p.email) + '</div>' +
+              '<div class="meta">waiting for them to accept</div></div></div>';
+          });
+        }
         if (host && reqs.length) {
           html += '<h3 style="margin:14px 0 8px">Wants to join</h3>';
           reqs.forEach(function (p) {
@@ -684,6 +727,70 @@
         var l = body.querySelector('#btnLeaveLobby');
         if (l) l.onclick = function () { call('leave_skribbl_lobby', { p_lobby_id: lobby.id }); };
       });
+  }
+
+  /* ── presence: who else has Skribbl open (mirrors the Scrabble lobby) ──
+     One shared channel keyed by email; each client tracks its own identity
+     and re-renders the list on every sync. The host gets an Invite button
+     next to anyone who isn't already in their lobby. */
+  function setupPresence() {
+    if (!window.sb || !me.email || presenceChan) return;
+    presenceChan = window.sb.channel('arena_skribbl_lobby', { config: { presence: { key: me.email } } });
+    presenceChan
+      .on('presence', { event: 'sync' }, function () {
+        var state = presenceChan.presenceState();
+        online.clear();
+        Object.keys(state).forEach(function (k) {
+          var items = state[k];
+          if (items && items.length) online.set(items[0].email, items[0]);
+        });
+        renderOnline();
+      })
+      .subscribe(function (status) {
+        if (status === 'SUBSCRIBED') {
+          presenceChan.track({ email: me.email, name: me.name, userId: me.id });
+        }
+      });
+  }
+
+  function renderOnline() {
+    var list = $('#onlineList'), count = $('#onlineCount');
+    if (!list) return;
+    var others = Array.from(online.values()).filter(function (u) { return u.email !== me.email; });
+    count.hidden = !others.length;
+    count.textContent = others.length;
+    if (!others.length) {
+      list.innerHTML = '<div class="sk-empty">No-one else is here yet</div>';
+      return;
+    }
+    var hosting = !!(lobby && lobby.host_user_id === me.id);
+    var full = hosting && myLobbyPlayers.filter(function (p) { return p.status === 'joined'; }).length >= lobby.max_players;
+    list.innerHTML = '';
+    others.forEach(function (u) {
+      var already = myLobbyPlayers.some(function (p) {
+        return p.user_id === u.userId && ['joined', 'requested', 'invited'].indexOf(p.status) >= 0;
+      });
+      var el = document.createElement('div');
+      el.className = 'sk-lobby';
+      el.style.padding = '9px 12px';
+      el.innerHTML = '<div class="grow"><div class="who">' + esc(u.name || (u.email || '').split('@')[0]) + '</div>' +
+        '<div class="meta">' + esc(u.email) + '</div></div>';
+      if (hosting) {
+        var b = document.createElement('button');
+        b.className = 'sk-btn sm' + (already || full ? ' ghost' : '');
+        if (already) { b.textContent = 'In lobby'; b.disabled = true; }
+        else if (full) { b.textContent = 'Full'; b.disabled = true; }
+        else {
+          b.textContent = 'Invite';
+          b.onclick = function () {
+            b.disabled = true; b.textContent = 'Invited';
+            call('invite_to_skribbl_lobby', { p_lobby_id: lobby.id, p_user_id: u.userId });
+          };
+        }
+        el.appendChild(b);
+      }
+      list.appendChild(el);
+    });
   }
 
   async function call(fn, args) {
@@ -786,6 +893,8 @@
       (meRow && meRow.guessed_at ? 'You got it! Waiting for the others…' :
       (game.phase === 'drawing' ? 'Type your guess…' : 'Waiting for the next round…'));
 
+    renderVoid();
+
     // overlays
     var choose = (game.phase === 'choosing' && iDraw && myRound && !myRound.word);
     $('#ovChoose').hidden = !choose;
@@ -797,6 +906,62 @@
 
     if (game.phase === 'ended') { $('#ovReveal').hidden = true; renderFinal(); }
   }
+
+  /* ── void request (Scrabble rules: unanimous, 60s, decline = 5min cooldown) ── */
+  function renderVoid() {
+    var banner = $('#voidBanner'), btn = $('#btnVoid');
+    var live = game && game.status === 'active' && game.phase !== 'ended';
+    if (btn) btn.hidden = !live;
+
+    if (!game || game.void_by == null) { banner.hidden = true; return; }
+    var meRow = players.filter(function (p) { return p.user_id === me.id; })[0];
+    var asker = players.filter(function (p) { return p.seat === game.void_by; })[0];
+    var mine = meRow && meRow.seat === game.void_by;
+    var active = players.filter(function (p) { return !p.left_at; }).length;
+    var agreed = (game.void_agreed || []).length;
+
+    banner.hidden = false;
+    $('#voidMsg').textContent = mine
+      ? 'You asked to void this game — waiting for the others (' + agreed + '/' + active + ' agreed).'
+      : (asker && asker.name ? asker.name : 'A player') + ' wants to void this game. Agree and it ends with no points.';
+    $('#voidBtns').hidden = !!mine;
+  }
+
+  function paintVoidCountdown() {
+    if (!game || game.void_by == null || !game.void_at) { $('#voidCount').textContent = ''; return; }
+    var left = Math.max(0, 60 - (Date.now() - new Date(game.void_at).getTime()) / 1000);
+    $('#voidCount').textContent = Math.ceil(left) + 's';
+    if (left <= 0 && Date.now() - lastNudge > 1000) { lastNudge = Date.now(); fire('skribbl_tick', { p_game_id: game.id }); }
+  }
+
+  $('#btnVoid').onclick = async function () {
+    if (!game) return;
+    if (!confirm('Ask everyone to void this game?\n\nAll remaining players must agree within 60 seconds. ' +
+                 'If anyone declines the game continues and you can\'t ask again for 5 minutes (others still can). ' +
+                 'A voided game awards no points.')) return;
+    var b = this; b.disabled = true;
+    var r = await window.sb.rpc('request_skribbl_void', { p_game_id: game.id });
+    b.disabled = false;
+    if (r.error) { toast(r.error.message, '#E72347'); return; }
+    if (r.data && r.data.voided) refreshGame(game.id);
+    else toast('Void requested — waiting for the others.');
+  };
+  $('#btnVoidYes').onclick = async function () {
+    if (!game) return;
+    this.disabled = true;
+    var r = await window.sb.rpc('respond_skribbl_void', { p_game_id: game.id, p_agree: true });
+    this.disabled = false;
+    if (r.error) toast(r.error.message, '#E72347');
+    else if (!(r.data && r.data.voided)) toast('You agreed — waiting for the rest.');
+  };
+  $('#btnVoidNo').onclick = async function () {
+    if (!game) return;
+    this.disabled = true;
+    var r = await window.sb.rpc('respond_skribbl_void', { p_game_id: game.id, p_agree: false });
+    this.disabled = false;
+    if (r.error) toast(r.error.message, '#E72347');
+    else toast('Void declined — play on.', '#71B357');
+  };
 
   function renderChoices() {
     var box = $('#chooseBtns');
@@ -835,11 +1000,16 @@
     $('#ovFinal').hidden = false;
     var sorted = players.slice().sort(function (a, b) { return b.score - a.score; });
     $('#finalScores').innerHTML = scoreRows(sorted, false);
-    $('#finalSub').textContent = sorted.length ? ((sorted[0].name || 'Someone') + ' wins!') : 'Good game!';
+    var voided = game && game.status === 'void';
+    $('#ovFinal').querySelector('h2').textContent = voided ? 'Game voided' : 'Final scores';
+    $('#finalSub').textContent = voided
+      ? 'Everyone agreed to void — no points were awarded.'
+      : (sorted.length ? ((sorted[0].name || 'Someone') + ' wins!') : 'Good game!');
   }
 
   /* clock — the server owns the deadline; this is just the countdown paint */
   function paintClock() {
+    paintVoidCountdown();
     if (!game || !game.phase_ends_at) { $('#gTime').textContent = '—'; $('#gBar').style.width = '0%'; return; }
     var total = game.phase === 'drawing' ? game.draw_seconds : (game.phase === 'choosing' ? 20 : 7);
     var left = Math.max(0, (new Date(game.phase_ends_at).getTime() - Date.now()) / 1000);
@@ -975,6 +1145,7 @@
 
     fillSelects();
     repaint();
+    setupPresence();
 
     // rejoin an in-flight game if I'm in one
     var mine = await window.sb.from('arena_skribbl_game_players')
@@ -990,7 +1161,10 @@
     watchLobbies();
   })();
 
-  window.addEventListener('beforeunload', function () { teardown(); });
+  window.addEventListener('beforeunload', function () {
+    teardown();
+    if (presenceChan) { try { window.sb.removeChannel(presenceChan); } catch (e) {} }
+  });
 })();
 </script>
 </body>
