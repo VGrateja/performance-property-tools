@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Skribbl — Performance Arena</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/common.css?v=fffe58f7"/>
+<script src="../shared/os-chrome.js?v=f66c69d4"></script>
+<link rel="stylesheet" href="../shared/os-theme.css?v=a0feabf6"/>
+<script src="../shared/fit-screen.js?v=5e41a716"></script>
+<style>
+  /* ─── Skribbl — draw & guess. Arena skin (magenta accent, OS wallpaper).
+     Two views: the lobby browser and the game table. All game state is
+     server-owned (see migration 091); this file is presentation + the
+     drawing transport. ─── */
+  body{ margin:0; min-height:100vh; background:transparent !important; font-family:'Montserrat',sans-serif; }
+  body{ animation:pp-page-fade-in .42s cubic-bezier(.22,1,.36,1) both; }
+  @keyframes pp-page-fade-in{ from{opacity:0} to{opacity:1} }
+
+  #skView{ display:flex; flex-direction:column; min-height:100vh; color:#e9eef7; }
+  [data-theme="light"] #skView{ color:#0a1520; }
+  .sk-inner{ flex:1; width:100%; max-width:1320px; margin:0 auto; padding:44px 20px 48px; }
+
+  .sk-eyebrow{ font-weight:800; font-size:11px; letter-spacing:3px; text-transform:uppercase;
+    color:#D373D3; opacity:.9; margin-bottom:10px; text-align:center; }
+  .sk-title{ font-weight:900; font-size:clamp(26px,3.6vw,42px); letter-spacing:1.5px;
+    text-transform:uppercase; margin:0 0 10px; text-align:center; }
+  .sk-title em{ color:#D373D3; font-style:normal; }
+  .sk-sub{ font-size:.92rem; opacity:.75; max-width:640px; margin:0 auto 34px;
+    text-align:center; line-height:1.6; }
+
+  /* ── panels ── */
+  .sk-panel{ background:rgba(18,22,34,.62); border:1px solid rgba(255,255,255,.09);
+    border-radius:16px; padding:20px; backdrop-filter:blur(7px); }
+  [data-theme="light"] .sk-panel{ background:rgba(255,255,255,.78); border-color:rgba(10,21,32,.10); }
+  .sk-panel h3{ margin:0 0 14px; font-size:12px; font-weight:800; letter-spacing:1.6px;
+    text-transform:uppercase; opacity:.62; }
+
+  .sk-cols{ display:grid; grid-template-columns:1.15fr .85fr; gap:18px; align-items:start; }
+  @media (max-width:900px){ .sk-cols{ grid-template-columns:1fr; } }
+
+  /* ── form controls ── */
+  .sk-field{ margin-bottom:14px; }
+  .sk-field label{ display:block; font-size:10.5px; font-weight:800; letter-spacing:1.3px;
+    text-transform:uppercase; opacity:.6; margin-bottom:6px; }
+  .sk-field select, .sk-field input[type=text]{
+    width:100%; padding:9px 11px; border-radius:9px; font-family:inherit; font-size:13px;
+    background:#141a28; color:#e9eef7; border:1px solid rgba(255,255,255,.14); }
+  [data-theme="light"] .sk-field select, [data-theme="light"] .sk-field input[type=text]{
+    background:#fff; color:#0a1520; border-color:rgba(10,21,32,.18); }
+  .sk-field select option{ background:#141a28; color:#e9eef7; }
+  [data-theme="light"] .sk-field select option{ background:#fff; color:#0a1520; }
+  .sk-row3{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+
+  .sk-btn{ display:inline-flex; align-items:center; justify-content:center; gap:7px;
+    padding:10px 18px; border-radius:10px; border:1px solid transparent; cursor:pointer;
+    font-family:inherit; font-weight:700; font-size:12.5px; letter-spacing:.4px;
+    background:#D373D3; color:#180c18; transition:filter .16s ease, transform .16s ease; }
+  .sk-btn:hover{ filter:brightness(1.08); transform:translateY(-1px); }
+  .sk-btn[disabled]{ opacity:.45; cursor:not-allowed; transform:none; filter:none; }
+  .sk-btn.ghost{ background:transparent; color:inherit; border-color:rgba(255,255,255,.18); }
+  [data-theme="light"] .sk-btn.ghost{ border-color:rgba(10,21,32,.2); }
+  .sk-btn.sm{ padding:7px 12px; font-size:11.5px; }
+  .sk-btn.danger{ background:#E72347; color:#fff; }
+
+  /* ── lobby list ── */
+  .sk-lobby{ display:flex; align-items:center; gap:12px; padding:12px 14px; border-radius:12px;
+    border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.03); margin-bottom:9px; }
+  [data-theme="light"] .sk-lobby{ border-color:rgba(10,21,32,.1); background:rgba(10,21,32,.03); }
+  .sk-lobby .who{ font-weight:700; font-size:13.5px; }
+  .sk-lobby .meta{ font-size:11px; opacity:.6; margin-top:2px; }
+  .sk-lobby .grow{ flex:1; }
+  .sk-empty{ padding:20px; text-align:center; font-size:11.5px; letter-spacing:1.2px;
+    text-transform:uppercase; opacity:.42; }
+
+  .sk-chip{ display:inline-block; padding:3px 9px; border-radius:999px; font-size:10px;
+    font-weight:800; letter-spacing:1px; text-transform:uppercase;
+    background:rgba(211,115,211,.16); color:#D373D3; }
+
+  /* ── game table ── */
+  .sk-game{ display:grid; grid-template-columns:190px minmax(0,1fr) 260px; gap:14px; align-items:start; }
+  @media (max-width:1080px){ .sk-game{ grid-template-columns:150px minmax(0,1fr); }
+    .sk-chatwrap{ grid-column:1 / -1; } }
+  @media (max-width:720px){ .sk-game{ grid-template-columns:1fr; } }
+
+  .sk-topbar{ display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:12px 16px; border-radius:14px; margin-bottom:14px;
+    background:rgba(18,22,34,.62); border:1px solid rgba(255,255,255,.09); }
+  [data-theme="light"] .sk-topbar{ background:rgba(255,255,255,.78); border-color:rgba(10,21,32,.1); }
+  .sk-round{ font-size:11px; font-weight:800; letter-spacing:1.4px; text-transform:uppercase; opacity:.62; }
+  .sk-word{ flex:1; text-align:center; font-weight:800; font-size:clamp(16px,2.2vw,24px);
+    letter-spacing:.42em; font-variant-numeric:tabular-nums; }
+  .sk-word .len{ font-size:11px; letter-spacing:1px; opacity:.5; margin-left:10px; }
+  .sk-clock{ display:flex; align-items:center; gap:9px; }
+  .sk-clock .n{ font-weight:900; font-size:19px; font-variant-numeric:tabular-nums; min-width:34px; text-align:right; }
+  .sk-clock.low .n{ color:#E72347; }
+  .sk-bar{ width:110px; height:6px; border-radius:99px; background:rgba(255,255,255,.12); overflow:hidden; }
+  .sk-bar > i{ display:block; height:100%; background:#D373D3; width:100%; transition:width .95s linear; }
+  .sk-clock.low .sk-bar > i{ background:#E72347; }
+
+  /* players */
+  .sk-players{ display:flex; flex-direction:column; gap:7px; }
+  .sk-pl{ display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:11px;
+    background:rgba(255,255,255,.04); border:1px solid transparent; font-size:12.5px; }
+  [data-theme="light"] .sk-pl{ background:rgba(10,21,32,.04); }
+  .sk-pl .nm{ flex:1; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sk-pl .sc{ font-weight:800; font-variant-numeric:tabular-nums; }
+  .sk-pl.is-drawer{ border-color:#D373D3; }
+  .sk-pl.has-guessed{ background:rgba(113,179,87,.16); }
+  .sk-pl .tick{ color:#71B357; font-weight:900; }
+  .sk-pl .pen{ opacity:.85; }
+  .sk-pl.is-me .nm{ color:#D373D3; }
+  .sk-pl .delta{ color:#71B357; font-weight:800; font-size:11px; }
+
+  /* canvas */
+  .sk-canvaswrap{ position:relative; border-radius:14px; overflow:hidden;
+    border:1px solid rgba(255,255,255,.1); background:#fff; }
+  #skCanvas{ display:block; width:100%; height:auto; touch-action:none; cursor:crosshair; background:#fff; }
+  .sk-canvaswrap.watching #skCanvas{ cursor:default; }
+
+  .sk-tools{ display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:10px 12px; margin-top:10px; border-radius:12px;
+    background:rgba(18,22,34,.62); border:1px solid rgba(255,255,255,.09); }
+  /* a class-level display: BEATS the hidden attribute — guard every toggled
+     element that has one (this bar is hidden for everyone but the drawer) */
+  .sk-tools[hidden]{ display:none; }
+  [data-theme="light"] .sk-tools{ background:rgba(255,255,255,.78); border-color:rgba(10,21,32,.1); }
+  .sk-swatches{ display:flex; gap:5px; flex-wrap:wrap; }
+  .sk-sw{ width:20px; height:20px; border-radius:5px; border:2px solid transparent; cursor:pointer; padding:0; }
+  .sk-sw.on{ border-color:#D373D3; transform:scale(1.12); }
+  .sk-sizes{ display:flex; gap:5px; }
+  .sk-size{ width:26px; height:26px; border-radius:7px; cursor:pointer; display:grid; place-items:center;
+    background:rgba(255,255,255,.06); border:1px solid transparent; }
+  [data-theme="light"] .sk-size{ background:rgba(10,21,32,.05); }
+  .sk-size.on{ border-color:#D373D3; }
+  .sk-size i{ display:block; border-radius:50%; background:currentColor; }
+  .sk-tools .sp{ flex:1; }
+
+  /* chat */
+  .sk-chatwrap{ display:flex; flex-direction:column; height:520px;
+    border-radius:14px; overflow:hidden;
+    background:rgba(18,22,34,.62); border:1px solid rgba(255,255,255,.09); }
+  [data-theme="light"] .sk-chatwrap{ background:rgba(255,255,255,.78); border-color:rgba(10,21,32,.1); }
+  .sk-chat{ flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:6px; }
+  .sk-msg{ font-size:12.5px; line-height:1.45; }
+  .sk-msg b{ font-weight:700; }
+  .sk-msg.correct{ color:#71B357; font-weight:700; }
+  .sk-msg.system{ opacity:.55; font-style:italic; font-size:11.5px; }
+  .sk-chatform{ display:flex; gap:8px; padding:10px; border-top:1px solid rgba(255,255,255,.08); }
+  [data-theme="light"] .sk-chatform{ border-top-color:rgba(10,21,32,.1); }
+  .sk-chatform input{ flex:1; padding:9px 11px; border-radius:9px; font-family:inherit; font-size:13px;
+    background:#141a28; color:#e9eef7; border:1px solid rgba(255,255,255,.14); }
+  [data-theme="light"] .sk-chatform input{ background:#fff; color:#0a1520; border-color:rgba(10,21,32,.18); }
+  .sk-chatform input[disabled]{ opacity:.5; }
+
+  /* overlays */
+  .sk-ov{ position:fixed; inset:0; z-index:60; display:grid; place-items:center;
+    background:rgba(5,8,14,.72); backdrop-filter:blur(3px); }
+  .sk-ov[hidden]{ display:none; }
+  .sk-card{ width:min(520px,92vw); padding:26px; border-radius:18px; text-align:center;
+    background:#111725; border:1px solid rgba(255,255,255,.12); color:#e9eef7; }
+  [data-theme="light"] .sk-card{ background:#fff; color:#0a1520; border-color:rgba(10,21,32,.12); }
+  .sk-card h2{ margin:0 0 6px; font-size:19px; font-weight:800; }
+  .sk-card p{ margin:0 0 18px; font-size:13px; opacity:.7; }
+  .sk-choices{ display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+  .sk-choices .sk-btn{ font-size:14px; padding:13px 20px; }
+  .sk-reveal-word{ font-size:26px; font-weight:900; letter-spacing:1px; color:#D373D3; margin:6px 0 14px; }
+  .sk-scores{ text-align:left; margin:0 auto; max-width:340px; }
+  .sk-scores .r{ display:flex; gap:10px; padding:7px 0; border-bottom:1px solid rgba(255,255,255,.08); font-size:13.5px; }
+  [data-theme="light"] .sk-scores .r{ border-bottom-color:rgba(10,21,32,.09); }
+  .sk-scores .r .p{ width:26px; opacity:.5; font-weight:800; }
+  .sk-scores .r .n{ flex:1; font-weight:600; }
+  .sk-scores .r .v{ font-weight:800; font-variant-numeric:tabular-nums; }
+  .sk-scores .r.win .n{ color:#D373D3; }
+
+  /* transient toast (close-guess feedback) */
+  .sk-toast{ position:fixed; left:50%; bottom:34px; transform:translateX(-50%);
+    padding:11px 20px; border-radius:11px; font-size:13px; font-weight:700; z-index:70;
+    background:#FFA91F; color:#221607; box-shadow:0 10px 30px rgba(0,0,0,.3);
+    opacity:0; pointer-events:none; transition:opacity .18s ease, transform .18s ease; }
+  .sk-toast.on{ opacity:1; transform:translateX(-50%) translateY(-4px); }
+
+  .sk-note{ font-size:11.5px; opacity:.55; text-align:center; margin-top:14px; }
+  .sk-err{ color:#E72347; font-size:12px; margin-top:10px; min-height:16px; }
+</style>
+<link rel="stylesheet" href="../shared/concierge.css?v=b515403e"/>
+</head>
+<body>
+<div class="wall scrim" aria-hidden="true"></div>
+<script>
+  PP_OS.initChrome({ name: 'Skribbl', section: 'arena', backHref: '../',
+    actions: [{ id: 'abArena', label: 'Arena', title: 'Back to Arena',
+      svg: '<svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="10" rx="5"/><path d="M8 12v2M7 13h2M16.5 12.2v.1M14.8 13.8v.1"/></svg>',
+      onClick: function () { location.href = 'arena.html'; } }] });
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../shared/supabase-client.js?v=79207e52"></script>
+<script src="../shared/tool-registry.js?v=686f4343"></script>
+<script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
+<script src="../shared/auth.js?v=d653ab09"></script>
+<script src="../shared/auth-gate.js?v=003cdc01"></script>
+<script src="../shared/concierge.js?v=dac998dd"></script>
+
+<div id="skView">
+  <div class="sk-inner">
+
+    <!-- ══════════ LOBBY ══════════ -->
+    <div id="lobbyView">
+      <div class="sk-eyebrow">Performance Arena</div>
+      <h1 class="sk-title">Skri<em>bbl</em></h1>
+      <p class="sk-sub">One player draws, everyone else guesses. Fastest correct guess scores most —
+        and the drawer scores on how many people got it. Everyone takes a turn each round.</p>
+
+      <div class="sk-cols">
+        <div class="sk-panel">
+          <h3>Open games</h3>
+          <div id="lobbyList"><div class="sk-empty">Loading…</div></div>
+        </div>
+
+        <div>
+          <div class="sk-panel" id="createPanel">
+            <h3>Start a game</h3>
+            <div class="sk-field">
+              <label for="fTopic">Topic</label>
+              <select id="fTopic">
+                <option value="random">Random — everything</option>
+              </select>
+            </div>
+            <div class="sk-field">
+              <label for="fDiff">Difficulty</label>
+              <select id="fDiff">
+                <option value="mixed">Mixed</option>
+                <option value="easy">Easy</option>
+                <option value="medium">Medium</option>
+                <option value="hard">Hard</option>
+              </select>
+            </div>
+            <div class="sk-row3">
+              <div class="sk-field">
+                <label for="fPlayers">Players</label>
+                <select id="fPlayers"></select>
+              </div>
+              <div class="sk-field">
+                <label for="fRounds">Rounds</label>
+                <select id="fRounds">
+                  <option value="2">2</option>
+                  <option value="3" selected>3</option>
+                  <option value="5">5</option>
+                </select>
+              </div>
+              <div class="sk-field">
+                <label for="fTime">Draw time</label>
+                <select id="fTime">
+                  <option value="60">60s</option>
+                  <option value="80" selected>80s</option>
+                  <option value="120">120s</option>
+                </select>
+              </div>
+            </div>
+            <button class="sk-btn" id="btnCreate" style="width:100%">Create game</button>
+            <div class="sk-err" id="createErr"></div>
+          </div>
+
+          <div class="sk-panel" id="myLobby" hidden style="margin-top:16px">
+            <h3>Your game</h3>
+            <div id="myLobbyBody"></div>
+          </div>
+        </div>
+      </div>
+      <p class="sk-note">Every player draws once per round · 2–12 players · points carry to the Arena leaderboard</p>
+    </div>
+
+    <!-- ══════════ GAME ══════════ -->
+    <div id="gameView" hidden>
+      <div class="sk-topbar">
+        <div class="sk-round" id="gRound">Round 1 / 3</div>
+        <div class="sk-word" id="gWord">— — —</div>
+        <div class="sk-clock" id="gClock"><div class="sk-bar"><i id="gBar"></i></div><span class="n" id="gTime">0</span></div>
+      </div>
+
+      <div class="sk-game">
+        <div class="sk-panel" style="padding:12px">
+          <h3 style="margin-bottom:10px">Players</h3>
+          <div class="sk-players" id="gPlayers"></div>
+          <button class="sk-btn ghost sm" id="btnLeave" style="width:100%;margin-top:12px">Leave game</button>
+        </div>
+
+        <div>
+          <div class="sk-canvaswrap" id="canvasWrap">
+            <canvas id="skCanvas" width="1000" height="700"></canvas>
+          </div>
+          <div class="sk-tools" id="gTools" hidden>
+            <div class="sk-swatches" id="gSwatches"></div>
+            <div class="sk-sizes" id="gSizes"></div>
+            <button class="sk-btn ghost sm" id="btnEraser">Eraser</button>
+            <button class="sk-btn ghost sm" id="btnFill">Fill</button>
+            <div class="sp"></div>
+            <button class="sk-btn ghost sm" id="btnUndo">Undo</button>
+            <button class="sk-btn ghost sm" id="btnClear">Clear</button>
+          </div>
+        </div>
+
+        <div class="sk-chatwrap">
+          <div class="sk-chat" id="gChat"></div>
+          <form class="sk-chatform" id="gChatForm" autocomplete="off">
+            <input id="gGuess" type="text" maxlength="120" placeholder="Type your guess…">
+            <button class="sk-btn sm" type="submit">Send</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- word choice -->
+<div class="sk-ov" id="ovChoose" hidden>
+  <div class="sk-card">
+    <h2>Your turn to draw</h2>
+    <p>Pick a word — <span id="chooseCount">20</span>s</p>
+    <div class="sk-choices" id="chooseBtns"></div>
+  </div>
+</div>
+
+<!-- round reveal -->
+<div class="sk-ov" id="ovReveal" hidden>
+  <div class="sk-card">
+    <h2 id="revealHead">Round over</h2>
+    <div class="sk-reveal-word" id="revealWord"></div>
+    <div class="sk-scores" id="revealScores"></div>
+  </div>
+</div>
+
+<!-- final -->
+<div class="sk-ov" id="ovFinal" hidden>
+  <div class="sk-card">
+    <h2>Final scores</h2>
+    <p id="finalSub">Good game!</p>
+    <div class="sk-scores" id="finalScores"></div>
+    <div style="margin-top:18px;display:flex;gap:10px;justify-content:center">
+      <button class="sk-btn" id="btnAgain">Back to lobby</button>
+      <button class="sk-btn ghost" onclick="location.href='arena.html'">Arena</button>
+    </div>
+  </div>
+</div>
+
+<div class="sk-toast" id="toast"></div>
+
+<script>
+/* ═══════════════════════ Skribbl — client ═══════════════════════
+   The server owns the game (migration 091): phases, the secret word, guess
+   checking and scoring all live in RPCs. This file does three things —
+   render that state, transport the drawing, and count the clock down.
+
+   Drawing is deliberately NOT in the database: strokes go over a realtime
+   BROADCAST channel as batched, resolution-independent points. Persisting
+   them would mean hundreds of writes a minute per game. A late joiner asks
+   the drawer for a snapshot instead.
+   ═══════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  var $ = function (s) { return document.querySelector(s); };
+
+  var TOPICS = [
+    ['random', 'Random — everything'], ['animals', 'Animals'], ['food', 'Food & drink'],
+    ['objects', 'Objects'], ['sports', 'Sports'], ['movies', 'Movies & TV'],
+    ['places', 'Places'], ['actions', 'Actions'], ['nature', 'Nature'],
+    ['property', 'Property'], ['office', 'Office life']
+  ];
+  var COLOURS = ['#000000','#7f8c8d','#c0392b','#e74c3c','#e67e22','#f1c40f','#2ecc71',
+                 '#16a085','#3498db','#2c3e50','#9b59b6','#e84393','#8b5a2b','#ffffff'];
+  var SIZES = [3, 7, 14, 26];
+
+  /* supabase-js query builders are LAZY — they only issue the HTTP request when
+     something calls .then(). A bare `sb.rpc(...)` with no await silently does
+     nothing, which is a very quiet way to lose a game clock. Everything
+     fire-and-forget goes through here. */
+  function fire(fn, args) {
+    return window.sb.rpc(fn, args || {}).then(function () {}, function () {});
+  }
+
+  var me = { id: null, email: null, name: null };
+  var lobby = null;        // my lobby row
+  var game = null;         // current game row
+  var players = [];        // game_players rows
+  var myRound = null;      // the drawer-only row (only ever populated for the drawer)
+  var chans = [];          // realtime channels to tear down
+  var tickTimer = null, clockTimer = null, chooseTimer = null;
+  var lastTurnKey = '';    // detects a turn change so we can reset the canvas
+
+  /* ── drawing state ──────────────────────────────────────────── */
+  var cv = $('#skCanvas'), ctx = cv.getContext('2d');
+  var items = [];          // replayable: {t:'s',c,w,e,p:[[x,y]…]} | {t:'f',c,x,y}
+  var cur = null;          // stroke in progress (drawer)
+  var pen = { colour: '#000000', size: 7, eraser: false, fill: false };
+  var drawChan = null, pending = [], flushTimer = null;
+
+  function amDrawer() { return !!(game && myRound && myRound.drawer_seat === game.drawer_seat); }
+  function isDrawing() { return !!(game && game.phase === 'drawing'); }
+
+  function px(x, y) { return [x * cv.width, y * cv.height]; }
+
+  function drawStroke(s) {
+    if (!s.p || !s.p.length) return;
+    ctx.save();
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = s.e ? '#ffffff' : s.c;
+    ctx.lineWidth = s.w * (cv.width / 1000);
+    ctx.beginPath();
+    var a = px(s.p[0][0], s.p[0][1]);
+    ctx.moveTo(a[0], a[1]);
+    if (s.p.length === 1) ctx.lineTo(a[0] + 0.01, a[1]);
+    for (var i = 1; i < s.p.length; i++) { var b = px(s.p[i][0], s.p[i][1]); ctx.lineTo(b[0], b[1]); }
+    ctx.stroke(); ctx.restore();
+  }
+
+  /* Scanline flood fill over the raw pixels — replayed in sequence with the
+     strokes so every client ends up with the same picture. */
+  function floodFill(nx, ny, hex) {
+    var w = cv.width, h = cv.height;
+    var sx = Math.round(nx * w), sy = Math.round(ny * h);
+    if (sx < 0 || sy < 0 || sx >= w || sy >= h) return;
+    var img = ctx.getImageData(0, 0, w, h), d = img.data;
+    var at = function (x, y) { return (y * w + x) * 4; };
+    var i0 = at(sx, sy);
+    var t = [d[i0], d[i0 + 1], d[i0 + 2], d[i0 + 3]];
+    var m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex) || ['', '00', '00', '00'];
+    var f = [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), 255];
+    if (t[0] === f[0] && t[1] === f[1] && t[2] === f[2] && t[3] === f[3]) return;
+    var near = function (i) {
+      return Math.abs(d[i] - t[0]) < 24 && Math.abs(d[i + 1] - t[1]) < 24 &&
+             Math.abs(d[i + 2] - t[2]) < 24 && Math.abs(d[i + 3] - t[3]) < 24;
+    };
+    var stack = [[sx, sy]];
+    while (stack.length) {
+      var pt = stack.pop(), x = pt[0], y = pt[1];
+      while (x >= 0 && near(at(x, y))) x--;
+      x++;
+      var up = false, dn = false;
+      while (x < w && near(at(x, y))) {
+        var i = at(x, y);
+        d[i] = f[0]; d[i + 1] = f[1]; d[i + 2] = f[2]; d[i + 3] = 255;
+        if (y > 0) { if (near(at(x, y - 1))) { if (!up) { stack.push([x, y - 1]); up = true; } } else up = false; }
+        if (y < h - 1) { if (near(at(x, y + 1))) { if (!dn) { stack.push([x, y + 1]); dn = true; } } else dn = false; }
+        x++;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  function repaint() {
+    ctx.save(); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height); ctx.restore();
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (it.t === 'f') floodFill(it.x, it.y, it.c); else drawStroke(it);
+    }
+  }
+
+  function applyItem(it, redraw) {
+    items.push(it);
+    if (it.t === 'f') floodFill(it.x, it.y, it.c);
+    else if (redraw !== false) drawStroke(it);
+  }
+
+  /* ── broadcast transport ────────────────────────────────────── */
+  function bcast(event, payload) {
+    if (drawChan) { try { drawChan.send({ type: 'broadcast', event: event, payload: payload }); } catch (e) {} }
+  }
+  function flushPoints() {
+    flushTimer = null;
+    if (!pending.length || !cur) return;
+    bcast('s', { c: cur.c, w: cur.w, e: cur.e, p: pending });
+    pending = [];
+  }
+  function queuePoint(p) {
+    pending.push(p);
+    if (!flushTimer) flushTimer = setTimeout(flushPoints, 55);
+  }
+
+  /* ── pointer handling (drawer only) ─────────────────────────── */
+  function pos(ev) {
+    var r = cv.getBoundingClientRect();
+    return [Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)),
+            Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height))];
+  }
+  cv.addEventListener('pointerdown', function (ev) {
+    if (!amDrawer() || !isDrawing()) return;
+    cv.setPointerCapture(ev.pointerId);
+    var p = pos(ev);
+    if (pen.fill) {
+      var it = { t: 'f', c: pen.colour, x: p[0], y: p[1] };
+      applyItem(it); bcast('f', it); return;
+    }
+    cur = { t: 's', c: pen.colour, w: pen.size, e: pen.eraser, p: [p] };
+    items.push(cur); pending = [p]; drawStroke(cur);
+  });
+  cv.addEventListener('pointermove', function (ev) {
+    if (!cur || !amDrawer() || !isDrawing()) return;
+    var p = pos(ev);
+    var last = cur.p[cur.p.length - 1];
+    if (Math.abs(p[0] - last[0]) < 0.002 && Math.abs(p[1] - last[1]) < 0.002) return;
+    cur.p.push(p); queuePoint(p);
+    ctx.save();
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = cur.e ? '#ffffff' : cur.c;
+    ctx.lineWidth = cur.w * (cv.width / 1000);
+    ctx.beginPath();
+    var a = px(last[0], last[1]), b = px(p[0], p[1]);
+    ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.restore();
+  });
+  function endStroke() { if (!cur) return; flushPoints(); cur = null; }
+  cv.addEventListener('pointerup', endStroke);
+  cv.addEventListener('pointercancel', endStroke);
+  cv.addEventListener('pointerleave', endStroke);
+
+  /* ── tool bar ───────────────────────────────────────────────── */
+  function buildTools() {
+    var sw = $('#gSwatches'); sw.innerHTML = '';
+    COLOURS.forEach(function (c) {
+      var b = document.createElement('button');
+      b.className = 'sk-sw' + (c === pen.colour ? ' on' : '');
+      b.style.background = c;
+      if (c === '#ffffff') b.style.boxShadow = 'inset 0 0 0 1px rgba(0,0,0,.25)';
+      b.title = c;
+      b.onclick = function () {
+        pen.colour = c; pen.eraser = false;
+        $('#btnEraser').classList.remove('on'); buildTools();
+      };
+      sw.appendChild(b);
+    });
+    var sz = $('#gSizes'); sz.innerHTML = '';
+    SIZES.forEach(function (s) {
+      var b = document.createElement('button');
+      b.className = 'sk-size' + (s === pen.size ? ' on' : '');
+      b.innerHTML = '<i style="width:' + Math.min(16, s) + 'px;height:' + Math.min(16, s) + 'px"></i>';
+      b.onclick = function () { pen.size = s; buildTools(); };
+      sz.appendChild(b);
+    });
+    $('#btnEraser').style.opacity = pen.eraser ? 1 : .6;
+    $('#btnFill').style.opacity = pen.fill ? 1 : .6;
+  }
+  $('#btnEraser').onclick = function () { pen.eraser = !pen.eraser; pen.fill = false; buildTools(); };
+  $('#btnFill').onclick = function () { pen.fill = !pen.fill; pen.eraser = false; buildTools(); };
+  $('#btnClear').onclick = function () {
+    if (!amDrawer()) return;
+    items = []; repaint(); bcast('clear', {});
+  };
+  $('#btnUndo').onclick = function () {
+    if (!amDrawer() || !items.length) return;
+    items.pop(); repaint();
+    bcast('snap', { items: items.slice(-400) });   // cheap + authoritative
+  };
+
+  /* ── toast ──────────────────────────────────────────────────── */
+  var toastTimer = null;
+  function toast(msg, colour) {
+    var t = $('#toast');
+    t.textContent = msg;
+    t.style.background = colour || '#FFA91F';
+    t.style.color = colour === '#71B357' ? '#fff' : '#221607';
+    t.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove('on'); }, 1900);
+  }
+
+  /* ══════════════════ LOBBY ══════════════════ */
+  function fillSelects() {
+    var t = $('#fTopic'); t.innerHTML = '';
+    TOPICS.forEach(function (p) {
+      var o = document.createElement('option'); o.value = p[0]; o.textContent = p[1]; t.appendChild(o);
+    });
+    var pl = $('#fPlayers'); pl.innerHTML = '';
+    for (var i = 2; i <= 12; i++) {
+      var o = document.createElement('option'); o.value = i; o.textContent = i;
+      if (i === 8) o.selected = true; pl.appendChild(o);
+    }
+  }
+
+  function topicLabel(k) {
+    for (var i = 0; i < TOPICS.length; i++) if (TOPICS[i][0] === k) return TOPICS[i][1];
+    return k;
+  }
+
+  async function loadLobbies() {
+    try { await window.sb.rpc('expire_stale_skribbl_lobbies'); } catch (e) {}
+    var res = await window.sb.from('arena_skribbl_lobbies')
+      .select('*').eq('status', 'open').order('created_at', { ascending: false });
+    var rows = res.data || [];
+    var pc = await window.sb.from('arena_skribbl_lobby_players')
+      .select('lobby_id,user_id,status').in('status', ['joined', 'requested', 'invited']);
+    var byLobby = {};
+    (pc.data || []).forEach(function (r) { (byLobby[r.lobby_id] = byLobby[r.lobby_id] || []).push(r); });
+
+    var mine = rows.filter(function (r) {
+      return r.host_user_id === me.id ||
+        (byLobby[r.id] || []).some(function (p) { return p.user_id === me.id && p.status === 'joined'; });
+    })[0];
+    lobby = mine || null;
+    renderMyLobby(byLobby);
+
+    var list = $('#lobbyList');
+    var others = rows.filter(function (r) { return !lobby || r.id !== lobby.id; });
+    if (!others.length) { list.innerHTML = '<div class="sk-empty">No open games — start one</div>'; return; }
+    list.innerHTML = '';
+    others.forEach(function (r) {
+      var mem = byLobby[r.id] || [];
+      var joined = mem.filter(function (m) { return m.status === 'joined'; }).length;
+      var mineHere = mem.filter(function (m) { return m.user_id === me.id; })[0];
+      var el = document.createElement('div');
+      el.className = 'sk-lobby';
+      el.innerHTML =
+        '<div class="grow"><div class="who">' + esc(r.host_name || r.host_email) + "'s game</div>" +
+        '<div class="meta">' + esc(topicLabel(r.topic)) + ' · ' + esc(r.difficulty) + ' · ' +
+          r.rounds + ' rounds · ' + r.draw_seconds + 's · ' + joined + '/' + r.max_players + ' players</div></div>';
+      var b = document.createElement('button');
+      b.className = 'sk-btn sm';
+      if (mineHere && mineHere.status === 'requested') { b.textContent = 'Requested'; b.disabled = true; }
+      else if (mineHere && mineHere.status === 'invited') { b.textContent = 'Accept invite'; b.onclick = function () { respond(r.id, true); }; }
+      else if (joined >= r.max_players) { b.textContent = 'Full'; b.disabled = true; }
+      else { b.textContent = 'Ask to join'; b.onclick = function () { joinLobby(r.id); }; }
+      el.appendChild(b);
+      list.appendChild(el);
+    });
+  }
+
+  function renderMyLobby(byLobby) {
+    var box = $('#myLobby'), body = $('#myLobbyBody');
+    if (!lobby) { box.hidden = true; $('#createPanel').hidden = false; return; }
+    box.hidden = false; $('#createPanel').hidden = true;
+    var mem = (byLobby && byLobby[lobby.id]) || [];
+    var host = lobby.host_user_id === me.id;
+
+    window.sb.from('arena_skribbl_lobby_players').select('*').eq('lobby_id', lobby.id)
+      .then(function (res) {
+        var rows = res.data || [];
+        var joined = rows.filter(function (r) { return r.status === 'joined'; });
+        var reqs   = rows.filter(function (r) { return r.status === 'requested'; });
+        var html = '<div class="meta" style="font-size:11.5px;opacity:.6;margin-bottom:10px">' +
+          esc(topicLabel(lobby.topic)) + ' · ' + esc(lobby.difficulty) + ' · ' + lobby.rounds +
+          ' rounds · ' + lobby.draw_seconds + 's</div>';
+        html += '<div style="margin-bottom:10px">';
+        joined.forEach(function (p) {
+          html += '<div class="sk-lobby" style="padding:8px 11px;margin-bottom:6px"><div class="grow">' +
+            '<div class="who">' + esc(p.name || p.email) + (p.user_id === lobby.host_user_id ? ' <span class="sk-chip">host</span>' : '') +
+            '</div></div>' +
+            (host && p.user_id !== me.id ? '<button class="sk-btn ghost sm" data-kick="' + p.user_id + '">Remove</button>' : '') +
+            '</div>';
+        });
+        html += '</div>';
+        if (host && reqs.length) {
+          html += '<h3 style="margin:14px 0 8px">Wants to join</h3>';
+          reqs.forEach(function (p) {
+            html += '<div class="sk-lobby" style="padding:8px 11px;margin-bottom:6px"><div class="grow">' +
+              '<div class="who">' + esc(p.name || p.email) + '</div></div>' +
+              '<button class="sk-btn sm" data-accept="' + p.user_id + '">Accept</button></div>';
+          });
+        }
+        html += '<div style="display:flex;gap:9px;margin-top:14px">';
+        if (host) {
+          html += '<button class="sk-btn" id="btnStart"' + (joined.length < 2 ? ' disabled' : '') + '>Start game</button>' +
+                  '<button class="sk-btn ghost" id="btnCancel">Cancel</button>';
+        } else {
+          html += '<button class="sk-btn ghost" id="btnLeaveLobby">Leave</button>';
+        }
+        html += '</div>';
+        if (joined.length < 2) html += '<div class="sk-note" style="text-align:left">Waiting for at least one more player…</div>';
+        body.innerHTML = html;
+
+        body.querySelectorAll('[data-kick]').forEach(function (b) {
+          b.onclick = function () { call('kick_skribbl_lobby_player', { p_lobby_id: lobby.id, p_user_id: b.dataset.kick }); };
+        });
+        body.querySelectorAll('[data-accept]').forEach(function (b) {
+          b.onclick = function () { call('accept_skribbl_join_request', { p_lobby_id: lobby.id, p_user_id: b.dataset.accept }); };
+        });
+        var s = body.querySelector('#btnStart');
+        if (s) s.onclick = async function () {
+          s.disabled = true;
+          var r = await window.sb.rpc('start_skribbl_lobby', { p_lobby_id: lobby.id });
+          if (r.error) { s.disabled = false; toast(r.error.message, '#E72347'); }
+        };
+        var c = body.querySelector('#btnCancel');
+        if (c) c.onclick = function () { call('cancel_skribbl_lobby', { p_lobby_id: lobby.id }); };
+        var l = body.querySelector('#btnLeaveLobby');
+        if (l) l.onclick = function () { call('leave_skribbl_lobby', { p_lobby_id: lobby.id }); };
+      });
+  }
+
+  async function call(fn, args) {
+    var r = await window.sb.rpc(fn, args || {});
+    if (r.error) toast(r.error.message, '#E72347');
+    loadLobbies();
+    return r;
+  }
+  function joinLobby(id) { call('request_join_skribbl_lobby', { p_lobby_id: id }); }
+  function respond(id, ok) { call('respond_skribbl_invite', { p_lobby_id: id, p_accept: ok }); }
+
+  $('#btnCreate').onclick = async function () {
+    $('#createErr').textContent = '';
+    var r = await window.sb.rpc('create_skribbl_lobby', {
+      p_max_players: +$('#fPlayers').value, p_rounds: +$('#fRounds').value,
+      p_draw_secs: +$('#fTime').value, p_topic: $('#fTopic').value, p_difficulty: $('#fDiff').value
+    });
+    if (r.error) { $('#createErr').textContent = r.error.message; return; }
+    loadLobbies();
+  };
+
+  /* ══════════════════ GAME ══════════════════ */
+  async function enterGame(gameId) {
+    teardown();
+    $('#lobbyView').hidden = true; $('#gameView').hidden = false;
+    items = []; repaint(); lastTurnKey = '';
+    await refreshGame(gameId);
+    await loadChat(gameId);
+    wireGameChannels(gameId);
+    tickTimer = setInterval(function () { fire('skribbl_tick', { p_game_id: gameId }); }, 3000);
+    clockTimer = setInterval(paintClock, 250);
+  }
+
+  async function refreshGame(gameId) {
+    var g = await window.sb.from('arena_skribbl_games').select('*').eq('id', gameId).maybeSingle();
+    if (!g.data) return;
+    game = g.data;
+    var p = await window.sb.from('arena_skribbl_game_players').select('*').eq('game_id', gameId).order('seat');
+    players = p.data || [];
+    // the drawer-only row: RLS returns nothing unless that's me
+    var r = await window.sb.from('arena_skribbl_rounds').select('*')
+      .eq('game_id', gameId).eq('round_no', game.round_no).eq('drawer_seat', game.drawer_seat).maybeSingle();
+    myRound = r.data || null;
+    renderGame();
+  }
+
+  function renderGame() {
+    if (!game) return;
+    var turnKey = game.round_no + '-' + game.drawer_seat;
+    if (turnKey !== lastTurnKey) {          // new turn → fresh canvas
+      lastTurnKey = turnKey; items = []; repaint();
+      if (amDrawer()) setTimeout(function () { bcast('snap', { items: [] }); }, 120);
+    }
+
+    $('#gRound').textContent = 'Round ' + game.round_no + ' / ' + game.rounds_total;
+
+    var drawer = players.filter(function (p) { return p.seat === game.drawer_seat; })[0];
+    var iDraw = amDrawer();
+
+    // word / hint line
+    var w = $('#gWord');
+    if (game.phase === 'choosing') {
+      w.textContent = iDraw ? 'Pick a word…' : ((drawer && drawer.name ? drawer.name : 'Someone') + ' is choosing…');
+      w.style.letterSpacing = '.04em';
+    } else if (game.phase === 'drawing') {
+      w.style.letterSpacing = '.42em';
+      if (iDraw && myRound && myRound.word) {
+        w.innerHTML = esc(myRound.word.toUpperCase()) + '<span class="len">you are drawing</span>';
+      } else {
+        w.innerHTML = esc(game.hint || '') + '<span class="len">' + (game.word_len || 0) + '</span>';
+      }
+    } else if (game.phase === 'reveal' || game.phase === 'ended') {
+      w.style.letterSpacing = '.04em';
+      w.textContent = game.reveal_word ? game.reveal_word.toUpperCase() : '—';
+    }
+
+    // players
+    var box = $('#gPlayers'); box.innerHTML = '';
+    players.slice().sort(function (a, b) { return b.score - a.score; }).forEach(function (p) {
+      var el = document.createElement('div');
+      el.className = 'sk-pl' + (p.seat === game.drawer_seat ? ' is-drawer' : '') +
+        (p.guessed_at ? ' has-guessed' : '') + (p.user_id === me.id ? ' is-me' : '');
+      el.innerHTML = '<span class="' + (p.seat === game.drawer_seat ? 'pen' : 'tick') + '">' +
+          (p.seat === game.drawer_seat ? '✎' : (p.guessed_at ? '✓' : '')) + '</span>' +
+        '<span class="nm">' + esc(p.name || p.email) + (p.left_at ? ' (left)' : '') + '</span>' +
+        '<span class="sc">' + p.score + '</span>';
+      box.appendChild(el);
+    });
+
+    // tools + canvas affordance
+    $('#gTools').hidden = !(iDraw && game.phase === 'drawing');
+    $('#canvasWrap').classList.toggle('watching', !(iDraw && game.phase === 'drawing'));
+    if (iDraw && game.phase === 'drawing') buildTools();
+
+    // guess box
+    var meRow = players.filter(function (p) { return p.user_id === me.id; })[0];
+    var canGuess = game.phase === 'drawing' && !iDraw && meRow && !meRow.guessed_at;
+    $('#gGuess').disabled = !canGuess;
+    $('#gGuess').placeholder = iDraw ? 'You are drawing — no guessing!' :
+      (meRow && meRow.guessed_at ? 'You got it! Waiting for the others…' :
+      (game.phase === 'drawing' ? 'Type your guess…' : 'Waiting for the next round…'));
+
+    // overlays
+    var choose = (game.phase === 'choosing' && iDraw && myRound && !myRound.word);
+    $('#ovChoose').hidden = !choose;
+    if (choose) renderChoices();
+
+    var reveal = (game.phase === 'reveal');
+    $('#ovReveal').hidden = !reveal;
+    if (reveal) renderReveal();
+
+    if (game.phase === 'ended') { $('#ovReveal').hidden = true; renderFinal(); }
+  }
+
+  function renderChoices() {
+    var box = $('#chooseBtns');
+    if (box.dataset.turn === lastTurnKey) return;
+    box.dataset.turn = lastTurnKey;
+    box.innerHTML = '';
+    (myRound.choices || []).forEach(function (word, i) {
+      var b = document.createElement('button');
+      b.className = 'sk-btn'; b.textContent = word;
+      b.onclick = function () {
+        box.querySelectorAll('button').forEach(function (x) { x.disabled = true; });
+        fire('skribbl_choose_word', { p_game_id: game.id, p_index: i });
+      };
+      box.appendChild(b);
+    });
+  }
+
+  function scoreRows(list, showRound) {
+    return list.map(function (p, i) {
+      return '<div class="r' + (i === 0 ? ' win' : '') + '"><span class="p">' + (i + 1) + '</span>' +
+        '<span class="n">' + esc(p.name || p.email) + '</span>' +
+        (showRound && p.round_pts ? '<span class="delta">+' + p.round_pts + '</span>' : '') +
+        '<span class="v">' + p.score + '</span></div>';
+    }).join('');
+  }
+
+  function renderReveal() {
+    $('#revealHead').textContent = 'Round ' + game.round_no + ' of ' + game.rounds_total;
+    $('#revealWord').textContent = game.reveal_word || '';
+    var sorted = players.slice().sort(function (a, b) { return b.score - a.score; });
+    $('#revealScores').innerHTML = scoreRows(sorted, true);
+  }
+
+  function renderFinal() {
+    if (!$('#ovFinal').hidden) return;
+    $('#ovFinal').hidden = false;
+    var sorted = players.slice().sort(function (a, b) { return b.score - a.score; });
+    $('#finalScores').innerHTML = scoreRows(sorted, false);
+    $('#finalSub').textContent = sorted.length ? ((sorted[0].name || 'Someone') + ' wins!') : 'Good game!';
+  }
+
+  /* clock — the server owns the deadline; this is just the countdown paint */
+  function paintClock() {
+    if (!game || !game.phase_ends_at) { $('#gTime').textContent = '—'; $('#gBar').style.width = '0%'; return; }
+    var total = game.phase === 'drawing' ? game.draw_seconds : (game.phase === 'choosing' ? 20 : 7);
+    var left = Math.max(0, (new Date(game.phase_ends_at).getTime() - Date.now()) / 1000);
+    $('#gTime').textContent = Math.ceil(left);
+    $('#gBar').style.width = Math.max(0, Math.min(100, (left / total) * 100)) + '%';
+    $('#gClock').classList.toggle('low', game.phase === 'drawing' && left <= 10);
+    if ($('#ovChoose').hidden === false) $('#chooseCount').textContent = Math.ceil(left);
+    /* the deadline passed — nudge the server, but no more than once a second
+       (this paints 4x a second) */
+    if (left <= 0 && Date.now() - lastNudge > 1000) { lastNudge = Date.now(); fire('skribbl_tick', { p_game_id: game.id }); }
+  }
+  var lastNudge = 0;
+
+  /* ── chat ── */
+  async function loadChat(gameId) {
+    var r = await window.sb.from('arena_skribbl_guesses').select('*')
+      .eq('game_id', gameId).order('id').limit(200);
+    $('#gChat').innerHTML = '';
+    (r.data || []).forEach(addMsg);
+  }
+  function addMsg(m) {
+    var el = document.createElement('div');
+    if (m.kind === 'system') { el.className = 'sk-msg system'; el.textContent = m.text || ''; }
+    else if (m.kind === 'correct') { el.className = 'sk-msg correct'; el.textContent = '✓ ' + (m.name || 'Someone') + ' guessed the word!'; }
+    else { el.className = 'sk-msg'; el.innerHTML = '<b>' + esc(m.name || '?') + ':</b> ' + esc(m.text || ''); }
+    var c = $('#gChat'); c.appendChild(el); c.scrollTop = c.scrollHeight;
+  }
+
+  $('#gChatForm').onsubmit = async function (ev) {
+    ev.preventDefault();
+    var inp = $('#gGuess'), v = inp.value.trim();
+    if (!v || !game) return;
+    inp.value = '';
+    var r = await window.sb.rpc('submit_skribbl_guess', { p_game_id: game.id, p_text: v });
+    if (r.error) { toast(r.error.message, '#E72347'); return; }
+    var st = r.data && r.data.status;
+    if (st === 'correct') toast('+' + r.data.points + ' — you got it!', '#71B357');
+    else if (st === 'close') toast('So close!');
+  };
+
+  /* ── realtime ── */
+  function wireGameChannels(gameId) {
+    var c1 = window.sb.channel('skribbl_game_' + gameId)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'arena_skribbl_games', filter: 'id=eq.' + gameId },
+        function () { refreshGame(gameId); })
+      .subscribe();
+    var c2 = window.sb.channel('skribbl_players_' + gameId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'arena_skribbl_game_players', filter: 'game_id=eq.' + gameId },
+        function () { refreshGame(gameId); })
+      .subscribe();
+    var c3 = window.sb.channel('skribbl_chat_' + gameId)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'arena_skribbl_guesses', filter: 'game_id=eq.' + gameId },
+        function (p) { addMsg(p.new); })
+      .subscribe();
+
+    drawChan = window.sb.channel('skribbl_draw_' + gameId, { config: { broadcast: { self: false } } })
+      .on('broadcast', { event: 's' }, function (m) {
+        if (amDrawer()) return;
+        applyItem({ t: 's', c: m.payload.c, w: m.payload.w, e: m.payload.e, p: m.payload.p });
+      })
+      .on('broadcast', { event: 'f' }, function (m) { if (!amDrawer()) applyItem(m.payload); })
+      .on('broadcast', { event: 'clear' }, function () { if (!amDrawer()) { items = []; repaint(); } })
+      .on('broadcast', { event: 'snap' }, function (m) {
+        if (amDrawer()) return;
+        items = (m.payload && m.payload.items) || []; repaint();
+      })
+      .on('broadcast', { event: 'snapreq' }, function () {
+        // only the drawer answers, and only with what fits comfortably
+        if (amDrawer()) bcast('snap', { items: items.slice(-400) });
+      })
+      .subscribe(function (status) {
+        if (status === 'SUBSCRIBED' && !amDrawer()) bcast('snapreq', {});
+      });
+
+    chans = [c1, c2, c3, drawChan];
+  }
+
+  function teardown() {
+    chans.forEach(function (c) { try { window.sb.removeChannel(c); } catch (e) {} });
+    chans = []; drawChan = null;
+    if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+    if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
+  }
+
+  $('#btnLeave').onclick = async function () {
+    if (game) await window.sb.rpc('skribbl_leave_game', { p_game_id: game.id });
+    backToLobby();
+  };
+  $('#btnAgain').onclick = backToLobby;
+
+  function backToLobby() {
+    teardown(); game = null; myRound = null; players = [];
+    $('#ovFinal').hidden = true; $('#ovReveal').hidden = true; $('#ovChoose').hidden = true;
+    $('#gameView').hidden = true; $('#lobbyView').hidden = false;
+    history.replaceState({}, '', location.pathname);
+    loadLobbies(); watchLobbies();
+  }
+
+  /* lobby-level realtime: my lobby starting, players coming and going */
+  var lobbyChans = [];
+  function watchLobbies() {
+    lobbyChans.forEach(function (c) { try { window.sb.removeChannel(c); } catch (e) {} });
+    lobbyChans = [
+      window.sb.channel('skribbl_lobbies')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'arena_skribbl_lobbies' },
+          function (p) {
+            if (p.new && p.new.status === 'started' && p.new.game_id && lobby && p.new.id === lobby.id) {
+              enterGame(p.new.game_id); return;
+            }
+            loadLobbies();
+          }).subscribe(),
+      window.sb.channel('skribbl_lobby_players')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'arena_skribbl_lobby_players' },
+          function () { loadLobbies(); }).subscribe()
+    ];
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  /* ── boot ── */
+  (async function boot() {
+    for (var i = 0; i < 60 && !window.sb; i++) await new Promise(function (r) { setTimeout(r, 100); });
+    if (!window.sb) return;
+    var s = await window.sb.auth.getSession();
+    if (!s.data || !s.data.session) return;            // auth-gate.js handles the redirect
+    me.id = s.data.session.user.id;
+    me.email = s.data.session.user.email;
+    me.name = (me.email || '').split('@')[0];
+
+    fillSelects();
+    repaint();
+
+    // rejoin an in-flight game if I'm in one
+    var mine = await window.sb.from('arena_skribbl_game_players')
+      .select('game_id, arena_skribbl_games!inner(id,status)')
+      .eq('user_id', me.id).is('left_at', null)
+      .eq('arena_skribbl_games.status', 'active').limit(1);
+    var qs = new URLSearchParams(location.search);
+    var deep = qs.get('game');
+    if (deep) { enterGame(deep); return; }
+    if (mine.data && mine.data.length) { enterGame(mine.data[0].game_id); return; }
+
+    await loadLobbies();
+    watchLobbies();
+  })();
+
+  window.addEventListener('beforeunload', function () { teardown(); });
+})();
+</script>
+</body>
+</html>

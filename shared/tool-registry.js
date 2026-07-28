@@ -50,6 +50,7 @@
     'arena-typing':     { sec: 'arena',     file: 'arena-typing.html',           label: 'Typing Test' },
     'arena-chess':      { sec: 'arena',     file: 'arena-chess.html',            label: 'Chess' },
     'arena-scrabble':   { sec: 'arena',     file: 'arena-scrabble.html',         label: 'Scrabble' },
+    'arena-skribbl':    { sec: 'arena',     file: 'arena-skribbl.html',          label: 'Skribbl' },
     /* docs */
     'documents':        { sec: 'docs',      file: 'whitepapers-strategies.html', label: 'Documents' },
     'online-reports':   { sec: 'docs',      file: 'online-reports.html',         label: 'Online Reports' },
@@ -68,7 +69,7 @@
   var DEFAULT_BASELINE = ['clock', 'runway-demand', 'runway-workbook', 'vr-projection', 'results',
     'documents', 'online-reports', 'research-reports',
     'present-new', 'present-company', 'present-mine', 'present-library',
-    'arena', 'arena-typing', 'arena-chess', 'arena-scrabble'];
+    'arena', 'arena-typing', 'arena-chess', 'arena-scrabble', 'arena-skribbl'];
   var DEFAULT_LEADS_EXTRA = ['scorecards'];   /* lockstep with the 081 'leads' seed */
 
   /* every registry key whose file matches a basename (a file can carry
