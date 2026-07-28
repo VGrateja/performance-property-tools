@@ -29,7 +29,6 @@
     'runway-demand':    { sec: 'analytics', file: 'runway-demand.html',          label: 'Runway v Demand Score' },
     'runway-workbook':  { sec: 'analytics', file: 'runway-workbook.html',        label: 'Runway Workbook' },
     'vr-projection':    { sec: 'analytics', file: 'vr-projection.html',          label: 'Vacancy Rate Projection' },
-    'results':          { sec: 'analytics', file: 'results.html',                label: 'Results' },
     /* vault */
     'forge':            { sec: 'vault',     file: 'data-forge.html',             label: 'Data Forge' },
     'data-extractor':   { sec: 'vault',     file: 'data-extractor.html',         label: 'Data Extractor' },
@@ -42,6 +41,7 @@
     'data-map':         { sec: 'vault',     file: 'data-architecture.html',      label: 'Data Architecture Map' },
     'reports-lite':     { sec: 'vault',     file: 'online-reports.html',         label: 'Lite Online Reports' },
     'lite-links':       { sec: 'vault',     file: 'lite-report-links.html',      label: 'Lite Report Links' },
+    'results':          { sec: 'vault',     file: 'results.html',                label: 'Results' },
     /* pm */
     'cadence':          { sec: 'pm',        file: 'cadence.html',                label: 'Cadence' },
     'tenant-summary':   { sec: 'pm',        file: 'tenant-summary.html',         label: 'Tenant Application Summary' },
@@ -66,7 +66,9 @@
 
   /* Pre-migration fallback = EXACTLY today's company-tier-visible hub.
      LOCKSTEP: mirror of the 081 company_baseline seed — change both or none. */
-  var DEFAULT_BASELINE = ['clock', 'runway-demand', 'runway-workbook', 'vr-projection', 'results',
+  /* 'results' moved to the Vault 2026-07-28 and OUT of the staff default —
+     it is dev/admin (+ ticked groups) only, like every other Vault tool. */
+  var DEFAULT_BASELINE = ['clock', 'runway-demand', 'runway-workbook', 'vr-projection',
     'documents', 'online-reports', 'research-reports',
     'present-new', 'present-company', 'present-mine', 'present-library',
     'arena', 'arena-typing', 'arena-chess', 'arena-scrabble', 'arena-skribbl'];
