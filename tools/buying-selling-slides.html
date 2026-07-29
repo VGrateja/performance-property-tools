@@ -1567,6 +1567,72 @@ async function renderHousingFinance(host, slug){
   host.style.border='1px solid #63666A';   /* the sample frames this chart panel */
   _drawEChart(host, option);
 }
+/* ── Consumer Confidence — OECD CCI (Australia), monthly. NATIONAL series, so
+      every deck shows the same chart (like Housing Finance). The index is
+      centred on 100 = the long-run average and only moves in a ~96-102 band,
+      so the y-axis must NOT start at zero — zero-basing flatlines it. A dashed
+      reference line marks 100 and the band above it is tinted, which is what
+      makes "above/below average" readable at slide size. ── */
+let _ccCache;
+async function getConsumerConf(){
+  if(_ccCache!==undefined) return _ccCache;
+  let out=null;
+  try{
+    const {data}=await window.sb.from('rdp_raw_series').select('period,value')
+      .eq('region_slug','australia').eq('metric','consumer_confidence').eq('freq','M')
+      .gte('period','2000-01-01').order('period');   /* 1974 start is far too long for a slide */
+    if(data&&data.length){
+      const months=[],vals=[];
+      data.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return; months.push(String(r.period).slice(0,7)); vals.push(Math.round(v*100)/100); });
+      if(months.length) out={ months:months, vals:vals };
+    }
+  }catch(e){}
+  _ccCache=out||null; return _ccCache;
+}
+function mountConsumerConf(slideEl){ const host=slideEl.querySelector('.bss-chart'); if(host) renderConsumerConf(host); }
+async function renderConsumerConf(host){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const D=await getConsumerConf();
+  if(!D){ host.innerHTML='<div class="bss-chartload">No consumer-confidence data.</div>'; return; }
+  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const last=D.months.length-1;
+  const shortM=s=>s.slice(0,4);                                   /* year-only ticks over 25 years */
+  const longM=s=>{ const [y,m]=s.split('-'); return MON[+m-1]+' '+y; };
+  const lo=Math.min.apply(null,D.vals), hi=Math.max.apply(null,D.vals);
+  const pad=Math.max(0.6,(hi-lo)*0.12);
+  const yMin=Math.floor((lo-pad)*2)/2, yMax=Math.ceil((hi+pad)*2)/2;
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', confine:true,
+      formatter:params=>{ const p=params.find(x=>x.seriesName==='Consumer confidence'); if(!p) return '';
+        const v=Number(p.value);
+        return '<b>'+longM(p.axisValue)+'</b><br>'+p.marker+'Consumer confidence: <b>'+v.toFixed(2)+'</b>'
+          +'<br><span style="opacity:.7">'+(v>=100?'above':'below')+' the long-run average</span>'; } },
+    legend:{ top:4, left:'center', itemWidth:9, itemHeight:9, itemGap:18, textStyle:{fontSize:10,color:'#222'},
+      data:[{name:'Consumer confidence',icon:'path://M0,0h24v4h-24z'}] },
+    grid:{left:52,right:26,top:42,bottom:52},
+    xAxis:{ type:'category', data:D.months, boundaryGap:false,
+      axisLabel:{ color:'#444', fontSize:8.5, interval:0, hideOverlap:false, rotate:60, margin:8,
+        formatter:(s,i)=>(s.slice(5)==='01')?shortM(s):'' },   /* year ticks only — pinning the last point too would print its year twice */
+      axisTick:{ alignWithLabel:true, interval:i=>(D.months[i].slice(5)==='01'||i===last), lineStyle:{color:'#999'} },
+      axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', min:yMin, max:yMax, axisLabel:{color:'#444',fontSize:9,formatter:v=>v.toFixed(0)},
+      splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+      axisLine:{show:true,lineStyle:{color:'#999'}}, axisTick:{show:true,lineStyle:{color:'#999'}},
+      name:'Index (100 = long-run average)', nameLocation:'middle', nameGap:38, nameRotate:90, nameTextStyle:{color:'#444',fontSize:9.5} },
+    series:[
+      { name:'Consumer confidence', type:'line', data:D.vals, smooth:0.25, showSymbol:false,
+        lineStyle:{color:'#00A0B4',width:2.6}, itemStyle:{color:'#00A0B4'},
+        markLine:{ silent:true, symbol:'none', data:[{yAxis:100}],
+          lineStyle:{color:'#63666A',type:'dashed',width:1.4},
+          label:{show:true,position:'insideEndTop',formatter:'Long-run average (100)',color:'#63666A',fontSize:9,fontWeight:600} },
+        markArea:{ silent:true, itemStyle:{color:'rgba(0,160,180,0.07)'}, data:[[{yAxis:100},{yAxis:yMax}]] } } ],
+    graphic:[{ type:'text', left:2, bottom:0, silent:true,
+      style:{ text:'Source: OECD — Consumer Confidence Index (Australia), amplitude adjusted',
+        fontSize:8.5, fill:'#63666A', fontFamily:'Montserrat, sans-serif' } }] };
+  _drawEChart(host, option);
+}
 /* ── Underutilisation — ABS Labour Force. Underutilisation = unemployment +
       underemployment, so both are plotted: the SHADED GAP between the two lines
       IS the underemployment component, which reads better than one bare line.
@@ -1919,9 +1985,9 @@ function mountRvdEmbed(slideEl){
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null, JAINFO=null, BFINFO=null, UUINFO=null;   /* UUINFO = ABS underutilisation figures for the {underutil_*} tokens; BFINFO = ABS business-finance figures for the {bizfin_*} tokens; JAINFO = JSA job-ads index figures for the {jobads_*} tokens; DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null, JAINFO=null, BFINFO=null, UUINFO=null, CCINFO=null;   /* CCINFO = OECD consumer-confidence figures for the {cci_*} tokens; UUINFO = ABS underutilisation figures for the {underutil_*} tokens; BFINFO = ABS business-finance figures for the {bizfin_*} tokens; JAINFO = JSA job-ads index figures for the {jobads_*} tokens; DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null; JAINFO=null; BFINFO=null; UUINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null; JAINFO=null; BFINFO=null; UUINFO=null; CCINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
     if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
@@ -1930,6 +1996,10 @@ async function loadEntryAndPrices(){
     if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
   try{ VRINFO=await getVRAdjusted(state.slug); }catch(e){}   /* same figures as the slide-5 cards (cached) */
   try{ POPINFO=forecastPop(state.slug,3); }catch(e){}   /* same figures as the pop-forecast chart */
+  try{ const C=await getConsumerConf();   /* national — same series as the Consumer Confidence chart (cached) */
+    if(C&&C.vals.length){ const n=C.vals.length-1, y=n>=12?C.vals[n-12]:null;
+      CCINFO={ index:C.vals[n], month:C.months[n], yoy:(y!=null&&y!==0)?(C.vals[n]/y-1):null,
+        chg:(y!=null)?(C.vals[n]-y):null }; } }catch(e){}
   try{ const U=await getUnderutil(state.slug);   /* same series as the Underutilisation chart (cached) */
     if(U&&U.years.length){ const y=U.years[U.years.length-1];
       UUINFO={ year:y, state:U.state, uu:U.U[y], un:U.E[y],
@@ -2464,7 +2534,7 @@ const SLIDE_DEFS = [
   { key:'stub_jobads', t:'Job Ads', render: c=>lightChartSlide(72), mount:(el,c)=>mountJobAds(el,c.slug) },   /* keeps the stub_jobads key so any overlays authored on the stub follow */
   { key:'stub_bizfin', t:'Business Finance', render: c=>lightChartSlide(72), mount:(el,c)=>mountBusFinance(el,c.slug) },   /* keeps the stub_bizfin key so any overlays authored on the stub follow */
   { key:'housing_fin', t:'Housing Finance', render: c=>lightChartSlide(72), mount:(el,c)=>mountHousingFinance(el,c.slug) },
-  { key:'stub_cci', t:'Consumer Confidence', render: c=>stubSlide('Consumer Confidence') },
+  { key:'stub_cci', t:'Consumer Confidence', render: c=>lightChartSlide(72), mount:(el,c)=>mountConsumerConf(el) },   /* NATIONAL series — same chart on every deck. Keeps the stub_cci key so any overlays authored on the stub follow */
   { key:'stub_hpei', t:'House Price Expectation (VIC)', render: c=>stubSlide('House Price Expectation (VIC)') },
   { key:'stub_bizconf', t:'Business Confidence (VIC)', render: c=>stubSlide('Business Confidence (VIC)') },
   { key:'stub_underutil', t:'Underutilisation', render: c=>lightChartSlide(72), mount:(el,c)=>mountUnderutil(el,c.slug) },   /* keeps the stub_underutil key so any overlays authored on the stub follow */
@@ -2829,6 +2899,12 @@ function _tokenMap(){
         :P2IINFO.uNear?'is just below its record high'
         :'is lower than it was in '+P2IINFO.uYear)
       : 'is shown above',
+    /* live consumer confidence (OECD CCI, national — same series as the chart) */
+    cci_index:(CCINFO&&CCINFO.index!=null)?CCINFO.index.toFixed(1):'—',
+    cci_month:(CCINFO&&CCINFO.month)?(MONTHS[+CCINFO.month.slice(5,7)-1]+' '+CCINFO.month.slice(0,4)):'—',
+    cci_vs_average:(CCINFO&&CCINFO.index!=null)?(CCINFO.index>=100?'above':'below'):'—',
+    cci_change:(CCINFO&&CCINFO.chg!=null)?((CCINFO.chg>=0?'+':'')+CCINFO.chg.toFixed(1)+' pts'):'—',
+    cci_trend:(CCINFO&&CCINFO.chg!=null)?(CCINFO.chg>=0.3?'improving':CCINFO.chg<=-0.3?'softening':'steady'):'—',
     /* live underutilisation (ABS Labour Force — same series as the chart) */
     underutil_rate:_uuPc(UUINFO&&UUINFO.uu), underutil_unemp:_uuPc(UUINFO&&UUINFO.un),
     underutil_gap:_uuPc(UUINFO&&UUINFO.gap),
@@ -3065,7 +3141,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Underutilisation</b> · {underutil_rate} {underutil_unemp} {underutil_gap} {underutil_year} {underutil_state}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_index} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions} {dw_fc_year} {dw_fc_completions} {dw_fc_change}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Consumer confidence</b> · {cci_index} {cci_month} {cci_vs_average} {cci_change} {cci_trend}<br><b>Underutilisation</b> · {underutil_rate} {underutil_unemp} {underutil_gap} {underutil_year} {underutil_state}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_index} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions} {dw_fc_year} {dw_fc_completions} {dw_fc_change}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
