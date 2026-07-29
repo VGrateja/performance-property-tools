@@ -1922,6 +1922,25 @@ async function getDwellings(slug){
   }
   _dwCache[slug]=out||null; return _dwCache[slug];
 }
+/* Baked note/source lines placed on the SLIDE, not inside the chart canvas, so
+   they land exactly where the authored source overlays sit on every other page
+   (x36 / y692, Montserrat 12 italic #7a7f87 — see f8/f12). .bss-slide is a
+   1280x720 box, so overlay x/y map straight to pixels. Used where the text has
+   to vary per market and therefore can't be an authored overlay. */
+function _bssSlideLines(host, lines){
+  const slide=host.closest('.bss-slide'); if(!slide) return;
+  slide.querySelectorAll('[data-bss-line]').forEach(e=>e.remove());   // re-render safe
+  lines.filter(Boolean).forEach(l=>{
+    const d=document.createElement('div');
+    d.setAttribute('data-bss-line','1');
+    d.style.cssText='position:absolute;left:'+l.x+'px;top:'+l.y+'px;'
+      +"font-family:'Montserrat',sans-serif;font-size:"+l.size+'px;color:'+l.color+';'
+      +'font-weight:'+(l.weight||400)+';'+(l.italic?'font-style:italic;':'')
+      +'white-space:nowrap;pointer-events:none;';
+    d.textContent=l.text;
+    slide.appendChild(d);
+  });
+}
 function mountDwellings(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderDwellings(host, slug); }
 async function renderDwellings(host, slug){
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
@@ -1965,7 +1984,7 @@ async function renderDwellings(host, slug){
     legend:{ top:2, left:'center', itemWidth:14, itemHeight:3, itemGap:22, textStyle:{fontSize:11,color:'#222'},
       data:(D.kind==='abs'?['Dwelling Approvals']:['Approvals','Commencements','Completions'])
         .map(n=>({name:n,icon:'path://M0,0h24v3h-24z'})) },
-    grid:{left:62,right:74,top:40,bottom:82},                       /* right 74 = end labels; bottom 82 = rotated years + the note/source lines below them */
+    grid:{left:62,right:74,top:40,bottom:58},                       /* right 74 = room for the end labels; the note/source sit on the slide below the chart, not in here */
     xAxis:{ type:'category', data:cats, boundaryGap:false, axisLabel:{color:'#444',fontSize:9,interval:0,rotate:90},
       axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
     yAxis:{ type:'value', min:yMin, max:yTop, interval:step,        /* no axis title — the sample has none */
@@ -1973,21 +1992,21 @@ async function renderDwellings(host, slug){
       splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
       axisLine:{show:false}, axisTick:{show:false} },
     series:series };
-  /* Note + source, bottom-left, baked in (the source differs by market — see the
-     block comment above). The note only applies where completions exist. */
+  _drawEChart(host, option);
+  /* Note + source live on the SLIDE at the same coordinates as every other
+     page's authored source line — they're baked rather than authored only
+     because the text varies by market (Oxford vs the ABS fallback). */
   const note=(D.kind==='oxford')
     ? 'Note: '+(endYear-1)+'-'+endYear+' completion numbers are not yet confirmed.'
     /* the ABS fallback's final year is annualised from the months published so
        far, not a completed year — the all-solid design drops the dashed hint
        the old chart used, so say it in words instead */
     : 'Note: '+endYear+' is annualised from the months published so far.';
-  option.graphic=[
-    ...(note?[{ type:'text', left:0, bottom:16, silent:true,
-      style:{ text:note, fontSize:11, fontWeight:700, fill:'#171B24', fontFamily:'Montserrat, sans-serif' } }]:[]),
-    { type:'text', left:0, bottom:0, silent:true,
-      style:{ text:(D.kind==='oxford'?'Source: Oxford Economics':'Source: ABS Building Approvals (houses + units)'),
-        fontSize:9, fontStyle:'italic', fill:'#63666A', fontFamily:'Montserrat, sans-serif' } }];
-  _drawEChart(host, option);
+  _bssSlideLines(host, [
+    { text:note, x:36, y:654, size:13, color:'#171B24', weight:700 },
+    { text:(D.kind==='oxford'?'Source: Oxford Economics':'Source: ABS Building Approvals (houses + units)'),
+      x:36, y:692, size:12, color:'#7a7f87', italic:true },
+  ]);
 }
 /* ── Vacancy Rate Projection (slide 13) — the richer VR viewer: Current → 1yr →
       2yr forecast + a Tighter↔Looser gradient with current/forecast markers.
@@ -2603,7 +2622,7 @@ const SLIDE_DEFS = [
   { key:'pop_move', t:'Population Movement', render: c=>lightChartSlide(60), mount:(el,c)=>mountPopMovement(el,c.slug) },
   { key:'f12', t:'Vacancy v Rent', render: c=>chartSlideBare(120), mount:(el,c)=>mountVacRent(el,c.slug) },   /* 120 bottom-pad = chart ends ~y600, just above the authored narrative (y615) which sits above the logo (y665) + source line (y692) — Van's layout */
   { key:'vr_proj', t:'Vacancy Rate Projection', render: c=>vrProjSlide(), mount:(el,c)=>mountVRProjection(el,c.slug) },
-  { key:'stub_dwellings', t:'Total Dwellings', render: c=>lightChartSlide(72), mount:(el,c)=>mountDwellings(el,c.slug) },   /* keeps the stub_dwellings key so any overlays authored on the stub follow */
+  { key:'stub_dwellings', t:'Total Dwellings', render: c=>lightChartSlide(96), mount:(el,c)=>mountDwellings(el,c.slug) },   /* 96 bottom-pad ends the chart ~y624, leaving the note (y654) + source (y692) clear of the rotated year labels. Keeps the stub_dwellings key so stub-era overlays follow */
   { key:'stub_bonds', t:'RTBA Rental Bonds Held', render: c=>stubSlide('RTBA Rental Bonds Held') },
   { key:'div_value', t:'VALUE (divider)', render: c=>'' },
   { key:'median_combined', t:'Median Price', render: c=>lightChartSlide(60), mount:(el,c)=>mountMedianCombined(el,c.slug) },
