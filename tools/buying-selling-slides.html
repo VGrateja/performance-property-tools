@@ -1832,6 +1832,85 @@ async function renderBusFinance(host, slug){
         fontSize:8.5, fill:'#63666A', fontFamily:'Montserrat, sans-serif' } }] };
   _drawEChart(host, option);
 }
+/* ── RTBA Rental Bonds Held — Consumer Affairs Victoria annual reports.
+      Bonds lodged + repaid as bars, Gain/Loss (lodged − repaid) as a line on a
+      SECOND axis, by financial year. VICTORIA ONLY: the RTBA is a Victorian
+      authority and no other state publishes a comparable series, so non-VIC
+      decks get an explicit "not published for this state" panel rather than a
+      blank chart. Gain/Loss is DERIVED, never stored. ── */
+let _rbCache;
+async function getRentalBonds(){
+  if(_rbCache!==undefined) return _rbCache;
+  let out=null;
+  try{
+    const {data}=await window.sb.from('rdp_raw_series').select('metric,period,value')
+      .eq('region_slug','st-vic').eq('source','cav')
+      .in('metric',['bonds_lodged','bonds_repaid']).order('period');
+    if(data&&data.length){
+      const L={},R={},ys=new Set();
+      data.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return;
+        const fy=+String(r.period).slice(0,4); ys.add(fy);
+        (r.metric==='bonds_lodged'?L:R)[fy]=v; });
+      const fys=[...ys].sort((a,b)=>a-b);
+      if(fys.length) out={ fys:fys, L:L, R:R };
+    }
+  }catch(e){}
+  _rbCache=out||null; return _rbCache;
+}
+function mountRentalBonds(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderRentalBonds(host, slug); }
+async function renderRentalBonds(host, slug){
+  const st=(DB.meta[slug]&&DB.meta[slug].state)?String(DB.meta[slug].state).toUpperCase():'';
+  if(st!=='VIC'){
+    host.innerHTML='<div class="bss-chartload" style="text-align:center;line-height:1.6">'
+      +'<b>RTBA Rental Bonds</b> — Victoria only.<br>'
+      +'<span style="font-size:12px;opacity:.75">The Residential Tenancies Bond Authority is a Victorian body; '
+      +esc((DB.meta[slug]&&DB.meta[slug].name)||slug)+' is in '+esc(st||'another state')
+      +', and no equivalent series is published there.</span></div>';
+    _bssSlideLines(host,[]); return;
+  }
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const D=await getRentalBonds();
+  if(!D){ host.innerHTML='<div class="bss-chartload">No rental-bond data.</div>'; return; }
+  const lab=fy=>fy+'-'+String(fy+1).slice(2);
+  const cats=D.fys.map(lab);
+  const LOD=D.fys.map(y=>D.L[y]!=null?Math.round(D.L[y]):null);
+  const REP=D.fys.map(y=>D.R[y]!=null?Math.round(D.R[y]):null);
+  const GL =D.fys.map(y=>(D.L[y]!=null&&D.R[y]!=null)?Math.round(D.L[y]-D.R[y]):null);
+  const nInt=v=>v==null?'—':Number(v).toLocaleString();
+  const barMax=Math.max.apply(null,LOD.concat(REP).filter(v=>v!=null));
+  const barTop=Math.ceil(barMax*1.12/50000)*50000;                   /* 300,000 on today's data, like the sample */
+  const glAbs=Math.max.apply(null,GL.filter(v=>v!=null).map(Math.abs));
+  const glTop=Math.ceil(glAbs*1.6/20000)*20000;                      /* symmetric so the zero line sits mid-axis */
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
+      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'
+        +params.filter(p=>p.value!=null).map(p=>p.marker+p.seriesName+': <b>'
+          +((p.seriesName==='Gain / Loss'&&p.value>=0?'+':'')+nInt(p.value))+'</b>').join('<br>') },
+    legend:{ top:2, left:'center', itemWidth:12, itemHeight:8, itemGap:20, textStyle:{fontSize:11,color:'#222'},
+      data:[{name:'Bonds Lodgements'},{name:'Bonds Repayments'},{name:'Gain / Loss',icon:'path://M0,0h24v3h-24z'}] },
+    grid:{left:66,right:62,top:40,bottom:58},
+    xAxis:{ type:'category', data:cats, axisLabel:{color:'#444',fontSize:9,interval:0,rotate:90},
+      axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:[
+      { type:'value', min:0, max:barTop, interval:barTop/6,
+        axisLabel:{color:'#444',fontSize:9.5,formatter:v=>Number(v).toLocaleString()},
+        splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}}, axisLine:{show:false}, axisTick:{show:false} },
+      { type:'value', min:-glTop, max:glTop, interval:glTop/3,
+        axisLabel:{color:'#444',fontSize:9.5,formatter:v=>Number(v).toLocaleString()},
+        splitLine:{show:false}, axisLine:{show:false}, axisTick:{show:false} } ],
+    series:[
+      { name:'Bonds Lodgements', type:'bar', data:LOD, itemStyle:{color:'#00A0B4'}, barGap:'6%', barCategoryGap:'34%' },
+      { name:'Bonds Repayments', type:'bar', data:REP, itemStyle:{color:'#c6c6c6'} },
+      { name:'Gain / Loss', type:'line', yAxisIndex:1, data:GL, smooth:0.3, showSymbol:false,
+        lineStyle:{color:'#171B24',width:2.6}, itemStyle:{color:'#171B24'} } ] };
+  _drawEChart(host, option);
+  _bssSlideLines(host, [
+    { text:'Source: Residential Tenancies Bond Authority; Consumer Affairs Victoria',
+      x:36, y:692, size:12, color:'#7a7f87', italic:true },
+  ]);
+}
 /* ── Job Ads — JSA Internet Vacancy Index (metric job_creation_index, monthly,
       36 markets, 2010-05→). Same series the Online Report's Job Creation page
       plots, so the presentation matches it deliberately: single teal line,
@@ -2623,7 +2702,7 @@ const SLIDE_DEFS = [
   { key:'f12', t:'Vacancy v Rent', render: c=>chartSlideBare(120), mount:(el,c)=>mountVacRent(el,c.slug) },   /* 120 bottom-pad = chart ends ~y600, just above the authored narrative (y615) which sits above the logo (y665) + source line (y692) — Van's layout */
   { key:'vr_proj', t:'Vacancy Rate Projection', render: c=>vrProjSlide(), mount:(el,c)=>mountVRProjection(el,c.slug) },
   { key:'stub_dwellings', t:'Total Dwellings', render: c=>lightChartSlide(96), mount:(el,c)=>mountDwellings(el,c.slug) },   /* 96 bottom-pad ends the chart ~y624, leaving the note (y654) + source (y692) clear of the rotated year labels. Keeps the stub_dwellings key so stub-era overlays follow */
-  { key:'stub_bonds', t:'RTBA Rental Bonds Held', render: c=>stubSlide('RTBA Rental Bonds Held') },
+  { key:'stub_bonds', t:'RTBA Rental Bonds Held', render: c=>lightChartSlide(96), mount:(el,c)=>mountRentalBonds(el,c.slug) },   /* VIC-only series; non-VIC decks get an explicit panel. 96 bottom-pad clears the source line at y692 */
   { key:'div_value', t:'VALUE (divider)', render: c=>'' },
   { key:'median_combined', t:'Median Price', render: c=>lightChartSlide(60), mount:(el,c)=>mountMedianCombined(el,c.slug) },
   { key:'house_unit', t:'House v Unit', render: c=>lightChartSlide(60), mount:(el,c)=>mountHouseUnit(el,c.slug) },
