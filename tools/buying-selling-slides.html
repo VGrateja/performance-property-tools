@@ -1567,6 +1567,73 @@ async function renderHousingFinance(host, slug){
   host.style.border='1px solid #63666A';   /* the sample frames this chart panel */
   _drawEChart(host, option);
 }
+/* ── Underutilisation — ABS Labour Force. Underutilisation = unemployment +
+      underemployment, so both are plotted: the SHADED GAP between the two lines
+      IS the underemployment component, which reads better than one bare line.
+      STATE-level — ABS publishes underutilisation for the nation and 8 states
+      only (Table X28); there is no capital-city series, so a regional deck
+      shows its state. Stored annual as DECIMAL fractions (0.1174 = 11.74%). ── */
+let _uuCache={};
+async function getUnderutil(slug){
+  const m=DB.meta[slug]||{}, st=m.state?('st-'+String(m.state).toLowerCase()):null;
+  if(!st) return null;
+  if(_uuCache[st]!==undefined) return _uuCache[st];
+  let out=null;
+  try{
+    const {data}=await window.sb.from('rdp_raw_series').select('metric,period,value')
+      .eq('region_slug',st).eq('freq','A').in('metric',['underutilisation','unemployment']).order('period');
+    if(data&&data.length){
+      const U={},E={},ys=new Set();
+      data.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return; const y=+String(r.period).slice(0,4);
+        if(r.metric==='underutilisation'){ U[y]=v; ys.add(y); } else E[y]=v; });
+      const years=[...ys].sort((a,b)=>a-b);
+      if(years.length) out={ years:years, U:U, E:E, state:String(m.state).toUpperCase() };
+    }
+  }catch(e){}
+  _uuCache[st]=out||null; return _uuCache[st];
+}
+function mountUnderutil(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderUnderutil(host, slug); }
+async function renderUnderutil(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const D=await getUnderutil(slug);
+  if(!D){ host.innerHTML='<div class="bss-chartload">No underutilisation data for this state.</div>'; return; }
+  const y0=Math.max(D.years[0],1995);                      /* 1978 start is too long for the slide */
+  const years=D.years.filter(y=>y>=y0);
+  const pt=v=>v==null?null:+(v*100).toFixed(2);
+  const UU=years.map(y=>pt(D.U[y])), UE=years.map(y=>pt(D.E[y]));
+  const all=UU.concat(UE).filter(v=>v!=null);
+  const yTop=Math.ceil(Math.max.apply(null,all)*1.1/2)*2;
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', confine:true,
+      formatter:params=>{ const g={}; params.forEach(p=>{ if(p.value!=null) g[p.seriesName]=p.value; });
+        const gap=(g['Underutilisation']!=null&&g['Unemployment']!=null)?(g['Underutilisation']-g['Unemployment']):null;
+        return '<b>'+params[0].axisValue+'</b><br>'+params.filter(p=>p.value!=null&&p.seriesName!=='_gap')
+          .map(p=>p.marker+p.seriesName+': <b>'+Number(p.value).toFixed(2)+'%</b>').join('<br>')
+          +(gap!=null?'<br><span style="opacity:.7">underemployment: <b>'+gap.toFixed(2)+'%</b></span>':''); } },
+    legend:{ top:4, left:'center', itemWidth:9, itemHeight:9, itemGap:18, textStyle:{fontSize:10,color:'#222'},
+      data:[{name:'Underutilisation',icon:'path://M0,0h24v4h-24z'},{name:'Unemployment',icon:'path://M0,0h24v4h-24z'}] },
+    grid:{left:52,right:26,top:44,bottom:52},
+    xAxis:{ type:'category', data:years.map(String), boundaryGap:false,
+      axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:60}, axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}},
+      axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', min:0, max:yTop, interval:2,
+      axisLabel:{color:'#444',fontSize:9,formatter:v=>v+'%'}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+      axisLine:{show:true,lineStyle:{color:'#999'}}, axisTick:{show:true,lineStyle:{color:'#999'}} },
+    series:[
+      /* the gap band: unemployment as an invisible base, the difference stacked
+         on top in translucent teal — that shaded area IS underemployment */
+      { name:'_gap', type:'line', stack:'gap', data:UE, showSymbol:false, silent:true, lineStyle:{opacity:0}, areaStyle:{opacity:0}, tooltip:{show:false} },
+      { name:'_gap2', type:'line', stack:'gap', data:years.map((y,i)=>(UU[i]!=null&&UE[i]!=null)?+(UU[i]-UE[i]).toFixed(2):null),
+        showSymbol:false, silent:true, lineStyle:{opacity:0}, areaStyle:{color:'rgba(0,160,180,0.13)'}, tooltip:{show:false} },
+      { name:'Underutilisation', type:'line', data:UU, smooth:true, showSymbol:false, lineStyle:{color:'#00A0B4',width:2.8}, itemStyle:{color:'#00A0B4'} },
+      { name:'Unemployment', type:'line', data:UE, smooth:true, showSymbol:false, lineStyle:{color:'#171B24',width:2.4}, itemStyle:{color:'#171B24'} } ],
+    graphic:[{ type:'text', left:2, bottom:0, silent:true,
+      style:{ text:'Source: ABS Labour Force — underutilisation rate ('+D.state+'); shaded band = underemployment',
+        fontSize:8.5, fill:'#63666A', fontFamily:'Montserrat, sans-serif' } }] };
+  _drawEChart(host, option);
+}
 /* ── Business Finance — ABS Lending Indicators, new loan commitments to SMALL
       businesses (fixed term loans), by the two purposes the data guide names:
       Construction and Purchase of property. STATE-level (the guide's series are
@@ -1852,9 +1919,9 @@ function mountRvdEmbed(slideEl){
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null, JAINFO=null, BFINFO=null;   /* BFINFO = ABS business-finance figures for the {bizfin_*} tokens; JAINFO = JSA job-ads index figures for the {jobads_*} tokens; DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null, JAINFO=null, BFINFO=null, UUINFO=null;   /* UUINFO = ABS underutilisation figures for the {underutil_*} tokens; BFINFO = ABS business-finance figures for the {bizfin_*} tokens; JAINFO = JSA job-ads index figures for the {jobads_*} tokens; DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null; JAINFO=null; BFINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null; JAINFO=null; BFINFO=null; UUINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
     if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
@@ -1863,6 +1930,10 @@ async function loadEntryAndPrices(){
     if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
   try{ VRINFO=await getVRAdjusted(state.slug); }catch(e){}   /* same figures as the slide-5 cards (cached) */
   try{ POPINFO=forecastPop(state.slug,3); }catch(e){}   /* same figures as the pop-forecast chart */
+  try{ const U=await getUnderutil(state.slug);   /* same series as the Underutilisation chart (cached) */
+    if(U&&U.years.length){ const y=U.years[U.years.length-1];
+      UUINFO={ year:y, state:U.state, uu:U.U[y], un:U.E[y],
+        gap:(U.U[y]!=null&&U.E[y]!=null)?(U.U[y]-U.E[y]):null }; } }catch(e){}
   try{ const B=await getBusFinance(state.slug);   /* same series as the Business Finance chart (cached) */
     if(B&&B.periods.length){ const p=B.periods[B.periods.length-1], y=B.periods.length>4?B.periods[B.periods.length-5]:null;
       const ch=(m,k)=>(y&&B[k][y])?(B[k][p]/B[k][y]-1):null;
@@ -2045,6 +2116,7 @@ const _vrPct=v=>v==null?'—':(v*100).toFixed(2)+'%', _vrInt=v=>v==null?'—':Ma
 const _dwInt=v=>(v==null||!isFinite(v))?'—':Math.round(v).toLocaleString();
 const _bfM=v=>(v==null||!isFinite(v))?'—':'$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:1})+'m';
 const _bfPc=v=>(v==null||!isFinite(v))?'—':((v>=0?'+':'')+(v*100).toFixed(1)+'%');
+const _uuPc=v=>(v==null||!isFinite(v))?'—':(v*100).toFixed(2)+'%';   /* stored as a decimal fraction */
 async function mountVRForecast(slideEl, slug){
   const host=slideEl.querySelector('.bss-vrbody'); if(!host) return;
   host.innerHTML='<div class="bss-chartload">Loading…</div>';
@@ -2395,7 +2467,7 @@ const SLIDE_DEFS = [
   { key:'stub_cci', t:'Consumer Confidence', render: c=>stubSlide('Consumer Confidence') },
   { key:'stub_hpei', t:'House Price Expectation (VIC)', render: c=>stubSlide('House Price Expectation (VIC)') },
   { key:'stub_bizconf', t:'Business Confidence (VIC)', render: c=>stubSlide('Business Confidence (VIC)') },
-  { key:'stub_underutil', t:'Underutilisation', render: c=>stubSlide('Underutilisation') },
+  { key:'stub_underutil', t:'Underutilisation', render: c=>lightChartSlide(72), mount:(el,c)=>mountUnderutil(el,c.slug) },   /* keeps the stub_underutil key so any overlays authored on the stub follow */
   { key:'tl_revisit', t:'Revisiting the Traffic Lights', render: c=>tlSlide('Revisiting the Traffic Lights',false,true), mount:(el,c)=>mountTL(el,c.slug) },
 ];
 
@@ -2757,6 +2829,11 @@ function _tokenMap(){
         :P2IINFO.uNear?'is just below its record high'
         :'is lower than it was in '+P2IINFO.uYear)
       : 'is shown above',
+    /* live underutilisation (ABS Labour Force — same series as the chart) */
+    underutil_rate:_uuPc(UUINFO&&UUINFO.uu), underutil_unemp:_uuPc(UUINFO&&UUINFO.un),
+    underutil_gap:_uuPc(UUINFO&&UUINFO.gap),
+    underutil_year:(UUINFO&&UUINFO.year!=null)?String(UUINFO.year):'—',
+    underutil_state:(UUINFO&&UUINFO.state)?UUINFO.state:'—',
     /* live business finance (ABS Lending Indicators — same series as the chart) */
     bizfin_quarter:(BFINFO&&BFINFO.quarter)?('Q'+(Math.floor((+BFINFO.quarter.slice(5,7)-1)/3)+1)+' '+BFINFO.quarter.slice(0,4)):'—',
     bizfin_state:(BFINFO&&BFINFO.state)?BFINFO.state:'—',
@@ -2988,7 +3065,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_index} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions} {dw_fc_year} {dw_fc_completions} {dw_fc_change}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Underutilisation</b> · {underutil_rate} {underutil_unemp} {underutil_gap} {underutil_year} {underutil_state}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_index} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions} {dw_fc_year} {dw_fc_completions} {dw_fc_change}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';

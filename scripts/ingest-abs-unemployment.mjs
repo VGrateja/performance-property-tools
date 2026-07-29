@@ -1,12 +1,18 @@
 // =============================================================================
 // ingest-abs-unemployment.mjs — Data Forge: UNEMPLOYMENT (national + states +
-// capitals + regionals) and UNDEREMPLOYMENT (national). ABS, Original.
+// capitals + regionals), UNDEREMPLOYMENT (national) and UNDERUTILISATION
+// (national + states). ABS, Original.
 //
 // SOURCES (per the user's Research Guides):
 //   • National unemployment + states  → ABS Data API, dataflow LF, MEASURE M13
 //     (Unemployment rate), SEX 3, AGE 1599, TSEST 10 (ORIGINAL), FREQ M.
 //   • National underemployment        → ABS Data API, dataflow LF_UNDER,
 //     PARM_ITEM M23 (Underemployment rate, proportion of labour force), Original.
+//   • Underutilisation (nat + states) → same dataflow, PARM_ITEM M24. This is the
+//     guide's "Table X28. Underutilised persons by State and Territory and Sex".
+//     ABS publishes NO capital-city underutilisation — X28 is state-level, X29 is
+//     by age, and the 6291002 GCCSA cube has no such column — so a regional deck
+//     shows its STATE. (That answers the guide's "same source as regular data?".)
 //   • Capitals (Greater Capital City) → data cube 6291002.xlsx (Table 02,
 //     "Labour force status by ... greater capital city ..."), column
 //     "Greater <City> ; Unemployment rate ; Persons", Original. ABS does NOT
@@ -22,7 +28,8 @@
 //   (4.6% -> 0.046):  completed years = average of that year's months;
 //   current year = "R90" = average of the latest 3 available months.
 //
-//   ISOLATED: rdp_raw_series (source='abs', metric unemployment|underemployment)
+//   ISOLATED: rdp_raw_series (source='abs', metric unemployment|underemployment|
+//   underutilisation)
 //   + rdp_runs + forge_data_status ('unemployment'). Upsert-only. Dry-run by
 //   DEFAULT; --write upserts; --from=YYYY (API history start, default 1978).
 // =============================================================================
@@ -60,7 +67,7 @@ const sb = createClient(URL, KEY, { auth: { persistSession: false } });
 async function recordStatus(status, message, extra = {}) {
   if (!WRITE) return;
   const now = new Date().toISOString();
-  const row = { data_key: 'unemployment', label: 'Unemployment & Underemployment', source: 'ABS Labour Force (LF/LF_UNDER API + 6291002 GCCSA + MRM1 SA4), Original', status, message, last_run_at: now, updated_at: now, ...extra };
+  const row = { data_key: 'unemployment', label: 'Unemployment, Underemployment & Underutilisation', source: 'ABS Labour Force (LF/LF_UNDER API + 6291002 GCCSA + MRM1 SA4), Original', status, message, last_run_at: now, updated_at: now, ...extra };
   if (status === 'ok') row.last_ok_at = now;
   const { error } = await sb.from('forge_data_status').upsert(row, { onConflict: 'data_key' });
   if (error) console.warn('  (forge_data_status not updated? ' + error.message + ')');
@@ -138,8 +145,15 @@ try {
   // ── API: national + states unemployment, national underemployment ──
   const unemp = await fetchAPI('LF', 'M13', Object.keys(STATE).join('+'), STATE);
   const under = await fetchAPI('LF_UNDER', 'M23', 'AUS', { AUS: 'australia' });
+  // Underutilisation rate (M24 = unemployment + underemployment). ABS publishes it
+  // for the nation and the 8 states ONLY — Table X28 is "by State and Territory and
+  // Sex", X29 is by age, and the GCCSA cube (6291002) carries no underutilisation
+  // column at all. So there is NO capital-city series to be had; regional decks read
+  // their state. (This answers the "same source as regular data?" note in the guide.)
+  const underutil = await fetchAPI('LF_UNDER', 'M24', Object.keys(STATE).join('+'), STATE);
   for (const [reg, m] of Object.entries(unemp)) rows.push(...annualRows(m, 'unemployment', reg));
   for (const [reg, m] of Object.entries(under)) rows.push(...annualRows(m, 'underemployment', reg));
+  for (const [reg, m] of Object.entries(underutil)) rows.push(...annualRows(m, 'underutilisation', reg));
   // ── Capitals (6291002 GCCSA) ──
   const cap = await dlCube('6291002.xlsx'); const caps = parseCapitals(cap.buf);
   for (const slug of CAPITALS) { if (caps[slug]) rows.push(...annualRows(caps[slug], 'unemployment', slug)); else warn.push(`capital ${slug} not found in 6291002`); }
@@ -159,7 +173,7 @@ const ok = missing.length === 0 && rows.some(r => r.metric === 'underemployment'
 
 // reconcile vs DB (recent years) — national/states/capitals should match; regionals are the new MRM1 basis
 const yrs = [latestYear - 2, latestYear - 1, latestYear];
-const { data: db } = await sb.from('rdp_raw_series').select('region_slug,metric,period,value').eq('source', 'abs').in('metric', ['unemployment', 'underemployment']).eq('freq', 'A').gte('period', `${yrs[0]}-01-01`);
+const { data: db } = await sb.from('rdp_raw_series').select('region_slug,metric,period,value').eq('source', 'abs').in('metric', ['unemployment', 'underemployment', 'underutilisation']).eq('freq', 'A').gte('period', `${yrs[0]}-01-01`);
 const dbMap = {}; for (const r of (db || [])) dbMap[`${r.metric}|${r.region_slug}|${r.period.slice(0, 4)}`] = +r.value;
 const newMap = {}; for (const r of rows) newMap[`${r.metric}|${r.region_slug}|${r.period.slice(0, 4)}`] = r.value;
 const pct = v => v == null ? '  — ' : (v * 100).toFixed(2).padStart(5);
@@ -168,11 +182,12 @@ function tier(title, keys) {
   for (const [metric, region] of keys) {
     const k = y => `${metric}|${region}|${y}`;
     if (!yrs.some(y => newMap[k(y)] != null)) continue;
-    console.log(`  ${(metric === 'underemployment' ? 'underemp ' : '') + region}`.padEnd(20) + yrs.map(y => `${pct(newMap[k(y)])}/${pct(dbMap[k(y)])}`).join('  '));
+    console.log(`  ${(metric === 'underemployment' ? 'underemp ' : metric === 'underutilisation' ? 'underutil ' : '') + region}`.padEnd(20) + yrs.map(y => `${pct(newMap[k(y)])}/${pct(dbMap[k(y)])}`).join('  '));
   }
 }
 console.log(`\nABS Original — ${rows.length} annual rows, latest year ${latestYear}.`);
 tier('NATIONAL + STATES + UNDEREMP', [['unemployment','australia'],['underemployment','australia'],...Object.keys(STATE).filter(k=>k!=='AUS').map(k=>['unemployment',STATE[k]])]);
+tier('UNDERUTILISATION (national + states)', [['underutilisation','australia'],...Object.keys(STATE).filter(k=>k!=='AUS').map(k=>['underutilisation',STATE[k]])]);
 tier('CAPITALS', [...CAPITALS,'darwin'].map(c=>['unemployment',c]));
 tier('REGIONALS (new MRM1 basis — expected to differ from old DB)', Object.keys(REGION_SA4).map(r=>['unemployment',r]));
 if (warn.length) console.log('\n⚠ ', warn.join('\n   '));
@@ -182,7 +197,7 @@ if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert (upsert-only
 
 let written = 0;
 for (let k = 0; k < rows.length; k += 500) { const chunk = rows.slice(k, k + 500); const { error } = await sb.from('rdp_raw_series').upsert(chunk, { onConflict: 'source,region_slug,metric,freq,period' }); if (error) { console.error('\n', error.message); process.exit(1); } written += chunk.length; }
-await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS unemployment ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: ok ? 'ok' : 'partial', notes: `Unemployment (national+states API, capitals 6291002, regionals MRM1 SA4) + underemployment (national), Original, annual per R90 rule, through ${latestYear}.` });
+await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS unemployment ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: ok ? 'ok' : 'partial', notes: `Unemployment (national+states API, capitals 6291002, regionals MRM1 SA4) + underemployment (national) + underutilisation (national+states), Original, annual per R90 rule, through ${latestYear}.` });
 await recordStatus(ok ? 'ok' : 'error', ok ? `All tiers through ${latestYear}. Regionals now on ABS MRM1 modelled SA4 estimates.` : `Incomplete for ${latestYear}: ${missing.join(', ')}`, { row_count: written, region_count: regionsLatest.size, latest_year: latestYear });
 console.log(`\n✓ Upserted ${written} rows.`);
 process.exit(ok ? 0 : 1);
