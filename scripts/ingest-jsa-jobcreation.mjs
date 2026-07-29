@@ -103,19 +103,31 @@ try {
 console.log('IVI Regions:', iviSrc.split('/').pop());
 console.log('States/Terr:', stSrc.split('/').pop());
 
-// ── 1) Job Creation Index — Indexed sheet, Level-1 region totals ──
+// ── 1) Job Creation Index + Job Ads — the SAME workbook, two sheets:
+//      "Indexed"  → the index      → metric job_creation_index
+//      "Averaged" → the actual COUNT of online job advertisements (3-month
+//                   averaged, which is how JSA publishes regional levels)
+//                                  → metric job_ads
+//      B/S "Job Ads" plots the COUNT (its axis runs to ~70,000); the reports'
+//      Job Creation page plots the INDEX. Same parse, different sheet. ──
 const rows = [];
 let latestM = '';
+const SHEETS = [['Indexed', 'job_creation_index'], ['Averaged', 'job_ads']];
 try {
-  const g = XLSX.utils.sheet_to_json(XLSX.read(iviBuf, { type: 'buffer' }).Sheets['Indexed'], { header: 1, raw: true, defval: '' });
-  const hdr = g[0]; const dateCols = []; for (let c = 5; c < hdr.length; c++) if (typeof hdr[c] === 'number') dateCols.push([c, serialMonth(hdr[c])]);
-  latestM = dateCols[dateCols.length - 1][1];
-  const regionSeries = {};   // region name -> { period -> index }
-  for (let r = 1; r < g.length; r++) { if (g[r][0] !== 1) continue; const name = String(g[r][2]).trim(); const s = regionSeries[name] ||= {}; for (const [c, p] of dateCols) { const v = g[r][c]; if (typeof v === 'number') s[p] = v; } }
-  for (const [slug, region] of Object.entries(CITY_MAP)) {
-    const s = regionSeries[region];
-    if (!s) { console.error(`  ✗ IVI region not found for ${slug}: "${region}"`); continue; }
-    for (const [p, v] of Object.entries(s)) rows.push({ source: 'jsa', region_slug: slug, metric: 'job_creation_index', freq: 'M', period: p, value: v });
+  const wbIVI = XLSX.read(iviBuf, { type: 'buffer' });
+  for (const [sheet, metric] of SHEETS) {
+    if (!wbIVI.Sheets[sheet]) { console.error(`  ✗ IVI sheet "${sheet}" missing`); continue; }
+    const g = XLSX.utils.sheet_to_json(wbIVI.Sheets[sheet], { header: 1, raw: true, defval: '' });
+    const hdr = g[0]; const dateCols = []; for (let c = 5; c < hdr.length; c++) if (typeof hdr[c] === 'number') dateCols.push([c, serialMonth(hdr[c])]);
+    if (!latestM) latestM = dateCols[dateCols.length - 1][1];
+    const regionSeries = {};   // region name -> { period -> value }
+    for (let r = 1; r < g.length; r++) { if (g[r][0] !== 1) continue; const name = String(g[r][2]).trim(); const s = regionSeries[name] ||= {}; for (const [c, p] of dateCols) { const v = g[r][c]; if (typeof v === 'number') s[p] = v; } }
+    for (const [slug, region] of Object.entries(CITY_MAP)) {
+      const s = regionSeries[region];
+      if (!s) { console.error(`  ✗ IVI region not found for ${slug}: "${region}" (${sheet})`); continue; }
+      /* counts carry decimals from the 3-month average — round to whole ads */
+      for (const [p, v] of Object.entries(s)) rows.push({ source: 'jsa', region_slug: slug, metric, freq: 'M', period: p, value: metric === 'job_ads' ? Math.round(v) : v });
+    }
   }
 } catch (e) { console.error('\n✗ IVI Regions parse failed:', e.message); await recordStatus('job_creation_index', 'Job Creation Index', 'error', `parse failed: ${e.message}`); process.exit(1); }
 

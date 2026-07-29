@@ -1970,10 +1970,10 @@ async function getJobAds(slug){
   let out=null;
   try{
     const {data}=await window.sb.from('rdp_raw_series').select('period,value')
-      .eq('region_slug',slug).eq('metric','job_creation_index').eq('freq','M').order('period');   /* ~194 rows, well under the 1000 cap */
+      .eq('region_slug',slug).eq('metric','job_ads').eq('freq','M').gte('period','2019-01-01').order('period');   /* COUNTS (JSA "Averaged" sheet), not the index — the sample's axis runs to ~70,000. Jan-19 start matches the sample. */
     if(data&&data.length){
       const months=[],vals=[];
-      data.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return; months.push(String(r.period).slice(0,7)); vals.push(Math.round(v*10)/10); });
+      data.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return; months.push(String(r.period).slice(0,7)); vals.push(Math.round(v)); });
       if(months.length) out={ months:months, vals:vals };
     }
   }catch(e){}
@@ -1986,29 +1986,40 @@ async function renderJobAds(host, slug){
   if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
   const D=await getJobAds(slug);
   if(!D){ host.innerHTML='<div class="bss-chartload">No job-ads data for this region.</div>'; return; }
-  const name=(DB.meta[slug]&&DB.meta[slug].name)||slug, last=D.months.length-1;
+  const m=DB.meta[slug]||{}, name=m.name||slug;
+  /* the sample's legend reads "Greater Melbourne Online Job Advertisements" —
+     for a capital the IVI region IS the greater capital city, so "Greater" is
+     accurate there; regionals map to a broader IVI area (see the block comment)
+     so they're labelled with the market name alone. */
+  const label=(m.cluster==='capital'?'Greater '+name:name)+' Online Job Advertisements';
   const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const shortM=s=>{ const [y,m]=s.split('-'); return MON[+m-1]+' '+y.slice(-2); };
-  const longM=s=>{ const [y,m]=s.split('-'); return MON[+m-1]+' '+y; };
+  const shortM=s=>{ const [y,mo]=s.split('-'); return MON[+mo-1]+'-'+y.slice(-2); };
+  const longM=s=>{ const [y,mo]=s.split('-'); return MON[+mo-1]+' '+y; };
+  const maxV=Math.max.apply(null,D.vals);
+  const NICE=[1000,2000,2500,5000,10000,20000,25000,50000];
+  const step=NICE.find(n=>n>=maxV/7)||NICE[NICE.length-1];
+  const yTop=Math.ceil(maxV*1.02/step)*step;                      /* 70,000 on Melbourne, like the sample */
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true,
-      formatter:params=>{ const p=params[0]; return '<b>'+longM(p.axisValue)+'</b><br>'+p.marker+p.seriesName+': <b>'+Number(p.value).toFixed(1)+'</b>'; } },
-    legend:{ top:4, left:'center', itemWidth:9, itemHeight:9, textStyle:{fontSize:10,color:'#222'},
-      data:[{name:name,icon:'path://M0,0h24v4h-24z'}] },
-    grid:{left:60,right:26,top:42,bottom:62},
+      formatter:params=>{ const p=params[0]; return '<b>'+longM(p.axisValue)+'</b><br>'+p.marker+p.seriesName+': <b>'+Number(p.value).toLocaleString()+'</b>'; } },
+    legend:{ top:2, left:'center', itemWidth:14, itemHeight:3, textStyle:{fontSize:10.5,color:'#222'},
+      data:[{name:label,icon:'path://M0,0h24v3h-24z'}] },
+    grid:{left:64,right:26,top:38,bottom:74},                     /* bottom 74 = every month labelled, rotated */
     xAxis:{ type:'category', data:D.months, boundaryGap:false,
-      axisLabel:{ color:'#444', fontSize:8.5, interval:0, hideOverlap:false, rotate:50, margin:8,
-        formatter:(s,i)=>(i%6===0||i===last)?shortM(s):'' },
-      axisTick:{ alignWithLabel:true, interval:i=>(i%3===0||i===last), lineStyle:{color:'#999'} },
+      /* the sample labels EVERY month, rotated vertical */
+      axisLabel:{ color:'#444', fontSize:7.5, interval:0, hideOverlap:false, rotate:90, margin:8,
+        formatter:s=>shortM(s) },
+      axisTick:{ alignWithLabel:true, interval:0, lineStyle:{color:'#999'} },
       axisLine:{lineStyle:{color:'#999'}} },
-    yAxis:{ type:'value', axisLabel:{color:'#444',fontSize:9}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
-      axisLine:{show:true,lineStyle:{color:'#999'}}, axisTick:{show:true,lineStyle:{color:'#999'}},
-      name:'Job ads index', nameLocation:'middle', nameGap:44, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
-    series:[{ name:name, type:'line', data:D.vals, smooth:0.25, showSymbol:false,
-      lineStyle:{color:'#00A0B4',width:2.4}, itemStyle:{color:'#00A0B4'} }],
-    graphic:[{ type:'text', left:2, bottom:0, silent:true,
-      style:{ text:'Source: Jobs & Skills Australia — Internet Vacancy Index', fontSize:8.5, fill:'#63666A', fontFamily:'Montserrat, sans-serif' } }] };
+    yAxis:{ type:'value', min:0, max:yTop, interval:step,          /* COUNTS, zero-based — no axis title in the sample */
+      axisLabel:{color:'#444',fontSize:9.5,formatter:v=>Number(v).toLocaleString()},
+      splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}}, axisLine:{show:false}, axisTick:{show:false} },
+    series:[{ name:label, type:'line', data:D.vals, smooth:0.25, showSymbol:false,
+      lineStyle:{color:'#3ec8d8',width:2.2}, itemStyle:{color:'#3ec8d8'} }] };
   _drawEChart(host, option);
+  _bssSlideLines(host, [
+    { text:'Source: Jobs and Skills Australia', x:36, y:692, size:12, color:'#7a7f87', italic:true },
+  ]);
 }
 /* ── Total Dwellings — Oxford Economics approvals / commencements / completions
 
@@ -2761,7 +2772,7 @@ const SLIDE_DEFS = [
   { key:'f14', t:'Sensitivity — Houses', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'h') },
   { key:'f15', t:'Sensitivity — Units', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'u') },
   { key:'div_conf', t:'CONFIDENCE (divider)', render: c=>'' },
-  { key:'stub_jobads', t:'Job Ads', render: c=>lightChartSlide(72), mount:(el,c)=>mountJobAds(el,c.slug) },   /* keeps the stub_jobads key so any overlays authored on the stub follow */
+  { key:'stub_jobads', t:'Job Ads', render: c=>lightChartSlide(96), mount:(el,c)=>mountJobAds(el,c.slug) },   /* keeps the stub_jobads key so any overlays authored on the stub follow */
   { key:'stub_bizfin', t:'Business Finance', render: c=>lightChartSlide(72), mount:(el,c)=>mountBusFinance(el,c.slug) },   /* keeps the stub_bizfin key so any overlays authored on the stub follow */
   { key:'housing_fin', t:'Housing Finance', render: c=>lightChartSlide(72), mount:(el,c)=>mountHousingFinance(el,c.slug) },
   { key:'stub_cci', t:'Consumer Confidence', render: c=>lightChartSlide(72), mount:(el,c)=>mountConsumerConf(el) },   /* NATIONAL series — same chart on every deck. Keeps the stub_cci key so any overlays authored on the stub follow */
@@ -3152,7 +3163,7 @@ function _tokenMap(){
     bizfin_construction:_bfM(BFINFO&&BFINFO.construction), bizfin_property:_bfM(BFINFO&&BFINFO.property),
     bizfin_construction_yoy:_bfPc(BFINFO&&BFINFO.conYoy), bizfin_property_yoy:_bfPc(BFINFO&&BFINFO.proYoy),
     /* live job ads (JSA Internet Vacancy Index — same series as the Job Ads chart) */
-    jobads_index:(JAINFO&&JAINFO.index!=null)?JAINFO.index.toFixed(1):'—',
+    jobads_count:(JAINFO&&JAINFO.index!=null)?Math.round(JAINFO.index).toLocaleString():'—',   /* now a COUNT of ads, not an index */
     jobads_month:(JAINFO&&JAINFO.month)?(MONTHS[+JAINFO.month.slice(5,7)-1]+' '+JAINFO.month.slice(0,4)):'—',
     jobads_yoy:(JAINFO&&JAINFO.yoy!=null)?((JAINFO.yoy>=0?'+':'')+(JAINFO.yoy*100).toFixed(1)+'%'):'—',
     jobads_trend:(JAINFO&&JAINFO.yoy!=null)?(JAINFO.yoy>=0.02?'rising':JAINFO.yoy<=-0.02?'easing':'steady'):'—',
@@ -3373,7 +3384,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Consumer confidence</b> · {cci_index} {cci_month} {cci_vs_average} {cci_change} {cci_trend}<br><b>Underutilisation</b> · {underutil_rate} {underutil_unemp} {underutil_gap} {underutil_year} {underutil_state}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_index} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Consumer confidence</b> · {cci_index} {cci_month} {cci_vs_average} {cci_change} {cci_trend}<br><b>Underutilisation</b> · {underutil_rate} {underutil_unemp} {underutil_gap} {underutil_year} {underutil_state}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_count} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
