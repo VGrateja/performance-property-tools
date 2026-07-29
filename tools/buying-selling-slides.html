@@ -1567,6 +1567,60 @@ async function renderHousingFinance(host, slug){
   host.style.border='1px solid #63666A';   /* the sample frames this chart panel */
   _drawEChart(host, option);
 }
+/* ── Job Ads — JSA Internet Vacancy Index (metric job_creation_index, monthly,
+      36 markets, 2010-05→). Same series the Online Report's Job Creation page
+      plots, so the presentation matches it deliberately: single teal line,
+      6-month labels on a quarterly tick rhythm, last point always labelled.
+      CAVEAT: JSA publishes 37 IVI regions, fewer than our 36 markets, so
+      several markets share one IVI region (all of Albury/Wagga/Wodonga/Mildura
+      read "Riverina & Murray") — those decks show an identical chart. That is
+      the source's granularity, not a bug here. ── */
+let _jaCache={};
+async function getJobAds(slug){
+  if(_jaCache[slug]!==undefined) return _jaCache[slug];
+  let out=null;
+  try{
+    const {data}=await window.sb.from('rdp_raw_series').select('period,value')
+      .eq('region_slug',slug).eq('metric','job_creation_index').eq('freq','M').order('period');   /* ~194 rows, well under the 1000 cap */
+    if(data&&data.length){
+      const months=[],vals=[];
+      data.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return; months.push(String(r.period).slice(0,7)); vals.push(Math.round(v*10)/10); });
+      if(months.length) out={ months:months, vals:vals };
+    }
+  }catch(e){}
+  _jaCache[slug]=out||null; return _jaCache[slug];
+}
+function mountJobAds(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderJobAds(host, slug); }
+async function renderJobAds(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const D=await getJobAds(slug);
+  if(!D){ host.innerHTML='<div class="bss-chartload">No job-ads data for this region.</div>'; return; }
+  const name=(DB.meta[slug]&&DB.meta[slug].name)||slug, last=D.months.length-1;
+  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const shortM=s=>{ const [y,m]=s.split('-'); return MON[+m-1]+' '+y.slice(-2); };
+  const longM=s=>{ const [y,m]=s.split('-'); return MON[+m-1]+' '+y; };
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', confine:true,
+      formatter:params=>{ const p=params[0]; return '<b>'+longM(p.axisValue)+'</b><br>'+p.marker+p.seriesName+': <b>'+Number(p.value).toFixed(1)+'</b>'; } },
+    legend:{ top:4, left:'center', itemWidth:9, itemHeight:9, textStyle:{fontSize:10,color:'#222'},
+      data:[{name:name,icon:'path://M0,0h24v4h-24z'}] },
+    grid:{left:60,right:26,top:42,bottom:62},
+    xAxis:{ type:'category', data:D.months, boundaryGap:false,
+      axisLabel:{ color:'#444', fontSize:8.5, interval:0, hideOverlap:false, rotate:50, margin:8,
+        formatter:(s,i)=>(i%6===0||i===last)?shortM(s):'' },
+      axisTick:{ alignWithLabel:true, interval:i=>(i%3===0||i===last), lineStyle:{color:'#999'} },
+      axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', axisLabel:{color:'#444',fontSize:9}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+      axisLine:{show:true,lineStyle:{color:'#999'}}, axisTick:{show:true,lineStyle:{color:'#999'}},
+      name:'Job ads index', nameLocation:'middle', nameGap:44, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
+    series:[{ name:name, type:'line', data:D.vals, smooth:0.25, showSymbol:false,
+      lineStyle:{color:'#00A0B4',width:2.4}, itemStyle:{color:'#00A0B4'} }],
+    graphic:[{ type:'text', left:2, bottom:0, silent:true,
+      style:{ text:'Source: Jobs & Skills Australia — Internet Vacancy Index', fontSize:8.5, fill:'#63666A', fontFamily:'Montserrat, sans-serif' } }] };
+  _drawEChart(host, option);
+}
 /* ── Total Dwellings — Oxford Economics approvals / commencements / completions
       (source='oxford', freq A, 2002-2029; 2026+ is Oxford's FORECAST, drawn
       dashed over a shaded band). 27 of the 36 markets have Oxford data; the
@@ -1739,9 +1793,9 @@ function mountRvdEmbed(slideEl){
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null;   /* DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null, JAINFO=null;   /* JAINFO = JSA job-ads index figures for the {jobads_*} tokens; DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null; JAINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
     if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
@@ -1750,6 +1804,10 @@ async function loadEntryAndPrices(){
     if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
   try{ VRINFO=await getVRAdjusted(state.slug); }catch(e){}   /* same figures as the slide-5 cards (cached) */
   try{ POPINFO=forecastPop(state.slug,3); }catch(e){}   /* same figures as the pop-forecast chart */
+  try{ const J=await getJobAds(state.slug);   /* same series as the Job Ads chart (cached) */
+    if(J&&J.vals.length){ const n=J.vals.length-1, yoy=(n>=12&&J.vals[n-12])?(J.vals[n]/J.vals[n-12]-1):null;
+      JAINFO={ index:J.vals[n], month:J.months[n], yoy:yoy,
+        peak:Math.max.apply(null,J.vals), peakMonth:J.months[J.vals.indexOf(Math.max.apply(null,J.vals))] }; } }catch(e){}
   try{ const D=await getDwellings(state.slug);   /* same series as the Total Dwellings chart (cached) */
     if(D){ const ys=D.years, cut=(D.kind==='oxford'?OX_FORECAST_FROM:ys[ys.length-1]);
       const lastH=ys.filter(y=>y<cut).pop(), lastF=ys[ys.length-1];
@@ -2265,7 +2323,7 @@ const SLIDE_DEFS = [
   { key:'f14', t:'Sensitivity — Houses', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'h') },
   { key:'f15', t:'Sensitivity — Units', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'u') },
   { key:'div_conf', t:'CONFIDENCE (divider)', render: c=>'' },
-  { key:'stub_jobads', t:'Job Ads', render: c=>stubSlide('Job Ads') },
+  { key:'stub_jobads', t:'Job Ads', render: c=>lightChartSlide(72), mount:(el,c)=>mountJobAds(el,c.slug) },   /* keeps the stub_jobads key so any overlays authored on the stub follow */
   { key:'stub_bizfin', t:'Business Finance', render: c=>stubSlide('Business Finance') },
   { key:'housing_fin', t:'Housing Finance', render: c=>lightChartSlide(72), mount:(el,c)=>mountHousingFinance(el,c.slug) },
   { key:'stub_cci', t:'Consumer Confidence', render: c=>stubSlide('Consumer Confidence') },
@@ -2633,6 +2691,11 @@ function _tokenMap(){
         :P2IINFO.uNear?'is just below its record high'
         :'is lower than it was in '+P2IINFO.uYear)
       : 'is shown above',
+    /* live job ads (JSA Internet Vacancy Index — same series as the Job Ads chart) */
+    jobads_index:(JAINFO&&JAINFO.index!=null)?JAINFO.index.toFixed(1):'—',
+    jobads_month:(JAINFO&&JAINFO.month)?(MONTHS[+JAINFO.month.slice(5,7)-1]+' '+JAINFO.month.slice(0,4)):'—',
+    jobads_yoy:(JAINFO&&JAINFO.yoy!=null)?((JAINFO.yoy>=0?'+':'')+(JAINFO.yoy*100).toFixed(1)+'%'):'—',
+    jobads_trend:(JAINFO&&JAINFO.yoy!=null)?(JAINFO.yoy>=0.02?'rising':JAINFO.yoy<=-0.02?'easing':'steady'):'—',
     /* live dwelling pipeline (same series as the Total Dwellings chart). On the
        9 markets with no Oxford location only {dw_approvals} resolves — the rest
        read "—", so a narrative that quotes commencements/completions must stay
@@ -2854,7 +2917,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions} {dw_fc_year} {dw_fc_completions} {dw_fc_change}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Job ads</b> · {jobads_index} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions} {dw_fc_year} {dw_fc_completions} {dw_fc_change}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
