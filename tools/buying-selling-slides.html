@@ -1567,6 +1567,97 @@ async function renderHousingFinance(host, slug){
   host.style.border='1px solid #63666A';   /* the sample frames this chart panel */
   _drawEChart(host, option);
 }
+/* ── Total Dwellings — Oxford Economics approvals / commencements / completions
+      (source='oxford', freq A, 2002-2029; 2026+ is Oxford's FORECAST, drawn
+      dashed over a shaded band). 27 of the 36 markets have Oxford data; the
+      other 9 have no Oxford location that maps one-to-one, so they fall back
+      to the ABS building approvals already in Forge (approvals_h+approvals_u)
+      and show a single line. Because the source differs BY MARKET the source
+      caption is baked into the chart rather than authored as an overlay —
+      don't add a source text overlay to this slide or it will double up. ── */
+const OX_FORECAST_FROM = 2026;   /* export is June 2026 → 2002-2025 history, 2026-2029 projected */
+let _dwCache={};
+async function getDwellings(slug){
+  if(_dwCache[slug]!==undefined) return _dwCache[slug];
+  let out=null;
+  try{
+    const {data}=await window.sb.from('rdp_raw_series').select('metric,period,value')
+      .eq('region_slug',slug).eq('source','oxford')
+      .in('metric',['dwellings_approvals','dwellings_commencements','dwellings_completions']).order('period');
+    if(data&&data.length){
+      const S={approvals:{},commencements:{},completions:{}};
+      data.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return;
+        S[r.metric.replace('dwellings_','')][+String(r.period).slice(0,4)]=v; });
+      const years=Object.keys(S.approvals).map(Number).sort((a,b)=>a-b);
+      out={ kind:'oxford', years:years, S:S };
+    }
+  }catch(e){}
+  if(!out){   /* fallback: ABS approvals (houses + units), annualised current year */
+    try{
+      const {data}=await window.sb.from('rdp_raw_series').select('metric,period,value')
+        .eq('region_slug',slug).eq('freq','A').in('metric',['approvals_h','approvals_u']).order('period');
+      const tot={};
+      (data||[]).forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return;
+        const y=+String(r.period).slice(0,4); tot[y]=(tot[y]||0)+v; });
+      const years=Object.keys(tot).map(Number).sort((a,b)=>a-b);
+      if(years.length) out={ kind:'abs', years:years, S:{approvals:tot} };
+    }catch(e){}
+  }
+  _dwCache[slug]=out||null; return _dwCache[slug];
+}
+function mountDwellings(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderDwellings(host, slug); }
+async function renderDwellings(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const D=await getDwellings(slug);
+  if(!D){ host.innerHTML='<div class="bss-chartload">No dwelling data for this region.</div>'; return; }
+  const years=D.years, cats=years.map(String);
+  /* history solid / forecast dashed — the forecast series repeats the last
+     history point so the two segments join with no gap */
+  const cut = D.kind==='oxford' ? OX_FORECAST_FROM : years[years.length-1];   /* ABS: only the annualised current year is "estimated" */
+  const pick=(map,fc)=>years.map(y=>{ const v=map[y]; if(v==null) return null;
+    return fc ? (y>=cut-1?Math.round(v):null) : (y<cut?Math.round(v):null); });
+  const PAL={approvals:'#00A0B4', commencements:'#171B24', completions:'#63666A'};   /* Dark Gray, not the deck's usual #c6c6c6 — three lines on a light slide, the pale grey vanishes */
+  const LABEL={approvals:'Approvals', commencements:'Commencements', completions:'Completions'};
+  const series=[];
+  Object.keys(D.S).forEach(k=>{
+    const col=PAL[k]||'#63666A', nm=D.kind==='abs'?'Dwelling Approvals':LABEL[k];
+    series.push({ name:nm, type:'line', data:pick(D.S[k],false), smooth:true, showSymbol:false, connectNulls:false,
+      lineStyle:{color:col,width:2.8}, itemStyle:{color:col} });
+    series.push({ name:nm, type:'line', data:pick(D.S[k],true), smooth:true, showSymbol:false, connectNulls:false,
+      lineStyle:{color:col,width:2.8,type:'dashed'}, itemStyle:{color:col}, tooltip:{show:false}, legendHoverLink:false, silent:true });
+  });
+  const all=[]; Object.keys(D.S).forEach(k=>years.forEach(y=>{ const v=D.S[k][y]; if(v!=null) all.push(v); }));
+  const maxV=Math.max.apply(null,all), step=Math.max(500,Math.ceil(maxV/6/500)*500), yTop=Math.ceil(maxV*1.06/step)*step;
+  const iCut=years.indexOf(cut);
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', confine:true,
+      formatter:params=>{ const seen={}; const ln=params.filter(p=>p.value!=null&&!seen[p.seriesName]&&(seen[p.seriesName]=1))
+        .map(p=>p.marker+p.seriesName+': <b>'+Number(p.value).toLocaleString()+'</b>');
+        const y=+params[0].axisValue;
+        return '<b>'+params[0].axisValue+(D.kind==='oxford'&&y>=cut?' (forecast)':'')+'</b><br>'+ln.join('<br>'); } },
+    legend:{ top:4, left:'center', itemWidth:9, itemHeight:9, itemGap:18, textStyle:{fontSize:10,color:'#222'},
+      data:(D.kind==='abs'?['Dwelling Approvals']:['Approvals','Commencements','Completions'])
+        .map(n=>({name:n,icon:'path://M0,0h24v4h-24z'})) },
+    grid:{left:70,right:26,top:44,bottom:58},
+    xAxis:{ type:'category', data:cats, boundaryGap:false, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90},
+      axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', min:0, max:yTop, interval:step,
+      axisLabel:{color:'#444',fontSize:9,formatter:v=>Number(v).toLocaleString()}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+      axisLine:{show:true,lineStyle:{color:'#999'}}, axisTick:{show:true,lineStyle:{color:'#999'}},
+      name:'Dwellings', nameLocation:'middle', nameGap:54, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
+    series:series };
+  if(D.kind==='oxford'&&iCut>0){   /* shade + label the projected years */
+    series[0].markArea={ silent:true, itemStyle:{color:'rgba(0,160,180,0.07)'},
+      label:{show:true,position:'insideTop',color:'#63666A',fontSize:9,fontWeight:600,formatter:'Forecast'},
+      data:[[{xAxis:cats[iCut]},{xAxis:cats[cats.length-1]}]] };
+  }
+  option.graphic=[{ type:'text', left:2, bottom:0, silent:true,
+    style:{ text:(D.kind==='oxford'?'Source: Oxford Economics':'Source: ABS Building Approvals (houses + units)'),
+      fontSize:8.5, fill:'#63666A', fontFamily:'Montserrat, sans-serif' } }];
+  _drawEChart(host, option);
+}
 /* ── Vacancy Rate Projection (slide 13) — the richer VR viewer: Current → 1yr →
       2yr forecast + a Tighter↔Looser gradient with current/forecast markers.
       Uses getVRAdjusted (Cotality-rebased, same as the tokens) + the raw
@@ -1648,9 +1739,9 @@ function mountRvdEmbed(slideEl){
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null;   /* RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null;   /* DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
     if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
@@ -1659,6 +1750,13 @@ async function loadEntryAndPrices(){
     if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
   try{ VRINFO=await getVRAdjusted(state.slug); }catch(e){}   /* same figures as the slide-5 cards (cached) */
   try{ POPINFO=forecastPop(state.slug,3); }catch(e){}   /* same figures as the pop-forecast chart */
+  try{ const D=await getDwellings(state.slug);   /* same series as the Total Dwellings chart (cached) */
+    if(D){ const ys=D.years, cut=(D.kind==='oxford'?OX_FORECAST_FROM:ys[ys.length-1]);
+      const lastH=ys.filter(y=>y<cut).pop(), lastF=ys[ys.length-1];
+      const g=(k,y)=>(D.S[k]&&D.S[k][y]!=null)?Math.round(D.S[k][y]):null;
+      DWINFO={ kind:D.kind, year:lastH, fcYear:lastF,
+        approvals:g('approvals',lastH), commencements:g('commencements',lastH), completions:g('completions',lastH),
+        fcCompletions:(D.kind==='oxford'?g('completions',lastF):null), fcApprovals:(D.kind==='oxford'?g('approvals',lastF):null) }; } }catch(e){}
   try{
     await whenChartsReady();
     const payload=await getFeed(state.slug);
@@ -1822,6 +1920,7 @@ async function getVRAdjusted(slug){
   return (VRADJ[slug]=p);
 }
 const _vrPct=v=>v==null?'—':(v*100).toFixed(2)+'%', _vrInt=v=>v==null?'—':Math.round(v).toLocaleString();
+const _dwInt=v=>(v==null||!isFinite(v))?'—':Math.round(v).toLocaleString();
 async function mountVRForecast(slideEl, slug){
   const host=slideEl.querySelector('.bss-vrbody'); if(!host) return;
   host.innerHTML='<div class="bss-chartload">Loading…</div>';
@@ -2152,7 +2251,7 @@ const SLIDE_DEFS = [
   { key:'pop_move', t:'Population Movement', render: c=>lightChartSlide(60), mount:(el,c)=>mountPopMovement(el,c.slug) },
   { key:'f12', t:'Vacancy v Rent', render: c=>chartSlideBare(120), mount:(el,c)=>mountVacRent(el,c.slug) },   /* 120 bottom-pad = chart ends ~y600, just above the authored narrative (y615) which sits above the logo (y665) + source line (y692) — Van's layout */
   { key:'vr_proj', t:'Vacancy Rate Projection', render: c=>vrProjSlide(), mount:(el,c)=>mountVRProjection(el,c.slug) },
-  { key:'stub_dwellings', t:'Total Dwellings', render: c=>stubSlide('Total Dwellings') },
+  { key:'stub_dwellings', t:'Total Dwellings', render: c=>lightChartSlide(72), mount:(el,c)=>mountDwellings(el,c.slug) },   /* keeps the stub_dwellings key so any overlays authored on the stub follow */
   { key:'stub_bonds', t:'RTBA Rental Bonds Held', render: c=>stubSlide('RTBA Rental Bonds Held') },
   { key:'div_value', t:'VALUE (divider)', render: c=>'' },
   { key:'median_combined', t:'Median Price', render: c=>lightChartSlide(60), mount:(el,c)=>mountMedianCombined(el,c.slug) },
@@ -2534,6 +2633,18 @@ function _tokenMap(){
         :P2IINFO.uNear?'is just below its record high'
         :'is lower than it was in '+P2IINFO.uYear)
       : 'is shown above',
+    /* live dwelling pipeline (same series as the Total Dwellings chart). On the
+       9 markets with no Oxford location only {dw_approvals} resolves — the rest
+       read "—", so a narrative that quotes commencements/completions must stay
+       on the 27 Oxford decks. */
+    dw_year:(DWINFO&&DWINFO.year!=null)?String(DWINFO.year):'—',
+    dw_fc_year:(DWINFO&&DWINFO.fcYear!=null)?String(DWINFO.fcYear):'—',
+    dw_approvals:_dwInt(DWINFO&&DWINFO.approvals), dw_commencements:_dwInt(DWINFO&&DWINFO.commencements),
+    dw_completions:_dwInt(DWINFO&&DWINFO.completions),
+    dw_fc_approvals:_dwInt(DWINFO&&DWINFO.fcApprovals), dw_fc_completions:_dwInt(DWINFO&&DWINFO.fcCompletions),
+    dw_fc_change:(DWINFO&&DWINFO.completions&&DWINFO.fcCompletions)
+      ? ((DWINFO.fcCompletions>=DWINFO.completions?'+':'')+Math.round((DWINFO.fcCompletions/DWINFO.completions-1)*100)+'%') : '—',
+    dw_source:(DWINFO&&DWINFO.kind==='oxford')?'Oxford Economics':'ABS Building Approvals',
     /* rates + wage-growth horizon (sensitivity slides; live from rdp_runway_config) */
     cash_current:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.current.cash*100).toFixed(2)+'%':'—',
     cash_forecast:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.forecast.cash*100).toFixed(2)+'%':'—',
@@ -2743,7 +2854,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions} {dw_fc_year} {dw_fc_completions} {dw_fc_change}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
