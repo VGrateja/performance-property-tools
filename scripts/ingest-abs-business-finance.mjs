@@ -1,10 +1,11 @@
 // =============================================================================
 // ingest-abs-business-finance.mjs — Data Forge path: BUSINESS FINANCE, quarterly.
 //
-// ABS Lending Indicators (5601.0) — new loan commitments to SMALL businesses,
-// fixed term loans, split by the two purposes the B/S data guide names:
-//     Construction          (LOAN_PURPOSE DV5185)  → metric bus_fin_construction
-//     Purchase of property  (LOAN_PURPOSE DV5186)  → metric bus_fin_property
+// ABS Lending Indicators (5601.0) — new loan commitments, fixed term loans,
+// for BOTH business sizes × the two purposes the B/S data guide names:
+//     Construction          (LOAN_PURPOSE DV5185)
+//     Purchase of property  (LOAN_PURPOSE DV5186)
+//   → metrics bus_fin_<sm|med>_<construction|property>  (4 series)
 //
 // Verified against the guide's two Victoria series IDs:
 //   A130267721W  Fixed term loans; Small businesses; Construction; Victoria
@@ -18,9 +19,10 @@
 //   = value ($m) · new loan commitments · fixed term loans · all lenders ·
 //     small businesses · Original · quarterly. History starts 2019-Q3.
 //
-// MEDIUM businesses (BUSINESS_SIZE DV8604) are equally available on the same
-// key — the guide cites ABS Table 32 for them — but the two series it actually
-// names are both SMALL, so only small is ingested. Flip SIZE below to add them.
+// BOTH sizes: the guide names two SMALL series explicitly but also cites ABS
+// Table 32 for MEDIUM by purpose, and Van's page-28 sample plots small combined
+// plus medium broken out by purpose. BUSINESS_SIZE DV8605 = small, DV8604 =
+// medium. The slide sums the two purposes for its combined lines.
 //
 // Stored freq='Q' at the quarter-START month (2026-Q1 → 2026-01-01), which is
 // the existing convention for quarterly series here (cf. mineral_exploration).
@@ -37,18 +39,22 @@ const API = 'https://data.api.abs.gov.au/rest';
 const getJson = async u => { const r = await fetch(u, { headers: { Accept: 'application/vnd.sdmx.data+json' } }); const t = await r.text(); try { return JSON.parse(t); } catch { throw new Error(`ABS ${r.status}: ${t.slice(0, 120)}`); } };
 
 const REG = { AUS: 'australia', '1': 'st-nsw', '2': 'st-vic', '3': 'st-qld', '4': 'st-sa', '5': 'st-wa', '6': 'st-tas', '7': 'st-nt', '8': 'st-act' };
-const SIZE = 'DV8605';                                    // small businesses
+const SIZES = [
+  { code: 'DV8605', key: 'sm', label: 'Small' },
+  { code: 'DV8604', key: 'med', label: 'Medium' },
+];
 const PURPOSES = [
-  { code: 'DV5185', metric: 'bus_fin_construction', label: 'Construction' },
-  { code: 'DV5186', metric: 'bus_fin_property', label: 'Purchase of property' },
+  { code: 'DV5185', key: 'construction', label: 'Construction' },
+  { code: 'DV5186', key: 'property', label: 'Purchase of property' },
 ];
 // 2026-Q1 → 2026-01-01 (quarter START month, the convention here)
 const qToPeriod = q => { const [y, n] = q.split('-Q'); return `${y}-${String((+n - 1) * 3 + 1).padStart(2, '0')}-01`; };
 
 const out = [];
 const seen = {};
-for (const p of PURPOSES) {
-  const key = `FIN_VAL.NEWCOMMITS.DV8270.${p.code}.TOT.${SIZE}.10.AUS+1+2+3+4+5+6+7+8.Q`;
+for (const sz of SIZES) for (const p of PURPOSES) {
+  const metric = `bus_fin_${sz.key}_${p.key}`;
+  const key = `FIN_VAL.NEWCOMMITS.DV8270.${p.code}.TOT.${sz.code}.10.AUS+1+2+3+4+5+6+7+8.Q`;
   const j = await getJson(`${API}/data/ABS,LEND_BUSINESS/${key}?dimensionAtObservation=AllDimensions`);
   const dims = j.data.structures[0].dimensions.observation;
   const rI = dims.findIndex(d => d.id === 'REGION'), tI = dims.findIndex(d => d.id === 'TIME_PERIOD');
@@ -59,23 +65,26 @@ for (const p of PURPOSES) {
     const slug = REG[dims[rI].values[ix[rI]].id];
     const val = Number(v[0]);
     if (!slug || !isFinite(val)) continue;
-    out.push({ source: 'abs', region_slug: slug, metric: p.metric, freq: 'Q', period: qToPeriod(dims[tI].values[ix[tI]].id), value: Math.round(val * 100) / 100 });
+    out.push({ source: 'abs', region_slug: slug, metric, freq: 'Q', period: qToPeriod(dims[tI].values[ix[tI]].id), value: Math.round(val * 100) / 100 });
     n++;
   }
-  seen[p.metric] = n;
+  seen[metric] = n;
 }
 
 /* ── report ───────────────────────────────────────────────────────────── */
 const periods = [...new Set(out.map(o => o.period))].sort();
-console.log('ABS Lending Indicators — Business Finance (small businesses, fixed term loans, new commitments, $m)');
+console.log('ABS Lending Indicators — Business Finance (fixed term loans, new commitments, $m)');
 console.log('Quarters : ' + periods.length + '  ' + periods[0] + ' → ' + periods[periods.length - 1]);
 console.log('Regions  : ' + new Set(out.map(o => o.region_slug)).size + '   Rows: ' + out.length);
-PURPOSES.forEach(p => console.log('  ' + p.metric.padEnd(22) + String(seen[p.metric]).padStart(4) + '  (' + p.label + ')'));
+Object.keys(seen).forEach(m => console.log('  ' + m.padEnd(26) + String(seen[m]).padStart(4)));
 const last = periods[periods.length - 1];
-console.log('\nLatest quarter (' + last + '):');
-['australia', 'st-nsw', 'st-vic', 'st-qld', 'st-wa'].forEach(s => {
-  const g = m => { const r = out.find(o => o.region_slug === s && o.metric === m && o.period === last); return r ? '$' + r.value.toLocaleString() + 'm' : '—'; };
-  console.log('  ' + s.padEnd(12) + 'construction ' + g('bus_fin_construction').padEnd(12) + 'property ' + g('bus_fin_property'));
+console.log('\nLatest quarter (' + last + '), $m:');
+['australia', 'st-nsw', 'st-vic'].forEach(s => {
+  const g = m => { const r = out.find(o => o.region_slug === s && o.metric === m && o.period === last); return r ? r.value.toLocaleString() : '—'; };
+  console.log('  ' + s.padEnd(11) + 'sm con ' + g('bus_fin_sm_construction').padStart(9)
+    + '   sm prop ' + g('bus_fin_sm_property').padStart(9)
+    + '   med con ' + g('bus_fin_med_construction').padStart(9)
+    + '   med prop ' + g('bus_fin_med_property').padStart(9));
 });
 
 if (!WRITE) { console.log('\nDry run — nothing written. Re-run with --write to upsert.'); process.exit(0); }
