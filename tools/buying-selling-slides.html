@@ -1639,28 +1639,50 @@ const MANUAL_SERIES={
     src:'Source: Westpac–Melbourne Institute — House Price Expectations Index',
     baseLabel:'Long-run average (100)', where:'the Westpac–Melbourne Institute report' },
 };
+/* STATE-PREFERRED with a national fallback. Van's CSVs (2026-07-30) carry NAB
+   confidence for national + VIC/NSW/QLD/WA/SA/TAS monthly, and the Westpac–MI
+   HPEI for VIC monthly + national annually — so a deck shows its own state
+   where that state is published and drops back to national otherwise (NT/ACT
+   for NAB; every non-VIC market for the HPEI). No source filter, so a
+   hand-entered month in Data Forge extends the same series seamlessly. */
 const _msCache={};
-async function getManualSeries(metric){
-  if(_msCache[metric]!==undefined) return _msCache[metric];
+async function getManualSeries(metric, slug){
+  const m=DB.meta[slug]||{}, st=m.state?('st-'+String(m.state).toLowerCase()):null;
+  const ck=metric+'|'+(st||'-');
+  if(_msCache[ck]!==undefined) return _msCache[ck];
   let out=null;
   try{
-    const {data}=await window.sb.from('rdp_raw_series').select('period,value')
-      .eq('region_slug','australia').eq('metric',metric).eq('source','manual').eq('freq','M').order('period');
+    const regions=st?[st,'australia']:['australia'];
+    const {data}=await window.sb.from('rdp_raw_series').select('region_slug,freq,period,value')
+      .in('region_slug',regions).eq('metric',metric).order('period');
     if(data&&data.length){
-      const months=[],vals=[];
-      data.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return; months.push(String(r.period).slice(0,7)); vals.push(v); });
-      if(months.length) out={ months:months, vals:vals };
+      /* prefer the state's own monthly series; else national (monthly if it
+         exists, otherwise the annual points) */
+      const pick=(reg,freq)=>data.filter(r=>r.region_slug===reg&&r.freq===freq);
+      let rows=st?pick(st,'M'):[];
+      let scope=st?String(m.state).toUpperCase():'', freq='M';
+      if(!rows.length){ rows=pick(st,'A'); freq='A'; }
+      if(!rows.length){ rows=pick('australia','M'); scope='National'; freq='M'; }
+      if(!rows.length){ rows=pick('australia','A'); scope='National'; freq='A'; }
+      /* dedupe by period — the query deliberately doesn't filter source, so a
+         hand-entered month and a CSV month for the SAME period would otherwise
+         both plot and duplicate the x category. Last write wins. */
+      const byP=new Map();
+      rows.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return;
+        byP.set(String(r.period).slice(0,freq==='A'?4:7), v); });
+      const periods=[...byP.keys()].sort(), vals=periods.map(p=>byP.get(p));
+      if(periods.length) out={ periods:periods, vals:vals, scope:scope, freq:freq };
     }
   }catch(e){}
-  _msCache[metric]=out||null; return _msCache[metric];
+  _msCache[ck]=out||null; return _msCache[ck];
 }
-function mountManualSeries(slideEl, metric){ const host=slideEl.querySelector('.bss-chart'); if(host) renderManualSeries(host, metric); }
-async function renderManualSeries(host, metric){
+function mountManualSeries(slideEl, metric, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderManualSeries(host, metric, slug); }
+async function renderManualSeries(host, metric, slug){
   const CFG=MANUAL_SERIES[metric];
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
   await whenChartsReady();
   if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
-  const D=await getManualSeries(metric);
+  const D=await getManualSeries(metric, slug);
   if(!D){   /* explicit, honest empty state — never a blank axis in a client deck */
     host.innerHTML='<div class="bss-chartload" style="text-align:center;line-height:1.6">'
       +'<b>'+esc(CFG.label)+'</b> — no data entered yet.<br>'
@@ -1668,32 +1690,34 @@ async function renderManualSeries(host, metric){
       +' in Data&nbsp;Forge → Business &amp; House Price Sentiment.</span></div>';
     return; }
   const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const longM=s=>{ const [y,m]=s.split('-'); return MON[+m-1]+' '+y; };
+  const ann=D.freq==='A';
+  const longP=s=>ann?s:(MON[+s.split('-')[1]-1]+' '+s.split('-')[0]);
+  const shortP=s=>ann?s:(MON[+s.split('-')[1]-1]+'-'+s.split('-')[0].slice(-2));
+  const label=(D.scope?D.scope+' ':'')+CFG.label;
   const lo=Math.min(CFG.base,Math.min.apply(null,D.vals)), hi=Math.max(CFG.base,Math.max.apply(null,D.vals));
   const pad=Math.max(1,(hi-lo)*0.15);
-  const many=D.months.length>18;
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true,
-      formatter:params=>{ const p=params[0]; return '<b>'+longM(p.axisValue)+'</b><br>'+p.marker+esc(CFG.label)+': <b>'+Number(p.value).toFixed(1)+'</b>'; } },
-    legend:{ top:4, left:'center', itemWidth:9, itemHeight:9, textStyle:{fontSize:10,color:'#222'},
-      data:[{name:CFG.label,icon:'path://M0,0h24v4h-24z'}] },
+      formatter:params=>{ const p=params[0]; return '<b>'+longP(p.axisValue)+'</b><br>'+p.marker+esc(label)+': <b>'+Number(p.value).toFixed(1)+'</b>'; } },
+    legend:{ top:4, left:'center', itemWidth:14, itemHeight:3, textStyle:{fontSize:10,color:'#222'},
+      data:[{name:label,icon:'path://M0,0h24v3h-24z'}] },
     grid:{left:58,right:26,top:42,bottom:56},
-    xAxis:{ type:'category', data:D.months, boundaryGap:false,
-      axisLabel:{ color:'#444', fontSize:8.5, interval:many?'auto':0, rotate:60,
-        formatter:s=>{ const [y,m]=s.split('-'); return MON[+m-1]+' '+y.slice(-2); } },
+    xAxis:{ type:'category', data:D.periods, boundaryGap:false,
+      axisLabel:{ color:'#444', fontSize:8.5, interval:D.periods.length>18?'auto':0, rotate:60, formatter:shortP },
       axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
     yAxis:{ type:'value', min:Math.floor(lo-pad), max:Math.ceil(hi+pad),
       axisLabel:{color:'#444',fontSize:9}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
       axisLine:{show:true,lineStyle:{color:'#999'}}, axisTick:{show:true,lineStyle:{color:'#999'}},
       name:CFG.axis, nameLocation:'middle', nameGap:42, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
-    series:[{ name:CFG.label, type:'line', data:D.vals, smooth:0.25, showSymbol:D.months.length<=24, symbolSize:5,
+    series:[{ name:label, type:'line', data:D.vals, smooth:0.25, showSymbol:D.periods.length<=24, symbolSize:5,
       lineStyle:{color:'#00A0B4',width:2.6}, itemStyle:{color:'#00A0B4'},
       markLine:{ silent:true, symbol:'none', data:[{yAxis:CFG.base}],
         lineStyle:{color:'#63666A',type:'dashed',width:1.4},
-        label:{show:true,position:'insideEndTop',formatter:CFG.baseLabel,color:'#63666A',fontSize:9,fontWeight:600} } }],
-    graphic:[{ type:'text', left:2, bottom:0, silent:true,
-      style:{ text:CFG.src, fontSize:8.5, fill:'#63666A', fontFamily:'Montserrat, sans-serif' } }] };
+        label:{show:true,position:'insideEndTop',formatter:CFG.baseLabel,color:'#63666A',fontSize:9,fontWeight:600} } }] };
   _drawEChart(host, option);
+  _bssSlideLines(host, [
+    { text:CFG.src+(D.freq==='A'?' — annual':''), x:36, y:692, size:12, color:'#7a7f87', italic:true },
+  ]);
 }
 /* ── Consumer Confidence (slide 30) — the region's MEDIAN PRICE bars (house
       teal / unit grey, left $ axis) against the NATIONAL CCI annualised on a
@@ -2873,8 +2897,8 @@ const SLIDE_DEFS = [
   { key:'stub_bizfin', t:'Business Finance', render: c=>lightChartSlide(60), mount:(el,c)=>mountBusFinance(el,c.slug) },   /* 60 bottom-pad — same reasoning as Job Ads */   /* keeps the stub_bizfin key so any overlays authored on the stub follow */
   { key:'housing_fin', t:'Housing Finance', render: c=>lightChartSlide(60), mount:(el,c)=>mountHousingFinance(el,c.slug) },   /* 60 bottom-pad, same as Job Ads / Business Finance — rotated quarter labels sit just above the source line at y692 */
   { key:'stub_cci', t:'Consumer Confidence', render: c=>lightChartSlide(60), mount:(el,c)=>mountConsumerConf(el,c.slug) },   /* NATIONAL series — same chart on every deck. Keeps the stub_cci key so any overlays authored on the stub follow */
-  { key:'stub_hpei', t:'House Price Expectation', render: c=>lightChartSlide(72), mount:(el,c)=>mountManualSeries(el,'house_price_expectations') },   /* NATIONAL (the MI index is not published by state) — hand-entered in Data Forge */
-  { key:'stub_bizconf', t:'Business Confidence', render: c=>lightChartSlide(72), mount:(el,c)=>mountManualSeries(el,'business_confidence') },   /* NATIONAL (NAB's headline confidence is national) — hand-entered in Data Forge */
+  { key:'stub_hpei', t:'House Price Expectation', render: c=>lightChartSlide(60), mount:(el,c)=>mountManualSeries(el,'house_price_expectations',c.slug) },   /* VIC monthly where published, national annual elsewhere — loaded from Van's Westpac-MI CSV */
+  { key:'stub_bizconf', t:'Business Confidence', render: c=>lightChartSlide(60), mount:(el,c)=>mountManualSeries(el,'business_confidence',c.slug) },   /* the deck's own state where NAB publishes it, else national — loaded from Van's NAB CSV */
   { key:'stub_underutil', t:'Underutilisation', render: c=>lightChartSlide(60), mount:(el,c)=>mountUnderutil(el,c.slug) },   /* keeps the stub_underutil key so any overlays authored on the stub follow */
   { key:'tl_revisit', t:'Revisiting the Traffic Lights', render: c=>tlSlide('Revisiting the Traffic Lights',false,false,true), mount:(el,c)=>mountTL(el,c.slug) },   /* headed light layout per Van's sample (was dark with the title inside the card) */
 ];

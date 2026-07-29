@@ -505,6 +505,7 @@
     <div id="sentEntry"></div>
     <div id="sentBcOut" style="margin-top:22px"></div>
     <div id="sentHpOut" style="margin-top:22px"></div>
+    <div id="sentHpaOut" style="margin-top:22px"></div>
   </section>
 
   <!-- ── RTBA RENTAL BONDS (Consumer Affairs Victoria annual reports) ── -->
@@ -818,7 +819,7 @@ const CLUSTERS = [
   { key:'national_vacancies', icon:'💼', ingest:'api', label:'National Job Vacancies', desc:'JSA national internet vacancies (SA) + ABS Job Vacancies survey (private/public). Monthly + quarterly.', view:'natvac' },
   { key:'unemployment', icon:'👷', ingest:'api', label:'Unemployment, Underemployment & Underutilisation', desc:'ABS Labour Force (Original) — unemployment for national, 8 states, 7 capitals & 28 regions; underemployment <b>national + 8 states</b>; <b>underutilisation</b> (unemployment + underemployment) national + 8 states — the guide’s Table X28, feeding B/S Slides. API (national/states) + ABS data cubes (capitals/regionals).', view:'unemployment' },
   { key:'approvals', icon:'🏠', ingest:'api', label:'Building Approvals', desc:'ABS Building Approvals (8731.0, Original) — new house + unit dwelling approvals. National + 8 capitals (BA_GCCSA) + 28 LGA regions (BA_LGA). Annual counts.', view:'approvals' },
-  { key:'sentiment_manual', icon:'📝', ingest:'manual', label:'Business & House Price Sentiment', desc:'Two survey series with <b>no machine-readable source anywhere</b> — typed in each month. <b>NAB Business Confidence</b> (net balance, from the NAB Monthly Business Survey) and the <b>Melbourne Institute House Price Expectations Index</b> (from the Westpac–MI Consumer Sentiment report). Checked: no API, nothing on DBnomics, the MI site blocks automation, and RBA table H3 publishes only the adjacent series (NAB business <i>conditions</i>, MI consumer <i>sentiment</i>) — not these. National, monthly. Feeds B/S Slides.', view:'sentiment' },
+  { key:'sentiment_manual', icon:'📝', ingest:'manual', label:'Business & House Price Sentiment', desc:'Two survey series with <b>no machine-readable source anywhere</b> — loaded from the CSV exports (<code>ingest-sentiment-csv.mjs</code>), topped up by hand here. <b>NAB Business Confidence</b> (net balance, from the NAB Monthly Business Survey) and the <b>Melbourne Institute House Price Expectations Index</b> (from the Westpac–MI Consumer Sentiment report). Checked: no API, nothing on DBnomics, the MI site blocks automation, and RBA table H3 publishes only the adjacent series (NAB business <i>conditions</i>, MI consumer <i>sentiment</i>) — not these. National, monthly. Feeds B/S Slides.', view:'sentiment' },
   { key:'rental_bonds', icon:'🔐', ingest:'api', label:'RTBA Rental Bonds (VIC)', desc:'Residential Tenancies Bond Authority transaction counts per <b>financial year</b> — bonds lodged, repayments and bonds held. Parsed straight from the <b>Consumer Affairs Victoria annual reports</b> (the Word edition, which is real XML); each report publishes three years, so the reports back to 2014-15 cover 2012-13 onward. <b>Victoria only</b> — the RTBA is a Victorian body and no other state publishes a comparable series. Feeds B/S Slides page 14, which derives Gain/Loss = lodged − repaid.', view:'bonds' },
   { key:'consumer_confidence', icon:'🙂', ingest:'api', label:'Consumer Confidence', desc:'OECD <b>Consumer Confidence Index (CCI)</b> for Australia — monthly, amplitude adjusted, <b>100 = the long-run average</b> (the series only moves in a ~96–102 band, so never chart it from zero). National only, history from 1974. Pulled from the OECD Data Explorer SDMX API. Feeds B/S Slides page 32.', view:'cci' },
   { key:'business_finance', icon:'💼', ingest:'api', label:'Business Finance', desc:'ABS Lending Indicators (5601.0) — <b>new loan commitments</b> on fixed term loans, four series: <b>small</b> and <b>medium</b> businesses × <b>Construction</b> and <b>Purchase of property</b>. National + 8 states, quarterly ($m) from 2019-Q3. All four are plotted on B/S Slides page 28.', view:'bizfin' },
@@ -1706,9 +1707,13 @@ const loadApprovals = () => {
    the lightest form that works, rather than a PDF scraper that breaks silently.
    Writes go straight to rdp_raw_series (source='manual'); RLS already restricts
    INSERT/UPDATE to is_writer(), and the UI gates on _forgeCanEdit as well. */
+/* region + source per series so a hand-entered month EXTENDS exactly the series
+   the CSV loads and the B/S slides read — not a parallel source='manual' island.
+   business confidence → the national headline (the CSV also carries 6 states);
+   house price expectations → st-vic, which is where the monthly index exists. */
 const SENT_SERIES = [
-  { metric:'business_confidence',     label:'NAB Business Confidence',            unit:'net balance', hint:'NAB Monthly Business Survey — the headline "business confidence" index (a net balance, so it can be negative).' },
-  { metric:'house_price_expectations', label:'MI House Price Expectations Index', unit:'index',       hint:'Westpac–Melbourne Institute Consumer Sentiment report — the House Price Expectations Index.' },
+  { metric:'business_confidence',      region:'australia', source:'nab', label:'NAB Business Confidence (national)', unit:'net balance', hint:'NAB Monthly Business Survey — the headline "business confidence" index (a net balance, so it can be negative). State figures come from the CSV export.' },
+  { metric:'house_price_expectations', region:'st-vic',    source:'wmi', label:'House Price Expectations Index (VIC)', unit:'index', hint:'Westpac–Melbourne Institute Consumer Sentiment report — the House Price Expectations Index. Not published every month; leave blank when there is no new reading.' },
 ];
 function sentMonthOptions(){
   /* last 24 months, newest first — the surveys are monthly and you enter the
@@ -1730,7 +1735,7 @@ async function sentSave(){
     if (raw === '') continue;                       // blank = leave that series alone this month
     const v = Number(raw);
     if (!isFinite(v)) { alert(s.label + ': "' + raw + '" is not a number.'); return; }
-    rows.push({ source:'manual', region_slug:'australia', metric:s.metric, freq:'M', period: ym + '-01', value: v });
+    rows.push({ source:s.source, region_slug:s.region, metric:s.metric, freq:'M', period: ym + '-01', value: v });
   }
   if (!rows.length) { alert('Enter at least one value.'); return; }
   const btn = document.getElementById('sentSaveBtn');
@@ -1768,12 +1773,15 @@ function renderSentEntry(){
 }
 const loadSentiment = () => {
   renderSentEntry();
-  renderSeriesView({ outId:'sentBcOut', key:'sentiment_manual', metric:'business_confidence', dbSource:'manual', freq:'M', from:'2018-01-01', period:'month', colN:12, fmt:v=>v==null?'—':(+v).toFixed(1), unit:'net balance', sortBy:'group',
-    title:'NAB business confidence', eyebrow:'NAB · Monthly Business Survey (hand-entered)', source:'NAB Monthly Business Survey', defaultMsg:'Nothing entered yet — add a month above.',
+  renderSeriesView({ outId:'sentBcOut', key:'sentiment_manual', metric:'business_confidence', dbSource:'nab', freq:'M', from:'2018-01-01', period:'month', colN:12, fmt:v=>v==null?'—':(+v).toFixed(1), unit:'net balance', sortBy:'group',
+    title:'NAB business confidence', eyebrow:'NAB · Monthly Business Survey', source:'NAB Monthly Business Survey', defaultMsg:'Nothing entered yet — add a month above.',
     note:'The headline <b>business confidence</b> index from the NAB Monthly Business Survey — a <b>net balance</b>, so negative values are normal and meaningful. NAB publishes it inside the monthly survey release rather than as a data feed, so it is typed in here. Note RBA table H3 carries NAB business <i>conditions</i>, which is a different measure (how trading, profitability and employment are going <i>now</i>, versus confidence which is <i>expectations</i>) — do not substitute one for the other.' });
-  renderSeriesView({ outId:'sentHpOut', key:'sentiment_manual', metric:'house_price_expectations', dbSource:'manual', freq:'M', from:'2018-01-01', period:'month', colN:12, fmt:v=>v==null?'—':(+v).toFixed(1), unit:'index', sortBy:'group',
-    title:'House price expectations index', eyebrow:'Melbourne Institute (hand-entered)', source:'Westpac–Melbourne Institute', defaultMsg:'Nothing entered yet — add a month above.',
-    note:'The <b>House Price Expectations Index</b> from the Westpac–Melbourne Institute Consumer Sentiment report. Published inside the monthly report, and melbourneinstitute.unimelb.edu.au blocks automated requests, so it is typed in here.' });
+  renderSeriesView({ outId:'sentHpOut', key:'sentiment_manual', metric:'house_price_expectations', dbSource:'wmi', freq:'M', from:'2018-01-01', period:'month', colN:12, fmt:v=>v==null?'—':(+v).toFixed(1), unit:'index', sortBy:'group',
+    title:'House price expectations index — VIC, monthly', eyebrow:'Westpac–Melbourne Institute', source:'Westpac–Melbourne Institute', defaultMsg:'Nothing loaded yet — run ingest-sentiment-csv.mjs or add a month above.',
+    note:'The <b>House Price Expectations Index</b> from the Westpac–Melbourne Institute Consumer Sentiment report. <b>VIC, monthly</b> — the only state-level series in the export, and <b>not published every month</b> (gaps are real, not missing loads). B/S page 31 uses this on the 6 Victorian decks.' });
+  renderSeriesView({ outId:'sentHpaOut', key:'sentiment_manual', metric:'house_price_expectations', dbSource:'wmi', freq:'A', from:'2020-01-01', period:'year', colN:8, fmt:v=>v==null?'—':(+v).toFixed(1), unit:'index', sortBy:'group',
+    title:'House price expectations index — national, annual', eyebrow:'Westpac–Melbourne Institute', source:'Westpac–Melbourne Institute', defaultMsg:'No annual national figures loaded.',
+    note:'The <b>national</b> House Price Expectations Index, annual. This is what B/S page 31 falls back to on the <b>30 non-Victorian decks</b>, since the monthly index is only published for VIC in the export — so it is worth eyeballing here to see what those decks show.' });
 };
 
 // RTBA Rental Bonds (VIC) — financial-year counts from the CAV annual reports.
