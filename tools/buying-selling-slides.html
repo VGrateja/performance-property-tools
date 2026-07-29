@@ -1752,6 +1752,69 @@ async function renderHpeCombo(host, slug){
   ]);
   return true;
 }
+/* ── Business Confidence (slide 32) — Van's sample plots CONFIDENCE and
+      CONDITIONS together as net balances on ONE axis, with a solid zero line.
+      Both come from the NAB survey CSV, so the same state resolution applies:
+      the deck's own state where NAB publishes it (VIC/NSW/QLD/WA/SA/TAS),
+      national otherwise (ACT/NT) — every deck gets both lines either way. ── */
+let _bcCache={};
+async function getBizCombo(slug){
+  if(_bcCache[slug]!==undefined) return _bcCache[slug];
+  const m=DB.meta[slug]||{}, st=m.state?('st-'+String(m.state).toLowerCase()):null;
+  let out=null;
+  try{
+    const regions=st?[st,'australia']:['australia'];
+    const {data}=await window.sb.from('rdp_raw_series').select('region_slug,metric,period,value')
+      .in('region_slug',regions).eq('freq','M').in('metric',['business_confidence','business_conditions']).order('period');
+    if(data&&data.length){
+      /* one scope for BOTH lines — never mix a state confidence with a national
+         condition, which would silently compare different things */
+      const has=r=>data.some(x=>x.region_slug===r&&x.metric==='business_confidence');
+      const reg=(st&&has(st))?st:'australia';
+      const scope=reg==='australia'?'National':String(m.state).toUpperCase();
+      const C={},D2={},ps=new Set();
+      data.filter(r=>r.region_slug===reg).forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return;
+        const p=String(r.period).slice(0,7); ps.add(p);
+        (r.metric==='business_confidence'?C:D2)[p]=v; });
+      const periods=[...ps].sort();
+      if(periods.length) out={ periods, conf:periods.map(p=>C[p]??null), cond:periods.map(p=>D2[p]??null), scope };
+    }
+  }catch(e){}
+  _bcCache[slug]=out||null; return _bcCache[slug];
+}
+async function renderBizCombo(host, slug){
+  const D=await getBizCombo(slug);
+  if(!D||!D.cond.some(v=>v!=null)) return false;      // no conditions → caller falls back to the single line
+  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const lab=p=>{ const [y,mo]=p.split('-'); return MON[+mo-1]+' '+y; };
+  const all=D.conf.concat(D.cond).filter(v=>v!=null);
+  const yMin=Math.floor(Math.min.apply(null,all)/10)*10, yMax=Math.ceil(Math.max.apply(null,all)/10)*10;
+  const S=[
+    { name:D.scope+' Confidence (Net Balance)', data:D.conf, col:'#3ec8d8', w:2.2 },
+    { name:D.scope+' Condition (Net Balance)',  data:D.cond, col:'#171B24', w:2.2 },
+  ];
+  _drawEChart(host, { backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', confine:true,
+      formatter:params=>'<b>'+lab(params[0].axisValue.replace(' ','-'))+'</b><br>'+params.filter(p=>p.value!=null)
+        .map(p=>p.marker+p.seriesName+': <b>'+(p.value>0?'+':'')+p.value+'</b>').join('<br>') },
+    legend:{ top:2, left:'center', itemWidth:14, itemHeight:3, itemGap:20, textStyle:{fontSize:9.5,color:'#222'},
+      data:S.map(s=>({name:s.name,icon:'path://M0,0h24v3h-24z'})) },
+    grid:{left:52,right:26,top:38,bottom:66},
+    xAxis:{ type:'category', data:D.periods.map(lab), boundaryGap:false,
+      axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90},
+      axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', min:yMin, max:yMax, interval:10, axisLabel:{color:'#444',fontSize:9.5},
+      splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}}, axisLine:{show:false}, axisTick:{show:false} },
+    series:S.map((s,i)=>({ name:s.name, type:'line', data:s.data, smooth:true, showSymbol:false, connectNulls:true,
+      lineStyle:{color:s.col,width:s.w}, itemStyle:{color:s.col},
+      /* solid zero line, once (on the first series only) — the sample's */
+      markLine:i?undefined:{ silent:true, symbol:'none', data:[{yAxis:0}],
+        lineStyle:{color:'#171B24',width:1,type:'solid'}, label:{show:false} } })) });
+  _bssSlideLines(host, [
+    { text:'Source: NAB News', x:36, y:692, size:12, color:'#7a7f87', italic:true },
+  ]);
+  return true;
+}
 function mountManualSeries(slideEl, metric, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderManualSeries(host, metric, slug); }
 async function renderManualSeries(host, metric, slug){
   const CFG=MANUAL_SERIES[metric];
@@ -1761,6 +1824,7 @@ async function renderManualSeries(host, metric, slug){
   /* page 31 gets the 3-series combo where the median columns exist (Melbourne);
      everywhere else it falls through to the single-series chart below */
   if(metric==='house_price_expectations' && await renderHpeCombo(host, slug)) return;
+  if(metric==='business_confidence' && await renderBizCombo(host, slug)) return;
   const D=await getManualSeries(metric, slug);
   if(!D){   /* explicit, honest empty state — never a blank axis in a client deck */
     host.innerHTML='<div class="bss-chartload" style="text-align:center;line-height:1.6">'
