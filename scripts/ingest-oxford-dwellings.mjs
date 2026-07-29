@@ -157,4 +157,15 @@ for (let i = 0; i < out.length; i += 500) {
   done += chunk.length;
   process.stdout.write('\r  upserted ' + done + '/' + out.length);
 }
+/* Data Forge card freshness (the 'dwellings' data point) */
+{
+  const now = new Date().toISOString();
+  const { error } = await sb.from('forge_data_status').upsert({
+    data_key: 'dwellings', label: 'Total Dwellings (Oxford)',
+    source: 'Oxford Economics — dwelling pipeline export (ALL DATA sheet)',
+    status: 'ok', message: slugs.length + ' markets · ' + out.length + ' rows · ' + YEARS[0].year + '–' + YEARS[YEARS.length - 1].year,
+    last_run_at: now, last_ok_at: now, updated_at: now,
+  }, { onConflict: 'data_key' });
+  if (error) console.warn('  (forge_data_status not updated? ' + error.message + ')');
+}
 console.log('\n✓ Oxford dwelling data written for ' + slugs.length + ' markets.');
