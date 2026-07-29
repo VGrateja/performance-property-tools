@@ -38,19 +38,29 @@ const UA = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKi
 const fetchRetry = async (url, opts, tries = 3) => { let err; for (let a = 1; a <= tries; a++) { try { return await fetch(url, opts); } catch (e) { err = e; if (a < tries) await new Promise(s => setTimeout(s, 2000 * a)); } } throw err; };
 const IVI_PAGE = 'https://www.jobsandskills.gov.au/data/internet-vacancy-index';
 
-// slug -> exact IVI-region name in the "Indexed"/"region" column (Data Dump JCI tab)
+// slug -> exact IVI-region name in the "Indexed"/"region" column (Data Dump JCI tab).
+// THREE entries were corrected 2026-07-29 (Van's call) — the Data Dump tab had them
+// pointing at the wrong IVI region, which put another area's job ads on those decks
+// and on their Online Report Job Creation page:
+//   tamworth   Gosford & Central Coast      → Tamworth and North West NSW (exists by name)
+//   ipswich    Toowoomba and South West QLD → Brisbane  (Ipswich is in Greater Brisbane)
+//   rockingham South West WA                → Perth     (Rockingham is Perth metro)
+// mandurah DELIBERATELY stays on South West WA — Peel sits inside Greater Perth on the
+// ABS boundary but reads as South West in practice, so it was left alone.
+// JSA publishes 37 IVI regions for our 36 markets, so sharing is normal and expected
+// (Albury/Wagga/Wodonga/Mildura all read "Riverina & Murray").
 const CITY_MAP = {
   sydney: 'Sydney', melbourne: 'Melbourne', brisbane: 'Brisbane', perth: 'Perth', adelaide: 'Adelaide',
   canberra: 'Canberra & ACT', hobart: 'Hobart & Southeast Tasmania', darwin: 'Darwin',
-  mackay: 'Central Queensland', bundaberg: 'Central Queensland', ipswich: 'Toowoomba and South West QLD',
+  mackay: 'Central Queensland', bundaberg: 'Central Queensland', ipswich: 'Brisbane',
   rockhampton: 'Central Queensland', gladstone: 'Central Queensland', cairns: 'Far North Queensland',
   townsville: 'Far North Queensland', 'sunshine-coast': 'Sunshine Coast', toowoomba: 'Toowoomba and South West QLD',
   'gold-coast': 'Gold Coast', albury: 'Riverina & Murray', 'central-coast': 'Gosford & Central Coast',
   'coffs-harbour': 'NSW North Coast', orange: 'Blue Mountains, Bathurst & Central West NSW',
-  'port-macquarie': 'NSW North Coast', newcastle: 'Newcastle & Hunter', tamworth: 'Gosford & Central Coast',
+  'port-macquarie': 'NSW North Coast', newcastle: 'Newcastle & Hunter', tamworth: 'Tamworth and North West NSW',
   'wagga-wagga': 'Riverina & Murray', wollongong: 'Illawarra & South Coast', ballarat: 'Ballarat & Central Highlands',
   bendigo: 'Bendigo & High Country', geelong: 'Geelong & Surf Coast', wodonga: 'Riverina & Murray',
-  mildura: 'Riverina & Murray', mandurah: 'South West WA', rockingham: 'South West WA', bunbury: 'South West WA',
+  mildura: 'Riverina & Murray', mandurah: 'South West WA', rockingham: 'Perth', bunbury: 'South West WA',
   launceston: 'Launceston and Northeast Tasmania',
 };
 
