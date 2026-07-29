@@ -1676,12 +1676,91 @@ async function getManualSeries(metric, slug){
   }catch(e){}
   _msCache[ck]=out||null; return _msCache[ck];
 }
+/* ── House Price Expectation (slide 31) — Van's sample is THREE series: the
+      VIC House Price Expectation Index (black, left index axis) against the
+      monthly Melbourne median house price as tracked from Cotality (teal) and
+      PriceFinder (grey) on a right $ axis. The two median series stop before
+      the index does (CL Mar-2026, PF May-2026) and the index has published
+      gaps — both are real and visible, so nulls are connected, not filled.
+      The two axes are given the SAME interval count so their gridlines align
+      (left 120-180 by 20, right $700k-$1.0m by $100k on today's data — the
+      sample's exact axes, derived not hard-coded). Only Melbourne has the
+      median columns, so other decks fall back to the index-only chart. ── */
+let _hpeCache={};
+async function getHpeCombo(slug){
+  if(_hpeCache[slug]!==undefined) return _hpeCache[slug];
+  let out=null;
+  try{
+    const idx=await getManualSeries('house_price_expectations', slug);
+    if(idx&&idx.freq==='M'){
+      const {data}=await window.sb.from('rdp_raw_series').select('metric,period,value')
+        .eq('region_slug',slug).eq('freq','M').in('metric',['mhp_cl','mhp_pf']).order('period');
+      const CL={},PF={};
+      (data||[]).forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return;
+        (r.metric==='mhp_cl'?CL:PF)[String(r.period).slice(0,7)]=v; });
+      if(Object.keys(CL).length||Object.keys(PF).length){
+        /* union of periods so a median month with no index still shows */
+        const ps=new Set(idx.periods); Object.keys(CL).forEach(p=>ps.add(p)); Object.keys(PF).forEach(p=>ps.add(p));
+        const periods=[...ps].sort();
+        const im={}; idx.periods.forEach((p,i)=>im[p]=idx.vals[i]);
+        out={ periods, idx:periods.map(p=>im[p]??null), cl:periods.map(p=>CL[p]??null), pf:periods.map(p=>PF[p]??null), scope:idx.scope };
+      }
+    }
+  }catch(e){}
+  _hpeCache[slug]=out||null; return _hpeCache[slug];
+}
+async function renderHpeCombo(host, slug){
+  const D=await getHpeCombo(slug);
+  if(!D) return false;                                    // no median columns → caller falls back
+  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const lab=p=>{ const [y,m]=p.split('-'); return MON[+m-1]+' '+y; };
+  const money=v=>'$'+Number(v).toLocaleString();
+  const iv=D.idx.filter(v=>v!=null), mv=D.cl.concat(D.pf).filter(v=>v!=null);
+  /* left axis first, then give the right axis the SAME interval count so the
+     gridlines line up instead of drifting */
+  const LN=[5,10,20,25,50,100], RN=[10000,20000,25000,50000,100000,200000,250000,500000];
+  const lStep=LN.find(n=>(Math.max.apply(null,iv)-Math.min.apply(null,iv))/n<=4)||LN[LN.length-1];
+  const lMin=Math.floor(Math.min.apply(null,iv)/lStep)*lStep, lMax=Math.ceil(Math.max.apply(null,iv)/lStep)*lStep;
+  const n=Math.max(1,Math.round((lMax-lMin)/lStep));
+  const rLo=Math.min.apply(null,mv), rHi=Math.max.apply(null,mv);
+  let rStep=RN.find(s=>{ const lo=Math.floor(rLo/s)*s; return lo+n*s>=rHi; })||RN[RN.length-1];
+  const rMin=Math.floor(rLo/rStep)*rStep, rMax=rMin+n*rStep;
+  const S=[
+    { name:(D.scope?D.scope+' ':'')+'House Price Expectation Index', data:D.idx, col:'#171B24', w:2.6, ax:0 },
+    { name:'MHP (CL)', data:D.cl, col:'#3ec8d8', w:2.2, ax:1 },
+    { name:'MHP (PF)', data:D.pf, col:'#c6c6c6', w:2.2, ax:1 },
+  ];
+  _drawEChart(host, { backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', confine:true,
+      formatter:params=>'<b>'+lab(params[0].axisValue.replace(' ','-'))+'</b><br>'+params.filter(p=>p.value!=null)
+        .map(p=>p.marker+p.seriesName+': <b>'+(p.seriesName.indexOf('MHP')>=0?money(p.value):Number(p.value).toFixed(1))+'</b>').join('<br>') },
+    legend:{ top:2, left:'center', itemWidth:14, itemHeight:3, itemGap:18, textStyle:{fontSize:9.5,color:'#222'},
+      data:S.map(s=>({name:s.name,icon:'path://M0,0h24v3h-24z'})) },
+    grid:{left:56,right:82,top:38,bottom:64},
+    xAxis:{ type:'category', data:D.periods.map(lab), boundaryGap:false,
+      axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90},
+      axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:[
+      { type:'value', min:lMin, max:lMax, interval:lStep, axisLabel:{color:'#444',fontSize:9.5},
+        splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}}, axisLine:{show:false}, axisTick:{show:false} },
+      { type:'value', min:rMin, max:rMax, interval:rStep, axisLabel:{color:'#444',fontSize:9.5,formatter:money},
+        splitLine:{show:false}, axisLine:{show:false}, axisTick:{show:false} } ],
+    series:S.map(s=>({ name:s.name, type:'line', yAxisIndex:s.ax, data:s.data, smooth:true, showSymbol:false,
+      connectNulls:true, lineStyle:{color:s.col,width:s.w}, itemStyle:{color:s.col} })) });
+  _bssSlideLines(host, [
+    { text:'Source: Cotality (formerly Corelogic); PriceFinder; Westpac IQ', x:36, y:692, size:12, color:'#7a7f87', italic:true },
+  ]);
+  return true;
+}
 function mountManualSeries(slideEl, metric, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderManualSeries(host, metric, slug); }
 async function renderManualSeries(host, metric, slug){
   const CFG=MANUAL_SERIES[metric];
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
   await whenChartsReady();
   if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  /* page 31 gets the 3-series combo where the median columns exist (Melbourne);
+     everywhere else it falls through to the single-series chart below */
+  if(metric==='house_price_expectations' && await renderHpeCombo(host, slug)) return;
   const D=await getManualSeries(metric, slug);
   if(!D){   /* explicit, honest empty state — never a blank axis in a client deck */
     host.innerHTML='<div class="bss-chartload" style="text-align:center;line-height:1.6">'

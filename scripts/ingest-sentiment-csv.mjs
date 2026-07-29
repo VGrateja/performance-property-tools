@@ -124,22 +124,39 @@ const out = [];
       na++;
     }
   }
-  /* (b) monthly block — "Month, VIC House Price Expectation Index, …" */
+  /* (b) monthly block — "Month, VIC House Price Expectation Index, MHP (CL), MHP (PF)".
+         The two MHP columns are the monthly Melbourne median house price as
+         tracked from Cotality and from PriceFinder; B/S page 31 plots them
+         against the index on a second ($) axis, so they ARE needed — they're
+         stored under region 'melbourne' (a city median) while the index is
+         st-vic (a state survey). Both run out before the index does: CL stops
+         Mar-2026, PF May-2026, and that short tail is visible on the slide. */
   const mi = lines.findIndex(l => /^Month,/i.test(l) && /VIC House Price Expectation Index/i.test(l));
-  let nm = 0, gaps = 0;
+  let nm = 0, gaps = 0, nmhp = 0;
   if (mi >= 0) {
-    const col = splitCsv(lines[mi]).findIndex(h => /VIC House Price Expectation Index/i.test(h));
+    const hdr = splitCsv(lines[mi]);
+    const col = hdr.findIndex(h => /VIC House Price Expectation Index/i.test(h));
+    const MHP = [
+      { i: hdr.findIndex(h => /^MHP\s*\(CL\)$/i.test(h)), metric: 'mhp_cl', source: 'corelogic' },
+      { i: hdr.findIndex(h => /^MHP\s*\(PF\)$/i.test(h)), metric: 'mhp_pf', source: 'pricefinder' },
+    ].filter(m => m.i >= 0);
     for (const line of lines.slice(mi + 1)) {
       const c = splitCsv(line); const period = monthCell(c[0]);
       if (!period) continue;
       const v = num(c[col]);
-      if (v == null) { gaps++; continue; }                       // the index isn't published every month
-      out.push({ source: 'wmi', region_slug: 'st-vic', metric: 'house_price_expectations', freq: 'M', period, value: v });
-      nm++;
+      if (v == null) gaps++;                                     // the index isn't published every month
+      else { out.push({ source: 'wmi', region_slug: 'st-vic', metric: 'house_price_expectations', freq: 'M', period, value: v }); nm++; }
+      for (const m of MHP) {
+        const mv = num(c[m.i]);
+        if (mv == null) continue;                                // series ends before the index does
+        out.push({ source: m.source, region_slug: 'melbourne', metric: m.metric, freq: 'M', period, value: mv });
+        nmhp++;
+      }
     }
   }
   console.log('Westpac–MI HPEI      → ' + nm + ' monthly rows (st-vic)' + (gaps ? ', ' + gaps + ' month(s) with no published index' : '')
     + ' + ' + na + ' annual rows (australia)');
+  console.log('Monthly MHP CL/PF    → ' + nmhp + ' rows (melbourne)');
 }
 
 /* ── report ───────────────────────────────────────────────────────────── */
