@@ -1,13 +1,15 @@
 // =============================================================================
 // ingest-abs-unemployment.mjs — Data Forge: UNEMPLOYMENT (national + states +
-// capitals + regionals), UNDEREMPLOYMENT (national) and UNDERUTILISATION
+// capitals + regionals), UNDEREMPLOYMENT (national + states) and UNDERUTILISATION
 // (national + states). ABS, Original.
 //
 // SOURCES (per the user's Research Guides):
 //   • National unemployment + states  → ABS Data API, dataflow LF, MEASURE M13
 //     (Unemployment rate), SEX 3, AGE 1599, TSEST 10 (ORIGINAL), FREQ M.
-//   • National underemployment        → ABS Data API, dataflow LF_UNDER,
+//   • Underemployment (nat + states)  → ABS Data API, dataflow LF_UNDER,
 //     PARM_ITEM M23 (Underemployment rate, proportion of labour force), Original.
+//     State series run back to 1978 too — B/S page 33 plots its state's line.
+//     (Probing gotcha: passing startPeriod makes a state series LOOK truncated.)
 //   • Underutilisation (nat + states) → same dataflow, PARM_ITEM M24. This is the
 //     guide's "Table X28. Underutilised persons by State and Territory and Sex".
 //     ABS publishes NO capital-city underutilisation — X28 is state-level, X29 is
@@ -144,7 +146,12 @@ const rows = []; const warn = [];
 try {
   // ── API: national + states unemployment, national underemployment ──
   const unemp = await fetchAPI('LF', 'M13', Object.keys(STATE).join('+'), STATE);
-  const under = await fetchAPI('LF_UNDER', 'M23', 'AUS', { AUS: 'australia' });
+  /* Underemployment: national AND the 8 states. ABS serves M23 by state back to
+     1978-02 (581 monthly obs) — the same depth as the national series — so the
+     B/S Underutilisation slide can plot its state's underemployment line.
+     (Careful when probing this by hand: passing startPeriod makes it LOOK like
+     the state series only begins there.) */
+  const under = await fetchAPI('LF_UNDER', 'M23', Object.keys(STATE).join('+'), STATE);
   // Underutilisation rate (M24 = unemployment + underemployment). ABS publishes it
   // for the nation and the 8 states ONLY — Table X28 is "by State and Territory and
   // Sex", X29 is by age, and the GCCSA cube (6291002) carries no underutilisation
@@ -188,6 +195,7 @@ function tier(title, keys) {
 console.log(`\nABS Original — ${rows.length} annual rows, latest year ${latestYear}.`);
 tier('NATIONAL + STATES + UNDEREMP', [['unemployment','australia'],['underemployment','australia'],...Object.keys(STATE).filter(k=>k!=='AUS').map(k=>['unemployment',STATE[k]])]);
 tier('UNDERUTILISATION (national + states)', [['underutilisation','australia'],...Object.keys(STATE).filter(k=>k!=='AUS').map(k=>['underutilisation',STATE[k]])]);
+tier('UNDEREMPLOYMENT (national + states)', [['underemployment','australia'],...Object.keys(STATE).filter(k=>k!=='AUS').map(k=>['underemployment',STATE[k]])]);
 tier('CAPITALS', [...CAPITALS,'darwin'].map(c=>['unemployment',c]));
 tier('REGIONALS (new MRM1 basis — expected to differ from old DB)', Object.keys(REGION_SA4).map(r=>['unemployment',r]));
 if (warn.length) console.log('\n⚠ ', warn.join('\n   '));
