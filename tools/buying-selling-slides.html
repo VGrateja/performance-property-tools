@@ -1567,6 +1567,65 @@ async function renderHousingFinance(host, slug){
   host.style.border='1px solid #63666A';   /* the sample frames this chart panel */
   _drawEChart(host, option);
 }
+/* ── Business Finance — ABS Lending Indicators, new loan commitments to SMALL
+      businesses (fixed term loans), by the two purposes the data guide names:
+      Construction and Purchase of property. STATE-level (the guide's series are
+      Victoria), so every deck shows its own state; regionals share their
+      capital's state series. Quarterly from 2019-Q3 — a short history, so the
+      axis labels every quarter rather than thinning them. ── */
+let _bfCache={};
+async function getBusFinance(slug){
+  const m=DB.meta[slug]||{}, st=m.state?('st-'+String(m.state).toLowerCase()):null;
+  if(!st) return null;
+  if(_bfCache[st]!==undefined) return _bfCache[st];
+  let out=null;
+  try{
+    const {data}=await window.sb.from('rdp_raw_series').select('metric,period,value')
+      .eq('region_slug',st).eq('freq','Q').in('metric',['bus_fin_construction','bus_fin_property']).order('period');
+    if(data&&data.length){
+      const C={},P={},ps=new Set();
+      data.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return; const p=String(r.period).slice(0,7); ps.add(p);
+        (r.metric==='bus_fin_construction'?C:P)[p]=v; });
+      const periods=[...ps].sort();
+      if(periods.length) out={ periods:periods, C:C, P:P, state:String(m.state).toUpperCase() };
+    }
+  }catch(e){}
+  _bfCache[st]=out||null; return _bfCache[st];
+}
+function mountBusFinance(slideEl, slug){ const host=slideEl.querySelector('.bss-chart'); if(host) renderBusFinance(host, slug); }
+async function renderBusFinance(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const D=await getBusFinance(slug);
+  if(!D){ host.innerHTML='<div class="bss-chartload">No business-finance data for this state.</div>'; return; }
+  const qLab=p=>{ const [y,mo]=p.split('-'); return 'Q'+(Math.floor((+mo-1)/3)+1)+' '+y.slice(-2); };
+  const CON=D.periods.map(p=>D.C[p]!=null?Math.round(D.C[p]*10)/10:null);
+  const PRO=D.periods.map(p=>D.P[p]!=null?Math.round(D.P[p]*10)/10:null);
+  const money=v=>v==null?'—':'$'+Number(v).toLocaleString()+'m';
+  const maxV=Math.max.apply(null,CON.concat(PRO).filter(v=>v!=null));
+  const step=Math.max(200,Math.ceil(maxV/6/200)*200), yTop=Math.ceil(maxV*1.06/step)*step;
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', confine:true,
+      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+money(p.value)+'</b>').join('<br>') },
+    legend:{ top:4, left:'center', itemWidth:9, itemHeight:9, itemGap:18, textStyle:{fontSize:10,color:'#222'},
+      data:[{name:'Purchase of property',icon:'path://M0,0h24v4h-24z'},{name:'Construction',icon:'path://M0,0h24v4h-24z'}] },
+    grid:{left:72,right:26,top:44,bottom:56},
+    xAxis:{ type:'category', data:D.periods.map(qLab), boundaryGap:false,
+      axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:60}, axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}},
+      axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', min:0, max:yTop, interval:step,
+      axisLabel:{color:'#444',fontSize:9,formatter:v=>'$'+Number(v).toLocaleString()}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+      axisLine:{show:true,lineStyle:{color:'#999'}}, axisTick:{show:true,lineStyle:{color:'#999'}},
+      name:'in $ Millions', nameLocation:'middle', nameGap:56, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
+    series:[
+      { name:'Purchase of property', type:'line', data:PRO, smooth:true, showSymbol:false, lineStyle:{color:'#00A0B4',width:2.8}, itemStyle:{color:'#00A0B4'} },
+      { name:'Construction', type:'line', data:CON, smooth:true, showSymbol:false, lineStyle:{color:'#171B24',width:2.6}, itemStyle:{color:'#171B24'} } ],
+    graphic:[{ type:'text', left:2, bottom:0, silent:true,
+      style:{ text:'Source: ABS Lending Indicators — new loan commitments, small businesses, fixed term loans ('+D.state+')',
+        fontSize:8.5, fill:'#63666A', fontFamily:'Montserrat, sans-serif' } }] };
+  _drawEChart(host, option);
+}
 /* ── Job Ads — JSA Internet Vacancy Index (metric job_creation_index, monthly,
       36 markets, 2010-05→). Same series the Online Report's Job Creation page
       plots, so the presentation matches it deliberately: single teal line,
@@ -1793,9 +1852,9 @@ function mountRvdEmbed(slideEl){
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null, JAINFO=null;   /* JAINFO = JSA job-ads index figures for the {jobads_*} tokens; DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null, JAINFO=null, BFINFO=null;   /* BFINFO = ABS business-finance figures for the {bizfin_*} tokens; JAINFO = JSA job-ads index figures for the {jobads_*} tokens; DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null; JAINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null; JAINFO=null; BFINFO=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
     if(rows&&rows.length){ const latest=rows[rows.length-1], win=rows.filter(r=>r.y>latest.y-20);
@@ -1804,6 +1863,11 @@ async function loadEntryAndPrices(){
     if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
   try{ VRINFO=await getVRAdjusted(state.slug); }catch(e){}   /* same figures as the slide-5 cards (cached) */
   try{ POPINFO=forecastPop(state.slug,3); }catch(e){}   /* same figures as the pop-forecast chart */
+  try{ const B=await getBusFinance(state.slug);   /* same series as the Business Finance chart (cached) */
+    if(B&&B.periods.length){ const p=B.periods[B.periods.length-1], y=B.periods.length>4?B.periods[B.periods.length-5]:null;
+      const ch=(m,k)=>(y&&B[k][y])?(B[k][p]/B[k][y]-1):null;
+      BFINFO={ quarter:p, state:B.state, construction:B.C[p], property:B.P[p],
+        conYoy:ch('con','C'), proYoy:ch('pro','P') }; } }catch(e){}
   try{ const J=await getJobAds(state.slug);   /* same series as the Job Ads chart (cached) */
     if(J&&J.vals.length){ const n=J.vals.length-1, yoy=(n>=12&&J.vals[n-12])?(J.vals[n]/J.vals[n-12]-1):null;
       JAINFO={ index:J.vals[n], month:J.months[n], yoy:yoy,
@@ -1979,6 +2043,8 @@ async function getVRAdjusted(slug){
 }
 const _vrPct=v=>v==null?'—':(v*100).toFixed(2)+'%', _vrInt=v=>v==null?'—':Math.round(v).toLocaleString();
 const _dwInt=v=>(v==null||!isFinite(v))?'—':Math.round(v).toLocaleString();
+const _bfM=v=>(v==null||!isFinite(v))?'—':'$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:1})+'m';
+const _bfPc=v=>(v==null||!isFinite(v))?'—':((v>=0?'+':'')+(v*100).toFixed(1)+'%');
 async function mountVRForecast(slideEl, slug){
   const host=slideEl.querySelector('.bss-vrbody'); if(!host) return;
   host.innerHTML='<div class="bss-chartload">Loading…</div>';
@@ -2324,7 +2390,7 @@ const SLIDE_DEFS = [
   { key:'f15', t:'Sensitivity — Units', render: c=>sensSlideBare(), mount:(el,c)=>mountSens(el,c,'u') },
   { key:'div_conf', t:'CONFIDENCE (divider)', render: c=>'' },
   { key:'stub_jobads', t:'Job Ads', render: c=>lightChartSlide(72), mount:(el,c)=>mountJobAds(el,c.slug) },   /* keeps the stub_jobads key so any overlays authored on the stub follow */
-  { key:'stub_bizfin', t:'Business Finance', render: c=>stubSlide('Business Finance') },
+  { key:'stub_bizfin', t:'Business Finance', render: c=>lightChartSlide(72), mount:(el,c)=>mountBusFinance(el,c.slug) },   /* keeps the stub_bizfin key so any overlays authored on the stub follow */
   { key:'housing_fin', t:'Housing Finance', render: c=>lightChartSlide(72), mount:(el,c)=>mountHousingFinance(el,c.slug) },
   { key:'stub_cci', t:'Consumer Confidence', render: c=>stubSlide('Consumer Confidence') },
   { key:'stub_hpei', t:'House Price Expectation (VIC)', render: c=>stubSlide('House Price Expectation (VIC)') },
@@ -2691,6 +2757,11 @@ function _tokenMap(){
         :P2IINFO.uNear?'is just below its record high'
         :'is lower than it was in '+P2IINFO.uYear)
       : 'is shown above',
+    /* live business finance (ABS Lending Indicators — same series as the chart) */
+    bizfin_quarter:(BFINFO&&BFINFO.quarter)?('Q'+(Math.floor((+BFINFO.quarter.slice(5,7)-1)/3)+1)+' '+BFINFO.quarter.slice(0,4)):'—',
+    bizfin_state:(BFINFO&&BFINFO.state)?BFINFO.state:'—',
+    bizfin_construction:_bfM(BFINFO&&BFINFO.construction), bizfin_property:_bfM(BFINFO&&BFINFO.property),
+    bizfin_construction_yoy:_bfPc(BFINFO&&BFINFO.conYoy), bizfin_property_yoy:_bfPc(BFINFO&&BFINFO.proYoy),
     /* live job ads (JSA Internet Vacancy Index — same series as the Job Ads chart) */
     jobads_index:(JAINFO&&JAINFO.index!=null)?JAINFO.index.toFixed(1):'—',
     jobads_month:(JAINFO&&JAINFO.month)?(MONTHS[+JAINFO.month.slice(5,7)-1]+' '+JAINFO.month.slice(0,4)):'—',
@@ -2917,7 +2988,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Job ads</b> · {jobads_index} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions} {dw_fc_year} {dw_fc_completions} {dw_fc_change}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_index} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions} {dw_fc_year} {dw_fc_completions} {dw_fc_change}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
