@@ -2445,6 +2445,48 @@ function _mountChart(pageId, option) {
      always init fresh. */
   try { const prev = echarts.getInstanceByDom(canvas); if (prev) prev.dispose(); } catch (_) {}
   canvas.innerHTML = '';
+  /* Trim the DEAD TAIL of a category axis (Van 2026-07-30: "all graphs have
+     2030 for x axis but the graphs don't have data up to that point"). The
+     feeds pad their year lists out to a fixed 2030 horizon, and a couple of
+     monthly series lag their axis by a few months, so most graphs carried
+     labelled ticks with nothing plotted — dead space on the right.
+     A category is dropped only when EVERY series aligned to this axis is
+     empty there, so nothing real is ever hidden and a chart that genuinely
+     reaches 2030 (Forecasted Population, the FY budget chart) keeps its full
+     axis. Series shorter than the axis count as empty out there; series with
+     coordinate-pair data or their own x-axis are left out of the decision,
+     which makes the guard fail SAFE (no trim) on anything unusual. Every
+     markLine/markArea in these reports is anchored to a historical year, well
+     inside the kept range. */
+  (function trimDeadTail() {
+    const axes = Array.isArray(option.xAxis) ? option.xAxis : (option.xAxis ? [option.xAxis] : []);
+    if (axes.length !== 1) return;                 /* dual-x chart — leave it alone */
+    const ax = axes[0];
+    if (!ax || ax.type !== 'category' || !Array.isArray(ax.data) || !ax.data.length) return;
+    const n = ax.data.length;
+    const all = Array.isArray(option.series) ? option.series : [];
+    const valAt = (s, i) => { const v = s.data[i]; return (v && typeof v === 'object' && !Array.isArray(v)) ? v.value : v; };
+    /* index-aligned series only: array data no longer than the axis, on x-axis 0 */
+    const aligned = all.filter(s => s && Array.isArray(s.data) && s.data.length <= n && !(s.xAxisIndex > 0));
+    if (!aligned.length) return;
+    /* A flat reference line — one distinct value the whole way across, e.g. the
+       Population page's "Long-Term Average" — is drawn over the padded years as
+       well, so it must NOT be what holds the axis open. Judge the tail on the
+       SHAPED series and truncate the flat ones to match. If every series is flat
+       we can't tell padding from data, so bail (fail safe). */
+    const shaped = aligned.filter(s => {
+      const vals = [];
+      for (let i = 0; i < s.data.length; i++) { const v = valAt(s, i); if (v != null && v !== '') vals.push(String(v)); }
+      return new Set(vals).size > 1;
+    });
+    if (!shaped.length) return;
+    let last = n - 1;
+    while (last >= 0 && shaped.every(s => { const v = valAt(s, last); return v == null || v === ''; })) last--;
+    if (last < 0 || last === n - 1) return;         /* all empty, or nothing to trim */
+    const keep = last + 1;
+    ax.data = ax.data.slice(0, keep);
+    aligned.forEach(s => { if (s.data.length > keep) s.data = s.data.slice(0, keep); });
+  })();
   /* Match the regional reports' line markers exactly so the legend icon is
      identical (a line with a filled circle, not the ECharts default hollow
      marker): symbol:'circle' + symbolSize:8, symbols hidden on the line

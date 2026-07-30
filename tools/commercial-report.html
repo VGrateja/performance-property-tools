@@ -2241,6 +2241,39 @@ function _mountChart(pageId, option) {
      always init fresh. */
   try { const prev = echarts.getInstanceByDom(canvas); if (prev) prev.dispose(); } catch (_) {}
   canvas.innerHTML = '';
+  /* Trim the DEAD TAIL of a category axis — kept identical to national-report's
+     _mountChart so the two don't drift. Commercial's feeds don't pad their axes
+     today (checked 2026-07-30: 14 charts, 0 dead tails) so this is currently a
+     no-op here; it's in place so the same feed padding can't reintroduce the
+     National defect. A category is dropped only when EVERY series aligned to
+     this axis is empty there, so nothing real is ever hidden. */
+  (function trimDeadTail() {
+    const axes = Array.isArray(option.xAxis) ? option.xAxis : (option.xAxis ? [option.xAxis] : []);
+    if (axes.length !== 1) return;                 /* dual-x chart — leave it alone */
+    const ax = axes[0];
+    if (!ax || ax.type !== 'category' || !Array.isArray(ax.data) || !ax.data.length) return;
+    const n = ax.data.length;
+    const all = Array.isArray(option.series) ? option.series : [];
+    const valAt = (s, i) => { const v = s.data[i]; return (v && typeof v === 'object' && !Array.isArray(v)) ? v.value : v; };
+    /* index-aligned series only: array data no longer than the axis, on x-axis 0 */
+    const aligned = all.filter(s => s && Array.isArray(s.data) && s.data.length <= n && !(s.xAxisIndex > 0));
+    if (!aligned.length) return;
+    /* A flat reference line (one distinct value the whole way across) is drawn
+       over padded years too, so it must not hold the axis open — judge on the
+       SHAPED series and truncate the flat ones to match. All flat ⇒ bail. */
+    const shaped = aligned.filter(s => {
+      const vals = [];
+      for (let i = 0; i < s.data.length; i++) { const v = valAt(s, i); if (v != null && v !== '') vals.push(String(v)); }
+      return new Set(vals).size > 1;
+    });
+    if (!shaped.length) return;
+    let last = n - 1;
+    while (last >= 0 && shaped.every(s => { const v = valAt(s, last); return v == null || v === ''; })) last--;
+    if (last < 0 || last === n - 1) return;         /* all empty, or nothing to trim */
+    const keep = last + 1;
+    ax.data = ax.data.slice(0, keep);
+    aligned.forEach(s => { if (s.data.length > keep) s.data = s.data.slice(0, keep); });
+  })();
   /* Match the regional reports' line markers exactly so the legend icon is
      identical (a line with a filled circle, not the ECharts default hollow
      marker): symbol:'circle' + symbolSize:8, symbols hidden on the line
