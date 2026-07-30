@@ -10,8 +10,12 @@
 <!-- OS chrome -->
 <script src="../shared/os-chrome.js?v=f3c57c2c"></script>
 <link rel="stylesheet" href="../shared/os-theme.css?v=a0feabf6"/>
-<!-- SheetJS: XLSX export, all client-side -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- XLSX export, all client-side. xlsx-js-style is a drop-in fork of SheetJS
+     0.18.5 (identical XLSX.utils / writeFile API, same cell.z number formats)
+     that ALSO writes cell.s — fills, fonts and borders. Plain SheetJS community
+     accepts cell.s and silently drops it on write (styling is a Pro feature),
+     so the coloured header groups below need this build. -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <style>
 /* ═══════════════════════════════════════════════════════════════════════════
    DATA EXTRACTOR (under Data Forge) — pick any mix of capitals / LGAs / suburbs
@@ -209,6 +213,51 @@ function catOf(code, category){
   if (/(rate|bond|deposit|inflation|cpi|retail|bus_inv|approvals|commenced|building|dwellings)/.test(code)) return 'Economy & rates';   /* dwellings_* = the Oxford pipeline; sits with building approvals */
   return 'Other';
 }
+
+/* ── category order + header colours ────────────────────────────────────────
+   Related data points sit together in the sheet, coloured by family so a wide
+   extract can be read at a glance (Van's sample layout, 2026-07-31). Colours
+   are BRAND accents, not the raw cyan/magenta of the sample — his cyan is
+   Bright Blue #00C4F5 and his magenta is Purple #C445C4, so the grouping reads
+   the same without inventing hexes. `ink` is chosen per fill for contrast.
+
+   TWO category vocabularies are live and both must be handled: 27 catalogue
+   metrics carry a short `category` ('price','rent','macro'…), and 90 have NO
+   category and fall through to catOf()'s regex fallbacks, which return long
+   labels ('Housing market','Labour market'…). Keying only one set silently
+   ties every rank and the sort becomes a no-op. */
+const CAT_SEQ = [
+  /* housing — 'Housing market' (the catOf fallback, e.g. ranking_h) shares the
+     blue fill with price/sales/market, so it sits with them and the coloured
+     block stays contiguous instead of blue-teal-blue */
+  /* housing */      'price', 'sales', 'market', 'Housing market', 'rent', 'supply',
+  /* people */       'demographics', 'Demographics & finance', 'Population projection', 'Population pyramid',
+  /* rates */        'macro', 'Economy & rates',
+  /* labour */       'economy', 'Labour market',
+  /* industry */     'Industry value-added', 'Commodities',
+  /* suburb + rest */'Suburb metrics', 'Other',
+];
+function catRank(c){ const i = CAT_SEQ.indexOf(c); return i < 0 ? CAT_SEQ.length : i; }
+/* One fill per SUPER-group, so a wide sheet reads as coloured blocks rather
+   than a rainbow — the same way the sample puts prices and sale counts in one
+   colour and the rate columns in another. */
+const F_HOUSE = { bg:'00C4F5', ink:'171B24' };   /* Bright Blue */
+const F_RENT  = { bg:'00A0B4', ink:'FFFFFF' };   /* Teal */
+const F_PEOPLE= { bg:'54A6DE', ink:'171B24' };   /* Celestial Blue */
+const F_RATES = { bg:'C445C4', ink:'FFFFFF' };   /* Purple */
+const F_LABOUR= { bg:'71B357', ink:'171B24' };   /* Green */
+const F_IND   = { bg:'FFA91F', ink:'171B24' };   /* Yellow */
+const CAT_FILL = {
+  'price': F_HOUSE, 'sales': F_HOUSE, 'market': F_HOUSE, 'Housing market': F_HOUSE, 'Suburb metrics': F_HOUSE,
+  'rent': F_RENT, 'supply': F_RENT,
+  'demographics': F_PEOPLE, 'Demographics & finance': F_PEOPLE,
+  'Population projection': F_PEOPLE, 'Population pyramid': F_PEOPLE,
+  'macro': F_RATES, 'Economy & rates': F_RATES,
+  'economy': F_LABOUR, 'Labour market': F_LABOUR,
+  'Industry value-added': F_IND, 'Commodities': F_IND,
+  'Other': { bg:'63666A', ink:'FFFFFF' },        /* Dark Gray */
+};
+const AXIS_FILL = { bg:'171B24', ink:'FFFFFF' };             /* Dark Teal, like the sample's black Year column */
 
 /* ── recording frequency (Monthly / Quarterly / Yearly separators) ── */
 const FREQ_ORDER = ['monthly','quarterly','yearly'];
@@ -444,7 +493,11 @@ function assembleWide(blocks){
   list.forEach((b, bi) => {
     if (bi > 0) { header.push(''); meta.push({ type:'spacer' }); }
     header.push(FREQ_AXIS[b.freq]); meta.push({ type:'axis' });
-    b.cols.forEach(c => { header.push(c.label); meta.push({ type:'data', kind:c.kind }); });
+    b.cols.forEach((c, i) => { header.push(c.label);
+      /* `cat` drives the header colour on export; `newCat` marks the first
+         column of each family so a divider can be drawn on its left edge. */
+      meta.push({ type:'data', kind:c.kind, cat:c.cat, newCat: i === 0 || c.cat !== b.cols[i-1].cat });
+    });
     b.periods = [...b.periods].sort();
   });
   const maxLen = Math.max(0, ...list.map(b => b.periods.length));
@@ -468,9 +521,16 @@ function buildRegionWide(slug, series){
   [...state.rMetrics].forEach(code => {
     const mc = state.metrics.find(m => m.code === code) || {};
     const b = blocks[freqOf(mc.freqs)];
-    b.cols.push({ key:code, label:prettyMetric(code, mc.label), kind:regionKind(code, mc.unit) });
+    b.cols.push({ key:code, label:prettyMetric(code, mc.label), kind:regionKind(code, mc.unit),
+                  cat: catOf(code, mc.category) });
     const ms = (series[slug]||{})[code];
     if (ms) Object.keys(ms.data).forEach(p => { b.periods.add(p); (b.cell[p] = b.cell[p] || {})[code] = ms.data[p]; });
+  });
+  /* Sit related data points next to each other (Van 2026-07-31) rather than in
+     tick order — group by the same category the picker uses, ordered by
+     CAT_SEQ, and keep tick order inside a category (sort is stable). */
+  Object.keys(blocks).forEach(fr => {
+    blocks[fr].cols.sort((a, b2) => catRank(a.cat) - catRank(b2.cat));
   });
   return assembleWide(blocks);
 }
@@ -478,7 +538,7 @@ function buildSuburbWide(nameKey, series){
   const rows = series[nameKey] || [];
   const ptypes = [...new Set(rows.map(r => r.ptype))].sort();   // ['H','U']
   const b = { freq:'monthly', cols:[], periods:new Set(), cell:{} };
-  [...state.sMetrics].forEach(k => ptypes.forEach(pt => b.cols.push({ key:k+'|'+pt, label:SUB_LABEL[k]+' · '+pt, kind:SUB_KIND[k]||'num' })));
+  [...state.sMetrics].forEach(k => ptypes.forEach(pt => b.cols.push({ key:k+'|'+pt, label:SUB_LABEL[k]+' · '+pt, kind:SUB_KIND[k]||'num', cat:'Suburb metrics' })));
   rows.forEach(r => { const p = r.month; b.periods.add(p); const c = b.cell[p] = b.cell[p] || {};
     [...state.sMetrics].forEach(k => { const v = r.metrics && r.metrics[k]; if (v != null) c[k+'|'+r.ptype] = v; }); });
   return assembleWide({ monthly:b });
@@ -534,6 +594,49 @@ function sheetName(label, used){
   let n = String(label).replace(/[\\/?*\[\]:]/g, ' ').trim().slice(0, 28) || 'Sheet';
   let base = n, i = 2; while (used.has(n.toLowerCase())) { n = (base.slice(0, 25) + ' ' + i).trim(); i++; } used.add(n.toLowerCase()); return n;
 }
+/* ── sheet styling ──────────────────────────────────────────────────────────
+   Header row: bold, filled per data family, wrapped and centred. Body: thin
+   grid, right-aligned numbers, and a thicker left edge wherever a new family
+   starts so the groups read as blocks (the sample's vertical rules). Spacer
+   columns stay unfilled and narrow — they're the frequency separators.
+   Requires xlsx-js-style; plain SheetJS drops cell.s silently. */
+const THIN = { style:'thin', color:{ rgb:'D9D9D6' } };        /* brand Light Gray */
+const EDGE = { style:'medium', color:{ rgb:'171B24' } };       /* brand Dark Teal */
+function styleSheet(ws, t, nRows){
+  const cols = [];
+  t.meta.forEach((m, ci) => {
+    const isSpacer = m.type === 'spacer';
+    const fill = m.type === 'axis' ? AXIS_FILL : (CAT_FILL[m.cat] || CAT_FILL['Other']);
+    /* header */
+    const hRef = XLSX.utils.encode_cell({ r:0, c:ci });
+    if (ws[hRef]) {
+      ws[hRef].s = isSpacer ? { fill:{ fgColor:{ rgb:'FFFFFF' } } } : {
+        font: { bold:true, sz:10, color:{ rgb: fill.ink }, name:'Calibri' },
+        fill: { patternType:'solid', fgColor:{ rgb: fill.bg } },
+        alignment: { horizontal:'center', vertical:'center', wrapText:true },
+        border: { top:EDGE, bottom:EDGE, left: m.newCat || m.type === 'axis' ? EDGE : THIN, right:THIN },
+      };
+    }
+    /* body */
+    for (let r = 1; r < nRows; r++) {
+      const ref = XLSX.utils.encode_cell({ r, c:ci });
+      if (!ws[ref]) continue;
+      if (isSpacer) { ws[ref].s = {}; continue; }
+      ws[ref].s = {
+        font: { sz:10, name:'Calibri', bold: m.type === 'axis' },
+        alignment: { horizontal: m.type === 'axis' ? 'center' : 'right' },
+        border: { top:THIN, bottom:THIN, left: m.newCat || m.type === 'axis' ? EDGE : THIN, right:THIN },
+      };
+    }
+    cols.push({ wch: isSpacer ? 2 : m.type === 'axis' ? 11 : Math.min(22, Math.max(11, String(t.header[ci] || '').length + 2)) });
+  });
+  ws['!cols'] = cols;
+  ws['!rows'] = [{ hpt: 34 }];                                 /* room for wrapped headers */
+  /* No freeze pane: this writer ignores ws['!freeze'] — verified by reading the
+     generated sheet1.xml, which contains no <pane/>. Left out rather than left
+     in as code that looks like it works. */
+}
+
 async function runExport(){
   const btn = $('#dxExportBtn'); btn.disabled = true; btn.textContent = 'Building…';
   try {
@@ -551,6 +654,7 @@ async function runExport(){
       t.meta.forEach((m, ci) => { if (m.type !== 'data') return; const z = Z[m.kind]; if (!z) return;
         for (let ri = 1; ri < aoa.length; ri++) { const cell = ws[XLSX.utils.encode_cell({ r: ri, c: ci })]; if (cell && typeof cell.v === 'number') cell.z = z; }
       });
+      styleSheet(ws, t, aoa.length);
       XLSX.utils.book_append_sheet(wb, ws, sheetName(g.label, used)); wrote++;
     }
     if (!wrote) { alert('Nothing to export for the current selection.'); }
