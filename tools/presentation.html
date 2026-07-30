@@ -3650,6 +3650,7 @@
       <b>Approvals</b> · <code>{approvals}</code> <code>{approvals_year}</code> <code>{approvals_vs_peak}</code>
       <b>Rates</b> · <code>{cash_rate}</code> <code>{rate_current}</code> <code>{rate_forecast}</code> <code>{cash_current}</code> <code>{cash_forecast}</code>
       <b>Rent · price · yield</b> · <code>{rent:darwin}</code> <code>{median:darwin}</code> <code>{rent_yoy:darwin}</code> <code>{yield:darwin}</code> <code>{yield_standing:darwin}</code> <code>{yield_rank:darwin}</code> — add <code>:u</code> for units (<code>{yield:darwin:u}</code>). <code>{yield_standing}</code> writes the phrase for you: "the highest of any capital" while the region leads, otherwise "3rd highest of the 8 capitals" — so a promotional line can't quietly turn into a false claim.
+      <b>R90 rolling median</b> · <code>{r90:sydney}</code> <code>{r90_month}</code> <code>{r90_month_short}</code> and, against a fixed anchor month, <code>{r90_at:sydney:2020-05}</code> <code>{r90_diff:sydney:2020-05}</code> <code>{r90_pct:sydney:2020-05}</code> <code>{r90_years:sydney:2020-05}</code> — <code>{r90_years}</code> floors the span so a "5-YEAR GROWTH" heading rolls to 6 on its own. Works in TABLE cells too.
       <b>Industry mix</b> · <code>{ind_name:darwin:1}</code> <code>{ind_pct:darwin:1}</code> (rank 1–6, paired — always use both so a reorder can't mismatch them)
     </div>
   </details>
@@ -4250,7 +4251,7 @@ function _buildThumbOverlay(o) {
         const cell = (o.cells && o.cells[ri] && o.cells[ri][ci]) || {};
         if (cell.bgColor)   td.style.background = cell.bgColor;
         if (cell.textColor) td.style.color = cell.textColor;
-        td.innerHTML = cell.html || '';
+        td.innerHTML = presResolveTokens(cell.html || '');
         tr.appendChild(td);
       });
       tbl.appendChild(tr);
@@ -5588,7 +5589,7 @@ function buildThumbOverlayEl(o) {
         if (cell.align)      td.style.textAlign     = cell.align;
         if (cell.vAlign)     td.style.verticalAlign = cell.vAlign;
         if (borderStyleThumb) td.style.border   = borderStyleThumb;
-        td.innerHTML = cell.html || '';
+        td.innerHTML = presResolveTokens(cell.html || '');
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
@@ -8604,10 +8605,14 @@ function buildTableEl(o) {
       if (borderStyleOverride) td.style.border = borderStyleOverride;
       if (selIsMulti && selRect && r >= selRect.minR && r <= selRect.maxR &&
           c >= selRect.minC && c <= selRect.maxC) td.classList.add('cell-in-range');
-      td.innerHTML = cell.html || '';
+      td.innerHTML = presResolveTokens(cell.html || '');
       /* focus → mark this cell as the active edit target so the
          right-rail Text Settings panel reflects + edits its state. */
       td.addEventListener('focus', () => {
+        /* Show the RAW token while the cell is being edited — blur below writes
+           td.innerHTML straight into cell.html, so editing a resolved cell would
+           bake this month's figure over the token (same trap as text overlays). */
+        if (_tokHas(cell.html)) td.innerHTML = cell.html;
         _focusedCellCtx = { overlayId: o.id, row: r, col: c, td };
         syncTextPanel();
       });
@@ -8622,6 +8627,10 @@ function buildTableEl(o) {
           saveOverlays();
           pushHistory();
         }
+        /* Editing showed the raw token; this handler doesn't re-render, so put
+           the resolved figure back on screen now rather than leaving "{r90:…}"
+           visible until something else triggers a repaint. */
+        if (_tokHas(cell.html)) td.innerHTML = presResolveTokens(cell.html);
       });
       /* Stop the overlay's pointerdown drag from firing when the
          user clicks inside a cell — they want to edit, not move
@@ -9644,7 +9653,15 @@ async function _tokLoad() {
       const { data } = await window.sb.from('rdp_runway_config').select('key,value');
       cfg = Object.fromEntries((data || []).map(r => [r.key, r.value]));
     } catch (e) { console.warn('[presentation] runway config load failed:', e && e.message || e); }
-    _tokData = { latest, byYear, industry, cfg };
+    /* Rolling-90-day monthly medians — what the decks call "R90". Same store the
+       Cotality drop fills and build-ranking reads: regions.<slug>.{months[],h[],u[]},
+       the two arrays index-aligned. */
+    let monthly = {};
+    try {
+      const { data } = await window.sb.from('forge_monthly_price').select('data').eq('id', 'latest').maybeSingle();
+      monthly = (data && data.data && data.data.regions) || {};
+    } catch (e) { console.warn('[presentation] monthly price load failed:', e && e.message || e); }
+    _tokData = { latest, byYear, industry, cfg, monthly };
     return _tokData;
   })();
   return _tokLoading;
@@ -9758,6 +9775,56 @@ function _tokValue(body) {
       const d = (now / base - 1) * 100;
       return (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(0) + '%';   /* − = U+2212, matches the decks */
     }
+    /* R90 — rolling-90-day median. Third arg is an anchor month (YYYY-MM); with
+       one, the value AT that month, or the difference / % movement since it.
+       Used by the 5-Year Growth table, whose baseline is a fixed May 2020. */
+    case 'r90':
+    case 'r90_month':
+    case 'r90_month_short':
+    case 'r90_years':
+    case 'r90_at':
+    case 'r90_diff':
+    case 'r90_pct': {
+      /* The month labels are shared across regions, so a bare {r90_month} (no
+         region) answers "what month is the R90 data at?" using whichever
+         region runs latest — that's what a table HEADER wants. */
+      let reg = _tokData.monthly[slug];
+      if (!reg && (name === 'r90_month' || name === 'r90_month_short')) {
+        for (const s of _TOK_CAPITALS) {
+          const cand = _tokData.monthly[s]; if (!cand || !Array.isArray(cand.months)) continue;
+          if (!reg || String(cand.months[cand.months.length - 1]) > String(reg.months[reg.months.length - 1])) reg = cand;
+        }
+      }
+      if (!reg) return null;
+      const series = (arg === 'u' || parts[3] === 'u') ? reg.u : reg.h;
+      const months = reg.months;
+      if (!Array.isArray(series) || !Array.isArray(months) || !series.length) return null;
+      const lastAt = (() => { for (let i = series.length - 1; i >= 0; i--) if (series[i] != null) return i; return -1; })();
+      if (lastAt < 0) return null;
+      const MN = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+      const label = (m, short) => { const d = String(m || '').slice(0, 7).split('-');
+        const nm = MN[(+d[1] || 1) - 1] || '';
+        return (short ? nm.slice(0, 3) : nm) + ' ' + d[0]; };
+      if (name === 'r90')             return '$' + _tokNum(series[lastAt]);
+      if (name === 'r90_month')       return label(months[lastAt], false);
+      if (name === 'r90_month_short') return label(months[lastAt], true);
+      /* anchor month — accepts 2020-05 or 2020-05-01 */
+      const anchor = String(arg || '').slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(anchor)) return null;
+      const ai = months.findIndex(m => String(m).slice(0, 7) === anchor);
+      if (ai < 0) return null;
+      /* Whole years between the anchor and the latest month, FLOORED — lets a
+         heading say "5-YEAR GROWTH" and roll to 6 by itself. May 2020 -> Apr
+         2026 is 5y11m, so it correctly still reads 5. */
+      if (name === 'r90_years') {
+        const a = String(months[ai]).slice(0, 7).split('-'), b = String(months[lastAt]).slice(0, 7).split('-');
+        return String(Math.max(0, Math.floor(((+b[0] * 12 + +b[1]) - (+a[0] * 12 + +a[1])) / 12)));
+      }
+      if (series[ai] == null) return null;
+      if (name === 'r90_at')   return '$' + _tokNum(series[ai]);
+      if (name === 'r90_diff') return '$' + _tokNum(series[lastAt] - series[ai]);
+      return Math.round((series[lastAt] / series[ai] - 1) * 100) + '%';
+    }
     /* industry value added, rank n (1-based) by share of the region's total */
     case 'ind_name':
     case 'ind_pct': {
@@ -9772,7 +9839,12 @@ function _tokValue(body) {
 }
 
 const _TOK_RE = /\{([a-z][a-z0-9_]*(?::[a-z0-9_\-]+){0,2})\}/gi;
-function _tokHas(html) { return typeof html === 'string' && html.indexOf('{') >= 0 && _TOK_RE.test(html); }
+/* Separate, NON-global copy for testing. `.test()` on a /g/ regex advances its
+   lastIndex, so reusing _TOK_RE here made every second call return false — which
+   silently skipped the raw-swap and let an edit bake the resolved figure over
+   the token, the exact failure this guard exists to prevent. */
+const _TOK_RE_TEST = /\{[a-z][a-z0-9_]*(?::[a-z0-9_\-]+){0,2}\}/i;
+function _tokHas(html) { return typeof html === 'string' && html.indexOf('{') >= 0 && _TOK_RE_TEST.test(html); }
 
 /* Substitute for display. Kicks off the data load on first use and repaints
    once it lands, so the very first render doesn't have to block on network. */
