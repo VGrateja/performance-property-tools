@@ -640,9 +640,22 @@ async function loadArenaLiveFeed() {
       window.sb.from('arena_scrabble_games')
         .select('id, ranked, started_at, players:arena_scrabble_game_players(name, email, seat)')
         .eq('status', 'active').order('started_at', { ascending: false }).limit(5),
+      /* Incoming skribbl invites. Same lobby model as scrabble, but skribbl
+         lobbies have NO expires_at column — so no expiry filter here. */
+      myId ? window.sb.from('arena_skribbl_lobby_players')
+        .select('lobby_id, created_at, lobby:arena_skribbl_lobbies!inner(host_name, host_email, rounds, topic, difficulty, status)')
+        .eq('user_id', myId).eq('status', 'invited')
+        .eq('lobby.status', 'open')
+        .order('created_at', { ascending: false }).limit(5)
+        : Promise.resolve({ data: [] }),
+      /* Active skribbl games. Note created_at, not started_at, and a game is
+         only really live while phase !== 'ended' (arena-skribbl's own test). */
+      window.sb.from('arena_skribbl_games')
+        .select('id, created_at, round_no, rounds_total, phase, players:arena_skribbl_game_players(name, email, seat)')
+        .eq('status', 'active').order('created_at', { ascending: false }).limit(5),
     ];
     const settled = await Promise.allSettled(queries);
-    const [chessChIn, scrChIn, chessAct, scrAct] = settled.map(s => (s.status === 'fulfilled' && s.value && s.value.data) || []);
+    const [chessChIn, scrChIn, chessAct, scrAct, skrChIn, skrAct] = settled.map(s => (s.status === 'fulfilled' && s.value && s.value.data) || []);
 
     /* Build feed items. priority: 0=incoming challenge, 1=active game,
        2=recent finish, 3=typing PB. */
@@ -689,6 +702,35 @@ async function loadArenaLiveFeed() {
         html: names.join(' vs ') + ' · Scrabble',
         meta: _arenaFriendly(g.started_at) + ' · live',
         action: { label: 'Watch', href: 'tools/arena-scrabble.html', title: 'Scrabble' },
+      });
+    });
+    skrChIn.forEach(c => {
+      const L = c.lobby || {};
+      const bits = [(L.rounds ? L.rounds + ' rounds' : null), L.topic, L.difficulty].filter(Boolean);
+      items.push({
+        priority: 0, type: 'challenge', icon: '📩',
+        time: new Date(c.created_at).getTime(),
+        html: '<strong>' + _escapeHtml(_arenaName(L.host_name, L.host_email))
+            + '</strong> invited you to <strong>Skribbl</strong>'
+            + (bits.length ? ' · ' + _escapeHtml(bits.join(' · ')) : ''),
+        meta: 'now',
+        action: { label: 'Open', href: 'tools/arena-skribbl.html', title: 'Skribbl' },
+        cls: 'is-challenge',
+      });
+    });
+    skrAct.forEach(g => {
+      if (g.phase === 'ended') return;          /* status can lag the phase */
+      const names = (g.players || [])
+        .slice().sort((a, b) => (a.seat || 0) - (b.seat || 0))
+        .map(p => '<strong>' + _escapeHtml(_arenaName(p.name, p.email)) + '</strong>');
+      if (!names.length) return;
+      const round = (g.round_no && g.rounds_total) ? ('round ' + g.round_no + ' of ' + g.rounds_total + ' · ') : '';
+      items.push({
+        priority: 1, type: 'active', icon: '✏️',
+        time: new Date(g.created_at).getTime(),
+        html: names.join(' vs ') + ' · Skribbl',
+        meta: round + _arenaFriendly(g.created_at) + ' · live',
+        action: { label: 'Watch', href: 'tools/arena-skribbl.html', title: 'Skribbl' },
       });
     });
     /* Recent finishes are intentionally NOT added here — they moved to
@@ -740,9 +782,17 @@ async function loadArenaHighlights() {
         .select('id, ranked, termination, ended_at, players:arena_scrabble_match_players(email, name, finish_rank, pts_before)')
         .neq('termination', 'void')   /* voided games give EVERY player finish_rank=1 — never a real win */
         .order('ended_at', { ascending: false }).limit(60),
+      /* Skribbl matches. No void filter needed here — unlike scrabble, a voided
+         skribbl game writes NO match row at all, so nothing to exclude. Its
+         match_players carries no pts_before, so streaks are possible but
+         upsets aren't (there's no rating snapshot to compare). */
+      window.sb.from('arena_skribbl_matches')
+        .select('id, ended_at, players:arena_skribbl_match_players(email, name, finish_rank, score)')
+        .order('ended_at', { ascending: false }).limit(60),
     ]);
     const chessMatches = (settled[0].status === 'fulfilled' && settled[0].value.data) || [];
     const scrabMatches = (settled[1].status === 'fulfilled' && settled[1].value.data) || [];
+    const skribMatches = (settled[2].status === 'fulfilled' && settled[2].value.data) || [];
 
     /* ── 1. Chess streaks ────────────────────────────────────────
        For each player, walk their matches newest-first and count
@@ -868,6 +918,35 @@ async function loadArenaHighlights() {
         html: '<strong>' + _escapeHtml(u.winnerName) + '</strong> upset the field in Scrabble (' +
               u.winnerPts + ' vs ' + u.loserPts + ')',
       });
+    });
+
+    /* ── 4b. Skribbl streaks ────────────────────────────────────
+       Same rule as scrabble: newest-first per player, count consecutive
+       finish_rank=1 finishes, 3+ is a highlight. No upset equivalent —
+       arena_skribbl_match_players stores no pts_before. */
+    const skribByPlayer = {};
+    skribMatches.forEach(m => {
+      (m.players || []).forEach(p => {
+        const email = (p.email || '').toLowerCase();
+        if (!email) return;
+        (skribByPlayer[email] = skribByPlayer[email] || []).push({
+          name: p.name || email.split('@')[0],
+          won: p.finish_rank === 1,
+          ended: m.ended_at,
+        });
+      });
+    });
+    Object.keys(skribByPlayer).forEach(email => {
+      const arr = skribByPlayer[email].sort((a, b) => new Date(b.ended) - new Date(a.ended));
+      let streak = 0;
+      for (const r of arr) { if (!r.won) break; streak++; }
+      if (streak >= 3) {
+        items.push({
+          priority: 0, icon: '🔥',
+          time: new Date(arr[0].ended).getTime(),
+          html: '<strong>' + _escapeHtml(arr[0].name) + '</strong> is on a <strong>' + streak + '-win streak</strong> in Skribbl',
+        });
+      }
     });
 
     /* ── 5. Typing personal bests — reuse the cached news items
