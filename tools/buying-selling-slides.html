@@ -2483,9 +2483,9 @@ function mountRvdEmbed(slideEl){
             clobber a region's own entry data.
    PRICES = latest medians live from the Forge report feed (auto-updates as
             Forge publishes). */
-let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null, JAINFO=null, RCINFO=null, BFINFO=null, UUINFO=null, CCINFO=null;   /* CCINFO = OECD consumer-confidence figures for the {cci_*} tokens; UUINFO = ABS underutilisation figures for the {underutil_*} tokens; BFINFO = ABS business-finance figures for the {bizfin_*} tokens; JAINFO = JSA job-ads index figures for the {jobads_*} tokens; DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
+let ENTRY=null, PRICES=null, RANKINFO=null, RATIOINFO=null, VRINFO=null, POPINFO=null, P2IINFO=null, DWINFO=null, JAINFO=null, RCINFO=null, BFINFO=null, UUINFO=null, CCINFO=null, BCSCOPE=null, HPSCOPE=null;   /* CCINFO = OECD consumer-confidence figures for the {cci_*} tokens; UUINFO = ABS underutilisation figures for the {underutil_*} tokens; BFINFO = ABS business-finance figures for the {bizfin_*} tokens; JAINFO = JSA job-ads index figures for the {jobads_*} tokens; DWINFO = dwelling pipeline figures for the {dw_*} tokens; RANKINFO = {cur, avg, years} for the ranking tokens; RATIOINFO = {peer, avg, cur} for the %-of-peer tokens; VRINFO = adjusted VR payload for the {vr_*} tokens; POPINFO = forecastPop result for the {pop_*} tokens; P2IINFO = {hYear, uYear} for the price-to-income tokens */
 async function loadEntryAndPrices(){
-  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null; JAINFO=null; RCINFO=null; BFINFO=null; UUINFO=null; CCINFO=null;
+  ENTRY=null; PRICES=null; RANKINFO=null; RATIOINFO=null; VRINFO=null; POPINFO=null; P2IINFO=null; DWINFO=null; JAINFO=null; RCINFO=null; BFINFO=null; UUINFO=null; CCINFO=null; BCSCOPE=null; HPSCOPE=null;
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-entry').maybeSingle(); ENTRY=(data&&data.payload)||null; }catch(e){}
   try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-'+state.slug+'-replcost').maybeSingle(); RCINFO=(data&&data.payload)||null; }catch(e){}   /* loaded BEFORE buildDeck so the onlyIf gate can drop the slide */
   try{ const rows=await getRanking(state.slug);   /* same series as the ranking slide (cached) */
@@ -2495,6 +2495,11 @@ async function loadEntryAndPrices(){
     if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
   try{ VRINFO=await getVRAdjusted(state.slug); }catch(e){}   /* same figures as the slide-5 cards (cached) */
   try{ POPINFO=forecastPop(state.slug,3); }catch(e){}   /* same figures as the pop-forecast chart */
+  /* the SCOPE each sentiment chart actually resolved to, so an authored title can
+     say it instead of hard-coding "(VIC)" — business confidence falls back to
+     National on ACT/NT, where a literal state would be wrong */
+  try{ const B=await getBizCombo(state.slug); if(B) BCSCOPE=B.scope; }catch(e){}
+  try{ const H=await getManualSeries('house_price_expectations', state.slug); if(H) HPSCOPE=H.scope; }catch(e){}
   try{ const C=await getConsumerConf();   /* national — same series as the Consumer Confidence chart (cached) */
     if(C&&C.byYear){
       const mean=a=>a.reduce((x,z)=>x+z,0)/a.length;
@@ -3478,6 +3483,14 @@ function _tokenMap(){
     dw_completions:_dwInt(DWINFO&&DWINFO.completions),
     dw_source:(DWINFO&&DWINFO.kind==='oxford')?'Oxford Economics':'ABS Building Approvals',
     /* rates + wage-growth horizon (sensitivity slides; live from rdp_runway_config) */
+    /* which scope the sentiment charts resolved to (VIC / National) — use these
+       in the page 31/32 titles rather than a literal state */
+    bizconf_scope:BCSCOPE||'—', hpe_scope:HPSCOPE||'—',
+    /* the PP model's interest rates, live from rdp_runway_config — the demand
+       caption had 4.94% hard-coded and went stale at the APRA fix */
+    rate_current:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.current.rate*100).toFixed(2)+'%':'—',
+    rate_forecast:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.forecast.rate*100).toFixed(2)+'%':'—',
+    runway_wage_years:(DB&&DB.cfg&&DB.cfg.wage_growth&&DB.cfg.wage_growth.years!=null)?String(DB.cfg.wage_growth.years):'—',
     cash_current:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.current.cash*100).toFixed(2)+'%':'—',
     cash_forecast:(DB&&DB.cfg&&DB.cfg.rates)?(DB.cfg.rates.forecast.cash*100).toFixed(2)+'%':'—',
     wage_years:state.mode==='buy'?'5':'1' };
@@ -3686,7 +3699,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Consumer confidence</b> · {cci_index} {cci_year} {cci_average} {cci_vs_average} {cci_change} {cci_trend}<br><b>Underutilisation</b> · {underutil_rate} {underutil_unemp} {underutil_gap} {underutil_region_unemp} {underutil_year} {underutil_state}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_med_construction} {bizfin_med_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_count} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Consumer confidence</b> · {cci_index} {cci_year} {cci_average} {cci_vs_average} {cci_change} {cci_trend}<br><b>Underutilisation</b> · {underutil_rate} {underutil_unemp} {underutil_gap} {underutil_region_unemp} {underutil_year} {underutil_state}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_med_construction} {bizfin_med_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_count} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years} {rate_current} {rate_forecast} {runway_wage_years}<br><b>Scope</b> · {bizconf_scope} {hpe_scope}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
