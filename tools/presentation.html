@@ -3649,6 +3649,7 @@
       <b>Migration</b> · <code>{nom}</code> <code>{nom_peak}</code> <code>{nom_peak_year}</code> <code>{nat_inc}</code> <code>{nat_inc_year}</code>
       <b>Approvals</b> · <code>{approvals}</code> <code>{approvals_year}</code> <code>{approvals_vs_peak}</code>
       <b>Rates</b> · <code>{cash_rate}</code> <code>{rate_current}</code> <code>{rate_forecast}</code> <code>{cash_current}</code> <code>{cash_forecast}</code>
+      <b>Rent · price · yield</b> · <code>{rent:darwin}</code> <code>{median:darwin}</code> <code>{rent_yoy:darwin}</code> <code>{yield:darwin}</code> <code>{yield_standing:darwin}</code> <code>{yield_rank:darwin}</code> — add <code>:u</code> for units (<code>{yield:darwin:u}</code>). <code>{yield_standing}</code> writes the phrase for you: "the highest of any capital" while the region leads, otherwise "3rd highest of the 8 capitals" — so a promotional line can't quietly turn into a false claim.
       <b>Industry mix</b> · <code>{ind_name:darwin:1}</code> <code>{ind_pct:darwin:1}</code> (rank 1–6, paired — always use both so a reorder can't mismatch them)
     </div>
   </details>
@@ -9600,7 +9601,7 @@ async function _tokLoad() {
   if (_tokData) return _tokData;
   if (_tokLoading) return _tokLoading;
   _tokLoading = (async () => {
-    const METRICS = ['vacancy_rate', 'unemployment', 'nom', 'natural_increase', 'approvals_h', 'approvals_u', 'cash_rate'];
+    const METRICS = ['vacancy_rate', 'unemployment', 'nom', 'natural_increase', 'approvals_h', 'approvals_u', 'cash_rate', 'rent_h', 'rent_u', 'mp_h', 'mp_u'];
     const latest = {};    /* metric -> slug -> {v, period} */
     const byYear = {};    /* metric -> slug -> year -> v   (for peak / vs-peak maths) */
     try {
@@ -9613,9 +9614,17 @@ async function _tokLoad() {
           for (const r of (data || [])) {
             const v = Number(r.value); if (!isFinite(v)) continue;
             const y = _tokYear(r.period);
-            ((byYear[metric] ||= {})[r.region_slug] ||= {})[y] = v;
+            /* Some metrics carry more than one SOURCE tag for the same
+               region+period (darwin rent_h 2026 exists as both 730 and 737.5).
+               Take the higher one deterministically, in BOTH maps — otherwise
+               `latest` (first row wins) and `byYear` (last row wins) disagree
+               and a token silently flickers with row order between publishes. */
+            const ys = ((byYear[metric] ||= {})[r.region_slug] ||= {});
+            if (ys[y] == null || v > ys[y]) ys[y] = v;
             const cur = (latest[metric] ||= {})[r.region_slug];
-            if (!cur || String(r.period) > String(cur.period)) latest[metric][r.region_slug] = { v: v, period: r.period };
+            const newer = !cur || String(r.period) > String(cur.period);
+            const tie   = cur && String(r.period) === String(cur.period) && v > cur.v;
+            if (newer || tie) latest[metric][r.region_slug] = { v: v, period: r.period };
           }
           if (!data || data.length < 1000) break;
           from += 1000;
@@ -9667,6 +9676,37 @@ function _tokValue(body) {
       return n + suffix;
     }
     case 'vac_rank_of':    return String(_TOK_CAPITALS.filter(s => L('vacancy_rate', s)).length);
+    /* Weekly rent, median price, and gross yield (rent x 52 / median). */
+    case 'rent':           { const r = L(arg === 'u' ? 'rent_u' : 'rent_h', slug); return r ? '$' + _tokNum(r.v) : null; }
+    case 'median':         { const r = L(arg === 'u' ? 'mp_u' : 'mp_h', slug);     return r ? '$' + _tokNum(r.v) : null; }
+    case 'rent_yoy': {
+      const m = (_tokData.byYear[arg === 'u' ? 'rent_u' : 'rent_h'] || {})[slug]; if (!m) return null;
+      const ys = Object.keys(m).sort(); if (ys.length < 2) return null;
+      const now = m[ys[ys.length - 1]], prev = m[ys[ys.length - 2]];
+      if (!prev) return null;
+      const d = (now / prev - 1) * 100;
+      return (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(1) + '%';
+    }
+    case 'yield':
+    case 'yield_rank':
+    case 'yield_standing': {
+      const kindU = arg === 'u';
+      const y = s => {
+        const rr = L(kindU ? 'rent_u' : 'rent_h', s), mp = L(kindU ? 'mp_u' : 'mp_h', s);
+        return (rr && mp && mp.v) ? (rr.v * 52 / mp.v) : null;
+      };
+      const mine = y(slug); if (mine == null) return null;
+      if (name === 'yield') return (mine * 100).toFixed(2) + '%';
+      const all = _TOK_CAPITALS.map(y).filter(v => v != null).sort((a, b) => b - a);   /* highest first */
+      const i = all.findIndex(v => v <= mine); if (i < 0) return null;
+      const n = i + 1, m100 = n % 100, m10 = n % 10;
+      const suf = (m100 >= 11 && m100 <= 13) ? 'th' : (m10 === 1 ? 'st' : m10 === 2 ? 'nd' : m10 === 3 ? 'rd' : 'th');
+      if (name === 'yield_rank') return n + suf;
+      /* A phrase, so promotional copy stays TRUE as the ranking moves: it reads
+         as a superlative only while the region actually leads, and degrades to
+         a plain placing instead of silently becoming a false claim. */
+      return n === 1 ? 'the highest of any capital' : (n + suf + ' highest of the ' + all.length + ' capitals');
+    }
     case 'unemp':          { const r = L('unemployment', slug);    return r ? _tokPct(r.v, 1) : null; }
     case 'unemp_year':     { const r = L('unemployment', slug);    return r ? _tokYear(r.period) : null; }
     case 'nom':            { const r = L('nom', slug);             return r ? _tokNum(r.v) : null; }
