@@ -60,6 +60,12 @@
     'present-company':  { sec: 'present',   file: 'presentation.html',           label: 'Company Presentations' },
     'present-mine':     { sec: 'present',   file: 'presentation.html',           label: 'My Presentations' },
     'present-library':  { sec: 'present',   file: 'presentations-library.html',  label: 'Presentations Library' },
+    /* Curated Buying/Selling decks — the SAME file as the 'bs-slides' Vault
+       master, holding a second key on purpose: 'bs-slides' = every region +
+       curation controls, 'bs-slides-curated' = only the published set. Ticking
+       just this key gives a group the curated card without the master, and the
+       tool forces the filtered view for that user however they reach the URL. */
+    'bs-slides-curated':{ sec: 'present',   file: 'buying-selling-slides.html',  label: 'Buying/Selling Slide (curated)' },
     /* people */
     'scorecards':       { sec: 'people',    file: 'scorecards.html',             label: 'Performance Scorecards' }
   };

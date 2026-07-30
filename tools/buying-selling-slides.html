@@ -482,7 +482,10 @@ body.bss-panel-open .bss-slidewrap{margin-right:272px}   /* settings panel open 
 .bss-sh:hover{background:rgba(0,160,180,.18);border-color:var(--bss-cyan)}
 .bss-sh svg{width:24px;height:24px;pointer-events:none}
 /* copy-to-regions modal */
-.bss-modal{position:fixed;inset:0;z-index:80;background:rgba(4,12,24,.7);display:flex;align-items:center;justify-content:center;padding:20px}
+/* z-index 110 puts modals above .bss-bar (100) — a full-screen dialog with a
+   backdrop must not have the toolbar punching through it. Was 80, which only
+   showed once a modal grew tall enough to reach the bar (the Curate picker). */
+.bss-modal{position:fixed;inset:0;z-index:110;background:rgba(4,12,24,.7);display:flex;align-items:center;justify-content:center;padding:20px}
 .bss-modal[hidden]{display:none}
 .bss-modal-card{width:460px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;background:rgba(10,24,44,.99);border:1px solid var(--bss-line);border-radius:16px;padding:20px 22px;box-shadow:0 24px 60px rgba(0,0,0,.6);color:var(--bss-ink)}
 .bss-modal .cm-note{font-size:12.5px;color:var(--bss-mut);line-height:1.5;margin:10px 0 14px}
@@ -493,6 +496,18 @@ body.bss-panel-open .bss-slidewrap{margin-right:272px}   /* settings panel open 
 .bss-modal .cm-actions .grow{flex:1}
 .bss-modal .bss-btn{padding:8px 16px}
 .bss-modal .bss-btn.primary{background:var(--bss-cyan);border-color:var(--bss-cyan);color:#04202a}
+/* Curate picker — one row per region with a Selling + Buying tick. Its own grid
+   rather than the shared .cm-list (which is a 2-up list of single labels) so the
+   two purpose columns line up under sticky headers. */
+.bss-modal .cu-list{overflow-y:auto;flex:1;border:1px solid var(--bss-line);border-radius:10px;padding:0 12px 10px;background:var(--bss-navy)}
+.bss-modal .cu-head,.bss-modal .cu-row{display:grid;grid-template-columns:1fr 62px 62px;align-items:center;gap:8px}
+.bss-modal .cu-head{position:sticky;top:0;z-index:1;background:var(--bss-navy);padding:9px 0 6px;border-bottom:1px solid var(--bss-line);font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--bss-mut)}
+.bss-modal .cu-head b{font-weight:700;text-align:center}
+.bss-modal .cu-row{font-size:13px;padding:3.5px 0}
+.bss-modal .cu-row label{display:flex;justify-content:center;cursor:pointer}
+.bss-modal .cu-row input{cursor:pointer}
+.bss-modal .cu-grp{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--bss-mut);opacity:.75;margin:12px 0 3px}
+.bss-modal .cu-count{font-size:12px;color:var(--bss-mut)}
 /* background popover */
 .bss-bgpop{position:fixed;z-index:60;width:300px;background:rgba(8,20,38,.98);border:1px solid var(--bss-line);border-radius:14px;padding:14px 15px;box-shadow:0 16px 44px rgba(0,0,0,.55);color:var(--bss-ink);font-size:13px}
 .bss-bgpop .bgp-title{font-family:'Figtree',sans-serif;font-weight:800;font-size:12.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--bss-cyan);margin-bottom:10px}
@@ -536,7 +551,15 @@ body.bss-present .bss-presd{display:flex}
 <body>
 <div class="wall scrim" aria-hidden="true"></div>
 <script>
-  PP_OS.initChrome({ name: 'Buying/Selling Slides', section: 'vault', backHref: '../',
+  /* Curated entries wear the PRESENTATIONS chrome, not "The Vault" — the staff
+     who arrive that way have no Vault access and that badge would mislead. Read
+     straight off the URL because initChrome runs before the entitlement check in
+     boot(); every real curated entry carries ?curated=1 (the hub card links with
+     it and syncURL keeps it), so the rare bare-URL case just keeps the old chip
+     while still being filtered, which is the part that matters. */
+  var _bssCuratedChrome = false;
+  try { _bssCuratedChrome = new URLSearchParams(location.search).get('curated') === '1'; } catch (e) {}
+  PP_OS.initChrome({ name: 'Buying/Selling Slides', section: _bssCuratedChrome ? 'present' : 'vault', backHref: '../',
     actions: [{ id: 'bss-cluster-btn', label: 'Cluster', title: 'Back to region picker',
       svg: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>' }] });
 </script>
@@ -585,6 +608,9 @@ body.bss-present .bss-presd{display:flex}
   <span class="bss-edtoolbar" id="bssEdBar" hidden>
     <span class="sep">|</span>
     <span class="bss-seg" id="bssEditMode"><button data-em="view" class="on">View</button><button data-em="edit">Edit</button></span>
+    <!-- deliberately OUTSIDE #bssEdBtns: curation is a tool setting, not a deck
+         edit, so it must not hide behind Edit mode the way Entry…/Repl. cost… do -->
+    <button class="bss-btn" id="bssCurate" title="Choose which regions and purposes the hub's curated Buying/Selling Slide card offers">Curate…</button>
     <span class="bss-edbtns" id="bssEdBtns" hidden>
       <span class="sep">|</span>
       <button class="bss-btn" data-add="text">+ Text</button>
@@ -638,6 +664,14 @@ body.bss-present .bss-presd{display:flex}
     <p class="cm-note">Researched per region, so it's entered by hand. <b>A region with nothing entered here does not get the slide at all</b> — fill it in and the page appears in that deck. Runway is free text so a range like "50-60%" reads exactly as written. Clear every field to remove the page again.</p>
     <div id="rmRows"></div>
     <div class="cm-actions"><span class="grow"></span><button class="bss-btn" data-rm="cancel">Cancel</button><button class="bss-btn primary" data-rm="save">Save</button></div>
+  </div>
+</div>
+<div class="bss-modal" id="bssCurateModal" hidden>
+  <div class="bss-modal-card" style="max-width:520px">
+    <div class="bp-title">Curated decks — what the hub card offers</div>
+    <p class="cm-note">These ticks drive the <b>Buying/Selling Slide</b> card in the hub's Presentation widget. Untick a region and it leaves that card's picker — the deck itself is untouched and stays available here in the Vault, which always shows every region. Selling and Buying curate separately, so a region can be offered for one purpose only.</p>
+    <div class="cu-list" id="cuList"></div>
+    <div class="cm-actions"><span class="cu-count" id="cuCount"></span><span class="grow"></span><button class="bss-btn" data-cu="cancel">Cancel</button><button class="bss-btn primary" data-cu="save">Save</button></div>
   </div>
 </div>
 <div class="bss-modal" id="bssCopyModal" hidden>
@@ -701,7 +735,7 @@ body.bss-present .bss-presd{display:flex}
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=79207e52"></script>
-<script src="../shared/tool-registry.js?v=7a000341"></script>
+<script src="../shared/tool-registry.js?v=91c09a4e"></script>
 <script src="../shared/desktop-pins.js?v=e2416017"></script>
 <script src="../shared/auth.js?v=d653ab09"></script>
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
@@ -718,8 +752,33 @@ const MONTH_LABEL = MONTHS[now.getMonth()] + ' ' + now.getFullYear();
 const REVIEW_YEAR = now.getFullYear();
 
 let DB = null;
-let _slugs = [];   /* boot-ordered region list (capitals first) — drives the double-tap region switch */
+let _slugs = [];   /* NAVIGABLE region list (capitals first) — dropdown, landing, double-tap switch. Curated-filtered. */
+let _allSlugs = [];   /* every region with runway data — the master list; editor features (Copy to…, Curate…) use this */
 let state = { slug:'adelaide', mode:'sell', idx:0 };
+
+/* ── curated visibility ───────────────────────────────────────────────────
+   One reports_state row ('bss-visibility') holds { sell:[slug…], buy:[slug…] }
+   = the decks the hub's "Buying/Selling Slide" card offers. The Vault tool is
+   the MASTER (every region, always); the curated card is this same page,
+   filtered. Not all regions should be in front of everyone at once and the set
+   moves with the market (manager's request, 2026-07-20).
+
+   Curated mode is decided by ENTITLEMENT, not just ?curated=1: a user holding
+   the curated key but NOT the master 'bs-slides' key is filtered no matter what
+   URL they type, so the bare tool URL can't be used to reach an uncurated
+   region. ?curated=1 lets dev/admin (who hold both) preview the staff view. */
+let CURATED = null;        /* { sell:[], buy:[] } — null until loaded */
+let _isCurated = false;    /* is THIS page load the curated view? */
+const _curSet = mode => new Set((CURATED && CURATED[mode]) || []);
+/* regions offered for one purpose — unfiltered when this isn't the curated view */
+function curSlugs(mode){ if(!_isCurated) return _allSlugs; const s=_curSet(mode); return _allSlugs.filter(x=>s.has(x)); }
+async function loadCurated(){
+  try{
+    const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-visibility').maybeSingle();
+    const p=(data&&data.payload)||null;
+    CURATED={ sell:(p&&Array.isArray(p.sell))?p.sell:[], buy:(p&&Array.isArray(p.buy))?p.buy:[] };
+  }catch(e){ CURATED={sell:[],buy:[]}; }
+}
 let DECK = [];
 let _bsCanEdit = false;   // dev/admin → can edit (overlays, backgrounds, image upload)
 let _slideScale = 1;      // current .bss-slide transform scale (drag deltas ÷ this)
@@ -3356,7 +3415,7 @@ function deleteCustomPage(key){
 })();
 
 /* keep the URL shareable/pinnable — reflects the open deck */
-function syncURL(){ try{ history.replaceState(null,'','?region='+state.slug+'&mode='+state.mode); }catch(e){} }
+function syncURL(){ try{ history.replaceState(null,'','?region='+state.slug+'&mode='+state.mode+(_isCurated?'&curated=1':'')); }catch(e){} }
 
 /* ── present mode ── */
 function enterPresent(){ document.body.classList.add('bss-present'); const el=document.querySelector('.bss-stage'); if(el.requestFullscreen)el.requestFullscreen().catch(()=>{}); fitSlide(); }
@@ -3850,8 +3909,66 @@ function applyCopySlides(){ const list=_selObjs(); const m=$('#bssSlidesModal');
   m.hidden=true;
   if(idxs.length){ renderOverlays(); commit(); const what=list.length>1?(list.length+' items'):(list[0].type==='text'?'text box':list[0].type==='image'?'image':'shape'); alert('Copied '+(list.length>1?'these ':'this ')+what+' to '+idxs.length+' slide'+(idxs.length===1?'':'s')+'.'); }
 }
+/* ── curated-deck picker (dev/admin) ──────────────────────────────────────
+   A tick per region × purpose, grouped the way the landing picker groups them,
+   writing the single 'bss-visibility' row. Regions that fall outside every
+   cluster predicate still get a row under "Other" — otherwise a region with an
+   odd state string would be silently un-curatable. */
+function _cuRow(s,sell,buy){
+  return '<div class="cu-row"><span>'+esc((DB.meta[s]&&DB.meta[s].name)||s)+'</span>'
+    +'<label><input type="checkbox" data-cu-mode="sell" value="'+esc(s)+'"'+(sell.has(s)?' checked':'')+'></label>'
+    +'<label><input type="checkbox" data-cu-mode="buy" value="'+esc(s)+'"'+(buy.has(s)?' checked':'')+'></label></div>';
+}
+async function openCurateModal(){
+  if (!CURATED) await loadCurated();          /* master view never loads it at boot */
+  const sell=new Set(CURATED.sell||[]), buy=new Set(CURATED.buy||[]), seen=new Set();
+  let html='<div class="cu-head"><span>Region</span><b>Selling</b><b>Buying</b></div>';
+  BSS_CLUSTERS.forEach(c=>{
+    const rs=_allSlugs.filter(c.pick); if(!rs.length) return;
+    rs.forEach(s=>seen.add(s));
+    html+='<div class="cu-grp">'+esc(c.name)+'</div>'+rs.map(s=>_cuRow(s,sell,buy)).join('');
+  });
+  const rest=_allSlugs.filter(s=>!seen.has(s));
+  if(rest.length) html+='<div class="cu-grp">Other</div>'+rest.map(s=>_cuRow(s,sell,buy)).join('');
+  $('#cuList').innerHTML=html;
+  updateCurateCount();
+  $('#bssCurateModal').hidden=false;
+}
+function updateCurateCount(){
+  const n=m=>$('#cuList').querySelectorAll('[data-cu-mode="'+m+'"]:checked').length;
+  $('#cuCount').textContent=n('sell')+' selling · '+n('buy')+' buying';
+}
+async function saveCurate(){
+  const pick=m=>Array.from($('#cuList').querySelectorAll('[data-cu-mode="'+m+'"]:checked')).map(i=>i.value);
+  const pl={ sell:pick('sell'), buy:pick('buy') };
+  try{ const {error}=await window.sb.from('reports_state').upsert({region:'bss-visibility',payload:pl},{onConflict:'region'}); if(error)throw error; }
+  catch(e){ alert('Save failed — are you signed in as dev/admin?'); return; }
+  CURATED=pl;
+  $('#bssCurateModal').hidden=true;
+  /* previewing the curated view (?curated=1)? re-apply at once, and fall back to
+     the picker if the region on screen was just unticked */
+  if(_isCurated){
+    _slugs=curSlugs(state.mode);
+    syncModeButtons(); buildLanding(_slugs);
+    if(!_slugs.includes(state.slug)){
+      $('#bssLanding').classList.add('show'); document.body.classList.add('bss-landing-open');
+    } else fillRegionSelect();
+  }
+  alert('Curated set saved — '+pl.sell.length+' selling, '+pl.buy.length+' buying.');
+}
+
 function setupEditor(){
   $('#bssCopyTo').addEventListener('click',openCopyModal);
+  /* Curate… is a TOOL setting, not a deck edit, so it lives outside Edit mode.
+     RLS is the real gate on the write; _bsCanEdit just hides the button. */
+  $('#bssCurate').addEventListener('click',()=>{ if(_bsCanEdit) openCurateModal(); });
+  $('#cuList').addEventListener('change',updateCurateCount);
+  $('#bssCurateModal').addEventListener('click',async e=>{
+    if(e.target.id==='bssCurateModal'){ e.currentTarget.hidden=true; return; }
+    const b=e.target.closest('[data-cu]'); if(!b)return;
+    if(b.dataset.cu==='cancel'){ $('#bssCurateModal').hidden=true; return; }
+    await saveCurate();
+  });
   $('#bssEntry').addEventListener('click',()=>{ if(!_bsCanEdit)return; const m=$('#bssEntryModal');
     $('#emRegion').textContent=(DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug;
     $('#emYear').value=(ENTRY&&ENTRY.year)||''; $('#emMhp').value=(ENTRY&&ENTRY.mhp)||'';
@@ -3972,23 +4089,64 @@ function setupEditor(){
 }
 
 /* ── wire up ── */
+/* Region <select> — rebuilt whenever the navigable list changes (switching
+   purpose inside a curated view can change which regions are on offer). */
+function fillRegionSelect(){
+  $('#bssRegion').innerHTML = _slugs.map(s=>'<option value="'+s+'"'+(s===state.slug?' selected':'')+'>'+esc((DB.meta[s]&&DB.meta[s].name)||s)+'</option>').join('');
+}
+/* A purpose with nothing curated can't be entered — grey its button instead of
+   letting the click land on an empty deck list. */
+function syncModeButtons(){
+  document.querySelectorAll('#bssMode button').forEach(b=>{
+    const m=b.dataset.mode, off=_isCurated && !curSlugs(m).length;
+    b.disabled=off;
+    b.title=off ? ('No '+(m==='buy'?'Buying':'Selling')+' decks have been published') : '';
+  });
+}
+
 async function boot(){
   try { await loadForge(); }
   catch(e){ $('#bssStack').innerHTML='<div class="bss-boot">Couldn’t load Forge data: '+esc(e.message)+'</div>'; hideLiveLoadingOverlay(); return; }
   try { const p = (typeof sbCurrentProfile==='function') ? await sbCurrentProfile() : null; _bsCanEdit = !!(p && (p.tier==='dev' || p.tier==='admin')); } catch(e){}
-  // region dropdown — every region that has runway (sensitivity) data, capitals first
-  const slugs = Object.keys(DB.runway).sort((a,b)=>{ const ca=CAPS.has(a)?0:1, cb=CAPS.has(b)?0:1; return ca-cb || ((DB.meta[a]&&DB.meta[a].name)||a).localeCompare((DB.meta[b]&&DB.meta[b].name)||b); });
+  // every region that has runway (sensitivity) data, capitals first
+  _allSlugs = Object.keys(DB.runway).sort((a,b)=>{ const ca=CAPS.has(a)?0:1, cb=CAPS.has(b)?0:1; return ca-cb || ((DB.meta[a]&&DB.meta[a].name)||a).localeCompare((DB.meta[b]&&DB.meta[b].name)||b); });
+  /* Curated view? Either asked for (?curated=1, how the hub card links in and
+     how dev/admin preview it) or forced because the user holds the curated key
+     without the master one. Resolve the group state FIRST so that entitlement
+     branch isn't decided on a cold cache — ppToolAllowed fails open, which would
+     silently hand a staff member the unfiltered master. */
+  let _askCurated=false;
+  try{ _askCurated = new URLSearchParams(location.search).get('curated')==='1'; }catch(e){}
+  if (!_askCurated) { try{ if (typeof window.ppResolveAllowedTools==='function') await window.ppResolveAllowedTools(); }catch(e){} }
+  const _allow = k => (typeof window.ppToolAllowed==='function') ? window.ppToolAllowed(k) : true;
+  _isCurated = _askCurated || (_allow('bs-slides-curated') && !_allow('bs-slides'));
+  if (_isCurated) await loadCurated();
+  let slugs = curSlugs(state.mode);   /* reassigned below when a URL purpose changes the offered set */
   _slugs = slugs;
+  /* Curated with nothing ticked for this purpose — try the other one before
+     giving up, so a half-curated set still opens something. */
+  if (_isCurated && !slugs.length) {
+    const other = state.mode==='sell' ? 'buy' : 'sell';
+    if (curSlugs(other).length) { state.mode = other; _slugs = slugs = curSlugs(other); }
+  }
   if (!slugs.includes(state.slug)) state.slug = slugs.includes('adelaide')?'adelaide':slugs[0];
-  /* deep-link: ?region=<slug>&mode=<sell|buy> — used by "Pin to desktop" (validated against loaded regions) */
+  /* deep-link: ?region=<slug>&mode=<sell|buy> — used by "Pin to desktop" and the
+     library cards. Validated against the NAVIGABLE list, so a curated visitor
+     deep-linking an uncurated region lands on the picker instead of that deck. */
+  let _badLink=false;
   try {
     const _q = new URLSearchParams(location.search);
     const _r = _q.get('region'), _m = _q.get('mode');
-    if (_r && slugs.includes(_r)) state.slug = _r;
-    if (_m === 'buy' || _m === 'sell') state.mode = _m;
+    if (_m === 'buy' || _m === 'sell') {
+      /* honour the requested purpose only if it actually offers this region */
+      if (!_isCurated || curSlugs(_m).length) { state.mode = _m; _slugs = slugs = curSlugs(_m); }
+    }
+    if (_r) { if (slugs.includes(_r)) state.slug = _r; else _badLink = true; }
+    if (!slugs.includes(state.slug)) state.slug = slugs.includes('adelaide')?'adelaide':slugs[0];
   } catch (e) {}
   document.querySelectorAll('#bssMode button').forEach(x => x.classList.toggle('on', x.dataset.mode === state.mode));
-  $('#bssRegion').innerHTML = slugs.map(s=>'<option value="'+s+'"'+(s===state.slug?' selected':'')+'>'+esc((DB.meta[s]&&DB.meta[s].name)||s)+'</option>').join('');
+  fillRegionSelect();
+  syncModeButtons();
   $('#bssMonth').textContent = MONTH_LABEL;
   if (_bsCanEdit) $('#bssEdBar').hidden = false;   // View/Edit toolbar for dev/admin only
   setupEditor();
@@ -3996,7 +4154,11 @@ async function boot(){
      CLEAN backdrop — the deck only loads after a region is chosen (like the
      Online Reports chooser). Pins / Library links / deep-links go straight in. */
   buildLanding(slugs);
-  const deepLinked = (()=>{ try{ return new URLSearchParams(location.search).has('region'); }catch(e){ return false; } })();
+  if (_isCurated && !slugs.length) {   /* nothing curated at all — say so rather than showing an empty picker */
+    $('#bssStack').innerHTML='<div class="bss-boot">No decks have been published yet. An administrator curates them from the Buying/Selling Slides tool in the Vault.</div>';
+    hideLiveLoadingOverlay(); return;
+  }
+  const deepLinked = (()=>{ try{ return new URLSearchParams(location.search).has('region'); }catch(e){ return false; } })() && !_badLink;
   if (!deepLinked) {
     document.body.classList.add('bss-landing-open');
     $('#bssLanding').classList.add('show');
@@ -4074,13 +4236,21 @@ $('#bssLandRegionGrid').addEventListener('click',e=>{ const t=e.target.closest('
   reloadDeck();
 });
 $('#bssRegion').addEventListener('change',e=>{ state.slug=e.target.value; state.idx=0; syncURL(); reloadDeck(); });
-$('#bssMode').addEventListener('click',e=>{ const b=e.target.closest('button[data-mode]'); if(!b)return; state.mode=b.dataset.mode; document.querySelectorAll('#bssMode button').forEach(x=>x.classList.toggle('on',x===b)); state.idx=0; syncURL(); reloadDeck(); });
+$('#bssMode').addEventListener('click',e=>{ const b=e.target.closest('button[data-mode]'); if(!b||b.disabled)return;
+  state.mode=b.dataset.mode;
+  document.querySelectorAll('#bssMode button').forEach(x=>x.classList.toggle('on',x===b));
+  /* the offered set is per purpose: keep this region if the new purpose offers
+     it, otherwise land on the first one it does — then refresh dropdown + picker */
+  _slugs=curSlugs(state.mode);
+  if(!_slugs.includes(state.slug)) state.slug=_slugs[0]||state.slug;
+  fillRegionSelect(); buildLanding(_slugs);
+  state.idx=0; syncURL(); reloadDeck(); });
 /* "Pin to desktop" — pins THIS region+mode deck as a deep-link on the hub (PP_PINS). */
 (function(){ const btn=$('#bssPin'); if(!btn) return; btn.addEventListener('click',function(){ try{
   if(!window.PP_PINS) return;
   const name=(DB&&DB.meta&&DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug;
   const label=name+' — '+(state.mode==='buy'?'Buying':'Selling');
-  const url='tools/buying-selling-slides.html?region='+state.slug+'&mode='+state.mode;
+  const url='tools/buying-selling-slides.html?region='+state.slug+'&mode='+state.mode+(_isCurated?'&curated=1':'');
   if(PP_PINS.has(function(p){return p.url===url;})){ btn.textContent='Already pinned'; }
   else{ PP_PINS.add({kind:'link',label:label,url:url,a1:'#7E8CF1',a2:'#233AE7',icon:'<svg viewBox="0 0 24 24"><path d="M4 4v16h16"/><path d="M7 14l3-3 3 2 4-6"/></svg>'}); btn.textContent='Pinned'; }
   setTimeout(function(){ btn.textContent='Pin'; },1600);
