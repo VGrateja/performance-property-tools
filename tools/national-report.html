@@ -902,12 +902,11 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=79207e52"></script>
 <script src="../shared/tool-registry.js?v=91c09a4e"></script>
-<!-- Forge → flat national data assembler. Forge is the DEFAULT data source,
-     so this runs on every normal load; ?src=live / ?src=legacy is the escape
-     hatch that skips it. -->
-<script src="../shared/forge-national-adapter.js?v=1ca6a2bc"></script>
+<!-- Forge → flat national data assembler. Forge is the data source, so this
+     runs on every load; the Forge-derived snapshot is the only fallback. -->
+<script src="../shared/forge-national-adapter.js?v=563624fe"></script>
 <!-- Report-data snapshot cache + global "Save data" refresh (window.PPReportCache). -->
-<script src="../shared/report-cache.js?v=6cf08cbe"></script>
+<script src="../shared/report-cache.js?v=df4322bc"></script>
 <script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
 <script src="../shared/auth.js?v=d653ab09"></script>
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
@@ -1737,13 +1736,10 @@
 const REPORT_SLUG = 'national';
 const REPORT_TITLE = 'National Market Overview';
 
-/* Apps Script Web App URL for the National report's data feed.
-   Paste the /exec URL here after deploying
-   scripts/apps-script-national-report.js as a Web App. The script
-   reads the AUSTRALIA tab of the source spreadsheet and returns
-   { _meta, data: { columnKey: [values] } }. Leave empty during
-   phase-1 testing — the page still loads with stubbed charts. */
-const REPORT_DATA_URL = 'https://script.google.com/macros/s/AKfycbxTYz5pzmKvpHLwYLLjJo68prVjQWNYA5WXc-iR8QQZiho-kez-M_i0Ci1vXLGSxnmsGQ/exec';
+/* The Apps Script feed URL that used to live here was removed 2026-07-30 with
+   the legacy live-fetch leg. The deployed Web App itself is left alone (see
+   scripts/apps-script-national-report.js) — nothing reads it now, but
+   undeploying it is a separate decision. */
 
 /* Holds the fetched payload for chart code in phase 3. */
 let REPORT_DATA = null;
@@ -2274,8 +2270,8 @@ setTimeout(function () { try { hideLiveLoadingOverlay(); } catch (_) {} }, (PP_E
    SUPABASE SNAPSHOT CACHE — the stored fallback copy
    ─────────────────────────────────────────────────────────────────────
    Since the Forge cutover this snapshot is the FALLBACK, not the primary:
-   normal loads read Forge directly (see PP_FORGE_SRC below) and only fall
-   back to the snapshot, then the legacy Apps Script feed, if Forge fails.
+   normal loads read Forge directly and only fall back to the snapshot if Forge
+   fails. The legacy Apps Script leg after it was retired 2026-07-30.
    The Save-data buttons + the PUBLISH workflow now WRITE the snapshot from
    Forge. The cache read/write lives in shared/report-cache.js
    (window.PPReportCache, source='national'). ?fresh=1 (the PDF renderer)
@@ -2288,13 +2284,10 @@ const PP_FORCE_FRESH = (function () {
   catch (_) { return false; }
 })();
 
-/* [Forge cutover] Forge (forge_national_only + national rdp series) is now the
-   DEFAULT source; liveBoot falls back to the snapshot then the Apps Script feed
-   automatically if Forge fails. ?src=live forces the old feed path. */
-const PP_FORGE_SRC = (function () {
-  try { const s = new URLSearchParams(location.search).get('src'); return s !== 'live' && s !== 'legacy'; }
-  catch (_) { return true; }
-})();
+/* [Forge cutover] Forge (forge_national_only + national rdp series) is the
+   source; liveBoot falls back to the Forge-derived snapshot if Forge fails. The
+   ?src=live / ?src=legacy hatch was retired 2026-07-30 with the Apps Script
+   leg, so there is nothing left for it to select. */
 async function forgeNationalFeed() {
   if (!window.sb) throw new Error('Supabase client not loaded');
   if (!window.ForgeNationalAdapter) throw new Error('forge-national-adapter not loaded');
@@ -2311,12 +2304,6 @@ async function forgeNationalFeed() {
 }
 
 async function liveBoot() {
-  if (!REPORT_DATA_URL) {
-    console.info('[national-report] REPORT_DATA_URL is empty — skipping data fetch (stubbed mode).');
-    window.PPA_LIVE_BOOT_DONE = true;
-    hideLiveLoadingOverlay();
-    return;
-  }
   try {
     let data = null, src = 'live';
     /* Forge (default): assemble the national data object from Forge
@@ -2325,37 +2312,23 @@ async function liveBoot() {
        so an unseeded/unreadable table yields a truthy-but-empty object (empty
        reads return [] with HTTP 200, no throw) — without this gate the report
        would render blank charts instead of falling back to snapshot/feed. */
-    if (PP_FORGE_SRC) {
-      try {
-        const fd = await forgeNationalFeed();
-        if (fd && fd.data && Array.isArray(fd.data.year) && fd.data.year.length) { data = fd; src = 'forge'; }
-        else console.warn('[national-report] forge returned empty data — falling back to snapshot/feed');
-      }
-      catch (e) { console.warn('[national-report] forge load failed, falling back:', e && e.message || e); }
+    try {
+      const fd = await forgeNationalFeed();
+      if (fd && fd.data && Array.isArray(fd.data.year) && fd.data.year.length) { data = fd; src = 'forge'; }
+      else console.warn('[national-report] forge returned empty data — falling back to the stored snapshot');
     }
+    catch (e) { console.warn('[national-report] forge load failed, falling back:', e && e.message || e); }
     /* Supabase snapshot (fallback when Forge fails) — unless ?fresh=1, which
        skips it. On the Forge-default path above ?fresh=1 is a no-op. */
     if (!data && !PP_FORCE_FRESH && window.PPReportCache) {
       data = await window.PPReportCache.readSnapshot(REPORT_CACHE_SOURCE);
       if (data) src = 'snapshot';
     }
-    /* Live Apps Script feed (slow cold-start) — only when no snapshot is
-       stored yet, or when forced fresh. Prefer the shared module's fetch;
-       fall back to a direct fetch if it isn't available for any reason. */
-    if (!data) {
-      if (window.PPReportCache) {
-        data = await window.PPReportCache.fetchLive(REPORT_CACHE_SOURCE);
-      } else {
-        const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), 20000);
-        try {
-          const res = await fetch(REPORT_DATA_URL, { cache: 'no-store', signal: ctrl.signal });
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          data = await res.json();
-        } finally { clearTimeout(to); }
-      }
-    }
-    if (!data) throw new Error('no data from snapshot or feed');
+    /* The third leg — a live fetch from the Apps Script feed — was retired
+       2026-07-30. Since the cutover the snapshot above is itself written FROM
+       FORGE on every PUBLISH, so this could only ever fire if Forge failed AND
+       no snapshot existed, which cannot happen after a month's publish. */
+    if (!data) throw new Error('no data from Forge or the stored snapshot');
     REPORT_DATA = data;
     renderAllCharts(REPORT_DATA);
     /* Load-speed readout (for measuring the cache win): time from page

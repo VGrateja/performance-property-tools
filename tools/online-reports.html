@@ -58,11 +58,11 @@
      WRITES it from Forge. Classic script so it's defined before the inline boot
      code runs; uses window.sb only at call-time, so load order vs
      supabase-client is fine. -->
-<script src="../shared/report-cache.js?v=6cf08cbe"></script>
+<script src="../shared/report-cache.js?v=df4322bc"></script>
 <!-- Data Forge → feed-shape adapter. forge-report-starts sets per-region chart
      start years (window.ForgeReportStarts) and MUST load before the adapter, which
-     reads it. Forge is the DEFAULT source, so the adapter runs on every normal
-     load; ?src=live / ?src=legacy is the escape hatch that skips it. -->
+     reads it. Forge is the source, so the adapter runs on every load; the
+     ?src=live / ?src=legacy hatch was retired 2026-07-30. -->
 <script src="../shared/forge-report-starts.js?v=2b5f48e0"></script>
 <script src="../shared/forge-report-adapter.js?v=32336ad1"></script>
 <script src="../shared/color-picker.js?v=a7ec7189" defer></script>
@@ -3838,7 +3838,7 @@
     <!-- The ↻ refresh button was removed 2026-07-18: the Forge-default path
          reads the mart fresh on EVERY load (no 15-min cache in front), so the
          button duplicated a plain reload. The localStorage TTL cache it
-         cleared only fronts the legacy ?src=live fallback chain. -->
+         cleared now only fronts the snapshot fallback. -->
     <select id="region-select" title="Switch region">
       <!-- options injected at boot from REGIONS -->
     </select>
@@ -5179,12 +5179,13 @@ const REGION_POPMOVE_START = { mandurah: 2017 };
    demand-score dashboard). The data exposed is what we publish in the
    PDF reports anyway — the URLs are not secrets.
    ═════════════════════════════════════════════════════════════════════ */
-const REPORTS_DATA_URLS = {
-  capital:  'https://script.google.com/macros/s/AKfycbwCpEAXvYXh0Jrm46DfgaIA-iDM5dsF0XKK9z55JNALbkoM-OqyKm8DAyAeNanTYC_N/exec',
-  qld:      'https://script.google.com/macros/s/AKfycbwEkGUCmJL1svxkxoiiKFeGvn7OVA0PNSsRAtB7wEESdmKmwpKqrsFuKoz9ASL_3DE/exec',
-  nsw:      'https://script.google.com/macros/s/AKfycbzWkMzOZWBK-jYT2tqE3XvECux_-eYbYU-d_cY3s6nDDOEFcmLSmqznLOCjiqf_BF4/exec',
-  vicwatas: 'https://script.google.com/macros/s/AKfycbzEZzKiKojm1sh-ABhiUTwPxmLBsPHk4rCY6u7NQw9W94GUONJq9ffqaPYVrDEgu7uG/exec',
-};
+/* The four cluster keys. This used to be cluster → Apps Script URL, but the
+   legacy live-feed leg was retired (see liveDataFetch) — the object was still
+   doing double duty as the canonical cluster REGISTRY, which is all that is
+   needed now: validating a region's cluster and enumerating clusters to
+   prefetch. */
+const REPORT_CLUSTERS = ['capital', 'qld', 'nsw', 'vicwatas'];
+const isReportCluster = (c) => REPORT_CLUSTERS.indexOf(c) >= 0;
 const REPORTS_DATA_CACHE_TTL_MS = 15 * 60 * 1000; // 15 min — was 1 h; tightened so users see sheet edits sooner without manual refresh
 const REPORTS_DATA_CACHE_KEY = (cluster) => 'ppa-reports-data-cache-v1-' + cluster;
 
@@ -5211,8 +5212,9 @@ function liveDataWriteCache(cluster, data) {
    SUPABASE SNAPSHOT CACHE — the stored fallback copy
    ─────────────────────────────────────────────────────────────────────
    Since the Forge cutover this snapshot is the FALLBACK, not the primary:
-   normal loads read Forge directly (see PP_FORGE_SRC below) and only fall
-   back to the snapshot, then the legacy Apps Script feed, if Forge fails.
+   normal loads read Forge directly and only fall back to the snapshot (then
+   the static baseline) if Forge fails. The legacy Apps Script leg that used to
+   sit after the snapshot was retired 2026-07-30.
    The "Save data" button + the PUBLISH workflow now WRITE the snapshot
    from Forge. The cache read/write lives in shared/report-cache.js
    (window.PPReportCache, keyed by `source` = cluster slug); this page
@@ -5222,7 +5224,7 @@ function liveDataWriteCache(cluster, data) {
 /* The monthly PDF renderer opens reports with ?fresh=1, which skips the
    snapshot step in the fallback chain. On the Forge-default path it's a
    no-op (PDFs capture the last-PUBLISHed mart — correct and intended);
-   it only matters on the legacy ?src=live path / when Forge is
+   it now only affects the snapshot fallback, reached when Forge is
    unreadable. The presentation embed (exportMode=1, no fresh flag) keeps
    the snapshot fallback — the bypass is keyed to ?fresh=1, NOT exportMode. */
 const PP_FORCE_FRESH = (function () {
@@ -5231,13 +5233,11 @@ const PP_FORCE_FRESH = (function () {
 })();
 
 /* [Forge cutover] Data Forge (the rdp_report_feed mart, reshaped to the feed
-   shape via shared/forge-report-adapter.js) is now the DEFAULT data source.
-   The Apps Script cluster feed remains as the fallback (used automatically if
-   Forge is unreadable) and as an explicit escape hatch: ?src=live forces it. */
-const PP_FORGE_SRC = (function () {
-  try { const s = new URLSearchParams(location.search).get('src'); return s !== 'live' && s !== 'legacy'; }
-  catch (_) { return true; }
-})();
+   shape via shared/forge-report-adapter.js) is the data source. The old
+   ?src=live / ?src=legacy escape hatch that forced the Apps Script feed was
+   retired 2026-07-30 along with the feed leg itself; the fallback is now the
+   Forge-derived snapshot (see liveDataFetch), so there is nothing left for the
+   parameter to select. An unknown ?src value is simply ignored. */
 async function forgeClusterJson(slug) {
   if (!window.sb || !window.ForgeReportAdapter) { console.warn('[forge] supabase client / adapter not loaded'); return null; }
   try {
@@ -5253,34 +5253,26 @@ async function forgeClusterJson(slug) {
    cache win. */
 const _liveDataSrc = {};
 
+/* Fallback data for one cluster, reached only when the Forge mart is
+   unreadable. The third leg — a live fetch from the Apps Script feed — was
+   retired 2026-07-30: since the cutover the snapshot below is itself written
+   FROM FORGE on every PUBLISH, so the Apps Script leg could only ever fire if
+   Forge failed AND no snapshot existed, which cannot happen once a month's
+   publish has run. What remains is still three deep: memory cache → shared
+   Forge-derived snapshot → the static baseline handled by the caller. */
 async function liveDataFetch(cluster) {
-  const url = REPORTS_DATA_URLS[cluster];
   /* 1) localStorage — instant, per-browser (15-min TTL). */
   const cached = liveDataReadCache(cluster);
   if (cached) { _liveDataSrc[cluster] = 'cache'; return cached; }
-  /* 2) Supabase snapshot — shared + fast; the monthly stored copy.
-        SKIPPED only with ?fresh=1 (the monthly PDF renderer), which runs
-        before the snapshot refresh and must capture the freshest Google
-        data. The presentation embed (exportMode=1, no fresh flag) reads
-        this snapshot, so it loads fast. */
+  /* 2) Supabase snapshot — shared + fast, refreshed from Forge each PUBLISH.
+        SKIPPED with ?fresh=1 (the monthly PDF renderer). That flag is a no-op
+        on the Forge-default path and now has nothing further to fall through
+        to, which is fine: the PDFs capture the last-PUBLISHed mart. */
   if (!PP_FORCE_FRESH && window.PPReportCache) {
     const stored = await window.PPReportCache.readSnapshot(cluster);
     if (stored) { _liveDataSrc[cluster] = 'snapshot'; liveDataWriteCache(cluster, stored); return stored; }
   }
-  /* 3) Live Apps Script feed — slow cold-start; reached when nothing is
-        stored yet (before the first "Save data") or with ?fresh=1. */
-  if (!url) return null;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const json = await res.json();
-    _liveDataSrc[cluster] = 'live';
-    liveDataWriteCache(cluster, json);
-    return json;
-  } catch (e) {
-    console.warn('[reports] live data fetch failed for cluster', cluster, e && e.message || e);
-    return null;
-  }
+  return null;
 }
 
 /* Industry-donut color palette. The sheet stores only sector names +
@@ -6729,7 +6721,7 @@ async function liveBoot() {
     else setTimeout(hideLiveLoadingOverlay, remaining);
   };
 
-  if (!m || !REPORTS_DATA_URLS[m.cluster]) {
+  if (!m || !isReportCluster(m.cluster)) {
     scheduleOverlayHide();
     return;
   }
@@ -6745,13 +6737,11 @@ async function liveBoot() {
 
   try {
     let json, peerJson;
-    if (PP_FORGE_SRC) {
-      json = await forgeClusterJson(slug);
-      // regionals' Change-in-Population 3rd line is the PEER capital — fetch it from Forge too
-      peerJson = (json && needPeer) ? await forgeClusterJson(peerSlug) : null;
-      if (!json) console.warn('[forge] mart unreadable for', slug, '— falling back to the Apps Script feed');
-    }
-    if (!json) {   // ?src=live, or Forge unavailable → Apps Script cluster feed (then the static baseline)
+    json = await forgeClusterJson(slug);
+    // regionals' Change-in-Population 3rd line is the PEER capital — fetch it from Forge too
+    peerJson = (json && needPeer) ? await forgeClusterJson(peerSlug) : null;
+    if (!json) console.warn('[forge] mart unreadable for', slug, '— falling back to the stored snapshot');
+    if (!json) {   // Forge unavailable → Forge-derived snapshot (then the static baseline)
       [json, peerJson] = await Promise.all([
         liveDataFetch(m.cluster),
         needPeer ? liveDataFetch(peerCluster) : Promise.resolve(null),
@@ -6876,9 +6866,8 @@ async function liveBoot() {
    subsequent cluster switches are instant within that window. */
 function liveBootPrefetchOtherClusters(activeCluster, peerCluster) {
   const skip = new Set([activeCluster, peerCluster].filter(Boolean));
-  for (const cluster of Object.keys(REPORTS_DATA_URLS)) {
+  for (const cluster of REPORT_CLUSTERS) {
     if (skip.has(cluster)) continue;
-    if (!REPORTS_DATA_URLS[cluster]) continue;
     /* Don't await — liveDataFetch caches the result internally and
        returns the cached value on the next call. Errors are logged
        inside liveDataFetch, so .catch() here is just defensive. */

@@ -95,9 +95,9 @@ function reportUrlForSlug(slug, lite) {
      chain. Since the Forge cutover the reports read Forge by DEFAULT, so
      on the normal path this flag is a NO-OP — the PDFs capture the
      last-PUBLISHed Forge mart, which is correct and intended (don't
-     "fix" this). It only still matters on the legacy ?src=live path /
-     when Forge is unreadable, where it forces the live Apps Script feed
-     instead of a possibly-stale snapshot. */
+     "fix" this). Since the legacy Apps Script leg was retired
+     (2026-07-30) it has nothing left to fall through to — it now merely
+     skips the snapshot when Forge is unreadable. */
   const freshSuffix = '&fresh=1';
   if (isResearchReportSlug(slug)) {
     /* Research reports live in their own tool files. They don't

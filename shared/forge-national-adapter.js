@@ -3,9 +3,9 @@
 
    Assembles the National report's FLAT data object ({ year:[...],
    <columnKey>:[...] }) from Forge, so the (already-built) national-charts.js
-   builders + renderAllCharts render it. Forge is the DEFAULT source, so
-   this runs on every normal load (and in the Save-data assembly);
-   ?src=live / ?src=legacy is the escape hatch that skips it.
+   builders + renderAllCharts render it. Forge is the source, so this runs on
+   every load (and in the Save-data assembly). The ?src=live / ?src=legacy
+   escape hatch that used to skip it was retired 2026-07-30.
 
    Inputs (fetched by the report):
      natOnly  = forge_national_only.data  (workDone, gdpByCountry, federalBudget,
