@@ -2190,6 +2190,25 @@
   @keyframes pres-fmt-spin{ to{ transform:rotate(360deg); } }
   .pres-fmt-loading-text{ font-family:'Montserrat',sans-serif; font-weight:700; font-size:14px; letter-spacing:0.5px; }
 
+  /* Data-token cheatsheet — collapsed by default so it costs no panel height
+     until someone opens it. Each <b> heading starts its own line, and the
+     <code> chips wrap, so the list stays readable in a narrow rail. */
+  .pres-tp-tokens{ margin-bottom:8px; font-size:11px }
+  .pres-tp-tokens>summary{
+    cursor:pointer; padding:6px 8px; border-radius:6px;
+    background:rgba(0,160,180,0.10); border:1px solid rgba(0,160,180,0.28);
+    font-weight:700; letter-spacing:.02em; list-style:none;
+  }
+  .pres-tp-tokens>summary::-webkit-details-marker{ display:none }
+  .pres-tp-tokens>summary::before{ content:'▸ '; opacity:.75 }
+  .pres-tp-tokens[open]>summary::before{ content:'▾ ' }
+  .pres-tp-tokens-body{ padding:8px 2px 2px; line-height:1.55; opacity:.92 }
+  .pres-tp-tokens-body b{ display:block; margin-top:7px; font-size:10px; text-transform:uppercase; letter-spacing:.06em; opacity:.7 }
+  .pres-tp-tokens-body code{
+    display:inline-block; margin:1px 2px 1px 0; padding:1px 5px;
+    background:rgba(0,160,180,0.13); border:1px solid rgba(0,160,180,0.26);
+    border-radius:4px; font-family:'SFMono-Regular',Consolas,monospace; font-size:10.5px;
+  }
   .pres-tp-copy{
     width:100%;
     margin-bottom:8px;
@@ -3615,6 +3634,25 @@
     </div>
   </div>
   <div class="pres-tp-divider"></div>
+  <!-- Data tokens: type one into any text box and it is replaced by the live
+       Forge figure every time the slide is drawn, so the deck restates itself
+       after each PUBLISH. Region defaults to australia when left off. -->
+  <details class="pres-tp-tokens" id="pres-tp-tokens">
+    <summary>Data tokens</summary>
+    <div class="pres-tp-tokens-body">
+      Type a token into any text box — the live figure is substituted when the
+      slide is drawn, and refreshes itself after each monthly publish. Add a
+      region after a colon (<code>{vac:perth}</code>); leave it off for national.
+      An unknown token stays on screen as typed.
+      <b>Vacancy</b> · <code>{vac:perth}</code> <code>{vac_year:perth}</code>
+      <b>Unemployment</b> · <code>{unemp}</code> <code>{unemp_year}</code>
+      <b>Migration</b> · <code>{nom}</code> <code>{nom_peak}</code> <code>{nom_peak_year}</code> <code>{nat_inc}</code> <code>{nat_inc_year}</code>
+      <b>Approvals</b> · <code>{approvals}</code> <code>{approvals_year}</code> <code>{approvals_vs_peak}</code>
+      <b>Rates</b> · <code>{cash_rate}</code> <code>{rate_current}</code> <code>{rate_forecast}</code> <code>{cash_current}</code> <code>{cash_forecast}</code>
+      <b>Industry mix</b> · <code>{ind_name:darwin:1}</code> <code>{ind_pct:darwin:1}</code> (rank 1–6, paired — always use both so a reorder can't mismatch them)
+    </div>
+  </details>
+  <div class="pres-tp-divider"></div>
   <button class="pres-tp-copy" id="pres-tp-copy" type="button" title="Duplicate this text onto every slide or a chosen subset">Copy to slides…</button>
   <button class="pres-tp-delete" id="pres-tp-delete" type="button" title="Delete this text (or press Delete)">Delete Text</button>
 </aside>
@@ -4171,7 +4209,7 @@ function _buildThumbOverlay(o) {
     if (o.underline === 'underline' || o.underline === 'none') {
       el.dataset.deco = o.underline;
     }
-    el.innerHTML = o.html != null ? o.html : '';
+    el.innerHTML = presResolveTokens(o.html != null ? o.html : '');
     _applyTextVAlign(el, o);
   } else if (o.type === 'image' && (o.src || o.storage || o.clockImage)) {
     const img = document.createElement('img');
@@ -5478,7 +5516,7 @@ function buildThumbOverlayEl(o) {
     if (o.underline === 'underline' || o.underline === 'none') {
       el.dataset.deco = o.underline;
     }
-    el.innerHTML = o.html != null ? o.html : '';
+    el.innerHTML = presResolveTokens(o.html != null ? o.html : '');
     _applyTextVAlign(el, o);
   } else if (o.type === 'shape') {
     el.innerHTML = shapeSVG(o);
@@ -9516,6 +9554,183 @@ function applySlideBg() {
 /* ─── Render overlays for the current slide ─── runs after each
    renderSlide() so freshly-rewritten slot innerHTML gets the
    per-slide overlays appended on top. */
+/* ═══════════════════════════════════════════════════════════════════════
+   DATA TOKENS  —  {vac:melbourne} etc. resolved at RENDER time
+   ───────────────────────────────────────────────────────────────────────
+   Deck text stores the TOKEN; the live figure is substituted every time the
+   overlay is painted, so a deck restates itself after each Forge PUBLISH
+   instead of going quietly stale (Van 2026-07-30 — the company decks were
+   carrying vacancy/unemployment/cash-rate numbers several publishes old).
+
+   Same contract as the Buying/Selling tool: resolved in VIEW, raw while
+   EDITING (so a save can't bake the resolved value over the token), and an
+   unknown token is left on screen verbatim rather than blanked — a typo is
+   then visible instead of silently deleting the number.
+
+   Source is Forge (rdp_raw_series + forge_industry), i.e. the same marts the
+   reports read, all rebuilt by the monthly PUBLISH.
+   ═══════════════════════════════════════════════════════════════════════ */
+let _tokData = null;        /* resolved values, null until loaded */
+let _tokLoading = null;     /* in-flight promise (dedupes concurrent calls) */
+
+/* Full industry names are long; the decks were hand-written in a tighter
+   house style ("Professional, Scientific & Tech"). Reproduce that so a
+   tokenised name drops into the same box width as the text it replaces. */
+function _tokShortIndustry(name) {
+  return String(name || '')
+    .replace(/\s+and\s+/g, ' & ')
+    .replace(/Professional, Scientific & Technical Services/i, 'Professional, Scientific & Tech')
+    .replace(/Information Media & Telecommunications/i, 'Information Media & Telecoms')
+    .replace(/Electricity, Gas, Water & Waste Services/i, 'Electricity, Gas, Water & Waste')
+    .replace(/Rental, Hiring & Real Estate Services/i, 'Rental, Hiring & Real Estate')
+    .replace(/Transport, Postal & Warehousing Services/i, 'Transport, Postal & Warehousing');
+}
+
+const _tokPct  = (v, dp) => (v == null ? null : (v * 100).toFixed(dp == null ? 2 : dp) + '%');
+const _tokNum  = v => (v == null ? null : Math.round(v).toLocaleString('en-AU'));
+const _tokYear = p => (p ? String(p).slice(0, 4) : null);
+
+/* Pull every series the tokens need, in ONE pass per metric. Values in
+   rdp_raw_series are TEXT, and percentages are stored as FRACTIONS — both
+   traps are handled here rather than at each call site. */
+async function _tokLoad() {
+  if (_tokData) return _tokData;
+  if (_tokLoading) return _tokLoading;
+  _tokLoading = (async () => {
+    const METRICS = ['vacancy_rate', 'unemployment', 'nom', 'natural_increase', 'approvals_h', 'approvals_u', 'cash_rate'];
+    const latest = {};    /* metric -> slug -> {v, period} */
+    const byYear = {};    /* metric -> slug -> year -> v   (for peak / vs-peak maths) */
+    try {
+      for (const metric of METRICS) {
+        let from = 0;
+        for (;;) {
+          const { data, error } = await window.sb.from('rdp_raw_series')
+            .select('region_slug,period,value').eq('metric', metric).range(from, from + 999);
+          if (error) throw error;
+          for (const r of (data || [])) {
+            const v = Number(r.value); if (!isFinite(v)) continue;
+            const y = _tokYear(r.period);
+            ((byYear[metric] ||= {})[r.region_slug] ||= {})[y] = v;
+            const cur = (latest[metric] ||= {})[r.region_slug];
+            if (!cur || String(r.period) > String(cur.period)) latest[metric][r.region_slug] = { v: v, period: r.period };
+          }
+          if (!data || data.length < 1000) break;
+          from += 1000;
+        }
+      }
+    } catch (e) { console.warn('[presentation] token data load failed:', e && e.message || e); }
+    let industry = {};
+    try {
+      const { data } = await window.sb.from('forge_industry').select('data').eq('id', 'latest').maybeSingle();
+      industry = (data && data.data && data.data.regions) || {};
+    } catch (e) { console.warn('[presentation] industry load failed:', e && e.message || e); }
+    /* Runway rate config — the same row the Runway/B-S tools read, so the
+       "PP Interest Rate" captions can't drift from the model again (they were
+       still quoting 4.94%, the value from before the APRA double-buffer fix). */
+    let cfg = {};
+    try {
+      const { data } = await window.sb.from('rdp_runway_config').select('key,value');
+      cfg = Object.fromEntries((data || []).map(r => [r.key, r.value]));
+    } catch (e) { console.warn('[presentation] runway config load failed:', e && e.message || e); }
+    _tokData = { latest, byYear, industry, cfg };
+    return _tokData;
+  })();
+  return _tokLoading;
+}
+
+/* Resolve ONE token body (already stripped of its braces). Returns null when
+   the token is unknown or has no data, which leaves the text untouched. */
+function _tokValue(body) {
+  if (!_tokData) return null;
+  const parts = String(body).split(':');
+  const name = parts[0].toLowerCase();
+  const slug = (parts[1] || 'australia').toLowerCase();
+  const arg  = parts[2];
+  const L = (m, s) => (_tokData.latest[m] && _tokData.latest[m][s]) || null;
+
+  switch (name) {
+    case 'vac':            { const r = L('vacancy_rate', slug);    return r ? _tokPct(r.v, 2) : null; }
+    case 'vac_year':       { const r = L('vacancy_rate', slug);    return r ? _tokYear(r.period) : null; }
+    case 'unemp':          { const r = L('unemployment', slug);    return r ? _tokPct(r.v, 1) : null; }
+    case 'unemp_year':     { const r = L('unemployment', slug);    return r ? _tokYear(r.period) : null; }
+    case 'nom':            { const r = L('nom', slug);             return r ? _tokNum(r.v) : null; }
+    case 'nom_year':       { const r = L('nom', slug);             return r ? _tokYear(r.period) : null; }
+    case 'nat_inc':        { const r = L('natural_increase', slug);return r ? _tokNum(r.v) : null; }
+    case 'nat_inc_year':   { const r = L('natural_increase', slug);return r ? _tokYear(r.period) : null; }
+    case 'cash_rate':      { const r = L('cash_rate', 'australia');return r ? _tokPct(r.v, 2).replace(/0%$/, '%') : null; }
+    case 'cash_rate_year': { const r = L('cash_rate', 'australia');return r ? _tokYear(r.period) : null; }
+    /* Runway model rates (rdp_runway_config) — same basis as Runway v Demand.
+       rate_forecast is what the decks label "PP Interest Rate". */
+    case 'rate_current':
+    case 'rate_forecast': {
+      const rates = _tokData.cfg && _tokData.cfg.rates; if (!rates) return null;
+      const leg = rates[name === 'rate_current' ? 'current' : 'forecast'];
+      return (leg && leg.rate != null) ? (leg.rate * 100).toFixed(2) + '%' : null;
+    }
+    case 'cash_current':
+    case 'cash_forecast': {
+      const rates = _tokData.cfg && _tokData.cfg.rates; if (!rates) return null;
+      const leg = rates[name === 'cash_current' ? 'current' : 'forecast'];
+      return (leg && leg.cash != null) ? (leg.cash * 100).toFixed(2) + '%' : null;
+    }
+    /* peak of a series + the year it happened (NOM peak, etc.) */
+    case 'nom_peak':
+    case 'nom_peak_year': {
+      const m = (_tokData.byYear.nom || {})[slug]; if (!m) return null;
+      let best = null, bestY = null;
+      for (const y in m) if (best == null || m[y] > best) { best = m[y]; bestY = y; }
+      return name === 'nom_peak' ? _tokNum(best) : bestY;
+    }
+    /* dwelling approvals: houses + units, and the fall from a named peak year */
+    case 'approvals':
+    case 'approvals_year':
+    case 'approvals_vs_peak': {
+      const h = L('approvals_h', slug), u = L('approvals_u', slug);
+      if (!h && !u) return null;
+      const yr = _tokYear((h || u).period);
+      if (name === 'approvals_year') return yr;
+      const tot = y => {
+        const a = ((_tokData.byYear.approvals_h || {})[slug] || {})[y];
+        const b = ((_tokData.byYear.approvals_u || {})[slug] || {})[y];
+        return (a == null && b == null) ? null : (a || 0) + (b || 0);
+      };
+      const now = tot(yr);
+      if (name === 'approvals') return _tokNum(now);
+      const peakY = arg || '2015';
+      const base = tot(peakY);
+      if (!base || now == null) return null;
+      const d = (now / base - 1) * 100;
+      return (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(0) + '%';   /* − = U+2212, matches the decks */
+    }
+    /* industry value added, rank n (1-based) by share of the region's total */
+    case 'ind_name':
+    case 'ind_pct': {
+      const reg = _tokData.industry[slug]; if (!reg || !reg.values || !reg.total) return null;
+      const ranked = Object.entries(reg.values).map(([k, v]) => [k, Number(v)])
+        .filter(e => isFinite(e[1])).sort((a, b) => b[1] - a[1]);
+      const row = ranked[(parseInt(arg, 10) || 1) - 1]; if (!row) return null;
+      return name === 'ind_name' ? _tokShortIndustry(row[0]) : (row[1] / Number(reg.total) * 100).toFixed(1) + '%';
+    }
+  }
+  return null;
+}
+
+const _TOK_RE = /\{([a-z][a-z0-9_]*(?::[a-z0-9_\-]+){0,2})\}/gi;
+function _tokHas(html) { return typeof html === 'string' && html.indexOf('{') >= 0 && _TOK_RE.test(html); }
+
+/* Substitute for display. Kicks off the data load on first use and repaints
+   once it lands, so the very first render doesn't have to block on network. */
+function presResolveTokens(html) {
+  if (typeof html !== 'string' || html.indexOf('{') < 0) return html;
+  if (!_tokData) {
+    _tokLoad().then(d => { if (d) { try { renderOverlays(); } catch (_) {} } });
+    return html;                                  /* raw for one paint, then repainted */
+  }
+  return html.replace(_TOK_RE, (whole, body) => { const v = _tokValue(body); return v == null ? whole : v; });
+}
+/* warm the cache early so decks open already resolved */
+try { setTimeout(() => { if (window.sb) _tokLoad(); }, 1200); } catch (_) {}
+
 /* Live PresentChart controllers, keyed by chart-overlay id. Populated in
    buildOverlayEl, disposed here before each re-render to avoid leaks. The
    Present-mode driver reads these to build charts step-by-step. */
@@ -9795,7 +10010,7 @@ function buildOverlayEl(o) {
       el.dataset.deco = o.underline;
     }
     /* innerHTML so links / formatted spans survive a save+reload. */
-    el.innerHTML = o.html != null ? o.html : '';
+    el.innerHTML = presResolveTokens(o.html != null ? o.html : '');
     _applyTextVAlign(el, o);
 
     /* Click handling in edit mode:
@@ -9813,6 +10028,13 @@ function buildOverlayEl(o) {
       if (ev.detail < 2) return;
       ev.stopPropagation();
       if (el.contentEditable !== 'true') {
+        /* Swap the RESOLVED text back to its RAW tokens before the box goes
+           editable — blur persists el.innerHTML, so editing the resolved copy
+           would bake this month's figure over the token and the deck would
+           stop updating. Only done when a token is actually present, so
+           ordinary text keeps the exact double/triple-click word-select
+           behaviour set up below. */
+        if (_tokHas(o.html)) el.innerHTML = o.html;
         el.contentEditable = 'true';
         el.focus();
       }
