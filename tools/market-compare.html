@@ -77,6 +77,10 @@ h1{font-size:30px;font-weight:800;letter-spacing:-0.02em;margin:6px 0 2px}
 .mc-dir .lab{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--mc-mut)}
 .mc-dir{flex-wrap:wrap}                                   /* pairing seg + labels wrap on narrow screens */
 .mc-dirsep{width:1px;align-self:stretch;background:var(--mc-border);margin:0 2px}
+.mc-dirnames{display:flex;align-items:center;gap:12px}
+.mc-dirnames[hidden],.mc-dirall[hidden]{display:none}      /* author display beats the hidden attribute */
+.mc-dirall{text-transform:none;letter-spacing:.02em;font-weight:700}
+.mc-pick button[hidden],.mc-seg button[hidden]{display:none}
 .mc-swap[hidden]{display:none}                            /* nothing to swap when both sides share a purpose */
 .mc-dir b{color:var(--mc-ink);font-size:14px}
 .mc-swap{border:1px solid var(--mc-border-2);background:none;color:var(--mc-teal);border-radius:999px;width:32px;height:32px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
@@ -214,9 +218,12 @@ body.mc-present .mc-cards{grid-template-columns:repeat(auto-fit,minmax(290px,1fr
       <button data-p="sell">Selling vs Selling</button>
     </span>
     <span class="mc-dirsep"></span>
-    <span class="lab" id="mcDirLabA">Selling out of</span><b id="mcDirA">—</b>
-    <button class="mc-swap" id="mcSwap" title="Swap direction"><svg viewBox="0 0 24 24"><path d="M7 4v13M7 4L4 7m3-3l3 3"/><path d="M17 20V7m0 13l3-3m-3 3l-3-3"/></svg></button>
-    <span class="lab" id="mcDirLabB">Buying into</span><b id="mcDirB">—</b>
+    <span class="mc-dirnames" id="mcDirNames">
+      <span class="lab" id="mcDirLabA">Selling out of</span><b id="mcDirA">—</b>
+      <button class="mc-swap" id="mcSwap" title="Swap direction"><svg viewBox="0 0 24 24"><path d="M7 4v13M7 4L4 7m3-3l3 3"/><path d="M17 20V7m0 13l3-3m-3 3l-3-3"/></svg></button>
+      <span class="lab" id="mcDirLabB">Buying into</span><b id="mcDirB">—</b>
+    </span>
+    <span class="lab mc-dirall" id="mcDirAll" hidden></span>
   </div>
 
   <p class="mc-verdict" id="mcVerdict"></p>
@@ -237,10 +244,9 @@ body.mc-present .mc-cards{grid-template-columns:repeat(auto-fit,minmax(290px,1fr
   <div class="mc-section">
     <div class="mc-h2row">
       <h2 class="mc-h2">Sensitivity — affordability ceiling by cash rate</h2>
-      <span class="mc-seg mc-seg-sm" id="mcSensHz" hidden>
-        <button data-h="sell" class="on">Selling · 1yr</button>
-        <button data-h="buy">Buying · 5yr</button>
-      </span>
+      <!-- the old per-section horizon toggle lived here; the pairing control at
+           the top of the page now drives this ladder for 2 AND 3 markets, so a
+           second control would have been a way to disagree with itself -->
     </div>
     <p class="mc-h2sub" id="mcSensSub">The maximum sustainable price at each cash-rate scenario, versus today's median.</p>
     <div class="mc-sensgrid" id="mcSens"><div class="mc-skel">Loading…</div></div>
@@ -289,7 +295,8 @@ const DASH='—';
    selling and one buying; 'buy' = both columns judged as purchases; 'sell' =
    both judged as exits. It sets each column's wage-growth horizon, so it has to
    live in state (and in the URL) rather than being a display-only toggle. */
-const state={ markets:['brisbane','melbourne'], ktypes:['h','h'], type:'h', flip:false, pair:'mixed', sensHorizon:'sell' };   /* sensHorizon: 3-market-mode ladder horizon */
+const state={ markets:['brisbane','melbourne'], ktypes:['h','h'], type:'h', flip:false, pair:'mixed' };
+let _pairAuto=false;   /* true when a 3rd market forced mixed→sell, so it can be undone */
 let REG={}, RW={}, CFG=null, SNAP=null, CLOCK=null, TL=null, FEED={}, ENTRY={}, CAPS=new Set();
 let _profile=null;
 
@@ -394,8 +401,12 @@ function dsRank(slug,t){
 /* Which purpose column i is judged as. Both sides share it when the pairing is
    buy-vs-buy or sell-vs-sell; otherwise the flip decides which side buys. */
 const roleOf=i=>{
-  if(state.markets.length!==2) return 'sell';                     /* 3-market mode reads state.sensHorizon instead */
+  /* a chosen purpose applies to EVERY column, at any market count */
   if(state.pair==='buy'||state.pair==='sell') return state.pair;
+  /* 'mixed' is the switch framing and only means anything with exactly two
+     columns; with three, the tool's original behaviour was a uniform selling
+     view, so that stays the default. */
+  if(state.markets.length!==2) return 'sell';
   return i===(state.flip?0:1)?'buy':'sell';
 };
 /* runway on the direction horizon. The snapshot rw is the 5-yr wage-growth figure
@@ -653,18 +664,39 @@ function renderControls(){
 
 function renderDir(){
   const two=state.markets.length===2;
-  $('#mcDir').hidden=!two;
-  if(!two) return;
+  $('#mcDir').hidden=state.markets.length<2;
+  if(state.markets.length<2) return;
+  /* Three markets can't be a switch, so the mixed option drops out — and if it
+     was selected when the third market was added, fall back to the uniform
+     selling view rather than leaving no button lit. */
+  $('#mcPair').querySelector('[data-p="mixed"]').hidden=!two;
+  /* Coercing mixed→sell on the third market is remembered, so dropping back to
+     two restores the switch view instead of stranding the user in a pairing
+     they never picked. A deliberate choice (_pairAuto false) is left alone. */
+  if(!two && state.pair==='mixed'){ state.pair='sell'; _pairAuto=true; }
+  else if(two && _pairAuto){ state.pair='mixed'; _pairAuto=false; }
   const mixed=state.pair==='mixed';
-  /* flip only means anything when the two sides differ */
-  const a=(mixed&&state.flip)?1:0;
-  $('#mcDirA').textContent=colName(a);
-  $('#mcDirB').textContent=colName(1-a);
   const same=state.pair==='buy'?'Buying into':'Selling out of';
-  $('#mcDirLabA').textContent=mixed?'Selling out of':same;
-  $('#mcDirLabB').textContent=mixed?'Buying into':same;
-  $('#mcSwap').hidden=!mixed;
-  $('#mcPair').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.p===state.pair));
+  /* With three markets the per-column chips already carry the purpose, so the
+     bar just states it once instead of listing every name. */
+  $('#mcDirNames').hidden=!two;
+  $('#mcDirAll').hidden=two;
+  if(two){
+    const a=(mixed&&state.flip)?1:0;                   /* flip only matters when the sides differ */
+    $('#mcDirA').textContent=colName(a);
+    $('#mcDirB').textContent=colName(1-a);
+    $('#mcDirLabA').textContent=mixed?'Selling out of':same;
+    $('#mcDirLabB').textContent=mixed?'Buying into':same;
+    $('#mcSwap').hidden=!mixed;
+  } else {
+    $('#mcDirAll').textContent=same+' — all '+state.markets.length+' markets on the '+(state.pair==='buy'?'5-year':'1-year')+' wage-growth horizon';
+  }
+  $('#mcPair').querySelectorAll('button').forEach(b=>{
+    b.classList.toggle('on',b.dataset.p===state.pair);
+    /* "vs" reads wrong across three columns */
+    if(b.dataset.p==='buy')  b.textContent=two?'Buying vs Buying':'All buying';
+    if(b.dataset.p==='sell') b.textContent=two?'Selling vs Selling':'All selling';
+  });
 }
 
 function renderVerdict(w){
@@ -740,9 +772,11 @@ function renderCards(w){
       +'<div class="mc-scorerow">'
         +'<div class="mc-ds"><div class="n">'+(m&&m.ds!=null?m.ds.toFixed(0):DASH)+'</div><div class="k">Demand'+(rank?' · #'+rank.rank+' of '+rank.of:'')+'</div></div>'
         +'<div class="mc-gauge"><i style="width:'+(m&&m.ds!=null?Math.max(2,Math.min(100,m.ds)):0)+'%"></i></div>'
-        +(state.markets.length===2
-          ?'<div class="mc-rw"><div class="n">'+(rwv!=null?Math.round(rwv*100)+'%':DASH)+'</div><div class="k">Runway · '+(roleOf(i)==='buy'?'5yr':'1yr')+' wg</div></div>'
-          :'<div class="mc-rw"><div class="n">'+(rwv!=null?Math.round(rwv*100)+'%':DASH)+' / '+(m&&m.rw!=null?Math.round(m.rw*100)+'%':DASH)+'</div><div class="k">Runway · 1yr / 5yr wg</div></div>')
+        /* Three markets used to show BOTH horizons ("1yr / 5yr") because no
+           purpose was declared. One is declared now at any market count, so
+           show the single figure that matches it — otherwise an all-buying view
+           printed the 5-year number twice. */
+        +'<div class="mc-rw"><div class="n">'+(rwv!=null?Math.round(rwv*100)+'%':DASH)+'</div><div class="k">Runway · '+(roleOf(i)==='buy'?'5yr':'1yr')+' wg</div></div>'
       +'</div>'
       +(tier?'<span class="mc-tier" style="color:'+tier.color+'">'+esc(tier.label)+'</span>':'')
       +'<div class="mc-rag">'+['sd','value','confidence'].map((k,ki)=>{
@@ -883,14 +917,13 @@ function renderSens(){
   const curCash=CFG.rates.current.cash, fcCash=CFG.rates.forecast.cash;
   const ladder=[...new Set([...SENS_ANCHORS,curCash,fcCash])].sort((a,b)=>b-a);
   const two=state.markets.length===2;
-  $('#mcSensHz').hidden=two;   /* horizon toggle only matters without a declared direction */
   box.innerHTML=state.markets.map((s,i)=>{
     const p=RW[s]||{}, inp=p.inputs||{}, ceil=p.ai_ceiling||{};
     const aiv=T(i)==='u'?ceil.u:ceil.h;
     const median=T(i)==='u'?inp.median_u:inp.median_h;
     if(inp.income==null||aiv==null||median==null)
       return '<div class="mc-senscard"><div class="hd"><b>'+esc(colName(i))+'</b></div><div class="mc-skel">No runway inputs for this market.</div></div>';
-    const role=two?roleOf(i):state.sensHorizon, yrs=role==='buy'?5:1;
+    const role=roleOf(i), yrs=role==='buy'?5:1;   /* one source of truth for every column */
     const wg=CAPS.has(s)?((CFG.wage_growth&&CFG.wage_growth.capital)||0.03):((CFG.wage_growth&&CFG.wage_growth.regional)||0.02);
     const income=inp.income*Math.pow(1+wg,yrs);
     const moneyS=v=>(v<0?'-$':'$')+Math.abs(Math.round(v)).toLocaleString();   /* signed $ like the Forge card */
@@ -914,7 +947,7 @@ function renderSens(){
        ? (state.pair==='mixed'
            ? 'The selling market uses 1-year wage growth; the buying market 5-year (3% capitals / 2% regional) — swap the direction above to flip them.'
            : 'Both markets shown on the '+(state.pair==='buy'?'buying (5-year)':'selling (1-year)')+' wage-growth horizon — change the pairing above to compare them the other way.')
-       : 'All markets shown on the '+(state.sensHorizon==='buy'?'buying (5-year)':'selling (1-year)')+' wage-growth horizon — switch it beside the heading.');
+       : 'All '+state.markets.length+' markets shown on the '+(roleOf(0)==='buy'?'buying (5-year)':'selling (1-year)')+' wage-growth horizon — change the pairing at the top to switch it.');
 }
 
 function renderProv(){
@@ -943,13 +976,8 @@ function wireControls(){
   $('#mcPair').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
     if(state.pair===b.dataset.p) return;
     state.pair=b.dataset.p;
+    _pairAuto=false;                 /* an explicit pick is never undone */
     renderAll();                     /* horizon feeds runway + ladder, so redraw everything */
-  }));
-  $('#mcSensHz').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
-    if(state.sensHorizon===b.dataset.h) return;
-    state.sensHorizon=b.dataset.h;
-    $('#mcSensHz').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
-    renderSens();   /* the toggle is local to the sensitivity section */
   }));
   /* present mode — fullscreen client view; ESC or the floating button exits */
   const exitPresent=()=>{ document.body.classList.remove('mc-present');
