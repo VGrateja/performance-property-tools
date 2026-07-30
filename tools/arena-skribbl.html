@@ -82,6 +82,28 @@
     font-weight:800; letter-spacing:1px; text-transform:uppercase;
     background:rgba(211,115,211,.16); color:#D373D3; }
 
+  /* ── word-pool editor (dev/admin) ── */
+  .sk-wrow{ display:flex; gap:8px; align-items:center; margin-bottom:10px; }
+  .sk-wrow select{ flex:1; padding:7px 9px; border-radius:8px; font:inherit; font-size:12px;
+    /* opaque bg + explicit colour per theme — a bare select inherits the page
+       gradient and the options render unreadable */
+    background:#141824; color:#e8ecf4; border:1px solid rgba(255,255,255,.14); }
+  [data-theme="light"] .sk-wrow select{ background:#ffffff; color:#0a1520; border-color:rgba(10,21,32,.18); }
+  .sk-wlist{ max-height:190px; overflow-y:auto; display:flex; flex-wrap:wrap; gap:6px;
+    padding:10px; border-radius:10px; background:rgba(0,0,0,.18); margin-bottom:10px; }
+  [data-theme="light"] .sk-wlist{ background:rgba(10,21,32,.05); }
+  .sk-wtag{ display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px;
+    font-size:11.5px; background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.10); }
+  [data-theme="light"] .sk-wtag{ background:rgba(10,21,32,.05); border-color:rgba(10,21,32,.10); }
+  .sk-wtag button{ border:0; background:none; cursor:pointer; padding:0 1px; line-height:1;
+    font-size:13px; opacity:.5; color:inherit; }
+  .sk-wtag button:hover{ opacity:1; color:#E72347; }
+  .sk-wadd{ width:100%; box-sizing:border-box; padding:9px 10px; border-radius:10px; font:inherit;
+    font-size:12px; resize:vertical; margin-bottom:10px;
+    background:#141824; color:#e8ecf4; border:1px solid rgba(255,255,255,.14); }
+  [data-theme="light"] .sk-wadd{ background:#ffffff; color:#0a1520; border-color:rgba(10,21,32,.18); }
+  .sk-wmsg{ font-size:11.5px; opacity:.7 }
+
   /* ── game table ── */
   .sk-game{ display:grid; grid-template-columns:190px minmax(0,1fr) 260px; gap:14px; align-items:start; }
   @media (max-width:1080px){ .sk-game{ grid-template-columns:150px minmax(0,1fr); }
@@ -312,6 +334,29 @@
           <div class="sk-panel" id="onlinePanel" style="margin-top:16px">
             <h3>Online now <span class="sk-chip" id="onlineCount" hidden></span></h3>
             <div id="onlineList"><div class="sk-empty">Looking around…</div></div>
+          </div>
+
+          <!-- Word pool editor — dev/admin only, DENY by default (stays hidden
+               unless the profile check confirms a writer). RLS on skribbl_words
+               is the real gate; this is just the UI. Words were SQL-only
+               before, and each topic x difficulty bucket only holds ~12, so
+               repeats show up inside a single 3-round game. -->
+          <div class="sk-panel" id="wordsPanel" hidden style="margin-top:16px">
+            <h3>Word pool <span class="sk-chip" id="wordsTotal"></span></h3>
+            <div class="sk-wrow">
+              <select id="wTopic" title="Topic"></select>
+              <select id="wDiff" title="Difficulty">
+                <option value="easy">easy</option>
+                <option value="medium">medium</option>
+                <option value="hard">hard</option>
+              </select>
+            </div>
+            <div id="wList" class="sk-wlist"><div class="sk-empty">Pick a topic…</div></div>
+            <textarea id="wAdd" class="sk-wadd" rows="3" placeholder="Add words — one per line"></textarea>
+            <div class="sk-wrow">
+              <button class="sk-btn" id="wSave" type="button">Add words</button>
+              <span class="sk-wmsg" id="wMsg"></span>
+            </div>
           </div>
         </div>
       </div>
@@ -1337,6 +1382,93 @@
     });
   }
 
+  /* ══ word-pool editor (dev/admin) ══════════════════════════════════════
+     Words used to be SQL-only, and each topic x difficulty bucket holds only
+     ~12 — few enough that a single 3-round game can repeat one. The panel is
+     DENY-default: it stays hidden unless sbCurrentProfile() confirms dev/admin.
+     RLS on skribbl_words ("writers manage") is the actual gate; hiding the UI
+     just avoids showing a control that would fail. */
+  var W_TOPICS = [];
+
+  async function initWordsPanel() {
+    var canEdit = false;
+    try {
+      var p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null;
+      canEdit = !!(p && (p.tier === 'dev' || p.tier === 'admin'));
+    } catch (e) {}
+    if (!canEdit) return;                                   // stays hidden
+    var res = await window.sb.from('skribbl_words').select('topic').order('topic');
+    if (res.error) { console.warn('[skribbl] word pool unreadable:', res.error.message); return; }
+    W_TOPICS = Array.from(new Set((res.data || []).map(function (r) { return r.topic; }))).sort();
+    var sel = document.getElementById('wTopic');
+    sel.innerHTML = W_TOPICS.map(function (t) { return '<option value="' + esc(t) + '">' + esc(t) + '</option>'; }).join('');
+    document.getElementById('wordsTotal').textContent = (res.data || []).length + ' words';
+    document.getElementById('wordsPanel').hidden = false;
+    sel.addEventListener('change', loadWordBucket);
+    document.getElementById('wDiff').addEventListener('change', loadWordBucket);
+    document.getElementById('wSave').addEventListener('click', addWords);
+    document.getElementById('wList').addEventListener('click', function (ev) {
+      var b = ev.target.closest('button[data-del]');
+      if (b) delWord(b.getAttribute('data-del'), b.getAttribute('data-word'));
+    });
+    loadWordBucket();
+  }
+
+  function wBucket() {
+    return { topic: document.getElementById('wTopic').value, difficulty: document.getElementById('wDiff').value };
+  }
+  function wSay(msg) {
+    var el = document.getElementById('wMsg');
+    el.textContent = msg || '';
+    if (msg) setTimeout(function () { if (el.textContent === msg) el.textContent = ''; }, 3200);
+  }
+
+  async function loadWordBucket() {
+    var b = wBucket(), list = document.getElementById('wList');
+    list.innerHTML = '<div class="sk-empty">Loading…</div>';
+    var res = await window.sb.from('skribbl_words').select('id, word')
+      .eq('topic', b.topic).eq('difficulty', b.difficulty).order('word');
+    if (res.error) { list.innerHTML = '<div class="sk-empty">Couldn’t load</div>'; return; }
+    var rows = res.data || [];
+    /* A drawer gets 3 choices per turn, so a bucket under ~12 starts repeating
+       inside one game — worth flagging rather than leaving to be discovered. */
+    var warn = rows.length < 12 ? ' <span style="color:#FFA91F">· thin pool</span>' : '';
+    list.innerHTML = rows.length
+      ? rows.map(function (r) {
+          return '<span class="sk-wtag">' + esc(r.word) +
+                 '<button type="button" data-del="' + r.id + '" data-word="' + esc(r.word) +
+                 '" title="Remove">×</button></span>';
+        }).join('')
+      : '<div class="sk-empty">No words in this bucket</div>';
+    document.getElementById('wordsTotal').innerHTML = rows.length + ' in bucket' + warn;
+  }
+
+  async function addWords() {
+    var b = wBucket(), ta = document.getElementById('wAdd');
+    /* split on newlines OR commas, trim, drop blanks, de-dupe case-insensitively */
+    var seen = {}, words = String(ta.value || '').split(/[\n,]/).map(function (w) { return w.trim(); })
+      .filter(function (w) { return w.length > 0 && w.length <= 40; })
+      .filter(function (w) { var k = w.toLowerCase(); if (seen[k]) return false; seen[k] = 1; return true; });
+    if (!words.length) { wSay('Nothing to add'); return; }
+    var btn = document.getElementById('wSave');
+    btn.disabled = true;
+    var res = await window.sb.from('skribbl_words')
+      .insert(words.map(function (w) { return { word: w, topic: b.topic, difficulty: b.difficulty }; }));
+    btn.disabled = false;
+    if (res.error) { wSay('Failed: ' + res.error.message); return; }
+    ta.value = '';
+    wSay('Added ' + words.length + ' word' + (words.length === 1 ? '' : 's'));
+    loadWordBucket();
+  }
+
+  async function delWord(id, word) {
+    if (!confirm('Remove "' + word + '" from the word pool?')) return;
+    var res = await window.sb.from('skribbl_words').delete().eq('id', id);
+    if (res.error) { wSay('Failed: ' + res.error.message); return; }
+    wSay('Removed ' + word);
+    loadWordBucket();
+  }
+
   /* ── boot ── */
   (async function boot() {
     for (var i = 0; i < 60 && !window.sb; i++) await new Promise(function (r) { setTimeout(r, 100); });
@@ -1363,6 +1495,7 @@
 
     await loadLobbies();
     watchLobbies();
+    initWordsPanel();       /* lobby-only, writer-gated; never blocks the lobby */
   })();
 
   window.addEventListener('beforeunload', function () {
