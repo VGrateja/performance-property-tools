@@ -24,6 +24,21 @@
   'use strict';
   var doc = document, root = doc.documentElement;
 
+  /* ── PP_escapeHtml ──────────────────────────────────────────────────────
+     One HTML-escaper for the whole hub. Six tools each carried their own copy
+     (index, arena, arena-chess, arena-scrabble, arena-typing, cadence) escaping
+     the same five characters — but they disagreed on null: three returned the
+     literal string "null", three returned ''. This is the '' behaviour, which
+     is the one you want in UI text. Those six now delegate here.
+
+     Lives in os-chrome because every one of them already loads it in <head>,
+     ahead of their inline scripts — no new include and no load-order risk. */
+  window.PP_escapeHtml = function (s) {
+    return (s === null || s === undefined) ? '' : String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  };
+
   /* ── section registry (accents + glyphs, from the approved mockups) ─────── */
   var GLYPH = {
     pulse:  '<svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>',
