@@ -75,6 +75,9 @@ h1{font-size:30px;font-weight:800;letter-spacing:-0.02em;margin:6px 0 2px}
 .mc-dir{display:flex;align-items:center;gap:12px;margin:14px 0 4px;padding:12px 16px;background:var(--mc-surface);border:1px solid var(--mc-border);border-radius:14px}
 .mc-dir[hidden]{display:none}   /* author display:flex would otherwise beat the hidden attribute */
 .mc-dir .lab{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--mc-mut)}
+.mc-dir{flex-wrap:wrap}                                   /* pairing seg + labels wrap on narrow screens */
+.mc-dirsep{width:1px;align-self:stretch;background:var(--mc-border);margin:0 2px}
+.mc-swap[hidden]{display:none}                            /* nothing to swap when both sides share a purpose */
 .mc-dir b{color:var(--mc-ink);font-size:14px}
 .mc-swap{border:1px solid var(--mc-border-2);background:none;color:var(--mc-teal);border-radius:999px;width:32px;height:32px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
 .mc-swap svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
@@ -199,10 +202,21 @@ body.mc-present .mc-cards{grid-template-columns:repeat(auto-fit,minmax(290px,1fr
     </span>
   </div>
 
+  <!-- Two-market comparisons default to a SWITCH (sell one, buy the other), but
+       the same evidence answers "which of these two is the better buy?" and
+       "which should I sell first?" — so the purpose pairing is selectable. The
+       pairing drives each column's wage-growth horizon, the verdict wording and
+       the sensitivity ladder. -->
   <div class="mc-dir" id="mcDir" hidden>
-    <span class="lab">Selling out of</span><b id="mcDirA">—</b>
+    <span class="mc-seg mc-seg-sm" id="mcPair">
+      <button data-p="mixed" class="on">Buying vs Selling</button>
+      <button data-p="buy">Buying vs Buying</button>
+      <button data-p="sell">Selling vs Selling</button>
+    </span>
+    <span class="mc-dirsep"></span>
+    <span class="lab" id="mcDirLabA">Selling out of</span><b id="mcDirA">—</b>
     <button class="mc-swap" id="mcSwap" title="Swap direction"><svg viewBox="0 0 24 24"><path d="M7 4v13M7 4L4 7m3-3l3 3"/><path d="M17 20V7m0 13l3-3m-3 3l-3-3"/></svg></button>
-    <span class="lab">Buying into</span><b id="mcDirB">—</b>
+    <span class="lab" id="mcDirLabB">Buying into</span><b id="mcDirB">—</b>
   </div>
 
   <p class="mc-verdict" id="mcVerdict"></p>
@@ -271,7 +285,11 @@ const DASH='—';
 /* ktypes = per-column property type ('h'|'u') — lets one comparison mix houses
    and units (the "same region, houses vs units" ask). state.type stays as the
    default for new columns + the global seg's uniform state. */
-const state={ markets:['brisbane','melbourne'], ktypes:['h','h'], type:'h', flip:false, sensHorizon:'sell' };   /* sensHorizon: 3-market-mode ladder horizon */
+/* pair (2-market mode only): 'mixed' = the original switch framing, one side
+   selling and one buying; 'buy' = both columns judged as purchases; 'sell' =
+   both judged as exits. It sets each column's wage-growth horizon, so it has to
+   live in state (and in the URL) rather than being a display-only toggle. */
+const state={ markets:['brisbane','melbourne'], ktypes:['h','h'], type:'h', flip:false, pair:'mixed', sensHorizon:'sell' };   /* sensHorizon: 3-market-mode ladder horizon */
 let REG={}, RW={}, CFG=null, SNAP=null, CLOCK=null, TL=null, FEED={}, ENTRY={}, CAPS=new Set();
 let _profile=null;
 
@@ -306,6 +324,7 @@ let _profile=null;
     const tys=(q.get('types')||'').split(',').map(s=>s.trim()==='u'?'u':'h');
     state.ktypes=state.markets.map((_,i)=>(q.get('types')?tys[i]:state.type)||state.type);
     if(q.get('flip')==='1') state.flip=true;
+    const _p=q.get('pair'); if(_p==='buy'||_p==='sell') state.pair=_p;   /* validated — anything else stays the switch framing */
   }catch(e){}
   state.markets=state.markets.filter(s=>RW[s]);
   if(state.markets.length<2){ const all=marketSlugs(); state.markets=[all[0],all[1]]; }
@@ -372,7 +391,13 @@ function dsRank(slug,t){
 /* direction horizon: with exactly two markets the sell side uses 1-yr wage growth
    and the buy side 5-yr (Van's rule); any other count shows everything on the
    selling (1-yr) horizon — matching the sensitivity section */
-const roleOf=i=>(state.markets.length===2 && i===(state.flip?0:1))?'buy':'sell';
+/* Which purpose column i is judged as. Both sides share it when the pairing is
+   buy-vs-buy or sell-vs-sell; otherwise the flip decides which side buys. */
+const roleOf=i=>{
+  if(state.markets.length!==2) return 'sell';                     /* 3-market mode reads state.sensHorizon instead */
+  if(state.pair==='buy'||state.pair==='sell') return state.pair;
+  return i===(state.flip?0:1)?'buy':'sell';
+};
 /* runway on the direction horizon. The snapshot rw is the 5-yr wage-growth figure
    (build-runway forecast_wg_pct). Wage growth only scales income and the ceiling is
    linear in income, so income cancels and the 1-yr figure derives exactly:
@@ -630,15 +655,22 @@ function renderDir(){
   const two=state.markets.length===2;
   $('#mcDir').hidden=!two;
   if(!two) return;
-  const a=state.flip?1:0;
+  const mixed=state.pair==='mixed';
+  /* flip only means anything when the two sides differ */
+  const a=(mixed&&state.flip)?1:0;
   $('#mcDirA').textContent=colName(a);
   $('#mcDirB').textContent=colName(1-a);
+  const same=state.pair==='buy'?'Buying into':'Selling out of';
+  $('#mcDirLabA').textContent=mixed?'Selling out of':same;
+  $('#mcDirLabB').textContent=mixed?'Buying into':same;
+  $('#mcSwap').hidden=!mixed;
+  $('#mcPair').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.p===state.pair));
 }
 
 function renderVerdict(w){
   const el=$('#mcVerdict');
   if(state.markets.length!==2){ el.innerHTML=''; return; }
-  const ai=state.flip?1:0, bi=1-ai;
+  const ai=(state.pair==='mixed'&&state.flip)?1:0, bi=1-ai;
   const A=state.markets[ai], B=state.markets[bi];
   const an=colName(ai), bn=colName(bi);
   const ca=clockOf(A,T(ai)), cb=clockOf(B,T(bi));
@@ -646,7 +678,26 @@ function renderVerdict(w){
   const qa=quadrantOf(da&&da.ds, da&&da.rw, typeOf(A,T(ai))), qb=quadrantOf(db&&db.ds, db&&db.rw, typeOf(B,T(bi)));
   let line;
   const sa=ca?stageOf(ca.label):0, sb=cb?stageOf(cb.label):0;
-  if(sa===3&&sb===1){
+  const bA='<b>'+esc(an)+'</b>', bB='<b>'+esc(bn)+'</b>';
+  const mixedFallback=()=>(qa&&qb) ? bA+': '+esc(qa.phrase)+'. '+bB+': '+esc(qb.phrase)+'.'
+                                   : 'Signals are mixed or incomplete for this pairing — lean on the evidence table below.';
+  /* SAME-PURPOSE pairings answer a different question from the switch framing:
+     not "should I move from A to B" but "which of these two, for the same
+     purpose". Stage 1 = value phase, 3 = peak, 4 = post-peak; 2/0 are left to
+     the quadrant fallback rather than over-claiming a timing verdict. */
+  if(state.pair==='buy'){
+    if(sa===1&&sb===1)        line='Both '+bA+' and '+bB+' are early in the cycle, so timing does not separate them — the choice comes down to the fundamentals below.';
+    else if(sa===1&&sb>=3)    line=bA+' is still in its value phase while '+bB+' is past its peak — on timing the entry case favours '+bA+'.';
+    else if(sb===1&&sa>=3)    line=bB+' is still in its value phase while '+bA+' is past its peak — on timing the entry case favours '+bB+'.';
+    else if(sa>=3&&sb>=3)     line='Both markets sit at or beyond their peak, so neither is an obvious entry on timing — weigh the runway and the affordability ceiling below.';
+    else                     line=mixedFallback();
+  } else if(state.pair==='sell'){
+    if(sa>=3&&sb>=3)          line='Both '+bA+' and '+bB+' are in or past their selling window — this is a sequencing question, and the evidence below shows which is closer to its ceiling.';
+    else if(sa>=3&&sb<3)      line=bA+' is in its selling window while '+bB+' is earlier in the cycle — on timing the exit case favours '+bA+' first.';
+    else if(sb>=3&&sa<3)      line=bB+' is in its selling window while '+bA+' is earlier in the cycle — on timing the exit case favours '+bB+' first.';
+    else if(sa===1&&sb===1)   line='Neither market is near its peak, so selling either now would be early on timing — the runway below shows what each has left to run.';
+    else                     line=mixedFallback();
+  } else if(sa===3&&sb===1){
     line='<b>'+esc(an)+'</b> is in its selling window while <b>'+esc(bn)+'</b> is still in the value phase — the cycle spread supports selling '+esc(an)+' strength and buying '+esc(bn)+' early.';
   } else if(sa>=3&&sb>=3){
     line='Both <b>'+esc(an)+'</b> and <b>'+esc(bn)+'</b> are late-cycle — the timing favours the sell side; weigh the entry case against the runway below.';
@@ -859,8 +910,11 @@ function renderSens(){
       +'</div>';
   }).join('');
   $('#mcSensFoot').innerHTML='Ceiling = the maximum price sustainable at each cash rate: PV of the affordable repayment over 30 years ÷ 0.8 (80% LVR). Applied mortgage rate = cash + '+(margin*100).toFixed(2)+'%. '
-    +(two?'The selling market uses 1-year wage growth; the buying market 5-year (3% capitals / 2% regional) — swap the direction above to flip them.'
-         :'All markets shown on the '+(state.sensHorizon==='buy'?'buying (5-year)':'selling (1-year)')+' wage-growth horizon — switch it beside the heading.');
+    +(two
+       ? (state.pair==='mixed'
+           ? 'The selling market uses 1-year wage growth; the buying market 5-year (3% capitals / 2% regional) — swap the direction above to flip them.'
+           : 'Both markets shown on the '+(state.pair==='buy'?'buying (5-year)':'selling (1-year)')+' wage-growth horizon — change the pairing above to compare them the other way.')
+       : 'All markets shown on the '+(state.sensHorizon==='buy'?'buying (5-year)':'selling (1-year)')+' wage-growth horizon — switch it beside the heading.');
 }
 
 function renderProv(){
@@ -886,6 +940,11 @@ function wireControls(){
     state.markets.push(next); state.ktypes.push(state.type); await ensureFeeds([next]); renderAll();
   });
   $('#mcSwap').addEventListener('click',()=>{ state.flip=!state.flip; renderAll(); });
+  $('#mcPair').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+    if(state.pair===b.dataset.p) return;
+    state.pair=b.dataset.p;
+    renderAll();                     /* horizon feeds runway + ladder, so redraw everything */
+  }));
   $('#mcSensHz').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
     if(state.sensHorizon===b.dataset.h) return;
     state.sensHorizon=b.dataset.h;
@@ -905,7 +964,7 @@ function wireControls(){
   document.addEventListener('fullscreenchange',()=>{ if(!document.fullscreenElement) exitPresent(); });
   $('#mcPin').addEventListener('click',()=>{
     if(!window.PP_PINS){ alert('Pins unavailable.'); return; }
-    const url='tools/market-compare.html?markets='+state.markets.join(',')+'&types='+state.markets.map((_,i)=>T(i)).join(',')+(state.flip?'&flip=1':'');
+    const url='tools/market-compare.html?markets='+state.markets.join(',')+'&types='+state.markets.map((_,i)=>T(i)).join(',')+(state.flip?'&flip=1':'')+(state.pair!=='mixed'?'&pair='+state.pair:'');
     const label='Compare: '+state.markets.map((_,i)=>colName(i)).join(' vs ');
     if(PP_PINS.has(p=>p.url===url)){ flashPin('Already pinned'); return; }
     PP_PINS.add({ kind:'link', label:label, url:url, a1:'#7E8CF1', a2:'#233AE7',
@@ -915,7 +974,7 @@ function wireControls(){
 }
 function flashPin(t){ const b=$('#mcPin'); const old=b.innerHTML; b.innerHTML=esc(t); setTimeout(()=>{ b.innerHTML=old; },1500); }
 function syncURL(){
-  try{ history.replaceState(null,'','?markets='+state.markets.join(',')+'&types='+state.markets.map((_,i)=>T(i)).join(',')+(state.flip?'&flip=1':'')); }catch(e){}
+  try{ history.replaceState(null,'','?markets='+state.markets.join(',')+'&types='+state.markets.map((_,i)=>T(i)).join(',')+(state.flip?'&flip=1':'')+(state.pair!=='mixed'?'&pair='+state.pair:'')); }catch(e){}
 }
 </script>
 </body>
