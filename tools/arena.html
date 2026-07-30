@@ -617,10 +617,16 @@ async function loadArenaLiveFeed() {
         .eq('challengee_user_id', myId).eq('status', 'pending').gt('expires_at', nowIso)
         .order('created_at', { ascending: false }).limit(5)
         : Promise.resolve({ data: [] }),
-      /* Incoming scrabble challenges. */
-      myId ? window.sb.from('arena_scrabble_challenges')
-        .select('id, challenger_name, challenger_email, ranked, time_control, created_at')
-        .eq('challengee_user_id', myId).eq('status', 'pending').gt('expires_at', nowIso)
+      /* Incoming scrabble invites. Scrabble dropped 1:1 challenges for the
+         lobby model, and `arena_scrabble_challenges` went with it in migration
+         021 — this query had been 404ing ever since, swallowed by allSettled
+         below, so a pending Scrabble invite never reached the feed. The
+         equivalent now is a lobby_players row with status 'invited' whose lobby
+         is still open and unexpired. */
+      myId ? window.sb.from('arena_scrabble_lobby_players')
+        .select('lobby_id, created_at, lobby:arena_scrabble_lobbies!inner(host_name, host_email, ranked, status, turn_time_seconds, expires_at)')
+        .eq('user_id', myId).eq('status', 'invited')
+        .eq('lobby.status', 'open').gt('lobby.expires_at', nowIso)
         .order('created_at', { ascending: false }).limit(5)
         : Promise.resolve({ data: [] }),
       /* Active chess games. */
@@ -650,16 +656,20 @@ async function loadArenaLiveFeed() {
       action: { label: 'Open', href: 'tools/arena-chess.html', title: 'Chess' },
       cls: 'is-challenge',
     }));
-    scrChIn.forEach(c => items.push({
-      priority: 0, type: 'challenge', icon: '📩',
-      time: new Date(c.created_at).getTime(),
-      html: '<strong>' + _escapeHtml(_arenaName(c.challenger_name, c.challenger_email))
-          + '</strong> wants to play <strong>Scrabble</strong> · '
-          + _escapeHtml((c.ranked ? 'Ranked' : 'Casual') + ' · ' + (c.time_control || 'untimed')),
-      meta: 'now',
-      action: { label: 'Open', href: 'tools/arena-scrabble.html', title: 'Scrabble' },
-      cls: 'is-challenge',
-    }));
+    scrChIn.forEach(c => {
+      const L = c.lobby || {};
+      const turn = L.turn_time_seconds ? (L.turn_time_seconds + 's/turn') : 'untimed';
+      items.push({
+        priority: 0, type: 'challenge', icon: '📩',
+        time: new Date(c.created_at).getTime(),
+        html: '<strong>' + _escapeHtml(_arenaName(L.host_name, L.host_email))
+            + '</strong> invited you to <strong>Scrabble</strong> · '
+            + _escapeHtml((L.ranked ? 'Ranked' : 'Casual') + ' · ' + turn),
+        meta: 'now',
+        action: { label: 'Open', href: 'tools/arena-scrabble.html', title: 'Scrabble' },
+        cls: 'is-challenge',
+      });
+    });
     chessAct.forEach(g => items.push({
       priority: 1, type: 'active', icon: '♞',
       time: new Date(g.started_at).getTime(),
@@ -1167,6 +1177,16 @@ let _arenaNewsItems = [];
 let _arenaMilestones = [];
 const _WPM_MILESTONES = [60, 80, 100, 120];
 let _arenaNewsInFlight = false;
+/* The ticker was ported from index.html but its four supporting bindings were
+   left behind, so _renderArenaNewsTicker() threw ReferenceError — first on its
+   opening line (reading an undeclared binding throws, strict or not), then on
+   the interval timings once that was fixed. The highlights ticker never ran.
+   Values match the hub's copy exactly (index.html:3019-3020); the slide time
+   has to stay in step with the 0.55s CSS transform transition. */
+let _arenaNewsCycleTimer = null;
+let _arenaNewsCycleIdx = 0;
+const ARENA_NEWS_TICK_MS = 10000;     /* per-item dwell time */
+const ARENA_NEWS_SLIDE_MS = 550;      /* matches CSS transition duration */
 
 function _renderArenaNewsTicker() {
   const $track = document.getElementById('hs-arena-news-track');
