@@ -104,4 +104,4 @@
 |---|---|
 | New design preview | http://localhost:8124 ← this folder (`Desktop\PP-OS-Redesign`), auto-starts at logon (task “Performance Tools - OS Redesign Server”, `scratch/serve-redesign.vbs` in the main folder) |
 | Current design | http://localhost:8123 (task “Performance Tools - Local Server”) + VS Code Live Server :5500 — main folder, branch `main` |
-| Kit demo | http://localhost:8124/os-preview.html — renders the extracted design system without touching any tool |
+| Kit demo | os-preview.html — DELETED 2026-07-31 once the redesign shipped (in git history) |

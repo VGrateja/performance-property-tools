@@ -26,8 +26,8 @@
 
   const SUPABASE_URL = 'https://cannojsxduvlewimwoxa.supabase.co';
   /* Legacy anon JWT (role=anon, iss=supabase) rather than the newer
-     publishable key format. Kept after the freeze investigation —
-     see docs/BUG.md. */
+     publishable key format. Kept after the freeze investigation (that
+     sign-in freeze is CLOSED; docs/BUG.md was removed 2026-07-31). */
   const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbm5vanN4ZHV2bGV3aW13b3hhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwMzQ4MzQsImV4cCI6MjA5MzYxMDgzNH0.BQNkOTZHgmTEP1jONfRxD1-Db2rLgdIt82zbAsPxb0s';
 
   if (!window.supabase || typeof window.supabase.createClient !== 'function') {

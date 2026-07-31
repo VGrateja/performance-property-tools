@@ -107,8 +107,12 @@ that alone, not the site.
 
 ## The tools (`tools/`)
 
-Hub (`index.html`) is 4 swipeable pages: **analytics** (default), **pm**,
-**arena**, **vault**. Tools:
+Hub (`index.html`) is the **Performance OS desktop** — a dock that opens
+per-section windows: **analytics**, **docs**, **present**, **vault**, **pm**,
+**people**, **arena**. (It was 4 swipeable pages before the 2026-07 redesign;
+that model is gone, and a leftover `_hubCurrentPage()` call from it threw on
+every Arena-ticker tick until 2026-07-31 — don't reintroduce page-based
+assumptions.) Tools:
 
 - `online-reports.html` — ~474KB; the most complex tool at runtime (and 2nd
   largest file, after `presentation.html`). 36 regional property reports
@@ -177,14 +181,14 @@ Hub (`index.html`) is 4 swipeable pages: **analytics** (default), **pm**,
 ## Repo layout
 
 ```
-index.html              hub (login + 4 swipeable tool pages)
+index.html              hub (login + the Performance OS desktop: windows, dock)
 tools/                  one HTML file per tool
-shared/                 auth, supabase client, report-edit, theme, css
-supabase/migrations/    numbered SQL (apply via dashboard SQL editor)
+shared/                 auth, supabase client, report-edit, theme, telemetry, css
+supabase/migrations/    numbered SQL (apply via MCP apply_migration)
 supabase/functions/     Deno Edge Functions
-scripts/                Apps Script source, render-reports.mjs, seeds, cleanups
+scripts/                Forge ingests, render-reports.mjs, seeds, maintenance
 assets/Reports/         report cover images, logos, chart/data assets
-docs/                   BUG.md, CADENCE.md, ONLINE_REPORTS_RENDERER.md, etc.
+docs/                   CADENCE.md, DATA_FORGE_PIPELINE.md, ONLINE_REPORTS_RENDERER.md
 .github/workflows/      monthly PDF render
 ```
 
