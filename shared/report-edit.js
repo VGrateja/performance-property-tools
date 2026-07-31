@@ -3777,6 +3777,9 @@ function _readPdfPagesSelection() {
    JPEG / page-subset is a later increment). */
 function _dispatchReportDownload(kind, sel) {
   closePdfPagesModal();
+  /* usage telemetry: one 'export:<tool>' beat per download action (all three
+     report tools funnel through here) — see shared/pp-telemetry.js */
+  try { if (window.PP_TRACK) PP_TRACK.tag('export'); } catch (e) {}
   /* Lite = the pre-rendered Lite PDFs. Regional-only, PDF-only, and
      page-agnostic (a fixed pre-rendered file). */
   if (sel.lite) {

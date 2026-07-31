@@ -70,12 +70,20 @@
              : /iPhone|iPad/.test(ua) ? 'iOS'
              : /Android/.test(ua) ? 'Android'
              : /Linux/.test(ua) ? 'Linux' : 'Other';
-      return {
+      var meta = {
         br: br, os: os,
         vw: Math.round(window.innerWidth || 0),  vh: Math.round(window.innerHeight || 0),
         sw: Math.round((screen && screen.width)  || 0),
         sh: Math.round((screen && screen.height) || 0)
       };
+      /* page-load ms (nav start → DOM interactive) — clamped so a tab
+         restored from sleep can't report an hour-long "load" */
+      try {
+        var nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+        var lm = nav ? Math.round(nav.domInteractive) : 0;
+        if (lm > 0 && lm < 120000) meta.lm = lm;
+      } catch (e) {}
+      return meta;
     }
 
     /* ── engagement accounting ── */
@@ -161,6 +169,29 @@
         if (document.visibilityState === 'hidden') flushBeacon();
       });
       window.addEventListener('pagehide', flushBeacon);
+    } catch (e) {}
+
+    /* ── one-shot event beats on pseudo tool keys ('present:<tool>',
+       'export:<tool>') — same table, same RPC; the dashboard splits the
+       prefixed keys out of the leaderboard/engaged-time and counts them as
+       their own KPIs. Fire-and-forget, never before the session exists. ── */
+    function tag(prefix) {
+      try {
+        if (!token) return;                       /* pre-auth: drop silently */
+        window.sb.rpc('pp_track_usage', {
+          p_session: SID, p_tool: prefix + ':' + TOOL, p_page: path,
+          p_secs: 0, p_views: 1, p_ctx: CTX || null, p_meta: null
+        }).then(function () {}, function () {});
+      } catch (e) {}
+    }
+    window.PP_TRACK = { tag: tag };
+
+    /* entering fullscreen ≈ presenting (B/S Present, presentation deck,
+       Market Compare present all go fullscreen) — count entries only */
+    try {
+      document.addEventListener('fullscreenchange', function () {
+        if (document.fullscreenElement) tag('present');
+      });
     } catch (e) {}
 
     /* ── boot: wait for a signed-in session, then open with the first beat ── */
