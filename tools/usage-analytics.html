@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Usage Analytics &mdash; Performance Property</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
+<!-- OS chrome: mode/period/shade + legacy data-theme bridge -->
+<script src="../shared/os-chrome.js?v=f3c57c2c"></script>
+<link rel="stylesheet" href="../shared/os-theme.css?v=a0feabf6"/>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   USAGE ANALYTICS — dev-only telemetry dashboard (migration 094).
+   Who uses the hub, what they open, for how long. Engagement model and all
+   collection rules live in shared/pp-telemetry.js; this page only reads,
+   via the dev-gated pp_usage_dashboard / pp_usage_live RPCs.
+   Brand: Montserrat, sanctioned hexes only, both themes.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root{
+  --ua-ink:#F4F6F8; --ua-ink2:#C6CCD6; --ua-mut:var(--mut,#8b93a2);
+  --ua-surface:rgba(255,255,255,0.045); --ua-surface-2:rgba(255,255,255,0.025);
+  --ua-solid:#1A2130;
+  --ua-border:rgba(255,255,255,0.10); --ua-border-2:rgba(255,255,255,0.16);
+  --ua-teal:#00A0B4; --ua-teal-deep:#0083A3; --ua-blue:#54A6DE;
+  --ua-green:#71B357; --ua-warn:#FFA91F; --ua-euc:#3E7967;
+  --ua-chip:rgba(0,160,180,0.14);
+  --ua-track:rgba(255,255,255,0.08);
+}
+[data-theme="light"]{
+  --ua-ink:#171B24; --ua-ink2:#3F4650;
+  --ua-surface:#ffffff; --ua-surface-2:#F7F9FA;
+  --ua-solid:#ffffff;
+  --ua-border:rgba(23,27,36,0.12); --ua-border-2:rgba(23,27,36,0.20);
+  --ua-chip:#EBFBFF;
+  --ua-track:rgba(23,27,36,0.08);
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Montserrat',system-ui,sans-serif;color:var(--ua-ink);-webkit-font-smoothing:antialiased}
+
+.ua-wrap{max-width:1280px;margin:0 auto;padding:22px 22px 60px}
+
+/* header row */
+.ua-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+.ua-title h1{margin:0;font-size:22px;font-weight:800;letter-spacing:-0.01em}
+.ua-title p{margin:4px 0 0;font-size:12px;color:var(--ua-mut)}
+.ua-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ua-pills{display:flex;gap:0;border:1px solid var(--ua-border);border-radius:10px;overflow:hidden;background:var(--ua-surface)}
+.ua-pill{border:0;background:transparent;color:var(--ua-ink2);font:600 12px 'Montserrat',sans-serif;padding:8px 13px;cursor:pointer}
+.ua-pill.on{background:var(--ua-teal);color:#fff}
+.ua-pill:not(.on):hover{background:var(--ua-chip);color:var(--ua-ink)}
+.ua-tgl{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ua-ink2);cursor:pointer;user-select:none}
+.ua-tgl .sw{width:34px;height:19px;border-radius:10px;background:var(--ua-track);position:relative;transition:background .18s;flex:none}
+.ua-tgl .sw::after{content:'';position:absolute;top:2.5px;left:2.5px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .18s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.ua-tgl.on .sw{background:var(--ua-teal)}
+.ua-tgl.on .sw::after{left:17.5px}
+
+/* live chip */
+.ua-live{display:flex;align-items:center;gap:7px;padding:7px 12px;border:1px solid var(--ua-border);border-radius:10px;background:var(--ua-surface);font-size:12px;font-weight:600;color:var(--ua-ink2);cursor:default;position:relative}
+.ua-live .dot{width:8px;height:8px;border-radius:50%;background:var(--ua-green);flex:none;animation:ua-pulse 2s infinite}
+.ua-live.zero .dot{background:var(--ua-mut);animation:none}
+@keyframes ua-pulse{0%{box-shadow:0 0 0 0 rgba(113,179,87,.5)}70%{box-shadow:0 0 0 7px rgba(113,179,87,0)}100%{box-shadow:0 0 0 0 rgba(113,179,87,0)}}
+.ua-live-pop{position:absolute;top:calc(100% + 8px);right:0;min-width:230px;background:var(--ua-solid);border:1px solid var(--ua-border-2);border-radius:12px;padding:10px 12px;z-index:40;box-shadow:0 12px 34px rgba(0,0,0,.35);display:none}
+.ua-live:hover .ua-live-pop{display:block}
+.ua-live-pop .row{display:flex;justify-content:space-between;gap:14px;font-size:11.5px;padding:4px 0;font-weight:500;color:var(--ua-ink2)}
+.ua-live-pop .row b{color:var(--ua-ink);font-weight:700}
+
+/* demo watermark */
+.ua-demo{display:none;padding:6px 11px;border-radius:9px;background:rgba(255,169,31,.16);border:1px solid rgba(255,169,31,.4);color:var(--ua-warn);font-size:11px;font-weight:700;letter-spacing:.05em}
+body.ua-is-demo .ua-demo{display:inline-block}
+
+/* KPI grid */
+.ua-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:14px}
+@media (max-width:1100px){.ua-kpis{grid-template-columns:repeat(3,1fr)}}
+@media (max-width:640px){.ua-kpis{grid-template-columns:repeat(2,1fr)}}
+.ua-kpi{background:var(--ua-surface);border:1px solid var(--ua-border);border-radius:14px;padding:13px 14px 11px;min-width:0}
+.ua-kpi .lbl{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ua-mut)}
+.ua-kpi .val{font-size:24px;font-weight:800;margin-top:5px;line-height:1.1;letter-spacing:-0.01em}
+.ua-kpi .sub{display:flex;align-items:center;gap:6px;margin-top:5px;min-height:16px}
+.ua-kpi .delta{font-size:10.5px;font-weight:700;padding:1.5px 6px;border-radius:7px}
+.ua-kpi .delta.up{color:var(--ua-teal);background:var(--ua-chip)}
+.ua-kpi .delta.dn{color:var(--ua-mut);background:var(--ua-track)}
+.ua-kpi .spark{margin-left:auto;flex:none;opacity:.9}
+.ua-kpi .spark polyline{fill:none;stroke:var(--ua-teal);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+
+/* card grid */
+.ua-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.ua-grid .full{grid-column:1 / -1}
+@media (max-width:980px){.ua-grid{grid-template-columns:1fr}}
+.ua-card{background:var(--ua-surface);border:1px solid var(--ua-border);border-radius:16px;padding:16px 18px;min-width:0}
+.ua-card h2{margin:0;font-size:13.5px;font-weight:800;letter-spacing:-0.005em}
+.ua-card .hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.ua-card .hint{font-size:11px;color:var(--ua-mut);font-weight:500}
+.ua-seg{display:flex;border:1px solid var(--ua-border);border-radius:8px;overflow:hidden}
+.ua-seg button{border:0;background:transparent;color:var(--ua-ink2);font:600 10.5px 'Montserrat',sans-serif;padding:5px 10px;cursor:pointer}
+.ua-seg button.on{background:var(--ua-teal);color:#fff}
+.ua-chart{width:100%;height:300px}
+.ua-chart.tall{height:340px}
+.ua-chart.short{height:250px}
+
+/* people table */
+.ua-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.ua-tbl th{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ua-mut);text-align:left;padding:7px 8px;border-bottom:1px solid var(--ua-border);cursor:pointer;user-select:none;white-space:nowrap}
+.ua-tbl th.num,.ua-tbl td.num{text-align:right}
+.ua-tbl th .car{opacity:.6;font-size:9px}
+.ua-tbl td{padding:7px 8px;border-bottom:1px solid var(--ua-border);font-weight:500;color:var(--ua-ink2);white-space:nowrap}
+.ua-tbl tr:last-child td{border-bottom:0}
+.ua-tbl td.who{font-weight:700;color:var(--ua-ink)}
+.ua-tbl td .team{font-size:10px;color:var(--ua-mut);font-weight:600;margin-left:6px}
+.ua-tbl td .bar{display:inline-block;vertical-align:middle;height:7px;border-radius:4px;background:linear-gradient(90deg,var(--ua-teal),var(--ua-blue));margin-right:8px;min-width:2px}
+.ua-tbl td.excl{opacity:.55}
+.ua-scroll{overflow-x:auto}
+
+/* empty state */
+.ua-empty{display:none;text-align:center;padding:70px 20px;border:1px dashed var(--ua-border-2);border-radius:18px;margin-bottom:14px}
+.ua-empty .big{font-size:38px}
+.ua-empty h3{margin:12px 0 6px;font-size:16px;font-weight:800}
+.ua-empty p{margin:0;font-size:12.5px;color:var(--ua-mut);line-height:1.6}
+body.ua-no-data .ua-empty{display:block}
+body.ua-no-data .ua-kpis,body.ua-no-data .ua-grid{display:none}
+
+/* about footer */
+.ua-about{margin-top:16px;font-size:11px;color:var(--ua-mut);line-height:1.7;border-top:1px solid var(--ua-border);padding-top:12px}
+.ua-about b{color:var(--ua-ink2)}
+
+/* not-authorized cover (unassigned admins land here; RLS backs it anyway) */
+.ua-deny{display:none;min-height:60vh;align-items:center;justify-content:center;text-align:center;padding:40px}
+.ua-deny .inner{max-width:380px}
+.ua-deny h2{font-size:17px;font-weight:800;margin:14px 0 8px}
+.ua-deny p{font-size:12.5px;color:var(--ua-mut);line-height:1.6;margin:0}
+body.ua-denied .ua-deny{display:flex}
+body.ua-denied .ua-wrap{display:none}
+</style>
+</head>
+<body>
+
+<div class="ua-deny"><div class="inner">
+  <div style="font-size:34px">🔒</div>
+  <h2>This area is for the developer</h2>
+  <p>Usage analytics carries per-person activity, so it stays with the person who runs the platform. You'll be back on the desktop in a moment.</p>
+</div></div>
+
+<div class="ua-wrap">
+  <div class="ua-head">
+    <div class="ua-title">
+      <h1>Usage analytics</h1>
+      <p id="uaSubtitle">How the hub is being used — collected since <span id="uaSince">—</span>, day boundary AEST</p>
+    </div>
+    <div class="ua-controls">
+      <span class="ua-demo">DEMO DATA</span>
+      <div class="ua-pills" id="uaPills">
+        <button class="ua-pill" data-r="1">Today</button>
+        <button class="ua-pill on" data-r="7">7d</button>
+        <button class="ua-pill" data-r="30">30d</button>
+        <button class="ua-pill" data-r="90">90d</button>
+        <button class="ua-pill" data-r="all">All</button>
+      </div>
+      <div class="ua-tgl" id="uaTgl" role="switch" aria-checked="false" tabindex="0">
+        <span class="sw"></span><span>Include internal</span>
+      </div>
+      <div class="ua-live zero" id="uaLive">
+        <span class="dot"></span><span id="uaLiveN">0 online</span>
+        <div class="ua-live-pop" id="uaLivePop"><div class="row">Nobody on the hub right now</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ua-empty">
+    <div class="big">📡</div>
+    <h3>Telemetry is armed</h3>
+    <p>Data appears here as staff use the hub — engaged time, tools opened, devices, peak hours.<br>
+       Check back after the team's next working day. Append <b>?demo=1</b> to preview with sample data.</p>
+  </div>
+
+  <div class="ua-kpis" id="uaKpis"></div>
+
+  <div class="ua-grid">
+    <div class="ua-card full">
+      <div class="hd"><h2>Daily activity</h2><span class="hint">bars = active people · line = engaged hours</span></div>
+      <div class="ua-chart tall" id="chTimeline"></div>
+    </div>
+
+    <div class="ua-card">
+      <div class="hd"><h2>When the hub is used</h2><span class="hint">engaged time by weekday × hour</span></div>
+      <div class="ua-chart" id="chHeat"></div>
+    </div>
+
+    <div class="ua-card">
+      <div class="hd"><h2>Tool leaderboard</h2>
+        <div class="ua-seg" id="uaToolSeg">
+          <button data-m="secs" class="on">Hours</button><button data-m="users">People</button><button data-m="views">Opens</button>
+        </div>
+      </div>
+      <div class="ua-chart" id="chTools"></div>
+    </div>
+
+    <div class="ua-card full">
+      <div class="hd"><h2>People</h2><span class="hint" id="uaPeopleHint"></span></div>
+      <div class="ua-scroll"><table class="ua-tbl" id="uaPeople"></table></div>
+    </div>
+
+    <div class="ua-card">
+      <div class="hd"><h2>Report regions</h2><span class="hint">engaged time by region opened</span></div>
+      <div class="ua-chart short" id="chRegions"></div>
+    </div>
+
+    <div class="ua-card">
+      <div class="hd"><h2>Devices</h2><span class="hint">sessions by browser / viewport width</span></div>
+      <div class="ua-chart short" id="chDevices"></div>
+    </div>
+  </div>
+
+  <div class="ua-about">
+    <b>How this is measured.</b> Every signed-in page carries a lightweight collector
+    (<b>shared/pp-telemetry.js</b>). A second counts as <b>engaged</b> only while the tab is visible and the
+    person gave any input in the last 60&nbsp;seconds (5&nbsp;minutes during fullscreen presenting) — the same
+    engagement model GA4 uses. Beats flush once a minute into one row per person, tool and AEST day; nothing is
+    recorded per keystroke or per click, no content is captured, and exports, embeds and the PDF renderer are
+    excluded at source. <b>Internal traffic</b> (the dev account, the test account, the PDF service account)
+    is hidden from every number on this page unless the toggle includes it. Reading this data is
+    triple-locked to the dev role: RLS on the table, a role check inside the RPCs, and this page's own gate.
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../shared/supabase-client.js?v=79207e52"></script>
+<script src="../shared/tool-registry.js?v=64672718"></script>
+<script src="../shared/desktop-pins.js?v=e2416017"></script>
+<script src="../shared/auth.js?v=7dce203e"></script>
+<script src="../shared/auth-gate.js?v=003cdc01"></script>
+<script src="../shared/pp-telemetry.js?v=23069925"></script>
+<script src="../shared/fit-screen.js?v=5e41a716"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<script>
+'use strict';
+PP_OS.initChrome({ name: 'Usage Analytics', section: 'vault', backHref: '../' });
+
+/* ═══ dev gate — auth-gate already bounced company/assigned-admin deep links
+   (the registry key is in no group); this catches UNASSIGNED admins, whose
+   allowed-mode is 'all'. RLS + the RPC role checks stand behind both. ═══ */
+(function gate() {
+  var p = null;
+  try { p = (typeof sbCurrentProfile === 'function') ? sbCurrentProfile() : null; } catch (e) {}
+  if (!p || p.tier !== 'dev') {
+    document.body.classList.add('ua-denied');
+    setTimeout(function () { location.replace('../'); }, 2600);
+    throw new Error('ua: not dev');            /* stop the rest of this script */
+  }
+})();
+
+/* ─── helpers ─────────────────────────────────────────────────────────── */
+var $  = function (s) { return document.querySelector(s); };
+var $$ = function (s) { return Array.prototype.slice.call(document.querySelectorAll(s)); };
+var esc = window.PP_escapeHtml || function (s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+};
+
+function aestToday() {   /* YYYY-MM-DD in Australia/Sydney — matches the server's day bucket */
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Sydney' });
+}
+function addDays(iso, n) {
+  var d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function eachDay(from, to) {
+  var out = [], d = from;
+  while (d <= to) { out.push(d); d = addDays(d, 1); if (out.length > 400) break; }
+  return out;
+}
+function fmtH(secs) {
+  if (!secs) return '0m';
+  var h = Math.floor(secs / 3600), m = Math.round((secs % 3600) / 60);
+  return h ? (h + 'h ' + (m ? m + 'm' : '')) : (m + 'm');
+}
+function fmtHShort(secs) { return secs >= 3600 ? (secs / 3600).toFixed(1) + 'h' : Math.round(secs / 60) + 'm'; }
+function fmtDay(iso) {
+  var d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+}
+function titleCase(s) { return String(s).replace(/[-_]/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); }); }
+var DOWS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+/* tool_key (filename) → display label, from the registry + overrides */
+var TOOL_LABELS = (function () {
+  var map = { hub: 'Hub / Desktop', 'usage-analytics': 'Usage Analytics' };
+  try {
+    var reg = window.PP_TOOL_REGISTRY || {};
+    Object.keys(reg).forEach(function (k) {
+      var f = (reg[k].file || '').replace(/\.html$/, '');
+      if (f && !map[f]) map[f] = reg[k].label || titleCase(f);
+    });
+  } catch (e) {}
+  map['presentation'] = 'Presentation Builder';
+  map['presentations-library'] = 'Presentations Library';
+  map['online-reports'] = 'Online Reports';
+  map['buying-selling-slides'] = 'Buying/Selling Slides';
+  return map;
+})();
+function toolLabel(t) { return TOOL_LABELS[t] || titleCase(t); }
+
+/* internal accounts hidden by default — Van asked for numbers "aside from me" */
+function isInternal(u) {
+  return u.tier === 'dev' || u.k === 'test' || u.k.indexOf('pdf-renderer') === 0;
+}
+
+/* ─── state ───────────────────────────────────────────────────────────── */
+var state = { range: '7', includeInternal: false, toolMetric: 'secs',
+              blob: null, prevBlob: null, since: null };
+var charts = {};   /* id → echarts instance */
+
+/* ─── data access ─────────────────────────────────────────────────────── */
+var IS_DEMO = /(?:\?|&)demo=1/.test(location.search);
+if (IS_DEMO) document.body.classList.add('ua-is-demo');
+
+function rangeDates() {
+  var to = aestToday(), from;
+  if (state.range === 'all') from = state.since || addDays(to, -89);
+  else if (state.range === '1') from = to;
+  else from = addDays(to, -(parseInt(state.range, 10) - 1));
+  if (state.since && from < state.since) from = state.since;
+  return { from: from, to: to };
+}
+
+function fetchBlob(from, to) {
+  if (IS_DEMO) return Promise.resolve(demoBlob(from, to));
+  return window.sb.rpc('pp_usage_dashboard', { p_from: from, p_to: to })
+    .then(function (r) { if (r.error) throw r.error; return r.data; });
+}
+
+function loadAll() {
+  var r = rangeDates();
+  var len = eachDay(r.from, r.to).length;
+  var wantPrev = state.range !== 'all';
+  var prevFrom = addDays(r.from, -len), prevTo = addDays(r.from, -1);
+  return Promise.all([
+    fetchBlob(r.from, r.to),
+    wantPrev ? fetchBlob(prevFrom, prevTo) : Promise.resolve(null)
+  ]).then(function (res) {
+    state.blob = res[0] || {};
+    state.prevBlob = res[1];
+    state.since = state.blob.since || state.since;
+    $('#uaSince').textContent = state.since ? fmtDay(state.since) + ' ' + state.since.slice(0, 4) : 'today';
+    renderAll();
+  }).catch(function (e) {
+    console.error('usage-analytics load failed', e);
+    document.body.classList.add('ua-no-data');
+    $('.ua-empty h3').textContent = 'Couldn’t load the data';
+    $('.ua-empty p').innerHTML = esc(e && e.message || 'Unknown error');
+  });
+}
+
+/* ─── aggregation (client-side; the whole range is one small blob) ────── */
+function filteredRows(blob) {
+  if (!blob) return [];
+  var users = {};
+  (blob.users || []).forEach(function (u) { users[u.k] = u; });
+  var inc = state.includeInternal;
+  return (blob.rows || []).filter(function (r) {
+    var u = users[r.k]; return u && (inc || !isInternal(u));
+  });
+}
+function userDim(blob) {
+  var m = {};
+  ((blob && blob.users) || []).forEach(function (u) { m[u.k] = u; });
+  return m;
+}
+function aggregate(blob) {
+  var rows = filteredRows(blob);
+  var users = new Set(), secs = 0, views = 0;
+  var byDay = {}, byTool = {}, byUser = {};
+  rows.forEach(function (r) {
+    users.add(r.k); secs += r.s; views += r.v;
+    var d = byDay[r.d] || (byDay[r.d] = { users: new Set(), secs: 0, views: 0 });
+    d.users.add(r.k); d.secs += r.s; d.views += r.v;
+    var t = byTool[r.t] || (byTool[r.t] = { users: new Set(), secs: 0, views: 0 });
+    t.users.add(r.k); t.secs += r.s; t.views += r.v;
+    var u = byUser[r.k] || (byUser[r.k] = { secs: 0, views: 0, days: new Set(), tools: {}, lastDay: r.d });
+    u.secs += r.s; u.views += r.v; u.days.add(r.d);
+    u.tools[r.t] = (u.tools[r.t] || 0) + r.s;
+    if (r.d > u.lastDay) u.lastDay = r.d;
+  });
+  return { rows: rows, users: users, secs: secs, views: views, byDay: byDay, byTool: byTool, byUser: byUser };
+}
+
+/* ─── theme-aware chart plumbing ──────────────────────────────────────── */
+function cvar(name, fallback) {
+  var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+function isLight() { return document.documentElement.getAttribute('data-theme') === 'light'; }
+function chartInk()  { return isLight() ? '#3F4650' : '#C6CCD6'; }
+function chartGrid() { return isLight() ? 'rgba(23,27,36,0.08)' : 'rgba(255,255,255,0.08)'; }
+function mkChart(id) {
+  var el = document.getElementById(id);
+  if (!el) return null;
+  if (charts[id]) { charts[id].dispose(); }
+  charts[id] = echarts.init(el, null, { renderer: 'canvas' });
+  return charts[id];
+}
+window.addEventListener('resize', function () {
+  Object.keys(charts).forEach(function (k) { try { charts[k].resize(); } catch (e) {} });
+});
+new MutationObserver(function () { try { renderAll(); } catch (e) {} })
+  .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+/* ─── renderers ───────────────────────────────────────────────────────── */
+function sparkSvg(vals) {
+  if (!vals.length) return '';
+  var w = 56, h = 20, max = Math.max.apply(null, vals.concat([1]));
+  var pts = vals.map(function (v, i) {
+    var x = vals.length === 1 ? w / 2 : (i / (vals.length - 1)) * (w - 2) + 1;
+    var y = h - 2 - (v / max) * (h - 5);
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  return '<svg class="spark" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" aria-hidden="true"><polyline points="' + pts + '"/></svg>';
+}
+function deltaChip(cur, prev) {
+  if (prev == null || (!prev && !cur)) return '';
+  if (!prev) return '<span class="delta up">new</span>';
+  var pct = Math.round(((cur - prev) / prev) * 100);
+  if (!isFinite(pct)) return '';
+  var cls = pct >= 0 ? 'up' : 'dn';
+  var sign = pct > 0 ? '▲' : (pct < 0 ? '▼' : '●');
+  return '<span class="delta ' + cls + '">' + sign + ' ' + Math.abs(pct) + '%</span>';
+}
+
+function renderKpis(agg, prevAgg, r) {
+  var days = eachDay(r.from, r.to);
+  var uSeries = days.map(function (d) { return agg.byDay[d] ? agg.byDay[d].users.size : 0; });
+  var hSeries = days.map(function (d) { return agg.byDay[d] ? agg.byDay[d].secs : 0; });
+  var vSeries = days.map(function (d) { return agg.byDay[d] ? agg.byDay[d].views : 0; });
+
+  /* busiest weekday+hour from the heat data */
+  var heat = heatMatrix(state.blob);
+  var top = null;
+  heat.forEach(function (c) { if (!top || c[2] > top[2]) top = c; });
+  var busiest = (top && top[2] > 0)
+    ? DOWS[top[1]] + ' · ' + (top[0] === 0 ? '12am' : top[0] < 12 ? top[0] + 'am' : top[0] === 12 ? '12pm' : (top[0] - 12) + 'pm')
+    : '—';
+
+  var avg = agg.users.size ? agg.secs / agg.users.size : 0;
+  var liveN = parseInt($('#uaLiveN').dataset.n || '0', 10);
+
+  var cards = [
+    { lbl: 'Active people', val: String(agg.users.size),
+      sub: deltaChip(agg.users.size, prevAgg && prevAgg.users.size) + sparkSvg(uSeries) },
+    { lbl: 'Engaged time', val: fmtH(agg.secs),
+      sub: deltaChip(agg.secs, prevAgg && prevAgg.secs) + sparkSvg(hSeries) },
+    { lbl: 'Tool opens', val: String(agg.views),
+      sub: deltaChip(agg.views, prevAgg && prevAgg.views) + sparkSvg(vSeries) },
+    { lbl: 'Avg per person', val: fmtH(avg), sub: '' },
+    { lbl: 'Busiest time', val: busiest, sub: '' },
+    { lbl: 'Online now', val: String(liveN), sub: '' }
+  ];
+  $('#uaKpis').innerHTML = cards.map(function (c) {
+    return '<div class="ua-kpi"><div class="lbl">' + c.lbl + '</div><div class="val">' + esc(c.val) + '</div><div class="sub">' + c.sub + '</div></div>';
+  }).join('');
+}
+
+function renderTimeline(agg, r) {
+  var ch = mkChart('chTimeline'); if (!ch) return;
+  var days = eachDay(r.from, r.to);
+  var users = days.map(function (d) { return agg.byDay[d] ? agg.byDay[d].users.size : 0; });
+  var hours = days.map(function (d) { return agg.byDay[d] ? +(agg.byDay[d].secs / 3600).toFixed(2) : 0; });
+  ch.setOption({
+    animationDuration: 350,
+    grid: { left: 44, right: 48, top: 30, bottom: 30 },
+    tooltip: { trigger: 'axis',
+      formatter: function (ps) {
+        var d = ps[0] ? ps[0].axisValue : '';
+        var lines = ['<b>' + d + '</b>'];
+        ps.forEach(function (p) {
+          lines.push(p.marker + ' ' + p.seriesName + ': <b>' +
+            (p.seriesName === 'Engaged hours' ? fmtH(p.value * 3600) : p.value) + '</b>');
+        });
+        return lines.join('<br>');
+      } },
+    legend: { top: 0, left: 'center', textStyle: { color: chartInk(), fontSize: 11, fontFamily: 'Montserrat' }, itemWidth: 14, itemHeight: 9, itemGap: 18 },
+    xAxis: { type: 'category', data: days.map(fmtDay),
+      axisLine: { lineStyle: { color: chartGrid() } }, axisTick: { show: false },
+      axisLabel: { color: chartInk(), fontSize: 10, fontFamily: 'Montserrat', interval: days.length > 45 ? 'auto' : 0, rotate: days.length > 20 ? 40 : 0 } },
+    yAxis: [
+      { type: 'value', name: 'people', nameTextStyle: { color: chartInk(), fontSize: 10 }, minInterval: 1,
+        axisLabel: { color: chartInk(), fontSize: 10 }, splitLine: { lineStyle: { color: chartGrid() } } },
+      { type: 'value', name: 'hours', nameTextStyle: { color: chartInk(), fontSize: 10 },
+        axisLabel: { color: chartInk(), fontSize: 10 }, splitLine: { show: false } }
+    ],
+    series: [
+      { name: 'Active people', type: 'bar', data: users, itemStyle: { color: '#00A0B4', borderRadius: [4, 4, 0, 0] }, barMaxWidth: 26 },
+      { name: 'Engaged hours', type: 'line', yAxisIndex: 1, data: hours, smooth: true, symbolSize: 5,
+        lineStyle: { color: '#54A6DE', width: 2.4 }, itemStyle: { color: '#54A6DE' },
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: 'rgba(84,166,222,0.22)' }, { offset: 1, color: 'rgba(84,166,222,0)' }] } } }
+    ]
+  }, true);
+}
+
+function heatMatrix(blob) {
+  /* [hour, dow, secs] with the include-internal filter applied */
+  var users = userDim(blob), inc = state.includeInternal;
+  var m = {};
+  ((blob && blob.hours) || []).forEach(function (h) {
+    var u = users[h.k]; if (!u || (!inc && isInternal(u))) return;
+    var key = h.h + '|' + h.w;
+    m[key] = (m[key] || 0) + h.s;
+  });
+  return Object.keys(m).map(function (k) {
+    var p = k.split('|'); return [parseInt(p[0], 10), parseInt(p[1], 10), m[k]];
+  });
+}
+function renderHeat() {
+  var ch = mkChart('chHeat'); if (!ch) return;
+  var data = heatMatrix(state.blob);
+  var max = data.reduce(function (a, c) { return Math.max(a, c[2]); }, 0);
+  ch.setOption({
+    animationDuration: 350,
+    grid: { left: 44, right: 14, top: 10, bottom: 44 },
+    tooltip: { position: 'top',
+      formatter: function (p) {
+        var h = p.data[0];
+        var lab = (h === 0 ? '12am' : h < 12 ? h + 'am' : h === 12 ? '12pm' : (h - 12) + 'pm');
+        return DOWS[p.data[1]] + ' ' + lab + ' — <b>' + fmtH(p.data[2]) + '</b>';
+      } },
+    xAxis: { type: 'category', data: Array.from({ length: 24 }, function (_, i) { return i; }),
+      axisLabel: { color: chartInk(), fontSize: 9, interval: 2,
+        formatter: function (v) { v = +v; return v === 0 ? '12a' : v < 12 ? v + 'a' : v === 12 ? '12p' : (v - 12) + 'p'; } },
+      axisLine: { show: false }, axisTick: { show: false },
+      /* themed stripes — ECharts' default splitArea is light grey and glares in dark mode */
+      splitArea: { show: true, areaStyle: { color: isLight()
+        ? ['rgba(23,27,36,0.02)', 'rgba(23,27,36,0.045)']
+        : ['rgba(255,255,255,0.03)', 'rgba(255,255,255,0.055)'] } } },
+    yAxis: { type: 'category', data: DOWS, inverse: true,
+      axisLabel: { color: chartInk(), fontSize: 10, fontFamily: 'Montserrat' },
+      axisLine: { show: false }, axisTick: { show: false }, splitArea: { show: false } },
+    visualMap: { min: 0, max: Math.max(max, 60), show: false,
+      inRange: { color: isLight()
+        ? ['#EBFBFF', '#9ADCE6', '#00A0B4', '#006D80']
+        : ['rgba(0,160,180,0.10)', 'rgba(0,160,180,0.45)', '#00A0B4', '#00C4F5'] } },
+    series: [{ type: 'heatmap', data: data, itemStyle: { borderRadius: 3, borderWidth: 1.5, borderColor: 'transparent' } }]
+  }, true);
+}
+
+function renderTools(agg) {
+  var ch = mkChart('chTools'); if (!ch) return;
+  var metric = state.toolMetric;
+  var items = Object.keys(agg.byTool).map(function (t) {
+    var e = agg.byTool[t];
+    return { t: t, v: metric === 'users' ? e.users.size : e[metric] };
+  }).filter(function (i) { return i.v > 0; })
+    .sort(function (a, b) { return a.v - b.v; })
+    .slice(-12);
+  ch.setOption({
+    animationDuration: 350,
+    grid: { left: 8, right: 54, top: 6, bottom: 6, containLabel: true },
+    tooltip: { trigger: 'item', formatter: function (p) {
+      var e = agg.byTool[items[p.dataIndex].t];
+      return '<b>' + esc(toolLabel(items[p.dataIndex].t)) + '</b><br>' +
+        fmtH(e.secs) + ' engaged · ' + e.users.size + ' people · ' + e.views + ' opens';
+    } },
+    xAxis: { type: 'value', axisLabel: { show: false }, splitLine: { show: false } },
+    yAxis: { type: 'category', data: items.map(function (i) { return toolLabel(i.t); }),
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { color: chartInk(), fontSize: 10.5, fontFamily: 'Montserrat', width: 150, overflow: 'truncate' } },
+    series: [{ type: 'bar', data: items.map(function (i, ix) {
+        return { value: i.v, itemStyle: { color: ix === items.length - 1 ? '#00A0B4' : (isLight() ? '#9ADCE6' : 'rgba(0,160,180,0.45)'), borderRadius: [0, 5, 5, 0] } };
+      }),
+      barMaxWidth: 15,
+      label: { show: true, position: 'right', color: chartInk(), fontSize: 10, fontFamily: 'Montserrat',
+        formatter: function (p) { return metric === 'secs' ? fmtHShort(p.value) : p.value; } } }]
+  }, true);
+}
+
+function renderPeople(agg, r) {
+  var users = userDim(state.blob);
+  var days = eachDay(r.from, r.to);
+  var list = Object.keys(agg.byUser).map(function (k) {
+    var u = agg.byUser[k];
+    var top = Object.keys(u.tools).sort(function (a, b) { return u.tools[b] - u.tools[a]; })[0];
+    return { k: k, team: (users[k] && users[k].team) || '', tier: (users[k] && users[k].tier) || '',
+             secs: u.secs, views: u.views, days: u.days.size, top: top, last: u.lastDay };
+  }).sort(function (a, b) { return b.secs - a.secs; });
+  var maxSecs = list.length ? list[0].secs : 1;
+  $('#uaPeopleHint').textContent = list.length + ' people · sorted by engaged time';
+  var head = '<tr><th>Person</th><th class="num">Engaged</th><th class="num">Opens</th><th class="num">Active days</th><th>Most used</th><th>Last seen</th></tr>';
+  var body = list.map(function (p) {
+    var w = Math.max(2, Math.round((p.secs / Math.max(maxSecs, 1)) * 90));
+    var internal = users[p.k] && isInternal(users[p.k]);
+    return '<tr>' +
+      '<td class="who' + (internal ? ' excl' : '') + '">' + esc(p.k) +
+        (p.team ? '<span class="team">' + esc(p.team.replace(/_/g, ' ')) + '</span>' : '') +
+        (internal ? '<span class="team">internal</span>' : '') + '</td>' +
+      '<td class="num"><span class="bar" style="width:' + w + 'px"></span>' + fmtH(p.secs) + '</td>' +
+      '<td class="num">' + p.views + '</td>' +
+      '<td class="num">' + p.days + ' / ' + days.length + '</td>' +
+      '<td>' + esc(toolLabel(p.top || '—')) + '</td>' +
+      '<td>' + (p.last === aestToday() ? 'today' : fmtDay(p.last)) + '</td>' +
+    '</tr>';
+  }).join('');
+  $('#uaPeople').innerHTML = head + body;
+}
+
+function renderRegions(agg) {
+  var ch = mkChart('chRegions'); if (!ch) return;
+  var users = userDim(state.blob), inc = state.includeInternal;
+  var acc = {};
+  ((state.blob && state.blob.ctxs) || []).forEach(function (c) {
+    var u = users[c.k]; if (!u || (!inc && isInternal(u))) return;
+    var m = /(?:^|&)region=([^&]+)/.exec(c.c || '');
+    if (!m) return;
+    var region = titleCase(decodeURIComponent(m[1]));
+    acc[region] = (acc[region] || 0) + c.s;
+  });
+  var items = Object.keys(acc).map(function (k) { return { k: k, v: acc[k] }; })
+    .sort(function (a, b) { return a.v - b.v; }).slice(-10);
+  ch.setOption({
+    animationDuration: 350,
+    grid: { left: 8, right: 50, top: 6, bottom: 6, containLabel: true },
+    tooltip: { trigger: 'item', formatter: function (p) { return '<b>' + esc(items[p.dataIndex].k) + '</b> — ' + fmtH(items[p.dataIndex].v); } },
+    xAxis: { type: 'value', axisLabel: { show: false }, splitLine: { show: false } },
+    yAxis: { type: 'category', data: items.map(function (i) { return i.k; }),
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { color: chartInk(), fontSize: 10.5, fontFamily: 'Montserrat' } },
+    series: [{ type: 'bar', data: items.map(function (i) { return i.v; }), barMaxWidth: 13,
+      itemStyle: { color: '#3E7967', borderRadius: [0, 5, 5, 0] },
+      label: { show: true, position: 'right', color: chartInk(), fontSize: 10, formatter: function (p) { return fmtHShort(p.value); } } }]
+  }, true);
+}
+
+function renderDevices() {
+  var ch = mkChart('chDevices'); if (!ch) return;
+  var users = userDim(state.blob), inc = state.includeInternal;
+  var br = {}, buckets = { '≤ 899': 0, '900–1049': 0, '1050–1279': 0, '1280–1439': 0, '1440–1679': 0, '≥ 1680': 0 };
+  ((state.blob && state.blob.devices) || []).forEach(function (d) {
+    var u = users[d.k]; if (!u || (!inc && isInternal(u))) return;
+    if (d.br) br[d.br] = (br[d.br] || 0) + 1;
+    var w = d.vw || 0;
+    if (w > 0) {
+      var b = w < 900 ? '≤ 899' : w < 1050 ? '900–1049' : w < 1280 ? '1050–1279' : w < 1440 ? '1280–1439' : w < 1680 ? '1440–1679' : '≥ 1680';
+      buckets[b]++;
+    }
+  });
+  var brItems = Object.keys(br).map(function (k) { return { name: k, value: br[k] }; });
+  var PAL = ['#00A0B4', '#54A6DE', '#3E7967', '#FFA91F', '#63666A', '#C445C4'];
+  var bLabels = Object.keys(buckets);
+  /* donut (browsers) on the left; viewport histogram on the cartesian grid to
+     the right — narrow bands get the warning colour, they're the widths the
+     Library title-collapse class of bugs bites at */
+  ch.setOption({
+    animationDuration: 350,
+    tooltip: { trigger: 'item' },
+    grid: { left: '56%', right: 44, top: 12, bottom: 8, containLabel: true },
+    xAxis: { type: 'value', axisLabel: { show: false }, splitLine: { show: false } },
+    yAxis: { type: 'category', data: bLabels,
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { color: chartInk(), fontSize: 9.5, fontFamily: 'Montserrat' } },
+    series: [
+      { type: 'pie', radius: ['38%', '58%'], center: ['20%', '50%'],
+        data: brItems, label: { color: chartInk(), fontSize: 9, fontFamily: 'Montserrat', formatter: '{b} {c}' },
+        labelLine: { length: 5, length2: 3 },
+        itemStyle: { borderColor: isLight() ? '#fff' : '#1A2130', borderWidth: 2 },
+        color: PAL },
+      { type: 'bar', data: bLabels.map(function (b) {
+          return { value: buckets[b], itemStyle: { color: b === '900–1049' || b === '≤ 899' ? '#FFA91F' : '#00A0B4', borderRadius: [0, 4, 4, 0] } };
+        }),
+        barMaxWidth: 11,
+        label: { show: true, position: 'right', color: chartInk(), fontSize: 9.5,
+          formatter: function (p) { return p.value || ''; } } }
+    ]
+  }, true);
+}
+
+function renderLive(list) {
+  list = list || [];
+  var vis = list.filter(function (e) { return state.includeInternal || !(e.tier === 'dev' || e.k === 'test' || (e.k || '').indexOf('pdf-renderer') === 0); });
+  var n = vis.length;
+  $('#uaLiveN').textContent = n + ' online';
+  $('#uaLiveN').dataset.n = String(n);
+  $('#uaLive').classList.toggle('zero', n === 0);
+  $('#uaLivePop').innerHTML = n
+    ? vis.map(function (e) {
+        var mins = Math.max(0, Math.round(e.ago / 60));
+        return '<div class="row"><b>' + esc(e.k) + '</b><span>' + esc(toolLabel(e.t)) + ' · ' + (mins === 0 ? 'now' : mins + 'm ago') + '</span></div>';
+      }).join('')
+    : '<div class="row">Nobody on the hub right now</div>';
+  /* keep the KPI card in step */
+  var kpiCards = $$('#uaKpis .ua-kpi .val');
+  if (kpiCards.length === 6) kpiCards[5].textContent = String(n);
+}
+
+function renderAll() {
+  if (!state.blob) return;
+  var r = rangeDates();
+  var agg = aggregate(state.blob);
+  var prevAgg = state.prevBlob ? aggregate(state.prevBlob) : null;
+  document.body.classList.toggle('ua-no-data', agg.rows.length === 0);
+  if (agg.rows.length === 0) return;
+  renderKpis(agg, prevAgg, r);
+  renderTimeline(agg, r);
+  renderHeat();
+  renderTools(agg);
+  renderPeople(agg, r);
+  renderRegions(agg);
+  renderDevices();
+}
+
+/* ─── live poll ───────────────────────────────────────────────────────── */
+function pollLive() {
+  if (IS_DEMO) { renderLive(demoLive()); return; }
+  window.sb.rpc('pp_usage_live', {}).then(function (r) {
+    if (!r.error) renderLive(r.data || []);
+  }, function () {});
+}
+
+/* ─── demo fixture (?demo=1) — lets the dashboard be seen with rich data
+   before real telemetry accrues. Deterministic PRNG so it's stable. ────── */
+function mulberry(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function demoBlob(from, to) {
+  var rnd = mulberry(42 + from.length + to.charCodeAt(9));
+  var USERS = [
+    { k: 'damien', tier: 'company', team: 'au_advisors' }, { k: 'tom', tier: 'company', team: 'au_advisors' },
+    { k: 'a.trigg', tier: 'company', team: 'au_advisors' }, { k: 'david', tier: 'company', team: 'au_advisors' },
+    { k: 'frank', tier: 'company', team: 'au_advisors' }, { k: 'saskia', tier: 'admin', team: 'admins' },
+    { k: 'shaene', tier: 'admin', team: 'admins' }, { k: 'paul', tier: 'admin', team: 'admins' },
+    { k: 'renz', tier: 'admin', team: '' }, { k: 'mira', tier: 'company', team: 'pm_team' },
+    { k: 'vandolf', tier: 'dev', team: '' }, { k: 'test', tier: 'company', team: 'au_advisors' }
+  ];
+  var TOOLS = ['hub', 'online-reports', 'market-compare', 'data-forge', 'buying-selling-slides',
+               'presentation', 'property-clock', 'demand-score', 'arena-scrabble', 'cadence', 'suburb-scoring'];
+  var REGIONS = ['perth', 'melbourne', 'brisbane', 'adelaide', 'darwin', 'townsville', 'geelong'];
+  var rows = [], hours = [], devices = [], ctxs = [];
+  eachDay(from, to).forEach(function (d) {
+    var dow = (new Date(d + 'T00:00:00Z').getUTCDay() + 6) % 7;
+    var weekday = dow < 5;
+    USERS.forEach(function (u, ui) {
+      var pActive = weekday ? (ui < 5 ? 0.85 : 0.55) : 0.08;
+      if (rnd() > pActive) return;
+      var nTools = 1 + Math.floor(rnd() * 4);
+      for (var i = 0; i < nTools; i++) {
+        var t = TOOLS[Math.floor(rnd() * TOOLS.length)];
+        var secs = Math.round(300 + rnd() * 5400);
+        rows.push({ k: u.k, d: d, t: t, s: secs, v: 1 + Math.floor(rnd() * 4) });
+        var h = 8 + Math.floor(rnd() * 9);
+        hours.push({ k: u.k, w: dow, h: h, s: Math.round(secs * 0.7) });
+        hours.push({ k: u.k, w: dow, h: Math.min(h + 1, 18), s: Math.round(secs * 0.3) });
+        if (t === 'online-reports' || t === 'buying-selling-slides') {
+          ctxs.push({ k: u.k, t: t, c: 'region=' + REGIONS[Math.floor(rnd() * REGIONS.length)], s: secs });
+        }
+      }
+    });
+  });
+  USERS.forEach(function (u, i) {
+    var brs = ['Chrome', 'Chrome', 'Chrome', 'Edge', 'Safari'];
+    var vws = [1536, 1440, 1920, 1280, 1004, 934, 1706];
+    for (var s = 0; s < 2; s++) {
+      devices.push({ k: u.k, br: brs[Math.floor(rnd() * brs.length)], os: rnd() > 0.25 ? 'Windows' : 'macOS',
+                     vw: vws[Math.floor(rnd() * vws.length)], sw: 1920 });
+    }
+  });
+  return { from: from, to: to, since: addDays(aestToday(), -60), users: USERS, rows: rows, hours: hours, devices: devices, ctxs: ctxs };
+}
+function demoLive() {
+  return [{ k: 'damien', tier: 'company', t: 'online-reports', c: 'region=perth', ago: 40 },
+          { k: 'saskia', tier: 'admin', t: 'cadence', c: null, ago: 130 },
+          { k: 'tom', tier: 'company', t: 'market-compare', c: null, ago: 250 }];
+}
+
+/* ─── controls ────────────────────────────────────────────────────────── */
+$('#uaPills').addEventListener('click', function (e) {
+  var b = e.target.closest('.ua-pill'); if (!b) return;
+  $$('#uaPills .ua-pill').forEach(function (x) { x.classList.toggle('on', x === b); });
+  state.range = b.dataset.r;
+  loadAll();
+});
+function toggleInternal() {
+  state.includeInternal = !state.includeInternal;
+  var t = $('#uaTgl');
+  t.classList.toggle('on', state.includeInternal);
+  t.setAttribute('aria-checked', state.includeInternal ? 'true' : 'false');
+  renderAll(); pollLive();
+}
+$('#uaTgl').addEventListener('click', toggleInternal);
+$('#uaTgl').addEventListener('keydown', function (e) { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleInternal(); } });
+$('#uaToolSeg').addEventListener('click', function (e) {
+  var b = e.target.closest('button'); if (!b) return;
+  $$('#uaToolSeg button').forEach(function (x) { x.classList.toggle('on', x === b); });
+  state.toolMetric = b.dataset.m;
+  renderTools(aggregate(state.blob));
+});
+
+/* ─── boot ────────────────────────────────────────────────────────────── */
+loadAll();
+pollLive();
+setInterval(pollLive, 45000);
+setInterval(function () { if (document.visibilityState === 'visible' && !IS_DEMO) loadAll(); }, 300000);
+</script>
+</body>
+</html>

@@ -135,6 +135,12 @@ Hub (`index.html`) is 4 swipeable pages: **analytics** (default), **pm**,
 - `report-edit.js` / `report-edit.css` — the report editor (text/shape/image
   overlays, page-bg, TOC, modals, download modal, sync, audit, auto-zoom).
   Shared by national/commercial; the regional tool keeps its own inline copy.
+- `pp-telemetry.js` — usage telemetry on every signed-in page (mig 094):
+  GA4-style engaged-time beats → `pp_track_usage` RPC, one row per
+  (tab-session, tool, AEST day). Silent in iframes/`exportMode=1`/`embed=1`
+  (the PDF renderer must never pollute usage data). Read path is dev-only
+  (`tools/usage-analytics.html` + RLS); new tool pages should include it
+  after auth-gate.js.
 - `theme.js` — `PP_setTheme` / `PP_toggleTheme` (light/dark, `data-theme`).
 - `common.css`, `color-picker.{js,css}`.
 

@@ -42,6 +42,11 @@
     'reports-lite':     { sec: 'vault',     file: 'online-reports.html',         label: 'Lite Online Reports' },
     'lite-links':       { sec: 'vault',     file: 'lite-report-links.html',      label: 'Lite Report Links' },
     'results':          { sec: 'vault',     file: 'results.html',                label: 'Results' },
+    /* dev-only telemetry dashboard — deliberately in NO group and NOT in
+       DEFAULT_BASELINE: auth-gate bounces company/assigned-admin deep-links
+       because the key is never in their allowed set; the page itself and
+       RLS (mig 094) turn away unassigned admins. */
+    'usage-analytics':  { sec: 'vault',     file: 'usage-analytics.html',        label: 'Usage Analytics' },
     /* pm */
     'cadence':          { sec: 'pm',        file: 'cadence.html',                label: 'Cadence' },
     'tenant-summary':   { sec: 'pm',        file: 'tenant-summary.html',         label: 'Tenant Application Summary' },
