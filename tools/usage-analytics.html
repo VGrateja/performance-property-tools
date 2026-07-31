@@ -113,6 +113,15 @@ body.ua-is-demo .ua-demo{display:inline-block}
 .ua-errs .ewho{color:var(--ua-mut);font-size:10.5px}
 .ua-errbadge{font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:8px;background:rgba(231,35,71,.14);color:#E72347;border:1px solid rgba(231,35,71,.35)}
 .ua-errbadge.zero{background:var(--ua-track);color:var(--ua-mut);border-color:var(--ua-border)}
+.ua-errs li{position:relative}
+.ua-errfix{position:absolute;top:6px;right:0;border:1px solid var(--ua-border);background:var(--ua-surface-2);color:var(--ua-mut);
+  font:700 9.5px 'Montserrat',sans-serif;border-radius:7px;padding:2px 7px;cursor:pointer;opacity:0;transition:opacity .12s}
+.ua-errs li:hover .ua-errfix{opacity:1}
+.ua-errfix:hover{color:var(--ua-green);border-color:var(--ua-green)}
+.ua-errfix[disabled]{opacity:.6;cursor:default}
+.ua-errs .emsg{padding-right:70px}
+.ua-errdone{font-size:10.5px;color:var(--ua-mut);font-weight:600}
+.ua-errdone button{border:0;background:transparent;color:var(--ua-teal);font:600 10.5px 'Montserrat',sans-serif;cursor:pointer;padding:0 2px;text-decoration:underline}
 
 /* export csv button */
 .ua-csv{border:1px solid var(--ua-border);background:var(--ua-surface);color:var(--ua-ink2);font:600 11.5px 'Montserrat',sans-serif;border-radius:10px;padding:8px 12px;cursor:pointer}
@@ -289,7 +298,7 @@ body.ua-denied .ua-wrap{display:none}
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="../shared/supabase-client.js?v=b4bd183c"></script>
-<script src="../shared/tool-registry.js?v=64672718"></script>
+<script src="../shared/tool-registry.js?v=2cd34923"></script>
 <script src="../shared/desktop-pins.js?v=e2416017"></script>
 <script src="../shared/auth.js?v=7dce203e"></script>
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
@@ -807,15 +816,54 @@ function renderFirsts() {
 
 /* ─── errors (client_errors, mig 031 — writers-readable; page is dev-gated) ── */
 function loadErrors(r) {
-  if (IS_DEMO) { state.errors = demoErrors(r); renderErrors(); return; }
+  if (IS_DEMO) { state.errors = demoErrors(r); state.errResolved = 0; renderErrors(); return; }
+  /* UNRESOLVED only — a bug marked fixed (pp_resolve_errors, mig 096) stops
+     showing, so the card always answers "what is broken NOW" rather than
+     replaying history until it ages out of the range. */
   window.sb.from('client_errors')
-    .select('created_at,email,tier,tool,message')
+    .select('created_at,email,tier,tool,message,resolved_at')
     .gte('created_at', r.from + 'T00:00:00+10:00')
     .lte('created_at', r.to + 'T23:59:59+10:00')
     .order('created_at', { ascending: false })
     .limit(400)
-    .then(function (res) { state.errors = res.data || []; renderErrors(); },
-          function () { state.errors = []; renderErrors(); });
+    .then(function (res) {
+      var all = res.data || [];
+      state.errResolved = all.filter(function (e) { return e.resolved_at; }).length;
+      state.errors = all.filter(function (e) { return !e.resolved_at; });
+      renderErrors();
+    }, function () { state.errors = []; state.errResolved = 0; renderErrors(); });
+}
+
+/* Mark every row of this (tool, message) family fixed. Family-level because
+   one bug produces many identical rows; later occurrences arrive unresolved,
+   so a regression re-lights the card by itself. */
+function resolveErr(btn, tool, message) {
+  if (IS_DEMO) { btn.textContent = 'demo'; btn.disabled = true; return; }
+  btn.disabled = true; btn.textContent = '…';
+  window.sb.rpc('pp_resolve_errors', { p_tool: tool, p_message: message })
+    .then(function (res) {
+      if (res.error) { btn.textContent = 'failed'; return; }
+      loadErrors(rangeDates());
+    }, function () { btn.textContent = 'failed'; });
+}
+function unresolveAll() {
+  var r = rangeDates();
+  if (IS_DEMO) return;
+  /* bulk undo: re-open everything resolved inside the current range */
+  window.sb.from('client_errors')
+    .select('tool,message')
+    .not('resolved_at', 'is', null)
+    .gte('created_at', r.from + 'T00:00:00+10:00')
+    .lte('created_at', r.to + 'T23:59:59+10:00')
+    .then(function (res) {
+      var seen = {}, jobs = [];
+      (res.data || []).forEach(function (e) {
+        var k = (e.tool || '') + '|' + e.message;
+        if (seen[k]) return; seen[k] = 1;
+        jobs.push(window.sb.rpc('pp_unresolve_errors', { p_tool: e.tool, p_message: e.message }));
+      });
+      Promise.all(jobs).then(function () { loadErrors(r); }, function () { loadErrors(r); });
+    }, function () {});
 }
 function filteredErrors() {
   var inc = state.includeInternal;
@@ -831,7 +879,14 @@ function renderErrors() {
   if (!badge || !ul) return;
   badge.textContent = String(list.length);
   badge.classList.toggle('zero', list.length === 0);
-  if (!list.length) { ul.innerHTML = '<li>No uncaught errors in this range 🎉</li>'; return; }
+  var doneNote = state.errResolved
+    ? '<li class="ua-errdone">' + state.errResolved + ' occurrence' + (state.errResolved === 1 ? '' : 's') +
+      ' marked fixed and hidden · <button type="button" onclick="unresolveAll()">show again</button></li>'
+    : '';
+  if (!list.length) {
+    ul.innerHTML = '<li>No unresolved errors in this range 🎉</li>' + doneNote;
+    return;
+  }
   var byTool = {};
   list.forEach(function (e) { byTool[e.tool || '?'] = (byTool[e.tool || '?'] || 0) + 1; });
   var toolsLine = Object.keys(byTool).sort(function (a, b) { return byTool[b] - byTool[a]; })
@@ -840,11 +895,13 @@ function renderErrors() {
   var latest = list.slice(0, 4).map(function (e) {
     var when = new Date(e.created_at).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
     var who = String(e.email || '').split('@')[0];
+    var args = "this," + JSON.stringify(e.tool || '') + "," + JSON.stringify(e.message || '');
     return '<li><span class="etool">' + esc(toolLabel((e.tool === 'index' ? 'hub' : e.tool) || '?')) + '</span>' +
       ' <span class="ewho">' + esc(who) + ' · ' + when + '</span>' +
+      '<button class="ua-errfix" type="button" title="Mark this bug fixed — hides every occurrence of it" onclick=\'resolveErr(' + esc(args) + ')\'>✓ Fixed</button>' +
       '<span class="emsg" title="' + esc(e.message || '') + '">' + esc(e.message || '') + '</span></li>';
   }).join('');
-  ul.innerHTML = '<li>' + toolsLine + '</li>' + latest;
+  ul.innerHTML = '<li>' + toolsLine + '</li>' + latest + doneNote;
 }
 
 /* ─── drill-downs ─────────────────────────────────────────────────────── */

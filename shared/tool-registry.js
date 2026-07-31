@@ -45,8 +45,11 @@
     /* dev-only telemetry dashboard — deliberately in NO group and NOT in
        DEFAULT_BASELINE: auth-gate bounces company/assigned-admin deep-links
        because the key is never in their allowed set; the page itself and
-       RLS (mig 094) turn away unassigned admins. */
-    'usage-analytics':  { sec: 'vault',     file: 'usage-analytics.html',        label: 'Usage Analytics' },
+       RLS (mig 094) turn away unassigned admins.
+       `devOnly` hides it from the Groups panel's tick list: groups CANNOT
+       grant it (the page gate + RLS both demand dev tier), so offering the
+       checkbox would imply access that ticking it can never produce. */
+    'usage-analytics':  { sec: 'vault',     file: 'usage-analytics.html',        label: 'Usage Analytics', devOnly: true },
     /* pm */
     'cadence':          { sec: 'pm',        file: 'cadence.html',                label: 'Cadence' },
     'tenant-summary':   { sec: 'pm',        file: 'tenant-summary.html',         label: 'Tenant Application Summary' },
