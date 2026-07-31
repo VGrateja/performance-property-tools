@@ -575,7 +575,7 @@
           <p>Every deck owned by another user, tagged with its owner — visible to dev &amp; admin. Assign a presentation to a teammate and it moves here.</p>
         </button>
 
-        <button class="rcm-tile" id="pres-bss-tile" type="button" onclick="closePresentations(); _openToolTab('tools/buying-selling-slides.html?curated=1');">
+        <button class="rcm-tile" id="pres-bss-tile" type="button" onclick="closePresentations(); openBsCurated();">
           <div class="rcm-icon">🎯</div>
           <h3>Buying/Selling Slide</h3>
           <div class="rcm-count">Live decks</div>
@@ -640,6 +640,29 @@
       <h2 class="rcm-title">Choose a region</h2>
       <p class="rcm-sub">The deck opens ready to present — switch region, purpose or month from the controls inside the tool.</p>
       <div class="rcm-grid rcm-region-grid" id="bssmRegionGrid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Curated Buying/Selling picker — the STAFF-facing card. Same instant
+     modal as Online Reports and the Vault picker above, but ONE step: the
+     curated set is small enough that a cluster step would be noise.
+
+     Why this exists at all: pointing the card straight at the deck tool with
+     no region meant the tool booted just to render its own region list, and
+     its boot overlay has a 1200 ms minimum — so staff always sat through a
+     "Loading" screen before they could even pick. Listing the regions here
+     costs nothing (the hub already holds the region catalogue) and the deck
+     tab then opens deep-linked, straight onto the deck. ─── -->
+<div id="bsCuratedModal" class="reports-cluster-modal" aria-hidden="true" onclick="if(event.target===this)closeBsCurated()">
+  <div class="rcm-inner" role="dialog" aria-labelledby="bsc-title">
+    <button class="rcm-close" onclick="closeBsCurated()" aria-label="Close">×</button>
+
+    <div class="rcm-view" id="bscView">
+      <div class="rcm-eyebrow">Buying / Selling Slide</div>
+      <h2 class="rcm-title" id="bsc-title">Choose a region</h2>
+      <p class="rcm-sub">The published decks, built live from the research data. Each opens in its own tab — switch between Selling and Buying inside the deck.</p>
+      <div class="rcm-grid rcm-region-grid" id="bscGrid"></div>
     </div>
   </div>
 </div>
@@ -761,6 +784,16 @@
   [data-theme="light"] #bsSlidesModal{
     --rcm-acc:#233AE7; --rcm-acc-deep:#1427B8; --rcm-acc-ink:#fff;
     --rcm-acc-soft:rgba(35,58,231,.10); --rcm-acc-brd:rgba(35,58,231,.34);
+  }
+  /* Curated picker wears the Presentations section accent (Celestial Blue),
+     not the Vault cobalt — it's the staff-facing card, reached from there. */
+  #bsCuratedModal{
+    --rcm-acc:#54A6DE; --rcm-acc-deep:#2478BC; --rcm-acc-ink:#08243b;
+    --rcm-acc-soft:rgba(84,166,222,.14); --rcm-acc-brd:rgba(84,166,222,.32);
+  }
+  [data-theme="light"] #bsCuratedModal{
+    --rcm-acc:#2478BC; --rcm-acc-deep:#175A93; --rcm-acc-ink:#fff;
+    --rcm-acc-soft:rgba(36,120,188,.10); --rcm-acc-brd:rgba(36,120,188,.34);
   }
   .rcm-inner {
     position: relative;
@@ -3307,6 +3340,9 @@ function openPresentations() {
      fails open, which is the house rule — an unresolved state shows the tile. */
   const bssTile = document.getElementById('pres-bss-tile');
   if (bssTile) bssTile.hidden = (typeof ppToolAllowed === 'function') && !ppToolAllowed('bs-slides-curated');
+  /* Warm the curation row now so the curated picker opens with no wait at all
+     when the tile is clicked a moment later. */
+  if (!bssTile || !bssTile.hidden) { try { _bssLoadCurated(); } catch (e) {} }
   m.classList.add('show');
   m.setAttribute('aria-hidden', 'false');
   /* Re-trigger the staggered tile reveal (same as the Online Reports modal) —
@@ -3477,6 +3513,84 @@ function closeBsSlides() {
   m.setAttribute('aria-hidden', 'true');
   document.querySelectorAll('#bsSlidesModal .rcm-view').forEach(v => v.classList.remove('rcm-view-active'));
 }
+/* ── Curated Buying/Selling picker ───────────────────────────────────────
+   Curation lives in ONE reports_state row, 'bss-visibility', shaped
+   { sell:[slug…], buy:[slug…] } — written by the Curate… panel in the deck
+   tool. The hub reads it so the staff card can list regions without booting
+   the tool first. Fetched once, lazily, and a FAILED fetch does not stick
+   (the promise is cleared) so the next click retries instead of being
+   permanently degraded. */
+let _bssCurated = null;             /* { sell:Set, buy:Set } once resolved */
+let _bssCuratedPromise = null;
+function _bssLoadCurated() {
+  if (_bssCurated) return Promise.resolve(_bssCurated);
+  if (_bssCuratedPromise) return _bssCuratedPromise;
+  _bssCuratedPromise = (async () => {
+    try {
+      const { data } = await window.sb.from('reports_state')
+        .select('payload').eq('region', 'bss-visibility').maybeSingle();
+      const p = (data && data.payload) || {};
+      _bssCurated = { sell: new Set(p.sell || []), buy: new Set(p.buy || []) };
+    } catch (e) { _bssCurated = null; }
+    _bssCuratedPromise = null;
+    return _bssCurated;
+  })();
+  return _bssCuratedPromise;
+}
+
+/* Curated regions in catalogue order (capitals, QLD, NSW, VIC/WA/TAS), each
+   tagged with the purpose that actually offers it — a region curated for
+   Buying only must open with mode=buy or the tool bounces it to its picker. */
+function _bssCuratedList() {
+  if (!_bssCurated) return [];
+  const out = [];
+  Object.keys(REGION_CLUSTERS).forEach((ck) => {
+    const c = REGION_CLUSTERS[ck];
+    if (!c || !c.regions) return;
+    c.regions.forEach((r) => {
+      if (r.url) return;                     /* research reports aren't decks */
+      const inSell = _bssCurated.sell.has(r.slug);
+      const inBuy  = _bssCurated.buy.has(r.slug);
+      if (!inSell && !inBuy) return;
+      out.push({ r: r, mode: inSell ? 'sell' : 'buy' });
+    });
+  });
+  return out;
+}
+
+async function openBsCurated() {
+  const items = (await _bssLoadCurated()) ? _bssCuratedList() : [];
+  /* Curation unreadable, or nothing curated: hand off to the tool, which
+     already has the "No decks have been published yet" copy for that case. */
+  if (!items.length) { _openToolTab('tools/buying-selling-slides.html?curated=1'); return; }
+  const grid = document.getElementById('bscGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  items.forEach((it) => {
+    const tile = document.createElement('button');
+    tile.className = 'rcm-tile';
+    tile.type = 'button';
+    tile.onclick = () => { _openToolTab('tools/buying-selling-slides.html?curated=1&region=' + encodeURIComponent(it.r.slug) + '&mode=' + it.mode); };
+    tile.innerHTML =
+      '<div class="rcm-icon">' + it.r.icon + '</div>' +
+      '<h3>' + it.r.name + '</h3>' +
+      '<div class="rcm-count">' + it.r.state + '</div>';
+    grid.appendChild(tile);
+  });
+  const m = document.getElementById('bsCuratedModal');
+  if (!m) return;
+  m.classList.add('show');
+  m.setAttribute('aria-hidden', 'false');
+  activateRcmView(document.getElementById('bscView'));
+}
+function closeBsCurated() {
+  const m = document.getElementById('bsCuratedModal');
+  if (!m) return;
+  m.classList.remove('show');
+  m.setAttribute('aria-hidden', 'true');
+  document.querySelectorAll('#bsCuratedModal .rcm-view').forEach(v => v.classList.remove('rcm-view-active'));
+}
+
 function bsShowClusters() {
   const c = document.getElementById('bssmClustersView');
   const r = document.getElementById('bssmRegionsView');
@@ -3520,6 +3634,11 @@ document.addEventListener('keydown', (ev) => {
   const onRegions = !document.getElementById('bssmRegionsView').hidden;
   if (onRegions) bsShowClusters();
   else           closeBsSlides();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Escape') return;
+  const m = document.getElementById('bsCuratedModal');
+  if (m && m.classList.contains('show')) closeBsCurated();
 });
 
 /* ── Auto-open Online Reports modal when arriving from the report
@@ -4684,7 +4803,7 @@ function navigateToTool(url, label) {
         { key: 'present-company', n: 'Performance Property Presentations', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 12.5l3-3 2 2 4-4.5"/><path d="M9 20l3-2 3 2"/></svg>', t: 'Company', d: 'The team’s shared decks everyone can present from.', run: function () { navigateToTool('tools/presentation.html?view=company', 'Presentation'); } },
         { key: 'present-mine', n: 'My Presentations', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><circle cx="12" cy="8.5" r="1.8"/><path d="M9 13.5c.6-1.3 1.7-2 3-2s2.4.7 3 2"/><path d="M9 20l3-2 3 2"/></svg>', t: 'Yours', d: 'Your own private decks.', run: function () { navigateToTool('tools/presentation.html?view=mine', 'Presentation'); } },
         { n: 'Users Presentations', icon: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.6"/><circle cx="16.5" cy="9.5" r="2"/><path d="M4.5 18.5c.8-3.2 2.5-4.8 4.5-4.8s3.7 1.6 4.5 4.8"/><path d="M15 18.5c.4-1.8 1.3-3 2.6-3.4"/></svg>', t: 'Dev · Admin', d: 'Every deck owned by another user, tagged with its owner.', cls: 'rcm-tile-staff', run: function () { navigateToTool('tools/presentation.html?view=users', 'Presentation'); } },
-        { key: 'bs-slides-curated', n: 'Buying/Selling Slide', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 12.5l2.5-3 2 2 2.5-3.5 3 4.5"/><path d="M9 20l3-2 3 2"/></svg>', t: 'Live decks', d: 'The published buying and selling decks, built live from the research data.', run: function () { _openToolTab('tools/buying-selling-slides.html?curated=1'); } },
+        { key: 'bs-slides-curated', n: 'Buying/Selling Slide', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 12.5l2.5-3 2 2 2.5-3.5 3 4.5"/><path d="M9 20l3-2 3 2"/></svg>', t: 'Live decks', d: 'The published buying and selling decks, built live from the research data.', run: function () { openBsCurated(); } },
         { key: 'present-library', n: 'Library', icon: '<svg viewBox="0 0 24 24"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8z"/><path d="M3.5 13l8.5 4.5L20.5 13"/></svg>', t: 'Slides', d: 'Buying/selling slides, strategy decks, client + partner decks.', run: function () { navigateToTool('tools/presentations-library.html', 'Presentations'); } }
       ] },
     { id: 'people', full: 'People & Culture', g: 'people', a1: '#47DAFF', a2: '#00A3CC', leadsPlus: true,
