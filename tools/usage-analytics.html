@@ -124,6 +124,10 @@ body.ua-no-data .ua-kpis,body.ua-no-data .ua-grid{display:none}
 .ua-about{margin-top:16px;font-size:11px;color:var(--ua-mut);line-height:1.7;border-top:1px solid var(--ua-border);padding-top:12px}
 .ua-about b{color:var(--ua-ink2)}
 
+/* embedded in the hub's modal (?chrome=0): the OS appbar is the modal's job */
+body.ua-embed .appbar{ display:none !important }
+body.ua-embed .ua-wrap{ padding-top:14px }
+
 /* not-authorized cover (unassigned admins land here; RLS backs it anyway) */
 .ua-deny{display:none;min-height:60vh;align-items:center;justify-content:center;text-align:center;padding:40px}
 .ua-deny .inner{max-width:380px}
@@ -236,18 +240,8 @@ body.ua-denied .ua-wrap{display:none}
 'use strict';
 PP_OS.initChrome({ name: 'Usage Analytics', section: 'vault', backHref: '../' });
 
-/* ═══ dev gate — auth-gate already bounced company/assigned-admin deep links
-   (the registry key is in no group); this catches UNASSIGNED admins, whose
-   allowed-mode is 'all'. RLS + the RPC role checks stand behind both. ═══ */
-(function gate() {
-  var p = null;
-  try { p = (typeof sbCurrentProfile === 'function') ? sbCurrentProfile() : null; } catch (e) {}
-  if (!p || p.tier !== 'dev') {
-    document.body.classList.add('ua-denied');
-    setTimeout(function () { location.replace('../'); }, 2600);
-    throw new Error('ua: not dev');            /* stop the rest of this script */
-  }
-})();
+/* embedded in the hub's usage modal — hide the in-page appbar */
+if (/(?:\?|&)chrome=0/.test(location.search)) document.body.classList.add('ua-embed');
 
 /* ─── helpers ─────────────────────────────────────────────────────────── */
 var $  = function (s) { return document.querySelector(s); };
@@ -797,11 +791,33 @@ $('#uaToolSeg').addEventListener('click', function (e) {
   renderTools(aggregate(state.blob));
 });
 
-/* ─── boot ────────────────────────────────────────────────────────────── */
-loadAll();
-pollLive();
-setInterval(pollLive, 45000);
-setInterval(function () { if (document.visibilityState === 'visible' && !IS_DEMO) loadAll(); }, 300000);
+/* ─── boot, behind the dev gate ───────────────────────────────────────────
+   auth-gate already bounced company/assigned-admin deep links (the registry
+   key is in no group); this catches UNASSIGNED admins, whose allowed-mode is
+   'all'. RLS + the RPC role checks stand behind both.
+   sbCurrentProfile() is ASYNC — check auth.js's sync mirror first
+   (pp_auth_level = real tier), await the profile only on a cold tab where
+   the mirror hasn't landed yet. */
+(async function uaBoot() {
+  var tier = '';
+  try { tier = sessionStorage.getItem('pp_auth_level') || ''; } catch (e) {}
+  if (tier !== 'dev') {
+    try {
+      var p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null;
+      tier = (p && p.tier) || '';
+    } catch (e) { tier = ''; }
+  }
+  if (tier !== 'dev') {
+    document.body.classList.add('ua-denied');
+    /* never navigate an embedding iframe — the cover alone is the answer there */
+    if (window.top === window) setTimeout(function () { location.replace('../'); }, 2600);
+    return;
+  }
+  loadAll();
+  pollLive();
+  setInterval(pollLive, 45000);
+  setInterval(function () { if (document.visibilityState === 'visible' && !IS_DEMO) loadAll(); }, 300000);
+})();
 </script>
 </body>
 </html>
