@@ -291,14 +291,12 @@ async function renderRegion(browser, slug, lite, session) {
          leaks the visual too). Belt-and-braces: physically remove
          every chrome surface from the DOM before capture. The
          addStyleTag display:none rules below still apply for any
-         late-injected nodes (concierge widget, etc.) that arrive
-         after this evaluate runs. */
+         late-injected nodes that arrive after this evaluate runs. */
       const CHROME_SELECTORS = [
         '.appbar', '.wall',
         '.pager', '.ct-panel', '.side-toc', '.mobile-control-bar',
         '#or-back-to-hub', '#or-cluster-btn', '#or-theme-toggle',
         '#pdf-overlay', '.bands-modal-bg',
-        '.concierge-btn', '.concierge-panel',
         /* New chrome on tools/national-report.html and
            tools/commercial-report.html. IDs are pp-* (rather than the
            or-* prefix used on the regional tool), and there's a new
@@ -336,15 +334,11 @@ async function renderRegion(browser, slug, lite, session) {
        overlays — so none of them leak into the captured PDF. */
     await page.addStyleTag({
       content: `
-        /* Chrome surfaces — none of this belongs in a print PDF.
-           AI Concierge launcher + panel are loaded on every tool
-           page and would otherwise paint a cyan circle in the
-           bottom-right corner of every PDF page. */
+        /* Chrome surfaces — none of this belongs in a print PDF. */
         .appbar, .wall,
         .pager, .ct-panel, .side-toc, .mobile-control-bar,
         #or-back-to-hub, #or-cluster-btn, #or-theme-toggle,
         #pdf-overlay, .bands-modal-bg,
-        .concierge-btn, .concierge-panel,
         #pp-back-to-hub, #pp-back-to-cluster, #pp-theme-toggle,
         #pp-download-pill, #pp-download-menu, #pp-export-overlay,
         .pp-pager, #ct-panel,

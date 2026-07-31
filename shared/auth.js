@@ -236,13 +236,10 @@ function _ppBuildTierSwitcher() {
 
   const host = document.createElement('div');
   host.id = 'tier-switcher-js';
-  /* Sits at bottom-right but shifted LEFT past the AI-concierge
-     floating chat button (.concierge-btn — 56px wide, anchored at
-     right:20). 96px clearance = button width + its 20px right
-     margin + a 20px gap so the two sit comfortably side-by-side
-     instead of overlapping. */
+  /* Bottom-right. This used to sit at right:96px to clear the AI-concierge
+     floating chat button; that widget is gone, so it reclaims the corner. */
   const hostStyles = {
-    'position':'fixed','bottom':'18px','right':'96px','z-index':'2147483647',
+    'position':'fixed','bottom':'18px','right':'20px','z-index':'2147483647',
     'display':'block','width':'auto','height':'auto','min-width':'180px','min-height':'40px',
     'font-family':"'Figtree', 'Montserrat', system-ui, -apple-system, sans-serif",
     'pointer-events':'auto','margin':'0','padding':'0','border':'none',

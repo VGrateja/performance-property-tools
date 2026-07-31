@@ -135,9 +135,6 @@ Hub (`index.html`) is 4 swipeable pages: **analytics** (default), **pm**,
 - `report-edit.js` / `report-edit.css` — the report editor (text/shape/image
   overlays, page-bg, TOC, modals, download modal, sync, audit, auto-zoom).
   Shared by national/commercial; the regional tool keeps its own inline copy.
-- `concierge.js` / `concierge.css` — hub AI chat widget. Navigation tool-calls
-  run client-side; the LLM call proxies through the `ai-concierge` Edge
-  Function. Skips injection inside export/embed iframes.
 - `theme.js` — `PP_setTheme` / `PP_toggleTheme` (light/dark, `data-theme`).
 - `common.css`, `color-picker.{js,css}`.
 
@@ -151,8 +148,10 @@ Hub (`index.html`) is 4 swipeable pages: **analytics** (default), **pm**,
   any authenticated user reads; only writers write. Later migrations add
   Arena, Cadence, storage buckets + the `online-reports` storage lockdown
   (028, bucket is private — fetch via short-lived signed URLs).
-- **`functions/`** — `ai-concierge` (Groq Llama-3.3-70B proxy, JWT-gated,
-  model allowlist) and `notify-cadence`.
+- **`functions/`** — `notify-cadence`, `notify-clock`, `notify-scorecards`.
+  There is **no AI/LLM function**: the AI Concierge and the report editor's
+  "✨ Draft" button were both removed 2026-07-31 and the `ai-concierge`
+  function was undeployed. Don't reintroduce an LLM dependency without asking.
 - `supabase/.temp/` is machine-local (gitignored).
 
 ## Data pipelines
@@ -174,7 +173,7 @@ Hub (`index.html`) is 4 swipeable pages: **analytics** (default), **pm**,
 ```
 index.html              hub (login + 4 swipeable tool pages)
 tools/                  one HTML file per tool
-shared/                 auth, supabase client, report-edit, concierge, theme, css
+shared/                 auth, supabase client, report-edit, theme, css
 supabase/migrations/    numbered SQL (apply via dashboard SQL editor)
 supabase/functions/     Deno Edge Functions
 scripts/                Apps Script source, render-reports.mjs, seeds, cleanups
@@ -209,8 +208,9 @@ docs/                   BUG.md, CADENCE.md, ONLINE_REPORTS_RENDERER.md, etc.
   `apply*Visibility` / gating function as one-tier-only — widen to
   dev/admin/company and CSS-gate the content. A one-tier-only gate has caused
   multi-hour hub freezes before.
-- **AI Concierge stays on the Groq free tier.** Don't re-pitch Bedrock / paid
-  tiers proactively.
+- **There is no AI in this product any more** (removed 2026-07-31, Van's call:
+  chat widget, ✨ Draft, Edge Function and the Groq key all gone). Don't
+  propose adding an LLM feature back unless asked.
 - When porting between the regional tool and the research reports, match the
   regional **exactly** (fonts, paddings, colors, modal layouts) — the user
   compares pixel-for-pixel. `online-reports.html` is the source of truth for
