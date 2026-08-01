@@ -16,6 +16,13 @@
      accepts cell.s and silently drops it on write (styling is a Pro feature),
      so the coloured header groups below need this build. -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<!-- fflate (8KB) — zip read/write so the export can be post-patched with a
+     frozen header row. xlsx-js-style CANNOT write freeze panes: its bundle
+     contains no <pane> emitter and ignores ws['!freeze'] entirely (the only
+     "pane" strings in it are a legacy BIFF parser that explicitly skips
+     freezepanes). An .xlsx is just a zip of XML, so we unzip the finished
+     workbook, inject the <pane> into each sheet's <sheetView>, and rezip. -->
+<script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
 <style>
 /* ═══════════════════════════════════════════════════════════════════════════
    DATA EXTRACTOR (under Data Forge) — pick any mix of capitals / LGAs / suburbs
@@ -638,11 +645,62 @@ function styleSheet(ws, t, nRows){
      in as code that looks like it works. */
 }
 
+/* ── frozen header row + axis column ────────────────────────────────────────
+   Mirrors the on-screen preview, which already pins the header row and the
+   first column — so a 40-year × 20-metric extract stays readable when you
+   scroll. xlsx-js-style can't do this (see the fflate comment in <head>), so
+   we patch the finished workbook: an .xlsx is a zip, and each sheet's XML
+   carries a SELF-CLOSING <sheetView …/>. Reopening that tag with a <pane>
+   inside is the whole change.
+
+   Defensive by construction: any failure — fflate missing, unexpected XML,
+   zip trouble — returns the ORIGINAL bytes. The worst case is an export
+   without a frozen row, never a corrupt download. */
+function freezePanes(rawBuf, nFrozenCols) {
+  try {
+    if (!window.fflate) return rawBuf;
+    const xSplit = Math.max(0, nFrozenCols | 0);
+    const topLeft = XLSX.utils.encode_cell({ r: 1, c: xSplit });   /* e.g. B2 */
+    const activePane = xSplit > 0 ? 'bottomRight' : 'bottomLeft';
+    const pane = '<pane ' + (xSplit > 0 ? 'xSplit="' + xSplit + '" ' : '') +
+      'ySplit="1" topLeftCell="' + topLeft + '" activePane="' + activePane + '" state="frozen"/>' +
+      '<selection pane="' + activePane + '" activeCell="' + topLeft + '" sqref="' + topLeft + '"/>';
+
+    const files = fflate.unzipSync(new Uint8Array(rawBuf));
+    const dec = new TextDecoder(), enc = new TextEncoder();
+    let patched = 0;
+    Object.keys(files).forEach((name) => {
+      if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(name)) return;
+      const xml = dec.decode(files[name]);
+      /* the writer emits <sheetViews><sheetView …/></sheetViews> */
+      const next = xml.replace(/<sheetView([^>]*?)\/>/, function (_m, attrs) {
+        return '<sheetView' + attrs + '>' + pane + '</sheetView>';
+      });
+      if (next !== xml) { files[name] = enc.encode(next); patched++; }
+    });
+    if (!patched) return rawBuf;
+    return fflate.zipSync(files);
+  } catch (e) {
+    console.warn('freezePanes skipped:', e);
+    return rawBuf;
+  }
+}
+
+function downloadBytes(bytes, filename) {
+  const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+
 async function runExport(){
   const btn = $('#dxExportBtn'); btn.disabled = true; btn.textContent = 'Building…';
   try {
     if (!state.data) await runPreview();
     const wb = XLSX.utils.book_new(); const used = new Set(); let wrote = 0;
+    let frozenCols = 1;   /* leading non-data (axis) columns, measured per sheet below */
     for (const g of state.geos) {
       const t = state.data.tables[g.type+':'+g.id]; if (!t || !t.header.length || !t.nRows) continue;
       const aoa = [t.header];
@@ -656,12 +714,17 @@ async function runExport(){
         for (let ri = 1; ri < aoa.length; ri++) { const cell = ws[XLSX.utils.encode_cell({ r: ri, c: ci })]; if (cell && typeof cell.v === 'number') cell.z = z; }
       });
       styleSheet(ws, t, aoa.length);
+      /* how many leading columns are labels rather than data — that's what
+         gets frozen alongside the header row (normally just the axis) */
+      if (!wrote) { let n = 0; while (t.meta[n] && t.meta[n].type !== 'data') n++; frozenCols = n; }
       XLSX.utils.book_append_sheet(wb, ws, sheetName(g.label, used)); wrote++;
     }
     if (!wrote) { alert('Nothing to export for the current selection.'); }
     else {
       const d = new Date().toISOString().slice(0,10);
-      XLSX.writeFile(wb, 'forge-data-extract-' + d + '.xlsx');
+      /* write to bytes (not writeFile) so freezePanes can patch the zip first */
+      const raw = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+      downloadBytes(freezePanes(raw, frozenCols), 'forge-data-extract-' + d + '.xlsx');
       try { if (window.PP_TRACK) PP_TRACK.tag('export'); } catch (e) {}   /* usage telemetry */
     }
   } catch (e) { alert('Export failed: ' + (e.message||e)); }
