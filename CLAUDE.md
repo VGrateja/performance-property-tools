@@ -231,6 +231,14 @@ docs/                   CADENCE.md, DATA_FORGE_PIPELINE.md, ONLINE_REPORTS_RENDE
 
 ## Gotchas
 
+- **`vercel.json` was deleted 2026-08-01** (the Vercel hosting path is dropped;
+  production is GitHub Pages). `shared/vercel-img.js` is still LOADED by 5 tool
+  pages and must stay — it's deliberately inert off-Vercel, returning image
+  paths unchanged, so one codebase serves both hosts. If these tools are ever
+  deployed to Vercel again (e.g. ported into the new Performance OS), restore
+  `vercel.json` from git history FIRST: `PP_IMG` requests `w`/`q` values that
+  must appear in its `images` block or `/_vercel/image` returns 400.
+
 - No build/test step. To verify, open the page in a browser (it needs a real
   HTTP server, not `file://` — sessionStorage/CDN/Supabase break on `file://`).
   `node --check shared/report-edit.js` is the quick JS syntax gate.
