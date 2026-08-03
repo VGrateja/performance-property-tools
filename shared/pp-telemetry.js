@@ -48,7 +48,7 @@
     /* light context: whitelisted params only (region slugs, modes — no ids) */
     var CTX = '';
     try {
-      var keep = ['region', 'cluster', 'mode', 'view', 'market', 'markets', 'curated', 'pair'];
+      var keep = ['region', 'cluster', 'mode', 'view', 'market', 'markets', 'curated', 'pair', 'book'];
       var parts = [];
       keep.forEach(function (k) {
         var v = q && q.get(k);

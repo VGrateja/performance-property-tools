@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bookshelf &mdash; Performance Property</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,600&display=swap" rel="stylesheet">
+<!-- OS chrome: mode/period/shade + legacy data-theme bridge -->
+<script src="../shared/os-chrome.js?v=f3c57c2c"></script>
+<link rel="stylesheet" href="../shared/os-theme.css?v=a0feabf6"/>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   BOOKSHELF — staff library of in-hub books, read like a real book.
+   Content lives in public.books (mig 097) and is fetched at runtime — the
+   strategy text is Confidential and this repo is public, so NO book content
+   ships in this file.
+
+   Perf ground rules (the hub-freeze lessons): the page turn is ONE
+   compositor-only 3D flip (transform + opacity, no layout, no filters);
+   will-change exists only DURING a turn; only the pages adjacent to the
+   spread are in the DOM; no backdrop-filter anywhere near the book. Reduced
+   mode (prefers-reduced-motion / lite flag / low-memory device) swaps the
+   flip for a 120ms cross-fade.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root{
+  --bk-ink:#F4F6F8; --bk-ink2:#C6CCD6; --bk-mut:var(--mut,#8b93a2);
+  --bk-teal:#00A0B4; --bk-deep:#171B24; --bk-blue:#54A6DE; --bk-warn:#FFA91F;
+  --bk-border:rgba(255,255,255,0.10);
+  --bk-surface:rgba(255,255,255,0.045);
+  /* the paper (always light — a book page is paper in both themes) */
+  --pg-paper:#FCFCFA; --pg-paper2:#F4F3EE; --pg-ink:#232830; --pg-ink2:#4A5160;
+  --pg-mut:#7A8290; --pg-line:#E3E2DA;
+  --pg-w:480px; --pg-h:656px;
+}
+[data-theme="light"]{
+  --bk-ink:#171B24; --bk-ink2:#3F4650;
+  --bk-border:rgba(23,27,36,0.12);
+  --bk-surface:#ffffff;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Montserrat',system-ui,sans-serif;color:var(--bk-ink);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+
+/* ── shelf ────────────────────────────────────────────────────────────── */
+.bk-shelf{max-width:1180px;margin:0 auto;padding:26px 22px 60px}
+.bk-shelf h1{margin:0;font-size:24px;font-weight:800;letter-spacing:-0.01em}
+.bk-shelf .sub{margin:6px 0 26px;font-size:12.5px;color:var(--bk-mut)}
+.bk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:26px}
+.bk-card{appearance:none;border:0;background:transparent;padding:0;cursor:pointer;text-align:left;color:inherit;font-family:inherit}
+.bk-card .jacket{
+  aspect-ratio:3/4.1; border-radius:6px 12px 12px 6px; position:relative;
+  background:linear-gradient(145deg,#1d2534 0%,var(--bk-deep) 55%,#10141d 100%);
+  border:1px solid rgba(255,255,255,0.09);
+  box-shadow:0 14px 30px rgba(0,0,0,0.35), inset 4px 0 8px -5px rgba(255,255,255,0.25);
+  transform:perspective(900px) rotateY(0deg);
+  transition:transform .22s ease, box-shadow .22s ease;
+  overflow:hidden;
+  display:flex;flex-direction:column;justify-content:space-between;padding:20px 18px 16px;
+}
+.bk-card .jacket::before{ /* spine hint */
+  content:''; position:absolute; inset:0 auto 0 8px; width:1px; background:rgba(255,255,255,0.14);
+}
+.bk-card:hover .jacket{ transform:perspective(900px) rotateY(-7deg) translateY(-3px); box-shadow:0 22px 40px rgba(0,0,0,0.42), inset 4px 0 8px -5px rgba(255,255,255,0.25) }
+.bk-card:focus-visible .jacket{ outline:2px solid var(--bk-teal); outline-offset:3px }
+.bk-card .j-kick{font-size:9px;font-weight:800;letter-spacing:.22em;color:var(--bk-teal);text-transform:uppercase}
+.bk-card .j-title{font-size:19px;font-weight:800;line-height:1.22;color:#fff;margin-top:8px;letter-spacing:-0.01em}
+.bk-card .j-rule{width:34px;height:3px;background:var(--bk-teal);border-radius:2px;margin:12px 0 0}
+.bk-card .j-foot{display:flex;align-items:flex-end;justify-content:space-between;gap:8px}
+.bk-card .j-pub{font-size:8.5px;font-weight:600;letter-spacing:.08em;color:rgba(255,255,255,0.55);text-transform:uppercase;line-height:1.5}
+.bk-card .j-logo{height:15px;opacity:.95}
+.bk-card .meta{margin-top:11px}
+.bk-card .m-title{font-size:13.5px;font-weight:700}
+.bk-card .m-sub{font-size:11px;color:var(--bk-mut);margin-top:2px}
+.bk-card .m-resume{display:inline-block;margin-top:7px;font-size:10px;font-weight:700;color:var(--bk-teal);background:rgba(0,160,180,0.12);border:1px solid rgba(0,160,180,0.3);border-radius:8px;padding:2px 8px}
+.bk-empty{padding:60px 0;text-align:center;color:var(--bk-mut);font-size:13px}
+
+/* ── reader stage ─────────────────────────────────────────────────────── */
+.bk-reader{display:none;position:relative;min-height:calc(100vh - 64px)}
+body.bk-open .bk-reader{display:block}
+body.bk-open .bk-shelf{display:none}
+.bk-stage{
+  position:relative; margin:0 auto; padding:18px 0 8px;
+  display:flex; align-items:center; justify-content:center;
+  perspective:2200px;
+}
+.bk-scale{transform-origin:top center}
+
+/* the book = spread of two pages (or one, narrow) */
+.bk-book{position:relative;display:flex;filter:drop-shadow(0 26px 34px rgba(0,0,0,0.38))}
+[data-theme="light"] .bk-book{filter:drop-shadow(0 22px 30px rgba(23,27,36,0.28))}
+.bk-page{
+  width:var(--pg-w);height:var(--pg-h);
+  background:var(--pg-paper);
+  color:var(--pg-ink);
+  position:relative; overflow:hidden;
+}
+.bk-page.pg-left{border-radius:10px 2px 2px 10px}
+.bk-page.pg-right{border-radius:2px 10px 10px 2px}
+.bk-page.pg-single{border-radius:8px}
+/* inner gutter shading toward the spine */
+.bk-page.pg-left::after{content:'';position:absolute;inset:0 0 0 auto;width:26px;pointer-events:none;
+  background:linear-gradient(to left, rgba(35,40,48,0.10), transparent)}
+.bk-page.pg-right::after{content:'';position:absolute;inset:0 auto 0 0;width:26px;pointer-events:none;
+  background:linear-gradient(to right, rgba(35,40,48,0.10), transparent)}
+
+/* the animated flipper */
+.bk-flip{
+  position:absolute; top:0; width:var(--pg-w); height:var(--pg-h);
+  transform-style:preserve-3d; z-index:5; pointer-events:none;
+}
+.bk-flip .face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;overflow:hidden;background:var(--pg-paper)}
+.bk-flip .face.back{transform:rotateY(180deg)}
+.bk-flip.fwd{right:0;transform-origin:left center}
+.bk-flip.bwd{left:0;transform-origin:right center}
+.bk-flip.go{transition:transform .38s cubic-bezier(.35,.1,.28,1)}
+.bk-flip.fwd .face.front{border-radius:2px 10px 10px 2px}
+.bk-flip.bwd .face.front{border-radius:10px 2px 2px 10px}
+/* moving shadow on the flipping sheet */
+.bk-flip .face::before{content:'';position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .38s;background:linear-gradient(to right, rgba(0,0,0,0.16), transparent 55%)}
+.bk-flip.go .face::before{opacity:1}
+
+/* reduced-motion / lite crossfade */
+body.bk-lite .bk-flip{display:none}
+.bk-fade{animation:bkfade .13s ease}
+@keyframes bkfade{from{opacity:.35}to{opacity:1}}
+
+/* click-to-turn: handled on the book itself (clicks on buttons/links win) */
+.bk-book{cursor:pointer}
+.bk-book .pg-toc,.bk-book .pg-flow{cursor:default}
+
+/* ── page typography (the “paper”) ────────────────────────────────────── */
+.pgc{padding:46px 42px 58px;height:100%;display:flex;flex-direction:column;position:relative}
+.pgc .kick{font-size:9px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:var(--bk-teal);margin:0 0 12px}
+.pgc h1{font-size:19px;font-weight:800;letter-spacing:-0.01em;line-height:1.25;margin:14px 0 6px;color:var(--pg-ink)}
+.pgc h2{font-size:14.5px;font-weight:700;line-height:1.3;margin:12px 0 4px;color:var(--pg-ink)}
+.pgc h3{font-size:12.5px;font-weight:700;font-style:italic;margin:11px 0 3px;color:var(--pg-ink2)}
+.pgc p{font-size:12.6px;line-height:1.6;margin:6px 0;color:var(--pg-ink2)}
+.pgc p b{color:var(--pg-ink)}
+.pgc .note{font-size:10.5px;line-height:1.55;font-style:italic;color:var(--pg-mut);margin:8px 0}
+.pgc .meta{font-size:11px;color:var(--pg-mut);margin:2px 0}
+.pgc ul,.pgc ol{margin:6px 0 8px;padding-left:20px}
+.pgc li{font-size:12.3px;line-height:1.55;color:var(--pg-ink2);margin:3px 0}
+.pgc li::marker{color:var(--bk-teal);font-weight:700}
+.pgc table{width:100%;border-collapse:collapse;font-size:10.8px;margin:8px 0}
+.pgc th{background:var(--bk-deep);color:#fff;font-weight:700;padding:5px 8px;text-align:left;font-size:10px;letter-spacing:.03em}
+.pgc td{border:1px solid var(--pg-line);padding:4.5px 8px;color:var(--pg-ink2);line-height:1.4;vertical-align:top}
+.pgc tr.grp td{background:#E9F6F8;color:var(--bk-deep);font-weight:800;font-size:10px;letter-spacing:.05em;text-transform:uppercase;border-color:var(--pg-line)}
+.pgc .tbl-cont{font-size:9.5px;color:var(--pg-mut);font-style:italic;margin:0 0 3px}
+.pgc figure{margin:10px 0;text-align:center}
+.pgc figure img{max-width:100%;height:auto;border:1px solid var(--pg-line);border-radius:6px}
+.pgc figcaption{font-size:10px;font-style:italic;color:var(--pg-mut);margin-top:5px}
+.pgc .folio{position:absolute;bottom:22px;font-size:10px;color:var(--pg-mut);font-weight:600}
+.pg-left .folio,.pg-single .folio{left:42px}
+.pg-right .folio{right:42px}
+.pgc .runhead{position:absolute;top:20px;font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--pg-mut)}
+.pg-left .runhead{left:42px}
+.pg-right .runhead,.pg-single .runhead{right:42px}
+.pgc .conf{position:absolute;bottom:22px;right:42px;font-size:8.5px;letter-spacing:.12em;color:#C9CDD6;text-transform:uppercase}
+.pg-right .conf,.pg-single .conf{right:auto;left:42px}
+
+/* cover page */
+.pg-cover{background:linear-gradient(150deg,#20293b 0%,var(--bk-deep) 52%,#0d1119 100%)}
+.pg-cover .pgc{justify-content:space-between;padding:56px 46px}
+.pg-cover .c-kick{font-size:10px;font-weight:800;letter-spacing:.26em;color:var(--bk-teal);text-transform:uppercase}
+.pg-cover .c-title{font-size:35px;font-weight:900;line-height:1.12;color:#fff;letter-spacing:-0.015em;margin-top:14px}
+.pg-cover .c-sub{font-size:12.5px;line-height:1.6;color:rgba(255,255,255,0.72);margin-top:14px;max-width:320px}
+.pg-cover .c-rule{width:44px;height:4px;background:var(--bk-teal);border-radius:2px;margin-top:20px}
+.pg-cover .c-foot{display:flex;align-items:flex-end;justify-content:space-between}
+.pg-cover .c-pub{font-size:9px;font-weight:600;letter-spacing:.1em;color:rgba(255,255,255,0.55);text-transform:uppercase;line-height:1.7}
+.pg-cover .c-logo{height:22px}
+.pg-cover .c-conf{position:absolute;top:22px;right:46px;font-size:9px;letter-spacing:.18em;color:rgba(255,255,255,0.35);text-transform:uppercase}
+
+/* title page + end page */
+.pg-titlepage .pgc{justify-content:center;text-align:center;align-items:center}
+.pg-titlepage .t-title{font-size:24px;font-weight:800;color:var(--pg-ink);letter-spacing:-0.01em;line-height:1.2}
+.pg-titlepage .t-sub{font-size:12px;color:var(--pg-ink2);margin-top:12px;max-width:300px;line-height:1.6}
+.pg-titlepage .t-ed{font-size:10.5px;color:var(--pg-mut);margin-top:26px;line-height:1.8}
+.pg-titlepage img{height:20px;margin-bottom:26px}
+
+/* chapter opener */
+.pg-chapter .ch-num{font-size:64px;font-weight:900;color:rgba(0,160,180,0.18);line-height:1;letter-spacing:-0.03em}
+.pg-chapter .ch-title{font-size:24px;font-weight:800;letter-spacing:-0.015em;margin-top:-16px;color:var(--pg-ink)}
+.pg-chapter .ch-tag{font-size:12px;font-style:italic;color:var(--pg-ink2);margin:8px 0 4px}
+.pg-chapter .ch-rule{width:38px;height:3px;background:var(--bk-teal);border-radius:2px;margin:14px 0 10px}
+
+/* TOC — two compact columns so six chapters + sections fit one page */
+.pg-toc .toc-cols{column-count:2;column-gap:26px;margin-top:8px}
+.pg-toc .toc-chap{break-inside:avoid;margin-bottom:9px}
+.pg-toc .toc-row{display:flex;align-items:baseline;gap:6px;margin:4px 0 2px;cursor:pointer}
+.pg-toc .toc-row:hover .tl{color:var(--bk-teal)}
+.pg-toc .toc-row .tn{font-size:9.5px;font-weight:800;color:var(--bk-teal);min-width:13px}
+.pg-toc .toc-row .tl{font-size:10.8px;font-weight:700;color:var(--pg-ink)}
+.pg-toc .toc-row .dots{flex:1;border-bottom:1.5px dotted var(--pg-line);transform:translateY(-2px);min-width:8px}
+.pg-toc .toc-row .tp{font-size:9.5px;font-weight:700;color:var(--pg-ink2)}
+.pg-toc .toc-sec{display:flex;align-items:baseline;gap:6px;margin:1.5px 0 1.5px 18px;cursor:pointer}
+.pg-toc .toc-sec:hover .tsl{color:var(--bk-teal)}
+.pg-toc .toc-sec .tsl{font-size:8.9px;color:var(--pg-ink2);line-height:1.35}
+.pg-toc .toc-sec .dots{flex:1;border-bottom:1px dotted var(--pg-line);transform:translateY(-1px);min-width:6px}
+.pg-toc .toc-sec .tsp{font-size:8.6px;color:var(--pg-mut)}
+
+/* flowchart page */
+.pg-flow .fl-wrap{position:relative;flex:1;margin-top:4px}
+.fl-node{position:absolute;transform:translate(-50%,0);border-radius:9px;padding:7px 10px;font-size:9.6px;line-height:1.35;text-align:center;font-weight:600}
+.fl-q{background:#E7F4FB;border:1.5px solid var(--bk-blue);color:#123;width:168px}
+.fl-a{background:var(--bk-deep);color:#fff;border-radius:999px;padding:3px 12px;font-size:9px;font-weight:800;letter-spacing:.06em;width:auto;white-space:nowrap}
+.fl-end{appearance:none;cursor:pointer;font-family:inherit;background:#FFF3DC;border:1.5px solid var(--bk-warn);color:#5a3c00;width:128px;font-weight:700;transition:transform .12s ease, box-shadow .12s ease}
+.fl-end:hover{transform:translate(-50%,-2px);box-shadow:0 6px 14px rgba(0,0,0,0.14);background:#FFEAC2}
+.fl-end:focus-visible{outline:2px solid var(--bk-teal);outline-offset:2px}
+.fl-svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.fl-svg path{stroke:#232830;stroke-width:1.6;fill:none;marker-end:url(#bkarr)}
+.fl-hint{font-size:10px;color:var(--pg-mut);font-style:italic;margin-top:2px}
+.fl-guide-btn{appearance:none;border:0;cursor:pointer;font-family:inherit;
+  background:var(--bk-teal);color:#fff;font-size:11px;font-weight:800;letter-spacing:.04em;
+  border-radius:9px;padding:8px 14px;margin-top:8px;align-self:flex-start}
+.fl-guide-btn:hover{filter:brightness(1.07)}
+
+/* guided overlay (inside the page) */
+.fl-guide{position:absolute;inset:0;background:var(--pg-paper);display:none;flex-direction:column;padding:46px 42px}
+.pg-flow.guiding .fl-guide{display:flex}
+.fl-guide .gq{font-size:15.5px;font-weight:800;line-height:1.4;color:var(--pg-ink);margin:18px 0 16px}
+.fl-guide .gopt{appearance:none;cursor:pointer;font-family:inherit;text-align:left;
+  border:1.5px solid var(--bk-blue);background:#F2F9FE;color:#123;border-radius:10px;
+  font-size:12.5px;font-weight:700;padding:11px 14px;margin:5px 0}
+.fl-guide .gopt:hover{background:#E7F4FB}
+.fl-guide .gpath{font-size:10px;color:var(--pg-mut);min-height:16px}
+.fl-guide .gres{font-size:11.5px;color:var(--pg-ink2);margin:4px 0 10px}
+.fl-guide .gback{appearance:none;border:0;background:transparent;cursor:pointer;font-family:inherit;color:var(--bk-teal);font-size:10.5px;font-weight:700;align-self:flex-start;padding:0;margin-top:auto}
+
+/* ── reader chrome (bar under the book) ───────────────────────────────── */
+.bk-bar{
+  display:flex;align-items:center;gap:10px;justify-content:center;
+  padding:12px 16px 26px;flex-wrap:wrap;
+}
+.bk-btn{appearance:none;cursor:pointer;font-family:inherit;
+  border:1px solid var(--bk-border);background:var(--bk-surface);color:var(--bk-ink2);
+  font-size:11.5px;font-weight:700;border-radius:9px;padding:7px 12px}
+.bk-btn:hover{color:var(--bk-ink);border-color:var(--bk-teal)}
+.bk-count{font-size:11.5px;color:var(--bk-mut);font-weight:600;min-width:86px;text-align:center}
+.bk-goto{width:52px;border:1px solid var(--bk-border);background:var(--bk-surface);color:var(--bk-ink);
+  border-radius:8px;padding:6px 8px;font:600 11.5px 'Montserrat',sans-serif;text-align:center}
+.bk-goto:focus{outline:none;border-color:var(--bk-teal)}
+.bk-progress{position:relative;height:3px;background:var(--bk-border);border-radius:2px;width:min(560px,72vw)}
+.bk-progress .fill{position:absolute;inset:0 auto 0 0;background:var(--bk-teal);border-radius:2px;transition:width .25s ease}
+
+/* fullscreen read mode */
+body.bk-fs .appbar{display:none !important}
+body.bk-fs .bk-bar{position:fixed;left:0;right:0;bottom:0;opacity:0;transition:opacity .2s;background:linear-gradient(to top, rgba(10,14,20,0.55), transparent);padding-bottom:14px}
+body.bk-fs .bk-bar:hover,body.bk-fs .bk-bar:focus-within{opacity:1}
+body.bk-fs .bk-stage{padding-top:6px}
+
+@media (max-width:700px){
+  .bk-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:18px}
+}
+</style>
+</head>
+<body>
+
+<!-- ── shelf ── -->
+<div class="bk-shelf" id="bkShelf">
+  <h1>Bookshelf</h1>
+  <div class="sub">Performance Property publications — open a book, turn its pages, and use the flowchart to find the strategy that fits.</div>
+  <div class="bk-grid" id="bkGrid"><div class="bk-empty">Loading the shelf…</div></div>
+</div>
+
+<!-- ── reader ── -->
+<div class="bk-reader" id="bkReader">
+  <div class="bk-stage" id="bkStage">
+    <div class="bk-scale" id="bkScale">
+      <div class="bk-book" id="bkBook"></div>
+    </div>
+  </div>
+  <div class="bk-bar">
+    <button class="bk-btn" id="bkBack">‹ Shelf</button>
+    <button class="bk-btn" id="bkTocBtn">Contents</button>
+    <button class="bk-btn" id="bkPrev" aria-label="Previous page">←</button>
+    <span class="bk-count" id="bkCount"></span>
+    <button class="bk-btn" id="bkNext" aria-label="Next page">→</button>
+    <input class="bk-goto" id="bkGoto" inputmode="numeric" placeholder="p." title="Go to page (folio number)"/>
+    <button class="bk-btn" id="bkFs">Read fullscreen</button>
+  </div>
+  <div style="display:flex;justify-content:center;padding-bottom:18px">
+    <div class="bk-progress"><div class="fill" id="bkFill" style="width:0%"></div></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../shared/supabase-client.js?v=b4bd183c"></script>
+<script src="../shared/tool-registry.js?v=c1d65e5b"></script>
+<script src="../shared/desktop-pins.js?v=e2416017"></script>
+<script src="../shared/auth.js?v=7dce203e"></script>
+<script src="../shared/auth-gate.js?v=003cdc01"></script>
+<script src="../shared/pp-telemetry.js?v=a1e39d4f"></script>
+<script src="../shared/fit-screen.js?v=5e41a716"></script>
+<script>
+'use strict';
+PP_OS.initChrome({ name: 'Bookshelf', section: 'docs', backHref: '../' });
+
+var $ = function (s) { return document.querySelector(s); };
+var esc = window.PP_escapeHtml || function (s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+};
+
+/* reduced mode: honour the OS setting, the hub's lite flag, weak devices */
+var LITE = false;
+try {
+  LITE = matchMedia('(prefers-reduced-motion: reduce)').matches ||
+         localStorage.getItem('pp-lite') === '1' ||
+         (navigator.deviceMemory && navigator.deviceMemory <= 4);
+} catch (e) {}
+if (LITE) document.body.classList.add('bk-lite');
+
+var LOGO_DARK_BG = '../assets/Reports/logo-color.png';        /* white text — dark covers */
+var LOGO_LIGHT_BG = '../assets/Reports/logo-color-black.png'; /* dark text — paper pages */
+
+var state = {
+  books: [],            /* shelf rows {slug,title,subtitle,cover} */
+  book: null,           /* full payload when open */
+  idx: 0,               /* current page index (left page of the spread) */
+  single: false,        /* single-page mode (narrow) */
+  turning: false,
+  cache: {},            /* pageIdx -> rendered HTML */
+};
+
+/* ── data ─────────────────────────────────────────────────────────────── */
+function loadShelf() {
+  /* cover jsonb carries pageCount so the shelf never downloads page content */
+  window.sb.from('books').select('slug,title,subtitle,cover').order('sort')
+    .then(function (r) {
+      if (r.error) { $('#bkGrid').innerHTML = '<div class="bk-empty">Couldn’t load the shelf: ' + esc(r.error.message) + '</div>'; return; }
+      state.books = r.data || [];
+      renderShelf();
+      route();
+    }, function () { $('#bkGrid').innerHTML = '<div class="bk-empty">Couldn’t load the shelf.</div>'; });
+}
+function loadBook(slug, page) {
+  window.sb.from('books').select('payload').eq('slug', slug).maybeSingle()
+    .then(function (r) {
+      if (r.error || !r.data) { closeBook(); return; }
+      openBook(r.data.payload, page);
+    }, function () { closeBook(); });
+}
+
+/* ── shelf render ─────────────────────────────────────────────────────── */
+function resumeKey(slug) { return 'pp_book_pos_' + slug; }
+function renderShelf() {
+  var g = $('#bkGrid');
+  if (!state.books.length) { g.innerHTML = '<div class="bk-empty">No books on the shelf yet.</div>'; return; }
+  g.innerHTML = state.books.map(function (b) {
+    var pages = (b.cover && b.cover.pageCount) || 0;
+    var res = null;
+    try { res = parseInt(localStorage.getItem(resumeKey(b.slug)), 10); } catch (e) {}
+    var resume = res && res > 1 ? '<span class="m-resume">Resume — p' + folioOf(res) + '</span>' : '';
+    return '<button class="bk-card" data-slug="' + esc(b.slug) + '" title="Open ' + esc(b.title) + '">' +
+      '<span class="jacket">' +
+        '<span><span class="j-kick">Performance Property</span>' +
+        '<span class="j-title" style="display:block">' + esc(b.title) + '</span>' +
+        '<span class="j-rule" style="display:block"></span></span>' +
+        '<span class="j-foot"><span class="j-pub">Research Division' + (pages ? '<br>' + (pages - 4) + ' pages' : '') + '</span>' +
+        '<img class="j-logo" src="' + LOGO_DARK_BG + '" alt=""/></span>' +
+      '</span>' +
+      '<span class="meta" style="display:block">' +
+        '<span class="m-title" style="display:block">' + esc(b.title) + '</span>' +
+        '<span class="m-sub" style="display:block">' + esc(b.subtitle || '') + '</span>' + resume +
+      '</span>' +
+    '</button>';
+  }).join('');
+  g.querySelectorAll('.bk-card').forEach(function (c) {
+    c.addEventListener('click', function () {
+      var slug = c.dataset.slug;
+      var res = null;
+      try { res = parseInt(localStorage.getItem(resumeKey(slug)), 10); } catch (e) {}
+      loadBook(slug, res || 0);
+    });
+  });
+}
+
+/* ── folio numbering: content starts counting at 1 after the front matter ── */
+function folioOf(idx) { return idx - 3; }        /* pages 4.. → folio 1.. */
+function idxOfFolio(f) { return f + 3; }
+
+/* ── page rendering ───────────────────────────────────────────────────── */
+function blockHtml(b, book) {
+  switch (b.t) {
+    case 'h1': return '<h1>' + b.html + '</h1>';
+    case 'h2': return '<h2>' + b.html + '</h2>';
+    case 'h3': return '<h3>' + b.html + '</h3>';
+    case 'p': return '<p>' + b.html + '</p>';
+    case 'note': return '<p class="note">' + b.html + '</p>';
+    case 'meta': return '<p class="meta">' + b.html + '</p>';
+    case 'ul': case 'ol':
+      return '<' + b.t + '>' + b.items.map(function (it) { return '<li>' + it.html + '</li>'; }).join('') + '</' + b.t + '>';
+    case 'table':
+      return (b.cont ? '<p class="tbl-cont">Risk mitigation framework, continued</p>' : '') +
+        '<table>' + (b.cont ? '' : '<tr><th>' + esc(b.head[0]) + '</th><th>' + esc(b.head[1]) + '</th></tr>') +
+        b.rows.map(function (r) {
+          return r.g ? '<tr class="grp"><td colspan="2">' + esc(r.g) + '</td></tr>'
+                     : '<tr><td>' + esc(r.l) + '</td><td>' + esc(r.r) + '</td></tr>';
+        }).join('') + '</table>';
+    case 'img':
+      return '<figure><img src="' + book.assets[b.src] + '" alt="' + esc(b.cap || '') + '" width="' + b.w + '" height="' + b.h + '"/>' +
+        (b.cap ? '<figcaption>' + esc(b.cap) + '</figcaption>' : '') + '</figure>';
+    default: return '';
+  }
+}
+
+function renderPage(idx) {
+  if (state.cache[idx] !== undefined) return state.cache[idx];
+  var book = state.book;
+  if (!book || idx < 0 || idx >= book.pages.length) { state.cache[idx] = ''; return ''; }
+  var p = book.pages[idx];
+  var chTitle = p.ch && book.chapters[p.ch - 1] ? book.chapters[p.ch - 1].title : '';
+  var html = '';
+  if (p.kind === 'cover') {
+    html = '<div class="pgc">' +
+      '<span class="c-conf">Confidential</span>' +
+      '<div><div class="c-kick">' + esc(book.publisher) + '</div>' +
+      '<div class="c-title">' + esc(book.title) + '</div>' +
+      '<div class="c-sub">' + esc(book.subtitle) + '</div><div class="c-rule"></div></div>' +
+      '<div class="c-foot"><div class="c-pub">' + esc(book.edition) + '<br>Internal · advisor use</div>' +
+      '<img class="c-logo" src="' + LOGO_DARK_BG + '" alt="Performance Property"/></div></div>';
+  } else if (p.kind === 'title') {
+    html = '<div class="pgc"><div style="margin:auto;text-align:center;display:flex;flex-direction:column;align-items:center">' +
+      '<img src="' + LOGO_LIGHT_BG + '" alt="Performance Property" style="height:20px;margin-bottom:26px"/>' +
+      '<div class="t-title">' + esc(book.title) + '</div>' +
+      '<div class="t-sub">' + esc(book.subtitle) + '</div>' +
+      '<div class="t-ed">' + esc(book.publisher) + '<br>' + esc(book.edition) + '</div>' +
+      '</div><span class="conf">Confidential — internal use</span></div>';
+  } else if (p.kind === 'toc') {
+    html = '<div class="pgc"><div class="kick">Contents</div><h1 style="margin-top:0">Table of contents</h1>' +
+      '<div class="toc-row" data-go="' + book.flowPage + '" style="margin-bottom:6px"><span class="tn">◆</span><span class="tl">Find your strategy — the flowchart</span><span class="dots"></span><span class="tp">' + (book.flowPage < 4 ? '·' : folioOf(book.flowPage)) + '</span></div>' +
+      '<div class="toc-cols">' +
+      book.toc.map(function (c) {
+        return '<div class="toc-chap"><div class="toc-row" data-go="' + c.page + '"><span class="tn">' + c.n + '</span><span class="tl">' + esc(c.title) + '</span><span class="dots"></span><span class="tp">' + folioOf(c.page) + '</span></div>' +
+          c.sections.map(function (s2) {
+            return '<div class="toc-sec" data-go="' + s2.page + '"><span class="tsl">' + esc(s2.label) + '</span><span class="dots"></span><span class="tsp">' + folioOf(s2.page) + '</span></div>';
+          }).join('') + '</div>';
+      }).join('') + '</div></div>';
+  } else if (p.kind === 'flow') {
+    html = renderFlowPage(book);
+  } else if (p.kind === 'chapter') {
+    html = '<div class="pgc"><span class="runhead">' + esc(book.title) + '</span>' +
+      '<div class="kick">Chapter ' + p.ch + '</div>' +
+      '<div class="ch-num">' + String(p.ch).padStart(2, '0') + '</div>' +
+      '<div class="ch-title">' + esc(p.title) + '</div>' +
+      '<div class="ch-tag">' + esc(p.tag || '') + '</div><div class="ch-rule"></div>' +
+      (p.blocks || []).map(function (b) { return blockHtml(b, book); }).join('') +
+      '<span class="folio">' + folioOf(idx) + '</span><span class="conf">Confidential</span></div>';
+  } else if (p.kind === 'content') {
+    html = '<div class="pgc"><span class="runhead">' + esc(chTitle) + '</span>' +
+      '<div style="margin-top:14px">' +
+      (p.blocks || []).map(function (b) { return blockHtml(b, book); }).join('') + '</div>' +
+      '<span class="folio">' + folioOf(idx) + '</span><span class="conf">Confidential</span></div>';
+  } else if (p.kind === 'end') {
+    html = '<div class="pgc"><div style="margin:auto;text-align:center;display:flex;flex-direction:column;align-items:center">' +
+      '<img src="' + LOGO_LIGHT_BG + '" alt="" style="height:18px;margin-bottom:22px"/>' +
+      '<div style="font-size:13px;font-weight:700;color:var(--pg-ink)">Talk to a Performance Property Advisor</div>' +
+      '<div style="font-size:11px;color:var(--pg-mut);margin-top:10px;line-height:1.8">Current property-clock positioning, entry pricing and portfolio reviews<br>are available through your advisor at any time.<br><br>www.performanceproperty.com.au<br>L10, 30 Collins Street, Melbourne VIC 3000</div>' +
+      '</div><span class="conf">Confidential — © 2026 PPA Services Pty Ltd</span></div>';
+  }
+  state.cache[idx] = html;
+  return html;
+}
+
+/* ── the flowchart page ───────────────────────────────────────────────── */
+function renderFlowPage(book) {
+  /* Only LAYOUT lives here — every question text, answer label and strategy
+     name comes from the payload (book.flow), so no book content ships in
+     this public file. Positions are % of the flow area. */
+  var Q = {}; book.flow.q.forEach(function (q) { Q[q.id] = q; });
+  var q4opts = (Q.q4 && Q.q4.opts) || [];
+  var N = {
+    q1: { x: 50, y: 3,  t: Q.q1.text, cls: 'fl-q', w: 200 },
+    n1: { x: 24, y: 17, t: 'No',  cls: 'fl-a' },
+    y1: { x: 76, y: 17, t: 'Yes', cls: 'fl-a' },
+    q2: { x: 24, y: 24, t: Q.q2.text, cls: 'fl-q', w: 150 },
+    q3: { x: 76, y: 24, t: Q.q3.text, cls: 'fl-q', w: 150 },
+    n2: { x: 10, y: 36, t: 'No',  cls: 'fl-a' },
+    y2: { x: 36, y: 36, t: 'Yes', cls: 'fl-a' },
+    n3: { x: 60, y: 36, t: 'No',  cls: 'fl-a' },
+    y3: { x: 88, y: 36, t: 'Yes', cls: 'fl-a' },
+    e1: { x: 16, y: 43, end: 'rentvestor', cls: 'fl-end' },
+    e2: { x: 28, y: 50, end: 'upgrader', cls: 'fl-end' },
+    e6: { x: 83, y: 43, end: 'debt-reducer', cls: 'fl-end' },
+    q4: { x: 64, y: 56, t: Q.q4.text, cls: 'fl-q', w: 150 },
+    a4: { x: 36, y: 72, t: (q4opts[0] || {}).label || '', cls: 'fl-a' },
+    b4: { x: 78, y: 72, t: (q4opts[1] || {}).label || '', cls: 'fl-a' },
+    e3: { x: 36, y: 79, end: 'high-growth', cls: 'fl-end' },
+    e4: { x: 70, y: 79, end: 'strategic-allocation', cls: 'fl-end' },
+    e5: { x: 78, y: 89, end: 'model-portfolios', cls: 'fl-end' },
+  };
+  var EDGES = [
+    ['q1', 'n1'], ['q1', 'y1'], ['n1', 'q2'], ['y1', 'q3'],
+    ['q2', 'n2'], ['q2', 'y2'], ['q3', 'n3'], ['q3', 'y3'],
+    ['n2', 'e1'], ['y2', 'e2'], ['y3', 'e6'], ['n3', 'q4'],
+    ['q4', 'a4'], ['q4', 'b4'], ['a4', 'e3'], ['b4', 'e4'], ['b4', 'e5'],
+  ];
+  var nodes = Object.keys(N).map(function (k) {
+    var n = N[k];
+    var label = n.end ? state.book.flow.ends[n.end] : n.t;
+    var style = 'left:' + n.x + '%;top:' + n.y + '%;' + (n.w ? 'width:' + n.w + 'px;' : '');
+    if (n.end) return '<button class="fl-node ' + n.cls + '" style="' + style + '" data-k="' + k + '" data-end="' + n.end + '">' + esc(label) + '</button>';
+    return '<div class="fl-node ' + n.cls + '" style="' + style + '" data-k="' + k + '">' + esc(label) + '</div>';
+  }).join('');
+  var paths = EDGES.map(function (e) { return '<path data-e="' + e[0] + '-' + e[1] + '" d=""/>'; }).join('');
+  return '<div class="pgc pg-flow-inner"><div class="kick">Find your strategy</div>' +
+    '<h1 style="margin:0 0 2px">Property Strategy Flowchart</h1>' +
+    '<div class="fl-hint">Answer from the top — or tap a strategy to jump straight to its chapter.</div>' +
+    '<button class="fl-guide-btn" data-guide="1">▸ Guide me — three quick questions</button>' +
+    '<div class="fl-wrap"><svg class="fl-svg"><defs><marker id="bkarr" markerWidth="7" markerHeight="7" refX="5.4" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#232830"/></marker></defs>' + paths + '</svg>' + nodes + '</div>' +
+    '<div class="fl-guide" data-gui="1"></div>' +
+    '<span class="folio">·</span><span class="conf">Confidential</span></div>';
+}
+
+/* connect the flowchart arrows once the nodes have real boxes */
+function wireFlow(pageEl) {
+  var wrap = pageEl.querySelector('.fl-wrap');
+  if (!wrap) return;
+  var svg = wrap.querySelector('.fl-svg');
+  var box = wrap.getBoundingClientRect();
+  if (!box.height) return;
+  svg.setAttribute('viewBox', '0 0 ' + box.width + ' ' + box.height);
+  wrap.querySelectorAll('.fl-node').forEach(function (n) { n._r = n.getBoundingClientRect(); });
+  svg.querySelectorAll('path[data-e]').forEach(function (path) {
+    var pair = path.dataset.e.split('-');
+    var a = wrap.querySelector('[data-k="' + pair[0] + '"]');
+    var b2 = wrap.querySelector('[data-k="' + pair[1] + '"]');
+    if (!a || !b2) return;
+    var ra = a._r || a.getBoundingClientRect(), rb = b2._r || b2.getBoundingClientRect();
+    var x1 = ra.left + ra.width / 2 - box.left, y1 = ra.bottom - box.top;
+    var x2 = rb.left + rb.width / 2 - box.left, y2 = rb.top - box.top;
+    path.setAttribute('d', 'M' + x1 + ',' + y1 + ' C' + x1 + ',' + (y1 + 14) + ' ' + x2 + ',' + (y2 - 16) + ' ' + x2 + ',' + (y2 - 2));
+  });
+}
+
+/* guided mode */
+function startGuide(pageEl) {
+  var book = state.book;
+  var gui = pageEl.querySelector('.fl-guide');
+  var flowPage = pageEl.closest('.bk-page') ? pageEl : pageEl;
+  var qmap = {}; book.flow.q.forEach(function (q) { qmap[q.id] = q; });
+  var path = [];
+  function chapterPage(slug) {
+    var ch = book.chapters.find(function (c) { return c.slug === slug; });
+    var t = book.toc.find(function (c) { return c.n === (ch && ch.n); });
+    return t ? t.page : 4;
+  }
+  function render(qid) {
+    var q = qmap[qid];
+    var crumbs = path.map(function (s) { return esc(s); }).join('  ›  ');
+    if (!q) return;
+    var opts = '';
+    if (q.opts) {
+      opts = q.opts.map(function (o, i) { return '<button class="gopt" data-o="' + i + '">' + esc(o.label) + '</button>'; }).join('');
+    } else {
+      opts = '<button class="gopt" data-a="yes">Yes</button><button class="gopt" data-a="no">No</button>';
+    }
+    gui.innerHTML = '<div class="kick">Find your strategy</div><div class="gpath">' + crumbs + '</div>' +
+      '<div class="gq">' + esc(q.text) + '</div>' + opts +
+      '<button class="gback">‹ Back to the flowchart</button>';
+    gui.querySelector('.gback').onclick = function () { flowPage.classList.remove('guiding'); };
+    gui.querySelectorAll('.gopt').forEach(function (btn) {
+      btn.onclick = function () {
+        if (btn.dataset.a) {
+          var next = q[btn.dataset.a];
+          path.push(q.text.split('?')[0].slice(0, 34) + '? ' + (btn.dataset.a === 'yes' ? 'Yes' : 'No'));
+          if (typeof next === 'string') render(next);
+          else finish([next.end]);
+        } else {
+          var o = q.opts[+btn.dataset.o];
+          path.push(o.label);
+          finish(o.ends || [o.end]);
+        }
+      };
+    });
+  }
+  function finish(slugs) {
+    var crumbs = path.map(function (s) { return esc(s); }).join('  ›  ');
+    gui.innerHTML = '<div class="kick">Your strategy</div><div class="gpath">' + crumbs + '</div>' +
+      '<div class="gq">' + (slugs.length > 1 ? 'Two strategies fit this path:' : 'This path points to:') + '</div>' +
+      slugs.map(function (s) {
+        return '<button class="gopt" data-s="' + s + '">' + esc(state.book.flow.ends[s]) + ' — open chapter ›</button>';
+      }).join('') +
+      '<div class="gres">' + (slugs.length > 1 ? 'Strategic Allocation blends property with financial products; the Commercial Property Portfolio pursues income through commercial assets. Read both — advisors often combine them.' : '') + '</div>' +
+      '<button class="gback">‹ Start again</button>';
+    gui.querySelector('.gback').onclick = function () { path = []; render('q1'); };
+    gui.querySelectorAll('.gopt').forEach(function (btn) {
+      btn.onclick = function () { flowPage.classList.remove('guiding'); goTo(chapterPage(btn.dataset.s)); };
+    });
+  }
+  flowPage.classList.add('guiding');
+  path = [];
+  render('q1');
+}
+
+/* ── spread building ──────────────────────────────────────────────────── */
+function pageNode(idx, cls) {
+  var d = document.createElement('div');
+  d.className = 'bk-page ' + cls;
+  var p = state.book && state.book.pages[idx];
+  if (p && p.kind === 'cover') d.classList.add('pg-cover');
+  if (p && p.kind === 'title') d.classList.add('pg-titlepage');
+  if (p && p.kind === 'toc') d.classList.add('pg-toc');
+  if (p && p.kind === 'flow') d.classList.add('pg-flow');
+  if (p && p.kind === 'chapter') d.classList.add('pg-chapter');
+  d.innerHTML = renderPage(idx);
+  return d;
+}
+function normalizeIdx(i) {
+  if (state.single) return Math.max(0, Math.min(i, state.book.pages.length - 1));
+  if (i <= 0) return 0;                     /* cover sits alone on the right? no — cover = single left? */
+  if (i % 2 === 1) i--;                     /* spreads start on even idx */
+  return Math.max(0, Math.min(i, state.book.pages.length - 1));
+}
+function buildSpread() {
+  var book = state.book, wrapEl = $('#bkBook');
+  wrapEl.innerHTML = '';
+  var i = state.idx;
+  if (state.single) {
+    wrapEl.appendChild(pageNode(i, 'pg-single' + (LITE ? ' bk-fade' : '')));
+  } else if (i === 0) {
+    /* the closed book: cover alone, POV tilt */
+    var c = pageNode(0, 'pg-single');
+    c.style.transform = 'perspective(1400px) rotateY(-9deg)';
+    c.style.transition = 'transform .25s ease';
+    c.addEventListener('mouseenter', function () { c.style.transform = 'perspective(1400px) rotateY(-3deg)'; });
+    c.addEventListener('mouseleave', function () { c.style.transform = 'perspective(1400px) rotateY(-9deg)'; });
+    wrapEl.appendChild(c);
+  } else {
+    wrapEl.appendChild(pageNode(i, 'pg-left' + (LITE ? ' bk-fade' : '')));
+    wrapEl.appendChild(pageNode(i + 1, 'pg-right' + (LITE ? ' bk-fade' : '')));
+  }
+  wireInteractive(wrapEl);
+  syncBar();
+  fitStage();
+}
+function wireInteractive(rootEl) {
+  rootEl.querySelectorAll('[data-go]').forEach(function (el) {
+    el.addEventListener('click', function (ev) { ev.stopPropagation(); goTo(+el.dataset.go); });
+  });
+  rootEl.querySelectorAll('.fl-end').forEach(function (el) {
+    el.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      var book = state.book;
+      var ch = book.chapters.find(function (c) { return c.slug === el.dataset.end; });
+      var t = book.toc.find(function (c) { return ch && c.n === ch.n; });
+      if (t) goTo(t.page);
+    });
+  });
+  rootEl.querySelectorAll('[data-guide]').forEach(function (el) {
+    el.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      startGuide(el.closest('.pg-flow') || el.closest('.bk-page'));
+    });
+  });
+  var fl = rootEl.querySelector('.pg-flow');
+  if (fl) requestAnimationFrame(function () { wireFlow(fl); });
+}
+
+/* ── turning ──────────────────────────────────────────────────────────── */
+function goTo(i, silent) {
+  if (!state.book) return;
+  state.idx = normalizeIdx(i);
+  state.turning = false;
+  buildSpread();
+  persist();
+  if (!silent) syncURL();
+}
+function next() { turn(1); }
+function prev() { turn(-1); }
+function turn(dir) {
+  var book = state.book;
+  if (!book || state.turning) return;
+  var step = state.single ? 1 : (state.idx === 0 ? 1 : 2);
+  var target = state.idx + dir * step;
+  if (dir > 0 && state.idx === 0) target = 1;                    /* open the cover onto p1/p2 spread */
+  if (!state.single && target > 0 && target % 2 === 1) target--; /* keep spreads even; cover handled above */
+  if (dir > 0 && state.idx >= book.pages.length - (state.single ? 1 : 2)) return;
+  if (dir < 0 && state.idx === 0) return;
+  if (dir < 0 && target < 0) target = 0;
+  if (dir > 0 && state.idx === 0) target = 2;                    /* cover → first spread (idx 2,3) */
+
+  if (LITE || state.idx === 0 || target === 0) { goTo(target); return; }
+
+  /* 3D flip: forward flips the right page; backward flips the left */
+  state.turning = true;
+  var wrapEl = $('#bkBook');
+  var flip = document.createElement('div');
+  flip.className = 'bk-flip ' + (dir > 0 ? 'fwd' : 'bwd');
+  var front = document.createElement('div'); front.className = 'face front';
+  var back = document.createElement('div'); back.className = 'face back';
+  if (dir > 0) {
+    front.innerHTML = renderPage(state.idx + 1);   /* current right */
+    back.innerHTML = renderPage(target);           /* next left */
+    /* underneath: replace right page content with the incoming right */
+    var rightEl = wrapEl.querySelector('.pg-right');
+    if (rightEl) rightEl.innerHTML = renderPage(target + 1);
+  } else {
+    front.innerHTML = renderPage(state.idx);       /* current left */
+    back.innerHTML = renderPage(target + 1);       /* prev right */
+    var leftEl = wrapEl.querySelector('.pg-left');
+    if (leftEl) leftEl.innerHTML = renderPage(target);
+  }
+  flip.appendChild(front); flip.appendChild(back);
+  flip.style.willChange = 'transform';
+  wrapEl.appendChild(flip);
+  /* run the flip on the next frame */
+  requestAnimationFrame(function () {
+    flip.classList.add('go');
+    flip.style.transform = 'rotateY(' + (dir > 0 ? -180 : 180) + 'deg)';
+  });
+  var done = false;
+  function finish() {
+    if (done) return; done = true;
+    flip.style.willChange = '';
+    goTo(target);
+  }
+  flip.addEventListener('transitionend', finish);
+  setTimeout(finish, 460);                                        /* safety */
+}
+
+/* ── chrome sync ──────────────────────────────────────────────────────── */
+function syncBar() {
+  var book = state.book; if (!book) return;
+  var n = book.pages.length;
+  var label;
+  if (state.idx === 0) label = 'Cover';
+  else if (state.single) label = folioLabel(state.idx);
+  else label = folioLabel(state.idx) + '–' + folioLabel(Math.min(state.idx + 1, n - 1));
+  $('#bkCount').textContent = label + ' · ' + (n - 4) + 'pp';
+  $('#bkFill').style.width = Math.round((state.idx / (n - 1)) * 100) + '%';
+}
+function folioLabel(idx) {
+  var f = folioOf(idx);
+  return f >= 1 && f <= state.book.pages.length - 5 ? 'p' + f : ['cover', 'title', 'flowchart', 'contents'][idx] || '·';
+}
+function persist() {
+  try { localStorage.setItem(resumeKey(state.book.slug), String(state.idx)); } catch (e) {}
+}
+function syncURL() {
+  try {
+    history.replaceState(null, '', '?book=' + encodeURIComponent(state.book.slug) + '&page=' + state.idx);
+  } catch (e) {}
+}
+
+/* scale the spread to the viewport (transform only — no layout thrash) */
+function fitStage() {
+  var stage = $('#bkStage'), scale = $('#bkScale');
+  var pageW = 480, pageH = 656;
+  var w = state.single || state.idx === 0 ? pageW : pageW * 2;
+  var availW = Math.min(window.innerWidth - 36, 1160);
+  var availH = window.innerHeight - (document.body.classList.contains('bk-fs') ? 90 : 205);
+  var s = Math.min(availW / w, availH / pageH, 1.12);
+  scale.style.transform = 'scale(' + s + ')';
+  stage.style.height = Math.ceil(pageH * s + 20) + 'px';
+}
+
+/* ── open/close ───────────────────────────────────────────────────────── */
+function openBook(payload, page) {
+  state.book = payload;
+  state.cache = {};
+  state.single = window.innerWidth < 900;
+  state.idx = normalizeIdx(page || 0);
+  document.body.classList.add('bk-open');
+  buildSpread();
+  syncURL();
+  document.title = payload.title + ' · Bookshelf';
+}
+function closeBook() {
+  state.book = null;
+  document.body.classList.remove('bk-open', 'bk-fs');
+  try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) {}
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  document.title = 'Bookshelf — Performance Property';
+  renderShelf();   /* refresh resume chips */
+}
+
+/* ── controls ─────────────────────────────────────────────────────────── */
+/* click-to-turn on the book: left half back, right half forward — unless the
+   click landed on something interactive (TOC rows, flow chips, guide) */
+$('#bkBook').addEventListener('click', function (ev) {
+  if (!state.book || state.turning) return;
+  if (ev.target.closest('button, [data-go], a, input, .fl-guide')) return;
+  var r = this.getBoundingClientRect();
+  (ev.clientX < r.left + r.width / 2 && state.idx > 0) ? prev() : next();
+});
+$('#bkBack').addEventListener('click', closeBook);
+$('#bkPrev').addEventListener('click', prev);
+$('#bkNext').addEventListener('click', next);
+$('#bkTocBtn').addEventListener('click', function () { if (state.book) goTo(state.book.tocPage); });
+$('#bkGoto').addEventListener('keydown', function (e) {
+  if (e.key !== 'Enter' || !state.book) return;
+  var f = parseInt(this.value, 10);
+  if (isFinite(f)) goTo(idxOfFolio(f));
+  this.value = '';
+});
+$('#bkFs').addEventListener('click', function () {
+  var on = !document.body.classList.contains('bk-fs');
+  document.body.classList.toggle('bk-fs', on);
+  try { on ? document.documentElement.requestFullscreen() : document.exitFullscreen(); } catch (e) {}
+  fitStage();
+});
+document.addEventListener('fullscreenchange', function () {
+  if (!document.fullscreenElement) document.body.classList.remove('bk-fs');
+  fitStage();
+});
+document.addEventListener('keydown', function (e) {
+  if (!state.book) return;
+  if (e.target && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+  else if (e.key === 'Home') goTo(0);
+});
+/* swipe */
+(function () {
+  var x0 = null;
+  document.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener('touchend', function (e) {
+    if (x0 == null || !state.book) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 46) (dx < 0 ? next() : prev());
+    x0 = null;
+  }, { passive: true });
+})();
+window.addEventListener('resize', function () {
+  if (!state.book) return;
+  var single = window.innerWidth < 900;
+  if (single !== state.single) { state.single = single; state.idx = normalizeIdx(state.idx); buildSpread(); }
+  else fitStage();
+});
+
+/* ── routing ──────────────────────────────────────────────────────────── */
+function route() {
+  var q = new URLSearchParams(location.search);
+  var slug = q.get('book');
+  if (slug) loadBook(slug, parseInt(q.get('page'), 10) || 0);
+}
+loadShelf();
+</script>
+</body>
+</html>

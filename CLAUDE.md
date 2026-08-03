@@ -128,6 +128,8 @@ assumptions.) Tools:
 - `presentation.html` (builder, ~607KB — the largest tool file)
   + `presentations-library.html` (deck library).
 - `whitepapers-strategies.html` — Documents.
+- `bookshelf.html` — staff library; book CONTENT lives in public.books (mig
+  097), fetched at runtime — never commit book text (this repo is public).
 - `cadence.html` — team workflow board (Supabase-backed, realtime + notify).
 - `arena.html`, `arena-typing.html`, `arena-chess.html`, `arena-scrabble.html` —
   games with leaderboards; chess/scrabble are online multiplayer via RPCs.
