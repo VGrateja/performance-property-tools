@@ -1,77 +1,92 @@
 /* ============================================================================
  * traffic-lights-engine.js — the Traffic Lights scoring model, ported verbatim
- * from Traffic Lights.xlsx (Scoring Model sheet). PURE: no I/O, no DOM, no sb.
+ * from Traffic Lights.xlsx (Scoring Model sheet, 2026-08 revision). PURE where
+ * it can be: scoreRegion()/confInputsFrom()/dampedForecast() have no I/O.
+ *
+ * 2026-08 model (replaces the 9-indicator version):
+ *  · CONFIDENCE = 6 indicators — Job Ads, Business Finance, Housing Finance,
+ *    Consumer Confidence, Business Confidence, Underutilisation. Current
+ *    verdict = simple average of 2/1/0 scores vs 1.5/0.7 (the any-RED veto is
+ *    OFF — workbook B21="NO"; a red now just drags the average). Forecast =
+ *    per-indicator DAMPED-TREND projection (Gardner–McKenzie, phi=0.8, slope
+ *    over the last 6 observations, clamped to the series' historical min/max),
+ *    aggregated as Σ(score×weight)/Σweight with weights [1,1.5,2,1,1,0.5].
+ *  · VALUE = continuous normalised scores: rank-gap and runway each mapped to
+ *    0..1 between their red/green thresholds; verdict =
+ *    (4·avg(rankNorms) + avg(runwayNorms))/2.5 vs 1.4/0.7.
+ *  · SUPPLY & DEMAND = Demand Score H/U, BOTH thresholds green ≥30 / red ≤5;
+ *    verdict = 2·avg(norms) vs 1.4/0.7 (headline is the average of segments,
+ *    no longer worse-of).
  *
  * scoreRegion(inp) -> { sd, sd_fcst, value, value_fcst, confidence, conf_fcst,
  *                       conf_score, conf_fcst_score, indicators[], value_inds[], sd_inds[] }
- *
- * The caller assembles `inp` from Forge (YoY/MoM/level/gap already computed; use
- * linForecast() for the projected values). Thresholds/weights are the workbook's.
  * Loaded as a classic script (window.PP_TL_ENGINE) AND require()-able in Node.
  * ========================================================================== */
 (function (root) {
   'use strict';
 
+  var PHI = 0.8;           // damping factor (workbook B23)
+  var ANY_RED_VETO = false; // workbook B21 = "NO" (was YES in the 2026-07 model)
+
   var verdict = function (score, g, o) { return score >= g ? 'GREEN' : score >= o ? 'ORANGE' : 'RED'; };
   var sigOf = function (s) { return s === 2 ? 'GREEN' : s === 1 ? 'ORANGE' : 'RED'; };   // 2/1/0 -> signal
+  var clamp01 = function (x) { return x < 0 ? 0 : x > 1 ? 1 : x; };
+  // MEDIAN(0, (v-red)/(green-red), 1) — the workbook's normalisation. null → 0.5
+  // (neutral; the workbook's sample sheets are always populated, we must not crash).
+  var normTo = function (v, red, green) { return (v == null || isNaN(v)) ? 0.5 : clamp01((v - red) / (green - red)); };
 
-  // Confidence indicators, in workbook row order (10..18). cmp: how E/level maps to a 2/1/0 score.
-  //   'le'  lower-is-better:  E<=g -> 2, E>=r -> 0, else 1      (som/adom/arrears)
-  //   'ge'  higher-is-better: E>=g -> 2, E<=r -> 0, else 1      (retail/bizinv/jci/lending)
-  //   'lvl' level lower-is-better: C<=g -> 2, C>=r -> 0, else 1 (real cash rate)
-  //   'unemp' level+trend: (C<=g && dC<=0) -> 2, (C>=r || dC>0.005) -> 0, else 1
-  // kc = current weight, kf = forecast weight. Score aggregate = mean(score*weight) over the 9.
+  // Confidence indicators, workbook rows 10..15.
+  //   basis 'chg' : current = YoY change vs ±thresholds; forecast = damped level → (V/C−1)
+  //   basis 'lvl' : current = level vs thresholds (higher better); forecast = damped level
+  //   basis 'ut'  : level+trend current (≤g AND falling → GREEN; ≥r OR rose >0.3pp → RED);
+  //                 forecast = damped LEVEL only.
+  //   kc = current weight (all 1 → simple average), kf = forecast weight, h = damping
+  //   horizon in native periods (jobads 12 months, quarterly finance 4, levels 1;
+  //   business confidence resolves at shape time from its data cadence).
   var CONF = [
-    { key: 'som',     name: 'Stock on Market',         cmp: 'le',  g: -0.03, r: 0.03,  kc: 1,   kf: 2 },
-    { key: 'adom',    name: 'Average Days on Market',  cmp: 'le',  g: -0.05, r: 0.05,  kc: 1,   kf: 2 },
-    { key: 'retail',  name: 'Retail Turnover',         cmp: 'ge',  g: 0.03,  r: 0.0,   kc: 0.5, kf: 0.5 },
-    { key: 'bizinv',  name: 'Business Investment',     cmp: 'ge',  g: 0.02,  r: -0.02, kc: 1,   kf: 1.5 },
-    { key: 'unemp',   name: 'Unemployment',            cmp: 'unemp', g: 0.045, r: 0.06, kc: 1,  kf: 0.5 },
-    { key: 'realcash',name: 'Cash Rate vs. Inflation', cmp: 'lvl', g: 0.0,   r: 0.015, kc: 1,   kf: 1 },
-    { key: 'arrears', name: 'Mortgage Arrears',        cmp: 'le',  g: -0.05, r: 0.05,  kc: 0.5, kf: 0.5 },
-    { key: 'jci',     name: 'Job Creation Index',      cmp: 'ge',  g: 0.03,  r: -0.03, kc: 1,   kf: 1.5 },
-    { key: 'lending', name: 'Lending Flows (OO+INV)',  cmp: 'ge',  g: 0.03,  r: -0.03, kc: 1,   kf: 2 }
+    { key: 'jobads',   name: 'Job Ads',             basis: 'chg', g: 0.03,  r: -0.03, kc: 1, kf: 1,   h: 12 },
+    { key: 'bizfin',   name: 'Business Finance',    basis: 'chg', g: 0.03,  r: -0.03, kc: 1, kf: 1.5, h: 4 },
+    { key: 'housfin',  name: 'Housing Finance',     basis: 'chg', g: 0.03,  r: -0.03, kc: 1, kf: 2,   h: 4 },
+    { key: 'cci',      name: 'Consumer Confidence', basis: 'lvl', g: 100,   r: 97,    kc: 1, kf: 1,   h: 1 },
+    { key: 'bizconf',  name: 'Business Confidence', basis: 'lvl', g: 0,     r: -5,    kc: 1, kf: 1,   h: 12 },
+    { key: 'underemp', name: 'Underutilisation',    basis: 'ut',  g: 0.06,  r: 0.075, kc: 1, kf: 0.5, h: 1 }
   ];
 
   function scoreConf(spec, inp) {
-    if (spec.cmp === 'unemp') {
-      var C = inp.unemp_level, dC = inp.unemp_change;
-      if (C == null) return 1;
+    if (spec.basis === 'ut') {
+      var C = inp.underemp_level, dC = inp.underemp_change;
+      if (C == null || isNaN(C)) return 1;
       if (C <= spec.g && dC != null && dC <= 0) return 2;
-      if (C >= spec.r || (dC != null && dC > 0.005)) return 0;
+      if (C >= spec.r || (dC != null && dC > 0.003)) return 0;
       return 1;
     }
-    if (spec.cmp === 'lvl') {
-      var Cl = inp.real_cash_rate;
-      if (Cl == null) return 1;
-      return Cl <= spec.g ? 2 : Cl >= spec.r ? 0 : 1;
+    if (spec.basis === 'lvl') {
+      var L = inp[spec.key + '_level'];
+      if (L == null || isNaN(L)) return 1;
+      return L >= spec.g ? 2 : L <= spec.r ? 0 : 1;
     }
-    var E = inp[spec.key];                 // the change (YoY/MoM) value for this indicator
+    var E = inp[spec.key];                 // the YoY change for this indicator
     if (E == null || isNaN(E)) return 1;
-    return spec.cmp === 'le' ? (E <= spec.g ? 2 : E >= spec.r ? 0 : 1)
-                             : (E >= spec.g ? 2 : E <= spec.r ? 0 : 1);
+    return E >= spec.g ? 2 : E <= spec.r ? 0 : 1;
   }
 
-  // FORECAST score for a confidence indicator — scores that indicator's OWN projected
-  // value (inp.fc_<key> / fc_unemp_* / fc_real_cash_rate) against the SAME green/red
-  // thresholds as the current signal. Mirrors scoreConf; a null projection (missing or
-  // broken data — the IFERROR case) defaults to neutral (1) rather than crashing.
+  // Forecast signal (workbook col W): the indicator's own damped-trend projection
+  // scored against the SAME thresholds. Missing projection (the IFERROR case)
+  // defaults to ORANGE/1.
   function scoreConfFcst(spec, inp) {
-    if (spec.cmp === 'unemp') {
-      // forecast scores the PROJECTED level only (workbook W14), not the level+trend combo the current uses.
-      var C = inp.fc_unemp_level;
-      if (C == null) return 1;
+    if (spec.basis === 'ut') {             // LEVEL only (workbook W15)
+      var C = inp.fc_underemp_level;
+      if (C == null || isNaN(C)) return 1;
       return C <= spec.g ? 2 : C >= spec.r ? 0 : 1;
     }
-    if (spec.cmp === 'lvl') {
-      var Cl = inp.fc_real_cash_rate;
-      if (Cl == null) return 1;
-      return Cl <= spec.g ? 2 : Cl >= spec.r ? 0 : 1;
+    if (spec.basis === 'lvl') {
+      var L = inp['fc_' + spec.key + '_level'];
+      if (L == null || isNaN(L)) return 1;
+      return L >= spec.g ? 2 : L <= spec.r ? 0 : 1;
     }
-    var E = inp['fc_' + spec.key];
+    var E = inp['fc_' + spec.key];         // projected change (V/C − 1)
     if (E == null || isNaN(E)) return 1;
-    return spec.cmp === 'le' ? (E <= spec.g ? 2 : E >= spec.r ? 0 : 1)
-                             : (E >= spec.g ? 2 : E <= spec.r ? 0 : 1);
+    return E >= spec.g ? 2 : E <= spec.r ? 0 : 1;
   }
 
   // FORECAST(x, ys, xs) — linear-regression extrapolation to targetX. ys at x=1..n.
@@ -90,56 +105,80 @@
     return a + b * (targetX == null ? n + 1 : targetX);
   }
 
+  // Damped-trend forecast (workbook col V): slope over the LAST SIX observations,
+  // each step ahead contributes phi^k of that slope (Σ = phi(1−phi^h)/(1−phi)),
+  // clamped to the series' historical min/max — MEDIAN(min, C+slope·mult, max).
+  // Fewer than 6 points → null (the workbook's SLOPE would error → IFERROR).
+  function dampedForecast(series, h, phi) {
+    var a = [];
+    for (var i = 0; i < series.length; i++) if (series[i] != null && !isNaN(series[i])) a.push(+series[i]);
+    if (a.length < 6) return null;
+    var w = a.slice(-6);
+    var mx = 0, my = 0, k;
+    for (k = 0; k < 6; k++) { mx += k + 1; my += w[k]; } mx /= 6; my /= 6;
+    var num = 0, den = 0;
+    for (k = 0; k < 6; k++) { num += (k + 1 - mx) * (w[k] - my); den += (k + 1 - mx) * (k + 1 - mx); }
+    var slope = den ? num / den : 0;
+    var p = phi == null ? PHI : phi, mult = 0;
+    for (k = 1; k <= h; k++) mult += Math.pow(p, k);
+    var f = a[a.length - 1] + slope * mult;
+    var lo = Math.min.apply(null, a), hi = Math.max.apply(null, a);
+    return Math.min(hi, Math.max(lo, f));
+  }
+
   function scoreRegion(inp) {
-    // ── Confidence (9 indicators) ──
-    var indicators = [], lc = 0, lf = 0, kfSum = 0, anyRed = false;
+    // ── Confidence (6 indicators) ──
+    var indicators = [], lc = 0, kcSum = 0, lf = 0, kfSum = 0, anyRedCur = false, anyRedF = false;
     for (var i = 0; i < CONF.length; i++) {
       var s = scoreConf(CONF[i], inp);            // current score (2/1/0)
-      var fs = scoreConfFcst(CONF[i], inp);       // forecast score — each indicator's OWN projected trend
-      if (s === 0) anyRed = true;
-      lc += s * CONF[i].kc; lf += fs * CONF[i].kf; kfSum += CONF[i].kf;
+      var fs = scoreConfFcst(CONF[i], inp);       // forecast score from the damped projection
+      if (s === 0) anyRedCur = true;
+      if (fs === 0) anyRedF = true;
+      lc += s * CONF[i].kc; kcSum += CONF[i].kc;
+      lf += fs * CONF[i].kf; kfSum += CONF[i].kf;
       indicators.push({ key: CONF[i].key, name: CONF[i].name, score: s, signal: sigOf(s), fscore: fs, fsignal: sigOf(fs) });
     }
-    var confScore = lc / CONF.length;             // current: weighted sum / 9 (unchanged)
-    var confFcstScore = lf / kfSum;               // forecast: weighted AVERAGE over Σ(forecast weights)
-    var confidence = (anyRed) ? 'ORANGE' : verdict(confScore, 1.5, 0.7);   // any-RED veto caps current at ORANGE
-    var confFcst = verdict(confFcstScore, 1.5, 0.7);                        // forecast: single green line at 1.5, no veto
+    var confScore = lc / kcSum;                   // current weights are all 1 → simple average
+    var confFcstScore = lf / kfSum;               // Σ(score×fcstWeight)/Σweights (Σ = 7)
+    var confidence = (ANY_RED_VETO && anyRedCur) ? 'ORANGE' : verdict(confScore, 1.5, 0.7);
+    var confFcst = (ANY_RED_VETO && anyRedF) ? 'ORANGE' : verdict(confFcstScore, 1.5, 0.7);
 
-    // ── Value: Ranking H/U (w2) + Runway H/U (w0.5); verdict = Σweighted/Σweight ──
-    var vw = { rank_h: 2, rank_u: 2, runway_h: 0.5, runway_u: 0.5 }, vwSum = 5;
+    // ── Value: continuous norms — (4·avg(rank norms) + avg(runway norms)) / 2.5 ──
     var rankScore = function (gap) { return gap == null ? 1 : gap >= 3 ? 2 : gap <= -3 ? 0 : 1; };
     var rankFcstSig = function (proj, avg) { if (proj == null || avg == null) return 'ORANGE'; var d = proj - avg; return d >= 3 ? 'GREEN' : d <= -3 ? 'RED' : 'ORANGE'; };
     var rwScore = function (v, g, r) { return v == null ? 1 : v >= g ? 2 : v <= r ? 0 : 1; };
     var rwFcstSig = function (v, g, r) { return v == null ? 'ORANGE' : v >= g ? 'GREEN' : v <= r ? 'RED' : 'ORANGE'; };
-    var sigScore = function (sig) { return sig === 'GREEN' ? 2 : sig === 'RED' ? 0 : 1; };
 
     var rhGap = (inp.rank_h != null && inp.rank_h_avg != null) ? inp.rank_h - inp.rank_h_avg : null;
     var ruGap = (inp.rank_u != null && inp.rank_u_avg != null) ? inp.rank_u - inp.rank_u_avg : null;
-    var vCur = { rank_h: rankScore(rhGap), rank_u: rankScore(ruGap), runway_h: rwScore(inp.runway_h, 0.40, 0.15), runway_u: rwScore(inp.runway_u, 0.60, 0.30) };
-    var valueCurScore = (vCur.rank_h * 2 + vCur.rank_u * 2 + vCur.runway_h * 0.5 + vCur.runway_u * 0.5) / vwSum;
-
-    var rhFsig = rankFcstSig(inp.rank_h_fcst, inp.rank_h_avg), ruFsig = rankFcstSig(inp.rank_u_fcst, inp.rank_u_avg);
-    var rwhFsig = rwFcstSig(inp.runway_h_fcst, 0.40, 0.15), rwuFsig = rwFcstSig(inp.runway_u_fcst, 0.60, 0.30);
-    var valueFcstScore = (sigScore(rhFsig) * 2 + sigScore(ruFsig) * 2 + sigScore(rwhFsig) * 0.5 + sigScore(rwuFsig) * 0.5) / vwSum;
+    var rhGapF = (inp.rank_h_fcst != null && inp.rank_h_avg != null) ? inp.rank_h_fcst - inp.rank_h_avg : null;
+    var ruGapF = (inp.rank_u_fcst != null && inp.rank_u_avg != null) ? inp.rank_u_fcst - inp.rank_u_avg : null;
+    var rankNormCur = (normTo(rhGap, -3, 3) + normTo(ruGap, -3, 3)) / 2;
+    var rwNormCur = (normTo(inp.runway_h, 0.15, 0.40) + normTo(inp.runway_u, 0.30, 0.60)) / 2;
+    var valueCurScore = (4 * rankNormCur + rwNormCur) / 2.5;
+    var rankNormF = (normTo(rhGapF, -3, 3) + normTo(ruGapF, -3, 3)) / 2;
+    var rwNormF = (normTo(inp.runway_h_fcst, 0.15, 0.40) + normTo(inp.runway_u_fcst, 0.30, 0.60)) / 2;
+    var valueFcstScore = (4 * rankNormF + rwNormF) / 2.5;
 
     var value = verdict(valueCurScore, 1.4, 0.7), value_fcst = verdict(valueFcstScore, 1.4, 0.7);
+    var rhFsig = rankFcstSig(inp.rank_h_fcst, inp.rank_h_avg), ruFsig = rankFcstSig(inp.rank_u_fcst, inp.rank_u_avg);
+    var rwhFsig = rwFcstSig(inp.runway_h_fcst, 0.40, 0.15), rwuFsig = rwFcstSig(inp.runway_u_fcst, 0.60, 0.30);
     var value_inds = [
-      { name: 'Ranking House', gap: rhGap, signal: sigOf(vCur.rank_h), fcst: rhFsig, rank: inp.rank_h, avg: inp.rank_h_avg, proj: inp.rank_h_fcst },
-      { name: 'Ranking Unit',  gap: ruGap, signal: sigOf(vCur.rank_u), fcst: ruFsig, rank: inp.rank_u, avg: inp.rank_u_avg, proj: inp.rank_u_fcst },
-      { name: 'Runway House',  signal: sigOf(vCur.runway_h), fcst: rwhFsig, val: inp.runway_h, proj: inp.runway_h_fcst },
-      { name: 'Runway Unit',   signal: sigOf(vCur.runway_u), fcst: rwuFsig, val: inp.runway_u, proj: inp.runway_u_fcst }
+      { name: 'Ranking House', gap: rhGap, signal: sigOf(rankScore(rhGap)), fcst: rhFsig, rank: inp.rank_h, avg: inp.rank_h_avg, proj: inp.rank_h_fcst },
+      { name: 'Ranking Unit',  gap: ruGap, signal: sigOf(rankScore(ruGap)), fcst: ruFsig, rank: inp.rank_u, avg: inp.rank_u_avg, proj: inp.rank_u_fcst },
+      { name: 'Runway House',  signal: sigOf(rwScore(inp.runway_h, 0.40, 0.15)), fcst: rwhFsig, val: inp.runway_h, proj: inp.runway_h_fcst },
+      { name: 'Runway Unit',   signal: sigOf(rwScore(inp.runway_u, 0.60, 0.30)), fcst: rwuFsig, val: inp.runway_u, proj: inp.runway_u_fcst }
     ];
 
-    // ── Supply & Demand: Demand Score H (≥20/≤5) + U (≥25/≤5); current = worse-of ──
-    var dsScore = function (v, g, r) { return v == null ? 1 : v >= g ? 2 : v <= r ? 0 : 1; };
-    var dsFcstSig = function (v, g, r) { return v == null ? 'ORANGE' : v >= g ? 'GREEN' : v <= r ? 'RED' : 'ORANGE'; };
-    var sdH = dsScore(inp.ds_h, 20, 5), sdU = dsScore(inp.ds_u, 25, 5);
-    var sd = sigOf(Math.min(sdH, sdU));
-    var sdHf = dsFcstSig(inp.ds_h_fcst, 20, 5), sdUf = dsFcstSig(inp.ds_u_fcst, 25, 5);
-    var sd_fcst = (sdHf === 'RED' || sdUf === 'RED') ? 'RED' : (sdHf === 'ORANGE' || sdUf === 'ORANGE') ? 'ORANGE' : 'GREEN';
+    // ── Supply & Demand: DS H/U, both green ≥30 / red ≤5; headline = 2·avg(norms) ──
+    var dsScore = function (v) { return v == null ? 1 : v >= 30 ? 2 : v <= 5 ? 0 : 1; };
+    var dsFcstSig = function (v) { return v == null ? 'ORANGE' : v >= 30 ? 'GREEN' : v <= 5 ? 'RED' : 'ORANGE'; };
+    var sdCurScore = 2 * ((normTo(inp.ds_h, 5, 30) + normTo(inp.ds_u, 5, 30)) / 2);
+    var sdFcstScore = 2 * ((normTo(inp.ds_h_fcst, 5, 30) + normTo(inp.ds_u_fcst, 5, 30)) / 2);
+    var sd = verdict(sdCurScore, 1.4, 0.7), sd_fcst = verdict(sdFcstScore, 1.4, 0.7);
     var sd_inds = [
-      { name: 'Demand Score - House', signal: sigOf(sdH), fcst: sdHf, val: inp.ds_h, proj: inp.ds_h_fcst },
-      { name: 'Demand Score - Unit',  signal: sigOf(sdU), fcst: sdUf, val: inp.ds_u, proj: inp.ds_u_fcst }
+      { name: 'Demand Score - House', signal: sigOf(dsScore(inp.ds_h)), fcst: dsFcstSig(inp.ds_h_fcst), val: inp.ds_h, proj: inp.ds_h_fcst },
+      { name: 'Demand Score - Unit',  signal: sigOf(dsScore(inp.ds_u)), fcst: dsFcstSig(inp.ds_u_fcst), val: inp.ds_u, proj: inp.ds_u_fcst }
     ];
 
     return {
@@ -147,14 +186,46 @@
       confidence: confidence, conf_fcst: confFcst,
       conf_score: Math.round(confScore * 100) / 100, conf_fcst_score: Math.round(confFcstScore * 100) / 100,
       value_score: Math.round(valueCurScore * 100) / 100, value_fcst_score: Math.round(valueFcstScore * 100) / 100,
+      sd_score: Math.round(sdCurScore * 100) / 100, sd_fcst_score: Math.round(sdFcstScore * 100) / 100,
       indicators: indicators, value_inds: value_inds, sd_inds: sd_inds
     };
   }
 
+  // ── shared shaping: raw series bundle → the confidence fields of `inp` ──────
+  // Used by BOTH the live assembly (Forge) and the verification harness (the
+  // workbook's own columns), so the shaping math is tested against the sheet.
+  // bundle = { jobads[], bizfinQ[], housfinQ[], cciAnnual[], bizconf[],
+  //            bizconfFreq ('M'|'Q'), underemp[] }  — plain numeric arrays in
+  // period order (nulls allowed).
+  var lastN = function (a) { for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) return +a[i]; return null; };
+  var priorN = function (a) { var seen = 0; for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) { seen++; if (seen === 2) return +a[i]; } return null; };
+  // value k rows before the last populated one — the workbook's INDEX(col, MATCH(last)-k).
+  var backN = function (a, k) { for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) { var j = i - k; return (j >= 0 && a[j] != null && !isNaN(a[j])) ? +a[j] : null; } return null; };
+  var chgVs = function (l, p) { return (l == null || p == null || p === 0) ? null : l / p - 1; };
+  var fcChg = function (series, h) { var v = dampedForecast(series, h), l = lastN(series); return (v == null || l == null || l === 0) ? null : v / l - 1; };
+  var mean = function (a) { var s = 0, n = 0; for (var i = 0; i < a.length; i++) if (a[i] != null && !isNaN(a[i])) { s += +a[i]; n++; } return n ? s / n : null; };
+
+  function confInputsFrom(b) {
+    var bizconfBack = (b.bizconfFreq === 'Q') ? 4 : 12;   // workbook AJ1 flag
+    var ueL = lastN(b.underemp), ueP = priorN(b.underemp);
+    return {
+      jobads: chgVs(lastN(b.jobads), backN(b.jobads, 12)),
+      bizfin: chgVs(lastN(b.bizfinQ), backN(b.bizfinQ, 4)),
+      housfin: chgVs(lastN(b.housfinQ), backN(b.housfinQ, 4)),
+      cci_level: lastN(b.cciAnnual),
+      bizconf_level: lastN(b.bizconf),
+      underemp_level: ueL,
+      underemp_change: (ueL != null && ueP != null) ? ueL - ueP : null,
+      fc_jobads: fcChg(b.jobads, 12),
+      fc_bizfin: fcChg(b.bizfinQ, 4),
+      fc_housfin: fcChg(b.housfinQ, 4),
+      fc_cci_level: dampedForecast(b.cciAnnual, 1),
+      fc_bizconf_level: dampedForecast(b.bizconf, bizconfBack),
+      fc_underemp_level: dampedForecast(b.underemp, 1)
+    };
+  }
+
   // ── data assembly (browser; caller passes window.sb) ───────────────────────
-  // Reads the live Forge inputs, shapes them for scoreRegion(), and returns a
-  // DATA object keyed by capital NAME in the exact shape traffic-lights.html's
-  // renderer expects (so the tool's render is unchanged; only the source swaps).
   var CAPS = [
     { slug: 'sydney', state: 'st-nsw', name: 'Sydney' },
     { slug: 'melbourne', state: 'st-vic', name: 'Melbourne' },
@@ -165,28 +236,13 @@
     { slug: 'darwin', state: 'st-nt', name: 'Darwin' },
     { slug: 'hobart', state: 'st-tas', name: 'Hobart' }
   ];
-  // Each state's capital — the CPI proxy for regional markets (ABS publishes CPI by
-  // capital city only, so a region uses its state capital's inflation for the real
-  // cash rate; state-level indicators already come from the region's own state).
   var STATE_CAP = { NSW: 'sydney', VIC: 'melbourne', QLD: 'brisbane', WA: 'perth', SA: 'adelaide', ACT: 'canberra', NT: 'darwin', TAS: 'hobart' };
 
-  var lastN = function (a) { for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) return +a[i]; return null; };
-  var priorN = function (a) { var seen = 0; for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) { seen++; if (seen === 2) return +a[i]; } return null; };
-  // value k rows before the last populated one — the workbook's INDEX(col, MATCH(last)-k).
-  // Monthly confidence indicators use k=12 (year-on-year), NOT the previous point.
-  var backN = function (a, k) { for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) { var j = i - k; return (j >= 0 && a[j] != null && !isNaN(a[j])) ? +a[j] : null; } return null; };
-  var yoy = function (a) { var l = lastN(a), p = priorN(a); return (l == null || p == null || p === 0) ? null : l / p - 1; };
-  var mean = function (a) { var s = 0, n = 0; for (var i = 0; i < a.length; i++) if (a[i] != null && !isNaN(a[i])) { s += +a[i]; n++; } return n ? s / n : null; };
   var cleanNums = function (a) { var o = []; for (var i = 0; i < a.length; i++) if (a[i] != null && !isNaN(a[i])) o.push(+a[i]); return o; };
-  // project an indicator's OWN trend forward: fit the last `window` clean points, read `ahead` steps past the end.
-  var projFwd = function (a, window, ahead) { var w = cleanNums(a).slice(-window); return w.length ? linForecast(w, w.length + ahead) : null; };
-  // projected CHANGE = projected level vs the latest actual (mirrors the current YoY/ratio the signal scores).
-  var projChg = function (a, window, ahead) { var p = projFwd(a, window, ahead), l = lastN(a); return (p == null || l == null || l === 0) ? null : p / l - 1; };
+  // FORECAST over the last `win` observations to `ahead` past their end (S&D/runway/ranking projections)
+  var projLast = function (a, win, ahead) { var w = cleanNums(a).slice(-win); return w.length ? linForecast(w, w.length + ahead) : null; };
 
   async function fetchAll(sb) {
-    // Discover the market set from the latest demand snapshot (the regions that have
-    // SD/Value data) + rdp_regions (name/state). Each market carries its state slug
-    // (st-*) for the state-level indicators and its state capital's slug for CPI.
     var rg = await sb.from('rdp_regions').select('slug,name,state');
     var regInfo = {}; (rg.data || []).forEach(function (r) { regInfo[r.slug] = { name: r.name, state: r.state }; });
     var sn = await sb.from('forge_demand_snapshots').select('version,data').order('version');
@@ -197,36 +253,65 @@
     var markets = [];
     for (var si = 0; si < snapSlugs.length; si++) {
       var mslug = snapSlugs[si], info = regInfo[mslug], sc = info && info.state, capSlug = sc && STATE_CAP[sc];
-      if (!sc || !capSlug) continue;   // skip anything without a resolvable state/capital
+      if (!sc || !capSlug) continue;
       markets.push({ slug: mslug, name: (info && info.name) || mslug, state: 'st-' + sc.toLowerCase(), capitalSlug: capSlug });
     }
-    markets.sort(function (a, b) { var ca = capSet[a.slug] ? 0 : 1, cb = capSet[b.slug] ? 0 : 1; return ca !== cb ? ca - cb : a.name.localeCompare(b.name); });   // capitals first, then regional A→Z
+    markets.sort(function (a, b) { var ca = capSet[a.slug] ? 0 : 1, cb = capSet[b.slug] ? 0 : 1; return ca !== cb ? ca - cb : a.name.localeCompare(b.name); });
 
-    var METRICS = ['som_h', 'adom_h', 'retail_turnover', 'bus_investment', 'unemployment', 'cash_rate', 'cpi', 'job_creation_index', 'owner_occupier', 'investor', 'ranking_h', 'ranking_u'];
+    var METRICS = ['ranking_h', 'ranking_u', 'job_creation_index',
+      'owner_occupier', 'investor',
+      'bus_fin_sm_construction', 'bus_fin_sm_property', 'bus_fin_med_construction', 'bus_fin_med_property',
+      'consumer_confidence', 'business_confidence', 'underemployment'];
     var regSet = { australia: 1 };
-    for (var mi = 0; mi < markets.length; mi++) { regSet[markets[mi].slug] = 1; regSet[markets[mi].state] = 1; regSet[markets[mi].capitalSlug] = 1; }
+    for (var mi = 0; mi < markets.length; mi++) { regSet[markets[mi].slug] = 1; regSet[markets[mi].state] = 1; }
     var REGIONS = Object.keys(regSet);
     var rows = [];
-    for (var pg = 0; pg < 60; pg++) {
+    for (var pg = 0; pg < 80; pg++) {
       var q = await sb.from('rdp_raw_series').select('metric,region_slug,period,value').in('metric', METRICS).in('region_slug', REGIONS).order('period').range(pg * 1000, pg * 1000 + 999);
       if (q.error) throw q.error;
       rows = rows.concat(q.data || []);
       if (!q.data || q.data.length < 1000) break;
     }
-    var series = {};   // metric|region -> [values in period order]
-    for (var r = 0; r < rows.length; r++) { var k = rows[r].metric + '|' + rows[r].region_slug; (series[k] || (series[k] = [])).push(+rows[r].value); }
-    var ar = await sb.from('forge_arrears').select('data').eq('id', 'latest').maybeSingle();
-    // cash rate keyed by 'YYYY-MM' + the latest CPI quarter — so the real cash rate can
-    // align a QUARTERLY (3-month-avg) cash rate to the quarterly CPI (workbook method).
-    var cq = await sb.from('rdp_raw_series').select('period,value').eq('metric', 'cash_rate').eq('region_slug', 'australia').eq('freq', 'M').order('period');   // monthly only — an annual (freq 'A') row shares the same period and would clobber it
-    var cashByPeriod = {}; (cq.data || []).forEach(function (r) { cashByPeriod[String(r.period).slice(0, 7)] = +r.value; });
-    var cp = await sb.from('rdp_raw_series').select('period').eq('metric', 'cpi').order('period', { ascending: false }).limit(1);
-    var cpiLatest = (cp.data && cp.data[0]) ? String(cp.data[0].period).slice(0, 7) : null;
-    return { series: series, arrears: (ar.data && ar.data.data && ar.data.data.regions) || {}, snaps: snaps, cashByPeriod: cashByPeriod, cpiLatest: cpiLatest, markets: markets };
+    var series = {};   // metric|region -> [{p:'YYYY-MM', v}] in period order
+    for (var r = 0; r < rows.length; r++) {
+      var k = rows[r].metric + '|' + rows[r].region_slug;
+      (series[k] || (series[k] = [])).push({ p: String(rows[r].period).slice(0, 7), v: +rows[r].value });
+    }
+    return { series: series, snaps: snaps, markets: markets };
+  }
+
+  var valsOf = function (recs) { return (recs || []).map(function (r) { return r.v; }); };
+  // sum several {p,v} series period-by-period (business finance: small+medium × construction+property)
+  function sumByPeriod(lists) {
+    var by = {};
+    for (var i = 0; i < lists.length; i++) for (var j = 0; j < (lists[i] || []).length; j++) {
+      var r = lists[i][j]; by[r.p] = (by[r.p] || 0) + r.v;
+    }
+    return Object.keys(by).sort().map(function (p) { return by[p]; });
+  }
+  // monthly {p,v} → calendar-quarter SUMS, complete quarters only (housing finance)
+  function quarterSums(recs) {
+    var by = {}, cnt = {};
+    for (var i = 0; i < (recs || []).length; i++) {
+      var y = recs[i].p.slice(0, 4), m = +recs[i].p.slice(5, 7), qk = y + '-Q' + Math.ceil(m / 3);
+      by[qk] = (by[qk] || 0) + recs[i].v; cnt[qk] = (cnt[qk] || 0) + 1;
+    }
+    return Object.keys(by).sort().filter(function (k) { return cnt[k] === 3; }).map(function (k) { return by[k]; });
+  }
+  // monthly {p,v} → calendar-year MEANS, current partial year included (CCI — the
+  // workbook's CCI column is annual)
+  function yearMeans(recs) {
+    var by = {}, cnt = {};
+    for (var i = 0; i < (recs || []).length; i++) {
+      var y = recs[i].p.slice(0, 4);
+      by[y] = (by[y] || 0) + recs[i].v; cnt[y] = (cnt[y] || 0) + 1;
+    }
+    return Object.keys(by).sort().map(function (y) { return by[y] / cnt[y]; });
   }
 
   function buildRegion(cap, ctx) {
-    var S = function (metric, region) { return ctx.series[metric + '|' + region] || []; };
+    var R = function (metric, region) { return ctx.series[metric + '|' + region] || []; };
+    var S = function (metric, region) { return valsOf(R(metric, region)); };
     // snapshot ds/rw monthly series (house & unit)
     var dsH = [], dsU = [], rwH = [], rwU = [];
     for (var i = 0; i < ctx.snaps.length; i++) {
@@ -234,68 +319,47 @@
       if (h) { dsH.push(h.ds); rwH.push(h.rw); } if (u) { dsU.push(u.ds); rwU.push(u.rw); }
     }
     var rkH = S('ranking_h', cap.slug), rkU = S('ranking_u', cap.slug);
-    var oo = S('owner_occupier', cap.state), inv = S('investor', cap.state);
-    var lendLast = (lastN(oo) || 0) + (lastN(inv) || 0), lendPrior = (backN(oo, 12) || 0) + (backN(inv, 12) || 0);   // YoY (12 months back), per workbook
-    var unemp = S('unemployment', cap.state);
-    var arr = (ctx.arrears[cap.state] && ctx.arrears[cap.state].values) || [];
-    // Real cash rate — workbook method: QUARTERLY cash rate (3-month avg aligned to the
-    // CPI's latest quarter) minus the region's latest year-ended CPI. Using the latest
-    // MONTHLY cash rate (misaligned with the quarterly CPI) skewed every capital when a
-    // rate moved after the CPI quarter — the cause of the cash-rate drift.
-    var qAvgCash = function (endPeriod) {
-      if (!endPeriod) return null;
-      var y = +endPeriod.slice(0, 4), m = +endPeriod.slice(5, 7), vals = [];
-      for (var d = 0; d < 3; d++) { var mm = m - d, yy = y; while (mm < 1) { mm += 12; yy--; } var k = yy + '-' + (mm < 10 ? '0' + mm : '' + mm); if (ctx.cashByPeriod[k] != null) vals.push(ctx.cashByPeriod[k]); }
-      var s = 0; for (var i = 0; i < vals.length; i++) s += vals[i]; return vals.length ? s / vals.length : null;
-    };
-    var prevQ = function (p) { if (!p) return null; var y = +p.slice(0, 4), m = +p.slice(5, 7) - 3; while (m < 1) { m += 12; y--; } return y + '-' + (m < 10 ? '0' + m : '' + m); };
-    var cpi = lastN(S('cpi', cap.capitalSlug)), cpiP = priorN(S('cpi', cap.capitalSlug));
-    var qc = qAvgCash(ctx.cpiLatest), qcP = qAvgCash(prevQ(ctx.cpiLatest));
-    var real = (qc != null && cpi != null) ? qc - cpi : null;
-    var realP = (qcP != null && cpiP != null) ? qcP - cpiP : null;
 
-    // ── per-indicator confidence FORECASTS (each projects its OWN trend) ──
-    // annual indicators (stock/days/retail/biz-inv/unemp): 3-pt trend → 1 ahead;
-    // monthly (cash-rate/arrears/job-creation/lending): 6-pt window → 3 ahead.
-    var fcUnemp = projFwd(unemp, 3, 1), unLast = lastN(unemp);
-    // project the quarterly REAL cash-rate series (qtr-avg cash − CPI per quarter), like the workbook
-    var fcReal = (function () { var cpiArr = cleanNums(S('cpi', cap.capitalSlug)), rs = [], per = ctx.cpiLatest; for (var qi = cpiArr.length - 1; qi >= 0 && per; qi--) { var v = qAvgCash(per); if (v != null) rs.unshift(v - cpiArr[qi]); per = prevQ(per); } return projFwd(rs, 6, 3); })();
-    var lendSeries = []; for (var li = 0, lm = Math.max(oo.length, inv.length); li < lm; li++) if (oo[li] != null && inv[li] != null) lendSeries.push(oo[li] + inv[li]);
+    // confidence bundle — state-level for finance/underemployment, market-level
+    // job ads, national CCI, state NAB confidence with a national fallback
+    // (NAB doesn't publish ACT/NT — the workbook's sample sheets do the same).
+    var bizconfRecs = R('business_confidence', cap.state);
+    if (!bizconfRecs.length) bizconfRecs = R('business_confidence', 'australia');
+    var housfinMonthly = [];
+    var oo = R('owner_occupier', cap.state), inv = R('investor', cap.state);
+    var invBy = {}; inv.forEach(function (r) { invBy[r.p] = r.v; });
+    oo.forEach(function (r) { if (invBy[r.p] != null) housfinMonthly.push({ p: r.p, v: r.v + invBy[r.p] }); });
+    var bundle = {
+      jobads: S('job_creation_index', cap.slug),
+      bizfinQ: sumByPeriod([R('bus_fin_sm_construction', cap.state), R('bus_fin_sm_property', cap.state), R('bus_fin_med_construction', cap.state), R('bus_fin_med_property', cap.state)]),
+      housfinQ: quarterSums(housfinMonthly),
+      cciAnnual: yearMeans(R('consumer_confidence', 'australia')),
+      bizconf: valsOf(bizconfRecs),
+      bizconfFreq: 'M',
+      underemp: S('underemployment', cap.state)
+    };
+    var conf = confInputsFrom(bundle);
 
     var inp = {
       ds_h: lastN(dsH), ds_u: lastN(dsU),
-      // trailing 6-month window (like the per-indicator confidence forecasts) so the
-      // projection tracks the recent trajectory, not the whole multi-year series.
-      ds_h_fcst: dsH.length ? Math.round(projFwd(dsH, 6, 3)) : null,
-      ds_u_fcst: dsU.length ? Math.round(projFwd(dsU, 6, 3)) : null,
-      rank_h: lastN(rkH), rank_h_avg: mean(rkH), rank_h_fcst: rkH.length ? Math.round(linForecast(rkH.slice(-5), 6) * 10) / 10 : null,
-      rank_u: lastN(rkU), rank_u_avg: mean(rkU), rank_u_fcst: rkU.length ? Math.round(linForecast(rkU.slice(-5), 6) * 10) / 10 : null,
+      // FORECAST(9, last-6 monthly, 1..6) — three months ahead (workbook G35/G36)
+      ds_h_fcst: dsH.length ? Math.round(projLast(dsH, 6, 3)) : null,
+      ds_u_fcst: dsU.length ? Math.round(projLast(dsU, 6, 3)) : null,
+      rank_h: lastN(rkH), rank_h_avg: mean(rkH), rank_h_fcst: rkH.length ? Math.round(linForecast(cleanNums(rkH).slice(-5), 6) * 10) / 10 : null,
+      rank_u: lastN(rkU), rank_u_avg: mean(rkU), rank_u_fcst: rkU.length ? Math.round(linForecast(cleanNums(rkU).slice(-5), 6) * 10) / 10 : null,
       runway_h: lastN(rwH), runway_u: lastN(rwU),
-      runway_h_fcst: rwH.length ? linForecast(rwH, rwH.length + 3) : null,
-      runway_u_fcst: rwU.length ? linForecast(rwU, rwU.length + 3) : null,
-      som: yoy(S('som_h', cap.slug)), adom: yoy(S('adom_h', cap.slug)),
-      retail: yoy(S('retail_turnover', cap.state)), bizinv: yoy(S('bus_investment', cap.state)),
-      unemp_level: lastN(unemp), unemp_change: (lastN(unemp) != null && priorN(unemp) != null) ? lastN(unemp) - priorN(unemp) : null,
-      real_cash_rate: real,
-      arrears: (function () { var l = lastN(arr), p = backN(arr, 12); return (l != null && p != null && p !== 0) ? l / p - 1 : null; })(),   // YoY
-      jci: (function () { var j = S('job_creation_index', cap.slug), l = lastN(j), p = backN(j, 12); return (l != null && p != null && p !== 0) ? l / p - 1 : null; })(),   // YoY
-      lending: lendPrior ? lendLast / lendPrior - 1 : null,
-      // forecasts — scored against the same thresholds as the current signal above
-      fc_som: projChg(S('som_h', cap.slug), 3, 1),
-      fc_adom: projChg(S('adom_h', cap.slug), 3, 1),
-      fc_retail: projChg(S('retail_turnover', cap.state), 3, 3),   // workbook uses FORECAST(6) on the 3-pt trend
-      fc_bizinv: projChg(S('bus_investment', cap.state), 3, 1),
-      fc_unemp_level: fcUnemp,
-      fc_unemp_change: (fcUnemp != null && unLast != null) ? fcUnemp - unLast : null,
-      fc_real_cash_rate: fcReal,
-      fc_arrears: projChg(arr, 6, 3),
-      fc_jci: projChg(S('job_creation_index', cap.slug), 6, 3),
-      fc_lending: projChg(lendSeries, 6, 3)
+      // FORECAST(9, last-6 monthly, 1..6), rounded like the workbook (K29/K30)
+      runway_h_fcst: rwH.length ? Math.round(projLast(rwH, 6, 3) * 1000) / 1000 : null,
+      runway_u_fcst: rwU.length ? Math.round(projLast(rwU, 6, 3) * 1000) / 1000 : null
     };
+    for (var kf in conf) inp[kf] = conf[kf];
     var out = scoreRegion(inp);
-    return formatForTool(cap, inp, out, { som: lastN(S('som_h', cap.slug)), adom: lastN(S('adom_h', cap.slug)), retail: lastN(S('retail_turnover', cap.state)), bizinv: lastN(S('bus_investment', cap.state)), arrears: lastN(arr), jci: lastN(S('job_creation_index', cap.slug)), lending: lendLast, realP: realP });
+    return formatForTool(cap, inp, out, {
+      jobads: lastN(bundle.jobads), bizfin: lastN(bundle.bizfinQ), housfin: lastN(bundle.housfinQ),
+      cci: lastN(bundle.cciAnnual), cciPrior: priorN(bundle.cciAnnual),
+      bizconf: lastN(bundle.bizconf), bizconfPrior: backN(bundle.bizconf, 12)
+    });
   }
-  var yoyMoM = function (a) { return yoy(a); };   // JCI: latest vs prior available month
 
   // display formatting → the DATA shape traffic-lights.html renders
   var pctS = function (v, dp) { return (v == null || isNaN(v)) ? '--' : (v >= 0 ? '+' : '') + (v * 100).toFixed(dp == null ? 1 : dp) + '%'; };
@@ -303,20 +367,18 @@
   var lvlS = function (v) { return (v == null || isNaN(v)) ? '--' : (v * 100).toFixed(2) + '%'; };
   var intS = function (v) { return (v == null || isNaN(v)) ? '--' : Math.round(v).toLocaleString(); };
   var oneS = function (v) { return (v == null || isNaN(v)) ? '--' : (+v).toFixed(1); };
+  var d1S = function (v) { return (v == null || isNaN(v)) ? '--' : (v >= 0 ? '+' : '') + (+v).toFixed(1); };
   var trendW = function (a, b) { return (a == null || b == null) ? 'steady' : b > a + 0.5 ? 'rising' : b < a - 0.5 ? 'falling' : 'steady'; };
 
   function formatForTool(cap, inp, out, raw) {
     var byKey = {}, byF = {}; out.indicators.forEach(function (o) { byKey[o.key] = o.signal; byF[o.key] = o.fsignal; });
     var indicators = [
-      { name: 'Stock on Market', latest: intS(raw.som), change: pctS(inp.som), signal: byKey.som, fsignal: byF.som },
-      { name: 'Average Days on Market', latest: oneS(raw.adom), change: pctS(inp.adom), signal: byKey.adom, fsignal: byF.adom },
-      { name: 'Retail Turnover', latest: intS(raw.retail), change: pctS(inp.retail), signal: byKey.retail, fsignal: byF.retail },
-      { name: 'Business Investment', latest: intS(raw.bizinv), change: pctS(inp.bizinv), signal: byKey.bizinv, fsignal: byF.bizinv },
-      { name: 'Unemployment', latest: lvlS(inp.unemp_level), change: ppS(inp.unemp_change), signal: byKey.unemp, fsignal: byF.unemp },
-      { name: 'Cash Rate vs. Inflation', latest: lvlS(inp.real_cash_rate), change: ppS(inp.real_cash_rate != null && raw.realP != null ? inp.real_cash_rate - raw.realP : null), signal: byKey.realcash, fsignal: byF.realcash },
-      { name: 'Mortgage Arrears', latest: (raw.arrears == null ? '--' : (+raw.arrears).toFixed(2) + '%'), change: pctS(inp.arrears), signal: byKey.arrears, fsignal: byF.arrears },
-      { name: 'Job Creation Index', latest: oneS(raw.jci), change: pctS(inp.jci), signal: byKey.jci, fsignal: byF.jci },
-      { name: 'Lending Flows (OO+INV)', latest: intS(raw.lending), change: pctS(inp.lending), signal: byKey.lending, fsignal: byF.lending }
+      { name: 'Job Ads', latest: intS(raw.jobads), change: pctS(inp.jobads), signal: byKey.jobads, fsignal: byF.jobads },
+      { name: 'Business Finance ($m)', latest: intS(raw.bizfin), change: pctS(inp.bizfin), signal: byKey.bizfin, fsignal: byF.bizfin },
+      { name: 'Housing Finance ($m)', latest: intS(raw.housfin), change: pctS(inp.housfin), signal: byKey.housfin, fsignal: byF.housfin },
+      { name: 'Consumer Confidence', latest: oneS(inp.cci_level), change: d1S(raw.cci != null && raw.cciPrior != null ? raw.cci - raw.cciPrior : null), signal: byKey.cci, fsignal: byF.cci },
+      { name: 'Business Confidence', latest: oneS(inp.bizconf_level), change: d1S(raw.bizconf != null && raw.bizconfPrior != null ? raw.bizconf - raw.bizconfPrior : null), signal: byKey.bizconf, fsignal: byF.bizconf },
+      { name: 'Underutilisation', latest: lvlS(inp.underemp_level), change: ppS(inp.underemp_change), signal: byKey.underemp, fsignal: byF.underemp }
     ];
     var gapS = function (v) { return (v == null || isNaN(v)) ? '--' : (v >= 0 ? '+' : '') + (+v).toFixed(1); };
     var vi = out.value_inds;
@@ -334,9 +396,9 @@
       sd: out.sd, sd_fcst: out.sd_fcst, value: out.value, value_fcst: out.value_fcst,
       confidence: out.confidence, conf_fcst: out.conf_fcst, conf_score: out.conf_score, conf_fcst_score: out.conf_fcst_score,
       indicators: indicators, value_inds: value_inds, sd_inds: sd_inds,
-      sd_fcst_expl: 'Projecting the captured demand-score trend forward, house demand is ' + trendW(inp.ds_h, inp.ds_h_fcst) + ' (' + (inp.ds_h == null ? '—' : Math.round(inp.ds_h)) + '→' + (inp.ds_h_fcst == null ? '—' : inp.ds_h_fcst) + ') and unit demand is ' + trendW(inp.ds_u, inp.ds_u_fcst) + ' (' + (inp.ds_u == null ? '—' : Math.round(inp.ds_u)) + '→' + (inp.ds_u_fcst == null ? '—' : inp.ds_u_fcst) + '). Scored against the same thresholds as now, the forecast Supply & Demand signal is ' + out.sd_fcst + '.',
-      value_fcst_expl: 'Projecting the ranking trend and runway forward (ranking carries the main weight), the forecast Value signal is ' + out.value_fcst + '.',
-      conf_fcst_expl: 'The forecast re-weights the nine indicators toward the forward-looking ones (stock, days on market, lending, job creation). ' + cap.name + '’s leading-weighted score is ' + out.conf_fcst_score + ' versus the current ' + out.conf_score + ', giving a forecast Confidence signal of ' + out.conf_fcst + '.'
+      sd_fcst_expl: 'Projecting the demand-score trend of the last six months forward, house demand is ' + trendW(inp.ds_h, inp.ds_h_fcst) + ' (' + (inp.ds_h == null ? '—' : Math.round(inp.ds_h)) + '→' + (inp.ds_h_fcst == null ? '—' : inp.ds_h_fcst) + ') and unit demand is ' + trendW(inp.ds_u, inp.ds_u_fcst) + ' (' + (inp.ds_u == null ? '—' : Math.round(inp.ds_u)) + '→' + (inp.ds_u_fcst == null ? '—' : inp.ds_u_fcst) + '). The headline averages both segments, giving a forecast Supply & Demand signal of ' + out.sd_fcst + '.',
+      value_fcst_expl: 'Projecting the ranking trend and runway forward (ranking carries four times the runway weight in the averaged score), the forecast Value signal is ' + out.value_fcst + '.',
+      conf_fcst_expl: 'Each indicator projects its own damped trend (slope of its last six observations, damped at 0.8 per period and held inside its historical range). Weighted toward the forward-looking finance flows, ' + cap.name + '’s forecast score is ' + out.conf_fcst_score + ' versus the current ' + out.conf_score + ', giving a forecast Confidence signal of ' + out.conf_fcst + '.'
     };
   }
 
@@ -348,7 +410,8 @@
     return DATA;
   }
 
-  var api = { scoreRegion: scoreRegion, linForecast: linForecast, CONF: CONF, CAPS: CAPS, assembleTrafficLights: assembleTrafficLights };
+  var api = { scoreRegion: scoreRegion, confInputsFrom: confInputsFrom, dampedForecast: dampedForecast,
+    linForecast: linForecast, CONF: CONF, CAPS: CAPS, PHI: PHI, assembleTrafficLights: assembleTrafficLights };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.PP_TL_ENGINE = api;
 })(typeof self !== 'undefined' ? self : (typeof window !== 'undefined' ? window : null));
