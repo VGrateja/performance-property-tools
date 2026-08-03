@@ -42,7 +42,7 @@
     'reports-lite':     { sec: 'vault',     file: 'online-reports.html',         label: 'Lite Online Reports' },
     'lite-links':       { sec: 'vault',     file: 'lite-report-links.html',      label: 'Lite Report Links' },
     'results':          { sec: 'vault',     file: 'results.html',                label: 'Results' },
-    'bookshelf':        { sec: 'docs',      file: 'bookshelf.html',              label: 'Bookshelf' },
+    'bookshelf':        { sec: 'vault',     file: 'bookshelf.html',              label: 'Bookshelf' },
     /* dev-only telemetry dashboard — deliberately in NO group and NOT in
        DEFAULT_BASELINE: auth-gate bounces company/assigned-admin deep-links
        because the key is never in their allowed set; the page itself and
