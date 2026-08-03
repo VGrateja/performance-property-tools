@@ -80,10 +80,14 @@ body{margin:0;font-family:'Montserrat',system-ui,sans-serif;color:var(--bk-ink);
 body.bk-open .bk-reader{display:block}
 body.bk-open .bk-shelf{display:none}
 .bk-stage{
-  position:relative; margin:0 auto; padding:18px 0 8px;
-  display:flex; align-items:center; justify-content:center;
-  perspective:2200px;
+  position:relative; margin:0 auto; padding:14px 0 0;
+  display:flex; align-items:flex-start; justify-content:center;
+  perspective:2600px;
 }
+/* fitStage() gives .bk-scale an explicit UNSCALED box and computes the
+   stage height from the VISUAL (scaled) height — otherwise everything after
+   the stage (the progress line) positions against the unscaled layout box
+   and ends up ON the book whenever scale > 1 (fullscreen). */
 .bk-scale{transform-origin:top center}
 
 /* the book = spread of two pages (or one, narrow) */
@@ -104,21 +108,38 @@ body.bk-open .bk-shelf{display:none}
 .bk-page.pg-right::after{content:'';position:absolute;inset:0 auto 0 0;width:26px;pointer-events:none;
   background:linear-gradient(to right, rgba(35,40,48,0.10), transparent)}
 
-/* the animated flipper */
+/* the animated flipper — one compositor-only rotateY; translateZ(0) promotes
+   the layer at insert time so the first animation frames aren't spent
+   rasterising (the old version started the turn while the freshly built
+   faces were still painting → jump-cut). */
 .bk-flip{
   position:absolute; top:0; width:var(--pg-w); height:var(--pg-h);
   transform-style:preserve-3d; z-index:5; pointer-events:none;
+  transform:translateZ(0);
 }
 .bk-flip .face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;overflow:hidden;background:var(--pg-paper)}
 .bk-flip .face.back{transform:rotateY(180deg)}
 .bk-flip.fwd{right:0;transform-origin:left center}
 .bk-flip.bwd{left:0;transform-origin:right center}
-.bk-flip.go{transition:transform .38s cubic-bezier(.35,.1,.28,1)}
+.bk-flip.go{transition:transform .64s cubic-bezier(.3,.02,.18,.98)}
 .bk-flip.fwd .face.front{border-radius:2px 10px 10px 2px}
 .bk-flip.bwd .face.front{border-radius:10px 2px 2px 10px}
-/* moving shadow on the flipping sheet */
-.bk-flip .face::before{content:'';position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .38s;background:linear-gradient(to right, rgba(0,0,0,0.16), transparent 55%)}
-.bk-flip.go .face::before{opacity:1}
+/* shading on the flipping sheet: rises as the page stands up, dies as it
+   lands flat. Always darkest at the SPINE edge of whichever face shows. */
+.bk-flip .face::before{content:'';position:absolute;inset:0;pointer-events:none;opacity:0}
+.bk-flip.fwd .face.front::before,.bk-flip.bwd .face.back::before{background:linear-gradient(to right, rgba(0,0,0,0.20), transparent 62%)}
+.bk-flip.fwd .face.back::before,.bk-flip.bwd .face.front::before{background:linear-gradient(to left, rgba(0,0,0,0.20), transparent 62%)}
+.bk-flip.go .face::before{animation:bkSheetShade .64s cubic-bezier(.3,.02,.18,.98) forwards}
+@keyframes bkSheetShade{0%{opacity:0}30%{opacity:1}100%{opacity:.08}}
+/* cast shadows on the static halves: the revealed page brightens as the
+   sheet lifts away; the landing page darkens just before touchdown */
+.bk-shade{position:absolute;top:0;width:var(--pg-w);height:var(--pg-h);pointer-events:none;z-index:4}
+.bk-shade.r{right:0;background:linear-gradient(to right, rgba(15,20,28,0.28), transparent 62%)}
+.bk-shade.l{left:0;background:linear-gradient(to left, rgba(15,20,28,0.28), transparent 62%)}
+.bk-shade.out{animation:bkShadeOut .64s ease-out forwards}
+.bk-shade.in{animation:bkShadeIn .64s ease-in forwards}
+@keyframes bkShadeOut{0%{opacity:1}70%{opacity:.15}100%{opacity:0}}
+@keyframes bkShadeIn{0%{opacity:0}55%{opacity:0}90%{opacity:.85}100%{opacity:0}}
 
 /* reduced-motion / lite crossfade */
 body.bk-lite .bk-flip{display:none}
@@ -240,14 +261,17 @@ body.bk-lite .bk-flip{display:none}
 .bk-goto{width:52px;border:1px solid var(--bk-border);background:var(--bk-surface);color:var(--bk-ink);
   border-radius:8px;padding:6px 8px;font:600 11.5px 'Montserrat',sans-serif;text-align:center}
 .bk-goto:focus{outline:none;border-color:var(--bk-teal)}
+.bk-progrow{display:flex;justify-content:center;padding:2px 0 18px}
 .bk-progress{position:relative;height:3px;background:var(--bk-border);border-radius:2px;width:min(560px,72vw)}
 .bk-progress .fill{position:absolute;inset:0 auto 0 0;background:var(--bk-teal);border-radius:2px;transition:width .25s ease}
 
-/* fullscreen read mode */
+/* fullscreen read mode — the bar hides at the bottom; the progress line stays
+   in flow, which (with fitStage's visual-height stage) puts it UNDER the book */
 body.bk-fs .appbar{display:none !important}
 body.bk-fs .bk-bar{position:fixed;left:0;right:0;bottom:0;opacity:0;transition:opacity .2s;background:linear-gradient(to top, rgba(10,14,20,0.55), transparent);padding-bottom:14px}
 body.bk-fs .bk-bar:hover,body.bk-fs .bk-bar:focus-within{opacity:1}
 body.bk-fs .bk-stage{padding-top:6px}
+body.bk-fs .bk-progrow{padding:8px 0 10px}
 
 @media (max-width:700px){
   .bk-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:18px}
@@ -279,7 +303,7 @@ body.bk-fs .bk-stage{padding-top:6px}
     <input class="bk-goto" id="bkGoto" inputmode="numeric" placeholder="p." title="Go to page (folio number)"/>
     <button class="bk-btn" id="bkFs">Read fullscreen</button>
   </div>
-  <div style="display:flex;justify-content:center;padding-bottom:18px">
+  <div class="bk-progrow">
     <div class="bk-progress"><div class="fill" id="bkFill" style="width:0%"></div></div>
   </div>
 </div>
@@ -596,16 +620,20 @@ function startGuide(pageEl) {
 }
 
 /* ── spread building ──────────────────────────────────────────────────── */
+var KIND_CLS = { cover: 'pg-cover', title: 'pg-titlepage', toc: 'pg-toc', flow: 'pg-flow', chapter: 'pg-chapter' };
+/* set a page's content AND its kind class — the flip faces and the
+   underneath-swap in turn() need both, or a chapter opener/TOC shows
+   unstyled for the duration of the turn */
+function setPage(el, idx) {
+  el.className = el.className.replace(/\bpg-(cover|titlepage|toc|flow|chapter)\b/g, '').replace(/\s{2,}/g, ' ').trim();
+  var p = state.book && state.book.pages[idx];
+  if (p && KIND_CLS[p.kind]) el.classList.add(KIND_CLS[p.kind]);
+  el.innerHTML = renderPage(idx);
+}
 function pageNode(idx, cls) {
   var d = document.createElement('div');
   d.className = 'bk-page ' + cls;
-  var p = state.book && state.book.pages[idx];
-  if (p && p.kind === 'cover') d.classList.add('pg-cover');
-  if (p && p.kind === 'title') d.classList.add('pg-titlepage');
-  if (p && p.kind === 'toc') d.classList.add('pg-toc');
-  if (p && p.kind === 'flow') d.classList.add('pg-flow');
-  if (p && p.kind === 'chapter') d.classList.add('pg-chapter');
-  d.innerHTML = renderPage(idx);
+  setPage(d, idx);
   return d;
 }
 function normalizeIdx(i) {
@@ -682,7 +710,9 @@ function turn(dir) {
   if (dir < 0 && target < 0) target = 0;
   if (dir > 0 && state.idx === 0) target = 2;                    /* cover → first spread (idx 2,3) */
 
-  if (LITE || state.idx === 0 || target === 0) { goTo(target); return; }
+  /* single-page mode has no second half to hinge on — instant like LITE
+     (the 3D path would also flip the WRONG face there: front = idx+1) */
+  if (LITE || state.single || state.idx === 0 || target === 0) { goTo(target); return; }
 
   /* 3D flip: forward flips the right page; backward flips the left */
   state.turning = true;
@@ -692,24 +722,34 @@ function turn(dir) {
   var front = document.createElement('div'); front.className = 'face front';
   var back = document.createElement('div'); back.className = 'face back';
   if (dir > 0) {
-    front.innerHTML = renderPage(state.idx + 1);   /* current right */
-    back.innerHTML = renderPage(target);           /* next left */
+    setPage(front, state.idx + 1);                 /* current right */
+    setPage(back, target);                         /* next left */
     /* underneath: replace right page content with the incoming right */
     var rightEl = wrapEl.querySelector('.pg-right');
-    if (rightEl) rightEl.innerHTML = renderPage(target + 1);
+    if (rightEl) setPage(rightEl, target + 1);
   } else {
-    front.innerHTML = renderPage(state.idx);       /* current left */
-    back.innerHTML = renderPage(target + 1);       /* prev right */
+    setPage(front, state.idx);                     /* current left */
+    setPage(back, target + 1);                     /* prev right */
     var leftEl = wrapEl.querySelector('.pg-left');
-    if (leftEl) leftEl.innerHTML = renderPage(target);
+    if (leftEl) setPage(leftEl, target);
   }
   flip.appendChild(front); flip.appendChild(back);
   flip.style.willChange = 'transform';
   wrapEl.appendChild(flip);
-  /* run the flip on the next frame */
+  /* reveal + landing shadows on the static halves (buildSpread clears them) */
+  var shOut = document.createElement('div'), shIn = document.createElement('div');
+  shOut.className = 'bk-shade out ' + (dir > 0 ? 'r' : 'l');
+  shIn.className = 'bk-shade in ' + (dir > 0 ? 'l' : 'r');
+  wrapEl.appendChild(shOut); wrapEl.appendChild(shIn);
+  /* force style+layout of the fresh faces NOW, then start on a clean frame —
+     starting in the same frame as the DOM build makes the browser spend the
+     first transition frames on first-paint work (the "laggy jump-cut") */
+  void flip.offsetHeight;
   requestAnimationFrame(function () {
-    flip.classList.add('go');
-    flip.style.transform = 'rotateY(' + (dir > 0 ? -180 : 180) + 'deg)';
+    requestAnimationFrame(function () {
+      flip.classList.add('go');
+      flip.style.transform = 'rotateY(' + (dir > 0 ? -180 : 180) + 'deg)';
+    });
   });
   var done = false;
   function finish() {
@@ -718,7 +758,7 @@ function turn(dir) {
     goTo(target);
   }
   flip.addEventListener('transitionend', finish);
-  setTimeout(finish, 460);                                        /* safety */
+  setTimeout(finish, 860);                                        /* safety */
 }
 
 /* ── chrome sync ──────────────────────────────────────────────────────── */
@@ -745,16 +785,22 @@ function syncURL() {
   } catch (e) {}
 }
 
-/* scale the spread to the viewport (transform only — no layout thrash) */
+/* scale the spread to the viewport (transform only — no layout thrash).
+   The scale wrapper keeps its UNSCALED layout box, so the stage height must
+   come from the VISUAL height and the wrapper must be top-anchored
+   (align-items:flex-start + transform-origin:top center) — otherwise the
+   progress line after the stage lands ON the book whenever s > 1. */
 function fitStage() {
   var stage = $('#bkStage'), scale = $('#bkScale');
   var pageW = 480, pageH = 656;
   var w = state.single || state.idx === 0 ? pageW : pageW * 2;
   var availW = Math.min(window.innerWidth - 36, 1160);
-  var availH = window.innerHeight - (document.body.classList.contains('bk-fs') ? 90 : 205);
+  var availH = Math.max(320, window.innerHeight - (document.body.classList.contains('bk-fs') ? 96 : 205));
   var s = Math.min(availW / w, availH / pageH, 1.12);
+  scale.style.width = w + 'px';
+  scale.style.height = pageH + 'px';
   scale.style.transform = 'scale(' + s + ')';
-  stage.style.height = Math.ceil(pageH * s + 20) + 'px';
+  stage.style.height = Math.ceil(pageH * s + 16) + 'px';
 }
 
 /* ── open/close ───────────────────────────────────────────────────────── */
