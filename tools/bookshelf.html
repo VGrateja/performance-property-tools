@@ -206,6 +206,7 @@ body.bk-open .bk-shelf{display:none}
    decoration: pointer-events none, painted under the page, no filters. */
 .bk-page{z-index:1}
 .bk-edge{position:absolute;pointer-events:none;z-index:0;
+  transition:width .35s ease, left .35s ease, right .35s ease;
   --paperline:color-mix(in srgb, var(--pg-paper) 80%, #4a4234);
   box-shadow:0 20px 28px rgba(0,0,0,0.30)}
 .bk-edge.l{top:3px;bottom:-6px;border-radius:6px 0 0 6px;
@@ -231,7 +232,7 @@ body.bk-open .bk-shelf{display:none}
    faces carry the SAME page so the 90° crossover is imperceptible and the
    landed sheet IS the visible turned page (no fades) */
 .bk-flip.sgl.go{transition:transform .64s cubic-bezier(.3,.02,.18,.98)}
-.bk-flip.sgl .face::after{content:'';position:absolute;inset:0;width:auto;pointer-events:none;opacity:0;
+.bk-flip.sgl .face.front::after,.bk-flip.sgl .face.back::after{content:'';position:absolute;inset:0;width:auto;pointer-events:none;opacity:0;
   transition:opacity .3s ease .28s;background:
     linear-gradient(to right, rgba(255,255,255,0.55), rgba(255,255,255,0) 5%),
     linear-gradient(color-mix(in srgb, var(--pg-paper) 58%, transparent), color-mix(in srgb, var(--pg-paper) 58%, transparent)),
@@ -243,7 +244,8 @@ body.bk-open .bk-shelf{display:none}
    at the spine (Van's held-book photo) — visible, but barely any width */
 .bk-stand{position:absolute;left:0;top:0;width:var(--pg-w);height:var(--pg-h);
   transform-origin:left center;transform-style:preserve-3d;pointer-events:none;z-index:1;
-  transition:transform .5s cubic-bezier(.3,.02,.18,.98)}
+  will-change:transform;   /* stands animate on every takeoff — keeping them composited also matches the landed sheet's rasterization, so the swap is invisible */
+  transition:transform .5s cubic-bezier(.3,.02,.18,.98), opacity .45s ease}
 .bk-stand .face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;
   overflow:hidden;background:var(--pg-paper);border-radius:8px}
 .bk-stand .face.back{transform:rotateY(180deg)}
@@ -255,11 +257,11 @@ body.bk-open .bk-shelf{display:none}
     linear-gradient(color-mix(in srgb, var(--pg-paper) 58%, transparent), color-mix(in srgb, var(--pg-paper) 58%, transparent)),
     linear-gradient(to right, rgba(0,0,0,0.22), rgba(0,0,0,0.07) 30%, rgba(0,0,0,0.03) 62%, rgba(0,0,0,0.16))}
 /* deeper fan leaves: mostly paper — near edge-on, print all but disappears */
-.bk-stand.d1 .face::after{background:
+.bk-stand.d1 .face::after,.bk-flip.sgl.d1 .face.front::after,.bk-flip.sgl.d1 .face.back::after{background:
     linear-gradient(to right, rgba(255,255,255,0.5), rgba(255,255,255,0) 5%),
     linear-gradient(color-mix(in srgb, var(--pg-paper) 80%, transparent), color-mix(in srgb, var(--pg-paper) 80%, transparent)),
     linear-gradient(to right, rgba(0,0,0,0.20), rgba(0,0,0,0.06) 32%, rgba(0,0,0,0.14))}
-.bk-stand.d2 .face::after{background:
+.bk-stand.d2 .face::after,.bk-flip.sgl.d2 .face.front::after,.bk-flip.sgl.d2 .face.back::after{background:
     linear-gradient(to right, rgba(255,255,255,0.45), rgba(255,255,255,0) 5%),
     linear-gradient(color-mix(in srgb, var(--pg-paper) 90%, transparent), color-mix(in srgb, var(--pg-paper) 90%, transparent)),
     linear-gradient(to right, rgba(0,0,0,0.18), rgba(0,0,0,0.06) 35%, rgba(0,0,0,0.12))}
@@ -1013,13 +1015,27 @@ function addStandingLeaf(wrapEl) {
     fitDensity(lb); fitDensity(lf);
   }
 }
-function addBlockEdges(wrapEl) {
+function bkEdgeWidths() {
   var n = state.book ? state.book.pages.length : 0;
-  if (!n) return;
+  if (!n) return null;
   var T = 22;                                        /* total block thickness */
   var read = n > 1 ? Math.max(0, Math.min(1, state.idx / (n - 1))) : 0;
-  var wl = state.idx === 0 ? 0 : Math.max(3, Math.round(T * read));
-  var wr = state.idx >= n - 1 ? 0 : Math.max(3, Math.round(T * (1 - read)));
+  return {
+    wl: state.idx === 0 ? 0 : Math.max(3, T * read),
+    wr: state.idx >= n - 1 ? 0 : Math.max(3, T * (1 - read))
+  };
+}
+function updateBlockEdges(wrapEl) {
+  var w = bkEdgeWidths(); if (!w) return;
+  var l = wrapEl.querySelector('.bk-edge.l'), r = wrapEl.querySelector('.bk-edge.r'), b = wrapEl.querySelector('.bk-edge.b');
+  if (l) { l.style.left = (-w.wl) + 'px'; l.style.width = w.wl + 'px'; }
+  if (r) { r.style.right = (-w.wr) + 'px'; r.style.width = w.wr + 'px'; }
+  if (b) { b.style.left = (-w.wl) + 'px'; b.style.right = (-w.wr) + 'px'; }
+}
+function addBlockEdges(wrapEl) {
+  var wz = bkEdgeWidths();
+  if (!wz) return;
+  var wl = wz.wl, wr = wz.wr;
   if (wl) { var l = document.createElement('div'); l.className = 'bk-edge l';
     l.style.left = (-wl) + 'px'; l.style.width = wl + 'px'; wrapEl.appendChild(l); }
   if (wr) { var r = document.createElement('div'); r.className = 'bk-edge r';
@@ -1127,7 +1143,10 @@ function turn(dir) {
       wrapEl1.querySelectorAll('.bk-stand, .bk-flip.sgl.fwd').forEach(function (el) {
         var d = (+el.dataset.d || 0) + 1;
         el.dataset.d = d;
+        el.classList.remove('d1', 'd2');
+        el.classList.add(d === 1 ? 'd1' : 'd2');           /* the veil grade travels with the depth */
         el.style.transform = 'rotateY(' + bkFanAngle(d) + 'deg)';
+        if (d >= BK_FAN.length) el.style.opacity = '0';   /* pushed off the fan — gone before the rebuild drops it */
       });
     } else {
       /* the front leaf leaves the fan (the sheet takes its place); the REMAINING
@@ -1137,9 +1156,30 @@ function turn(dir) {
       wrapEl1.querySelectorAll('.bk-stand').forEach(function (el) {
         var d = Math.max(0, (+el.dataset.d || 0) - 1);
         el.dataset.d = d;
+        el.classList.remove('d1', 'd2');
+        if (d === 1) el.classList.add('d1'); else if (d >= 2) el.classList.add('d2');
         el.style.transform = 'rotateY(' + bkFanAngle(d) + 'deg)';
       });
+      /* the incoming deepest leaf fades IN now, so the rebuild adds nothing */
+      var backIdx = target - BK_FAN.length;
+      if (backIdx >= 0) {
+        var bleaf = document.createElement('div');
+        bleaf.className = 'bk-stand d' + (BK_FAN.length - 1);
+        bleaf.dataset.d = BK_FAN.length - 1;
+        var bf = document.createElement('div'); bf.className = 'face front pg-single';
+        var bb = document.createElement('div'); bb.className = 'face back pg-single';
+        setPage(bf, backIdx); setPage(bb, backIdx);
+        bleaf.appendChild(bf); bleaf.appendChild(bb);
+        bleaf.style.transform = 'rotateY(' + bkFanAngle(BK_FAN.length - 1) + 'deg)';
+        bleaf.style.opacity = '0';
+        var firstStand = wrapEl1.querySelector('.bk-stand');
+        if (firstStand) wrapEl1.insertBefore(bleaf, firstStand); else wrapEl1.appendChild(bleaf);
+        fitDensity(bf); fitDensity(bb);
+        void bleaf.offsetHeight;
+        bleaf.style.opacity = '1';
+      }
     }
+    updateBlockEdges(wrapEl1);                       /* the block thickness follows at takeoff, not at the rebuild */
     var flip1 = document.createElement('div');
     flip1.className = 'bk-flip sgl ' + (dir > 0 ? 'fwd' : 'bwd');
     flip1.dataset.d = 0;
@@ -1161,6 +1201,7 @@ function turn(dir) {
     /* density + flow arrows while the face is still unrotated (nothing paints
        between append and the transform below — same trick as the spread) */
     fitDensity(front1);
+    fitDensity(back1);                               /* the BACK face is the visible one past 90° — unfitted it would swap sizes at the rebuild */
     wireFlowIn(front1);
     if (dir < 0) flip1.style.transform = 'rotateY(' + BK_STAND + 'deg)';   /* start standing at the spine */
     if (firstOfBurst1) {
@@ -1178,10 +1219,10 @@ function turn(dir) {
     var done1 = false;
     function finish1() {
       if (done1) return; done1 = true;
-      flip1.style.willChange = '';
-      if (!flip1.parentNode) return;                 /* an external goTo already rebuilt */
+      if (!flip1.parentNode) { flip1.style.willChange = ''; return; }   /* an external goTo already rebuilt */
       state.pending--;
       if (state.pending <= 0) { goTo(state.idx); return; }
+      flip1.style.willChange = '';
       /* fwd sheets STAY as the standing fan; a landed bwd sheet commits its
          page into the base and leaves (a flat lingering sheet would be
          yanked around by later takeoffs) */
