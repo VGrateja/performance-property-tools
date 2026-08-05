@@ -231,10 +231,19 @@ body.bk-open .bk-shelf{display:none}
    faces carry the SAME page so the 90° crossover is imperceptible and the
    landed sheet IS the visible turned page (no fades) */
 .bk-flip.sgl.go{transition:transform .64s cubic-bezier(.3,.02,.18,.98)}
+.bk-flip.sgl .face::after{content:'';position:absolute;inset:0;width:auto;pointer-events:none;opacity:0;
+  transition:opacity .3s ease .28s;background:
+    linear-gradient(to right, rgba(255,255,255,0.55), rgba(255,255,255,0) 5%),
+    linear-gradient(color-mix(in srgb, var(--pg-paper) 58%, transparent), color-mix(in srgb, var(--pg-paper) 58%, transparent)),
+    linear-gradient(to right, rgba(0,0,0,0.22), rgba(0,0,0,0.07) 30%, rgba(0,0,0,0.03) 62%, rgba(0,0,0,0.16))}
+.bk-flip.sgl.go .face::after{opacity:1}
+.bk-flip.sgl.bwd .face::after{opacity:1;transition:opacity .26s ease}
+.bk-flip.sgl.bwd.go .face::after{opacity:0}
 /* the persistent turned half: the previous page standing just past vertical
    at the spine (Van's held-book photo) — visible, but barely any width */
 .bk-stand{position:absolute;left:0;top:0;width:var(--pg-w);height:var(--pg-h);
-  transform-origin:left center;transform-style:preserve-3d;pointer-events:none;z-index:1}
+  transform-origin:left center;transform-style:preserve-3d;pointer-events:none;z-index:1;
+  transition:transform .5s cubic-bezier(.3,.02,.18,.98)}
 .bk-stand .face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;
   overflow:hidden;background:var(--pg-paper);border-radius:8px}
 .bk-stand .face.back{transform:rotateY(180deg)}
@@ -986,6 +995,7 @@ function buildSpread() {
    Rebuilt with the spread (cheap static divs; widths track the position). */
 var BK_STAND = -93.5;                    /* the front standing leaf — flips land here */
 var BK_FAN = [-93.5, -96.5, -100];       /* up to three turned pages fan out at the spine */
+function bkFanAngle(d){ return d < BK_FAN.length ? BK_FAN[d] : BK_FAN[BK_FAN.length - 1] - (d - BK_FAN.length + 1) * 3; }
 function addStandingLeaf(wrapEl) {
   if (!state.book || state.idx < 1) return;
   var n = Math.min(BK_FAN.length, state.idx);
@@ -997,6 +1007,7 @@ function addStandingLeaf(wrapEl) {
     setPage(lf, state.idx - 1 - i);
     setPage(lb, state.idx - 1 - i);                /* past 90° the BACK face is the visible one */
     leaf.appendChild(lf); leaf.appendChild(lb);
+    leaf.dataset.d = i;
     leaf.style.transform = 'rotateY(' + BK_FAN[i] + 'deg)';
     wrapEl.appendChild(leaf);
     fitDensity(lb); fitDensity(lf);
@@ -1112,8 +1123,26 @@ function turn(dir) {
     state.lastTurnAt = Date.now();
     var firstOfBurst1 = state.pending === 1;
     persist(); syncURL(); syncBar();
+    if (dir > 0) {
+      wrapEl1.querySelectorAll('.bk-stand, .bk-flip.sgl.fwd').forEach(function (el) {
+        var d = (+el.dataset.d || 0) + 1;
+        el.dataset.d = d;
+        el.style.transform = 'rotateY(' + bkFanAngle(d) + 'deg)';
+      });
+    } else {
+      /* the front leaf leaves the fan (the sheet takes its place); the REMAINING
+         static leaves step forward — in-flight sheets are never retargeted */
+      var stands0 = wrapEl1.querySelectorAll('.bk-stand');
+      if (stands0.length) stands0[stands0.length - 1].remove();
+      wrapEl1.querySelectorAll('.bk-stand').forEach(function (el) {
+        var d = Math.max(0, (+el.dataset.d || 0) - 1);
+        el.dataset.d = d;
+        el.style.transform = 'rotateY(' + bkFanAngle(d) + 'deg)';
+      });
+    }
     var flip1 = document.createElement('div');
     flip1.className = 'bk-flip sgl ' + (dir > 0 ? 'fwd' : 'bwd');
+    flip1.dataset.d = 0;
     flip1.style.zIndex = ++state.zSeq;
     var front1 = document.createElement('div'); front1.className = 'face front pg-single';
     var back1 = document.createElement('div'); back1.className = 'face back pg-single';
@@ -1133,11 +1162,7 @@ function turn(dir) {
        between append and the transform below — same trick as the spread) */
     fitDensity(front1);
     wireFlowIn(front1);
-    if (dir < 0) {
-      flip1.style.transform = 'rotateY(' + BK_STAND + 'deg)';     /* start standing at the spine */
-      var stands = wrapEl1.querySelectorAll('.bk-stand');
-      if (stands.length) stands[stands.length - 1].remove();   /* the FRONT leaf (painted last) — the sheet takes its place */
-    }
+    if (dir < 0) flip1.style.transform = 'rotateY(' + BK_STAND + 'deg)';   /* start standing at the spine */
     if (firstOfBurst1) {
       var sh1 = document.createElement('div');
       sh1.className = 'bk-shade s ' + (dir > 0 ? 'out' : 'in');
@@ -1147,7 +1172,7 @@ function turn(dir) {
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
         flip1.classList.add('go');
-        flip1.style.transform = 'rotateY(' + (dir > 0 ? BK_STAND : 0) + 'deg)';
+        flip1.style.transform = 'rotateY(' + (dir > 0 ? bkFanAngle(+flip1.dataset.d || 0) : 0) + 'deg)';
       });
     });
     var done1 = false;
@@ -1157,9 +1182,13 @@ function turn(dir) {
       if (!flip1.parentNode) return;                 /* an external goTo already rebuilt */
       state.pending--;
       if (state.pending <= 0) { goTo(state.idx); return; }
-      /* non-last sheets stay in the tableau (fwd: standing at the spine under
-         newer sheets; bwd: landed flat under newer arrivals) — the last
-         landing's rebuild sweeps them all */
+      /* fwd sheets STAY as the standing fan; a landed bwd sheet commits its
+         page into the base and leaves (a flat lingering sheet would be
+         yanked around by later takeoffs) */
+      if (dir < 0) {
+        if (base1) { setPage(base1, target); fitDensity(base1); wireFlowIn(base1); }
+        flip1.remove();
+      }
     }
     flip1.addEventListener('transitionend', function (ev) { if (ev.propertyName === 'transform') finish1(); });
     setTimeout(finish1, 900);
