@@ -238,9 +238,26 @@ body.bk-open .bk-shelf{display:none}
 .bk-stand .face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;
   overflow:hidden;background:var(--pg-paper);border-radius:8px}
 .bk-stand .face.back{transform:rotateY(180deg)}
+/* near-edge-on lighting: bright fold line at the spine, deep mid shade, and a
+   paper veil so the foreshortened print reads as paper, not pasted glyphs */
 .bk-stand .face::after{content:'';position:absolute;inset:0;pointer-events:none;
-  background:linear-gradient(to right, rgba(0,0,0,0.15), rgba(0,0,0,0.05) 35%, rgba(0,0,0,0.02) 65%, rgba(0,0,0,0.11))}
-.bk-stand .face.pg-cover::after{display:none}
+  background:
+    linear-gradient(to right, rgba(255,255,255,0.55), rgba(255,255,255,0) 5%),
+    linear-gradient(color-mix(in srgb, var(--pg-paper) 58%, transparent), color-mix(in srgb, var(--pg-paper) 58%, transparent)),
+    linear-gradient(to right, rgba(0,0,0,0.22), rgba(0,0,0,0.07) 30%, rgba(0,0,0,0.03) 62%, rgba(0,0,0,0.16))}
+/* deeper fan leaves: mostly paper — near edge-on, print all but disappears */
+.bk-stand.d1 .face::after{background:
+    linear-gradient(to right, rgba(255,255,255,0.5), rgba(255,255,255,0) 5%),
+    linear-gradient(color-mix(in srgb, var(--pg-paper) 80%, transparent), color-mix(in srgb, var(--pg-paper) 80%, transparent)),
+    linear-gradient(to right, rgba(0,0,0,0.20), rgba(0,0,0,0.06) 32%, rgba(0,0,0,0.14))}
+.bk-stand.d2 .face::after{background:
+    linear-gradient(to right, rgba(255,255,255,0.45), rgba(255,255,255,0) 5%),
+    linear-gradient(color-mix(in srgb, var(--pg-paper) 90%, transparent), color-mix(in srgb, var(--pg-paper) 90%, transparent)),
+    linear-gradient(to right, rgba(0,0,0,0.18), rgba(0,0,0,0.06) 35%, rgba(0,0,0,0.12))}
+.bk-stand .face.pg-cover::after{background:linear-gradient(to right, rgba(255,255,255,0.18), rgba(255,255,255,0) 6%), linear-gradient(to right, rgba(0,0,0,0.30), rgba(0,0,0,0.10) 40%, rgba(0,0,0,0.22))}
+/* the reading page's gutter: the standing half shades the paper near the spine */
+.bk-page.pg-single:not(.pg-cover)::after{content:'';position:absolute;inset:0 auto 0 0;width:36px;
+  pointer-events:none;z-index:3;background:linear-gradient(to right, rgba(35,40,48,0.16), transparent)}
 /* full-width reveal/landing shade for the single page (spine at the left) */
 .bk-shade.s{left:0;background:linear-gradient(to right, rgba(15,20,28,0.26), transparent 58%)}
 
@@ -600,7 +617,7 @@ function pickBook(cardEl, book, page) {
       requestAnimationFrame(function () {
         flyer.style.transform = 'translate(' + (to.left - r.left) + 'px,' + (to.top - r.top) + 'px) ' +
           'scale(' + (to.width / 620) + ',' + (to.height / 847) + ')';
-        sheet.style.transform = 'rotateY(-82deg)';     /* opens in flight to the standing angle (matches BK_STAND) */
+        sheet.style.transform = 'rotateY(-93.5deg)';   /* opens in flight to the standing angle (matches BK_STAND) */
       });
     } else {
       dur = 540;
@@ -967,19 +984,23 @@ function buildSpread() {
 /* the physical page block: read pages stack left of the spine, the remaining
    block sits at the fore-edge, and the bottom of the block peeks underneath.
    Rebuilt with the spread (cheap static divs; widths track the position). */
-var BK_STAND = -98;   /* the turned half stands just past vertical (deg) — flips land here */
+var BK_STAND = -93.5;                    /* the front standing leaf — flips land here */
+var BK_FAN = [-93.5, -96.5, -100];       /* up to three turned pages fan out at the spine */
 function addStandingLeaf(wrapEl) {
   if (!state.book || state.idx < 1) return;
-  var leaf = document.createElement('div');
-  leaf.className = 'bk-stand';
-  var lf = document.createElement('div'); lf.className = 'face front pg-single';
-  var lb = document.createElement('div'); lb.className = 'face back pg-single';
-  setPage(lf, state.idx - 1);
-  setPage(lb, state.idx - 1);                      /* past 90° the BACK face is the visible one */
-  leaf.appendChild(lf); leaf.appendChild(lb);
-  leaf.style.transform = 'rotateY(' + BK_STAND + 'deg)';
-  wrapEl.appendChild(leaf);
-  fitDensity(lb); fitDensity(lf);
+  var n = Math.min(BK_FAN.length, state.idx);
+  for (var i = n - 1; i >= 0; i--) {               /* deepest first — the front leaf paints last */
+    var leaf = document.createElement('div');
+    leaf.className = 'bk-stand' + (i ? ' d' + i : '');
+    var lf = document.createElement('div'); lf.className = 'face front pg-single';
+    var lb = document.createElement('div'); lb.className = 'face back pg-single';
+    setPage(lf, state.idx - 1 - i);
+    setPage(lb, state.idx - 1 - i);                /* past 90° the BACK face is the visible one */
+    leaf.appendChild(lf); leaf.appendChild(lb);
+    leaf.style.transform = 'rotateY(' + BK_FAN[i] + 'deg)';
+    wrapEl.appendChild(leaf);
+    fitDensity(lb); fitDensity(lf);
+  }
 }
 function addBlockEdges(wrapEl) {
   var n = state.book ? state.book.pages.length : 0;
@@ -1114,8 +1135,8 @@ function turn(dir) {
     wireFlowIn(front1);
     if (dir < 0) {
       flip1.style.transform = 'rotateY(' + BK_STAND + 'deg)';     /* start standing at the spine */
-      var st0 = wrapEl1.querySelector('.bk-stand');
-      if (st0) st0.remove();                       /* the sheet takes the leaf's place (same content, same angle) */
+      var stands = wrapEl1.querySelectorAll('.bk-stand');
+      if (stands.length) stands[stands.length - 1].remove();   /* the FRONT leaf (painted last) — the sheet takes its place */
     }
     if (firstOfBurst1) {
       var sh1 = document.createElement('div');
