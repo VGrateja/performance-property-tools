@@ -2512,17 +2512,14 @@ async function renderDwellings(host, slug){
       2yr forecast + a Tighter↔Looser gradient with current/forecast markers.
       Uses getVRAdjusted (Cotality-rebased, same as the tokens) + the raw
       forecastVR2/ooPct/population from getVRF. ── */
-function mountVRProjection(slideEl, slug){ const host=slideEl.querySelector('.bss-vrproj'); if(host) renderVRProjection(host, slug); }
-async function renderVRProjection(host, slug){
-  host.innerHTML='<div class="bss-chartload">Loading…</div>';
-  const [adj, raw] = await Promise.all([getVRAdjusted(slug), getVRF(slug)]);
-  if(!adj||!raw||raw.households==null){ host.innerHTML='<div class="bss-chartload">No VR forecast in Forge for this region.</div>'; return; }
-  /* projection CHAIN on the Cotality current VR (same math as the VR Projection
-     tool): rebase the property stock from the adjusted VR, then add each year's
-     new households (people ÷ household size) and commencements. Every cell is
-     arithmetically consistent with its neighbours; yr-1 matches VrForecastCalc. */
-  const v=adj.currentVR, HH=raw.households;
-  const props=HH/(1-v);
+/* the projection CHAIN on the Cotality current VR (same math as the VR
+   Projection tool): rebase the property stock from the adjusted VR, then add
+   each year's new households (people ÷ household size) and commencements.
+   THE single source of truth for slide 13 AND the {vr_*} narrative tokens —
+   the description words can never contradict the projection table again. */
+function _vrChain(adj, raw){
+  if(!adj||!raw||raw.households==null||adj.currentVR==null) return null;
+  const v=adj.currentVR, HH=raw.households, props=HH/(1-v);
   const hhSize=raw.hhSize!=null?raw.hhSize:((raw.expectedPeople&&raw.expNewHouseholds)?raw.expectedPeople/raw.expNewHouseholds:(HH?raw.population/HH:null));
   const newHH=raw.expNewHouseholds, oe1=raw.oeCommencements, oeY=raw.oeYear||(new Date().getFullYear());
   const oe2=(raw.oeSource==='oe'&&raw.oeByYear&&raw.oeByYear[String(oeY+1)]!=null)?raw.oeByYear[String(oeY+1)]
@@ -2530,6 +2527,17 @@ async function renderVRProjection(host, slug){
   const props1=props+(oe1||0), HH1=HH+(newHH||0), props2=props1+(oe2||0), HH2=HH1+(newHH||0);
   const v1=(newHH!=null&&oe1!=null&&props1>0)?Math.max(0.001,(props1-HH1)/props1):null;
   const v2=(v1!=null&&props2>0)?Math.max(0.001,(props2-HH2)/props2):null;
+  return { v, v1, v2, HH, HH1, HH2, props, props1, props2, hhSize, newHH, oe1, oe2, oeY };
+}
+function mountVRProjection(slideEl, slug){ const host=slideEl.querySelector('.bss-vrproj'); if(host) renderVRProjection(host, slug); }
+async function renderVRProjection(host, slug){
+  host.innerHTML='<div class="bss-chartload">Loading…</div>';
+  const [adj, raw] = await Promise.all([getVRAdjusted(slug), getVRF(slug)]);
+  if(!adj||!raw||raw.households==null){ host.innerHTML='<div class="bss-chartload">No VR forecast in Forge for this region.</div>'; return; }
+  const C=_vrChain(adj, raw);
+  if(!C){ host.innerHTML='<div class="bss-chartload">No VR forecast in Forge for this region.</div>'; return; }
+  const v=C.v, HH=C.HH, props=C.props, hhSize=C.hhSize, newHH=C.newHH, oe1=C.oe1, oe2=C.oe2, oeY=C.oeY;
+  const props1=C.props1, HH1=C.HH1, props2=C.props2, HH2=C.HH2, v1=C.v1, v2=C.v2;
   const P=v=>v==null?'—':(v*100).toFixed(2)+'%';
   const N=v=>v==null?'—':Math.round(v).toLocaleString();
   const SG=v=>v==null?'—':((v>=0?'+':'')+Math.round(v).toLocaleString());
@@ -2632,7 +2640,7 @@ async function loadEntryAndPrices(){
       RANKINFO={ cur:latest.v, avg:Math.round(win.reduce((a,b)=>a+b.v,0)/win.length), years:win.length }; } }catch(e){}
   try{ const D=await computeRatio(state.slug);   /* same series as the %-of-peer slide (cached) */
     if(D) RATIOINFO={ peer:D.pName, avg:D.lta, cur:D.cur }; }catch(e){}
-  try{ VRINFO=await getVRAdjusted(state.slug); }catch(e){}   /* same figures as the slide-5 cards (cached) */
+  try{ VRINFO=await getVRAdjusted(state.slug); if(VRINFO){ const rawVR=await getVRF(state.slug); VRINFO=Object.assign({}, VRINFO, { chain:_vrChain(VRINFO, rawVR) }); } }catch(e){}   /* same figures as the slide-5 cards (cached); chain = slide 13's exact projection */
   try{ POPINFO=forecastPop(state.slug,3); }catch(e){}   /* same figures as the pop-forecast chart */
   /* the SCOPE each sentiment chart actually resolved to, so an authored title can
      say it instead of hard-coding "(VIC)" — business confidence falls back to
@@ -2840,6 +2848,15 @@ async function getVRAdjusted(slug){
   }catch(e){}
   return (VRADJ[slug]=p);
 }
+const _VR_STEADY=0.0005;   /* ±0.05pp = steady/hold band (mirrors the tool) */
+function _vrTrendWord(){ const c=VRINFO&&VRINFO.chain; if(!c||c.v==null||c.v2==null) return "—";
+  const d=c.v2-c.v; return Math.abs(d)<_VR_STEADY?"steady":(d<0?"tightening":"easing"); }
+function _vrOutlookPhrase(){ const c=VRINFO&&VRINFO.chain; if(!c||c.v==null||c.v2==null) return "the vacancy rate to move with supply and demand";
+  const d=c.v2-c.v, to=(c.v2*100).toFixed(2)+"%";
+  return Math.abs(d)<_VR_STEADY?("the vacancy rate to hold near "+to)
+    :(d<0?("the vacancy rate to tighten toward "+to):("the vacancy rate to ease toward "+to)); }
+function _vrBalancePhrase(){ const c=VRINFO&&VRINFO.chain; if(!c||c.v2==null) return "near the ~3% balanced level";
+  return c.v2<0.028?"below the ~3% balanced level":(c.v2<=0.034?"around the ~3% balanced level":"above the ~3% balanced level"); }
 const _vrPct=v=>v==null?'—':(v*100).toFixed(2)+'%', _vrInt=v=>v==null?'—':Math.round(v).toLocaleString();
 const _dwInt=v=>(v==null||!isFinite(v))?'—':Math.round(v).toLocaleString();
 const _bfM=v=>(v==null||!isFinite(v))?'—':'$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:1})+'m';
@@ -3570,7 +3587,11 @@ function _tokenMap(){
     /* live VR forecast (same figures as the slide-5 cards) */
     vr_current:_vrPct(VRINFO&&VRINFO.currentVR), vr_forecast:_vrPct(VRINFO&&VRINFO.forecastVR),
     vr_households:_vrInt(VRINFO&&VRINFO.expNewHouseholds), vr_properties:_vrInt(VRINFO&&VRINFO.expProperties),
-    vr_trend:(VRINFO&&VRINFO.currentVR!=null&&VRINFO.forecastVR!=null)?(VRINFO.forecastVR>=VRINFO.currentVR?'easing':'tightening'):'—',
+    /* trend/outlook read the SAME 2-yr chain the Vacancy Rate Projection slide        renders — the words cannot contradict the table. Steady band ±0.05pp. */
+    vr_trend:_vrTrendWord(),
+    vr_yr1:_vrPct(VRINFO&&VRINFO.chain&&VRINFO.chain.v1), vr_yr2:_vrPct(VRINFO&&VRINFO.chain&&VRINFO.chain.v2),
+    vr_outlook_phrase:_vrOutlookPhrase(),
+    vr_balance_phrase:_vrBalancePhrase(),
     /* live population forecast (same figures as the pop-forecast chart) */
     pop_current:POPINFO?Math.round(POPINFO.base).toLocaleString():'—',
     pop_target:POPINFO?Math.round(POPINFO.finalPop).toLocaleString():'—',
@@ -3846,7 +3867,7 @@ function showSelBar(){
     h+='<label class="bp-l">Background</label><div class="bp-color"><input type="color" data-t="bgc" value="'+_hex(o.bg||'#0a2440')+'"><input class="bp-hex" data-t="bghex" placeholder="#hex" value="'+(o.bg||'')+'"><button class="bp-tg" data-t="bgrst" title="No background">↺</button></div>';
     h+='<label class="bp-l">Link selected text</label><div class="bp-row2"><button class="bp-rt" data-rt="link">Link…</button><button class="bp-rt" data-rt="unlink">Unlink</button></div>';
     h+='<label class="bp-l">List</label><div class="bp-row3"><button class="bp-rt" data-rt="ul">• List</button><button class="bp-rt" data-rt="dash">– List</button><button class="bp-rt" data-rt="ol">1. List</button></div>';
-    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Consumer confidence</b> · {cci_index} {cci_year} {cci_average} {cci_vs_average} {cci_change} {cci_trend}<br><b>Underutilisation</b> · {underutil_rate} {underutil_unemp} {underutil_gap} {underutil_region_unemp} {underutil_year} {underutil_state}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_med_construction} {bizfin_med_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_count} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years} {rate_current} {rate_forecast} {runway_wage_years}<br><b>Scope</b> · {bizconf_scope} {hpe_scope}</div>';
+    h+='<div class="bp-note">Links/Lists apply to the text you select while editing (double-click the text first).<br><b>Tokens</b> · {region} {REGION} {kind} {year} {month} {state}<br><b>Live</b> · {mhp} {mup} {mhp_growth} {mup_growth}<br><b>Entry</b> · {entry_year} {entry_mhp} {entry_mup} {thesis}<br><b>Ranking</b> · {rank_current} {rank_average} {rank_years}<br><b>Peer</b> · {peer} {PEER} {peer_avg} {peer_current} {peer_value}<br><b>VR</b> · {vr_current} {vr_forecast} {vr_households} {vr_properties} {vr_trend} {vr_yr1} {vr_yr2} {vr_outlook_phrase} {vr_balance_phrase}<br><b>Pop</b> · {pop_current} {pop_target} {pop_growth} {pop_growth_pct} {pop_current_fy} {pop_target_fy}<br><b>Consumer confidence</b> · {cci_index} {cci_year} {cci_average} {cci_vs_average} {cci_change} {cci_trend}<br><b>Underutilisation</b> · {underutil_rate} {underutil_unemp} {underutil_gap} {underutil_region_unemp} {underutil_year} {underutil_state}<br><b>Business finance</b> · {bizfin_quarter} {bizfin_state} {bizfin_construction} {bizfin_property} {bizfin_med_construction} {bizfin_med_property} {bizfin_construction_yoy} {bizfin_property_yoy}<br><b>Job ads</b> · {jobads_count} {jobads_month} {jobads_yoy} {jobads_trend}<br><b>Dwellings</b> · {dw_year} {dw_approvals} {dw_commencements} {dw_completions}<br><b>Rates</b> · {cash_current} {cash_forecast} {wage_years} {rate_current} {rate_forecast} {runway_wage_years}<br><b>Scope</b> · {bizconf_scope} {hpe_scope}</div>';
   } else if(o.type==='shape'){
     const lineish=(o.shape==='line'||o.shape==='arrow');
     h+='<div class="bp-title">Shape</div>';
