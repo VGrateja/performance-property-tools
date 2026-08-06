@@ -105,7 +105,18 @@
      overlap a toggle, so the one-shot animation can never trip auto-lite. */
   var lastX = window.innerWidth - 50, lastY = 40, _themeFallbackT = null;
   doc.addEventListener('pointerdown', function (e) { lastX = e.clientX; lastY = e.clientY; }, { capture: true, passive: true });
-  function setMode(m) {
+  /* The reveal anchors on the CONTROL that was activated (element or event
+     passed through cycleMode), falling back to the last pointer position —
+     keyboard toggles and programmatic calls then still originate somewhere
+     sensible instead of a fixed spot. */
+  function _originOf(o) {
+    try {
+      if (o && o.getBoundingClientRect) { var r = o.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }
+      if (o && typeof o.clientX === 'number') return { x: o.clientX, y: o.clientY };
+    } catch (e) {}
+    return { x: lastX, y: lastY };
+  }
+  function setMode(m, origin) {
     if (MODES.indexOf(m) < 0) m = 'light';
     var apply = function () {
       root.dataset.mode = m;
@@ -118,9 +129,12 @@
     var perfOff = root.classList.contains('pp-lite') || root.classList.contains('pp-perf-hidden');
     if (!changed || reduce || perfOff) { apply(); return; }
     window.__pposThemeSwitchAt = Date.now();
-    var maxR = Math.hypot(Math.max(lastX, window.innerWidth - lastX), Math.max(lastY, window.innerHeight - lastY));
-    root.style.setProperty('--ppt-x', lastX + 'px');
-    root.style.setProperty('--ppt-y', lastY + 'px');
+    var pt = _originOf(origin);
+    /* 5% radius overshoot: the sweep finishes covering the far corner BEFORE
+       the easing's slow tail, so the end never reads as stuck */
+    var maxR = 1.05 * Math.hypot(Math.max(pt.x, window.innerWidth - pt.x), Math.max(pt.y, window.innerHeight - pt.y));
+    root.style.setProperty('--ppt-x', pt.x + 'px');
+    root.style.setProperty('--ppt-y', pt.y + 'px');
     root.style.setProperty('--ppt-r', maxR + 'px');
     if (document.startViewTransition) {
       document.startViewTransition(apply);
@@ -131,7 +145,7 @@
       apply();
     }
   }
-  function cycleMode() { setMode(root.dataset.mode === 'dark' ? 'light' : 'dark'); }
+  function cycleMode(origin) { setMode(root.dataset.mode === 'dark' ? 'light' : 'dark', origin); }
 
   /* Apply immediately (script loads early — first paint must wear the right
      shade). No time-of-day polling anymore. */
@@ -197,7 +211,7 @@
       doc.body.insertBefore(bar, doc.body.firstChild);
     }
 
-    bar.querySelector('#pposModeBtn').addEventListener('click', cycleMode);
+    bar.querySelector('#pposModeBtn').addEventListener('click', function () { cycleMode(bar.querySelector('#pposModeBtn')); });
     (cfg.actions || []).forEach(function (a) {
       if (a.id && typeof a.onClick === 'function') {
         var btn = bar.querySelector('#' + a.id);
