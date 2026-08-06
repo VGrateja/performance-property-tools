@@ -4422,6 +4422,53 @@ function _pdfLibs(){
   ]).catch(e=>{ _pdfLibsP=null; throw e; });
   return _pdfLibsP;
 }
+/* Real Runway-v-Demand chart shots for the PDF (Van 2026-08-06): a hidden
+   same-origin iframe of the tool (embed mode, same wg as the deck) is captured
+   with html2canvas — the SAME element (#runwayView .chart-wrap) the tool's own
+   "Download HD JPEG" grabs — once on the House tab, then again after clicking
+   the Unit tab. The capture-across-documents trick is the Online Reports
+   multi-region exporter precedent. Returns {house,unit} dataURLs or null. */
+async function _rvdChartShots(setP){
+  const f=document.createElement('iframe');
+  f.src='runway-demand.html?embed=1&view=house&wg='+(state.mode==='sell'?1:5);
+  f.style.cssText='position:fixed;left:-2400px;top:0;width:1136px;height:754px;border:0;pointer-events:none';
+  document.body.appendChild(f);
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  try{
+    const until=Date.now()+45000;
+    while(Date.now()<until){
+      try{ const c=f.contentDocument&&f.contentDocument.querySelector('#runwayView .chart-wrap canvas'); if(c&&c.width>50) break; }catch(e){}
+      await sleep(250);
+    }
+    const wrap=()=>f.contentDocument.querySelector('#runwayView .chart-wrap');
+    if(!wrap()) return null;
+    await sleep(2600);   /* data + ECharts entrance animation settle */
+    setP('Rendering Runway v Demand (House)…');
+    const house=(await window.html2canvas(wrap(),{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'})).toDataURL('image/jpeg',0.92);
+    const tab=f.contentDocument.querySelector('.tab[data-type="unit"]');
+    if(!tab) return {house:house,unit:null};
+    tab.click();
+    await sleep(2400);   /* unit re-render */
+    setP('Rendering Runway v Demand (Unit)…');
+    const unit=(await window.html2canvas(wrap(),{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'})).toDataURL('image/jpeg',0.92);
+    return {house:house,unit:unit};
+  }catch(e){ return null; }
+  finally{ f.remove(); }
+}
+/* capture the demand slide with a chart image sitting in the embed host;
+   unitTitle=true swaps "(HOUSES)" → "(UNITS)" in the cloned text overlays */
+async function _captureDemandSlide(el,dataUrl,unitTitle){
+  const host=el.querySelector('.bss-rvd-embed');
+  const img=document.createElement('img');
+  img.src=dataUrl;
+  img.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:5;background:#fff';
+  host.appendChild(img);
+  try{
+    await new Promise(r=>{ if(img.complete) r(); else { img.onload=r; img.onerror=r; } });
+    return await window.html2canvas(el,{ scale:2, useCORS:true, logging:false, backgroundColor:'#ffffff', width:1280, height:720, windowWidth:1280, windowHeight:720,
+      onclone: unitTitle ? function(doc){ doc.querySelectorAll('.bss-ov').forEach(function(ov){ if(!ov.querySelector('canvas,img') && /houses/i.test(ov.textContent)) ov.innerHTML=ov.innerHTML.replace(/houses/gi,'UNITS'); }); } : undefined });
+  } finally { img.remove(); }
+}
 let _pdfBusy=false;
 async function downloadDeckPDF(){
   if(_pdfBusy) return;
@@ -4435,14 +4482,28 @@ async function downloadDeckPDF(){
     const slides=DECK.map((S,i)=>document.querySelector('.bss-slidewrap[data-i="'+i+'"] .bss-slide')).filter(Boolean);
     if(!slides.length) throw new Error('no slides');
     const pdf=new window.jspdf.jsPDF({ orientation:'landscape', unit:'px', format:[1280,720], compress:true, hotfixes:['px_scaling'] });
+    /* the Runway-v-Demand page becomes TWO PDF pages (House + Unit) built from
+       real chart captures — grab them up front so the loop stays simple */
+    const embedIdx=slides.findIndex(el=>el.querySelector('.bss-rvd-embed'));
+    let rvd=null;
+    if(embedIdx>=0){ setP('Loading Runway v Demand…'); rvd=await _rvdChartShots(setP); }
+    const total=slides.length+((rvd&&rvd.unit)?1:0);
+    let pageNo=0;
+    const addPage=canvas=>{ if(pageNo>0) pdf.addPage([1280,720],'landscape'); pdf.addImage(canvas.toDataURL('image/jpeg',0.85),'JPEG',0,0,1280,720,undefined,'FAST'); pageNo++; };
     for(let i=0;i<slides.length;i++){
-      setP('Rendering '+(i+1)+' / '+slides.length+'…');
+      setP('Rendering '+(pageNo+1)+' / '+total+'…');
       await new Promise(r=>setTimeout(r,30));   /* let the button repaint */
       const el=slides[i];
-      /* live-embed slide → a capture-only note (removed right after). Match the
-         EMBED HOST, not the iframe — the iframe is lazy (IntersectionObserver)
-         and doesn't exist unless the slide has been scrolled into view, in
-         which case the capture would show the raw "Loading…" placeholder. */
+      if(i===embedIdx&&rvd&&rvd.house){
+        addPage(await _captureDemandSlide(el,rvd.house,false));
+        if(rvd.unit){ setP('Rendering '+(pageNo+1)+' / '+total+'…'); addPage(await _captureDemandSlide(el,rvd.unit,true)); }
+        continue;
+      }
+      /* live-embed slide with NO captures (shot failed) → a capture-only note.
+         Match the EMBED HOST, not the iframe — the iframe is lazy
+         (IntersectionObserver) and doesn't exist unless the slide has been
+         scrolled into view, in which case the capture would show the raw
+         "Loading…" placeholder. */
       let note=null;
       if(el.querySelector('.bss-rvd-embed, iframe')){
         note=document.createElement('div');
@@ -4454,8 +4515,7 @@ async function downloadDeckPDF(){
       try{
         canvas=await window.html2canvas(el,{ scale:2, useCORS:true, logging:false, backgroundColor:'#ffffff', width:1280, height:720, windowWidth:1280, windowHeight:720 });
       } finally { if(note) note.remove(); }
-      if(i>0) pdf.addPage([1280,720],'landscape');
-      pdf.addImage(canvas.toDataURL('image/jpeg',0.85),'JPEG',0,0,1280,720,undefined,'FAST');
+      addPage(canvas);
     }
     const nm=(DB&&DB.meta&&DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug;
     const now=new Date(), month=now.toLocaleString('en-AU',{month:'long'});
