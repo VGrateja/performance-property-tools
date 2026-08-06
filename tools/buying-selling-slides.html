@@ -321,6 +321,13 @@ body.bss-present .bss-slidewrap.cur{display:block;}
 /* narrative removed → the table stretches to its fixed-height host (extra
    height distributes evenly across rows; cells stay middle-aligned) */
 .bss-senshost.sens-fill .bss-senst{height:100%}
+/* PDF export: slides must capture at NATURAL 1280×720 — fitSlide()'s inline
+   transform:scale(s) makes html2canvas crop at the SCALED bounding box (white
+   bands right+bottom when s<1, clipping when s>1 — Van's second download).
+   Class rule + !important beats the inline style; the fullscreen loading
+   overlay hides the layout jump while the export runs. */
+body.bss-exporting .bss-slide{transform:scale(1)!important}
+body.bss-exporting .bss-scale{height:720px!important}
 .bss-chartload{display:flex;align-items:center;justify-content:center;height:100%;color:var(--bss-mut);font-size:16px}
 /* section dividers (DEMAND / VALUE / CONFIDENCE) render as bare slides (default
    slide bg); all divider chrome is authored per-deck via overlays. */
@@ -4473,7 +4480,7 @@ let _pdfBusy=false;
 async function downloadDeckPDF(){
   if(_pdfBusy) return;
   const btn=$('#bssDownload'); _pdfBusy=true; btn.disabled=true;
-  const setP=t=>{ btn.textContent=t; };
+  const setP=t=>{ btn.textContent=t; const s=$('#live-loading-sub'); if(s) s.textContent=t; };
   try{
     setP('Preparing…');
     await _pdfLibs();
@@ -4485,6 +4492,13 @@ async function downloadDeckPDF(){
        let fit-screen re-apply. */
     var _zoomWas=document.documentElement.style.zoom;
     document.documentElement.style.zoom='1';
+    /* neutralise fitSlide()'s transform (the CSS above) behind the fullscreen
+       overlay — the on-screen layout jump is invisible, and every capture sees
+       true 1280×720 geometry regardless of the user's window size */
+    showLiveLoadingOverlay('','Preparing…');
+    { const r=$('#live-loading-region'); if(r) r.textContent='Exporting PDF…'; }
+    document.body.classList.add('bss-exporting');
+    await new Promise(r=>setTimeout(r,120));   /* let the overlay + relayout paint */
     const slides=DECK.map((S,i)=>document.querySelector('.bss-slidewrap[data-i="'+i+'"] .bss-slide')).filter(Boolean);
     if(!slides.length) throw new Error('no slides');
     const pdf=new window.jspdf.jsPDF({ orientation:'landscape', unit:'px', format:[1280,720], compress:true, hotfixes:['px_scaling'] });
@@ -4531,6 +4545,7 @@ async function downloadDeckPDF(){
     setP('Export failed');
     console.error('B/S PDF export:',e);
   } finally {
+    try{ document.body.classList.remove('bss-exporting'); fitSlide(); hideLiveLoadingOverlay(); }catch(e){}
     try{ document.documentElement.style.zoom=_zoomWas||''; if(window.PP_refit) window.PP_refit(); }catch(e){}
     _pdfBusy=false;
     setTimeout(()=>{ btn.textContent='⬇ Download'; btn.disabled=false; },1800);
