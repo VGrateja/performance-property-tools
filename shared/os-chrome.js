@@ -133,9 +133,14 @@
     /* 5% radius overshoot: the sweep finishes covering the far corner BEFORE
        the easing's slow tail, so the end never reads as stuck */
     var maxR = 1.05 * Math.hypot(Math.max(pt.x, window.innerWidth - pt.x), Math.max(pt.y, window.innerHeight - pt.y));
-    root.style.setProperty('--ppt-x', pt.x + 'px');
-    root.style.setProperty('--ppt-y', pt.y + 'px');
-    root.style.setProperty('--ppt-r', maxR + 'px');
+    /* fit-screen.js zooms tool pages with CSS zoom: rects/clientX are VISUAL px
+       but the view-transition clip-path resolves in the ZOOMED root space —
+       divide by the effective zoom or the origin drifts toward the top-left
+       (the reference_zoom_getboundingclientrect gotcha, consumption side) */
+    var zf = 1; try { zf = parseFloat(getComputedStyle(root).zoom) || 1; } catch (e) {}
+    root.style.setProperty('--ppt-x', (pt.x / zf) + 'px');
+    root.style.setProperty('--ppt-y', (pt.y / zf) + 'px');
+    root.style.setProperty('--ppt-r', (maxR / zf) + 'px');
     if (document.startViewTransition) {
       document.startViewTransition(apply);
     } else {
