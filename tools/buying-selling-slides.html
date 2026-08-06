@@ -631,7 +631,7 @@ body.bss-present .bss-presd{display:flex}
   <span class="bss-chip" id="bssMonth" title="Data month"></span>
   <button class="bss-btn" id="bssPin" title="Pin this deck to your desktop">Pin</button>
   <button class="bss-btn" id="bssPresent">▶ Present</button>
-  <button class="bss-btn" id="bssDownload" disabled title="PDF / image export — a later phase">⬇ Download</button>
+  <button class="bss-btn" id="bssDownload" title="Download this deck as a PDF">⬇ Download</button>
 </div>
 
 <div class="bss-stage" id="bssStage">
@@ -4404,6 +4404,72 @@ $('#bssMode').addEventListener('click',e=>{ const b=e.target.closest('button[dat
   else{ PP_PINS.add({kind:'link',label:label,url:url,a1:'#7E8CF1',a2:'#233AE7',icon:'<svg viewBox="0 0 24 24"><path d="M4 4v16h16"/><path d="M7 14l3-3 3 2 4-6"/></svg>'}); btn.textContent='Pinned'; }
   setTimeout(function(){ btn.textContent='Pin'; },1600);
 }catch(e){} }); })();
+/* ── PDF download — html2canvas + jsPDF (the Online Reports live-export
+      pattern, same CDN builds). Libraries load lazily on FIRST click so the
+      deck itself stays light. Slides capture at their natural 1280×720 layout
+      (html2canvas ignores the ancestor .bss-scale transform), scale 2 → JPEG.
+      The Demand-vs-Runway page embeds a live IFRAME html2canvas can't paint —
+      it gets a temporary "view online" note for the capture (the accepted
+      Presentation-embed limitation). ── */
+function _loadScript(src){ return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=()=>rej(new Error('load failed: '+src)); document.head.appendChild(s); }); }
+let _pdfLibsP=null;
+function _pdfLibs(){
+  if(window.html2canvas && window.jspdf) return Promise.resolve();
+  if(_pdfLibsP) return _pdfLibsP;
+  _pdfLibsP=Promise.all([
+    window.html2canvas?Promise.resolve():_loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'),
+    window.jspdf?Promise.resolve():_loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+  ]).catch(e=>{ _pdfLibsP=null; throw e; });
+  return _pdfLibsP;
+}
+let _pdfBusy=false;
+async function downloadDeckPDF(){
+  if(_pdfBusy) return;
+  const btn=$('#bssDownload'); _pdfBusy=true; btn.disabled=true;
+  const setP=t=>{ btn.textContent=t; };
+  try{
+    setP('Preparing…');
+    await _pdfLibs();
+    try{ await document.fonts.ready; }catch(e){}
+    if(EDIT){ try{ deselect(); }catch(e){} }
+    const slides=DECK.map((S,i)=>document.querySelector('.bss-slidewrap[data-i="'+i+'"] .bss-slide')).filter(Boolean);
+    if(!slides.length) throw new Error('no slides');
+    const pdf=new window.jspdf.jsPDF({ orientation:'landscape', unit:'px', format:[1280,720], compress:true, hotfixes:['px_scaling'] });
+    for(let i=0;i<slides.length;i++){
+      setP('Rendering '+(i+1)+' / '+slides.length+'…');
+      await new Promise(r=>setTimeout(r,30));   /* let the button repaint */
+      const el=slides[i];
+      /* live-embed slide → a capture-only note (removed right after). Match the
+         EMBED HOST, not the iframe — the iframe is lazy (IntersectionObserver)
+         and doesn't exist unless the slide has been scrolled into view, in
+         which case the capture would show the raw "Loading…" placeholder. */
+      let note=null;
+      if(el.querySelector('.bss-rvd-embed, iframe')){
+        note=document.createElement('div');
+        note.style.cssText='position:absolute;inset:120px 48px 48px;display:flex;align-items:center;justify-content:center;text-align:center;color:#63666A;font:600 22px Montserrat,sans-serif;background:#f4f5f7;border-radius:10px;z-index:5';
+        note.textContent='Live interactive chart — view this page in the online deck.';
+        el.appendChild(note);
+      }
+      let canvas;
+      try{
+        canvas=await window.html2canvas(el,{ scale:2, useCORS:true, logging:false, backgroundColor:'#ffffff', width:1280, height:720, windowWidth:1280, windowHeight:720 });
+      } finally { if(note) note.remove(); }
+      if(i>0) pdf.addPage([1280,720],'landscape');
+      pdf.addImage(canvas.toDataURL('image/jpeg',0.85),'JPEG',0,0,1280,720,undefined,'FAST');
+    }
+    const nm=(DB&&DB.meta&&DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug;
+    const now=new Date(), month=now.toLocaleString('en-AU',{month:'long'});
+    pdf.save((state.mode==='buy'?'Buying in ':'Selling in ')+nm+' - '+month+' '+now.getFullYear()+'.pdf');
+    setP('Downloaded ✓');
+  }catch(e){
+    setP('Export failed');
+    console.error('B/S PDF export:',e);
+  } finally {
+    _pdfBusy=false;
+    setTimeout(()=>{ btn.textContent='⬇ Download'; btn.disabled=false; },1800);
+  }
+}
+$('#bssDownload').addEventListener('click',downloadDeckPDF);
 $('#bssPrev').addEventListener('click',()=>go(state.idx-1));
 $('#bssNext').addEventListener('click',()=>go(state.idx+1));
 $('#bssPPrev').addEventListener('click',()=>go(state.idx-1));
