@@ -1314,8 +1314,9 @@ async function getTL(){
   }catch(e){ return null; } })();
   return _tlPromise;
 }
-/* region → the DATA key: capitals use their own name; regionals map to their
-   state's capital (the TL model scores at the capital level). */
+/* region → the FALLBACK DATA key: the engine scores all 36 markets by name
+   (ed8612f), so renderTL tries the region's OWN name first; this capital
+   mapping only catches markets the demand snapshot doesn't cover. */
 function tlName(slug){
   const m=(DB&&DB.meta&&DB.meta[slug])||{};
   if(m.cluster==='capital') return m.name||slug;
@@ -1357,13 +1358,16 @@ async function renderTL(host, slug, staticRows){
     host.innerHTML='<div class="bss-chartload" style="padding:60px 0">Loading Traffic Lights…</div>';
     const DATA=await getTL();
     if(!DATA){ host.innerHTML='<div class="bss-chartload" style="padding:60px 0">Traffic Lights unavailable.</div>'; return; }
-    const d=DATA[tlName(slug)] || DATA[((DB.meta[slug]||{}).name)];
+    /* The region's OWN lights first — the engine scores all 36 markets, and
+       this page must always MATCH the Traffic Lights tool (Van 2026-08-06);
+       the capital mapping is only a fallback for unscored markets. */
+    const d=DATA[((DB.meta[slug]||{}).name)] || DATA[tlName(slug)];
     if(!d){ host.innerHTML='<div class="bss-chartload" style="padding:60px 0">No Traffic Lights for this region.</div>'; return; }
-    /* The engine's any-RED veto caps current Confidence at ORANGE even when a
-       confidence indicator is RED — the sample deck shows that state as the
-       dual red+amber light (Van 2026-07-27), so surface it as RED_AMBER. */
-    const confSig=(d.confidence==='ORANGE'&&(d.indicators||[]).some(i=>i.signal==='RED'))?'RED_AMBER':d.confidence;
-    rows=[['Supply & Demand',d.sd,d.sd_fcst],['Value',d.value,d.value_fcst],['Confidence',confSig,d.conf_fcst]];
+    /* Signals verbatim from the engine — no remapping, so this page can never
+       drift from the tool. (The old RED_AMBER surface marked the any-RED veto
+       state; the 2026-08 model runs with the veto OFF, so that condition had
+       started misfiring on plain-orange verdicts the tool shows as amber.) */
+    rows=[['Supply & Demand',d.sd,d.sd_fcst],['Value',d.value,d.value_fcst],['Confidence',d.confidence,d.conf_fcst]];
   }
   host.innerHTML='<div class="bss-tlhead"><span>INDICATOR</span><span>CURRENT</span><span>FORECAST</span></div>'
     + rows.map(r=>'<div class="bss-tlrow"><div class="bss-tllabel">'+esc(r[0])+'</div>'
