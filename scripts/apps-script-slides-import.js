@@ -84,8 +84,34 @@
  * Scripts in the same project without global collisions.
  */
 
+/* SHARED-SECRET GATE.
+   This web app is deployed "Execute as: Me / Who has access: Anyone", so
+   without a gate ANY person on the internet who knows the /exec URL can read
+   the full contents of every deck this account can see. (Confirmed 2026-08-07:
+   fetched from a plain Node script with no credentials.)
+
+   The only caller is now the Supabase Edge Function `slides-read`, which holds
+   the secret server-side and requires a signed-in staff JWT of its own; the
+   browser never talks to this endpoint directly any more.
+
+   TO ENABLE: Apps Script editor → Project Settings → Script Properties →
+   add  SHARED_SECRET = <the value in Supabase secrets>  → then Deploy → Manage
+   deployments → edit → New version. Until that property exists this check is a
+   no-op, so adding it here cannot break the current deployment. */
+function SL_authOk(p) {
+  var want;
+  try { want = PropertiesService.getScriptProperties().getProperty('SHARED_SECRET'); } catch (err) { want = null; }
+  if (!want) return true;                    // not configured yet — stay open
+  var got = (p && (p.k || p.key || p.secret)) || '';
+  if (got.length !== want.length) return false;
+  var diff = 0;                              // constant-time-ish compare
+  for (var i = 0; i < want.length; i++) diff |= (got.charCodeAt(i) ^ want.charCodeAt(i));
+  return diff === 0;
+}
+
 function doGet(e) {
   var p = (e && e.parameter) || {};
+  if (!SL_authOk(p)) return SL_json({ error: 'Not authorised.' });
   var raw = p.id || p.deck || p.url || '';
   var id = SL_extractDeckId(raw);
   if (!id) return SL_json({ error: 'Pass ?id=<deck id or Slides URL>' });

@@ -53,10 +53,20 @@ const SB_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!SB_KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY'); process.exit(1); }
 const sb = createClient(SB_URL, SB_KEY, { auth: { persistSession: false } });
 
-/* The already-deployed Slides reader (same URL tools/presentation.html uses).
-   Overridable so a re-deploy needs one secret, not a code change. */
-const EXEC = process.env.SLIDES_IMPORT_URL
-  || 'https://script.google.com/macros/s/AKfycbyjeUsbQJer49awXWAX7DTNVWMEElL1nC6KexOrNlDOe18_RpmyF-_iPP7RI0cEGeE/exec';
+/* The Slides reader. This runs server-side (GitHub Actions), so unlike the
+   browser it CAN hold the shared secret and call the Apps Script directly —
+   no Edge Function hop needed.
+
+   BOTH values come from secrets, with NO hard-coded fallback on purpose: this
+   repo is public, and the endpoint URL sitting in it is half of what made the
+   reader world-readable in the first place. GitHub Actions gets them from repo
+   secrets; locally they come from .env (gitignored). */
+const EXEC   = process.env.SLIDES_IMPORT_URL || '';
+const SECRET = process.env.SLIDES_SHARED_SECRET || '';
+if (!EXEC) {
+  console.error('Missing SLIDES_IMPORT_URL (repo secret in CI, .env locally) — cannot reach the Slides reader.');
+  process.exit(1);
+}
 
 const sha = s => createHash('sha1').update(s).digest('hex').slice(0, 16);
 /* key-sorted stringify so an incidental key-order change can't read as an edit */
@@ -74,7 +84,8 @@ async function callScript(fileId, qs, tries = 3) {
   for (let i = 0; i < tries; i++) {
     if (i) await sleep(1500 * i);
     try {
-      const res = await fetch(EXEC + '?id=' + encodeURIComponent(fileId) + qs, { redirect: 'follow' });
+      const res = await fetch(EXEC + '?id=' + encodeURIComponent(fileId) + qs
+        + (SECRET ? '&k=' + encodeURIComponent(SECRET) : ''), { redirect: 'follow' });
       const txt = await res.text();
       let j = null; try { j = JSON.parse(txt); } catch {}
       if (!j) { lastErr = 'non-JSON response (HTTP ' + res.status + ')'; continue; }

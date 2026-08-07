@@ -5063,10 +5063,14 @@ function createNewDeck() {
    then we pull each image one-at-a-time via ?img=<n> and upload it to
    Storage — base64 bytes never travel in one giant blob.
 
-   SLIDES_IMPORT_URL must be the deployment's "/exec" Web app URL (Deploy →
-   Manage deployments), NOT the script.googleusercontent.com/echo URL the
-   browser redirects to — that one carries a request-scoped key and expires. */
-const SLIDES_IMPORT_URL = 'https://script.google.com/macros/s/AKfycbyjeUsbQJer49awXWAX7DTNVWMEElL1nC6KexOrNlDOe18_RpmyF-_iPP7RI0cEGeE/exec';
+   THE BROWSER NO LONGER CALLS GOOGLE DIRECTLY (2026-08-07). The Apps Script
+   /exec URL used to live right here, in a PUBLIC repo, in front of a web app
+   deployed "anyone can access" — so anyone who read the repo could pull the
+   full contents of every deck that account could see. A secret in this file
+   would be just as public, so the call now goes through the `slides-read`
+   Supabase Edge Function, which requires a signed-in staff JWT and is the only
+   thing that knows the endpoint and its secret. */
+const SLIDES_FN = 'slides-read';
 
 /* Auto-resync of snapshot decks on open is DISABLED (per request) — the manual
    "Sync slides" button still works. Flip this to true to re-enable the
@@ -5110,22 +5114,35 @@ function _slidesTextHtml(t) {
   return esc.replace(/\r\n|\r|\n/g, '<br>');
 }
 
-/* Fetch a structural or single-image payload from the reader web app.
-   Mirrors report-cache.fetchLive's abort/timeout shape; follows the Apps
-   Script 302 → googleusercontent transparently. */
+/* Fetch a structural or single-image payload from the reader, via the
+   `slides-read` Edge Function (see the SLIDES_FN note above — the browser must
+   not hold the endpoint or its secret).
+
+   Call sites still pass the old query-string shape ('id=…&mode=snapshot'), so
+   this parses it back into the JSON body the function expects and nothing
+   upstream had to change. supabase-js attaches the caller's JWT itself, which
+   is what the function authenticates on; invoke() can't be aborted, so the
+   timeout is a race that frees the UI rather than the request. */
 async function _slidesFetch(params, timeoutMs) {
-  if (!SLIDES_IMPORT_URL) throw new Error('Slides import URL not configured');
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs || 60000);
+  if (!window.sb || !window.sb.functions) throw new Error('Not signed in — cannot reach the Slides reader');
+  const q = new URLSearchParams(params);
+  const body = { id: q.get('id') || '' };
+  if (q.get('mode'))         body.mode  = q.get('mode');
+  if (q.get('thumb') !== null) body.thumb = q.get('thumb');
+  if (q.get('img')   !== null) body.img   = q.get('img');
+  if (q.get('inlineImages')) body.inlineImages = 1;
+
+  let timer;
+  const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('Slides reader timed out')), timeoutMs || 60000); });
   try {
-    const url = SLIDES_IMPORT_URL + (SLIDES_IMPORT_URL.indexOf('?') === -1 ? '?' : '&') + params;
-    const res = await fetch(url, { signal: ctrl.signal, redirect: 'follow' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const json = await res.json();
-    if (json && json.error) throw new Error(json.error);
+    const res = await Promise.race([window.sb.functions.invoke(SLIDES_FN, { body: body }), timeout]);
+    if (res && res.error) throw new Error(res.error.message || 'Slides reader unavailable');
+    const json = res && res.data;
+    if (!json) throw new Error('Empty response from the Slides reader');
+    if (json.error) throw new Error(json.error);
     return json;
   } finally {
-    clearTimeout(t);
+    clearTimeout(timer);
   }
 }
 
@@ -5135,8 +5152,8 @@ async function _slidesFetch(params, timeoutMs) {
    editable, but looks identical — the user layers editable text/charts on top.
    Reuses the image-overlay path (Storage upload + signed-URL refresh). */
 async function importGoogleSlidesSnapshot() {
-  if (!SLIDES_IMPORT_URL) {
-    alert('The Google Slides import endpoint is not set yet — paste the Apps Script /exec URL into SLIDES_IMPORT_URL in presentation.html.');
+  if (!window.sb || !window.sb.functions) {
+    alert('Sign-in required — the Google Slides reader is behind an authenticated Edge Function.');
     return;
   }
   const deckUrl = prompt('Paste the Google Slides URL (or deck id) to import as snapshot images:');
@@ -5223,7 +5240,7 @@ async function importGoogleSlidesSnapshot() {
 async function refreshSnapshotDeck(deck, opts) {
   opts = opts || {};
   const src = deck && deck.snapshotSource;
-  if (!src || !src.id || !SLIDES_IMPORT_URL) {
+  if (!src || !src.id) {
     if (opts.toast) showPresToast('This deck has no Google Slides source — re-import it to enable syncing.', { duration: 6000, warn: true });
     return;
   }
