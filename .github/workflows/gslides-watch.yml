@@ -1,0 +1,55 @@
+# =============================================================================
+# Google Slides change watch (migration 098).
+#
+# Runs scripts/gslides-watch.mjs: for every Google Slides file attached to a hub
+# slide (public.gslides_links), checks whether the Google deck changed and — when
+# it did — records which pages changed, so the hub can put a red mark on the hub
+# slide the link is attached to.
+#
+# Reads Google through the Apps Script web app tools/presentation.html already
+# uses, so this needs NO Google credential: the only secrets are the two Supabase
+# ones already configured.
+#
+# Cadence: twice a day. These decks change a few times a month at most, and the
+# cheap revisionId gate means an unchanged deck costs one ~2.5s call — but the
+# structural re-read after a real change costs ~5-9s per deck, so this is not a
+# job to run every five minutes.
+#
+# Secrets (already configured): SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
+# Optional secret SLIDES_IMPORT_URL overrides the Apps Script endpoint if it is
+# ever re-deployed (the default is the same URL hard-coded in presentation.html).
+# =============================================================================
+name: Google Slides watch
+
+on:
+  schedule:
+    - cron: '0 20 * * *'   # daily 20:00 UTC = 6:00 AM AEST (7:00 AM AEDT) — before the workday
+    - cron: '0 3 * * *'    # daily 03:00 UTC = 1:00 PM AEST (2:00 PM AEDT) — mid-afternoon catch
+  workflow_dispatch:        # manual run from the Actions tab (after a known Google edit)
+
+concurrency:
+  group: gslides-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SLIDES_IMPORT_URL:         ${{ secrets.SLIDES_IMPORT_URL }}
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install deps
+        run: npm install --no-audit --no-fund
+      - name: Check linked Google Slides decks
+        run: node scripts/gslides-watch.mjs --write
