@@ -11,9 +11,10 @@
    returns the stamp to a value the user already acknowledged and the mark
    disappears on its own — no stuck dots.
 
-   A link may target ONE Google page (url carried #slide=id.<objectId>) or the
-   whole deck. A page-targeted link only lights up when THAT page changes, which
-   is what makes a per-hub-slide mark meaningful.
+   A link watches the WHOLE Google deck. The hub slide it hangs off is just
+   where the red dot lands — there is no content connection between the two, by
+   design: Van does the comparing. The report answers only "did it change, when,
+   and which pages".
 
      PP_GSW.parse(url)                     -> { fileId, pageId } | null
      await PP_GSW.load(scope, deckKey)     -> { links, files, seen }
@@ -52,53 +53,29 @@
       + (pageId ? '#slide=id.' + pageId : '');
   }
 
-  /* The stamp this link is watching: one page's fingerprint, or the whole deck's.
-     A page that has vanished from the Google deck gets its own stamp so the loss
-     is reported once and can then be acknowledged. */
+  /* A link watches the WHOLE Google deck — its fingerprint is the deck's.
+     Deliberately not per-page: the hub slide and the Google deck are not wired
+     together, so there is nothing to scope a watch to. Van does the comparing;
+     this only answers "did it move, when, and which pages". */
   function stampFor(link, file) {
-    if (!file) return null;
-    if (link.page_id) {
-      var h = (file.page_hashes || {})[link.page_id];
-      return h ? h : 'gone:' + link.page_id;
-    }
-    return file.content_stamp || null;
+    return (file && file.content_stamp) || null;
   }
 
   function isFlagged(link, state) {
     if (!link || !state) return false;
     var file = state.files[link.file_id];
-    if (!file) return false;                       // never polled yet — say nothing
+    if (!file) return false;                  // never polled yet — say nothing
+    if (!file.last_changed_at) return false;  // seeded, nothing has moved since
     var stamp = stampFor(link, file);
     if (!stamp) return false;
-    var seen = state.seen[link.id];
-    /* the page this link points at is gone from the Google deck — report once */
-    if (stamp.indexOf('gone:') === 0) return seen !== stamp;
-    if (!file.last_changed_at) return false;       // seeded, never changed since
-    if (!link.page_id) return seen !== stamp;      // whole-deck link: any change counts
-
-    /* PAGE-SCOPED link. "Never acknowledged" is not evidence that THIS page
-       moved — without this guard every page-scoped link on a deck lights up
-       the moment any single page changes. So on a first sighting we trust the
-       monitor's own changed_pages list; once the user HAS acknowledged a
-       version of this page, a differing hash is proof enough on its own. */
-    if (seen === undefined) {
-      return (file.changed_pages || []).some(function (c) { return c.objectId === link.page_id; });
-    }
-    return seen !== stamp;
+    return state.seen[link.id] !== stamp;
   }
 
+  /* Every page the monitor saw move in the latest change, newest list wins. */
   function changesFor(link, state) {
     var file = state && state.files[link.file_id];
     if (!file) return [];
-    var all = (file.changed_pages || []).slice();
-    if (link.page_id) {
-      var mine = all.filter(function (c) { return c.objectId === link.page_id; });
-      if (!mine.length && !(file.page_hashes || {})[link.page_id]) {
-        mine = [{ objectId: link.page_id, index: 0, title: '', kind: 'removed' }];
-      }
-      all = mine;
-    }
-    return all.map(function (c) {
+    return (file.changed_pages || []).map(function (c) {
       return { index: c.index, title: c.title || '', kind: c.kind,
                objectId: c.objectId, url: pageUrl(link.file_id, c.objectId) };
     });
@@ -154,18 +131,17 @@
     return n;
   }
 
-  /* cfg.ignorePage — treat the url's #slide= fragment as INCIDENTAL and watch the
-     whole deck. A library card's url often carries whatever slide the author had
-     open when they copied it; honouring that would scope the card to page 1 and
-     it would then stay silent while pages 3 and 7 changed. A hand-attached
-     per-slide link is the opposite: there the fragment is the whole point. */
+  /* page_id is always null: a link watches the whole Google deck. Pasted urls
+     routinely carry a leftover #slide=id.… fragment from wherever they were
+     copied, and honouring that would silently narrow the watch to one page and
+     stay quiet while every other page changed. */
   async function attach(cfg) {
     var p = parse(cfg.url);
     if (!p) throw new Error('That does not look like a Google Slides link.');
     var u = await sb().auth.getUser();
     var row = {
       scope: cfg.scope, deck_key: String(cfg.deckKey), slide_key: String(cfg.slideKey || ''),
-      file_id: p.fileId, page_id: cfg.ignorePage ? null : p.pageId, source_url: String(cfg.url).trim(),
+      file_id: p.fileId, page_id: null, source_url: String(cfg.url).trim(),
       label: cfg.label || null,
       created_by: (u && u.data && u.data.user && u.data.user.id) || null,
     };

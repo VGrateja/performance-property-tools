@@ -3274,7 +3274,7 @@
      a hub slide can wear a red mark when its Google source page changes. The
      module swallows its own errors and hands back an empty state, so the deck
      still opens if the migration hasn't been applied on this database. -->
-<script src="../shared/gslides-watch.js?v=f37b1fa8"></script>
+<script src="../shared/gslides-watch.js?v=56a9d95d"></script>
 
 <!-- Top chrome — back, decks, presentation-mode. -->
 <!-- Floating chrome — Hub (top:16 left:16), Decks (top:16 left:160,
@@ -5587,27 +5587,16 @@ function _gswChangeText(c) {
        + (c.title ? ' — ' + c.title : '');
 }
 
-/* slide index -> hover text, for every slide the watch has something to say
-   about. Two independent routes into the same mark:
-     · the DECK link — its changed pages matched to slide.srcPageId (no manual
-       attaching needed on snapshot decks);
-     · a MANUAL per-slide link — flagged on its own terms. */
+/* slide index -> hover text, for slides that carry their OWN attached link.
+   Deliberately NOT derived from the deck link + slide.srcPageId: the hub slide
+   and the Google page are not wired together (Van 2026-08-07 — "there won't be
+   any connection to the hub slide because I will manually do the checking"),
+   and auto-dotting slides nobody attached anything to is exactly the confusion
+   that rule avoids. A slide is marked only if a link was put on it. */
 function _gswSlideMarks() {
   const marks = {};
   if (!window.PP_GSW || !_gswState || !_activeDeck) return marks;
   const slides = _activeDeck.slides || [];
-  const deckLink = _gswDeckLink(_gswState);
-  if (deckLink && PP_GSW.isFlagged(deckLink, _gswState)) {
-    const when = PP_GSW.whenText(PP_GSW.changedAt(deckLink, _gswState));
-    PP_GSW.changesFor(deckLink, _gswState).forEach(c => {
-      slides.forEach((sl, i) => {
-        if (sl && sl.srcPageId && sl.srcPageId === c.objectId) {
-          marks[i] = _gswChangeText(c) + (when ? ' — ' + when : '');
-        }
-      });
-    });
-  }
-  /* A manual link wins the tooltip — the editor attached it on purpose. */
   slides.forEach((sl, i) => {
     const link = _gswSlideLink(_gswState, sl && sl.gswKey);
     if (!link || !PP_GSW.isFlagged(link, _gswState)) return;
@@ -5777,11 +5766,8 @@ function _gswSyncWatchBtn(deck) {
     : 'Link this deck to its Google Slides copy so changes there get flagged here';
 }
 
-/* One click: register this deck's Google source with the monitor.
-   snapshotSource.id is whatever the importer's prompt was given — a bare file
-   id or a full /edit url. Attach the PARSED file id, not the raw string: a
-   pasted url may still carry a #slide=id.… fragment, which would narrow the
-   DECK-wide link down to a single page. */
+/* Attach / change / remove the Google Slides link this deck is watched
+   against. An imported deck pre-fills its own snapshotSource. */
 async function _gswWatchDeckSource() {
   if (!window.PP_GSW || !_activeDeck) return;
   const src    = _activeDeck.snapshotSource && _activeDeck.snapshotSource.id;
@@ -5804,13 +5790,9 @@ async function _gswWatchDeckSource() {
       await PP_GSW.detach(existing.id);
       showPresToast('Stopped watching this deck.');
     } else {
-      /* ignorePage: a DECK link watches the whole deck. A pasted url often still
-         carries a #slide=id.… fragment from wherever it was copied, and honouring
-         it would silently narrow the watch to that one page. Per-slide watching
-         is the thumbnail right-click, where the fragment is meant. */
       await PP_GSW.attach({
         scope: GSW_SCOPE, deckKey: _gswDeckKey(_activeDeck), slideKey: '',
-        url: url, label: _activeDeck.title || null, ignorePage: true,
+        url: url, label: _activeDeck.title || null,
       });
       showPresToast('Watching that Google deck — this one gets marked when its pages change.', { duration: 5000 });
     }
@@ -5824,9 +5806,9 @@ async function _gswWatchDeckSource() {
 }
 
 /* Right-click → "Google Slides link…" on one thumbnail. Paste a link to
-   attach (a #slide=id.<objectId> fragment narrows the watch to THAT page,
-   which is what makes a per-slide mark meaningful); clear it to detach.
-   Writer-only in the UI; RLS is the real gate. */
+   attach, clear it to detach. The link watches the WHOLE Google deck — this
+   slide is just where the red dot lands, so you know which one to go and
+   compare by hand. Writer-only in the UI; RLS is the real gate. */
 async function promptGswSlideLink(idx) {
   if (!window.PP_GSW || !_activeDeck) return;
   const slide = (_activeDeck.slides || [])[idx];
@@ -5834,7 +5816,8 @@ async function promptGswSlideLink(idx) {
   const existing = _gswSlideLink(_gswState, slide.gswKey);
   const answer = prompt(
     'Google Slides link to watch for slide ' + (idx + 1) + '.\n' +
-    'Include the #slide=id.… fragment to watch just that page.\n' +
+    'Any change in that Google deck puts a red dot on this slide, with the\n' +
+    'date and the list of pages that moved.\n' +
     'Leave empty to stop watching this slide.',
     (existing && existing.source_url) || '');
   if (answer === null) return;
