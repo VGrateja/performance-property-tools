@@ -5760,12 +5760,21 @@ async function _gswMarkReviewed() {
 }
 
 /* ─── Watch registration (writer only) ─── */
+/* The button is offered on EVERY deck, not just ones imported from Google —
+   the decks people actually present from were built in the hub and have no
+   snapshotSource, and those are exactly the ones worth linking to their Google
+   copy. An imported deck pre-fills its own source; anything else is prompted
+   for. When a link already exists the button becomes the way to change or
+   remove it, so there is one obvious place to manage this per deck. */
 function _gswSyncWatchBtn(deck) {
   const btn = document.getElementById('pres-gsw-watch');
   if (!btn) return;
-  const hasSource = !!(deck && deck.snapshotSource && deck.snapshotSource.id);
-  const already   = !!_gswDeckLink(_gswState);
-  btn.style.display = (window.PP_GSW && hasSource && _iAmWriter && !already) ? '' : 'none';
+  const linked = !!_gswDeckLink(_gswState);
+  btn.style.display = (window.PP_GSW && _iAmWriter) ? '' : 'none';
+  btn.textContent = linked ? 'Google source ✓' : 'Watch source';
+  btn.title = linked
+    ? 'This deck is linked to a Google Slides copy — click to change or remove the link'
+    : 'Link this deck to its Google Slides copy so changes there get flagged here';
 }
 
 /* One click: register this deck's Google source with the monitor.
@@ -5776,22 +5785,41 @@ function _gswSyncWatchBtn(deck) {
 async function _gswWatchDeckSource() {
   if (!window.PP_GSW || !_activeDeck) return;
   const src    = _activeDeck.snapshotSource && _activeDeck.snapshotSource.id;
-  const parsed = src ? PP_GSW.parse(src) : null;
-  if (!parsed) {
-    showPresToast('This deck has no readable Google Slides source — re-import it to enable watching.', { duration: 6000, warn: true });
-    return;
-  }
+  const existing = _gswDeckLink(_gswState);
+  /* Prefill: the link already in place, else the deck's own import source, else
+     blank for a hub-built deck being pointed at its Google copy for the first
+     time. Clearing the box detaches. */
+  const answer = prompt(
+    'Google Slides link for "' + (_activeDeck.title || 'this deck') + '".\n\n'
+    + 'Paste the Google Slides URL of the copy to watch. Whenever a page changes\n'
+    + 'there, this deck gets a red mark and the changed pages are listed.\n\n'
+    + 'Leave empty to stop watching this deck.',
+    (existing && existing.source_url) || src || '');
+  if (answer === null) return;
+  const url = answer.trim();
+
   try {
-    await PP_GSW.attach({
-      scope: GSW_SCOPE, deckKey: _gswDeckKey(_activeDeck), slideKey: '',
-      url: parsed.fileId, label: _activeDeck.title || null,
-    });
+    if (!url) {
+      if (!existing) return;
+      await PP_GSW.detach(existing.id);
+      showPresToast('Stopped watching this deck.');
+    } else {
+      /* ignorePage: a DECK link watches the whole deck. A pasted url often still
+         carries a #slide=id.… fragment from wherever it was copied, and honouring
+         it would silently narrow the watch to that one page. Per-slide watching
+         is the thumbnail right-click, where the fragment is meant. */
+      await PP_GSW.attach({
+        scope: GSW_SCOPE, deckKey: _gswDeckKey(_activeDeck), slideKey: '',
+        url: url, label: _activeDeck.title || null, ignorePage: true,
+      });
+      showPresToast('Watching that Google deck — this one gets marked when its pages change.', { duration: 5000 });
+    }
     _gswState = await PP_GSW.load(GSW_SCOPE, _gswDeckKey(_activeDeck));
     _gswSyncWatchBtn(_activeDeck);
     _gswPaintThumbs();
-    showPresToast('Watching the Google source — this deck will be marked when its pages change.', { duration: 5000 });
+    _gswRenderPanel();
   } catch (e) {
-    showPresToast('Could not start watching: ' + ((e && e.message) || 'write refused'), { duration: 7000, warn: true });
+    showPresToast('Could not save the link: ' + ((e && e.message) || 'write refused'), { duration: 7000, warn: true });
   }
 }
 
