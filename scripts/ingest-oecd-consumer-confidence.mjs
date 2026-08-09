@@ -28,34 +28,87 @@ try { if (existsSync('.env')) for (const ln of readFileSync('.env', 'utf8').spli
 const WRITE = process.argv.includes('--write');
 const SRC = 'https://sdmx.oecd.org/public/rest/data/OECD.SDD.STES,DSD_STES@DF_CLI,4.1/AUS.M.CCICP...AA...H?format=jsondata';
 
-/* OECD's SDMX API is intermittently flaky server-side: one backend in their
-   rotation answers HTTP 500 "languageTag1" while the others are fine — the
-   IDENTICAL request succeeds seconds later (reproduced 2026-08-10; it failed
-   the 2026-08 monthly gather this way). Retry a few times with backoff so a
-   single bad backend doesn't redden the whole GATHER run. */
-let text = '', lastErr = '';
-for (let attempt = 1; attempt <= 4; attempt++) {
-  if (attempt > 1) { console.log(`  OECD retry ${attempt}/4 (${lastErr})…`); await new Promise(res => setTimeout(res, 5000 * (attempt - 1))); }
+/* OECD's SDMX API fails in ways that are REGION-DEPENDENT: during the 2026-08
+   gather, GitHub's US runners got HTTP 500 "languageTag1" on every attempt
+   (6+ consecutive over two runs, retries included) while the identical request
+   from Australia returned 200 — their US edge/backend was broken, ours wasn't.
+   So retrying alone can't save a CI run. Three layers instead:
+     1. SDMX-JSON, 4 attempts with >4s backoff (Node closes idle keep-alive
+        sockets after ~4s, so each retry opens a fresh connection);
+     2. the CSV endpoint (?format=csvfilewithlabels) — a different serializer,
+        which a broken JSON writer may not take down;
+     3. if OECD is fully unreachable but the DB's newest CCI row is recent
+        (≤75 days — it's a MONTHLY national series that OECD publishes ~6
+        weeks in arrears), SKIP with exit 0 so one upstream outage doesn't
+        redden the whole GATHER. A genuinely stale series still fails hard. */
+let lastErr = '';
+async function fetchAttempt(url, accept) {
   try {
-    const r = await fetch(SRC, { headers: { Accept: 'application/vnd.sdmx.data+json' } });
+    const r = await fetch(url, accept ? { headers: { Accept: accept } } : undefined);
     const t = await r.text();
-    if (t.trim().startsWith('{')) { text = t; break; }
+    if (r.ok) return t;
     lastErr = `OECD ${r.status}: ${t.slice(0, 100)}`;
   } catch (e) { lastErr = String(e && e.message || e).slice(0, 100); }
+  return null;
 }
-if (!text) { console.error(`OECD unreachable after 4 attempts — last: ${lastErr}`); process.exit(1); }
-const j = JSON.parse(text);
+function parseJsonObs(text) {
+  try {
+    const j = JSON.parse(text);
+    const struct = (j.data.structures || [j.data.structure])[0];
+    const timeDim = struct.dimensions.observation[0];
+    const series = Object.values(j.data.dataSets[0].series || {})[0];
+    if (!series) { lastErr = 'no series for AUS in JSON — dataflow moved past 4.1?'; return null; }
+    return Object.entries(series.observations).map(([i, v]) => [timeDim.values[+i].id, Number(v[0])]);
+  } catch (e) { lastErr = 'JSON parse: ' + String(e && e.message || e).slice(0, 80); return null; }
+}
+function parseCsvObs(text) {
+  try {
+    const rows = text.split(/\r?\n/).filter(Boolean);
+    const split = ln => (ln.match(/("([^"]|"")*"|[^,]*)(,|$)/g) || []).map(c => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"'));
+    const head = split(rows[0]);
+    const iT = head.indexOf('TIME_PERIOD'), iV = head.indexOf('OBS_VALUE');
+    if (iT < 0 || iV < 0) { lastErr = 'CSV missing TIME_PERIOD/OBS_VALUE columns'; return null; }
+    return rows.slice(1).map(split).map(c => [c[iT], Number(c[iV])]);
+  } catch (e) { lastErr = 'CSV parse: ' + String(e && e.message || e).slice(0, 80); return null; }
+}
 
-const struct = (j.data.structures || [j.data.structure])[0];
-const timeDim = struct.dimensions.observation[0];
-const series = Object.values(j.data.dataSets[0].series || {})[0];
-if (!series) { console.error('OECD returned no series for AUS — has the dataflow version moved past 4.1?'); process.exit(1); }
+let raw = null;
+for (let attempt = 1; attempt <= 4 && !raw; attempt++) {
+  if (attempt > 1) { console.log(`  OECD retry ${attempt}/4 (${lastErr})…`); await new Promise(res => setTimeout(res, 5000 * (attempt - 1))); }
+  const t = await fetchAttempt(SRC, 'application/vnd.sdmx.data+json');
+  if (t) raw = parseJsonObs(t);
+}
+if (!raw) {
+  console.log(`  JSON endpoint down (${lastErr}) — trying the CSV endpoint…`);
+  const t = await fetchAttempt(SRC.replace('format=jsondata', 'format=csvfilewithlabels'), null);
+  if (t) raw = parseCsvObs(t);
+}
 
-const obs = Object.entries(series.observations)
-  .map(([i, v]) => [timeDim.values[+i].id, Number(v[0])])
+let skipped = false;
+if (!raw) {
+  /* both formats down — skip gracefully if the stored series is still fresh */
+  const KEY0 = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (KEY0) {
+    const sb0 = createClient(process.env.SUPABASE_URL || 'https://cannojsxduvlewimwoxa.supabase.co', KEY0, { auth: { persistSession: false } });
+    const { data: newest } = await sb0.from('rdp_raw_series').select('period')
+      .eq('source', 'oecd').eq('metric', 'consumer_confidence').eq('region_slug', 'australia')
+      .order('period', { ascending: false }).limit(1).maybeSingle();
+    const ageDays = newest ? (Date.now() - new Date(newest.period).getTime()) / 86400000 : Infinity;
+    if (ageDays <= 75) {
+      console.log(`OECD unreachable (${lastErr}), but the stored CCI series is current `
+        + `(latest ${String(newest.period).slice(0, 7)}, ${Math.round(ageDays)} days old — it publishes ~6 weeks in arrears).`);
+      console.log('SKIPPING this month rather than failing the gather. It will catch up next run.');
+      skipped = true;
+    }
+  }
+  if (!skipped) { console.error(`OECD unreachable after JSON retries + CSV fallback — last: ${lastErr}`); process.exitCode = 1; }
+}
+
+const obs = skipped || !raw ? [] : raw
   .filter(([ym, v]) => /^\d{4}-\d{2}$/.test(ym) && isFinite(v))
   .sort((a, b) => a[0].localeCompare(b[0]));
 
+if (obs.length) {
 const out = obs.map(([ym, v]) => ({
   source: 'oecd', region_slug: 'australia', metric: 'consumer_confidence',
   freq: 'M', period: ym + '-01', value: Math.round(v * 1000) / 1000,
@@ -100,4 +153,5 @@ if (!WRITE) {
       console.log('\n✓ Upserted ' + out.length + ' consumer-confidence rows.');
     }
   }
+}
 }
