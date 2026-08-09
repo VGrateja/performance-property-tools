@@ -28,9 +28,22 @@ try { if (existsSync('.env')) for (const ln of readFileSync('.env', 'utf8').spli
 const WRITE = process.argv.includes('--write');
 const SRC = 'https://sdmx.oecd.org/public/rest/data/OECD.SDD.STES,DSD_STES@DF_CLI,4.1/AUS.M.CCICP...AA...H?format=jsondata';
 
-const r = await fetch(SRC, { headers: { Accept: 'application/vnd.sdmx.data+json' } });
-const text = await r.text();
-if (!text.trim().startsWith('{')) { console.error(`OECD ${r.status}: ${text.slice(0, 160)}`); process.exit(1); }
+/* OECD's SDMX API is intermittently flaky server-side: one backend in their
+   rotation answers HTTP 500 "languageTag1" while the others are fine — the
+   IDENTICAL request succeeds seconds later (reproduced 2026-08-10; it failed
+   the 2026-08 monthly gather this way). Retry a few times with backoff so a
+   single bad backend doesn't redden the whole GATHER run. */
+let text = '', lastErr = '';
+for (let attempt = 1; attempt <= 4; attempt++) {
+  if (attempt > 1) { console.log(`  OECD retry ${attempt}/4 (${lastErr})…`); await new Promise(res => setTimeout(res, 5000 * (attempt - 1))); }
+  try {
+    const r = await fetch(SRC, { headers: { Accept: 'application/vnd.sdmx.data+json' } });
+    const t = await r.text();
+    if (t.trim().startsWith('{')) { text = t; break; }
+    lastErr = `OECD ${r.status}: ${t.slice(0, 100)}`;
+  } catch (e) { lastErr = String(e && e.message || e).slice(0, 100); }
+}
+if (!text) { console.error(`OECD unreachable after 4 attempts — last: ${lastErr}`); process.exit(1); }
 const j = JSON.parse(text);
 
 const struct = (j.data.structures || [j.data.structure])[0];
