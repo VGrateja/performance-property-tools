@@ -2263,29 +2263,54 @@ function parseArrearsSheet(wb){
   const names = wb.SheetNames.slice().sort((a, b) => (/arrears/i.test(b) ? 1 : 0) - (/arrears/i.test(a) ? 1 : 0));   // prefer an "Arrears" sheet
   for (const sn of names){
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, blankrows: false });
-    if (rows.length < 12) continue;
+    if (rows.length < 2) continue;   /* was <12 — small top-up files (a few new months) are legitimate now that imports MERGE */
     let hi = rows.findIndex(r => (r || []).some(c => /^national$/i.test(String(c || '').trim())));
     if (hi < 0) continue;
     const header = rows[hi] || [];
     let dateCol = header.findIndex(c => /date/i.test(String(c || ''))); if (dateCol < 0) dateCol = 0;
     const cols = []; for (let c = 0; c < header.length; c++){ if (c === dateCol) continue; const slug = arrearsSlug(header[c]); if (slug && !cols.some(x => x.slug === slug)) cols.push({ c, slug }); }
     if (!cols.some(x => x.slug === 'australia') || cols.length < 3) continue;
-    const months = []; const regions = {}; for (const col of cols) regions[col.slug] = { label: labelOf(col.slug), values: [] };
+    const months = []; const regions = {}; const rawRows = [];
+    for (const col of cols) regions[col.slug] = { label: labelOf(col.slug), values: [] };
     for (let r = hi + 1; r < rows.length; r++){
       const mo = arrSerialToMonth(rows[r][dateCol]); if (!mo) continue;
-      months.push(mo);
-      for (const col of cols){ const cell = rows[r][col.c]; const v = Number(cell); const bad = (cell == null || cell === '' || isNaN(v)); if (!bad) col.lastRaw = v; regions[col.slug].values.push(bad ? null : +(Math.abs(v) <= 1 ? v * 100 : v).toFixed(2)); }
+      months.push(mo); rawRows.push(rows[r]);
     }
-    if (months.length >= 6){
-      // Mixed-scale guard: the abs(v)<=1 → ×100 heuristic is PER CELL, so a sheet
-      // with some columns in percent (0.83) and others in decimal (0.0083) would
-      // silently mis-scale. Flag it when the columns' latest raw values straddle 1.
-      const lasts = cols.map(c => c.lastRaw).filter(v => v != null);
-      const mixed = lasts.some(v => Math.abs(v) <= 1) && lasts.some(v => Math.abs(v) > 1);
-      return { months, regions, mixed };
+    if (months.length >= 1){
+      /* Scale is decided PER SHEET, not per cell (the old per-cell "≤1 → ×100"
+         would turn a percent-form 0.75 into 75). Arrears run ~0.2–8 as
+         percent and ~0.002–0.08 as decimals — a sheet whose largest value is
+         under 0.15 can only be decimals → ×100; anything else is already %.
+         (Cowork handover 2026-08-10.) */
+      let maxAbs = 0;
+      for (const row of rawRows) for (const col of cols){ const v = Math.abs(Number(row[col.c])); if (isFinite(v) && v > maxAbs) maxAbs = v; }
+      const scale = (maxAbs > 0 && maxAbs < 0.15) ? 100 : 1;
+      for (const row of rawRows) for (const col of cols){
+        const cell = row[col.c]; const v = Number(cell); const bad = (cell == null || cell === '' || isNaN(v));
+        regions[col.slug].values.push(bad ? null : +(v * scale).toFixed(2));
+      }
+      return { months, regions, scaled: scale === 100 };
     }
   }
   return null;
+}
+/* Merge a parsed sheet into the EXISTING store (the guide always promised a
+   merge; until 2026-08-11 the import silently REPLACED the whole history —
+   a 3-month top-up file would have wiped 266 months. Cowork handover #1/#3.) */
+function mergeArrears(base, parsed){
+  if (!base || !Array.isArray(base.months) || !base.months.length) return parsed;
+  const out = JSON.parse(JSON.stringify(base));
+  for (const slug of Object.keys(parsed.regions)) if (!out.regions[slug]) out.regions[slug] = { label: labelOf(slug), values: out.months.map(() => null) };
+  parsed.months.forEach((mo, i) => {
+    let at = out.months.indexOf(mo);
+    if (at < 0){ out.months.push(mo); at = out.months.length - 1; for (const s of Object.keys(out.regions)) out.regions[s].values.push(null); }
+    for (const [slug, reg] of Object.entries(parsed.regions)){ const v = reg.values[i]; if (v != null) out.regions[slug].values[at] = v; }
+  });
+  /* keep chronological */
+  const order = out.months.map((m, i) => [m, i]).sort((a, b) => a[0] < b[0] ? -1 : 1).map(x => x[1]);
+  out.months = order.map(i => out.months[i]);
+  for (const reg of Object.values(out.regions)) reg.values = order.map(i => reg.values[i]);
+  return out;
 }
 async function importArrearsFiles(files){
   if (!_forgeGuard()) return;
@@ -2295,13 +2320,23 @@ async function importArrearsFiles(files){
   let parsed = null, used = '';
   for (const f of files){ try { const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' }); const p = parseArrearsSheet(wb); if (p){ parsed = p; used = f.name; break; } } catch (err){ /* try next */ } }
   if (!parsed){ msg.innerHTML = '<div class="df-banner warn">No Arrears sheet recognised — need a monthly date column plus a “National” column and the state columns.</div>'; return; }
-  // Mixed-scale warning (parse-time flag, display only — not persisted with the data).
-  const mixedWarn = parsed.mixed ? '<div class="df-banner warn">⚠️ Mixed value scales detected — some columns end ≤1 (decimal?) and others &gt;1 (percent?), so the per-cell ×100 normalisation may have mis-scaled a series. Check the source sheet.</div>' : '';
-  delete parsed.mixed;
-  await saveArrears(parsed);
+  delete parsed.scaled;
+  /* basis gate (Cowork handover #2): S&P publishes PRIME and ALL-LOANS as
+     parallel series — merging the wrong one splices datasets invisibly
+     (exactly what happened mid-2025). The store carries its basis; make the
+     uploader confirm every drop matches it. */
+  let base = null;
+  try { const { data } = await window.sb.from('forge_arrears').select('data').eq('id', 'latest').maybeSingle(); base = data && data.data; } catch {}
+  if (base && base.source_series){
+    const okGo = confirm('This store is on the basis:\n\n  ' + base.source_series + '\n\nConfirm the file you are dropping is the SAME series (not all-loans/non-conforming). S&P publishes several parallel sheets with different values for the same months.');
+    if (!okGo){ msg.innerHTML = '<div class="df-banner warn">Import cancelled — basis not confirmed.</div>'; return; }
+  }
+  const merged = mergeArrears(base, parsed);
+  if (base){ merged.source_publication = base.source_publication; merged.source_series = base.source_series; merged.basis = base.basis; merged.basis_note = base.basis_note; }
+  await saveArrears(merged);
   const nm = parsed.months.length;
-  msg.innerHTML = mixedWarn + '<div class="df-banner ok">Saved · ' + Object.keys(parsed.regions).length + ' series × ' + nm + ' months (' + monthLabelArr(parsed.months[0]) + ' → ' + monthLabelArr(parsed.months[nm - 1]) + ') from <b>' + esc(used) + '</b>.</div>';
-  renderArrears(parsed, { uploaded_at: new Date().toISOString() });
+  msg.innerHTML = '<div class="df-banner ok">Merged · ' + Object.keys(parsed.regions).length + ' series × ' + nm + ' month' + (nm === 1 ? '' : 's') + ' (' + monthLabelArr(parsed.months[0]) + ' → ' + monthLabelArr(parsed.months[nm - 1]) + ') from <b>' + esc(used) + '</b> — store now ' + merged.months.length + ' months.</div>';
+  renderArrears(merged, { uploaded_at: new Date().toISOString() });
 }
 async function saveArrears(data){
   try { let email = null; try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; email = p && p.email; } catch {}
@@ -2354,8 +2389,15 @@ function renderArrears(data, meta){
     + dfStat('Months', String(months.length))
     + dfStat('Latest', '<span class="sm">' + esc(monthLabelArr(months[li])) + '</span>')
     + dfStat('National now', lastNat != null ? lastNat.toFixed(2) + '%' : '—')
-    + dfStat('Source', '<span class="sm">S&P SPIN</span><div class="df-stat-foot">' + ingestChip('manual') + '</div>')
-    + '</div></div>';
+    + dfStat('Source', '<span class="sm">' + esc(data.basis ? 'S&P SPIN · ' + data.basis.toUpperCase() : 'S&P SPIN') + '</span><div class="df-stat-foot">' + ingestChip('manual') + '</div>')
+    + '</div></div>'
+    /* provenance (Cowork handover #2) — the exact publication + sheet this
+       series comes from, machine-recorded so a wrong-basis upload can't
+       splice datasets silently again */
+    + (data.source_series
+        ? '<div class="df-note" style="margin:10px 0 0"><b>Series basis:</b> ' + esc(data.source_series) + ' · <b>Publication:</b> ' + esc(data.source_publication || '—') + '</div>'
+        : '')
+    + (data.basis_note ? '<div class="df-banner warn" style="margin-top:8px">' + esc(data.basis_note) + '</div>' : '');
   const opts = regions.map(s => '<option value="' + esc(s) + '"' + (s === ARR_SEL ? ' selected' : '') + '>' + esc(labelOf(s)) + '</option>').join('');
   out.innerHTML = hero
     + '<div class="df-card df-tablecard">'
