@@ -1719,11 +1719,13 @@ document.addEventListener('click', function (ev) {
   .hub-page-transition {
     position: fixed;
     inset: 0;
+    /* deeper dim INSTEAD of a full-viewport backdrop blur — the blur ramp
+       landed at exactly click time, the worst moment on a weak GPU (Van's
+       meeting-lag report, 2026-08-10); the tools' boot overlays made the
+       same trade so the visual handoff stays consistent */
     background: radial-gradient(ellipse at center,
-        rgba(15, 25, 34, 0.40) 0%,
-        rgba(8, 16, 24, 0.92) 100%);
-    backdrop-filter: blur(calc(14px * var(--pp-glass-scale, 1))) saturate(120%);
-    -webkit-backdrop-filter: blur(calc(14px * var(--pp-glass-scale, 1))) saturate(120%);
+        rgba(10, 18, 26, 0.62) 0%,
+        rgba(6, 12, 18, 0.94) 100%);
     z-index: 99999;
     opacity: 0;
     pointer-events: none;
@@ -3962,10 +3964,40 @@ function navigateToTool(url, label) {
   if (lab && label) lab.textContent = 'Loading ' + label;
   if (!overlay) { location.href = url; return; }
   overlay.classList.add('active');
-  /* Match the CSS opacity transition (0.35 s) before navigating so
-     the hub fully blurs out before the page tear-down. */
-  setTimeout(() => { location.href = url; }, 350);
+  /* One painted frame of feedback, then GO — the fade keeps playing while
+     the browser fetches the next page anyway, so the old serialized wait
+     (fade fully in for 350ms, THEN start navigating) was a third of a
+     second of pure added lag on EVERY tool open (Van's meeting-lag
+     report, 2026-08-10). */
+  requestAnimationFrame(() => requestAnimationFrame(() => { location.href = url; }));
 }
+
+/* Warm the HTTP cache for the tools most opened live in a meeting. rel=prefetch
+   downloads WITHOUT executing (auth/telemetry untouched) at idle priority, and
+   is skipped when the user asked to save data. GitHub Pages serves these with
+   max-age=600, so a hub opened at the start of a meeting makes every tool
+   click in the next ~10 minutes a disk-cache hit instead of a network fetch. */
+(function prefetchPresentSet() {
+  try {
+    if (navigator.connection && navigator.connection.saveData) return;
+    var URLS = ['tools/property-clock.html', 'tools/online-reports.html',
+      'tools/runway-demand.html', 'tools/market-compare.html',
+      'tools/buying-selling-slides.html', 'tools/presentation.html',
+      'tools/whitepapers-strategies.html'];
+    var go = function () {
+      URLS.forEach(function (u) {
+        var l = document.createElement('link');
+        l.rel = 'prefetch'; l.href = u;
+        document.head.appendChild(l);
+      });
+    };
+    if (document.readyState === 'complete') { setTimeout(go, 2500); }
+    else window.addEventListener('load', function () {
+      if ('requestIdleCallback' in window) requestIdleCallback(go, { timeout: 8000 });
+      else setTimeout(go, 4000);
+    });
+  } catch (e) { /* prefetch is best-effort only */ }
+})();
 
 </script>
 
@@ -4560,7 +4592,7 @@ function navigateToTool(url, label) {
   .hub-cmd-group{color:var(--mut)} html[data-shade="light"] .hub-cmd-group{color:var(--mut)}
   .hub-cmd-sub{color:var(--mut)}   html[data-shade="light"] .hub-cmd-sub{color:var(--mut)}
   .hub-cmd-type{color:var(--mut);border-color:var(--brd)} html[data-shade="light"] .hub-cmd-type{color:var(--mut);border-color:var(--brd)}
-  .hub-page-transition{background:var(--scrim);backdrop-filter:blur(calc(14px * var(--pp-glass-scale, 1))) saturate(1.2)}
+  .hub-page-transition{background:var(--scrim)}   /* NO full-viewport backdrop blur — the blur ramp landed at exactly click time, the worst moment on a weak GPU (Van's meeting-lag report, 2026-08-10); the scrim alone carries the dim, matching the tools' boot overlays */
   .hub-page-transition .htp-card{background:var(--win);border:1px solid var(--win-brd);color:var(--tx);font-family:var(--ui);backdrop-filter:blur(calc(30px * var(--pp-glass-scale, 1))) saturate(1.5)}
   .hub-page-transition .htp-label{color:var(--tx)}
   .hub-page-transition .htp-sub{color:var(--mut)}
