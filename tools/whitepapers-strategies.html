@@ -548,6 +548,11 @@
   /* Square card — view mode. Slightly taller than wide so the dual
      button row at the bottom of a strategy card fits without
      crowding the title. */
+  /* Strategy squares carry a third action row (Document/Slides · Copy · Pin) —
+     the fixed square proportion strangled their two-line titles, so they size
+     to content instead (all strategy cards share the same structure, so the
+     grid row still reads uniform). */
+  .ws-square-card:has(.ws-square-actions){ aspect-ratio:auto; }
   .ws-square-card{
     aspect-ratio:1 / 1.15;
     position:relative;
@@ -657,15 +662,26 @@
     position:relative; z-index:1;
   }
   /* Whitepaper square-card footer — date on the left, Pin on the right. */
-  .ws-square-foot{ margin-top:auto; padding-top:8px; display:flex; align-items:flex-end; justify-content:space-between; gap:8px; position:relative; z-index:1; }
+  .ws-square-foot{ margin-top:auto; padding-top:8px; display:flex; align-items:flex-end; justify-content:space-between; gap:6px 8px; flex-wrap:wrap; position:relative; z-index:1; }
   .ws-square-foot .ws-square-card-date{ margin-top:0; padding-top:0; }
+  /* Copy + Pin travel as one right-aligned group so a tight card wraps them
+     BELOW the date instead of clipping Pin off the card edge. */
+  .ws-square-footbtns{ display:flex; gap:6px; margin-left:auto; }
   .ws-square-pin{ flex:0 0 auto; padding:5px 10px; border-radius:6px; font:inherit; font-size:11px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; background:rgba(255,185,71,0.14); border:1px solid rgba(255,185,71,0.40); color:var(--accent); cursor:pointer; white-space:nowrap; transition:background .12s, border-color .12s; }
   .ws-square-pin:hover{ background:rgba(255,185,71,0.26); border-color:rgba(255,185,71,0.65); }
   [data-theme="light"] .ws-square-pin{ border-color:rgba(255,185,71,0.45); }
+  /* Copy-link on the square cards (Van 2026-08-10) — same compact metrics as
+     the Pin button but neutral outline (matches the PDF Reports Copy link);
+     turns green once copied. */
+  .ws-square-copy{ flex:0 0 auto; padding:5px 10px; border-radius:6px; font:inherit; font-size:11px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; background:transparent; border:1px solid rgba(255,255,255,0.18); color:var(--fg-light); cursor:pointer; white-space:nowrap; transition:background .12s, border-color .12s, color .12s; }
+  .ws-square-copy:hover{ border-color:var(--accent); color:var(--accent); }
+  .ws-square-copy.copied{ border-color:#71B357; color:#71B357; }
+  [data-theme="light"] .ws-square-copy{ border-color:rgba(31,40,63,0.20); color:var(--fg-dark); }
+  [data-theme="light"] .ws-square-copy:hover{ border-color:var(--accent); color:var(--accent); }
   /* Strategy square card: two columns — each link (Document / Slides) with its Pin directly beneath. */
   .ws-strat-col{ flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; }
   .ws-square-actions .ws-strat-col .ws-action{ flex:0 0 auto; width:100%; }
-  .ws-strat-col .ws-square-pin{ align-self:stretch; box-sizing:border-box; max-width:100%; padding-left:6px; padding-right:6px; text-align:center; overflow:hidden; text-overflow:ellipsis; }
+  .ws-strat-col .ws-square-pin, .ws-strat-col .ws-square-copy{ align-self:stretch; box-sizing:border-box; max-width:100%; padding-left:6px; padding-right:6px; text-align:center; overflow:hidden; text-overflow:ellipsis; }
   /* Strategy bottom actions — Document + Slides side-by-side. */
   .ws-square-actions{
     display:flex; gap:6px; margin-top:10px;
@@ -2315,7 +2331,8 @@ function _copyFallback(text, cb) {
   } catch (_) {}
 }
 function _copyReportLink(url, btn) {
-  const restore = () => { btn.classList.remove('copied'); btn.textContent = 'Copy link'; };
+  if (!btn.dataset.orig) btn.dataset.orig = btn.textContent;   /* strategy cards label theirs "Copy slides" — restore whatever the button said */
+  const restore = () => { btn.classList.remove('copied'); btn.textContent = btn.dataset.orig; };
   const done = () => { btn.classList.add('copied'); btn.textContent = 'Copied'; clearTimeout(btn._t); btn._t = setTimeout(restore, 1500); };
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, () => _copyFallback(url, done));
@@ -2342,6 +2359,18 @@ function _addPinBtn(container, url, label, cls, btnText) {
         clearTimeout(b._t); b._t = setTimeout(function () { b.textContent = txt; }, 1500);
       } catch (er) {}
     });
+    container.appendChild(b);
+  } catch (e) {}
+}
+
+/* ── "Copy link": same treatment as the PDF Reports rows (Van 2026-08-10) —
+   copies the item's shareable URL without opening it. Sits beside Pin. ── */
+function _addCopyBtn(container, url, cls, label) {
+  try {
+    if (!container || !url) return;
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = cls || 'ws-square-copy'; b.title = 'Copy shareable link'; b.textContent = label || 'Copy';
+    b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, b); });
     container.appendChild(b);
   } catch (e) {}
 }
@@ -2395,6 +2424,19 @@ function _renderStrategyView(item) {
     '<h3 class="ws-card-title">' + _esc(item.title || 'Untitled') + '</h3>' +
     '<div class="ws-card-meta">' + (item.date ? 'Last upload ' + _esc(item.date) : 'Last upload —') + '</div>' +
     '<div class="ws-card-actions">' + docBtn + slidesBtn + '</div>';
+  /* Copy-link buttons (Van 2026-08-10) — same treatment as the whitepaper
+     cards + the PDF Reports rows: copy the shareable URL without opening it.
+     Strategies carry up to TWO links, so each gets its own labelled button. */
+  const acts = card.querySelector('.ws-card-actions');
+  const addCopy = (url, text, title) => {
+    if (!url) return;
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'ws-copy-link'; b.title = title; b.textContent = text;
+    b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, b); });
+    acts.appendChild(b);
+  };
+  addCopy(item.url, 'Copy link', 'Copy shareable Document link');
+  addCopy(item.slidesUrl, 'Copy slides', 'Copy shareable Slides link');
   return card;
 }
 
@@ -3080,8 +3122,9 @@ function _renderSquareItemView(item, kind) {
     const a = document.createElement('a');
     a.className = 'ws-square-card';
     a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-    a.innerHTML = statusHtml + iconHtml + titleHtml + '<div class="ws-square-foot">' + dateHtml + '</div>';
-    _addPinBtn(a.querySelector('.ws-square-foot'), item.url, item.title, 'ws-square-pin');
+    a.innerHTML = statusHtml + iconHtml + titleHtml + '<div class="ws-square-foot">' + dateHtml + '<div class="ws-square-footbtns"></div></div>';
+    _addCopyBtn(a.querySelector('.ws-square-footbtns'), item.url);
+    _addPinBtn(a.querySelector('.ws-square-footbtns'), item.url, item.title, 'ws-square-pin');
     return a;
   }
   const div = document.createElement('div');
@@ -3114,6 +3157,8 @@ function _renderSquareStrategyView(item) {
       '<div class="ws-strat-col" data-col="doc">' + docBtn + '</div>' +
       '<div class="ws-strat-col" data-col="slides">' + slidesBtn + '</div>' +
     '</div>';
+  _addCopyBtn(card.querySelector('.ws-strat-col[data-col="doc"]'), item.url);
+  _addCopyBtn(card.querySelector('.ws-strat-col[data-col="slides"]'), item.slidesUrl);
   _addPinBtn(card.querySelector('.ws-strat-col[data-col="doc"]'), item.url, (item.title || '') + ' — Document', 'ws-square-pin', 'Pin');
   _addPinBtn(card.querySelector('.ws-strat-col[data-col="slides"]'), item.slidesUrl, (item.title || '') + ' — Slides', 'ws-square-pin', 'Pin');
   return card;
