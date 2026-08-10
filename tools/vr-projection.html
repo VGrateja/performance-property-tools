@@ -88,17 +88,6 @@
   .vpt .mig span{ display:block; font-size:.66rem; color:var(--muted); font-weight:700; font-variant-numeric:tabular-nums; margin-top:1px; }
   .vpt .mig span.neg, .vpt span.amber{ color:var(--amber); }
 
-  /* rent forecast */
-  .rentgrid{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-  @media (max-width:560px){ .rentgrid{ grid-template-columns:1fr; } }
-  .rentbox{ background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:15px 16px; }
-  .rentbox .rt{ font-size:.66rem; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; font-weight:700; }
-  .rentbox .flow{ display:flex; align-items:baseline; gap:10px; margin-top:8px; }
-  .rentbox .now{ font-size:1.5rem; font-weight:800; font-variant-numeric:tabular-nums; }
-  .rentbox .to{ color:var(--muted); font-size:1.1rem; }
-  .rentbox .fc{ font-size:1.5rem; font-weight:800; font-variant-numeric:tabular-nums; color:var(--cyan); }
-  .rentbox .sub{ font-size:.7rem; color:var(--muted); margin-top:6px; }
-
   /* overview */
   .ov{ margin-top:0; }
   .ovgrid{ display:grid; grid-template-columns:1fr 1fr; gap:1px 28px; }
@@ -157,13 +146,13 @@
   <div id="vrBody"><div class="msg" id="vrMsg">Loading…</div></div>
 
   <p class="note" id="vrNote" style="display:none">
-    <b>Method:</b> VR = surplus properties ÷ (occupied households + surplus). The forecast adds the region's expected new households over the year (population growth: natural increase + net interstate + net overseas migration ÷ household size) and incoming stock (approvals + dwelling commencements), then recomputes the vacancy rate. The 2-year forecast repeats this with a further year of supply/demand. Read it for the <i>direction</i> of supply vs demand rather than exact levels. Rent forecast = current rent + rent-slope × forecast VR change. Data from the VR Projections workbook → <code>rdp_vr_forecast</code>. Use the <b>VR source</b> toggle to anchor the projection on the <b>SQM</b> vacancy (default) or the <b>CoreLogic/Cotality</b> house vacancy — the demand and supply drivers are identical, so only the starting VR and everything downstream (forecast VR, surplus, rents) change.
+    <b>Method:</b> VR = surplus properties ÷ (occupied households + surplus). The forecast adds the region's expected new households over the year (population growth: natural increase + net interstate + net overseas migration ÷ household size) and incoming stock (approvals + dwelling commencements), then recomputes the vacancy rate. The 2-year forecast repeats this with a further year of supply/demand. Read it for the <i>direction</i> of supply vs demand rather than exact levels. Data from the VR Projections workbook → <code>rdp_vr_forecast</code>. Use the <b>VR source</b> toggle to anchor the projection on the <b>SQM</b> vacancy (default) or the <b>CoreLogic/Cotality</b> house vacancy — the demand and supply drivers are identical, so only the starting VR and everything downstream (forecast VR, surplus) change.
   </p>
 
   <div class="srcnote" id="vrSrcNote" style="display:none">
     <b>Data sources — to confirm</b>
     <span class="ok">✅ From Forge:</span> Population · Current VR — <b>SQM</b> (Demand Score Dashboard Data card, default) or <b>CoreLogic/Cotality</b> (Cotality card's Vacancy Rate export), switchable above · Incoming supply (OE Commencements by year → else Forge Building Approvals × 0.9).<br/>
-    <span class="wb">⚠️ Still from the workbook</span> — ask how each is gathered before wiring to Forge: household size · NB / IM / OM migration (natural increase · net interstate · net overseas) · 2-year forecast · house &amp; unit rents · owner-occupier %.
+    <span class="wb">⚠️ Still from the workbook</span> — ask how each is gathered before wiring to Forge: household size · NB / IM / OM migration (natural increase · net interstate · net overseas) · 2-year forecast · owner-occupier %.
   </div>
 </div>
 
@@ -177,7 +166,6 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pct2 = v => v == null ? '—' : (v * 100).toFixed(2) + '%';   // VR levels shown to 2dp
-const money = v => v == null ? '—' : '$' + Math.round(v).toLocaleString();
 const num = v => v == null ? '—' : Math.round(v).toLocaleString();
 const signed = v => v == null ? '—' : (v >= 0 ? '+' : '') + Math.round(v).toLocaleString();   // migration components carry a sign (IM often negative)
 const BALANCED = 0.03;   // ~3% vacancy = a balanced rental market
@@ -190,13 +178,14 @@ let cur = { slug: null };
 const cotSlug = s => String(s).replace(/\(.*?\)/g, '').split(',')[0].trim().toLowerCase()
   .replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').replace(/^greater-/, '');
 
-/* Two things vary by the selected source:
-   (1) VR trajectory — the mart is SQM-anchored; for Cotality we swap in the
-       CoreLogic house vacancy and recompute downstream. Demand/supply are
-       VR-independent, so only the VR and the property base move. Matches
-       VrForecastCalc: forecastVR = max(0.001, 1 − newHouseholds ÷ newProperties).
-   (2) Rent — SQM VR uses the live SQM rent, Cotality VR the live CoreLogic rent;
-       the 1-yr forecast is rent + workbook slope × that source's VR change. */
+/* What varies by the selected source: the VR trajectory — the mart is
+   SQM-anchored; for Cotality we swap in the CoreLogic house vacancy and
+   recompute downstream. Demand/supply are VR-independent, so only the VR and
+   the property base move. Matches VrForecastCalc: forecastVR =
+   max(0.001, 1 − newHouseholds ÷ newProperties).
+   (The rent forecast that used to hang off this — rent + workbook slope ×
+   VR change — was REMOVED 2026-08-10: Van considers the calc wrong and is
+   reworking it. The rent fields stay in the rdp_vr_forecast payload.) */
 function payloadFor(slug){
   const p = VR[slug];
   if (!p) return p;
@@ -215,11 +204,6 @@ function payloadFor(slug){
     const surplus = (p.surplus != null) ? p.surplus + dP : null;
     out = { ...p, currentVR: v, forecastVR: f1, forecastVR2: f2, properties: propNew, surplus, _src: 'cotality' };
   }
-  // Rent: the selected source's live rent; forecast = rent + slope × (forecastVR − currentVR).
-  const vrCh = (out.forecastVR != null && out.currentVR != null) ? (out.forecastVR - out.currentVR) : 0;
-  const rH = cot ? p.rentHouseCot : p.rentHouseSqm, rU = cot ? p.rentUnitCot : p.rentUnitSqm;
-  if (rH != null){ out.rentHouse = rH; out.rentHouseFc = (p.rentHouseSlope != null) ? rH + p.rentHouseSlope * vrCh : rH; }
-  if (rU != null){ out.rentUnit = rU; out.rentUnitFc = (p.rentUnitSlope != null) ? rU + p.rentUnitSlope * vrCh : rU; }
   return out;
 }
 
@@ -399,24 +383,9 @@ function paint(){
         </table></div>
       </div>
 
-      <div class="card">
-        <h2>Rent forecast — 1 year (from VR change)</h2>
-        <div class="rentgrid">
-          <div class="rentbox"><div class="rt">House rent (weekly)</div><div class="flow"><span class="now">${money(p.rentHouse)}</span><span class="to">→</span><span class="fc">${money(p.rentHouseFc)}</span></div><div class="sub">${rentDelta(p.rentHouse, p.rentHouseFc)}</div></div>
-          <div class="rentbox"><div class="rt">Unit rent (weekly)</div><div class="flow"><span class="now">${money(p.rentUnit)}</span><span class="to">→</span><span class="fc">${money(p.rentUnitFc)}</span></div><div class="sub">${rentDelta(p.rentUnit, p.rentUnitFc)}</div></div>
-        </div>
-      </div>
-
       <div class="card ov" id="vrOv"></div>
     </div>`;
   renderOverview();
-}
-
-function rentDelta(now, fc){
-  if (now == null || fc == null) return '&nbsp;';
-  const d = fc - now; const pct = now ? (d / now * 100) : 0;
-  const cls = d >= 0 ? 'down' : 'up';   // rising rent = tightening (green)
-  return `<span class="${cls}">${d >= 0 ? '+' : ''}${money(d).replace('$','$')} (${d >= 0 ? '+' : ''}${pct.toFixed(1)}%)</span> over the year`;
 }
 
 function renderOverview(){
