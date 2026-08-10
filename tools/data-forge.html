@@ -1304,7 +1304,7 @@ function renderDemandInputs() {
 function dsiListingsBody(ro, regions) {
   const month = DSI_DATA.month || dsiCurMonth();
   let h = '<div class="df-card"><div class="dsi-controls">'
-    + '<label>Month <input type="month" id="dsiMonth" value="' + esc(month) + '"' + (ro ? ' disabled' : '') + '></label>'
+    + '<label title="The month this capture is recorded AS. The grid always shows the LATEST saved values (one current snapshot); each save also writes these counts into the monthly history series under this month, so past months are preserved and chartable.">Capture month <input type="month" id="dsiMonth" value="' + esc(month) + '"' + (ro ? ' disabled' : '') + '></label>'
     + (ro ? '<span class="df-note">🔒 View only — adding data is restricted to dev / admin.</span>'
           : '<button class="df-btn" id="dsiSave">Save listings</button> <span id="dsiMsg" class="df-note" style="margin-top:0"></span>')
     + '</div>';
@@ -1403,6 +1403,18 @@ async function dsiMergeSave(edits, month) {
   const { error } = await window.sb.from('forge_demand_inputs').upsert(
     { id: 'latest', data: base, updated_at: nowIso, uploaded_at: nowIso, uploaded_by: email }, { onConflict: 'id' });
   if (error) throw error;
+  /* HISTORY (Van 2026-08-10, after the Cowork run proved the snapshot store
+     overwrites each capture): listing counts ALSO land in rdp_raw_series as
+     monthly rows keyed to the capture month — the same preserve-old-data
+     convention every ingest follows, so month-over-month listings are never
+     lost again. Listings only: rents/VR already have monthly upstreams (SQM).
+     Non-fatal — a history hiccup must not block the snapshot save. */
+  try {
+    const hist = edits
+      .filter(e => (e.f === 'listings_h' || e.f === 'listings_u') && e.val != null && isFinite(e.val))
+      .map(e => ({ source: 'rea', region_slug: e.slug, metric: e.f, freq: 'M', period: (month || base.month || dsiCurMonth()) + '-01', value: e.val }));
+    if (hist.length) await window.sb.from('rdp_raw_series').upsert(hist, { onConflict: 'source,region_slug,metric,freq,period' });
+  } catch (e2) { console.warn('listings history upsert failed (snapshot saved fine)', e2); }
   DSI_DATA = base;                                  // this tab now reflects the merged truth
   return nowIso;
 }
