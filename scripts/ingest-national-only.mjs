@@ -8,8 +8,8 @@
 //                          type 04, current price, Original, AUS) — public +
 //                          private, Q. (Matches the Data Dump basis; total &
 //                          building did not.)
-//   govtDebtGdp ......... IMF DataMapper GGXWDG_NGDP/AUS (gross general-govt
-//                          debt % of GDP) — annual
+//   govtDebtGdp ......... IMF DataMapper GGXWDN_G01_GDP_PT/AUS (NET general-govt
+//                          debt % of GDP, incl. IMF projections) — annual
 //   householdDebtIncome . RBA E2 series BHFDDIT (household debt to income %) — Q
 //   gdpByCountry ........ IMF DataMapper NGDPD + GGXWDG_NGDP — 20 countries,
 //                          latest reference year
@@ -96,14 +96,20 @@ try {
   const imf = async ind => { const j = await fetchJsonRetry(`https://www.imf.org/external/datamapper/api/v1/${ind}/${COUNTRIES.map(c => c[0]).join(',')}`, 'application/json'); return (j.values && j.values[ind]) || {}; };
   const gdpAll = await imf('NGDPD'), debtAll = await imf('GGXWDG_NGDP');
   {
-    // Govt debt-to-GDP = NET, to match the original report. IMF DataMapper has NO
-    // net series for AUS (GGXWDN_NGDP is empty) and the old report sourced net from
-    // the Data Dump — so this is a SEEDED series (like the Budget/Census ones below);
-    // update it when a new Data Dump lands. The by-country comparison (p28) stays on
-    // IMF gross (debtAll). Values are % of GDP.
-    const NET = { 1989:17,1990:16,1991:22,1992:28,1993:31,1994:33,1995:31,1996:29,1997:26,1998:24,1999:22,2000:19,2001:17,2002:15,2003:13,2004:12,2005:11,2006:10,2007:10,2008:12,2009:17,2010:21,2011:24,2012:28,2013:31,2014:34,2015:38,2016:38,2017:41,2018:42,2019:45,2020:34.5,2021:40.2,2022:38.8,2023:34.9,2024:35.8,2025:36.3,2026:36.5,2027:36.5 };
+    // Govt debt-to-GDP = NET general government, LIVE from the IMF DataMapper.
+    // (History: this was a hand-seeded series from the old Data Dump because the
+    // indicator code tried back then — GGXWDN_NGDP — returned nothing for AUS.
+    // The current DataMapper code GGXWDN_G01_GDP_PT carries full AUS coverage,
+    // 1990 → IMF projections, verified 2026-08-10. The old seed also couldn't be
+    // matched to ANY published measure and had an impossible 45→34.5 move into
+    // COVID-2020 — rebuilt on Van's call, 2026-08-10.) The by-country comparison
+    // (p28) stays on IMF gross (debtAll). Values are % of GDP, 1dp.
+    const netAll = await imf('GGXWDN_G01_GDP_PT');
+    const NET = netAll.AUS || {};
     const years = Object.keys(NET).sort();
-    data.govtDebtGdp = { years, values: years.map(y => NET[y]), unit: '% of GDP', note: 'net general-government debt (seeded from Data Dump / original report)' };
+    if (!years.length) throw new Error('IMF net-debt series empty for AUS — check indicator GGXWDN_G01_GDP_PT');
+    data.govtDebtGdp = { years, values: years.map(y => Math.round(NET[y] * 10) / 10), unit: '% of GDP',
+      note: 'IMF DataMapper GGXWDN_G01_GDP_PT — general government NET debt, % of GDP (incl. IMF projections); auto-refreshes with this ingest' };
   }
   {
     // reference year = latest ≤ current year present for Australia
