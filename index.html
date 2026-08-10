@@ -633,6 +633,14 @@
           <div class="rcm-count">9 markets</div>
           <p>Geelong, Ballarat, Bendigo, Mildura, Wodonga, Rockingham, Mandurah, Bunbury, Launceston</p>
         </button>
+        <!-- Other = CUSTOM deck variants (reports_state 'bss-custom-decks') —
+             filled + unhidden by openBsSlides() when the config has decks -->
+        <button class="rcm-tile" id="bssmOtherTile" onclick="bsShowRegions('other')" hidden>
+          <div class="rcm-icon">🗂️</div>
+          <h3>Other</h3>
+          <div class="rcm-count" id="bssmOtherCount"></div>
+          <p id="bssmOtherNames"></p>
+        </button>
       </div>
     </div>
 
@@ -3450,6 +3458,39 @@ function openBsSlides() {
   bsShowClusters();
   m.classList.add('show');
   m.setAttribute('aria-hidden', 'false');
+  /* the "Other" cluster (custom deck variants) appears once the config
+     resolves — same lazy pattern as the curated list */
+  _bssLoadCustomDecks().then(function (decks) {
+    const t = document.getElementById('bssmOtherTile');
+    if (!t) return;
+    if (!decks.length) { t.hidden = true; return; }
+    document.getElementById('bssmOtherCount').textContent = decks.length + ' deck' + (decks.length === 1 ? '' : 's');
+    document.getElementById('bssmOtherNames').textContent = decks.map(function (d) { return d.label; }).join(', ');
+    t.hidden = false;
+  });
+}
+/* Custom deck variants for the "Other" cluster — reports_state
+   'bss-custom-decks' { decks:[{custom,slug,mode,label,sub}] }. Fetched once,
+   lazily; a failed fetch clears the promise so the next open retries. */
+let _bssCustoms = null;
+let _bssCustomsPromise = null;
+function _bssEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+function _bssLoadCustomDecks() {
+  if (_bssCustoms) return Promise.resolve(_bssCustoms);
+  if (_bssCustomsPromise) return _bssCustomsPromise;
+  _bssCustomsPromise = (async () => {
+    try {
+      const { data } = await window.sb.from('reports_state')
+        .select('payload').eq('region', 'bss-custom-decks').maybeSingle();
+      const p = (data && data.payload) || {};
+      _bssCustoms = Array.isArray(p.decks)
+        ? p.decks.filter(function (d) { return d && d.custom && d.slug && (d.mode === 'buy' || d.mode === 'sell'); })
+        : [];
+    } catch (e) { _bssCustoms = null; }
+    _bssCustomsPromise = null;
+    return _bssCustoms || [];
+  })();
+  return _bssCustomsPromise;
 }
 function closeBsSlides() {
   const m = document.getElementById('bsSlidesModal');
@@ -3522,6 +3563,22 @@ async function openBsCurated() {
       '<div class="rcm-count">' + it.r.state + '</div>';
     grid.appendChild(tile);
   });
+  /* custom deck variants ride along for staff too — only when the variant's
+     base region+purpose is itself curated (mirrors the tool's gate) */
+  try {
+    const decks = await _bssLoadCustomDecks();
+    decks.filter(d => _bssCurated && _bssCurated[d.mode] && _bssCurated[d.mode].has(d.slug)).forEach((d) => {
+      const tile = document.createElement('button');
+      tile.className = 'rcm-tile';
+      tile.type = 'button';
+      tile.onclick = () => { _openToolTab('tools/buying-selling-slides.html?curated=1&region=' + encodeURIComponent(d.slug) + '&mode=' + d.mode + '&custom=' + encodeURIComponent(d.custom)); };
+      tile.innerHTML =
+        '<div class="rcm-icon">🗂️</div>' +
+        '<h3>' + _bssEsc(d.label) + '</h3>' +
+        '<div class="rcm-count">' + _bssEsc(d.sub || 'Custom deck') + '</div>';
+      grid.appendChild(tile);
+    });
+  } catch (e) {}
   const m = document.getElementById('bsCuratedModal');
   if (!m) return;
   m.classList.add('show');
@@ -3544,6 +3601,7 @@ function bsShowClusters() {
   activateRcmView(c);
 }
 function bsShowRegions(clusterKey) {
+  if (clusterKey === 'other') { _bsShowOtherDecks(); return; }
   const cluster = REGION_CLUSTERS[clusterKey];
   if (!cluster) return;
   const eyebrow = document.getElementById('bssmRegionEyebrow');
@@ -3571,6 +3629,33 @@ function bsShowRegions(clusterKey) {
   const inner = document.querySelector('#bsSlidesModal .rcm-inner');
   if (inner) inner.scrollTop = 0;
   activateRcmView(document.getElementById('bssmRegionsView'));
+}
+/* the "Other" step — custom deck variants; each tile deep-links with its
+   full identity (region + purpose + custom) so the tool opens the variant */
+function _bsShowOtherDecks() {
+  _bssLoadCustomDecks().then(function (decks) {
+    const eyebrow = document.getElementById('bssmRegionEyebrow');
+    if (eyebrow) eyebrow.textContent = 'Other';
+    const grid = document.getElementById('bssmRegionGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    decks.forEach(function (d) {
+      const tile = document.createElement('button');
+      tile.className = 'rcm-tile';
+      tile.type = 'button';
+      tile.onclick = function () { _openToolTab('tools/buying-selling-slides.html?region=' + encodeURIComponent(d.slug) + '&mode=' + d.mode + '&custom=' + encodeURIComponent(d.custom)); };
+      tile.innerHTML =
+        '<div class="rcm-icon">🗂️</div>' +
+        '<h3>' + _bssEsc(d.label) + '</h3>' +
+        '<div class="rcm-count">' + _bssEsc(d.sub || 'Custom deck') + '</div>';
+      grid.appendChild(tile);
+    });
+    document.getElementById('bssmClustersView').hidden = true;
+    document.getElementById('bssmRegionsView').hidden = false;
+    const inner = document.querySelector('#bsSlidesModal .rcm-inner');
+    if (inner) inner.scrollTop = 0;
+    activateRcmView(document.getElementById('bssmRegionsView'));
+  });
 }
 document.addEventListener('keydown', (ev) => {
   if (ev.key !== 'Escape') return;

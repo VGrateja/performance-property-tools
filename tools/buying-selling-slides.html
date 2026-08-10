@@ -769,7 +769,25 @@ const REVIEW_YEAR = now.getFullYear();
 let DB = null;
 let _slugs = [];   /* NAVIGABLE region list (capitals first) — dropdown, landing, double-tap switch. Curated-filtered. */
 let _allSlugs = [];   /* every region with runway data — the master list; editor features (Copy to…, Curate…) use this */
-let state = { slug:'adelaide', mode:'sell', idx:0 };
+let state = { slug:'adelaide', mode:'sell', idx:0, custom:null };
+/* ── CUSTOM decks — the landing's "Other" cluster (Van 2026-08-10) ─ hand-built
+   variants of a region deck (e.g. an advisor's combined meeting deck) that keep
+   their OWN overlay/page state, so the shared regional deck stays untouched for
+   every other advisor. Config = reports_state 'bss-custom-decks'
+   { decks:[{custom,slug,mode,label,sub}] }; a variant's state row is
+   'bss-<slug>-<mode>--<custom>' (see edKey). Data/charts stay LIVE from the
+   base region — only the authored layer differs. */
+let CUSTOM_DECKS=[];
+async function loadCustomDecks(){
+  try{ const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-custom-decks').maybeSingle();
+    const p=(data&&data.payload)||null;
+    CUSTOM_DECKS=Array.isArray(p&&p.decks)?p.decks.filter(d=>d&&d.custom&&d.slug&&(d.mode==='buy'||d.mode==='sell')):[];
+  }catch(e){ CUSTOM_DECKS=[]; }
+}
+const _customDef=()=>state.custom?CUSTOM_DECKS.find(d=>d.custom===state.custom)||null:null;
+/* customs offered in THIS view — curated visitors only see variants whose base
+   region+purpose is itself curated (the variant inherits the base's clearance) */
+const _customsOffered=()=>CUSTOM_DECKS.filter(d=>!_isCurated || _curSet(d.mode).has(d.slug));
 
 /* ── curated visibility ───────────────────────────────────────────────────
    One reports_state row ('bss-visibility') holds { sell:[slug…], buy:[slug…] }
@@ -3548,14 +3566,16 @@ function deleteCustomPage(key){
 })();
 
 /* keep the URL shareable/pinnable — reflects the open deck */
-function syncURL(){ try{ history.replaceState(null,'','?region='+state.slug+'&mode='+state.mode+(_isCurated?'&curated=1':'')); }catch(e){}
+function syncURL(){
+  try{ history.replaceState(null,'','?region='+state.slug+'&mode='+state.mode+(state.custom?('&custom='+encodeURIComponent(state.custom)):'')+(_isCurated?'&curated=1':'')); }catch(e){}
   /* Region + purpose FIRST in the tab title. Decks are opened one per tab from
      pins and the Library, and a static title truncates to the same text on every
      one of them (same fix as Online Reports, Van 2026-07-31). Updated here
      rather than at boot because region/mode switch in place — syncURL is the
      one call every switch already goes through. */
-  try{ const nm=(DB&&DB.meta&&DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug;
-       document.title = nm + ' ' + (state.mode==='buy'?'Buying':'Selling') + ' · B/S Slides'; }catch(e){}
+  try{ const cd=_customDef();
+       const nm=(DB&&DB.meta&&DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug;
+       document.title = (cd?cd.label:(nm + ' ' + (state.mode==='buy'?'Buying':'Selling'))) + ' · B/S Slides'; }catch(e){}
 }
 
 /* ── present mode ── */
@@ -3569,7 +3589,7 @@ document.addEventListener('fullscreenchange',()=>{ if(!document.fullscreenElemen
    screen deltas by _slideScale so they track the cursor under transform:scale.
    State per deck (region+mode) in reports_state under 'bss-<slug>-<mode>'. */
 let ORDER=[], TITLES={};   /* per-deck slide order (keys) + custom TOC labels — persisted with the layout */
-function edKey(){ return 'bss-'+state.slug+'-'+state.mode; }
+function edKey(){ return 'bss-'+state.slug+'-'+state.mode+(state.custom?('--'+state.custom):''); }
 function curKey(){ const d=DECK[state.idx]; return d?d.key:null; }
 function _edPayload(){ return { overlays:OVL, bgs:BGS, customPages:CUSTOM, order:ORDER, titles:TITLES }; }
 async function loadDeckState(){
@@ -4280,6 +4300,7 @@ async function boot(){
   const _allow = k => (typeof window.ppToolAllowed==='function') ? window.ppToolAllowed(k) : true;
   _isCurated = _askCurated || (_allow('bs-slides-curated') && !_allow('bs-slides'));
   if (_isCurated) await loadCurated();
+  await loadCustomDecks();   /* the landing's "Other" cluster (empty config → no tile) */
   let slugs = curSlugs(state.mode);   /* reassigned below when a URL purpose changes the offered set */
   _slugs = slugs;
   /* Curated with nothing ticked for this purpose — try the other one before
@@ -4302,6 +4323,11 @@ async function boot(){
     }
     if (_r) { if (slugs.includes(_r)) state.slug = _r; else _badLink = true; }
     if (!slugs.includes(state.slug)) state.slug = slugs.includes('adelaide')?'adelaide':slugs[0];
+    /* custom-deck deep link — only honoured when the config row still lists it
+       for exactly this region+purpose (a deleted custom deck degrades to the
+       plain regional deck instead of an empty state) */
+    const _c = _q.get('custom');
+    if (_c && !_badLink) { const cd = CUSTOM_DECKS.find(d=>d.custom===_c && d.slug===state.slug && d.mode===state.mode); if (cd) state.custom = _c; }
   } catch (e) {}
   document.querySelectorAll('#bssMode button').forEach(x => x.classList.toggle('on', x.dataset.mode === state.mode));
   fillRegionSelect();
@@ -4348,6 +4374,15 @@ function _landSwapView(showEl,hideEl){
 }
 function buildLanding(slugs){
   _landSlugs=slugs;
+  /* "Other" cluster — custom deck variants (config-driven, hidden when empty) */
+  const customs=_customsOffered();
+  const otherTile=customs.length
+    ? '<button class="bssrcm-tile" data-cluster="other" type="button">'
+      +'<div class="bssrcm-icon">🗂️</div>'
+      +'<h3>Other</h3>'
+      +'<div class="bssrcm-count">'+customs.length+' deck'+(customs.length===1?'':'s')+'</div>'
+      +'<p>'+esc(customs.map(d=>d.label).join(', '))+'</p></button>'
+    : '';
   $('#bssLandClusterGrid').innerHTML=BSS_CLUSTERS.map(c=>{
     const rs=slugs.filter(c.pick);
     if(!rs.length) return '';
@@ -4357,9 +4392,19 @@ function buildLanding(slugs){
       +'<h3>'+esc(c.name)+'</h3>'
       +'<div class="bssrcm-count">'+rs.length+' markets</div>'
       +'<p>'+esc(names.join(', '))+'</p></button>';
-  }).join('');
+  }).join('')+otherTile;
 }
 function _landShowRegions(key){
+  if(key==='other'){
+    /* custom decks — each tile carries its full identity (custom+slug+mode) */
+    $('#bssLandRegionEyebrow').textContent='Other';
+    $('#bssLandRegionGrid').innerHTML=_customsOffered().map(d=>
+      '<button class="bssrcm-tile" data-custom="'+esc(d.custom)+'" data-slug="'+esc(d.slug)+'" data-mode="'+esc(d.mode)+'" type="button">'
+      +'<h3>'+esc(d.label)+'</h3>'
+      +'<div class="bssrcm-count">'+esc(String(d.sub||'Custom deck').toUpperCase())+'</div></button>').join('');
+    _landSwapView($('#bssLandRegions'),$('#bssLandClusters'));
+    return;
+  }
   const c=BSS_CLUSTERS.find(x=>x.key===key); if(!c) return;
   $('#bssLandRegionEyebrow').textContent=c.name;
   $('#bssLandRegionGrid').innerHTML=_landSlugs.filter(c.pick).map(s=>
@@ -4387,15 +4432,22 @@ $('#bssLandClose').addEventListener('click',()=>{
   });
 })();
 $('#bssLandRegionGrid').addEventListener('click',e=>{ const t=e.target.closest('.bssrcm-tile'); if(!t)return;
-  state.slug=t.dataset.slug; state.idx=0;   /* purpose switches inside the tool (Selling default) */
+  if(t.dataset.custom){
+    /* custom deck — carries its own purpose; sync the mode UI + offered set */
+    state.custom=t.dataset.custom; state.slug=t.dataset.slug; state.mode=t.dataset.mode;
+    document.querySelectorAll('#bssMode button').forEach(x=>x.classList.toggle('on',x.dataset.mode===state.mode));
+    _slugs=curSlugs(state.mode); fillRegionSelect();
+  } else { state.custom=null; state.slug=t.dataset.slug; }   /* purpose switches inside the tool (Selling default) */
+  state.idx=0;
   $('#bssRegion').value=state.slug;
   $('#bssLanding').classList.remove('show');
   document.body.classList.remove('bss-landing-open');
   syncURL();
   reloadDeck();
 });
-$('#bssRegion').addEventListener('change',e=>{ state.slug=e.target.value; state.idx=0; syncURL(); reloadDeck(); });
+$('#bssRegion').addEventListener('change',e=>{ state.custom=null; state.slug=e.target.value; state.idx=0; syncURL(); reloadDeck(); });   /* picking a region leaves any custom deck */
 $('#bssMode').addEventListener('click',e=>{ const b=e.target.closest('button[data-mode]'); if(!b||b.disabled)return;
+  state.custom=null;   /* switching purpose leaves any custom deck */
   state.mode=b.dataset.mode;
   document.querySelectorAll('#bssMode button').forEach(x=>x.classList.toggle('on',x===b));
   /* the offered set is per purpose: keep this region if the new purpose offers
@@ -4408,8 +4460,9 @@ $('#bssMode').addEventListener('click',e=>{ const b=e.target.closest('button[dat
 (function(){ const btn=$('#bssPin'); if(!btn) return; btn.addEventListener('click',function(){ try{
   if(!window.PP_PINS) return;
   const name=(DB&&DB.meta&&DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug;
-  const label=name+' — '+(state.mode==='buy'?'Buying':'Selling');
-  const url='tools/buying-selling-slides.html?region='+state.slug+'&mode='+state.mode+(_isCurated?'&curated=1':'');
+  const cd=_customDef();
+  const label=cd?cd.label:(name+' — '+(state.mode==='buy'?'Buying':'Selling'));
+  const url='tools/buying-selling-slides.html?region='+state.slug+'&mode='+state.mode+(state.custom?('&custom='+encodeURIComponent(state.custom)):'')+(_isCurated?'&curated=1':'');
   if(PP_PINS.has(function(p){return p.url===url;})){ btn.textContent='Already pinned'; }
   else{ PP_PINS.add({kind:'link',label:label,url:url,a1:'#7E8CF1',a2:'#233AE7',icon:'<svg viewBox="0 0 24 24"><path d="M4 4v16h16"/><path d="M7 14l3-3 3 2 4-6"/></svg>'}); btn.textContent='Pinned'; }
   setTimeout(function(){ btn.textContent='Pin'; },1600);
@@ -4602,6 +4655,7 @@ document.addEventListener('keydown',e=>{
 function switchRegion(dir){
   if(!_slugs.length) return;
   const i=_slugs.indexOf(state.slug); if(i<0) return;
+  state.custom=null;   /* region hopping is a standard-deck affair */
   state.slug=_slugs[(i+dir+_slugs.length)%_slugs.length];
   $('#bssRegion').value=state.slug;
   syncURL();
