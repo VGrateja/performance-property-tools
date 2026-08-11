@@ -336,6 +336,18 @@
   [data-theme="light"] #pres-present-blocked{
     background:rgba(255,255,255,0.97); border-color:rgba(217,112,7,0.5); color:#8a4a04;
   }
+  /* Present fit-mode toast (L key) — bottom-centred, teal accent. Present
+     mode paints the body black, so the dark pill works in both themes. */
+  #pres-fit-notice{
+    position:fixed; bottom:28px; left:50%;
+    transform:translateX(-50%) translateY(6px);
+    padding:10px 16px; border-radius:10px;
+    background:rgba(15,23,42,0.95); border:1px solid rgba(0,160,180,0.55);
+    color:#9fe6ee; font-size:12.5px; font-weight:600; letter-spacing:.02em;
+    z-index:10001; opacity:0; pointer-events:none;
+    transition:opacity .2s ease, transform .2s ease;
+  }
+  #pres-fit-notice.show{ opacity:1; transform:translateX(-50%) translateY(0); }
   /* Specific Undo/Redo positions — Undo nearer Present, Redo further.
      Hidden globally per request — keyboard shortcuts (Ctrl+Z / Ctrl+Y)
      still work, the buttons just no longer occupy chrome real estate. */
@@ -7017,6 +7029,14 @@ document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Home')                { ev.preventDefault(); renderSlide(0); }
   if (ev.key === 'End')                 { ev.preventDefault(); renderSlide(_activeDeck.slides.length - 1); }
   if (ev.key === 'f' || ev.key === 'F') { ev.preventDefault(); togglePresentationMode(); }
+  if ((ev.key === 'l' || ev.key === 'L') && isPresentMode) {
+    /* Flip the Present fit live: whole slide (letterbox) ⇄ fill screen (crop). */
+    ev.preventDefault();
+    _presFit = (_presFitEffective === 'cover') ? 'contain' : 'cover';
+    fitSlide();
+    presFitNotice(_presFit === 'contain' ? 'Whole slide — letterboxed (L to fill screen)'
+                                         : 'Fill screen — edges may crop (L to show whole slide)');
+  }
   if (ev.key === 'Escape' && document.body.classList.contains('pres-fullscreen')) { exitPresentationMode(); }
 });
 
@@ -7138,8 +7158,24 @@ function presPresentBlockedNotice() {
   clearTimeout(n._t);
   n._t = setTimeout(function () { n.classList.remove('show'); }, 2600);
 }
+/* Transient fit-mode toast shown when L flips the Present fit — bottom-centred
+   so it stays clear of slide titles while presenting. */
+function presFitNotice(text) {
+  var n = document.getElementById('pres-fit-notice');
+  if (!n) {
+    n = document.createElement('div');
+    n.id = 'pres-fit-notice';
+    n.setAttribute('role', 'status');
+    document.body.appendChild(n);
+  }
+  n.textContent = text;
+  n.classList.add('show');
+  clearTimeout(n._t);
+  n._t = setTimeout(function () { n.classList.remove('show'); }, 2200);
+}
 function enterPresentationMode() {
   if (document.body.classList.contains('pres-edit-mode')) { presPresentBlockedNotice(); return; }
+  _presFit = null;   /* every Present entry starts on auto fit (cover ≈16:9, letterbox otherwise) */
   document.body.classList.add('pres-fullscreen');
   /* Free every thumbnail-rail chart instance for the duration of the screen-
      share. The rail is hidden in Present mode, so its 20-30+ live ECharts
@@ -7226,6 +7262,14 @@ let _userZoom = null;
 const ZOOM_STEP = 1.1;   /* 10% per press, multiplicative — feels closer to natural pinch zoom than additive */
 const ZOOM_MIN  = 0.2;
 const ZOOM_MAX  = 4.0;
+/* Present-mode fit (Van 2026-08-11, screen-share feedback): cover-fit crops
+   the slide edges on any non-16:9 surface — a 16:10 laptop lays ~6% of every
+   slide off-screen, and sharing a window can crop far more. null → auto
+   (cover when the screen is within 2% of 16:9, letterbox otherwise);
+   'cover'/'contain' → the presenter overrode it with the L key. Reset to
+   auto on every Present entry. */
+let _presFit = null;
+let _presFitEffective = 'cover';
 
 function _autoFitScale(stage) {
   const sr = stage.getBoundingClientRect();
@@ -7264,14 +7308,17 @@ function fitSlide() {
   const availH = sr.height - pad * 2;
   let scale;
   if (isFull) {
-    /* Cover the whole screen — pick the LARGER scale factor so the
-       slide fills the viewport on every aspect ratio. On a non-16:9
-       screen (e.g. 16:10 laptops) the slide overflows on the long
-       axis; .pres-stage has overflow:hidden in fullscreen to crop
-       cleanly. Aspect ratio is preserved (no distortion); only the
-       slide bg edges are sacrificed, and slide content has built-in
-       padding so titles / charts stay fully visible. */
-    scale = Math.max(availW / 1280, availH / 720);
+    /* Cover fills the viewport edge-to-edge (larger scale factor,
+       overflow cropped by the stage) — but authored content near the
+       slide edges gets cut on non-16:9 screens, which is exactly what
+       advisors hit when screen-sharing. So: cover only when the crop
+       would be invisible (screen within 2% of 16:9), otherwise contain
+       (whole slide, black letterbox bars — body is already #000).
+       The L key toggles the two live while presenting. */
+    const cover   = Math.max(availW / 1280, availH / 720);
+    const contain = Math.min(availW / 1280, availH / 720);
+    _presFitEffective = _presFit || ((cover - contain) / cover < 0.02 ? 'cover' : 'contain');
+    scale = (_presFitEffective === 'cover') ? cover : contain;
   } else if (_userZoom != null) {
     /* User-set zoom (via +/-) overrides auto-fit. Min/max are
        already clamped in zoomIn / zoomOut, so no guard here. */
