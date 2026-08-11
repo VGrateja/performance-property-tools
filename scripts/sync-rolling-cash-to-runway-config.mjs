@@ -48,6 +48,42 @@ const rateNew = Math.round((cashNew + fc.margin + fc.apra) * 10000) / 10000;
 console.log(`rolling 216M cash avg: ${(avg * 100).toFixed(4)}% → rounded ${(cashNew * 100).toFixed(2)}%  (newest month ${rows[0].period.slice(0, 7)})`);
 console.log(`config forecast: cash ${(fc.cash * 100).toFixed(2)}% → ${(cashNew * 100).toFixed(2)}% · rate ${(fc.rate * 100).toFixed(2)}% → ${(rateNew * 100).toFixed(2)}%  (margin ${(fc.margin * 100).toFixed(2)}% + APRA ${(fc.apra * 100).toFixed(2)}% unchanged)`);
 
+/* Email Pre DD + Jonathan when the assumption moves (Saskia 2026-08-10 via
+   Van 2026-08-11). Fail-soft: a mail hiccup must never fail the publish.
+   --notify-current sends the CURRENT assumption without requiring a change
+   (inaugural/baseline note or a test). Needs RESEND_API_KEY (same secret as
+   the scorecard reminders); silently skipped when absent (local runs). */
+const NOTIFY_TO = (process.env.RATE_NOTIFY_TO || 'ppc@performanceproperty.com.au,jonathan@performanceproperty.com.au').split(',').map(s => s.trim());
+const FROM_EMAIL = process.env.SCORECARD_FROM_EMAIL || 'Performance Property Tools <scorecards@performanceproperty.com.au>';
+const pct = v => (v * 100).toFixed(2) + '%';
+async function notifyRateChange(oldCash, oldRate, newCash, newRate, isBaseline) {
+  const KEY = process.env.RESEND_API_KEY;
+  if (!KEY) { console.log('  (RESEND_API_KEY not set — email notification skipped)'); return; }
+  const subject = isBaseline
+    ? `Rolling cash rate assumption — current: ${pct(newCash)} (PP variable ${pct(newRate)})`
+    : `Rolling cash rate assumption updated: ${pct(oldCash)} → ${pct(newCash)} (PP variable ${pct(oldRate)} → ${pct(newRate)})`;
+  const html = `
+    <div style="font-family:Arial,sans-serif;font-size:14px;color:#171B24;line-height:1.6">
+      <p><b>${isBaseline ? 'Current rolling cash rate assumption' : 'The rolling cash rate assumption has changed'}.</b></p>
+      <table style="border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:4px 14px 4px 0;color:#63666A">Forecast cash rate</td><td style="padding:4px 0"><b>${isBaseline ? pct(newCash) : pct(oldCash) + ' → ' + pct(newCash)}</b></td></tr>
+        <tr><td style="padding:4px 14px 4px 0;color:#63666A">PP variable rate</td><td style="padding:4px 0"><b>${isBaseline ? pct(newRate) : pct(oldRate) + ' → ' + pct(newRate)}</b> (cash + ${pct(fc.margin)} margin + ${pct(fc.apra)} APRA)</td></tr>
+      </table>
+      <p>The forecast cash rate is the <b>rolling 216-month average of the RBA cash rate</b>, refreshed automatically at the monthly data publish. This rate drives the Runway Workbook, Runway v Demand and the Demand Score dashboard.</p>
+      <p style="color:#63666A;font-size:12px">Sent automatically by the Data Forge publish pipeline.</p>
+    </div>`;
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: FROM_EMAIL, to: NOTIFY_TO, subject, html }),
+    });
+    if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text().catch(() => '')}`);
+    console.log('✓ change notification emailed to ' + NOTIFY_TO.join(', '));
+  } catch (e) { console.error('⚠ email notification failed (publish continues): ' + e.message); }
+}
+
+if (process.argv.includes('--notify-current')) { await notifyRateChange(null, null, fc.cash, fc.rate, true); process.exit(0); }
 if (fc.cash === cashNew && fc.rate === rateNew) { console.log('✓ already in sync — nothing to write.'); process.exit(0); }
 if (!WRITE) { console.log('\nDry run — re-run with --write to update rdp_runway_config.'); process.exit(0); }
 
@@ -55,3 +91,4 @@ const next = { ...rates, forecast: { ...fc, cash: cashNew, rate: rateNew } };
 const { error: werr } = await sb.from('rdp_runway_config').update({ value: next }).eq('key', 'rates');
 if (werr) { console.error('✗ config write failed: ' + werr.message); process.exit(1); }
 console.log('✓ rdp_runway_config rates.forecast updated.');
+await notifyRateChange(fc.cash, fc.rate, cashNew, rateNew, false);
