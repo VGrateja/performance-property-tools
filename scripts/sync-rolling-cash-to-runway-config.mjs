@@ -53,7 +53,7 @@ console.log(`config forecast: cash ${(fc.cash * 100).toFixed(2)}% → ${(cashNew
    --notify-current sends the CURRENT assumption without requiring a change
    (inaugural/baseline note or a test). Needs RESEND_API_KEY (same secret as
    the scorecard reminders); silently skipped when absent (local runs). */
-const NOTIFY_TO = (process.env.RATE_NOTIFY_TO || 'ppc@performanceproperty.com.au,jonathan@performanceproperty.com.au').split(',').map(s => s.trim());
+const NOTIFY_TO = (process.env.RATE_NOTIFY_TO || 'ppc@performanceproperty.com.au,jonathan@performanceproperty.com.au,vandolf@performanceproperty.com.au').split(',').map(s => s.trim());
 const FROM_EMAIL = process.env.SCORECARD_FROM_EMAIL || 'Performance Property Tools <scorecards@performanceproperty.com.au>';
 const pct = v => (v * 100).toFixed(2) + '%';
 async function notifyRateChange(oldCash, oldRate, newCash, newRate, isBaseline) {
