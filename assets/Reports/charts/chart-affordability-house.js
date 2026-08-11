@@ -29,29 +29,22 @@
         { name: 'House Price Movement' },
       ]),
       xAxis: staircaseYearAxis(D.years, { boundaryGap: true }),
-      yAxis: [
-        {
-          type: 'value', min: 0,
-          axisLabel: Object.assign({}, T.axis, { formatter: v => v + '%' }),
-          splitLine: { lineStyle: { color: T.colors.grid } },
-          name: 'AI P&I Loan House',
-          nameLocation: 'middle', nameGap: 45, nameRotate: 90,
-          nameTextStyle: T.axisName,
-        },
-        {
-          type: 'value',
-          axisLabel: Object.assign({}, T.axis, { formatter: v => v + '%' }),
-          splitLine: { show: false },
-          name: 'House Price Movement',
-          nameLocation: 'middle', nameGap: 40, nameRotate: 90,
-          nameTextStyle: T.axisName,
-        },
-      ],
+      /* ONE shared % axis (Van 2026-08-12, matching the B/S slides): the old
+         dual-axis layout put the movement line's zero on a mid-plot gridline,
+         so a negative year (Perth 1991: −2.2%) still drew above the chart
+         floor and read as positive. On a shared axis negatives dip below the
+         zero gridline; min snaps to a 5%-step so the floor stays tidy. */
+      yAxis: {
+        type: 'value',
+        min: v => Math.min(0, Math.floor(v.min / 5) * 5),
+        axisLabel: Object.assign({}, T.axis, { formatter: v => v + '%' }),
+        splitLine: { lineStyle: { color: T.colors.grid } },
+      },
       series: [
         { name: 'AI P&I Loan House', type: 'bar', data: D.ai,
           itemStyle: { color: T.colors.houseBar }, barCategoryGap: '30%' },
         {
-          name: 'House Price Movement', type: 'line', yAxisIndex: 1,
+          name: 'House Price Movement', type: 'line',
           symbol: 'circle', symbolSize: 8, showSymbol: false,
           emphasis: { scale: false },
           lineStyle: { color: T.colors.house, width: 2 },

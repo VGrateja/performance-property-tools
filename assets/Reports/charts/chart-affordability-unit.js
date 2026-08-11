@@ -29,29 +29,20 @@
         { name: 'Unit Price Movement' },
       ]),
       xAxis: staircaseYearAxis(D.years, { boundaryGap: true }),
-      yAxis: [
-        {
-          type: 'value', min: 0,
-          axisLabel: Object.assign({}, T.axis, { formatter: v => v + '%' }),
-          splitLine: { lineStyle: { color: T.colors.grid } },
-          name: 'AI P&I Loan Unit',
-          nameLocation: 'middle', nameGap: 45, nameRotate: 90,
-          nameTextStyle: T.axisName,
-        },
-        {
-          type: 'value',
-          axisLabel: Object.assign({}, T.axis, { formatter: v => v + '%' }),
-          splitLine: { show: false },
-          name: 'Unit Price Movement',
-          nameLocation: 'middle', nameGap: 40, nameRotate: 90,
-          nameTextStyle: T.axisName,
-        },
-      ],
+      /* ONE shared % axis — same fix as the house chart (Van 2026-08-12):
+         the dual-axis layout let negative movement years draw above the
+         chart floor. Negatives now dip below the shared zero gridline. */
+      yAxis: {
+        type: 'value',
+        min: v => Math.min(0, Math.floor(v.min / 5) * 5),
+        axisLabel: Object.assign({}, T.axis, { formatter: v => v + '%' }),
+        splitLine: { lineStyle: { color: T.colors.grid } },
+      },
       series: [
         { name: 'AI P&I Loan Unit', type: 'bar', data: D.ai,
           itemStyle: { color: T.colors.houseBar }, barCategoryGap: '30%' },
         {
-          name: 'Unit Price Movement', type: 'line', yAxisIndex: 1,
+          name: 'Unit Price Movement', type: 'line',
           symbol: 'circle', symbolSize: 8, showSymbol: false,
           emphasis: { scale: false },
           lineStyle: { color: T.colors.house, width: 2 },
