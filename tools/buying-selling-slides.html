@@ -3356,6 +3356,19 @@ function _scrollToCur(smooth){
   w.scrollIntoView({behavior:smooth?'smooth':'auto',block:'center'});
 }
 function go(i){
+  /* custom-deck HANDOFF (Van 2026-08-11): a variant can chain into a follow-on
+     deck — pressing next past the last page while PRESENTING loads that deck
+     in present mode (FMD: Adelaide SELL pages → Melbourne BUY deck). A true
+     in-deck merge was rejected: 48 authored overlays on the follow-on deck use
+     live tokens ({mhp}, {vr_*}, {REGION}…) that resolve against THIS deck's
+     region — Melbourne pages would have shown Adelaide numbers. */
+  if(i>=DECK.length && document.body.classList.contains('bss-present')){
+    const cd=_customDef();
+    if(cd && cd.next && cd.next.slug){
+      location.href='?region='+encodeURIComponent(cd.next.slug)+'&mode='+(cd.next.mode==='buy'?'buy':'sell')+(cd.next.custom?('&custom='+encodeURIComponent(cd.next.custom)):'')+(_isCurated?'&curated=1':'')+'&present=1';
+      return;
+    }
+  }
   setActive(i);
   if(document.body.classList.contains('bss-present')){ fitSlide(); }
   else {
@@ -4318,10 +4331,11 @@ async function boot(){
   /* deep-link: ?region=<slug>&mode=<sell|buy> — used by "Pin to desktop" and the
      library cards. Validated against the NAVIGABLE list, so a curated visitor
      deep-linking an uncurated region lands on the picker instead of that deck. */
-  let _badLink=false;
+  let _badLink=false, _presentLink=false;
   try {
     const _q = new URLSearchParams(location.search);
     const _r = _q.get('region'), _m = _q.get('mode');
+    _presentLink = _q.get('present') === '1';   /* read BEFORE syncURL rewrites the URL */
     if (_m === 'buy' || _m === 'sell') {
       /* honour the requested purpose only if it actually offers this region */
       if (!_isCurated || curSlugs(_m).length) { state.mode = _m; _slugs = slugs = curSlugs(_m); }
@@ -4360,6 +4374,16 @@ async function boot(){
     rebuild();
     syncURL();
     hideLiveLoadingOverlay();
+    /* ?present=1 — arrive PRESENTING (the custom-deck handoff uses this so the
+       follow-on deck continues the show). Fullscreen needs a user gesture and
+       navigation dropped the old one, so the first keypress/click restores it
+       — which is exactly the advisor's next "advance" press. (The flag is
+       captured up in the deep-link block: syncURL rewrites the URL first.) */
+    if(_presentLink){ document.body.classList.add('bss-present'); fitSlide(); setActive(state.idx);
+      const arm=()=>{ document.removeEventListener('keydown',arm,true); document.removeEventListener('pointerdown',arm,true);
+        const el=document.querySelector('.bss-stage'); if(el&&el.requestFullscreen) el.requestFullscreen().catch(()=>{}); };
+      document.addEventListener('keydown',arm,true); document.addEventListener('pointerdown',arm,true);
+    }
   }
 }
 
