@@ -3836,6 +3836,7 @@ async function _downloadCachedReportPdfs(slugs) {
     return 'PPA_' + nice + '_report_ED' + _edMm + '-' + letters + digits;
   };
   const miss = [];
+  const linkUpdates = {};   // research slugs → durable-link refresh (flushed once below)
   for (const slug of slugs) {
     let done = false;
     for (const m of months) {
@@ -3848,15 +3849,42 @@ async function _downloadCachedReportPdfs(slugs) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = editionName(slug) + '.pdf';
+        const finalName = editionName(slug);
+        a.download = finalName + '.pdf';
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 5000);
         done = true;
+        /* Research reports: refresh the durable PDF link like the regionals'
+           own downloads do (Van 2026-08-12 — the cached download-all is his
+           monthly path, and National/Commercial links sat a month stale).
+           Same GCS scheme + payload shape as recordReportPdfLink; the file
+           still needs uploading to that GCS folder, exactly like regionals. */
+        if (RESEARCH_REGIONS[slug]) {
+          const d = new Date(), yr = d.getFullYear();
+          const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          linkUpdates[slug] = {
+            slug: slug, lite: false, edition: 'ED' + _edMm, year: yr,
+            url: 'https://docs.performanceproperty.com.au/research/Online/' + yr + '/ED' + _edMm + '/' + finalName + '.pdf',
+            date: String(d.getDate()).padStart(2, '0') + ' ' + MON[d.getMonth()] + ' ' + yr,
+            at: d.toISOString(),
+          };
+        }
         await new Promise(r => setTimeout(r, 350));   // space out so the browser asks once
         break;
       } catch (_) { /* try previous month */ }
     }
     if (!done) miss.push(slug);
+  }
+  if (Object.keys(linkUpdates).length) {
+    /* Best-effort, writers-only (RLS) — a viewer's download still works,
+       the link refresh just no-ops with a console warning. */
+    try {
+      let payload = {};
+      try { const { data } = await window.sb.from('report_pdf_links').select('payload').eq('id', 1).maybeSingle(); if (data && data.payload && typeof data.payload === 'object') payload = data.payload; } catch (_) {}
+      for (const k of Object.keys(linkUpdates)) payload[k] = linkUpdates[k];
+      const { error } = await window.sb.from('report_pdf_links').upsert({ id: 1, payload: payload }, { onConflict: 'id' });
+      if (error) console.warn('[pdf-links] cached-download link refresh not saved (' + error.message + ')');
+    } catch (e) { console.warn('[pdf-links] cached-download link refresh failed', e); }
   }
   if (miss.length) {
     alert('No cached PDF found yet for: ' + miss.map(nameOf).join(', ')
