@@ -509,6 +509,16 @@
     <div id="sentHpaOut" style="margin-top:22px"></div>
   </section>
 
+  <!-- ── BUILDING PRICE INDEX (ABS PPI house construction inputs + Rawlinsons) ──
+       Two panels on purpose: the ABS half is API-fetched and current, the
+       Rawlinsons half (Canberra + Darwin) is a static export. Keeping them
+       visually separate stops the manual pair being mistaken for live data. -->
+  <section id="dfBuildidx" hidden>
+    <button class="df-back" data-home>← All data points</button>
+    <div id="bpiAbsOut"></div>
+    <div id="bpiRawOut" style="margin-top:22px"></div>
+  </section>
+
   <!-- ── RTBA RENTAL BONDS (Consumer Affairs Victoria annual reports) ── -->
   <section id="dfBonds" hidden>
     <button class="df-back" data-home>← All data points</button>
@@ -702,7 +712,7 @@ const fmtDate = s => { if (!s) return '—'; try { return new Date(s).toLocaleDa
 
 /* ───────────────────────── view routing ───────────────────────── */
 function showView(name){
-  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCpi','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfDwellings','dfBizfin','dfCci','dfSentiment','dfBonds','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfSensitivity','dfPopforecast','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfRanking','dfComputed','dfCommercial','dfDemandinputs','dfClsuburbs','dfReplcost']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
+  for (const id of ['dfHome','dfCotality','dfPopulation','dfIncome','dfLending','dfInvestor','dfRetail','dfBusiness','dfFhb','dfNatinc','dfNim','dfNom','dfJobcreation','dfNatvac','dfInflation','dfCpi','dfCashrate','dfBankrate','dfUnemployment','dfApprovals','dfDwellings','dfBizfin','dfCci','dfSentiment','dfBonds','dfIndustry','dfPopPyramid','dfArrears','dfCiv','dfSensitivity','dfPopforecast','dfIron','dfMining','dfCommodities','dfNatonly','dfMonthlyprice','dfRanking','dfComputed','dfCommercial','dfDemandinputs','dfClsuburbs','dfReplcost','dfBuildidx']) document.getElementById(id).hidden = (id !== 'df' + name[0].toUpperCase() + name.slice(1));
   document.getElementById('dfHome').hidden = (name !== 'home');
   if (name === 'cotality') loadCotality();
   if (name === 'clsuburbs') loadClSuburbs();
@@ -745,6 +755,7 @@ function showView(name){
   if (name === 'commercial') loadCommercial();
   if (name === 'demandinputs') loadDemandInputs();
   if (name === 'replcost') loadReplCost();
+  if (name === 'buildidx') loadBuildIdx();
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('[data-home]').forEach(b => b.addEventListener('click', () => showView('home')));
@@ -841,6 +852,7 @@ const CLUSTERS = [
   { key:'ranking', icon:'🏆', ingest:'derived', label:'Median Price Ranking (H/U)', desc:'Rank of every region by median price (house &amp; unit) each year, 2004→present — rank&nbsp;1 = the highest median price that year. Derived from the Monthly Median Price point; feeds the Traffic Lights Value indicator (latest rank vs long-run average). Rebuild with <code>build-ranking.mjs</code>.', view:'ranking' },
   { key:'computed_metrics', icon:'🧮', ingest:'derived', label:'Computed Metrics', desc:'Calculated report metrics per region — CAGR, price/rent-to-income, affordability index, P&amp;I repayments, gross yields, YoY growth. Derived from the raw data (research mart) — a preview of what the reports compute.', view:'computed' },
   { key:'inflation', icon:'📉', ingest:'api', label:'Inflation Rate', desc:'ABS CPI — All groups year-ended % (national, annual). Latest from the new monthly CPI; full history retained.', view:'inflation' },
+  { key:'building_price_index', icon:'🧱', ingest:'hybrid', label:'Building Price Index', desc:'ABS Producer Price Index <b>Table 18</b> — input prices for house construction (materials, not finished homes). Six state capitals + the weighted average, quarterly back to <b>1980</b> and annual on the financial year to 30 June, base 2011-12 = 100. Auto-fetched over the ABS API. <b>Canberra &amp; Darwin are the manual part</b> — the ABS series is state capitals only, so those two come from a static Rawlinsons export.', view:'buildidx' },
   { key:'cpi', icon:'🏙️', ingest:'api', label:'CPI by Capital City', desc:'ABS All-groups CPI, year-ended % — national + all 8 capital cities, quarterly. Derived from <b>Table 17</b> index numbers (this quarter vs same quarter last year). Auto-fetched from the ABS CPI release. (The 2026-08 Traffic Lights model no longer uses the real-cash-rate signal; CPI keeps feeding the reports and affordability points.)', view:'cpi' },
   { key:'cash_rate', icon:'🏦', ingest:'api', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
   { key:'bank_rate', icon:'💳', ingest:'api', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
@@ -1807,6 +1819,22 @@ function renderSentEntry(){
   const btn = document.getElementById('sentSaveBtn');
   if (btn) btn.addEventListener('click', sentSave);
 }
+/* Building Price Index — house construction INPUT prices. Two panels because
+   the point has two provenances that must not be confused: the six state
+   capitals + weighted average come from the ABS PPI API and are current, while
+   Canberra and Darwin come from a Rawlinsons export and are frozen until
+   someone re-exports it. */
+const loadBuildIdx = () => {
+  renderSeriesView({ outId:'bpiAbsOut', key:'building_price_index', metric:'building_price_index', dbSource:'abs', freq:'A', from:'1980-01-01', period:'year', colN:16, fmt:v=>v==null?'—':(+v).toFixed(1), unit:'index', sortBy:'group',
+    title:'Building price index — ABS', eyebrow:'ABS · Producer Price Index, Table 18', source:'ABS Producer Price Indexes (house construction inputs)',
+    defaultMsg:'Run ingest-abs-building-price-index.mjs to load this.',
+    note:'Input prices for the <b>house construction industry</b> — the cost of materials, not the price of finished homes. Straight from the ABS <b>Producer Price Index Table 18</b> ("Input to the House construction industry, six state capital cities") over their SDMX API, so it refreshes with the other API points. Six state capitals plus the <b>weighted average of the 6</b>, stored as <code>australia</code>. Annual figures are the average of the four quarters of the <b>financial year ending 30 June</b>, on the ABS <b>2011-12 = 100</b> base — the FY average lands on exactly 100.00 for 2012, which is what confirms both conventions. Quarterly rows are stored too (freq Q, back to 1980-Q1). ⚠ This official series runs <b>8–12% higher than the old Looker spreadsheet in 2023-24</b>: that sheet appears to have missed part of the post-COVID cost surge, and its own tail is broken (empty 2025, a 2026 row copying 2024). Prefer this one.' });
+  renderSeriesView({ outId:'bpiRawOut', key:'building_price_index', metric:'building_price_index', dbSource:'rawlinsons', freq:'A', from:'1980-01-01', period:'year', colN:16, fmt:v=>v==null?'—':(+v).toFixed(1), unit:'index', sortBy:'group',
+    title:'Building price index — Canberra &amp; Darwin', eyebrow:'Rawlinsons · manual export', source:'Rawlinsons (via the Looker CSV export)',
+    defaultMsg:'No Rawlinsons rows loaded.',
+    note:'The ABS series covers the six <b>state</b> capitals only, so the two territories are not in it. These come from <b>Rawlinsons</b>, a paid publication with no API, loaded from the CSV export — which means they are <b>static</b> and will not move until someone re-exports. The export stored the index formatted as currency, so the loader divides by 10,000 (verified against the published table: Canberra 30.85 and Darwin 30.61 for 1983). <b>Not automatable</b> — treat these two as a manual refresh.' });
+};
+
 const loadSentiment = () => {
   renderSentEntry();
   renderSeriesView({ outId:'sentBcOut', key:'sentiment_manual', metric:'business_confidence', dbSource:'nab', freq:'M', from:'2018-01-01', period:'month', colN:12, fmt:v=>v==null?'—':(+v).toFixed(1), unit:'net balance', sortBy:'group',
