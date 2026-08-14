@@ -94,6 +94,12 @@ const latestYear = Math.max(...Object.keys(national.nom).map(Number));
 const { data: fc, error: fErr } = await sb.from('rdp_vr_forecast').select('region_slug,payload');
 if (fErr) { console.error('forecast read failed:', fErr.message); process.exit(1); }
 
+// Workforce figures come from public.vr_workforce — never from this repo, which
+// is public. `fc` is handed over as the fallback source for the window before
+// migration 100 is applied.
+await globalThis.VrWorkforce.load(sb, fc);
+console.log(`workforce: ${globalThis.VrWorkforce.markets().length} markets from ${globalThis.VrWorkforce.source()}`);
+
 const rows = [], skipped = [];
 for (const r of fc) {
   const p = r.payload || {}, slug = r.region_slug;
@@ -106,7 +112,7 @@ for (const r of fc) {
   const components = F[src];
   if (!components || !components.ni) { skipped.push(`${slug} (no components for ${src})`); continue; }
 
-  const wf = globalThis.VrWorkforce.forRegion(slug);
+  const wf = globalThis.VrWorkforce.forRegion(slug);   // loaded from public.vr_workforce above
   const res = globalThis.VrDemandCalc.computeDemand({
     components, population: pop, national, latestYear,
     treasuryNom: { yr1: TREASURY_NOM[latestYear + 1], yr2: TREASURY_NOM[latestYear + 2] },

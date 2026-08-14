@@ -1,54 +1,81 @@
 /* =============================================================================
-   vr-workforce.js — INFRASTRUCTURE WORKFORCE MODIFIER. Manual input, quarterly.
+   vr-workforce.js — INFRASTRUCTURE WORKFORCE MODIFIER: loader, not data.
 
-   The ONE input in the vacancy-rate model with no automated feed anywhere. It
-   is compiled by hand from major-project workforce schedules and covers only
-   the markets with material project pipelines. Everything else in the model
-   (population, household size, vacancy rates, commencements, NI/IM/OM) comes
-   from Forge — do not add anything here that Forge carries.
+   THE NUMBERS ARE NOT IN THIS FILE, AND MUST NOT BE PUT BACK. This repo is
+   PUBLIC and the workforce figures are internal research. They live in
+   public.vr_workforce (migration 100), behind auth like everything else.
+   This module only knows how to fetch them.
 
-   y1 / y2 = extra PEOPLE expected in the market from project workforces in
-   forecast year 1 and year 2. They are converted to households at the region's
-   average household size, exactly like any other incoming people.
+   What they are: extra PEOPLE expected in a market from major-project
+   workforces, in forecast year 1 and year 2, compiled by hand each quarter and
+   covering only the markets with material project pipelines. They convert to
+   households at the region's average size, exactly like any other incoming
+   people. A market with no row disables the workforce toggle rather than
+   applying a silent zero.
 
    NOT A DOUBLE COUNT. The source workbook's IM tab holds G = E + WF; the
-   pipeline stores column E, the WF-free base. Verified on live payloads:
-   Perth 12,144 · Townsville 412 · Mackay 398 · Darwin -2,055 all equal the
-   split base, so ADDING these numbers reproduces G. Anyone re-wiring the IM
-   feed must keep pulling column E — pulling the combined G and adding this
-   table would count the workforce twice.
+   pipeline stores column E, the WF-free base, so these ADD to it. Anyone
+   re-wiring the IM feed must keep pulling column E — pulling the combined
+   column and adding this would count the workforce twice.
 
    The 1.0 multiplier is an OPEN ASSUMPTION: no local-hire, FIFO or
-   camp-accommodation discount is applied, so every project worker is treated
-   as a new resident forming a household at the region's average size. That is
-   tolerable while this is a manual side-input but becomes far more visible now
-   the demand side is automated. Calibration path: QGSO non-resident population.
+   camp-accommodation discount. Calibration path: QGSO non-resident population.
 
-   To update: edit the numbers, bump REVIEWED, commit. A market with no entry
-   disables the workforce toggle rather than silently applying zero.
+   TO UPDATE (quarterly): edit public.vr_workforce. Not a code change any more.
 
-   Dual-use: loaded as a <script> in the browser (globalThis.VrWorkforce) and
-   imported by scripts/build-vr-demand.mjs, so the tool and the seeder can
-   never drift apart.
+   Usage — always await load() before reading:
+     await VrWorkforce.load(window.sb);        // browser
+     await VrWorkforce.load(sb, payloadsById); // node, with a fallback source
+     VrWorkforce.forRegion('mackay')  ->  { y1, y2 } | null
    ============================================================================= */
 (function (root) {
   'use strict';
 
-  const REVIEWED = 'August 2026';
+  let TABLE = null;                 // null until loaded — never a silent {}
+  let REVIEWED = null;
+  let SOURCE = 'unloaded';
 
-  const TABLE = {
-    perth:       { y1: 286,        y2: 958.285714 },
-    townsville:  { y1: 1805,       y2: 942 },
-    rockingham:  { y1: 254.28,     y2: 257.14 },
-    darwin:      { y1: 819.123809, y2: 239.2 },
-    mackay:      { y1: 2142.4,     y2: 240.933333 },
-    mandurah:    { y1: 169.26,     y2: 169.26 },
-    rockhampton: { y1: 120,        y2: 82.5 },
-    gladstone:   { y1: 26.25,      y2: 168.075 },
-  };
+  /* Fetch from public.vr_workforce. If that table isn't there yet (migration
+     100 not applied), fall back to the wf figures already embedded per region
+     in rdp_vr_forecast.payload.demand — the same numbers, written by
+     build-vr-demand.mjs, so the tool keeps working either way and still reads
+     nothing from the repo. */
+  async function load(sb, payloads) {
+    if (TABLE) return TABLE;
+    TABLE = {};
+    try {
+      const { data, error } = await sb.from('vr_workforce').select('region_slug,y1,y2,reviewed');
+      if (!error && data && data.length) {
+        for (const r of data) TABLE[r.region_slug] = { y1: +r.y1, y2: +r.y2 };
+        REVIEWED = data[0].reviewed || null;
+        SOURCE = 'vr_workforce';
+        return TABLE;
+      }
+    } catch (e) { /* fall through to the payload fallback */ }
 
-  const forRegion = slug => TABLE[slug] || null;
-  const markets = () => Object.keys(TABLE);
+    try {
+      let rows = payloads;
+      if (!rows) {
+        const { data } = await sb.from('rdp_vr_forecast').select('region_slug,payload');
+        rows = data || [];
+      }
+      for (const r of rows) {
+        const d = r.payload && r.payload.demand;
+        // V2, not V1: V1 repeats year 1 wholesale and sets its wf2 equal to
+        // wf1, so only V2 carries the real year-2 figure.
+        const src = (d && d.v2) || (d && d.v1);
+        if (src && src.wf1) TABLE[r.region_slug] = { y1: +src.wf1, y2: +src.wf2 };
+      }
+      SOURCE = Object.keys(TABLE).length ? 'rdp_vr_forecast (fallback — apply migration 100)' : 'none';
+    } catch (e) { SOURCE = 'none'; }
+    return TABLE;
+  }
 
-  root.VrWorkforce = { TABLE, REVIEWED, forRegion, markets };
+  const forRegion = slug => (TABLE && TABLE[slug]) || null;
+  const markets = () => Object.keys(TABLE || {});
+  const reviewed = () => REVIEWED;
+  const source = () => SOURCE;
+  const loaded = () => TABLE != null;
+
+  root.VrWorkforce = { load, forRegion, markets, reviewed, source, loaded };
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : this));
