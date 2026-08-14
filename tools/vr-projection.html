@@ -183,6 +183,8 @@
 <script src="../shared/auth.js?v=7dce203e"></script>
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
 <script src="../shared/pp-telemetry.js?v=a1e39d4f"></script>
+<!-- manual infrastructure-workforce table, shared with the demand seeder -->
+<script src="../shared/vr-workforce.js?v=faa5f0e3"></script>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -191,40 +193,12 @@ const num = v => v == null ? '—' : Math.round(v).toLocaleString();
 const signed = v => v == null ? '—' : (v >= 0 ? '+' : '') + Math.round(v).toLocaleString();   // migration components carry a sign (IM often negative)
 const BALANCED = 0.03;   // ~3% vacancy = a balanced rental market
 
-/* ══════════════════════════════════════════════════════════════════════════
-   INFRASTRUCTURE WORKFORCE — MANUAL INPUT TABLE. Update quarterly.
-
-   This is the ONE input on this page with no automated feed: it is compiled by
-   hand from major-project workforce schedules and covers only the 8 markets
-   with material project pipelines. Everything else on this page (population,
-   household size, vacancy rates, commencements, NI/IM/OM) comes from the live
-   Forge pipeline via rdp_vr_forecast — do not add data here that Forge carries.
-
-   y1 / y2 = extra PEOPLE expected in the market from project workforces, in
-   forecast year 1 and year 2. They are converted to households at the region's
-   average household size, exactly like any other incoming people.
-
-   To update: edit the numbers, bump REVIEWED, commit. A market with no entry
-   disables the Infrastructure WF toggle rather than silently applying zero.
-
-   NOT a double count (confirmed with Shaene 2026-08-14). The workbook's IM tab
-   holds G = E + WF; the pipeline stores column E, the WF-free base. Verified on
-   the live payload: Perth 12,144 · Townsville 412 · Mackay 398 · Darwin −2,055
-   all equal the split base exactly, so adding these numbers reproduces G.
-   Anyone re-wiring the IM feed must keep pulling column E — pulling the
-   combined G and adding this table would count the workforce twice.
-   ══════════════════════════════════════════════════════════════════════════ */
-const INFRA_WF_REVIEWED = 'August 2026';
-const INFRA_WF = {
-  perth:       { y1: 286,        y2: 958.285714 },
-  townsville:  { y1: 1805,       y2: 942 },
-  rockingham:  { y1: 254.28,     y2: 257.14 },
-  darwin:      { y1: 819.123809, y2: 239.2 },
-  mackay:      { y1: 2142.4,     y2: 240.933333 },
-  mandurah:    { y1: 169.26,     y2: 169.26 },
-  rockhampton: { y1: 120,        y2: 82.5 },
-  gladstone:   { y1: 26.25,      y2: 168.075 },
-};
+/* Infrastructure workforce — the one manual input in the model. The table and
+   its full provenance live in shared/vr-workforce.js so this page and the
+   seeder (scripts/build-vr-demand.mjs) read the SAME numbers and cannot drift.
+   Update it there, not here. */
+const INFRA_WF = (globalThis.VrWorkforce && globalThis.VrWorkforce.TABLE) || {};
+const INFRA_WF_REVIEWED = (globalThis.VrWorkforce && globalThis.VrWorkforce.REVIEWED) || 'unknown';
 
 /* Demand method. V1 is what the live pipeline carries today: NI and IM are
    single 2-year averages reused in both forecast years, so year 2 repeats
@@ -372,6 +346,9 @@ const regionsList = () => Object.keys(VR).map(slug => ({ slug, name: nameOf(slug
 });
 
 function initUI(){
+  // V2 unlocks as soon as the Forge-derived demand block is present. Before
+  // that it stays disabled rather than quietly serving V1 under a V2 label.
+  VERSIONS.v2.ready = Object.values(VR).some(p => p && p.demand && p.demand.v2);
   $('#vrControls').style.display = 'flex';
   { const sn = $('#vrSrcNote'); if (sn) sn.style.display = 'block'; }
   const list = regionsList();
@@ -465,32 +442,49 @@ function chainFor(p, raw, slug, wfOn){
     : oe1;
   if (newHH == null || oe1 == null) return { v, HH, props, hhSize, oeY };
 
-  /* Infrastructure workforce — extra PEOPLE on top of NI/IM/OM, converted to
-     households at the same average size. Markets with no entry disable the
-     toggle, so a zero here always means "deliberately excluded", never "missing". */
-  const w = wfOn ? wfFor(slug) : null;
-  const wf1 = w ? w.y1 : 0;
-  const repeat = VERSIONS[VER].yr2 === 'repeat';
-  // V1 repeats year-1 formation wholesale, workforce and all — the year-2
-  // workforce figure stays in the table but is deliberately not applied.
-  const wf2 = repeat ? wf1 : (w ? w.y2 : 0);
+  /* DEMAND. Preferred source is payload.demand[version] — computed from Forge's
+     financial-year components of population change by build-vr-demand.mjs, with
+     both versions carried per region. It reports the workforce-free totals
+     (people1NoWf) alongside the inclusive ones, so the toggle picks a figure
+     rather than adding to one — the double count this model keeps inviting.
+     Falls back to the legacy workbook-derived fields where no demand block has
+     been built yet, which keeps the tool working mid-migration. */
+  const dem = (p.demand && p.demand[VER]) || null;
+  const w = wfFor(slug);
+  let people1, people2, newHH1, newHH2, wf1, wf2, repeat, comps;
 
-  const basePeople = p.expectedPeople != null ? p.expectedPeople : newHH * (hhSize || 1);
-  const people1 = basePeople + wf1;
-  const newHH1  = newHH + (hhSize ? wf1 / hhSize : 0);
-  // Year 2 under "own" needs its own demand components; until the pipeline
-  // carries them this degrades to the repeat behaviour rather than inventing one.
-  const base2   = (!repeat && p.expectedPeople2 != null) ? p.expectedPeople2 : null;
-  const people2 = base2 != null ? base2 + wf2 : people1;
-  const newHH2  = base2 != null ? (base2 / (hhSize || 1)) + (hhSize ? wf2 / hhSize : 0) : newHH1;
+  if (dem) {
+    wf1 = w ? (dem.wf1 || 0) : 0;
+    wf2 = w ? (dem.wf2 || 0) : 0;
+    people1 = wfOn && w ? dem.people1 : dem.people1NoWf;
+    people2 = wfOn && w ? dem.people2 : dem.people2NoWf;
+    newHH1 = hhSize ? people1 / hhSize : null;
+    newHH2 = hhSize ? people2 / hhSize : null;
+    repeat = !!dem.repeatYr2;
+    // per-year component breakdown for the People cell
+    comps = {
+      y1: { ni: dem.ni1, im: dem.imBase1, om: dem.om1, wf: wfOn && w ? wf1 : 0 },
+      y2: { ni: dem.ni2, im: dem.imBase2, om: dem.om2, wf: wfOn && w ? wf2 : 0 },
+    };
+  } else {
+    const ww = wfOn ? w : null;
+    wf1 = ww ? ww.y1 : 0;
+    repeat = VERSIONS[VER].yr2 === 'repeat';
+    wf2 = repeat ? wf1 : (ww ? ww.y2 : 0);
+    const basePeople = p.expectedPeople != null ? p.expectedPeople : newHH * (hhSize || 1);
+    people1 = basePeople + wf1;
+    newHH1 = newHH + (hhSize ? wf1 / hhSize : 0);
+    people2 = people1; newHH2 = newHH1;
+    comps = { y1: { ni: p.nb, im: p.im, om: p.om, wf: wf1 }, y2: null };
+  }
 
   const props1 = props + oe1, HH1 = HH + newHH1;
   const props2 = props1 + (oe2 || 0), HH2 = HH1 + newHH2;
   const raw1 = props1 > 0 ? (props1 - HH1) / props1 : null;
   const raw2 = props2 > 0 ? (props2 - HH2) / props2 : null;
   return {
-    v, HH, props, hhSize, oeY, oe1, oe2, repeat: base2 == null,
-    hasWF: !!wfFor(slug), wf1: w ? wf1 : null, wf2: w ? wf2 : null,
+    v, HH, props, hhSize, oeY, oe1, oe2, repeat, comps, forge: !!dem,
+    hasWF: !!w, wf1: w ? wf1 : null, wf2: w ? wf2 : null,
     people1, people2, newHH: newHH1, newHH2, raw1, raw2,
     // 0.1% floor: a market at the floor has run out of surplus, it is not a
     // forecast of 0.1% — raw1/raw2 keep the unfloored value so the UI can say so.
@@ -514,11 +508,13 @@ function paint(){
   const posOf = v => v == null ? null : Math.min(100, Math.max(0, (v / scaleMax) * 100));
   const balPos = (BALANCED / scaleMax) * 100;
   const ticks = []; for (let t = 0; t <= Math.floor(scaleMax * 100); t++) ticks.push(`<span style="left:${(t / 100 / scaleMax) * 100}%">${t}%</span>`);
-  // People breakdown: NI / IM / OM from the pipeline, WF from the manual table
-  // and only when it is switched on (so the column always sums to the figure above).
-  const migCell = (wf) => (p.nb != null || p.im != null || p.om != null)
-    ? `<div class="mig"><span${p.nb < 0 ? ' class="neg"' : ''}>NI&nbsp; ${signed(p.nb)}</span><span${p.im < 0 ? ' class="neg"' : ''}>IM&nbsp; ${signed(p.im)}</span><span${p.om < 0 ? ' class="neg"' : ''}>OM&nbsp; ${signed(p.om)}</span>${wf ? `<span class="wf">WF&nbsp; ${signed(wf)}</span>` : ''}</div>`
-    : `<span>expected people</span>`;
+  /* People breakdown for a given year: NI / IM / OM, plus WF only when the
+     toggle is on — so the column always sums to the figure above it. */
+  const migCell = (c) => {
+    if (!c || (c.ni == null && c.im == null && c.om == null)) return `<span>expected people</span>`;
+    const line = (k, v, cls) => `<span${v < 0 ? ' class="neg"' : (cls ? ' class="' + cls + '"' : '')}>${k}&nbsp; ${signed(v)}</span>`;
+    return `<div class="mig">${line('NI', c.ni)}${line('IM', c.im)}${line('OM', c.om)}${c.wf ? line('WF', c.wf, 'wf') : ''}</div>`;
+  };
   const hhs = ch.hhSize != null ? (Math.round(ch.hhSize * 10) / 10).toFixed(1) : '—';
   // A market at the floor has run out of surplus — say so rather than present 0.1% as a forecast.
   const floorTag = rawv => (rawv != null && rawv < FLOOR) ? '<span class="floor">at 0.1% floor</span>' : '';
@@ -556,7 +552,7 @@ function paint(){
             </tr>
             <tr>
               <td class="lbl"><i class="dot d1"></i><b>Year 1</b><span>${fyLbl(ch.oeY)}</span></td>
-              <td><b>${signed(ch.people1)}</b>${migCell(ch.wf1)}</td>
+              <td><b>${signed(ch.people1)}</b>${migCell(ch.comps && ch.comps.y1)}</td>
               <td><b>${hhs}</b><span>unchanged</span></td>
               <td class="hh"><b>${signed(ch.newHH)}</b><span>new households</span></td>
               <td><b>${signed(ch.oe1)}</b><span>commencements</span></td>
@@ -564,7 +560,7 @@ function paint(){
             </tr>
             <tr>
               <td class="lbl"><i class="dot d2"></i><b>Year 2</b><span>${fyLbl(ch.oeY + 1)}</span></td>
-              <td><b>${signed(ch.people2)}</b>${ch.repeat ? '<span class="amber">held at year-1 level</span>' : migCell(ch.wf2)}</td>
+              <td><b>${signed(ch.people2)}</b>${ch.repeat ? '<span class="amber">held at year-1 level</span>' : migCell(ch.comps && ch.comps.y2)}</td>
               <td><b>${hhs}</b><span>unchanged</span></td>
               <td class="hh"><b>${signed(ch.newHH2)}</b><span>new households</span></td>
               <td><b>${signed(ch.oe2)}</b><span>commencements</span></td>
@@ -594,6 +590,8 @@ function paint(){
           Total properties are derived as households ÷ (1 − current VR), so changing the VR source also changes the implied dwelling stock — the whole chain shifts, not just the starting point.</div>
         <div class="mnote warn"><b>Household formation.</b> Incoming people are assumed to form households at the region's average size (${hhs} people per dwelling). Recent arrivals, particularly overseas migrants and construction workers, typically share at higher densities — so household formation may be lower than shown and demand is closer to a ceiling than a midpoint.</div>
         <div class="mnote"><b>Infrastructure workforce.</b> A manually-maintained input covering the ${Object.keys(INFRA_WF).length} markets with major-project data — ${Object.keys(INFRA_WF).map(s => esc(nameOf(s))).join(', ')} — reviewed ${INFRA_WF_REVIEWED}. No local-hire, FIFO or camp-accommodation discount is applied; the conversion from jobs to residents is an interim assumption pending calibration against QGSO non-resident population data. Every other market disables the toggle rather than applying a silent zero.</div>
+        ${ch.forge ? `<div class="mnote"><b>Demand comes from Forge, not a workbook.</b> Natural increase, internal and overseas migration are computed from the ABS annual components of population change (financial years, exact persons, per region) held in Forge, using the July 2026 workbook's <i>rules</i> — none of its data. Capitals read their own ${esc((p.demand && p.demand.basis) === 'state' ? 'STATE' : 'Greater Capital City')} figures.
+          Two consequences worth knowing: these will <b>not reconcile with the workbook</b>, because its multi-year averages were built from mixed ABS vintages (each year captured when it was current and never revised); and the averaging windows are parameters — ${esc(String(((p.demand || {}).params || {}).niWindowYears || 3))}-year for natural increase, ${esc(String(((p.demand || {}).params || {}).imYr2WeightCurrent != null ? ((p.demand || {}).params || {}).imYr2WeightCurrent : 0.5))} weight on the current year in year 2 — chosen to exclude the COVID-affected years and due for review each cycle.</div>` : ''}
         <div class="mnote"><b>Method.</b> Vacancy rate = surplus properties ÷ total properties. Each year adds incoming dwellings and the households formed by incoming people, then recomputes. A <b>0.1% floor</b> applies: a market shown at 0.1% has run out of surplus rather than being forecast at that level, and is labelled as such.</div>
         <div class="mnote"><b>Incoming supply.</b> Whether a market reads OE Commencements or discounted building approvals is decided per region by the workbook's own routing, not by a global rule — a market can have OE data and still be an approvals market. That routing is preserved across every toggle.</div>
       </div>
