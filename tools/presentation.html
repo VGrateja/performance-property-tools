@@ -5622,6 +5622,18 @@ let _gswAllFlagged = new Set();    /* deck.id values with a flagged link (picker
 let _gswPanel      = null;         /* the "what changed" panel, built on demand */
 let _gswDismissed  = '';           /* deck.id whose panel was closed without reviewing */
 
+/* DEV-ONLY SURFACE (Van, 2026-08-15: "the updated notice should only be
+   visible to me"). The watch is Van's own monitoring workflow — the "Updated"
+   picker chips, the red thumb dots, the "Google source updated" panel and the
+   Watch-source button were reaching every signed-in user as noise. Every
+   entry point checks this, so for anyone else the state is simply never
+   loaded. getAccessLevel() is view-as aware, so dev can verify by viewing-as
+   staff. RLS still guards the writes; this is a visibility gate only. */
+function _gswVisible() {
+  try { return typeof getAccessLevel === 'function' && getAccessLevel() === 'dev'; }
+  catch (_) { return false; }
+}
+
 /* deck.id — not deck._rowId — is this tool's canonical deck identifier: it's
    what ?deck= carries, what every overlay key is built from, and it exists
    before a deck has ever been persisted to presentation_decks. */
@@ -5837,7 +5849,7 @@ function _gswSyncWatchBtn(deck) {
   const btn = document.getElementById('pres-gsw-watch');
   if (!btn) return;
   const linked = !!_gswDeckLink(_gswState);
-  btn.style.display = (window.PP_GSW && _iAmWriter) ? '' : 'none';
+  btn.style.display = (window.PP_GSW && _gswVisible()) ? '' : 'none';   /* dev-only, like every other watch surface */
   btn.textContent = linked ? 'Google source ✓' : 'Watch source';
   btn.title = linked
     ? 'This deck is linked to a Google Slides copy — click to change or remove the link'
@@ -5847,7 +5859,7 @@ function _gswSyncWatchBtn(deck) {
 /* Attach / change / remove the Google Slides link this deck is watched
    against. An imported deck pre-fills its own snapshotSource. */
 async function _gswWatchDeckSource() {
-  if (!window.PP_GSW || !_activeDeck) return;
+  if (!_gswVisible() || !window.PP_GSW || !_activeDeck) return;
   const src    = _activeDeck.snapshotSource && _activeDeck.snapshotSource.id;
   const existing = _gswDeckLink(_gswState);
   /* Prefill: the link already in place, else the deck's own import source, else
@@ -5888,7 +5900,7 @@ async function _gswWatchDeckSource() {
    slide is just where the red dot lands, so you know which one to go and
    compare by hand. Writer-only in the UI; RLS is the real gate. */
 async function promptGswSlideLink(idx) {
-  if (!window.PP_GSW || !_activeDeck) return;
+  if (!_gswVisible() || !window.PP_GSW || !_activeDeck) return;
   const slide = (_activeDeck.slides || [])[idx];
   if (!slide) return;
   const existing = _gswSlideLink(_gswState, slide.gswKey);
@@ -5930,7 +5942,7 @@ function _gswOnDeckOpen(deck) {
   _gswDismissed = '';
   _gswHidePanel();
   _gswSyncWatchBtn(deck);
-  if (!window.PP_GSW || !deck) return;
+  if (!_gswVisible() || !window.PP_GSW || !deck) return;
   const key = _gswDeckKey(deck);
   PP_GSW.load(GSW_SCOPE, key).then(st => {
     /* The user may have gone back to the picker or opened another deck. */
@@ -5948,7 +5960,7 @@ function _gswOnDeckOpen(deck) {
    picker renders dozens of cards and a per-card query would be dozens of
    round trips (the cadence.html precedent). */
 async function _gswLoadPickerFlags() {
-  if (!window.PP_GSW) return;
+  if (!_gswVisible() || !window.PP_GSW) return;
   try {
     const st = await PP_GSW.load(GSW_SCOPE);
     const next = new Set();
@@ -6289,12 +6301,12 @@ function buildThumbnails() {
       const clipCount  = slideClipboardCount();
       const copyLabel  = selCount  > 1 ? ('Copy ' + selCount  + ' slides') : 'Copy slide';
       const pasteLabel = clipCount > 1 ? ('Paste ' + clipCount + ' slides below') : 'Paste slide below';
-      /* Google Slides watch (mig 098) — writers can point ONE hub slide at a
-         Google page and have it flagged when that page changes. Snapshot
-         decks already map themselves via srcPageId, so this is for the
-         hand-built slides; the label flips once a link exists. */
+      /* Google Slides watch (mig 098) — point ONE hub slide at a Google page
+         and have it flagged when that page changes. Snapshot decks already map
+         themselves via srcPageId, so this is for the hand-built slides; the
+         label flips once a link exists. Dev-only, like every watch surface. */
       const gswItems = [];
-      if (window.PP_GSW && _iAmWriter && selCount <= 1) {
+      if (window.PP_GSW && _gswVisible() && selCount <= 1) {
         const gswLink = _gswSlideLink(_gswState, entry && entry.gswKey);
         gswItems.push({ separator: true });
         gswItems.push({
@@ -15309,6 +15321,15 @@ function applyPresTierGate() {
      dev/admin-only ?view=users deep-link leaves its "Loading…" state for the
      right view — without the earlier flash of "My Presentations". */
   if ((_iAmDeckAdmin + '|' + _presTierResolved) !== prevState && typeof buildPicker === 'function') buildPicker();
+  /* The Google-Slides-watch surfaces are dev-only and their boot-time loads
+     may have run before the auth level resolved — re-enter them once a real
+     level lands. Both entry points self-gate on _gswVisible(), so this is a
+     no-op for everyone but the dev. */
+  if (level && !applyPresTierGate._gswKicked) {
+    applyPresTierGate._gswKicked = true;
+    if (typeof _gswLoadPickerFlags === 'function') _gswLoadPickerFlags();
+    if (_activeDeck && typeof _gswOnDeckOpen === 'function' && _gswVisible()) _gswOnDeckOpen(_activeDeck);
+  }
   /* The Users view needs the auth id to split mine-vs-others. Resolve it
      promptly (don't wait on full cloud hydration) + re-render, so the view
      doesn't sit on "Loading…" or briefly show decks that shouldn't be there. */
