@@ -38,7 +38,10 @@
     'bs-slides':        { sec: 'vault',     file: 'buying-selling-slides.html',  label: 'Buying/Selling Slides' },
     'suburb-data':      { sec: 'vault',     file: 'suburb-selection-data.html',  label: 'Suburb Selection Data' },
     'suburb-scoring':   { sec: 'vault',     file: 'suburb-scoring.html',         label: 'Suburb Scoring' },
-    'data-map':         { sec: 'vault',     file: 'data-architecture.html',      label: 'Data Architecture Map' },
+    /* dev-only since 2026-08-19 (rebuilt as the Research Pipeline board):
+       no hub card — a dev floating button + modal, like usage-analytics.
+       devOnly keeps it out of the Groups panel; the page gates itself. */
+    'data-map':         { sec: 'vault',     file: 'data-architecture.html',      label: 'Research Pipeline', devOnly: true },
     'reports-lite':     { sec: 'vault',     file: 'online-reports.html',         label: 'Lite Online Reports' },
     'lite-links':       { sec: 'vault',     file: 'lite-report-links.html',      label: 'Lite Report Links' },
     'results':          { sec: 'vault',     file: 'results.html',                label: 'Results' },
