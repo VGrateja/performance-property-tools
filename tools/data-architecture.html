@@ -460,8 +460,8 @@ const STEPS = [
       if (full >= 36 && nat && com) return { state: 'done', ev };
       if (full > 0) return { state: 'attn', ev: ev.concat(['edition ED' + CM + ' partially captured']) };
       return { ev }; } },
-  { id: 'r_suburb', ph: 'render', icon: '🏘', t: 'Suburb dashboards recomputed', s: 'one click after the Cotality drop', req: ['g_cotality'],
-    detail: '<p>The Suburb Selection Data recompute — rebuilds every region\'s advisor dashboard (<b>region_dashboard</b>) from the fresh CL suburb store. One button in the tool, once per drop.</p>',
+  { id: 'r_suburb', ph: 'render', icon: '🏘', t: 'Suburb dashboards recomputed', s: 'one click after the Cotality drop', req: ['g_cotality'], tick: 'suburb',
+    detail: '<p>The Suburb Selection Data recompute — rebuilds every region\'s advisor dashboard (<b>region_dashboard</b>) from the fresh CL suburb store. One button in the tool, once per drop. <b>Auto-confirms once the recompute\'s Save step lands</b> (it stamps computed_at); the override tick below covers a month you deliberately skip.</p>',
     acts: [['Suburb Selection Data', '../tools/suburb-selection-data.html']],
     check: d => { if (inCycle(d.regdMax)) return { state: 'done', ev: ['recomputed ' + fmtD(d.regdMax)] };
       return { ev: ['last recompute: ' + fmtD(d.regdMax)] }; } },
@@ -542,6 +542,12 @@ function computeStates() {
   for (const s of STEPS) {
     let res = { state: null, ev: [] };
     if (s.check) res = s.check(PD) || res;
+    /* auto step with an override tick: the tick counts as done when the DB
+       hasn't confirmed it (auto-done always wins and makes the tick moot) */
+    if (s.check && s.tick && res.state !== 'done' && isTicked(s)) {
+      const t = (TICKS[tickStore(s)] || {})[s.tick];
+      res = { state: 'done', ev: ['ticked ' + fmtD(t && t.at) + ' (manual override)'].concat(res.ev || []) };
+    }
     if (s.manual) {
       if (isTicked(s)) { const t = (TICKS[tickStore(s)] || {})[s.tick];
         res = { state: 'done', ev: ['ticked ' + fmtD(t && t.at)] }; }
@@ -620,7 +626,10 @@ function openStep(id) {
   drawer.style.setProperty('--c', ph.pc);
   const evHtml = (r.ev && r.ev.length) ? '<ul class="ev">' + r.ev.map(e => '<li>' + esc(e) + '</li>').join('') + '</ul>' : '';
   const acts = (s.acts || []).map(a => '<a class="chip" style="--cc:' + ph.pc + '" href="' + a[1] + '" target="_blank" rel="noopener"><span class="d"></span>' + esc(a[0]) + ' ↗</a>').join('');
-  const ticked = s.manual && isTicked(s);
+  const ticked = !!s.tick && isTicked(s);
+  /* tick button: always for manual steps; for auto steps with an override
+     key, only when the DB hasn't already confirmed (or to un-tick) */
+  const showTick = s.manual || (s.tick && (ticked || r.state !== 'done'));
   drawer.innerHTML = '<button class="close" onclick="closeDrawer()">✕</button>' +
     '<div class="dh"><div class="ic" style="--c:' + ph.pc + '">' + daIcon(s.icon) + '</div>' +
     '<div class="badge2" style="color:' + ph.pc + '">' + ph.t + ' · ' + STATE_LABEL[r.state] + '</div>' +
@@ -628,8 +637,8 @@ function openStep(id) {
     '<div class="body">' + (s.detail || '') +
     '<div class="rel"><h4>Evidence · ' + CYCLE_LABEL + '</h4>' + (evHtml || '<p style="color:var(--muted)">nothing logged yet</p>') + '</div>' +
     (acts ? '<div class="rel"><h4>Open</h4><div class="chips">' + acts + '</div></div>' : '') +
-    (s.manual ? '<button class="tickbtn' + (ticked ? ' undo' : '') + '" id="daTick" type="button">' +
-      (ticked ? 'Un-tick (mark not done)' : 'Mark done — ' + (s.ph === 'peri' ? (s.tick || '').split(':')[1] : CYCLE_LABEL)) + '</button>' : '') +
+    (showTick ? '<button class="tickbtn' + (ticked ? ' undo' : '') + '" id="daTick" type="button">' +
+      (ticked ? 'Un-tick (mark not done)' : 'Mark done' + (s.check ? ' (manual override)' : '') + ' — ' + (s.ph === 'peri' ? (s.tick || '').split(':')[1] : CYCLE_LABEL)) + '</button>' : '') +
     '</div>';
   drawer.classList.add('open'); scrim.classList.add('open');
   const tb = document.getElementById('daTick');
