@@ -246,6 +246,15 @@ h1{font-size:28px;font-weight:800;letter-spacing:-0.02em;margin:4px 0 2px}
 .ib-prov.auto{background:var(--ib-teal-soft);color:var(--ib-teal)}
 .ib-prov.edited{background:var(--ib-warn-soft);color:var(--ib-warn)}
 [data-theme="light"] .ib-prov.edited{color:#B36F00}
+/* publish modal */
+.ibp-ov{display:none;position:fixed;inset:0;z-index:9300;background:var(--shade-bg,rgba(10,14,22,0.72));
+  backdrop-filter:blur(6px);align-items:flex-start;justify-content:center;overflow:auto}
+.ibp-ov.show{display:flex}
+.ibp-dlg{width:min(620px,94vw);margin:8vh 0 6vh;background:var(--ib-solid);border:1px solid var(--ib-border-2);
+  border-radius:16px;padding:20px 22px 18px;box-shadow:0 22px 60px rgba(0,0,0,0.45)}
+.ibp-dlg h2{margin:0 0 4px;font-size:18px;font-weight:800}
+.ibp-dlg .ib-form{margin-top:12px}
+.ibp-stat{font-size:11.5px;font-weight:700;color:var(--ib-mut);margin-top:10px;min-height:16px}
 .ib-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;
   background:var(--ib-navy);color:#F4F6F8;border:1px solid rgba(255,255,255,0.18);border-radius:11px;
   padding:10px 18px;font:700 12.5px 'Montserrat',sans-serif;z-index:9400;pointer-events:none;transition:opacity .2s,transform .2s}
@@ -346,7 +355,9 @@ const COMP_MANUAL = [
     ['sa_deposit', 'Deposit Trust Account Receipt']]],
 ];
 
-let FILES = [], CUR = null, CFG = {}, RULES = [], RUBRIC = [], CAN = false, MY_EMAIL = '', view = 'review';
+let FILES = [], CUR = null, CFG = {}, RULES = [], RUBRIC = [], CAN = false, CANW = false, MY_EMAIL = '', view = 'review';
+/* CAN = has the ir-builder role · CANW = CAN and the file is still ACTIVE
+   (final/archived files are read-only until flipped back — the flip is audited) */
 let RATES = { current: 0.065, normalised: 0.0494 };   /* refreshed from rdp_runway_config at boot */
 
 /* ── boot ── */
@@ -387,10 +398,13 @@ async function boot() {
   if (id) { const f = FILES.find(x => x.id === id); if (f) openFile(id); }
 }
 
+let SHOW_ARCH = false;
 function renderHome() {
   $('#ibFile').style.display = 'none'; $('#ibHome').style.display = '';
   if (!FILES.length) { $('#ibHome').innerHTML = '<div class="ib-empty">No property files yet' + (CAN ? ' — create the first one.' : '.') + '</div>'; return; }
-  $('#ibHome').innerHTML = '<div class="ib-files">' + FILES.map(f => {
+  const archived = FILES.filter(f => f.status === 'archived');
+  const shown = SHOW_ARCH ? FILES : FILES.filter(f => f.status !== 'archived');
+  $('#ibHome').innerHTML = '<div class="ib-files">' + shown.map(f => {
     const rv = (f.compliance && f.compliance.review) || {};
     const checked = SECTIONS.filter(s => rv[s]).length;
     return '<button class="ib-fcard" type="button" data-id="' + f.id + '">' +
@@ -400,8 +414,12 @@ function renderHome() {
       (checked ? '<span class="ib-chip good">checked ' + checked + '/' + SECTIONS.length + '</span>' : '') + '</div>' +
       '<div class="r">' + esc(((f.roles || {}).consultant ? 'Consultant ' + f.roles.consultant : '')) +
       ' · updated ' + auTs(f.updated_at) + '</div></button>';
-  }).join('') + '</div>';
+  }).join('') + '</div>' +
+  (archived.length ? '<div class="ib-note" style="margin-top:12px"><button class="ib-btn sm" id="ibArchTgl" type="button">' +
+    (SHOW_ARCH ? 'Hide' : 'Show') + ' archived (' + archived.length + ')</button></div>' : '');
   document.querySelectorAll('.ib-fcard').forEach(c => c.onclick = () => openFile(c.dataset.id));
+  const at = document.getElementById('ibArchTgl');
+  if (at) at.onclick = () => { SHOW_ARCH = !SHOW_ARCH; renderHome(); };
 }
 
 async function newFile() {
@@ -447,12 +465,21 @@ function stepDone(s) {
 
 function renderFile() {
   $('#ibHome').style.display = 'none'; $('#ibFile').style.display = '';
+  CANW = CAN && CUR.status === 'active';
   const rv = (CUR.compliance && CUR.compliance.review) || {};
+  const statusCtl = CAN
+    ? '<select id="ibStatus" class="ib-inp" style="padding:5px 9px;font-size:11px;font-weight:800">' +
+      ['active', 'final', 'archived'].map(s => '<option' + (s === CUR.status ? ' selected' : '') + '>' + s + '</option>').join('') + '</select>'
+    : '<span class="ib-chip' + (CUR.status === 'final' ? ' good' : CUR.status === 'archived' ? ' warn' : '') + '">' + CUR.status + '</span>';
   $('#ibFile').innerHTML =
     '<div class="ib-fhead"><button class="ib-btn sm" id="ibBack" type="button">&larr; Files</button>' +
     '<h2>' + esc(CUR.address + (CUR.suburb ? ', ' + CUR.suburb : '')) + '</h2>' +
-    '<span class="sub">' + esc(CUR.market_label || 'market not set') + (CUR.state ? ' · ' + esc(CUR.state) : '') +
-    ' · <span class="ib-chip">' + CUR.status + '</span></span></div>' +
+    '<span class="sub">' + esc(CUR.market_label || 'market not set') + (CUR.state ? ' · ' + esc(CUR.state) : '') + '</span>' +
+    statusCtl +
+    (!CANW && CAN ? '<span class="ib-note">read-only while ' + CUR.status + '</span>' : '') +
+    (CAN ? '<button class="ib-btn pri sm" id="ibPublish" type="button" style="margin-left:auto">' +
+      ((CUR.compliance || {}).published ? 'Re-publish to library' : 'Publish as example IR') + '</button>' : '') +
+    '</div>' +
     '<div class="ib-steps">' + STEPS.map(s =>
       '<button class="ib-step' + (view === s.id ? ' on' : '') + '" type="button" data-step="' + s.id + '">' +
       (s.id === 'review' ? '' : '<span class="d' + (stepDone(s.id) ? ' done' : '') + '"></span>') + s.t +
@@ -460,6 +487,16 @@ function renderFile() {
       '</button>').join('') + '</div>' +
     '<div id="ibStepBody"></div>';
   $('#ibBack').onclick = () => { CUR = null; history.replaceState(null, '', location.pathname); refreshList(); };
+  const stSel = $('#ibStatus');
+  if (stSel) stSel.onchange = async () => {
+    const next = stSel.value;
+    const { error } = await sb.from('ir_files').update({ status: next }).eq('id', CUR.id);
+    if (error) { toast('Status change failed: ' + error.message); stSel.value = CUR.status; return; }
+    CUR.status = next; toast('Status: ' + next + (next !== 'active' ? ' — file is now read-only' : ''));
+    renderFile();
+  };
+  const pubBtn = $('#ibPublish');
+  if (pubBtn) pubBtn.onclick = openPublish;
   document.querySelectorAll('.ib-step').forEach(b => b.onclick = () => { view = b.dataset.step; renderFile(); });
   const body = $('#ibStepBody');
   if (view === 'review') renderReview(body);
@@ -517,7 +554,7 @@ function renderSetup(el) {
     ['consultant', 'dd_support', 'sales_admin', 'assistant'].map(r =>
       '<label>' + label(r) + '<input id="fRole_' + r + '" value="' + esc(roles[r] || '') + '"></label>').join('') +
     '</div></div>' +
-    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveSetup" type="button"' + (CAN ? '' : ' disabled') + '>Save setup</button></div>';
+    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveSetup" type="button"' + (CANW ? '' : ' disabled') + '>Save setup</button></div>';
   renderIntel();
   $('#fMkt').onchange = renderIntel; $('#fSub').onchange = renderIntel;
   $('#ibSaveSetup').onclick = async () => {
@@ -681,16 +718,16 @@ function renderDD(el) {
         (src && /^https?:/i.test(src) ? '<a class="src" href="' + esc(src) + '" target="_blank" rel="noopener">source ↗</a>'
           : (src ? '<span class="src" style="color:var(--ib-mut)">' + esc(src) + '</span>' : '')) +
         (crit ? '<button class="ib-btn sm ib-critbtn" type="button">criteria</button>' : '') +
-        '<select class="ib-ddrating' + (v.rating ? ' s-' + v.rating : '') + '"' + (CAN ? '' : ' disabled') + '>' +
+        '<select class="ib-ddrating' + (v.rating ? ' s-' + v.rating : '') + '"' + (CANW ? '' : ' disabled') + '>' +
         '<option value="">—</option>' + DD_RATINGS.map(r => '<option' + (v.rating === r ? ' selected' : '') + '>' + r + '</option>').join('') +
         '</select></div>' +
         (crit ? '<div class="ib-crit">' + crit + '</div>' : '') +
-        '<textarea class="ib-ddnotes" placeholder="Notes"' + (CAN ? '' : ' disabled') + '>' + esc(v.notes || '') + '</textarea>' +
+        '<textarea class="ib-ddnotes" placeholder="Notes"' + (CANW ? '' : ' disabled') + '>' + esc(v.notes || '') + '</textarea>' +
         '<div class="ib-files">' + ddFileChips(v.files) +
-          (CAN ? '<button class="ib-attach" type="button">&#128206; attach evidence</button><input type="file" hidden multiple accept="image/*,.pdf">' : '') +
+          (CANW ? '<button class="ib-attach" type="button">&#128206; attach evidence</button><input type="file" hidden multiple accept="image/*,.pdf">' : '') +
         '</div></div>';
     }).join('') + '</div>' +
-    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveDD" type="button"' + (CAN ? '' : ' disabled') + '>Save DD</button></div>';
+    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveDD" type="button"' + (CANW ? '' : ' disabled') + '>Save DD</button></div>';
   document.querySelectorAll('.ib-critbtn').forEach(b => b.onclick = () => b.closest('.ib-dditem').classList.toggle('open'));
   document.querySelectorAll('.ib-ddrating').forEach(s => s.onchange = () => { s.className = 'ib-ddrating' + (s.value ? ' s-' + s.value : ''); });
   wireDdEvidence(el);
@@ -711,7 +748,7 @@ function renderDD(el) {
 function ddFileChips(files) {
   return (files || []).map((f, i) =>
     '<span class="ib-file" data-path="' + esc(f.path) + '"><span class="nm">' + esc(f.name) + '</span>' +
-    (CAN ? '<span class="x" data-rmi="' + i + '" title="remove">&times;</span>' : '') + '</span>').join('');
+    (CANW ? '<span class="x" data-rmi="' + i + '" title="remove">&times;</span>' : '') + '</span>').join('');
 }
 function ddSlug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50); }
 function wireDdEvidence(root) {
@@ -794,11 +831,11 @@ function renderInspection(el) {
       '<span class="cnt">' + feats.filter(f => f.p).length + ' present' + (issues ? ' · <span style="color:var(--ib-warn)">' + issues + ' flagged</span>' : '') + '</span></div>' +
       '<div class="ib-room-b">' + feats.map((f, i) =>
         '<div class="ib-feat" data-fi="' + i + '"><span class="fn">' + esc(f.name) + '</span>' +
-        '<button type="button" class="ib-tgl tp' + (f.p ? ' on-p' : '') + '"' + (CAN ? '' : ' disabled') + '>Present</button>' +
-        '<button type="button" class="ib-tgl tr' + (f.r ? ' on-r' : '') + '"' + (CAN ? '' : ' disabled') + '>Required</button>' +
-        '<button type="button" class="ib-tgl tm' + (f.m ? ' on-m' : '') + '"' + (CAN ? '' : ' disabled') + '>Maint</button>' +
-        '<input class="fcost" inputmode="numeric" placeholder="$" value="' + esc(f.cost != null ? f.cost : '') + '"' + (CAN ? '' : ' disabled') + '>' +
-        '<input class="fnote" placeholder="note" value="' + esc(f.note || '') + '"' + (CAN ? '' : ' disabled') + '>' +
+        '<button type="button" class="ib-tgl tp' + (f.p ? ' on-p' : '') + '"' + (CANW ? '' : ' disabled') + '>Present</button>' +
+        '<button type="button" class="ib-tgl tr' + (f.r ? ' on-r' : '') + '"' + (CANW ? '' : ' disabled') + '>Required</button>' +
+        '<button type="button" class="ib-tgl tm' + (f.m ? ' on-m' : '') + '"' + (CANW ? '' : ' disabled') + '>Maint</button>' +
+        '<input class="fcost" inputmode="numeric" placeholder="$" value="' + esc(f.cost != null ? f.cost : '') + '"' + (CANW ? '' : ' disabled') + '>' +
+        '<input class="fnote" placeholder="note" value="' + esc(f.note || '') + '"' + (CANW ? '' : ' disabled') + '>' +
         '</div>').join('') + '</div></div>';
   };
   el.innerHTML =
@@ -807,12 +844,12 @@ function renderInspection(el) {
     ['beds', 'baths', 'living', 'cars'].map(k => '<label>' + label(k) + '<input data-ik="' + k + '" inputmode="numeric" value="' + esc(INSP[k] != null ? INSP[k] : '') + '"></label>').join('') + '</div></div>' +
     '<div class="ib-card"><h3>Room by room <span class="right"><span class="ib-note">tap Present / Required / Maint — flagged items feed the report + AMP</span></span></h3>' +
     Object.keys(ROOMS_DEF).map(roomCard).join('') + '</div>' +
-    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveInsp" type="button"' + (CAN ? '' : ' disabled') + '>Save inspection</button></div>';
+    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveInsp" type="button"' + (CANW ? '' : ' disabled') + '>Save inspection</button></div>';
   el.querySelectorAll('.ib-room-h').forEach(h => h.onclick = () => h.closest('.ib-room').classList.toggle('open'));
   el.querySelectorAll('.ib-feat').forEach(row => {
     const room = row.closest('.ib-room').dataset.room, i = +row.dataset.fi;
     const f = INSP.rooms[room].features[i];
-    const flip = (btn, key, cls) => { if (!CAN) return; f[key] = !f[key]; btn.classList.toggle('on-' + cls, f[key]); };
+    const flip = (btn, key, cls) => { if (!CANW) return; f[key] = !f[key]; btn.classList.toggle('on-' + cls, f[key]); };
     row.querySelector('.tp').onclick = e => flip(e.target, 'p', 'p');
     row.querySelector('.tr').onclick = e => flip(e.target, 'r', 'r');
     row.querySelector('.tm').onclick = e => flip(e.target, 'm', 'm');
@@ -847,7 +884,7 @@ function renderGrading(el) {
   const row = item => {
     const v = items[item] || '';
     return '<div class="ib-feat" data-gitem="' + esc(item) + '"><span class="fn" style="flex-basis:210px">' + esc(item) + '</span>' +
-      '<select class="gsel"' + (CAN ? '' : ' disabled') + '><option value="">—</option>' +
+      '<select class="gsel"' + (CANW ? '' : ' disabled') + '><option value="">—</option>' +
       gradesFor(item).map(gr => '<option' + (gr === v ? ' selected' : '') + '>' + esc(gr) + '</option>').join('') + '</select>' +
       '<span class="ib-note gcomment" style="flex:2 1 240px">' + esc(rubricComment(item, v)) + '</span></div>';
   };
@@ -861,7 +898,7 @@ function renderGrading(el) {
     '</div></div>' +
     '<div class="ib-card"><h3>Property / site attributes</h3>' + (layout.property || []).map(row).join('') + '</div>' +
     '<div class="ib-card"><h3>Location attributes</h3>' + (layout.location || []).map(row).join('') + '</div>' +
-    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveGrading" type="button"' + (CAN ? '' : ' disabled') + '>Save grading</button></div>';
+    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveGrading" type="button"' + (CANW ? '' : ' disabled') + '>Save grading</button></div>';
   el.querySelectorAll('.gsel').forEach(s => s.onchange = () => {
     const d = s.closest('[data-gitem]');
     d.querySelector('.gcomment').textContent = rubricComment(d.dataset.gitem, s.value);
@@ -893,10 +930,10 @@ function parseDateAny(s) {
   const d = new Date(t); return isNaN(d) ? null : d.getTime();
 }
 function eRow(cols) { return '<tr>' + cols.join('') + '</tr>'; }
-function eIn(cls, val, ph, dis) { return '<td><input class="' + cls + '" value="' + esc(val != null ? val : '') + '" placeholder="' + (ph || '') + '"' + (dis || !CAN ? ' disabled' : '') + '></td>'; }
-function eSel(cls, val, opts) { return '<td><select class="' + cls + '"' + (CAN ? '' : ' disabled') + '><option value="">—</option>' +
+function eIn(cls, val, ph, dis) { return '<td><input class="' + cls + '" value="' + esc(val != null ? val : '') + '" placeholder="' + (ph || '') + '"' + (dis || !CANW ? ' disabled' : '') + '></td>'; }
+function eSel(cls, val, opts) { return '<td><select class="' + cls + '"' + (CANW ? '' : ' disabled') + '><option value="">—</option>' +
   opts.map(o => '<option' + (o === val ? ' selected' : '') + '>' + o + '</option>').join('') + '</select></td>'; }
-function eRm() { return CAN ? '<td><button class="rm" type="button">&times;</button></td>' : '<td></td>'; }
+function eRm() { return CANW ? '<td><button class="rm" type="button">&times;</button></td>' : '<td></td>'; }
 
 function renderPricing(el) {
   PR = JSON.parse(JSON.stringify(CUR.pricing || {}));
@@ -905,7 +942,7 @@ function renderPricing(el) {
   const autoRef = intelAutoMap(CUR.suburb_stats || {});
   const sub = PR.suburb;
   const subFld = (k, lab, isPct) => '<label>' + lab + provChip(sub[k], autoRef[k]) +
-    '<input data-sk="' + k + '" value="' + esc(sub[k] != null ? (isPct ? (sub[k] * 100).toFixed(2) + '%' : sub[k]) : '') + '"' + (CAN ? '' : ' disabled') + '></label>';
+    '<input data-sk="' + k + '" value="' + esc(sub[k] != null ? (isPct ? (sub[k] * 100).toFixed(2) + '%' : sub[k]) : '') + '"' + (CANW ? '' : ' disabled') + '></label>';
   el.innerHTML =
     '<div class="ib-card"><h3>Suburb data <span class="right"><span class="ib-note">prefilled from the hub — verify or correct</span></span></h3>' +
     '<div class="ib-form" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">' +
@@ -923,16 +960,16 @@ function renderPricing(el) {
     '<div class="ib-card"><h3>Comparable rents <span class="right"><span class="ib-derived" id="prRentRange"></span></span></h3><div class="ib-tblwrap"><table class="ib-etbl" id="prRents"><thead><tr><th style="min-width:180px">Address</th><th>Link</th><th>Comparability</th><th>Rent /wk</th><th></th></tr></thead><tbody></tbody></table></div>' +
     (CAN ? '<button class="ib-btn sm" id="prRentAdd" type="button">+ add comparable rent</button>' : '') + '</div>' +
     '<div class="ib-card"><h3>Appraisal summary</h3><div class="ib-form" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr))">' +
-    '<label>Adopted direct comparable<input id="adComparable" value="' + esc(PR.adopted.comparable != null ? PR.adopted.comparable : '') + '"' + (CAN ? '' : ' disabled') + '></label>' +
-    '<label>Adopted weekly rent<input id="adRent" value="' + esc(PR.adopted.rent != null ? PR.adopted.rent : '') + '"' + (CAN ? '' : ' disabled') + '></label>' +
+    '<label>Adopted direct comparable<input id="adComparable" value="' + esc(PR.adopted.comparable != null ? PR.adopted.comparable : '') + '"' + (CANW ? '' : ' disabled') + '></label>' +
+    '<label>Adopted weekly rent<input id="adRent" value="' + esc(PR.adopted.rent != null ? PR.adopted.rent : '') + '"' + (CANW ? '' : ' disabled') + '></label>' +
     '<label>Investment yield price (auto)<input id="adYieldPrice" disabled></label>' +
-    '<label>Market strength<select id="adStrength"' + (CAN ? '' : ' disabled') + '><option value="">—</option>' +
+    '<label>Market strength<select id="adStrength"' + (CANW ? '' : ' disabled') + '><option value="">—</option>' +
       (((CFG.market_strength || {}).levels) || []).map(l => '<option' + (l.name === PR.adopted.marketStrength ? ' selected' : '') + '>' + esc(l.name) + '</option>').join('') + '</select></label>' +
     '<label>Negotiation range (auto)<input id="adNegRange" disabled></label>' +
-    '<label>Adopted top price<input id="adTop" value="' + esc(PR.adopted.topPrice != null ? PR.adopted.topPrice : '') + '"' + (CAN ? '' : ' disabled') + '></label>' +
+    '<label>Adopted top price<input id="adTop" value="' + esc(PR.adopted.topPrice != null ? PR.adopted.topPrice : '') + '"' + (CANW ? '' : ' disabled') + '></label>' +
     '<label>Gross yield (auto)<input id="adGross" disabled></label>' +
     '</div></div>' +
-    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSavePricing" type="button"' + (CAN ? '' : ' disabled') + '>Save pricing</button></div>';
+    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSavePricing" type="button"' + (CANW ? '' : ' disabled') + '>Save pricing</button></div>';
 
   const histBody = () => $('#prHist tbody').innerHTML = PR.history.map((h, i) => {
     const prev = PR.history[i - 1];
@@ -997,7 +1034,7 @@ function renderPricing(el) {
     el.querySelectorAll('.ib-etbl input, .ib-etbl select').forEach(i => { i.onchange = recompute; });
   }
   histBody(); streetBody(); compBody(); rentBody();
-  if (CAN) {
+  if (CANW) {
     $('#prHistAdd').onclick = () => { harvest(); PR.history.push({}); histBody(); wireRows(); };
     $('#prStreetAdd').onclick = () => { harvest(); PR.streetSales.push({}); streetBody(); wireRows(); };
     $('#prCompAdd').onclick = () => { harvest(); PR.compSales.push({}); compBody(); wireRows(); };
@@ -1048,7 +1085,7 @@ function renderCashflow(el) {
   if (CFW.acquisitionFee == null && CFW.budget && D.acquisitionFeePct) CFW.acquisitionFee = Math.round(CFW.budget * D.acquisitionFeePct);
   const PCT = ['lvr', 'rate', 'pmFeePct', 'repairsPctOfRent'];
   const F = (k, lab, extra) => '<label>' + lab +
-    '<input data-ck="' + k + '" value="' + esc(CFW[k] != null ? (PCT.includes(k) ? (CFW[k] * 100).toFixed(2) + '%' : CFW[k]) : '') + '"' + (CAN ? '' : ' disabled') + '>' + (extra || '') + '</label>';
+    '<input data-ck="' + k + '" value="' + esc(CFW[k] != null ? (PCT.includes(k) ? (CFW[k] * 100).toFixed(2) + '%' : CFW[k]) : '') + '"' + (CANW ? '' : ' disabled') + '>' + (extra || '') + '</label>';
   el.innerHTML =
     '<div class="ib-card"><h3>Cost of property & acquisition</h3><div class="ib-form" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">' +
     F('budget', 'Top budget' + (adopted.topPrice ? ' (adopted ' + money(adopted.topPrice) + ')' : '')) +
@@ -1073,7 +1110,7 @@ function renderCashflow(el) {
     '</div></div>' +
     '<div class="ib-card"><h3>Computed <span class="right"><span class="ib-note">P&I at your rate · IO · Normalised at the IC rate (' + pct(RATES.normalised) + ')</span></span></h3>' +
     '<div class="ib-cashsum" id="cfCards"></div></div>' +
-    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveCash" type="button"' + (CAN ? '' : ' disabled') + '>Save cashflow</button></div>';
+    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveCash" type="button"' + (CANW ? '' : ' disabled') + '>Save cashflow</button></div>';
   const feesBody = () => $('#cfFees tbody').innerHTML = CFW.feeLines.map(f =>
     eRow([eIn('fl', f.label, 'Advice Management Fee'), eIn('fp', f.pct != null ? (f.pct * 100).toFixed(2) + '%' : '', '%'), eIn('fa', f.amount, '$'), eRm()])).join('');
   const numv = v => { const d = String(v || '').replace(/[^0-9.]/g, ''); return d ? +d : null; };
@@ -1109,7 +1146,7 @@ function renderCashflow(el) {
   }
   feesBody(); wireFees(); cards();
   el.querySelectorAll('[data-ck]').forEach(i => i.oninput = cards);
-  if (CAN) {
+  if (CANW) {
     $('#cfFeeAdd').onclick = () => { harvest(); CFW.feeLines.push({}); feesBody(); wireFees(); };
     $('#cfLT').onclick = () => { harvest(); const s = suggestLandTax(CFW.budget || 0, CUR.state); if (s == null) { toast('No bracket for ' + (CUR.state || 'state?')); return; }
       el.querySelector('[data-ck="landTax"]').value = s; cards(); };
@@ -1150,7 +1187,7 @@ function renderCompliance(el) {
         return '<div class="ib-comp-item"><span class="ib-cbx' + (t ? ' on' : '') + '" data-ck="' + k + '"' + '>' + (t ? '✓' : '') + '</span>' + esc(lab) +
           (t ? '<span class="w">' + esc((t.by || '').split('@')[0]) + ' · ' + auDay(t.at) + '</span>' : '') + '</div>'; }).join('')).join('') +
     '</div>';
-  if (CAN) el.querySelectorAll('.ib-cbx[data-ck]').forEach(b => b.onclick = async () => {
+  if (CANW) el.querySelectorAll('.ib-cbx[data-ck]').forEach(b => b.onclick = async () => {
     const k = b.dataset.ck;
     const comp2 = { ...(CUR.compliance || {}) }; comp2.items = { ...(comp2.items || {}) };
     if (comp2.items[k]) delete comp2.items[k];
@@ -1360,7 +1397,7 @@ function tbl(sec, rows, base, cols) {
 function checkedBtn(sec) {
   const rvw = (CUR.compliance && CUR.compliance.review) || {};
   const c = rvw[sec];
-  return '<button class="ib-checkbtn' + (c ? '' : ' off') + '" data-check="' + sec + '" type="button"' + (CAN ? '' : ' disabled') + '>' +
+  return '<button class="ib-checkbtn' + (c ? '' : ' off') + '" data-check="' + sec + '" type="button"' + (CANW ? '' : ' disabled') + '>' +
     (c ? '✓ checked · ' + esc((c.by || '').split('@')[0]) + ' ' + auDay(c.at) : 'mark checked') + '</button>';
 }
 
@@ -1476,7 +1513,7 @@ function renderReview(el) {
 
   /* inline editing */
   el.querySelectorAll('.ib-rv[data-sec]').forEach(sp => sp.onclick = () => {
-    if (!CAN) { toast('View-only — editing needs the ir-builder role'); return; }
+    if (!CANW) { toast(CAN ? 'This file is ' + CUR.status + ' — flip it back to active to edit' : 'View-only — editing needs the ir-builder role'); return; }
     if (sp.querySelector('input')) return;
     const sec = sp.dataset.sec, path = JSON.parse(sp.dataset.path);
     const cur = pathGet(CUR[sec] || {}, path);
@@ -1510,6 +1547,168 @@ function renderReview(el) {
     else comp.review[sec] = { by: MY_EMAIL, at: new Date().toISOString() };
     if (await saveSection('compliance', comp, true)) renderFile();
   });
+}
+
+/* ════════ PHASE F — publish a finished file into the Investment Reports library ════════
+   Van's calls (2026-08-19): role-holders can publish · duplicates update in
+   place (non-null fields only) · the rendered report is captured as a PDF
+   into the staff-readable 'ir-library' bucket (migration 106) · publishing
+   flips the file to 'final' (read-only until flipped back; flip audited). */
+function pubSegment() {
+  const t = ((CUR.setup || {}).propertyType) || '';
+  if (/unit|apart|flat/i.test(t)) return 'unit';
+  if (/town|villa/i.test(t)) return 'villa_townhouse';
+  return 'house';
+}
+function pubStrategy() {
+  const s = ((CUR.grading || {}).strategy) || ((CUR.setup || {}).strategy) || '';
+  if (/trading/i.test(s)) return 'trading';
+  if (/foundation/i.test(s)) return 'foundation';
+  return null;
+}
+function pubFullAddress() {
+  return CUR.address + (CUR.suburb ? ', ' + CUR.suburb : '') + (CUR.state ? ', ' + CUR.state : '') + (CUR.postcode ? ' ' + CUR.postcode : '');
+}
+function pubDraftSummary() {
+  const s = CUR.setup || {}, g = CUR.grading || {}, adopted = ((CUR.pricing || {}).adopted) || {};
+  const pi = calcCashflow(CUR.cashflow || {}, 'pi');
+  let out = [s.beds, 'bed', s.baths, 'bath'].filter(x => x != null).join(' ') + ' ' + (s.propertyType || 'property').toLowerCase()
+    + (s.landSize ? ' on ' + s.landSize + 'm²' : '') + '.';
+  if (g.propertyGrade || g.suburbRating) out += ' ' + [g.propertyGrade ? g.propertyGrade + ' property' : null,
+    g.suburbRating ? g.suburbRating + ' suburb' : null].filter(Boolean).join(', ') + '.';
+  if (adopted.topPrice) out += ' Adopted top price ' + money(adopted.topPrice) + (adopted.rent ? ' at $' + adopted.rent + '/wk' : '')
+    + (pi ? ' (gross ' + pct(pi.grossYield) + ', net ' + pct(pi.netYield) + ')' : '') + '.';
+  const res = ddResult(((CUR.dd || {}).items) || {});
+  if (res) out += ' DD result: ' + res + '.';
+  if (g.strategy) out += ' Strategy: ' + g.strategy + '.';
+  return out;
+}
+function ensurePubModal() {
+  if (document.getElementById('ibpOv')) return;
+  const d = document.createElement('div');
+  d.className = 'ibp-ov'; d.id = 'ibpOv';
+  d.innerHTML = '<div class="ibp-dlg" id="ibpDlg"></div>';
+  document.body.appendChild(d);
+  d.addEventListener('mousedown', e => { if (e.target === d) d.classList.remove('show'); });
+}
+function openPublish() {
+  ensurePubModal();
+  const pub = (CUR.compliance || {}).published;
+  const s = CUR.setup || {};
+  const existingSold = pub && pub.sold_date ? String(pub.sold_date).slice(0, 7) : '';
+  $('#ibpDlg').innerHTML =
+    '<h2>' + (pub ? 'Re-publish to the Investment Reports library' : 'Publish as example IR') + '</h2>' +
+    '<div class="ib-note">Creates (or updates) the library entry advisors browse by budget — everything maps from this file. No client names, ever.</div>' +
+    '<div class="ib-form">' +
+    '<label>Settlement / purchase month<input id="pubMonth" type="month" value="' + esc(existingSold) + '"></label>' +
+    '<label>Master file link (Drive folder)<input id="pubLink" value="' + esc(s.driveUrl || '') + '" placeholder="https://drive.google.com/…"></label>' +
+    '<label class="full" style="grid-column:1/-1">Summary note (editable)<textarea id="pubNotes" style="min-height:96px">' + esc(pubDraftSummary()) + '</textarea></label>' +
+    '<label style="grid-column:1/-1;flex-direction:row;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:12px;color:var(--ib-ink)">' +
+    '<input type="checkbox" id="pubPdf" checked style="width:16px;height:16px"> Attach the rendered IR report as a PDF (staff-readable)</label>' +
+    '</div><div class="ibp-stat" id="pubStat"></div>' +
+    '<div class="ib-savebar"><button class="ib-btn" id="pubCancel" type="button">Cancel</button>' +
+    '<button class="ib-btn pri" id="pubGo" type="button">' + (pub ? 'Re-publish' : 'Publish') + '</button></div>';
+  $('#ibpOv').classList.add('show');
+  $('#pubCancel').onclick = () => $('#ibpOv').classList.remove('show');
+  $('#pubGo').onclick = doPublish;
+}
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    if (document.querySelector('script[src="' + src + '"]')) return res();
+    const sc = document.createElement('script'); sc.src = src; sc.onload = res; sc.onerror = rej;
+    document.head.appendChild(sc);
+  });
+}
+async function generateReportPdfBlob(statFn) {
+  statFn('loading PDF engine…');
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+  /* make sure the print pages exist + are renderable */
+  const pages = buildReportPages();
+  const total = pages.length;
+  const root = document.getElementById('ibPrint');
+  root.innerHTML = pages.map((p, i) => '<div class="pg">' + p.h + pgFoot(i + 1, total) + '</div>').join('');
+  root.style.cssText = 'display:block;position:fixed;left:-12000px;top:0;width:794px';
+  try {
+    const pdf = new window.jspdf.jsPDF({ unit: 'pt', format: 'a4', compress: true });
+    const els = [...root.querySelectorAll('.pg')];
+    for (let i = 0; i < els.length; i++) {
+      statFn('rendering page ' + (i + 1) + ' of ' + els.length + '…');
+      const canvas = await html2canvas(els[i], { scale: 2, backgroundColor: '#ffffff', logging: false });
+      if (i > 0) pdf.addPage();
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, 595.28, 841.89);
+    }
+    return pdf.output('blob');
+  } finally { root.style.cssText = ''; }
+}
+async function doPublish() {
+  const stat = m => { const e = $('#pubStat'); if (e) e.textContent = m; };
+  const month = $('#pubMonth').value;
+  if (!month) { stat('Pick the settlement / purchase month first.'); return; }
+  $('#pubGo').disabled = true;
+  try {
+    const pi = calcCashflow(CUR.cashflow || {}, 'pi');
+    const metrics = {};
+    if (pi) { metrics.gross_yield_pct = +(pi.grossYield * 100).toFixed(2); metrics.net_yield_pct = +(pi.netYield * 100).toFixed(2); }
+    /* find an existing library row for this property (update-in-place) */
+    stat('checking the library…');
+    let q = sb.from('investment_reports').select('id,metrics,link_url').ilike('address', CUR.address + '%').limit(1);
+    if (CUR.suburb) q = q.eq('suburb', CUR.suburb);
+    const { data: found } = await q;
+    const existing = found && found[0];
+    /* optional PDF */
+    let pdfPath = null;
+    if ($('#pubPdf').checked) {
+      try {
+        const blob = await generateReportPdfBlob(stat);
+        stat('uploading the PDF…');
+        pdfPath = 'published/' + CUR.id + '/IR-' + ddSlug(CUR.address) + '-' + Date.now() + '.pdf';
+        const up = await sb.storage.from('ir-library').upload(pdfPath, blob, { contentType: 'application/pdf' });
+        if (up.error) { pdfPath = null; stat(/not.*found/i.test(up.error.message) ? 'PDF skipped — apply migration 106. Publishing without it…' : 'PDF upload failed (' + up.error.message + ') — publishing without it…'); }
+      } catch (e) { pdfPath = null; stat('PDF render failed — publishing without it…'); }
+    }
+    if (pdfPath) metrics.report_pdf = pdfPath;
+    const rec = {
+      domain: 'residential', market_label: CUR.market_label, market_slug: CUR.market_slug,
+      segment: pubSegment(), strategy: pubStrategy(),
+      budget: (((CUR.pricing || {}).adopted) || {}).topPrice || (CUR.cashflow || {}).budget || null,
+      address: pubFullAddress(), suburb: CUR.suburb, state: CUR.state, lga: (CUR.setup || {}).lga || null,
+      sold_date: month + '-01', link_url: $('#pubLink').value.trim() || null,
+      notes: $('#pubNotes').value.trim() || null, status: 'current', source: 'ir-builder',
+    };
+    stat(existing ? 'updating the library entry…' : 'creating the library entry…');
+    let libId;
+    if (existing) {
+      const patch = {};
+      for (const [k, v] of Object.entries(rec)) if (v != null) patch[k] = v;   /* never blank existing values */
+      patch.metrics = { ...(existing.metrics || {}), ...metrics };
+      const { error } = await sb.from('investment_reports').update(patch).eq('id', existing.id);
+      if (error) throw error;
+      libId = existing.id;
+    } else {
+      rec.metrics = metrics;
+      const { data, error } = await sb.from('investment_reports').insert(rec).select('id').single();
+      if (error) throw error;
+      libId = data.id;
+    }
+    /* stamp the file + flip to final */
+    const comp = { ...(CUR.compliance || {}), published: { at: new Date().toISOString(), libraryId: libId, sold_date: month + '-01', pdf: pdfPath || null } };
+    await saveSection('compliance', comp, true);
+    if (CUR.status !== 'final') {
+      await sb.from('ir_files').update({ status: 'final' }).eq('id', CUR.id);
+      CUR.status = 'final';
+    }
+    stat('');
+    $('#ibpDlg').innerHTML = '<h2>Published ✓</h2>' +
+      '<div class="ib-note">The library entry is live' + (pdfPath ? ' with the report PDF attached' : '') +
+      '. This file is now <b>final</b> (read-only — flip the status back to active if it needs edits).</div>' +
+      '<div class="ib-savebar"><button class="ib-btn" id="pubClose" type="button">Close</button>' +
+      '<a class="ib-btn pri" style="text-decoration:none" href="investment-reports.html?id=' + libId + '" target="_blank" rel="noopener">Open in the library ↗</a></div>';
+    $('#pubClose').onclick = () => { $('#ibpOv').classList.remove('show'); renderFile(); };
+  } catch (e) {
+    stat('Publish failed: ' + (e.message || e));
+    $('#pubGo').disabled = false;
+  }
 }
 
 /* ── AUDIT tab: who changed what — rows from the ir_files_audit trigger,
