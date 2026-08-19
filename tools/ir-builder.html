@@ -246,6 +246,18 @@ h1{font-size:28px;font-weight:800;letter-spacing:-0.02em;margin:4px 0 2px}
 .ib-prov.auto{background:var(--ib-teal-soft);color:var(--ib-teal)}
 .ib-prov.edited{background:var(--ib-warn-soft);color:var(--ib-warn)}
 [data-theme="light"] .ib-prov.edited{color:#B36F00}
+/* property photos */
+.ib-photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:10px}
+.ib-photo{position:relative;border:1px solid var(--ib-border-2);border-radius:11px;overflow:hidden;background:var(--ib-surface-2);aspect-ratio:4/3}
+.ib-photo img{width:100%;height:100%;object-fit:cover;display:block}
+.ib-photo .cv{position:absolute;top:7px;left:7px;font-size:8.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;
+  background:var(--ib-teal);color:#fff;border-radius:5px;padding:2px 7px}
+.ib-photo .acts{position:absolute;inset:auto 0 0 0;display:flex;gap:5px;justify-content:flex-end;padding:6px;
+  background:linear-gradient(transparent,rgba(10,14,22,.75))}
+.ib-photo .acts button{border:0;border-radius:6px;font:800 9px 'Montserrat',sans-serif;padding:4px 8px;cursor:pointer;
+  background:rgba(255,255,255,.92);color:#171B24}
+.ib-photo .acts button.del{background:var(--ib-bad);color:#fff}
+
 /* publish modal */
 .ibp-ov{display:none;position:fixed;inset:0;z-index:9300;background:var(--shade-bg,rgba(10,14,22,0.72));
   backdrop-filter:blur(6px);align-items:flex-start;justify-content:center;overflow:auto}
@@ -555,12 +567,18 @@ function renderSetup(el) {
     '<label>Drive folder<input id="fDrive" value="' + esc(s.driveUrl || '') + '"></label>' +
     '</div>' +
     '<div class="ib-intel" id="ibIntel"></div></div>' +
+    '<div class="ib-card"><h3>Property photos <span class="right">' +
+    (CANW ? '<button class="ib-btn sm" id="ibPhotoAdd" type="button">+ add photos</button><input type="file" id="ibPhotoInput" hidden multiple accept="image/*">' : '') +
+    '</span></h3>' +
+    '<div class="ib-note">The first (cover) photo leads the report\'s cover page; the next three appear as thumbnails under it.</div>' +
+    '<div class="ib-photos" id="ibPhotos"><div class="ib-note">loading&hellip;</div></div></div>' +
     '<div class="ib-card"><h3>Roles</h3><div class="ib-form">' +
     ['consultant', 'dd_support', 'sales_admin', 'assistant'].map(r =>
       '<label>' + label(r) + '<input id="fRole_' + r + '" value="' + esc(roles[r] || '') + '"></label>').join('') +
     '</div></div>' +
     '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveSetup" type="button"' + (CANW ? '' : ' disabled') + '>Save setup</button></div>';
   renderIntel();
+  renderPhotos();
   $('#fMkt').onchange = renderIntel; $('#fSub').onchange = renderIntel;
   $('#ibSaveSetup').onclick = async () => {
     const v = id => $(id).value.trim();
@@ -591,6 +609,66 @@ function intelPtype() {
   const t = ($('#fType') ? $('#fType').value : (CUR.setup || {}).propertyType) || '';
   return /unit|apart|town|villa|flat/i.test(t) ? 'U' : 'H';
 }
+/* ── property photos — stored per file in the ir-evidence bucket under
+   <fileId>/photos/; setup.photos = [{path,name,at}], index 0 = the cover ── */
+const PHOTO_URLS = {};   /* path → signed url cache (1h) */
+async function signPhotoUrls(paths) {
+  const need = (paths || []).filter(p => !PHOTO_URLS[p]);
+  if (need.length) {
+    try {
+      const { data } = await sb.storage.from('ir-evidence').createSignedUrls(need, 3600);
+      (data || []).forEach((r, i) => { if (r.signedUrl) PHOTO_URLS[need[i]] = r.signedUrl; });
+    } catch (e) {}
+  }
+  return (paths || []).map(p => PHOTO_URLS[p] || null);
+}
+async function renderPhotos() {
+  const box = document.getElementById('ibPhotos'); if (!box) return;
+  const photos = ((CUR.setup || {}).photos) || [];
+  if (!photos.length) { box.innerHTML = '<div class="ib-note">no photos yet</div>'; }
+  else {
+    const urls = await signPhotoUrls(photos.map(p => p.path));
+    if (!document.getElementById('ibPhotos')) return;   /* view changed while signing */
+    box.innerHTML = photos.map((p, i) =>
+      '<div class="ib-photo" data-pi="' + i + '">' +
+      (urls[i] ? '<img src="' + esc(urls[i]) + '" alt="">' : '<div class="ib-note" style="padding:20px">unavailable</div>') +
+      (i === 0 ? '<span class="cv">cover</span>' : '') +
+      (CANW ? '<div class="acts">' + (i !== 0 ? '<button type="button" class="mkcv">make cover</button>' : '') +
+        '<button type="button" class="del">&times;</button></div>' : '') + '</div>').join('');
+    box.querySelectorAll('.mkcv').forEach(b => b.onclick = async () => {
+      const i = +b.closest('.ib-photo').dataset.pi;
+      const setup = { ...CUR.setup }; const arr = [...(setup.photos || [])];
+      arr.unshift(arr.splice(i, 1)[0]); setup.photos = arr;
+      if (await saveSection('setup', setup, true)) renderPhotos();
+    });
+    box.querySelectorAll('.del').forEach(b => b.onclick = async () => {
+      if (!confirm('Remove this photo?')) return;
+      const i = +b.closest('.ib-photo').dataset.pi;
+      const setup = { ...CUR.setup }; const arr = [...(setup.photos || [])];
+      const [gone] = arr.splice(i, 1); setup.photos = arr;
+      try { await sb.storage.from('ir-evidence').remove([gone.path]); } catch (e) {}
+      if (await saveSection('setup', setup, true)) { toast('Photo removed'); renderPhotos(); }
+    });
+  }
+  const addBtn = document.getElementById('ibPhotoAdd'), inp = document.getElementById('ibPhotoInput');
+  if (addBtn && inp && !addBtn._wired) {
+    addBtn._wired = true;
+    addBtn.onclick = () => inp.click();
+    inp.onchange = async () => {
+      for (const file of inp.files) {
+        if (file.size > 15 * 1024 * 1024) { toast(file.name + ' is over 15MB'); continue; }
+        const path = CUR.id + '/photos/' + Date.now() + '-' + file.name.replace(/[^\w.\-]+/g, '_');
+        const { error } = await sb.storage.from('ir-evidence').upload(path, file);
+        if (error) { toast(/not.*found/i.test(error.message) ? 'Photo storage not set up — apply migration 105' : 'Upload failed: ' + error.message); return; }
+        const setup = { ...CUR.setup };
+        setup.photos = [...(setup.photos || []), { path, name: file.name, at: new Date().toISOString() }];
+        if (!await saveSection('setup', setup, true)) return;
+      }
+      inp.value = ''; toast('Photos added'); renderPhotos();
+    };
+  }
+}
+
 async function fetchIntel() {
   const mkt = ($('#fMkt') ? $('#fMkt').value : CUR.market_label) || '';
   const sub = (($('#fSub') ? $('#fSub').value : CUR.suburb) || '').trim();
@@ -1231,13 +1309,20 @@ function buildReportPages() {
   const pages = [];
   const addr = c.address + (c.suburb ? ', ' + c.suburb : '') + (c.state ? ' ' + c.state : '') + (c.postcode ? ' ' + c.postcode : '');
 
-  /* 1 · cover */
+  /* 1 · cover — hero photo + up to three thumbnails, like the real IR */
+  const covPhotos = ((s.photos || []).slice(0, 4)).map(p => PHOTO_URLS[p.path]).filter(Boolean);
+  const photoBlock = covPhotos.length
+    ? '<div style="margin-top:22px"><img crossorigin="anonymous" src="' + esc(covPhotos[0]) + '" style="width:100%;height:300px;object-fit:cover;border-radius:4px" alt="">' +
+      (covPhotos.length > 1 ? '<div style="display:flex;gap:10px;margin-top:10px">' + covPhotos.slice(1).map(u =>
+        '<img crossorigin="anonymous" src="' + esc(u) + '" style="flex:1;min-width:0;height:112px;object-fit:cover;border-radius:4px" alt="">').join('') + '</div>' : '') + '</div>'
+    : '';
   pages.push({ t: 'Cover', h:
     '<div style="display:flex;justify-content:space-between;align-items:flex-start">' +
     '<img class="logo" src="../assets/logos/pp-logo-standard.png" alt="Performance Property">' +
     '<div style="text-align:right"><div style="font-size:17px;font-weight:700;color:#555">Investment Property Report</div>' +
     '<div style="font-size:10px;color:#999">Prepared ' + today + (consultant ? ' &nbsp;by ' + esc(consultant) : '') + '</div></div></div>' +
-    '<div style="margin-top:70px">' +
+    photoBlock +
+    '<div style="margin-top:' + (covPhotos.length ? '24' : '70') + 'px">' +
     [['Property Strategy:', g.strategy || s.strategy || '—'], ['Property Grade:', g.propertyGrade || '—'], ['Suburb Rating:', g.suburbRating || '—']].map(x =>
       '<div style="display:flex;gap:18px;align-items:center;margin:16px 0"><div style="flex:0 0 200px;font-size:16px;color:#555">' + x[0] + '</div>' +
       '<div class="gband" style="flex:1">' + esc(x[1]) + '</div></div>').join('') + '</div>' +
@@ -1354,6 +1439,7 @@ function buildReportPages() {
   return pages;
 }
 function renderReport(el) {
+  const prepCoverPhotos = () => signPhotoUrls((((CUR.setup || {}).photos) || []).slice(0, 4).map(p => p.path));
   el.innerHTML = '<div class="ib-card"><h3>Client report' +
     '<span class="right">' +
     '<button class="ib-btn sm" id="rpRefresh" type="button">↻ rebuild</button>' +
@@ -1361,7 +1447,8 @@ function renderReport(el) {
     '<div class="ib-note" style="margin-bottom:12px">Rendered live from this file — one template in code (no AutoCrat, no cloned-tab drift). ' +
     'Print lands on A4; every page re-renders with the latest data.</div>' +
     '<div class="ib-prevwrap" id="rpPrev"></div></div>';
-  const build = () => {
+  const build = async () => {
+    await prepCoverPhotos();
     const pages = buildReportPages();
     const total = pages.length;
     const html = pages.map((p, i) => '<div class="pg">' + p.h + pgFoot(i + 1, total) + '</div>').join('');
@@ -1372,7 +1459,7 @@ function renderReport(el) {
   build();
   $('#rpRefresh').onclick = build;
   $('#rpPrint').onclick = async () => {
-    build();
+    await build();
     const comp = { ...(CUR.compliance || {}), reportAt: new Date().toISOString() };
     await saveSection('compliance', comp, true);
     window.print();
@@ -1440,7 +1527,8 @@ function renderReview(el) {
     '<span class="right">' + checkedBtn(sec) + '</span></h3>' + inner + '</div>');
 
   card('setup', 'Setup & property', kvGrid('setup', { address: c.address, suburb: c.suburb, state: c.state, postcode: c.postcode, market: c.market_label, ...(c.setup || {}) }, []) +
-    '<div class="ib-note" style="margin-top:8px">Roles: ' + esc(Object.entries(c.roles || {}).map(([k, v]) => label(k) + ' — ' + v).join(' · ') || 'not set') + '</div>');
+    '<div class="ib-note" style="margin-top:8px">Roles: ' + esc(Object.entries(c.roles || {}).map(([k, v]) => label(k) + ' — ' + v).join(' · ') || 'not set') +
+    ' · Photos: ' + (((c.setup || {}).photos) || []).length + '</div>');
 
   const ss = c.suburb_stats || {};
   const sScores = ss.scores || (ss.quality != null || ss.lt != null ? ss : null);   /* legacy flat shape */
@@ -1631,7 +1719,8 @@ async function generateReportPdfBlob(statFn) {
   statFn('loading PDF engine…');
   await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
   await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
-  /* make sure the print pages exist + are renderable */
+  /* make sure the print pages exist + are renderable (photos need signed urls) */
+  await signPhotoUrls((((CUR.setup || {}).photos) || []).slice(0, 4).map(p => p.path));
   const pages = buildReportPages();
   const total = pages.length;
   const root = document.getElementById('ibPrint');
@@ -1642,7 +1731,7 @@ async function generateReportPdfBlob(statFn) {
     const els = [...root.querySelectorAll('.pg')];
     for (let i = 0; i < els.length; i++) {
       statFn('rendering page ' + (i + 1) + ' of ' + els.length + '…');
-      const canvas = await html2canvas(els[i], { scale: 2, backgroundColor: '#ffffff', logging: false });
+      const canvas = await html2canvas(els[i], { scale: 2, backgroundColor: '#ffffff', logging: false, useCORS: true });
       if (i > 0) pdf.addPage();
       pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, 595.28, 841.89);
     }
