@@ -391,33 +391,72 @@ function renderSetup(el) {
   };
 }
 
+/* Suburb intelligence = Suburb Scoring (LT CAGR, quality, runway, rec — the
+   old manual Looker step) MERGED with the Cotality suburb store (monthly:
+   medians, 5/10/20yr CAGRs, 3yr/5yr growth, DOM, rent + change, yield, AVM
+   with p25–p75 band, income, CBD distance) — the whole "paste Pricefinder
+   history into the CAGR tab" step dies here. */
+function intelPtype() {
+  const t = ($('#fType') ? $('#fType').value : (CUR.setup || {}).propertyType) || '';
+  return /unit|apart|town|villa|flat/i.test(t) ? 'U' : 'H';
+}
 async function fetchIntel() {
   const mkt = ($('#fMkt') ? $('#fMkt').value : CUR.market_label) || '';
-  const sub = ($('#fSub') ? $('#fSub').value : CUR.suburb) || '';
+  const sub = (($('#fSub') ? $('#fSub').value : CUR.suburb) || '').trim();
   const regions = ((CFG.regions || {}).regions) || [];
   const reg = regions.find(r => r.label === mkt);
-  if (!reg || !sub) return null;
+  if (!sub) return null;
+  const ptype = intelPtype();
+  const out = { asof: new Date().toISOString().slice(0, 10), ptype };
+  if (reg) {
+    try {
+      const key = reg.slug + '-' + (ptype === 'U' ? 'u' : 'h');
+      const { data } = await sb.from('suburb_scores').select('payload').eq('key', key).maybeSingle();
+      const row = data && (data.payload.rows || []).find(r => String(r.suburb || '').toLowerCase() === sub.toLowerCase());
+      if (row) out.scores = { lt: row.lt, quality: row.quality, yield: row.yield, price: row.price, rent: row.rent,
+        dom: row.dom, demand: row.demand, runway: row.runway, rec: row.rec, topPrice: row.topPrice, source: 'suburb_scores/' + key };
+    } catch (e) {}
+  }
   try {
-    const { data } = await sb.from('suburb_scores').select('payload').eq('key', reg.slug + '-h').maybeSingle();
-    const row = data && (data.payload.rows || []).find(r => String(r.suburb || '').toLowerCase() === sub.toLowerCase());
-    if (!row) return null;
-    return { lt: row.lt, quality: row.quality, yield: row.yield, price: row.price, rent: row.rent,
-      dom: row.dom, demand: row.demand, runway: row.runway, rec: row.rec, topPrice: row.topPrice,
-      asof: new Date().toISOString().slice(0, 10), source: 'suburb_scores/' + reg.slug + '-h' };
-  } catch (e) { return null; }
+    const st = (($('#fState') ? $('#fState').value : CUR.state) || (reg && reg.state) || '').trim();
+    let q = sb.from('forge_cl_suburbs').select('month,postcode,lga,metrics').eq('level', 'suburb')
+      .eq('ptype', ptype).ilike('name', sub).order('month', { ascending: false }).limit(1);
+    if (st) q = q.eq('state', st);
+    const { data } = await q;
+    if (data && data[0]) {
+      const m = data[0].metrics || {};
+      out.cl = { month: data[0].month, lga: data[0].lga, postcode: data[0].postcode,
+        med12: m.med12, med3: m.med3, medChg12: m.medChg12, medChg36: m.medChg36, medChg60: m.medChg60,
+        cagr5: m.cagr5, cagr10: m.cagr10, cagr20: m.cagr20,
+        cagr3_derived: m.medChg36 != null ? Math.pow(1 + m.medChg36, 1 / 3) - 1 : null,
+        dom: m.dom, rent: m.rent, rentChg12: m.rentChg12, yield: m.yield,
+        avm: m.avm, p25: m.p25, p75: m.p75, income: m.income, distCbd: m.dist,
+        holdPeriod: m.holdPeriod, sales12: m.sales12, listings: m.listings1 };
+    }
+  } catch (e) {}
+  return (out.scores || out.cl) ? out : null;
 }
 
 async function renderIntel() {
   const el = $('#ibIntel'); if (!el) return;
   el.innerHTML = '<div class="t">Suburb intelligence · auto</div><div class="ib-note">pick a market + suburb…</div>';
   const s = await fetchIntel();
-  if (!s) { el.innerHTML = '<div class="t">Suburb intelligence · auto</div><div class="ib-note">No Suburb Scoring row for this suburb — stats will stay blank (rating falls back to manual).</div>'; return; }
-  el.innerHTML = '<div class="t">Suburb intelligence — from Suburb Scoring (no more Looker step)</div><div class="grid">' +
-    [['Suburb rating', s.quality], ['LT CAGR', pct(s.lt)], ['Median', money(s.price)], ['Rent', '$' + s.rent + '/wk'],
-     ['Yield', pct(s.yield)], ['DOM', s.dom], ['Demand', s.demand], ['Runway', pct(s.runway, 1)],
-     ['Recommendation', s.rec]].map(c =>
-      '<div><div class="cellk">' + c[0] + '</div><div class="cellv">' + esc(c[1] != null ? c[1] : '—') + '</div></div>').join('') +
-    '</div><div class="ib-note" style="margin-top:7px">Snapshots into the file on save · source ' + esc(s.source) + '</div>';
+  if (!s) { el.innerHTML = '<div class="t">Suburb intelligence · auto</div><div class="ib-note">No Suburb Scoring / Cotality row found for this suburb yet — stats stay blank.</div>'; return; }
+  const cell = c => '<div><div class="cellk">' + c[0] + '</div><div class="cellv">' + esc(c[1] != null && c[1] !== '' ? c[1] : '—') + '</div></div>';
+  let html = '<div class="t">Suburb intelligence — auto (' + (s.ptype === 'U' ? 'units' : 'houses') + ')</div>';
+  if (s.scores) html += '<div class="ib-note" style="margin:2px 0 5px">Suburb Scoring (the old Looker step)</div><div class="grid">' +
+    [['Suburb rating', s.scores.quality], ['LT CAGR', pct(s.scores.lt)], ['Median', money(s.scores.price)],
+     ['Rent', s.scores.rent != null ? '$' + s.scores.rent + '/wk' : null], ['Yield', pct(s.scores.yield)],
+     ['Demand', s.scores.demand], ['Runway', pct(s.scores.runway, 1)], ['Recommendation', s.scores.rec]].map(cell).join('') + '</div>';
+  if (s.cl) html += '<div class="ib-note" style="margin:9px 0 5px">Cotality suburb store · data month ' + esc(s.cl.month) + (s.cl.lga ? ' · LGA ' + esc(s.cl.lga) : '') + '</div><div class="grid">' +
+    [['Median 12m', money(s.cl.med12)], ['Chg 12m', pct(s.cl.medChg12)], ['CAGR 3yr*', pct(s.cl.cagr3_derived)],
+     ['CAGR 5yr', pct(s.cl.cagr5)], ['CAGR 10yr', pct(s.cl.cagr10)], ['CAGR 20yr', pct(s.cl.cagr20)],
+     ['DOM', s.cl.dom], ['Rent', s.cl.rent != null ? '$' + s.cl.rent + '/wk' : null], ['Rent chg 12m', pct(s.cl.rentChg12)],
+     ['Yield', pct(s.cl.yield)], ['AVM', money(s.cl.avm)], ['p25–p75', s.cl.p25 != null ? money(s.cl.p25) + '–' + money(s.cl.p75) : null],
+     ['Area income', s.cl.income != null ? '$' + s.cl.income + '/wk' : null], ['CBD distance', s.cl.distCbd != null ? (+s.cl.distCbd).toFixed(1) + ' km' : null],
+     ['Hold period', s.cl.holdPeriod != null ? (+s.cl.holdPeriod).toFixed(0) + ' yrs' : null], ['Sales 12m', s.cl.sales12]].map(cell).join('') + '</div>';
+  html += '<div class="ib-note" style="margin-top:7px">Snapshots into the file on save · *3yr derived from the 36-month change</div>';
+  el.innerHTML = html;
 }
 
 /* ── PRELIMINARY DD step ── */
@@ -538,11 +577,22 @@ function renderReview(el) {
     '<div class="ib-note" style="margin-top:8px">Roles: ' + esc(Object.entries(c.roles || {}).map(([k, v]) => label(k) + ' — ' + v).join(' · ') || 'not set') + '</div>');
 
   const ss = c.suburb_stats || {};
-  card('suburb_stats', 'Suburb intelligence (auto)', Object.keys(ss).length
-    ? '<div class="ib-kv">' + [['Suburb rating', ss.quality], ['LT CAGR', pct(ss.lt)], ['Median', money(ss.price)],
-        ['Rent', ss.rent != null ? '$' + ss.rent + '/wk' : '—'], ['Yield', pct(ss.yield)], ['DOM', ss.dom],
-        ['Demand', ss.demand], ['Runway', pct(ss.runway, 1)], ['Recommendation', ss.rec], ['As of', ss.asof]].map(p =>
-        '<div class="pair"><span class="k">' + p[0] + '</span><span class="v">' + esc(p[1] != null ? p[1] : '—') + '</span></div>').join('') + '</div>'
+  const sScores = ss.scores || (ss.quality != null || ss.lt != null ? ss : null);   /* legacy flat shape */
+  const sCl = ss.cl || null;
+  const kvline = pairs => '<div class="ib-kv">' + pairs.filter(p => p[1] != null && p[1] !== '—').map(p =>
+    '<div class="pair"><span class="k">' + p[0] + '</span><span class="v">' + esc(p[1]) + '</span></div>').join('') + '</div>';
+  card('suburb_stats', 'Suburb intelligence (auto)', (sScores || sCl)
+    ? (sScores ? '<div class="ib-note" style="margin-bottom:4px">Suburb Scoring</div>' +
+        kvline([['Suburb rating', sScores.quality], ['LT CAGR', pct(sScores.lt)], ['Median', money(sScores.price)],
+          ['Rent', sScores.rent != null ? '$' + sScores.rent + '/wk' : null], ['Yield', pct(sScores.yield)],
+          ['Demand', sScores.demand], ['Runway', pct(sScores.runway, 1)], ['Recommendation', sScores.rec]]) : '') +
+      (sCl ? '<div class="ib-note" style="margin:8px 0 4px">Cotality · ' + esc(sCl.month || '') + '</div>' +
+        kvline([['Median 12m', money(sCl.med12)], ['Chg 12m', pct(sCl.medChg12)], ['CAGR 3yr', pct(sCl.cagr3_derived)],
+          ['CAGR 5yr', pct(sCl.cagr5)], ['CAGR 10yr', pct(sCl.cagr10)], ['CAGR 20yr', pct(sCl.cagr20)],
+          ['DOM', sCl.dom], ['Rent', sCl.rent != null ? '$' + sCl.rent + '/wk' : null], ['Yield', pct(sCl.yield)],
+          ['AVM', money(sCl.avm)], ['p25–p75', sCl.p25 != null ? money(sCl.p25) + '–' + money(sCl.p75) : null],
+          ['CBD', sCl.distCbd != null ? (+sCl.distCbd).toFixed(1) + ' km' : null]]) : '') +
+      '<div class="ib-note" style="margin-top:6px">as of ' + esc(ss.asof || '—') + '</div>'
     : '<div class="ib-note">not fetched yet — save Setup with a market + suburb</div>');
 
   const items = (c.dd || {}).items || {};
