@@ -153,6 +153,11 @@ h1{font-size:28px;font-weight:800;letter-spacing:-0.02em;margin:4px 0 2px}
 .ib-cash .row b{font-variant-numeric:tabular-nums}
 .ib-cash .row.neg b{color:var(--ib-bad)} .ib-cash .row.pos b{color:var(--ib-good)}
 
+.ib-prov{display:inline-block;font-size:8.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;
+  border-radius:5px;padding:1.5px 5px;margin-left:6px;vertical-align:1px}
+.ib-prov.auto{background:var(--ib-teal-soft);color:var(--ib-teal)}
+.ib-prov.edited{background:var(--ib-warn-soft);color:var(--ib-warn)}
+[data-theme="light"] .ib-prov.edited{color:#B36F00}
 .ib-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;
   background:var(--ib-navy);color:#F4F6F8;border:1px solid rgba(255,255,255,0.18);border-radius:11px;
   padding:10px 18px;font:700 12.5px 'Montserrat',sans-serif;z-index:9400;pointer-events:none;transition:opacity .2s,transform .2s}
@@ -386,7 +391,7 @@ function renderSetup(el) {
     if (error) { toast('Save failed: ' + error.message); return; }
     Object.assign(CUR, top, { setup, roles: roles2 });
     const stats = await fetchIntel();
-    if (stats) await saveSection('suburb_stats', stats, true);
+    if (stats) { await saveSection('suburb_stats', stats, true); await seedPrefills(stats); }
     toast('Setup saved'); renderFile();
   };
 }
@@ -457,6 +462,49 @@ async function renderIntel() {
      ['Hold period', s.cl.holdPeriod != null ? (+s.cl.holdPeriod).toFixed(0) + ' yrs' : null], ['Sales 12m', s.cl.sales12]].map(cell).join('') + '</div>';
   html += '<div class="ib-note" style="margin-top:7px">Snapshots into the file on save · *3yr derived from the 36-month change</div>';
   el.innerHTML = html;
+}
+
+/* ── auto-fill as EDITABLE PREFILL (Van's rule 2026-08-19): the fields the
+   team knows stay editable; our data lands in them first, only where the
+   human hasn't already typed something. suburb_stats stays the pristine
+   auto reference so the UI can mark each value auto vs edited. ── */
+function intelAutoMap(ss) {
+  const sc = (ss && ss.scores) || {}, cl = (ss && ss.cl) || {};
+  return {
+    suburbYield: cl.yield != null ? cl.yield : sc.yield,
+    cagr3: cl.cagr3_derived, cagr5: cl.cagr5, cagr10: cl.cagr10, cagr20: cl.cagr20,
+    ltCagr: sc.lt, suburbRating: sc.quality,
+    dom: cl.dom != null ? cl.dom : sc.dom,
+    suburbRent: cl.rent != null ? cl.rent : sc.rent,
+    suburbMedian: cl.med12 != null ? cl.med12 : sc.price,
+    avm: cl.avm, p25: cl.p25, p75: cl.p75,
+  };
+}
+async function seedPrefills(ss) {
+  const auto = intelAutoMap(ss);
+  /* pricing.suburb — the 5j "suburb summary" numbers, prefilled where empty */
+  const pricing = { ...(CUR.pricing || {}) };
+  const subj = { ...(pricing.suburb || {}) };
+  let changed = false;
+  for (const [k, v] of Object.entries(auto)) {
+    if (k === 'suburbRating') continue;
+    if (v != null && (subj[k] == null || subj[k] === '')) { subj[k] = v; changed = true; }
+  }
+  if (changed) { pricing.suburb = subj; await saveSection('pricing', pricing, true); }
+  /* grading.suburbRating + setup.lga */
+  if (auto.suburbRating && !(CUR.grading || {}).suburbRating) {
+    await saveSection('grading', { ...(CUR.grading || {}), suburbRating: auto.suburbRating }, true);
+  }
+  if (ss.cl && ss.cl.lga && !(CUR.setup || {}).lga) {
+    await saveSection('setup', { ...(CUR.setup || {}), lga: ss.cl.lga }, true);
+  }
+}
+/* provenance chip: does the live editable value still equal the auto one? */
+function provChip(val, autoVal) {
+  if (autoVal == null) return '';
+  const eq = (typeof val === 'number' && typeof autoVal === 'number')
+    ? Math.abs(val - autoVal) < 1e-9 : String(val) === String(autoVal);
+  return '<span class="ib-prov ' + (eq ? 'auto' : 'edited') + '">' + (eq ? 'auto' : 'edited') + '</span>';
 }
 
 /* ── PRELIMINARY DD step ── */
@@ -569,6 +617,7 @@ function calcCashflow(cf, mode, normRate) {
 
 function renderReview(el) {
   const c = CUR;
+  const autoRef = intelAutoMap(c.suburb_stats || {});
   const cards = [];
   const card = (sec, title, inner) => cards.push('<div class="ib-card" data-seccard="' + sec + '"><h3>' + title +
     '<span class="right">' + checkedBtn(sec) + '</span></h3>' + inner + '</div>');
@@ -613,10 +662,17 @@ function renderReview(el) {
       ? '<div class="ib-kv">' + Object.entries(g.items).map(([k, v]) =>
         '<div class="pair"><span class="k">' + esc(k) + '</span><span class="v">' + rv('grading', ['items', k], v) + '</span></div>').join('') + '</div>'
       : '<div class="ib-note">no grading yet</div>') +
-    (g.strategy ? '<div class="ib-note" style="margin-top:8px">Strategy: ' + rv('grading', ['strategy'], g.strategy) + '</div>' : ''));
+    (g.strategy ? '<div class="ib-note" style="margin-top:8px">Strategy: ' + rv('grading', ['strategy'], g.strategy) + '</div>' : '') +
+    (g.suburbRating ? '<div class="ib-note" style="margin-top:4px">Suburb rating: ' + rv('grading', ['suburbRating'], g.suburbRating) +
+      provChip(g.suburbRating, autoRef.suburbRating) + '</div>' : ''));
 
   const p = c.pricing || {};
   card('pricing', 'Pricing & appraisal',
+    (p.suburb && Object.keys(p.suburb).length
+      ? '<div class="ib-note" style="margin-bottom:3px">Suburb data — <b>prefilled from the hub, yours to correct</b></div>' +
+        '<div class="ib-kv" style="margin-bottom:10px">' + Object.entries(p.suburb).map(([k, v]) =>
+          '<div class="pair"><span class="k">' + esc(label(k)) + '</span><span class="v">' + rv('pricing', ['suburb', k], v) +
+          provChip(v, autoRef[k]) + '</span></div>').join('') + '</div>' : '') +
     (p.adopted ? '<div class="ib-kv" style="margin-bottom:10px">' + Object.entries(p.adopted).map(([k, v]) =>
       '<div class="pair"><span class="k">' + esc(label(k)) + '</span><span class="v">' + rv('pricing', ['adopted', k], v) + '</span></div>').join('') + '</div>' : '') +
     (p.history && p.history.length ? '<div class="ib-note" style="margin:6px 0 3px">Sale history</div>' + tbl('pricing', p.history, ['history']) : '') +
