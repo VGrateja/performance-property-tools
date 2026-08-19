@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IR Builder &mdash; Performance Property</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
+<!-- OS chrome: mode/period/shade + legacy data-theme bridge -->
+<script src="../shared/os-chrome.js?v=f6ea2748"></script>
+<link rel="stylesheet" href="../shared/os-theme.css?v=c82b0c67"/>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   IR BUILDER (Phase A, 2026-08-19) — the acquisition team's Property Master
+   File, hub-native. Replaces the 30-tab per-property Google Sheet: the DD
+   team fills a guided stepper, the BA team checks everything in ONE Review
+   window (inline-editable, per-section "checked" marks). Data = ir_files +
+   the ported rulebook/rubric/config (migration 104, seeded from the sample
+   workbook). Suburb stats auto-fill from suburb_scores — the manual
+   "enter LT CAGR from Looker" step is dead.
+   Phase A ships: file list · Review window (all sections) · Setup + DD
+   editors · computed cashflows (P&I / IO / Normalised — the cloned-template
+   drift bug fixed in code). Inspection/Grading/Pricing editors: Phase B/C.
+   Write access = dev/admin or a tool_roles 'ir-builder' grant.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root{
+  --ib-ink:#F4F6F8; --ib-ink2:#C6CCD6; --ib-mut:var(--mut,#8B93A1);
+  --ib-surface:rgba(255,255,255,0.045); --ib-surface-2:rgba(255,255,255,0.025);
+  --ib-solid:#1A2130;
+  --ib-border:rgba(255,255,255,0.10); --ib-border-2:rgba(255,255,255,0.18);
+  --ib-teal:#00A0B4; --ib-navy:#171B24;
+  --ib-good:#71B357; --ib-warn:#FFA91F; --ib-bad:#E72347; --ib-blue:#54A6DE; --ib-euc:#3E7967;
+  --ib-teal-soft:rgba(0,160,180,0.14); --ib-good-soft:rgba(113,179,87,0.16);
+  --ib-warn-soft:rgba(255,169,31,0.14); --ib-bad-soft:rgba(231,35,71,0.12); --ib-blue-soft:rgba(84,166,222,0.14);
+  --ib-field-bg:#141A28; --ib-field-ink:#F4F6F8; --ib-field-border:rgba(255,255,255,0.20);
+}
+[data-theme="light"]{
+  --ib-ink:#171B24; --ib-ink2:#3F4650;
+  --ib-surface:#ffffff; --ib-surface-2:#F7F9FA; --ib-solid:#ffffff;
+  --ib-border:rgba(23,27,36,0.12); --ib-border-2:rgba(23,27,36,0.22);
+  --ib-teal-soft:#E8F7FA; --ib-good-soft:#F0F7ED; --ib-warn-soft:#FFF6E8; --ib-bad-soft:#FDECEF; --ib-blue-soft:#EDF5FC;
+  --ib-field-bg:#ffffff; --ib-field-ink:#171B24; --ib-field-border:rgba(23,27,36,0.24);
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Montserrat',system-ui,sans-serif;color:var(--ib-ink);-webkit-font-smoothing:antialiased}
+.ib-wrap{max-width:1340px;margin:0 auto;padding:24px 28px 84px}
+.ib-eyebrow{font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--ib-teal)}
+h1{font-size:28px;font-weight:800;letter-spacing:-0.02em;margin:4px 0 2px}
+.ib-sub{font-size:12.5px;color:var(--ib-mut);margin:0;line-height:1.5;max-width:820px}
+.ib-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap;margin-bottom:16px}
+.ib-btn{border-radius:10px;padding:9px 16px;font:800 12.5px 'Montserrat',sans-serif;cursor:pointer;
+  border:1px solid var(--ib-border-2);background:transparent;color:var(--ib-ink)}
+.ib-btn.pri{background:var(--ib-teal);border-color:var(--ib-teal);color:#fff}
+.ib-btn.sm{padding:6px 11px;font-size:11px}
+.ib-btn:hover{filter:brightness(1.12)}
+.ib-btn:disabled{opacity:.45;cursor:default}
+
+/* home list */
+.ib-files{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+.ib-fcard{text-align:left;border:1px solid var(--ib-border);background:var(--ib-surface);border-radius:14px;
+  padding:14px 16px;cursor:pointer;color:var(--ib-ink);font-family:inherit;transition:border-color .15s,transform .15s}
+.ib-fcard:hover{border-color:var(--ib-teal);transform:translateY(-2px)}
+.ib-fcard .a{font-size:15px;font-weight:800;letter-spacing:-0.01em}
+.ib-fcard .m{font-size:11.5px;font-weight:700;color:var(--ib-ink2);margin-top:3px}
+.ib-fcard .r{font-size:10.5px;font-weight:600;color:var(--ib-mut);margin-top:7px}
+.ib-chip{display:inline-block;font-size:9.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;
+  border-radius:6px;padding:2.5px 7px;line-height:1.5;background:var(--ib-teal-soft);color:var(--ib-teal);margin-left:6px}
+.ib-chip.warn{background:var(--ib-warn-soft);color:var(--ib-warn)}
+.ib-chip.good{background:var(--ib-good-soft);color:var(--ib-good)}
+.ib-empty{padding:40px 10px;text-align:center;font-size:13px;font-weight:600;color:var(--ib-mut)}
+
+/* file header + steps */
+.ib-fhead{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:2px 0 14px}
+.ib-fhead h2{margin:0;font-size:21px;font-weight:800;letter-spacing:-0.015em}
+.ib-fhead .sub{font-size:12px;font-weight:700;color:var(--ib-mut)}
+.ib-steps{display:flex;gap:6px;flex-wrap:wrap;background:var(--ib-surface-2);border:1px solid var(--ib-border);
+  border-radius:12px;padding:5px;margin-bottom:16px}
+.ib-step{border:0;background:transparent;color:var(--ib-mut);font:700 12px 'Montserrat',sans-serif;
+  padding:8px 13px;border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.ib-step.on{background:var(--ib-teal);color:#fff}
+.ib-step .d{width:7px;height:7px;border-radius:50%;background:var(--ib-mut);opacity:.6}
+.ib-step .d.done{background:var(--ib-good);opacity:1}
+
+/* forms */
+.ib-card{border:1px solid var(--ib-border);background:var(--ib-surface);border-radius:14px;padding:16px 18px;margin-bottom:14px}
+.ib-card h3{margin:0 0 12px;font-size:14px;font-weight:800;letter-spacing:-0.01em;display:flex;align-items:center;gap:10px}
+.ib-card h3 .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.ib-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px 12px}
+.ib-form label,.ib-lb{display:flex;flex-direction:column;gap:4px;font-size:10px;font-weight:800;
+  letter-spacing:.07em;text-transform:uppercase;color:var(--ib-mut)}
+.ib-form input,.ib-form select,.ib-form textarea,.ib-inp{
+  border-radius:9px;border:1px solid var(--ib-field-border);background:var(--ib-field-bg);
+  color:var(--ib-field-ink);padding:9px 11px;font:600 12.5px 'Montserrat',sans-serif;outline:none}
+.ib-form textarea{min-height:70px;resize:vertical;line-height:1.5}
+.ib-form :focus,.ib-inp:focus{border-color:var(--ib-teal)}
+.ib-note{font-size:11px;font-weight:600;color:var(--ib-mut);line-height:1.5}
+.ib-savebar{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
+
+/* suburb intel */
+.ib-intel{border:1px solid rgba(0,160,180,.4);background:linear-gradient(140deg,var(--ib-teal-soft),transparent);border-radius:12px;padding:12px 14px;margin-top:12px}
+.ib-intel .t{font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--ib-teal);margin-bottom:8px;display:flex;gap:8px;align-items:center}
+.ib-intel .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+.ib-intel .cellk{font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--ib-mut)}
+.ib-intel .cellv{font-size:14px;font-weight:800;margin-top:1px}
+
+/* DD list */
+.ib-dd{display:flex;flex-direction:column;gap:9px}
+.ib-dditem{border:1px solid var(--ib-border);background:var(--ib-surface-2);border-radius:11px;padding:11px 13px}
+.ib-dditem .row1{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ib-dditem .nm{font-size:12.5px;font-weight:800;flex:1;min-width:200px}
+.ib-dditem select{border-radius:8px;border:1px solid var(--ib-field-border);background:var(--ib-field-bg);
+  color:var(--ib-field-ink);padding:6px 9px;font:700 11.5px 'Montserrat',sans-serif}
+.ib-dditem select.s-Approved{color:var(--ib-good);border-color:rgba(113,179,87,.5)}
+.ib-dditem select.s-Review{color:var(--ib-warn);border-color:rgba(255,169,31,.5)}
+.ib-dditem select.s-Failed{color:var(--ib-bad);border-color:rgba(231,35,71,.5)}
+.ib-dditem .src{font-size:10.5px;font-weight:700;color:var(--ib-blue);text-decoration:none}
+.ib-dditem .src:hover{text-decoration:underline}
+.ib-dditem textarea{width:100%;margin-top:8px;border-radius:8px;border:1px solid var(--ib-field-border);
+  background:var(--ib-field-bg);color:var(--ib-field-ink);padding:7px 10px;font:600 11.5px 'Montserrat',sans-serif;min-height:34px;resize:vertical}
+.ib-crit{margin-top:7px;font-size:10.5px;color:var(--ib-mut);line-height:1.5;display:none}
+.ib-dditem.open .ib-crit{display:block}
+.ib-crit b{font-weight:800}
+.ib-crit .g{color:var(--ib-good)} .ib-crit .w{color:var(--ib-warn)} .ib-crit .b{color:var(--ib-bad)}
+.ib-ddres{font-size:12px;font-weight:800;padding:8px 12px;border-radius:10px;display:inline-block;margin-bottom:12px}
+.ib-ddres.Approved{background:var(--ib-good-soft);color:var(--ib-good)}
+.ib-ddres.Review{background:var(--ib-warn-soft);color:var(--ib-warn)}
+.ib-ddres.Failed{background:var(--ib-bad-soft);color:var(--ib-bad)}
+
+/* review window */
+.ib-rev-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.ib-rev-prog{font-size:12px;font-weight:800;color:var(--ib-mut)}
+.ib-rv{cursor:pointer;border-bottom:1px dashed var(--ib-border-2);padding:0 1px}
+.ib-rv:hover{color:var(--ib-teal);border-color:var(--ib-teal)}
+.ib-rv.num{font-variant-numeric:tabular-nums}
+.ib-kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:7px 18px}
+.ib-kv .pair{display:flex;gap:8px;align-items:baseline;font-size:12px;min-width:0}
+.ib-kv .k{flex:none;max-width:46%;font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--ib-mut)}
+.ib-kv .v{font-weight:700;overflow-wrap:anywhere}
+.ib-tblwrap{overflow-x:auto}
+.ib-tbl{border-collapse:collapse;width:100%;font-size:11.5px}
+.ib-tbl th{font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--ib-mut);
+  text-align:left;padding:5px 8px;border-bottom:1px solid var(--ib-border-2)}
+.ib-tbl td{padding:6px 8px;border-bottom:1px solid var(--ib-border);font-weight:600;vertical-align:top}
+.ib-checkbtn{border-radius:9px;padding:7px 12px;font:800 11px 'Montserrat',sans-serif;cursor:pointer;
+  border:1px solid rgba(113,179,87,.55);background:var(--ib-good-soft);color:var(--ib-good)}
+[data-theme="light"] .ib-checkbtn{color:#4E8A38}
+.ib-checkbtn.off{border-color:var(--ib-border-2);background:transparent;color:var(--ib-mut)}
+.ib-cashsum{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.ib-cash{border:1px solid var(--ib-border);border-radius:11px;padding:11px 13px;background:var(--ib-surface-2)}
+.ib-cash .t{font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ib-teal);margin-bottom:7px}
+.ib-cash .row{display:flex;justify-content:space-between;font-size:11.5px;font-weight:700;padding:2px 0}
+.ib-cash .row b{font-variant-numeric:tabular-nums}
+.ib-cash .row.neg b{color:var(--ib-bad)} .ib-cash .row.pos b{color:var(--ib-good)}
+
+.ib-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;
+  background:var(--ib-navy);color:#F4F6F8;border:1px solid rgba(255,255,255,0.18);border-radius:11px;
+  padding:10px 18px;font:700 12.5px 'Montserrat',sans-serif;z-index:9400;pointer-events:none;transition:opacity .2s,transform .2s}
+.ib-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+@media (max-width:680px){.ib-wrap{padding:18px 14px 84px}.ib-form{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<div class="ib-wrap">
+  <div class="ib-head">
+    <div>
+      <div class="ib-eyebrow">Acquisitions · pilot</div>
+      <h1>IR Builder</h1>
+      <p class="ib-sub">The Property Master File, hub-native — the DD team fills the steps, the BA team checks
+        everything in one Review window. Suburb numbers fill themselves; the cashflows compute in code.</p>
+    </div>
+    <button class="ib-btn pri" id="ibNewBtn" type="button" style="display:none">+ New property file</button>
+  </div>
+  <div id="ibHome"><div class="ib-empty">Loading&hellip;</div></div>
+  <div id="ibFile" style="display:none"></div>
+</div>
+
+<div class="ib-toast" id="ibToast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="../shared/supabase-client.js?v=b4bd183c"></script>
+<script src="../shared/tool-registry.js?v=9c2885d9"></script>
+<script src="../shared/desktop-pins.js?v=e2416017"></script>
+<script src="../shared/auth.js?v=7dce203e"></script>
+<script src="../shared/auth-gate.js?v=003cdc01"></script>
+<script src="../shared/pp-telemetry.js?v=a1e39d4f"></script>
+<script src="../shared/fit-screen.js?v=5e41a716"></script>
+<script>
+'use strict';
+PP_OS.initChrome({ name: 'IR Builder', section: 'vault', backHref: '../' });
+
+/* ── helpers ── */
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const money = v => (v == null || !isFinite(v)) ? '—' : (v < 0 ? '-$' : '$') + Math.abs(Math.round(v)).toLocaleString();
+const pct = (v, dp) => (v == null || !isFinite(v)) ? '—' : (v * 100).toFixed(dp == null ? 2 : dp) + '%';
+const label = k => String(k).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ')
+  .replace(/\b\w/g, c => c.toUpperCase()).replace(/\bDd\b/, 'DD').replace(/\bLga\b/, 'LGA')
+  .replace(/\bLt\b/, 'LT').replace(/\bLvr\b/, 'LVR').replace(/\bPm\b/, 'PM').replace(/\bCrm\b/, 'CRM').replace(/\bUrl\b/, 'URL');
+function toast(m) { const t = $('#ibToast'); t.textContent = m; t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2400); }
+
+const SECTIONS = ['setup', 'suburb_stats', 'dd', 'inspection', 'grading', 'pricing', 'cashflow'];
+const STEPS = [
+  { id: 'review',     t: 'Review' },
+  { id: 'setup',      t: 'Setup' },
+  { id: 'dd',         t: 'Preliminary DD' },
+  { id: 'inspection', t: 'Inspection' },
+  { id: 'grading',    t: 'Grading' },
+  { id: 'pricing',    t: 'Pricing' },
+  { id: 'cashflow',   t: 'Cashflow' },
+  { id: 'audit',      t: 'Audit' },
+];
+const DD_RATINGS = ['Approved', 'Review', 'Failed'];
+
+let FILES = [], CUR = null, CFG = {}, RULES = [], RUBRIC = [], CAN = false, MY_EMAIL = '', view = 'review';
+
+/* ── boot ── */
+async function boot() {
+  let g = 0; while (!window.sb && g++ < 80) await new Promise(r => setTimeout(r, 100));
+  if (!window.sb) return;
+  MY_EMAIL = (typeof getCurrentUserEmail === 'function' && getCurrentUserEmail()) || '';
+  const lvl = (typeof getAccessLevel === 'function') ? getAccessLevel() : '';
+  CAN = lvl === 'dev' || lvl === 'admin';
+  if (!CAN) {
+    try { const { data: u } = await sb.auth.getUser();
+      const { data: tr } = await sb.from('tool_roles').select('role').eq('user_id', u.user.id).eq('tool_key', 'ir-builder');
+      CAN = !!(tr && tr.length); } catch (e) {}
+  }
+  $('#ibNewBtn').style.display = CAN ? '' : 'none';
+  $('#ibNewBtn').onclick = newFile;
+  const [cfg, files] = await Promise.all([
+    sb.from('ir_config').select('key,payload'),
+    sb.from('ir_files').select('id,address,suburb,state,market_label,market_slug,status,roles,updated_at,compliance').order('updated_at', { ascending: false }),
+  ]);
+  if (cfg.error || files.error) {
+    $('#ibHome').innerHTML = '<div class="ib-empty">' + (/does not exist|schema cache/i.test((cfg.error || files.error).message)
+      ? 'Not set up yet — apply migration 104, then run scratch/seed-ir-builder.mjs --write --sample.'
+      : 'Access is granted per person (tool role \'ir-builder\') — ask Van if you should be on the pilot.') + '</div>';
+    return;
+  }
+  (cfg.data || []).forEach(r => { CFG[r.key] = r.payload; });
+  FILES = files.data || [];
+  const id = new URLSearchParams(location.search).get('id');
+  renderHome();
+  if (id) { const f = FILES.find(x => x.id === id); if (f) openFile(id); }
+}
+
+function renderHome() {
+  $('#ibFile').style.display = 'none'; $('#ibHome').style.display = '';
+  if (!FILES.length) { $('#ibHome').innerHTML = '<div class="ib-empty">No property files yet' + (CAN ? ' — create the first one.' : '.') + '</div>'; return; }
+  $('#ibHome').innerHTML = '<div class="ib-files">' + FILES.map(f => {
+    const rv = (f.compliance && f.compliance.review) || {};
+    const checked = SECTIONS.filter(s => rv[s]).length;
+    return '<button class="ib-fcard" type="button" data-id="' + f.id + '">' +
+      '<div class="a">' + esc(f.address + (f.suburb ? ', ' + f.suburb : '')) + '</div>' +
+      '<div class="m">' + esc(f.market_label || '') + (f.state ? ' · ' + esc(f.state) : '') +
+      '<span class="ib-chip' + (f.status === 'final' ? ' good' : f.status === 'archived' ? ' warn' : '') + '">' + f.status + '</span>' +
+      (checked ? '<span class="ib-chip good">checked ' + checked + '/' + SECTIONS.length + '</span>' : '') + '</div>' +
+      '<div class="r">' + esc(((f.roles || {}).consultant ? 'Consultant ' + f.roles.consultant : '')) +
+      ' · updated ' + String(f.updated_at).slice(0, 10) + '</div></button>';
+  }).join('') + '</div>';
+  document.querySelectorAll('.ib-fcard').forEach(c => c.onclick = () => openFile(c.dataset.id));
+}
+
+async function newFile() {
+  const address = prompt('Street address (e.g. 91 Kearney Drive):'); if (!address) return;
+  const suburb = prompt('Suburb:') || null;
+  const regions = ((CFG.regions || {}).regions) || [];
+  const market = prompt('Market (' + regions.slice(0, 6).map(r => r.label).join(', ') + '…):') || '';
+  const reg = regions.find(r => r.label.toLowerCase() === market.toLowerCase());
+  const { data, error } = await sb.from('ir_files').insert({
+    address, suburb, market_label: reg ? reg.label : (market || null),
+    market_slug: reg ? reg.slug : null, state: reg ? reg.state : null,
+  }).select('id').single();
+  if (error) { toast('Create failed: ' + error.message); return; }
+  const { data: rows } = await sb.from('ir_files').select('id,address,suburb,state,market_label,market_slug,status,roles,updated_at,compliance').order('updated_at', { ascending: false });
+  FILES = rows || FILES; renderHome(); openFile(data.id);
+}
+
+/* ── file view ── */
+async function openFile(id) {
+  const { data, error } = await sb.from('ir_files').select('*').eq('id', id).maybeSingle();
+  if (error || !data) { toast('Could not open file'); return; }
+  CUR = data;
+  history.replaceState(null, '', location.pathname + '?id=' + id);
+  RULES = []; RUBRIC = [];
+  if (CUR.market_label) {
+    const { data: r } = await sb.from('ir_dd_rules').select('item,variable,value').eq('region', CUR.market_label);
+    RULES = r || [];
+  }
+  const { data: rb } = await sb.from('ir_grading_rubric').select('item,grade,comment,sort').order('sort');
+  RUBRIC = rb || [];
+  view = 'review';
+  renderFile();
+}
+
+function stepDone(s) {
+  if (s === 'review') return false;
+  const v = CUR[s === 'setup' ? 'setup' : s];
+  return v && Object.keys(v).length > 0 && (s !== 'dd' || Object.keys((v.items || {})).length > 0);
+}
+
+function renderFile() {
+  $('#ibHome').style.display = 'none'; $('#ibFile').style.display = '';
+  const rv = (CUR.compliance && CUR.compliance.review) || {};
+  $('#ibFile').innerHTML =
+    '<div class="ib-fhead"><button class="ib-btn sm" id="ibBack" type="button">&larr; Files</button>' +
+    '<h2>' + esc(CUR.address + (CUR.suburb ? ', ' + CUR.suburb : '')) + '</h2>' +
+    '<span class="sub">' + esc(CUR.market_label || 'market not set') + (CUR.state ? ' · ' + esc(CUR.state) : '') +
+    ' · <span class="ib-chip">' + CUR.status + '</span></span></div>' +
+    '<div class="ib-steps">' + STEPS.map(s =>
+      '<button class="ib-step' + (view === s.id ? ' on' : '') + '" type="button" data-step="' + s.id + '">' +
+      (s.id === 'review' ? '' : '<span class="d' + (stepDone(s.id) ? ' done' : '') + '"></span>') + s.t +
+      (s.id === 'review' ? ' (' + SECTIONS.filter(x => rv[x]).length + '/' + SECTIONS.length + ')' : '') +
+      '</button>').join('') + '</div>' +
+    '<div id="ibStepBody"></div>';
+  $('#ibBack').onclick = () => { CUR = null; history.replaceState(null, '', location.pathname); refreshList(); };
+  document.querySelectorAll('.ib-step').forEach(b => b.onclick = () => { view = b.dataset.step; renderFile(); });
+  const body = $('#ibStepBody');
+  if (view === 'review') renderReview(body);
+  else if (view === 'setup') renderSetup(body);
+  else if (view === 'dd') renderDD(body);
+  else if (view === 'audit') renderAudit(body);
+  else renderStub(body, view);
+}
+
+async function refreshList() {
+  const { data } = await sb.from('ir_files').select('id,address,suburb,state,market_label,market_slug,status,roles,updated_at,compliance').order('updated_at', { ascending: false });
+  if (data) FILES = data;
+  renderHome();
+}
+
+async function saveSection(sec, val, quiet) {
+  CUR[sec] = val;
+  const { error } = await sb.from('ir_files').update({ [sec]: val }).eq('id', CUR.id);
+  if (error) { toast('Save failed: ' + error.message); return false; }
+  if (!quiet) toast('Saved');
+  return true;
+}
+
+/* ── SETUP step ── */
+function renderSetup(el) {
+  const s = CUR.setup || {}, roles = CUR.roles || {};
+  const regions = ((CFG.regions || {}).regions) || [];
+  el.innerHTML =
+    '<div class="ib-card"><h3>Property</h3><div class="ib-form">' +
+    '<label>Address<input id="fAddr" value="' + esc(CUR.address || '') + '"></label>' +
+    '<label>Suburb<input id="fSub" value="' + esc(CUR.suburb || '') + '"></label>' +
+    '<label>Market<select id="fMkt">' + '<option value="">—</option>' + regions.map(r =>
+      '<option value="' + esc(r.label) + '"' + (r.label === CUR.market_label ? ' selected' : '') + '>' + esc(r.label) + '</option>').join('') + '</select></label>' +
+    '<label>State<input id="fState" value="' + esc(CUR.state || '') + '"></label>' +
+    '<label>Postcode<input id="fPost" value="' + esc(CUR.postcode || '') + '"></label>' +
+    '<label>Property type<input id="fType" value="' + esc(s.propertyType || '') + '" placeholder="House"></label>' +
+    '<label>Land size (m²)<input id="fLand" inputmode="numeric" value="' + esc(s.landSize != null ? s.landSize : '') + '"></label>' +
+    '<label>Beds<input id="fBeds" inputmode="numeric" value="' + esc(s.beds != null ? s.beds : '') + '"></label>' +
+    '<label>Baths<input id="fBaths" inputmode="numeric" value="' + esc(s.baths != null ? s.baths : '') + '"></label>' +
+    '<label>Cars<input id="fCars" inputmode="numeric" value="' + esc(s.cars != null ? s.cars : '') + '"></label>' +
+    '<label>LGA<input id="fLga" value="' + esc(s.lga || '') + '"></label>' +
+    '<label>Strategy<input id="fStrat" value="' + esc(s.strategy || '') + '" placeholder="Foundation - Passive"></label>' +
+    '<label style="grid-column:1/-1">Listing URL<input id="fList" value="' + esc(s.listingUrl || '') + '"></label>' +
+    '<label>CRM link<input id="fCrm" value="' + esc(s.crmUrl || '') + '"></label>' +
+    '<label>Drive folder<input id="fDrive" value="' + esc(s.driveUrl || '') + '"></label>' +
+    '</div>' +
+    '<div class="ib-intel" id="ibIntel"></div></div>' +
+    '<div class="ib-card"><h3>Roles</h3><div class="ib-form">' +
+    ['consultant', 'dd_support', 'sales_admin', 'assistant'].map(r =>
+      '<label>' + label(r) + '<input id="fRole_' + r + '" value="' + esc(roles[r] || '') + '"></label>').join('') +
+    '</div></div>' +
+    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveSetup" type="button"' + (CAN ? '' : ' disabled') + '>Save setup</button></div>';
+  renderIntel();
+  $('#fMkt').onchange = renderIntel; $('#fSub').onchange = renderIntel;
+  $('#ibSaveSetup').onclick = async () => {
+    const v = id => $(id).value.trim();
+    const numv = id => { const d = v(id).replace(/[^0-9.]/g, ''); return d ? +d : null; };
+    const regionsL = ((CFG.regions || {}).regions) || [];
+    const reg = regionsL.find(r => r.label === v('#fMkt'));
+    const top = { address: v('#fAddr'), suburb: v('#fSub') || null, state: v('#fState') || (reg && reg.state) || null,
+      postcode: v('#fPost') || null, market_label: v('#fMkt') || null, market_slug: reg ? reg.slug : null };
+    const setup = { ...CUR.setup, propertyType: v('#fType') || null, landSize: numv('#fLand'), beds: numv('#fBeds'),
+      baths: numv('#fBaths'), cars: numv('#fCars'), lga: v('#fLga') || null, strategy: v('#fStrat') || null,
+      listingUrl: v('#fList') || null, crmUrl: v('#fCrm') || null, driveUrl: v('#fDrive') || null };
+    const roles2 = {}; ['consultant', 'dd_support', 'sales_admin', 'assistant'].forEach(r => { const x = v('#fRole_' + r); if (x) roles2[r] = x; });
+    const { error } = await sb.from('ir_files').update({ ...top, setup, roles: roles2 }).eq('id', CUR.id);
+    if (error) { toast('Save failed: ' + error.message); return; }
+    Object.assign(CUR, top, { setup, roles: roles2 });
+    const stats = await fetchIntel();
+    if (stats) await saveSection('suburb_stats', stats, true);
+    toast('Setup saved'); renderFile();
+  };
+}
+
+async function fetchIntel() {
+  const mkt = ($('#fMkt') ? $('#fMkt').value : CUR.market_label) || '';
+  const sub = ($('#fSub') ? $('#fSub').value : CUR.suburb) || '';
+  const regions = ((CFG.regions || {}).regions) || [];
+  const reg = regions.find(r => r.label === mkt);
+  if (!reg || !sub) return null;
+  try {
+    const { data } = await sb.from('suburb_scores').select('payload').eq('key', reg.slug + '-h').maybeSingle();
+    const row = data && (data.payload.rows || []).find(r => String(r.suburb || '').toLowerCase() === sub.toLowerCase());
+    if (!row) return null;
+    return { lt: row.lt, quality: row.quality, yield: row.yield, price: row.price, rent: row.rent,
+      dom: row.dom, demand: row.demand, runway: row.runway, rec: row.rec, topPrice: row.topPrice,
+      asof: new Date().toISOString().slice(0, 10), source: 'suburb_scores/' + reg.slug + '-h' };
+  } catch (e) { return null; }
+}
+
+async function renderIntel() {
+  const el = $('#ibIntel'); if (!el) return;
+  el.innerHTML = '<div class="t">Suburb intelligence · auto</div><div class="ib-note">pick a market + suburb…</div>';
+  const s = await fetchIntel();
+  if (!s) { el.innerHTML = '<div class="t">Suburb intelligence · auto</div><div class="ib-note">No Suburb Scoring row for this suburb — stats will stay blank (rating falls back to manual).</div>'; return; }
+  el.innerHTML = '<div class="t">Suburb intelligence — from Suburb Scoring (no more Looker step)</div><div class="grid">' +
+    [['Suburb rating', s.quality], ['LT CAGR', pct(s.lt)], ['Median', money(s.price)], ['Rent', '$' + s.rent + '/wk'],
+     ['Yield', pct(s.yield)], ['DOM', s.dom], ['Demand', s.demand], ['Runway', pct(s.runway, 1)],
+     ['Recommendation', s.rec]].map(c =>
+      '<div><div class="cellk">' + c[0] + '</div><div class="cellv">' + esc(c[1] != null ? c[1] : '—') + '</div></div>').join('') +
+    '</div><div class="ib-note" style="margin-top:7px">Snapshots into the file on save · source ' + esc(s.source) + '</div>';
+}
+
+/* ── PRELIMINARY DD step ── */
+function ruleFor(item, variable) { const r = RULES.find(x => x.item === item && x.variable === variable); return r ? r.value : null; }
+function ddItems() {
+  const items = [...new Set(RULES.map(r => r.item))].sort();
+  const cur = Object.keys((CUR.dd || {}).items || {});
+  for (const c of cur) if (!items.includes(c)) items.push(c);
+  return items;
+}
+function ddResult(items) {
+  const ratings = Object.values(items || {}).map(x => x.rating).filter(Boolean);
+  if (ratings.includes('Failed')) return 'Failed';
+  if (ratings.includes('Review')) return 'Review';
+  return ratings.length ? 'Approved' : null;
+}
+function renderDD(el) {
+  const dd = CUR.dd || {}; const items = dd.items || {};
+  const list = ddItems();
+  if (!list.length) { el.innerHTML = '<div class="ib-card"><div class="ib-note">Pick a market in Setup first — the DD checklist is region-specific (the rulebook drives sources and criteria).</div></div>'; return; }
+  const res = ddResult(items);
+  el.innerHTML = (res ? '<span class="ib-ddres ' + res + '">DD result: ' + res + '</span>' : '') +
+    '<div class="ib-dd">' + list.map(it => {
+      const v = items[it] || {};
+      const src = ruleFor(it, 'Source');
+      const crit = ['Approved', 'Review', 'Failed'].map(k => { const c = ruleFor(it, k);
+        return c ? '<div><b class="' + { Approved: 'g', Review: 'w', Failed: 'b' }[k] + '">' + k + ':</b> ' + esc(c) + '</div>' : ''; }).join('');
+      return '<div class="ib-dditem" data-item="' + esc(it) + '"><div class="row1">' +
+        '<span class="nm">' + esc(it) + '</span>' +
+        (src && /^https?:/i.test(src) ? '<a class="src" href="' + esc(src) + '" target="_blank" rel="noopener">source ↗</a>'
+          : (src ? '<span class="src" style="color:var(--ib-mut)">' + esc(src) + '</span>' : '')) +
+        (crit ? '<button class="ib-btn sm ib-critbtn" type="button">criteria</button>' : '') +
+        '<select class="ib-ddrating' + (v.rating ? ' s-' + v.rating : '') + '"' + (CAN ? '' : ' disabled') + '>' +
+        '<option value="">—</option>' + DD_RATINGS.map(r => '<option' + (v.rating === r ? ' selected' : '') + '>' + r + '</option>').join('') +
+        '</select></div>' +
+        (crit ? '<div class="ib-crit">' + crit + '</div>' : '') +
+        '<textarea class="ib-ddnotes" placeholder="Notes"' + (CAN ? '' : ' disabled') + '>' + esc(v.notes || '') + '</textarea></div>';
+    }).join('') + '</div>' +
+    '<div class="ib-savebar"><button class="ib-btn pri" id="ibSaveDD" type="button"' + (CAN ? '' : ' disabled') + '>Save DD</button></div>';
+  document.querySelectorAll('.ib-critbtn').forEach(b => b.onclick = () => b.closest('.ib-dditem').classList.toggle('open'));
+  document.querySelectorAll('.ib-ddrating').forEach(s => s.onchange = () => { s.className = 'ib-ddrating' + (s.value ? ' s-' + s.value : ''); });
+  $('#ibSaveDD').onclick = async () => {
+    const out = {};
+    document.querySelectorAll('.ib-dditem').forEach(d => {
+      const rating = d.querySelector('.ib-ddrating').value || null;
+      const notes = d.querySelector('.ib-ddnotes').value.trim() || null;
+      if (rating || notes) out[d.dataset.item] = { rating, notes };
+    });
+    if (await saveSection('dd', { ...CUR.dd, items: out })) renderFile();
+  };
+}
+
+/* ── stubs (Phase B/C editors) ── */
+function renderStub(el, sec) {
+  el.innerHTML = '<div class="ib-card"><h3>' + label(sec) + '</h3>' +
+    '<div class="ib-note">The dedicated ' + label(sec).toLowerCase() + ' editor lands in the next build phase. ' +
+    'Everything already in this section is visible and editable in the <b>Review</b> window.</div></div>';
+}
+
+/* ── REVIEW window (the BA cockpit) ── */
+function pathGet(o, p) { return p.reduce((a, k) => (a == null ? a : a[k]), o); }
+function pathSet(o, p, v) { let a = o; for (let i = 0; i < p.length - 1; i++) a = a[p[i]]; a[p[p.length - 1]] = v; }
+function fmtVal(v) {
+  if (v == null || v === '') return '—';
+  if (typeof v === 'number') return Math.abs(v) < 1 && v !== 0 ? (v * 100).toFixed(2) + '%' : (Number.isInteger(v) ? v.toLocaleString() : String(v));
+  return String(v);
+}
+function rv(sec, path, v) {
+  return '<span class="ib-rv' + (typeof v === 'number' ? ' num' : '') + '" data-sec="' + sec + '" data-path="' + esc(JSON.stringify(path)) + '">' + esc(fmtVal(v)) + '</span>';
+}
+function kvGrid(sec, obj, base) {
+  const pairs = Object.entries(obj || {}).filter(([, v]) => typeof v !== 'object' || v === null);
+  if (!pairs.length) return '<div class="ib-note">nothing here yet</div>';
+  return '<div class="ib-kv">' + pairs.map(([k, v]) =>
+    '<div class="pair"><span class="k">' + esc(label(k)) + '</span><span class="v">' + rv(sec, [...base, k], v) + '</span></div>').join('') + '</div>';
+}
+function tbl(sec, rows, base, cols) {
+  if (!rows || !rows.length) return '';
+  cols = cols || [...new Set(rows.flatMap(r => Object.keys(r)))];
+  return '<div class="ib-tblwrap"><table class="ib-tbl"><thead><tr>' + cols.map(c => '<th>' + esc(label(c)) + '</th>').join('') + '</tr></thead><tbody>' +
+    rows.map((r, i) => '<tr>' + cols.map(c => '<td>' + rv(sec, [...base, i, c], r[c]) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+}
+function checkedBtn(sec) {
+  const rvw = (CUR.compliance && CUR.compliance.review) || {};
+  const c = rvw[sec];
+  return '<button class="ib-checkbtn' + (c ? '' : ' off') + '" data-check="' + sec + '" type="button"' + (CAN ? '' : ' disabled') + '>' +
+    (c ? '✓ checked · ' + esc((c.by || '').split('@')[0]) + ' ' + String(c.at || '').slice(5, 10) : 'mark checked') + '</button>';
+}
+
+function calcCashflow(cf, mode, normRate) {
+  const n = k => +cf[k] || 0;
+  const budget = n('budget'); if (!budget) return null;
+  const rate = mode === 'norm' ? (normRate || 0.0494) : (n('rate') || 0.065);
+  const loan = budget * (n('lvr') || 0.9);
+  const interest = loan * rate;
+  const mPmt = loan * (rate / 12) / (1 - Math.pow(1 + rate / 12, -((n('loanTermYears') || 30) * 12)));
+  const principal = mode === 'io' ? 0 : (mPmt * 12 - interest);
+  const rent = n('rent'), income = rent * (n('weeksLet') || 52);
+  const letting = (n('lettingFeeWeeks') || 0) * rent;
+  const pm = income * (n('pmFeePct') || 0);
+  const repairs = income * (n('repairsPctOfRent') || 0);
+  const other = n('strata') + n('councilWater') + n('landTax') + n('insurance');
+  const runningLessFin = letting + pm + repairs + other;
+  const acq = n('stampDuty') + n('engagementFee') + n('acquisitionFee') + n('titleTransfer') + n('conveyancing') + n('buildingPest') + n('depreciationSchedule') + n('professionalClean');
+  const totalCost = budget + n('maintenanceAllowance') + n('minRentalStdCost') + n('cosmeticWorks') + acq;
+  const annual = income - (runningLessFin + interest + principal);
+  return { loan, requiredCapital: totalCost - loan, grossYield: income / budget, netYield: (income - runningLessFin) / budget,
+    expenseRatio: runningLessFin / (income || 1), annual, weekly: annual / 52, interest, principal, income, totalCost };
+}
+
+function renderReview(el) {
+  const c = CUR;
+  const cards = [];
+  const card = (sec, title, inner) => cards.push('<div class="ib-card" data-seccard="' + sec + '"><h3>' + title +
+    '<span class="right">' + checkedBtn(sec) + '</span></h3>' + inner + '</div>');
+
+  card('setup', 'Setup & property', kvGrid('setup', { address: c.address, suburb: c.suburb, state: c.state, postcode: c.postcode, market: c.market_label, ...(c.setup || {}) }, []) +
+    '<div class="ib-note" style="margin-top:8px">Roles: ' + esc(Object.entries(c.roles || {}).map(([k, v]) => label(k) + ' — ' + v).join(' · ') || 'not set') + '</div>');
+
+  const ss = c.suburb_stats || {};
+  card('suburb_stats', 'Suburb intelligence (auto)', Object.keys(ss).length
+    ? '<div class="ib-kv">' + [['Suburb rating', ss.quality], ['LT CAGR', pct(ss.lt)], ['Median', money(ss.price)],
+        ['Rent', ss.rent != null ? '$' + ss.rent + '/wk' : '—'], ['Yield', pct(ss.yield)], ['DOM', ss.dom],
+        ['Demand', ss.demand], ['Runway', pct(ss.runway, 1)], ['Recommendation', ss.rec], ['As of', ss.asof]].map(p =>
+        '<div class="pair"><span class="k">' + p[0] + '</span><span class="v">' + esc(p[1] != null ? p[1] : '—') + '</span></div>').join('') + '</div>'
+    : '<div class="ib-note">not fetched yet — save Setup with a market + suburb</div>');
+
+  const items = (c.dd || {}).items || {};
+  const res = ddResult(items);
+  card('dd', 'Preliminary DD' + (res ? ' — <span style="color:var(--ib-' + (res === 'Approved' ? 'good' : res === 'Review' ? 'warn' : 'bad') + ')">' + res + '</span>' : ''),
+    Object.keys(items).length
+      ? '<div class="ib-tblwrap"><table class="ib-tbl"><thead><tr><th>Check</th><th>Rating</th><th>Notes</th></tr></thead><tbody>' +
+        Object.entries(items).map(([k, v]) => '<tr><td style="min-width:180px">' + esc(k) + '</td>' +
+          '<td>' + rv('dd', ['items', k, 'rating'], v.rating) + '</td>' +
+          '<td>' + rv('dd', ['items', k, 'notes'], v.notes) + '</td></tr>').join('') + '</tbody></table></div>'
+      : '<div class="ib-note">no checks yet</div>');
+
+  card('inspection', 'Inspection', kvGrid('inspection', c.inspection || {}, []));
+
+  const g = c.grading || {};
+  card('grading', 'Grading' + (g.propertyGrade ? ' — <span style="color:var(--ib-teal)">' + esc(g.propertyGrade) + '</span>' : ''),
+    (Object.keys(g.items || {}).length
+      ? '<div class="ib-kv">' + Object.entries(g.items).map(([k, v]) =>
+        '<div class="pair"><span class="k">' + esc(k) + '</span><span class="v">' + rv('grading', ['items', k], v) + '</span></div>').join('') + '</div>'
+      : '<div class="ib-note">no grading yet</div>') +
+    (g.strategy ? '<div class="ib-note" style="margin-top:8px">Strategy: ' + rv('grading', ['strategy'], g.strategy) + '</div>' : ''));
+
+  const p = c.pricing || {};
+  card('pricing', 'Pricing & appraisal',
+    (p.adopted ? '<div class="ib-kv" style="margin-bottom:10px">' + Object.entries(p.adopted).map(([k, v]) =>
+      '<div class="pair"><span class="k">' + esc(label(k)) + '</span><span class="v">' + rv('pricing', ['adopted', k], v) + '</span></div>').join('') + '</div>' : '') +
+    (p.history && p.history.length ? '<div class="ib-note" style="margin:6px 0 3px">Sale history</div>' + tbl('pricing', p.history, ['history']) : '') +
+    (p.compSales && p.compSales.length ? '<div class="ib-note" style="margin:10px 0 3px">Comparable sales</div>' + tbl('pricing', p.compSales, ['compSales'], ['address', 'beds', 'baths', 'cars', 'land', 'price', 'date', 'overall_r']) : '') +
+    (p.compRents && p.compRents.length ? '<div class="ib-note" style="margin:10px 0 3px">Comparable rents</div>' + tbl('pricing', p.compRents, ['compRents'], ['address', 'comparability', 'rent']) : '') +
+    (!p.adopted && !(p.history || []).length ? '<div class="ib-note">no pricing yet</div>' : ''));
+
+  const cf = c.cashflow || {};
+  const norm = 0.0494;
+  const pi = calcCashflow(cf, 'pi'), io = calcCashflow(cf, 'io'), nm = calcCashflow(cf, 'norm', norm);
+  card('cashflow', 'Cashflow',
+    Object.keys(cf).length
+      ? kvGrid('cashflow', cf, []) +
+        (pi ? '<div class="ib-cashsum" style="margin-top:12px">' + [['P&I @ ' + pct(+cf.rate || 0.065, 2), pi], ['Interest only', io], ['Normalised @ ' + pct(norm, 2), nm]].map(([t, x]) =>
+          '<div class="ib-cash"><div class="t">' + t + '</div>' +
+          '<div class="row"><span>Loan</span><b>' + money(x.loan) + '</b></div>' +
+          '<div class="row"><span>Required capital</span><b>' + money(x.requiredCapital) + '</b></div>' +
+          '<div class="row"><span>Gross yield</span><b>' + pct(x.grossYield) + '</b></div>' +
+          '<div class="row"><span>Net yield</span><b>' + pct(x.netYield) + '</b></div>' +
+          '<div class="row ' + (x.annual < 0 ? 'neg' : 'pos') + '"><span>Annual cashflow</span><b>' + money(x.annual) + '</b></div>' +
+          '<div class="row ' + (x.weekly < 0 ? 'neg' : 'pos') + '"><span>Weekly</span><b>' + money(x.weekly) + '</b></div></div>').join('') + '</div>' +
+          '<div class="ib-note" style="margin-top:8px">Computed live from the inputs above — one model in code, no cloned-tab drift.</div>'
+        : '')
+      : '<div class="ib-note">no cashflow inputs yet</div>');
+
+  el.innerHTML = '<div class="ib-rev-head"><span class="ib-rev-prog">The BA checking window — every section on one page. ' +
+    'Click any <span class="ib-rv" style="pointer-events:none">value</span> to correct it in place, then mark the section checked.</span></div>' +
+    cards.join('');
+
+  /* inline editing */
+  el.querySelectorAll('.ib-rv[data-sec]').forEach(sp => sp.onclick = () => {
+    if (!CAN) { toast('View-only — editing needs the ir-builder role'); return; }
+    if (sp.querySelector('input')) return;
+    const sec = sp.dataset.sec, path = JSON.parse(sp.dataset.path);
+    const cur = pathGet(CUR[sec] || {}, path);
+    const inp = document.createElement('input');
+    inp.className = 'ib-inp'; inp.style.cssText = 'width:100%;min-width:90px;padding:4px 7px;font-size:12px';
+    inp.value = cur == null ? '' : String(cur);
+    sp.textContent = ''; sp.appendChild(inp); inp.focus(); inp.select();
+    let done = false;
+    const commit = async ok => {
+      if (done) return; done = true;
+      if (!ok) { renderReview(el); return; }
+      let nv = inp.value.trim();
+      if (typeof cur === 'number' || (cur == null && /^[\d,$.%-]+$/.test(nv) && nv !== '')) {
+        const d = nv.replace(/[^0-9.-]/g, ''); nv = d === '' ? null : +d;
+        if (String(inp.value).includes('%') && nv != null && Math.abs(nv) > 1) nv = nv / 100;
+      } else if (nv === '') nv = null;
+      const obj = CUR[sec] || {};
+      pathSet(obj, path, nv);
+      await saveSection(sec, obj, true); toast('Saved');
+      renderReview(el);
+    };
+    inp.onkeydown = e => { if (e.key === 'Enter') commit(true); if (e.key === 'Escape') commit(false); };
+    inp.onblur = () => commit(true);
+  });
+
+  /* checked buttons */
+  el.querySelectorAll('.ib-checkbtn[data-check]').forEach(b => b.onclick = async () => {
+    const sec = b.dataset.check;
+    const comp = { ...(CUR.compliance || {}) }; comp.review = { ...(comp.review || {}) };
+    if (comp.review[sec]) delete comp.review[sec];
+    else comp.review[sec] = { by: MY_EMAIL, at: new Date().toISOString() };
+    if (await saveSection('compliance', comp, true)) renderFile();
+  });
+}
+
+/* ── AUDIT tab: who changed what — rows from the ir_files_audit trigger,
+   field-level diff computed here from each row's old/new section values ── */
+function jsonDiff(a, b, base, out, depth) {
+  base = base || []; out = out || []; depth = depth || 0;
+  if (depth > 6 || out.length > 40) return out;
+  const isObj = x => x && typeof x === 'object';
+  if (!isObj(a) || !isObj(b)) {
+    if (JSON.stringify(a === undefined ? null : a) !== JSON.stringify(b === undefined ? null : b))
+      out.push({ path: base.join('.'), from: a, to: b });
+    return out;
+  }
+  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  for (const k of keys) jsonDiff(a ? a[k] : undefined, b ? b[k] : undefined, [...base, k], out, depth + 1);
+  return out;
+}
+async function renderAudit(el) {
+  el.innerHTML = '<div class="ib-card"><div class="ib-note">Loading the trail&hellip;</div></div>';
+  const { data, error } = await sb.from('ir_files_audit').select('*')
+    .eq('file_id', CUR.id).order('changed_at', { ascending: false }).limit(200);
+  if (error) { el.innerHTML = '<div class="ib-card"><div class="ib-note">Audit unavailable: ' + esc(error.message) + '</div></div>'; return; }
+  if (!data || !data.length) { el.innerHTML = '<div class="ib-card"><div class="ib-note">No changes recorded yet.</div></div>'; return; }
+  el.innerHTML = '<div class="ib-card"><h3>Audit trail <span class="right"><span class="ib-note">' + data.length + ' change(s) · every save is logged by the database, per section</span></span></h3>' +
+    '<div class="ib-dd">' + data.map(r => {
+      const who = esc((r.changed_email || 'system').split('@')[0]);
+      const when = String(r.changed_at).slice(0, 16).replace('T', ' ');
+      let body = '';
+      if (r.section === 'created') body = '<div class="ib-note">file created</div>';
+      else if (r.section === 'deleted') body = '<div class="ib-note">file deleted</div>';
+      else {
+        const diffs = jsonDiff(r.old_value, r.new_value);
+        const lines = diffs.slice(0, 10).map(d =>
+          '<div class="ib-note" style="color:var(--ib-ink2)"><b>' + esc(d.path || r.section) + '</b>: ' +
+          '<span style="color:var(--ib-bad)">' + esc(fmtVal(d.from)) + '</span> → ' +
+          '<span style="color:var(--ib-good)">' + esc(fmtVal(d.to)) + '</span></div>').join('');
+        body = lines + (diffs.length > 10 ? '<div class="ib-note">+' + (diffs.length - 10) + ' more field(s)</div>' : '') +
+          (!diffs.length ? '<div class="ib-note">section rewritten (no field-level difference detected)</div>' : '');
+      }
+      return '<div class="ib-dditem"><div class="row1"><span class="nm">' + esc(label(r.section)) + '</span>' +
+        '<span class="ib-chip">' + who + '</span><span class="ib-note">' + when + '</span></div>' + body + '</div>';
+    }).join('') + '</div></div>';
+}
+
+boot();
+</script>
+</body>
+</html>

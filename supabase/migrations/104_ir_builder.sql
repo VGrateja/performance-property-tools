@@ -1,0 +1,182 @@
+-- 104_ir_builder.sql
+--
+-- IR Builder (tools/ir-builder.html): the acquisition team's Property Master
+-- File, hub-native — replaces the 30-tab per-property Google Sheet (Van's
+-- call 2026-08-19: build the factory first; slides integration follows once
+-- the team approves). One row per property file; each workflow section is its
+-- OWN jsonb column so different roles can save different sections without
+-- clobbering each other (update touches only the edited column).
+--
+-- Reference data ported from the workbook by scratch/seed-ir-builder.mjs:
+--   ir_dd_rules      — the region-specific DD rulebook (the sheet's 1,482-row
+--                      "Data" tab): per region x check -> source URL +
+--                      Approved/Review/Failed criteria. Editable in-tool later
+--                      so the DD team keeps owning their rulebook.
+--   ir_grading_rubric— the "IR Grading Table": item x grade -> canned comment.
+--   ir_config        — land-tax/insurance brackets, cashflow defaults,
+--                      market-strength negotiation ranges, grading layout.
+--
+-- Access (the scorecard_can_write pattern): the acquisition team are company
+-- tier, so writes ride tool_roles grants — ir_can_write() = is_writer() OR
+-- has_tool_role('ir-builder'). Reads are gated the same way on purpose:
+-- pre-purchase price strategy stays inside the acquisition circle until the
+-- team decides otherwise.
+
+create or replace function public.ir_can_write() returns boolean
+language sql stable security definer set search_path = public, pg_temp as $$
+  select public.is_writer() or public.has_tool_role('ir-builder');
+$$;
+revoke execute on function public.ir_can_write() from public, anon;
+grant  execute on function public.ir_can_write() to authenticated;
+
+create table public.ir_files (
+  id           uuid primary key default gen_random_uuid(),
+  address      text not null,
+  suburb       text,
+  state        text,
+  postcode     text,
+  market_slug  text,
+  market_label text,
+  status       text not null default 'active'
+               check (status in ('active','final','archived')),
+  roles        jsonb not null default '{}'::jsonb,  -- {consultant, dd_support, sales_admin, assistant}
+  setup        jsonb not null default '{}'::jsonb,  -- property basics + links (listing/CRM/Drive)
+  dd           jsonb not null default '{}'::jsonb,  -- {items:{'1.01 …':{rating,notes}}}
+  inspection   jsonb not null default '{}'::jsonb,  -- the on-site form (Phase B)
+  grading      jsonb not null default '{}'::jsonb,  -- {items:{name:grade}, propertyGrade, strategy}
+  pricing      jsonb not null default '{}'::jsonb,  -- history/comparables/adopted chain (Phase C)
+  cashflow     jsonb not null default '{}'::jsonb,  -- inputs; P&I/IO/normalised computed in-tool (Phase C)
+  compliance   jsonb not null default '{}'::jsonb,  -- manual checklist ticks (Phase D; auto ticks derive)
+  suburb_stats jsonb not null default '{}'::jsonb,  -- auto-filled snapshot from suburb_scores {lt,quality,…,asof}
+  created_at   timestamptz not null default now(),
+  created_by   uuid references auth.users(id) default auth.uid(),
+  updated_at   timestamptz not null default now(),
+  updated_by   uuid references auth.users(id)       -- touch_updated_at fills it
+);
+
+drop trigger if exists trg_ir_files_updated_at on public.ir_files;
+create trigger trg_ir_files_updated_at
+  before update on public.ir_files
+  for each row execute function public.touch_updated_at();
+
+create table public.ir_dd_rules (
+  region   text not null,   -- hub market label ('Melbourne', 'Sunshine Coast', …)
+  item     text not null,   -- '1.01 Easement Review' (code + name, sheet-style)
+  variable text not null,   -- 'Source' | 'Approved' | 'Review' | 'Failed'
+  value    text,
+  primary key (region, item, variable)
+);
+
+create table public.ir_grading_rubric (
+  item    text not null,    -- 'Natural Light', 'Parking', …
+  grade   text not null,    -- 'Poor' | 'Below Average' | 'Average' | 'Above Average' | 'Excellent' (+ type/title variants)
+  comment text,
+  sort    integer not null default 0,
+  primary key (item, grade)
+);
+
+create table public.ir_config (
+  key        text primary key,   -- 'defaults' | 'land_tax' | 'insurance' | 'market_strength' | 'grading_layout' | 'regions'
+  payload    jsonb not null,
+  updated_at timestamptz not null default now(),
+  updated_by uuid references auth.users(id)
+);
+
+drop trigger if exists trg_ir_config_updated_at on public.ir_config;
+create trigger trg_ir_config_updated_at
+  before update on public.ir_config
+  for each row execute function public.touch_updated_at();
+
+-- ── audit trail (Van 2026-08-19: "who made some changes and what part") ────
+-- One row per changed SECTION per save, written by a trigger so it can't be
+-- skipped by any client. The UI diffs old vs new to show field-level changes.
+create table public.ir_files_audit (
+  id            bigint generated by default as identity primary key,
+  file_id       uuid not null,
+  address       text,
+  section       text not null,   -- 'setup' | 'dd' | … | 'details' | 'created' | 'deleted'
+  old_value     jsonb,
+  new_value     jsonb,
+  changed_by    uuid,
+  changed_email text,
+  changed_at    timestamptz not null default now()
+);
+create index ir_files_audit_file_idx on public.ir_files_audit (file_id, changed_at desc);
+
+create or replace function public.ir_files_audit_fn() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_email text;
+  j_old jsonb; j_new jsonb;
+  s text;
+begin
+  select email into v_email from public.profiles where id = auth.uid();
+  if tg_op = 'INSERT' then
+    insert into public.ir_files_audit (file_id, address, section, new_value, changed_by, changed_email)
+    values (new.id, new.address, 'created', jsonb_build_object('address', new.address, 'market', new.market_label),
+            auth.uid(), v_email);
+    return new;
+  end if;
+  if tg_op = 'DELETE' then
+    insert into public.ir_files_audit (file_id, address, section, old_value, changed_by, changed_email)
+    values (old.id, old.address, 'deleted', jsonb_build_object('address', old.address), auth.uid(), v_email);
+    return old;
+  end if;
+  j_old := to_jsonb(old); j_new := to_jsonb(new);
+  foreach s in array
+    array['setup','dd','inspection','grading','pricing','cashflow','compliance','suburb_stats','roles']
+  loop
+    if (j_old -> s) is distinct from (j_new -> s) then
+      insert into public.ir_files_audit (file_id, address, section, old_value, new_value, changed_by, changed_email)
+      values (new.id, new.address, s, j_old -> s, j_new -> s, auth.uid(), v_email);
+    end if;
+  end loop;
+  -- top-level scalars grouped as one 'details' entry
+  if (j_old - 'setup' - 'dd' - 'inspection' - 'grading' - 'pricing' - 'cashflow' - 'compliance'
+        - 'suburb_stats' - 'roles' - 'updated_at' - 'updated_by')
+     is distinct from
+     (j_new - 'setup' - 'dd' - 'inspection' - 'grading' - 'pricing' - 'cashflow' - 'compliance'
+        - 'suburb_stats' - 'roles' - 'updated_at' - 'updated_by') then
+    insert into public.ir_files_audit (file_id, address, section, old_value, new_value, changed_by, changed_email)
+    values (new.id, new.address, 'details',
+            jsonb_build_object('address', old.address, 'suburb', old.suburb, 'state', old.state,
+                               'postcode', old.postcode, 'market', old.market_label, 'status', old.status),
+            jsonb_build_object('address', new.address, 'suburb', new.suburb, 'state', new.state,
+                               'postcode', new.postcode, 'market', new.market_label, 'status', new.status),
+            auth.uid(), v_email);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_ir_files_audit on public.ir_files;
+create trigger trg_ir_files_audit
+  after insert or update or delete on public.ir_files
+  for each row execute function public.ir_files_audit_fn();
+
+alter table public.ir_files_audit enable row level security;
+-- read for the acquisition circle; NO write policies — only the trigger writes
+-- (it runs as the table owner, which bypasses RLS, same as the Cadence history)
+create policy "ir_files_audit_read" on public.ir_files_audit
+  for select to authenticated using (public.ir_can_write());
+
+alter table public.ir_files          enable row level security;
+alter table public.ir_dd_rules       enable row level security;
+alter table public.ir_grading_rubric enable row level security;
+alter table public.ir_config         enable row level security;
+
+create policy "ir_files_rw" on public.ir_files
+  for all to authenticated
+  using (public.ir_can_write()) with check (public.ir_can_write());
+
+create policy "ir_dd_rules_rw" on public.ir_dd_rules
+  for all to authenticated
+  using (public.ir_can_write()) with check (public.ir_can_write());
+
+create policy "ir_grading_rubric_rw" on public.ir_grading_rubric
+  for all to authenticated
+  using (public.ir_can_write()) with check (public.ir_can_write());
+
+create policy "ir_config_rw" on public.ir_config
+  for all to authenticated
+  using (public.ir_can_write()) with check (public.ir_can_write());
