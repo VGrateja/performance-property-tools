@@ -365,13 +365,11 @@ async function boot() {
   let g = 0; while (!window.sb && g++ < 80) await new Promise(r => setTimeout(r, 100));
   if (!window.sb) return;
   MY_EMAIL = (typeof getCurrentUserEmail === 'function' && getCurrentUserEmail()) || '';
-  const lvl = (typeof getAccessLevel === 'function') ? getAccessLevel() : '';
-  CAN = lvl === 'dev' || lvl === 'admin';
-  if (!CAN) {
-    try { const { data: u } = await sb.auth.getUser();
-      const { data: tr } = await sb.from('tool_roles').select('role').eq('user_id', u.user.id).eq('tool_key', 'ir-builder');
-      CAN = !!(tr && tr.length); } catch (e) {}
-  }
+  /* Van's call: everyone who can VIEW the tool can EDIT it. auth-gate only
+     lets group-allowed users (and dev/admin) reach this page, and RLS
+     (ir_can_write, migration 107) checks the same group tick server-side —
+     so on-page internal users are editors. Externals stay view-only. */
+  CAN = !(typeof isViewOnly === 'function' && isViewOnly());
   $('#ibNewBtn').style.display = CAN ? '' : 'none';
   $('#ibNewBtn').onclick = newFile;
   const [cfg, files] = await Promise.all([
@@ -381,7 +379,7 @@ async function boot() {
   if (cfg.error || files.error) {
     $('#ibHome').innerHTML = '<div class="ib-empty">' + (/does not exist|schema cache/i.test((cfg.error || files.error).message)
       ? 'Not set up yet — apply migration 104, then run scratch/seed-ir-builder.mjs --write --sample.'
-      : 'Access is granted per person (tool role \'ir-builder\') — ask Van if you should be on the pilot.') + '</div>';
+      : 'Could not load the files — ask Van (access follows the tool\'s group tick).') + '</div>';
     return;
   }
   (cfg.data || []).forEach(r => { CFG[r.key] = r.payload; });
@@ -402,11 +400,11 @@ let SHOW_ARCH = false;
 function renderHome() {
   $('#ibFile').style.display = 'none'; $('#ibHome').style.display = '';
   if (!FILES.length) {
-    /* with no role grant, RLS returns an EMPTY list (not an error) — say why
-       instead of pretending there are simply no files */
+    /* an empty list with edit rights = genuinely no files; without rights it
+       means RLS is still on the old rule — apply migration 107 */
     $('#ibHome').innerHTML = '<div class="ib-empty">' + (CAN
-      ? 'No property files yet — create the first one.'
-      : 'You can see the tool, but file access is granted per person (an <b>IR Builder editor role</b>) — ask Van to add you to the pilot.') + '</div>';
+      ? 'No property files yet — create the first one. (If files should exist, migration 107 may not be applied yet.)'
+      : 'View-only account.') + '</div>';
     return;
   }
   const archived = FILES.filter(f => f.status === 'archived');
