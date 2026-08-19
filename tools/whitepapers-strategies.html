@@ -2782,11 +2782,90 @@ function renderPicker() {
   if (!WS_DATA.sections.length && !_editMode) {
     grid.innerHTML = '<div class="ws-empty">No document types yet. Switch to Edit to add one.</div>';
   }
-  /* Render-only "coming soon" placeholder for an upcoming folder — NOT part of
-     WS_DATA, so it can't be opened / edited / deleted / persisted. */
-  grid.appendChild(_renderComingSoonTile('Example Investment Reports', '📈'));
+  /* LIVE auto-folder (Saskia's request, wired 2026-08-19): published IR
+     report PDFs from the IR Builder pipeline. NOT part of WS_DATA — it reads
+     the Investment Reports library directly, so it can't drift and there is
+     nothing to edit or persist here. */
+  grid.appendChild(_renderIrLibTile());
   if (_editMode) {
     grid.appendChild(_renderAddTypeTile());
+  }
+}
+
+/* ─── "Example Investment Reports" — the staff-wide window onto PDFs the
+   acquisitions team publishes from IR Builder. Data = investment_reports
+   rows with metrics.report_pdf set (status current); the file itself lives
+   in the staff-readable 'ir-library' bucket (migration 106). ─── */
+let _irLibCountCache = null;
+async function _irLibCount() {
+  if (_irLibCountCache != null) return _irLibCountCache;
+  try {
+    let g = 0; while (!window.sb && g++ < 50) await new Promise(r => setTimeout(r, 100));
+    if (!window.sb) return 0;
+    const { count, error } = await sb.from('investment_reports')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'current').not('metrics->report_pdf', 'is', null);
+    _irLibCountCache = error ? 0 : (count || 0);
+    return _irLibCountCache;
+  } catch (e) { return 0; }
+}
+function _renderIrLibTile() {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'ws-type-tile';
+  btn.innerHTML =
+    '<div class="ws-type-icon">' + _iconGlyph('📈') + '</div>' +
+    '<h3 class="ws-type-title">Example Investment Reports</h3>' +
+    '<div class="ws-type-count" id="ws-irlib-count">&hellip;</div>' +
+    '<span class="ws-type-cta">Open <span>›</span></span>';
+  btn.addEventListener('click', enterIrLib);
+  _irLibCount().then(n => {
+    const el = document.getElementById('ws-irlib-count');
+    if (el) el.textContent = n + ' report' + (n === 1 ? '' : 's');
+  });
+  return btn;
+}
+function enterIrLib() {
+  _currentView = 'irlib';
+  renderAll();
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+async function _renderIrLibView() {
+  const root = document.getElementById('ws-section-root');
+  if (!root) return;
+  root.innerHTML = '<div class="ws-empty">Loading published investment reports&hellip;</div>';
+  try {
+    let g = 0; while (!window.sb && g++ < 50) await new Promise(r => setTimeout(r, 100));
+    if (!window.sb) throw new Error('not connected');
+    const { data, error } = await sb.from('investment_reports')
+      .select('id,address,suburb,market_label,budget,sold_date,metrics')
+      .eq('status', 'current').not('metrics->report_pdf', 'is', null)
+      .order('sold_date', { ascending: false, nullsFirst: false });
+    if (error) throw error;
+    if (_currentView !== 'irlib') return;
+    if (!data || !data.length) {
+      root.innerHTML = '<div class="ws-empty">No published reports yet — they appear here automatically whenever the acquisitions team publishes a finished file from the IR Builder.</div>';
+      return;
+    }
+    const MONW = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const mon = d => { if (!d) return null; const p = String(d).split('-'); return 'Sold ' + MONW[+p[1] - 1] + ' ' + p[0]; };
+    root.innerHTML =
+      '<div class="ws-empty" style="text-align:left;padding:0 2px 14px">Real settled purchases, published straight from the IR Builder — open any report to show a client what they get. The full library (filters + coverage board) lives in the Vault &rarr; Investment Reports.</div>' +
+      '<div class="ws-types-grid">' + data.map(r =>
+        '<button type="button" class="ws-type-tile" data-irpdf="' + _esc(r.metrics.report_pdf) + '">' +
+        '<div class="ws-type-icon">' + _iconGlyph('🏠') + '</div>' +
+        '<h3 class="ws-type-title">' + _esc(r.address) + '</h3>' +
+        '<div class="ws-type-count">' + _esc([r.market_label,
+          r.budget != null ? '$' + Math.round(r.budget).toLocaleString() : null,
+          mon(r.sold_date)].filter(Boolean).join(' · ')) + '</div>' +
+        '<span class="ws-type-cta">Open PDF <span>›</span></span></button>').join('') + '</div>';
+    root.querySelectorAll('[data-irpdf]').forEach(b => b.addEventListener('click', async () => {
+      const { data: s, error: e2 } = await sb.storage.from('ir-library').createSignedUrl(b.dataset.irpdf, 3600);
+      if (e2 || !s) { alert('Could not open the report PDF' + (e2 ? ': ' + e2.message : '')); return; }
+      window.open(s.signedUrl, '_blank', 'noopener');
+    }));
+  } catch (e) {
+    root.innerHTML = '<div class="ws-empty">Could not load the reports: ' + _esc(e.message || String(e)) + '</div>';
   }
 }
 
@@ -3568,6 +3647,12 @@ function renderAll() {
     sectionEl.hidden = true;
     _setPageHeader('picker');
     renderPicker();
+  } else if (_currentView === 'irlib') {
+    /* the live "Example Investment Reports" auto-folder */
+    pickerEl.hidden  = true;
+    sectionEl.hidden = false;
+    _setPageHeader('section', { title: 'Example Investment Reports' });
+    _renderIrLibView();
   } else {
     pickerEl.hidden  = true;
     sectionEl.hidden = false;
