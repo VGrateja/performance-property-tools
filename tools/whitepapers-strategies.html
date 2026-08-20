@@ -659,6 +659,12 @@
     border-color:rgba(31,40,63,0.20);
     color:rgba(31,40,63,0.60);
   }
+  .ws-square-status--updating{
+    background:rgba(196,69,196,0.14);
+    border-color:rgba(196,69,196,0.50);
+    color:#d67ad6;
+  }
+  [data-theme="light"] .ws-square-status--updating{ color:#a832b0 }
   /* Two-line clamp with the height RESERVED whether the title uses one line
      or two — that's what keeps every card's divider and footer on the same
      baseline across a row. */
@@ -902,6 +908,7 @@
   .ws-col-dot--awaiting   { background:#e0a85c }
   .ws-col-dot--in-progress{ background:#5cc8e0 }
   .ws-col-dot--not-completed{ background:#9aa3b1 }
+  .ws-col-dot--updating   { background:#c445c4 }
 
   /* Strategy items show a small "Slides" sub-link below the title. */
   .ws-col-item-stack{
@@ -1040,6 +1047,15 @@
     border-color:rgba(31,40,63,0.20);
     color:rgba(31,40,63,0.60);
   }
+  .ws-status-updating{
+    background:rgba(196,69,196,0.14);
+    border:1px solid rgba(196,69,196,0.50);
+    color:#d67ad6;
+  }
+  [data-theme="light"] .ws-status-updating{ color:#a832b0 }
+  /* An 'Updating' item is inert — grey the whole card (squares already
+     have this via .ws-square-card.is-disabled; this is the grid twin). */
+  .ws-card.is-disabled{ opacity:0.55 }
 
   .ws-card-title{
     font-size:17px; font-weight:800;
@@ -1628,7 +1644,8 @@
      ITEM (card):
        title  — card title
        url    — link to the document/page ('' if unset)
-       status — 'approved' | 'awaiting' | 'in-progress' | 'not-completed'
+       status — 'approved' | 'awaiting' | 'in-progress' | 'updating' | 'not-completed'
+                ('updating' locks the item: card greys out, no open / no copy)
        date   — last upload date as displayed (e.g. "08/12/2025")
 
    Cards with no `url` show a disabled "Not Available Yet" chip.
@@ -1729,6 +1746,7 @@ const WS_STATUS_LABELS = {
   'approved':       'Approved',
   'awaiting':       'Awaiting Approval',
   'in-progress':    'In Progress',
+  'updating':       'Updating',
   'not-completed':  'Not Yet Completed',
 };
 
@@ -2261,6 +2279,10 @@ function _esc(s) {
 }
 function _statusClass(status) { return 'ws-status-' + (status || 'approved'); }
 function _statusLabel(status) { return WS_STATUS_LABELS[status] || 'Approved'; }
+/* 'Updating' is a LOCK, not just a badge (Van 2026-08-20): the item renders
+   greyed out and its open/copy/pin affordances are withheld even when a URL
+   exists — the doc is being reworked and must not be shared mid-edit. */
+function _isUpdating(item) { return !!item && item.status === 'updating'; }
 function _statusOptionsHtml(selected) {
   return Object.keys(WS_STATUS_LABELS).map(key => {
     const sel = (key === selected) ? ' selected' : '';
@@ -2400,6 +2422,7 @@ function _renderItemView(item, ctaLabel, showStatus) {
   const label = ctaLabel || 'Open';
   const cap = _capturedLinkFor(item);
   const url = (cap && cap.url) || (item && item.url) || '';
+  const locked = _isUpdating(item);
   const dateStr = (cap && cap.date) || item.date;
   const meta = dateStr ? 'Last updated ' + _esc(dateStr) : 'Last updated —';
   const statusHtml = showStatus
@@ -2409,7 +2432,7 @@ function _renderItemView(item, ctaLabel, showStatus) {
     statusHtml +
     '<h3 class="ws-card-title">' + _esc(item.title || 'Untitled') + '</h3>' +
     '<div class="ws-card-meta">' + meta + '</div>';
-  if (url) {
+  if (url && !locked) {
     const a = document.createElement('a');
     a.className = 'ws-card';
     a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
@@ -2423,9 +2446,10 @@ function _renderItemView(item, ctaLabel, showStatus) {
     return a;
   }
   const div = document.createElement('div');
-  div.className = 'ws-card';
+  div.className = 'ws-card' + (locked ? ' is-disabled' : '');
+  if (locked) div.title = 'This document is being updated';
   div.innerHTML = head +
-    '<div class="ws-card-actions"><span class="ws-action ws-action-disabled">Not Available Yet</span></div>';
+    '<div class="ws-card-actions"><span class="ws-action ws-action-disabled">' + (locked ? 'Updating' : 'Not Available Yet') + '</span></div>';
   return div;
 }
 
@@ -2433,13 +2457,15 @@ function _renderItemView(item, ctaLabel, showStatus) {
    original layout from before the picker refactor. */
 function _renderStrategyView(item) {
   const card = document.createElement('div');
-  card.className = 'ws-card';
-  const docBtn = item.url
+  const locked = _isUpdating(item);
+  card.className = 'ws-card' + (locked ? ' is-disabled' : '');
+  if (locked) card.title = 'This document is being updated';
+  const docBtn = (item.url && !locked)
     ? '<a class="ws-action ws-action-primary" href="' + _esc(item.url) + '" target="_blank" rel="noopener noreferrer">Document <span>›</span></a>'
-    : '<span class="ws-action ws-action-disabled">Document</span>';
-  const slidesBtn = item.slidesUrl
+    : '<span class="ws-action ws-action-disabled">Document' + (locked ? ' · Updating' : '') + '</span>';
+  const slidesBtn = (item.slidesUrl && !locked)
     ? '<a class="ws-action ws-action-secondary" href="' + _esc(item.slidesUrl) + '" target="_blank" rel="noopener noreferrer">Slides <span>›</span></a>'
-    : '<span class="ws-action ws-action-disabled">Slides · TBC</span>';
+    : '<span class="ws-action ws-action-disabled">Slides · ' + (locked && item.slidesUrl ? 'Updating' : 'TBC') + '</span>';
   card.innerHTML =
     '<div class="ws-card-status ' + _esc(_statusClass(item.status)) + '">' + _esc(_statusLabel(item.status)) + '</div>' +
     '<h3 class="ws-card-title">' + _esc(item.title || 'Untitled') + '</h3>' +
@@ -2456,8 +2482,10 @@ function _renderStrategyView(item) {
     b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, b); });
     acts.appendChild(b);
   };
-  addCopy(item.url, 'Copy link', 'Copy shareable Document link');
-  addCopy(item.slidesUrl, 'Copy slides', 'Copy shareable Slides link');
+  if (!locked) {
+    addCopy(item.url, 'Copy link', 'Copy shareable Document link');
+    addCopy(item.slidesUrl, 'Copy slides', 'Copy shareable Slides link');
+  }
   return card;
 }
 
@@ -3233,7 +3261,8 @@ function _renderSquareItemView(item, kind) {
   const dateHtml = item.date
     ? '<div class="ws-square-card-date">Last updated ' + _esc(item.date) + '</div>'
     : '<div class="ws-square-card-date">Last updated —</div>';
-  if (item.url) {
+  const locked = _isUpdating(item);
+  if (item.url && !locked) {
     const a = document.createElement('a');
     a.className = 'ws-square-card';
     a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
@@ -3247,7 +3276,7 @@ function _renderSquareItemView(item, kind) {
      mid-card (redesign 2026-08-12). */
   const div = document.createElement('div');
   div.className = 'ws-square-card is-disabled';
-  div.title = 'Not Available Yet';
+  div.title = locked ? 'This document is being updated' : 'Not Available Yet';
   div.innerHTML = statusHtml + iconHtml + titleHtml + '<div class="ws-square-foot">' + dateHtml + '</div>';
   return div;
 }
@@ -3258,18 +3287,20 @@ function _renderSquareItemView(item, kind) {
    non-link surface stays inert. */
 function _renderSquareStrategyView(item) {
   const card = document.createElement('div');
-  card.className = 'ws-square-card';
+  const locked = _isUpdating(item);
+  card.className = 'ws-square-card' + (locked ? ' is-disabled' : '');
+  if (locked) card.title = 'This document is being updated';
   const statusKey = item.status || 'in-progress';
   /* One row per resource: name = the link, its own Copy/Pin on the same row
      (redesign 2026-08-12 — the old 2×3 grid repeated "Copy" and "Pin" with
      nothing tying either to Document vs Slides). */
-  const resRow = (col, label, url) => url
+  const resRow = (col, label, url) => (url && !locked)
     ? '<div class="ws-res-row" data-col="' + col + '">' +
         '<a class="ws-res-link" href="' + _esc(url) + '" target="_blank" rel="noopener noreferrer">' + _esc(label) + ' ›</a>' +
         '<div class="ws-res-btns"></div>' +
       '</div>'
     : '<div class="ws-res-row is-off" data-col="' + col + '">' +
-        '<span class="ws-res-link is-off">' + _esc(label) + ' · TBC</span>' +
+        '<span class="ws-res-link is-off">' + _esc(label) + (locked && url ? ' · Updating' : ' · TBC') + '</span>' +
       '</div>';
   card.innerHTML =
     '<div class="ws-square-status ws-square-status--' + _esc(statusKey) + '">' + _esc(_statusLabel(statusKey)) + '</div>' +
@@ -3278,10 +3309,12 @@ function _renderSquareStrategyView(item) {
     '<div class="ws-square-card-date">' + (item.date ? 'Last upload ' + _esc(item.date) : 'Last upload —') + '</div>' +
     '<div class="ws-res-list">' + resRow('doc', 'Document', item.url) + resRow('slides', 'Slides', item.slidesUrl) + '</div>';
   const btns = (col) => card.querySelector('.ws-res-row[data-col="' + col + '"] .ws-res-btns');
-  _addCopyBtn(btns('doc'), item.url, 'ws-res-btn', 'Copy');
-  _addPinBtn(btns('doc'), item.url, (item.title || '') + ' — Document', 'ws-res-btn', 'Pin');
-  _addCopyBtn(btns('slides'), item.slidesUrl, 'ws-res-btn', 'Copy');
-  _addPinBtn(btns('slides'), item.slidesUrl, (item.title || '') + ' — Slides', 'ws-res-btn', 'Pin');
+  if (!locked) {
+    _addCopyBtn(btns('doc'), item.url, 'ws-res-btn', 'Copy');
+    _addPinBtn(btns('doc'), item.url, (item.title || '') + ' — Document', 'ws-res-btn', 'Pin');
+    _addCopyBtn(btns('slides'), item.slidesUrl, 'ws-res-btn', 'Copy');
+    _addPinBtn(btns('slides'), item.slidesUrl, (item.title || '') + ' — Slides', 'ws-res-btn', 'Pin');
+  }
   return card;
 }
 
@@ -3408,6 +3441,7 @@ function _renderColumnItemView(item, showStatusDot) {
      fallback. PDF Reports uses THIS column renderer (not the grid one). */
   const cap = _capturedLinkFor(item);
   const url = (cap && cap.url) || (item && item.url) || '';
+  const locked = _isUpdating(item);
   const dateStr = (cap && cap.date) || item.date;
   const dotHtml = showStatusDot
     ? '<span class="ws-col-dot ws-col-dot--' + _esc(item.status || 'in-progress') + '" title="' + _esc(_statusLabel(item.status)) + '"></span>'
@@ -3420,7 +3454,7 @@ function _renderColumnItemView(item, showStatusDot) {
       '<span class="ws-col-item-title">' + _esc(item.title || 'Untitled') + '</span>' +
       dateHtml +
     '</div>';
-  if (url) {
+  if (url && !locked) {
     const a = document.createElement('a');
     a.className = 'ws-col-item ws-col-item--stacked';
     a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
@@ -3436,7 +3470,7 @@ function _renderColumnItemView(item, showStatusDot) {
   }
   const div = document.createElement('div');
   div.className = 'ws-col-item is-disabled';
-  div.title = 'Not Available Yet';
+  div.title = locked ? 'This document is being updated' : 'Not Available Yet';
   div.innerHTML = dotHtml + stackHtml;
   return div;
 }
@@ -3445,14 +3479,16 @@ function _renderColumnItemView(item, showStatusDot) {
    "Slides" sub-link if slidesUrl is set, then date if present. */
 function _renderColumnStrategyView(item) {
   const wrap = document.createElement('div');
-  wrap.className = 'ws-col-item' + (item.url ? '' : ' is-disabled');
+  const locked = _isUpdating(item);
+  wrap.className = 'ws-col-item' + ((item.url && !locked) ? '' : ' is-disabled');
+  if (locked) wrap.title = 'This document is being updated';
   const dot = '<span class="ws-col-dot ws-col-dot--' + _esc(item.status || 'in-progress') + '" title="' + _esc(_statusLabel(item.status)) + '"></span>';
-  const titleHtml = item.url
+  const titleHtml = (item.url && !locked)
     ? '<a class="ws-col-item-title" href="' + _esc(item.url) + '" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">' + _esc(item.title || 'Untitled') + '</a>'
     : '<span class="ws-col-item-title">' + _esc(item.title || 'Untitled') + '</span>';
-  const slidesHtml = item.slidesUrl
+  const slidesHtml = (item.slidesUrl && !locked)
     ? '<a class="ws-col-slides" href="' + _esc(item.slidesUrl) + '" target="_blank" rel="noopener noreferrer">Slides ›</a>'
-    : '<span class="ws-col-slides is-disabled">Slides · TBC</span>';
+    : '<span class="ws-col-slides is-disabled">Slides · ' + (locked && item.slidesUrl ? 'Updating' : 'TBC') + '</span>';
   const dateHtml = item.date
     ? '<span class="ws-col-item-date">' + _esc(item.date) + '</span>'
     : '';
