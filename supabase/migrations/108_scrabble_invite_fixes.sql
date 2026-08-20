@@ -21,14 +21,49 @@
 --        - request_join_scrabble_lobby's invited→joined shortcut now runs
 --          the same seat check accept_lobby_invite has always had.
 --
---   3. accept_lobby_invite now clears the accepter's other commitments
---      atomically: any open lobby they host is cancelled and their
---      joined/requested/invited rows in other open lobbies flip to 'left'.
---      Without this, being a member of two lobbies was reachable — and the
---      client can only surface one, which is how invites went invisible.
+--   3. One lobby at a time is now a real invariant. Every path that makes a
+--      player 'joined' somewhere (accepting an invite, a host accepting
+--      their request, the request-join invited→joined shortcut) — plus
+--      creating a lobby — first releases their other open commitments:
+--      any open lobby they host is cancelled and their joined/requested/
+--      invited rows in other open lobbies flip to 'left'. Without this,
+--      holding two memberships was reachable — and the client can only
+--      surface one, which is how invites went invisible.
 --
 -- Run order: after 107_*.sql.
 -- =============================================================================
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- scrabble_release_other_lobbies — internal helper for the one-lobby
+-- invariant. NOT client-callable (no grant to authenticated); only the
+-- security-definer RPCs below invoke it.
+-- ─────────────────────────────────────────────────────────────────────────────
+create or replace function public.scrabble_release_other_lobbies(p_user_id uuid, p_keep_lobby_id uuid)
+  returns void
+  language plpgsql
+  security definer
+  set search_path = public
+as $$
+begin
+  update public.arena_scrabble_lobbies
+     set status = 'cancelled', cancelled_at = now()
+   where host_user_id = p_user_id
+     and status = 'open'
+     and (p_keep_lobby_id is null or id <> p_keep_lobby_id);
+
+  update public.arena_scrabble_lobby_players p
+     set status = 'left'
+    from public.arena_scrabble_lobbies l
+   where l.id = p.lobby_id
+     and p.user_id = p_user_id
+     and l.status = 'open'
+     and (p_keep_lobby_id is null or p.lobby_id <> p_keep_lobby_id)
+     and p.status in ('joined', 'requested', 'invited');
+end;
+$$;
+revoke all on function public.scrabble_release_other_lobbies(uuid, uuid) from public;
+revoke all on function public.scrabble_release_other_lobbies(uuid, uuid) from anon, authenticated;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -114,18 +149,7 @@ begin
   /* One lobby at a time: cancel any open lobby I host and walk out of any
      other open lobby I'm attached to, so the client's single "My lobby"
      slot can never hide a membership. */
-  update public.arena_scrabble_lobbies
-     set status = 'cancelled', cancelled_at = now()
-   where host_user_id = v_uid and status = 'open' and id <> p_lobby_id;
-
-  update public.arena_scrabble_lobby_players p
-     set status = 'left'
-    from public.arena_scrabble_lobbies l
-   where l.id = p.lobby_id
-     and p.user_id = v_uid
-     and p.lobby_id <> p_lobby_id
-     and l.status = 'open'
-     and p.status in ('joined', 'requested', 'invited');
+  perform public.scrabble_release_other_lobbies(v_uid, p_lobby_id);
 
   update public.arena_scrabble_lobby_players
      set status = 'joined', joined_at = now()
@@ -163,6 +187,10 @@ begin
   select count(*) into v_count from public.arena_scrabble_lobby_players
     where lobby_id = p_lobby_id and status = 'joined';
   if v_count >= v_lobby.max_players then raise exception 'Lobby is full'; end if;
+
+  /* The requester becomes 'joined' here, so the one-lobby invariant
+     applies to THEM: release their other open commitments first. */
+  perform public.scrabble_release_other_lobbies(p_requester_id, p_lobby_id);
 
   update public.arena_scrabble_lobby_players
      set status = 'joined', joined_at = now()
@@ -212,6 +240,7 @@ begin
     select count(*) into v_count from public.arena_scrabble_lobby_players
       where lobby_id = p_lobby_id and status = 'joined';
     if v_count >= v_lobby.max_players then raise exception 'Lobby is full'; end if;
+    perform public.scrabble_release_other_lobbies(v_uid, p_lobby_id);
     update public.arena_scrabble_lobby_players
        set status = 'joined', joined_at = now()
      where lobby_id = p_lobby_id and user_id = v_uid;
@@ -234,5 +263,56 @@ begin
   v_name := split_part(v_email, '@', 1);
   insert into public.arena_scrabble_lobby_players (lobby_id, user_id, email, name, status)
     values (p_lobby_id, v_uid, v_email, v_name, 'requested');
+end;
+$$;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- create_scrabble_lobby — host opens a lobby (022's signature/body).
+-- Changed: creating a lobby also enforces the one-lobby invariant. The
+-- client already refuses with an alert while you're in a lobby, but a stale
+-- view could slip past it and strand a ghost lobby only the sweeper would
+-- ever clean up — now the old commitments release instead.
+-- ─────────────────────────────────────────────────────────────────────────────
+create or replace function public.create_scrabble_lobby(
+  p_max_players       int     default 4,
+  p_ranked            boolean default true,
+  p_turn_time_seconds int     default null
+)
+  returns uuid
+  language plpgsql
+  security definer
+  set search_path = public
+as $$
+declare
+  v_uid    uuid := auth.uid();
+  v_email  text;
+  v_name   text;
+  v_id     uuid;
+begin
+  if v_uid is null then raise exception 'Not signed in'; end if;
+  if p_max_players not between 2 and 4 then
+    raise exception 'max_players must be 2, 3 or 4';
+  end if;
+  if p_turn_time_seconds is not null and p_turn_time_seconds not between 30 and 3600 then
+    raise exception 'turn_time_seconds must be between 30 and 3600 (or null for untimed)';
+  end if;
+
+  select email into v_email from auth.users where id = v_uid;
+  if v_email is null then raise exception 'Could not resolve caller email'; end if;
+  v_name := split_part(v_email, '@', 1);
+
+  perform public.scrabble_release_other_lobbies(v_uid, null);
+
+  insert into public.arena_scrabble_lobbies (
+    host_user_id, host_email, host_name, max_players, ranked, turn_time_seconds
+  ) values (
+    v_uid, v_email, v_name, p_max_players, p_ranked, p_turn_time_seconds
+  ) returning id into v_id;
+
+  insert into public.arena_scrabble_lobby_players (lobby_id, user_id, email, name, status, joined_at)
+    values (v_id, v_uid, v_email, v_name, 'joined', now());
+
+  return v_id;
 end;
 $$;
