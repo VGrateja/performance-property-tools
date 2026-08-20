@@ -328,6 +328,10 @@
     padding: 2px 8px; background: rgba(211,115,211,0.14);
     border-radius: 999px;
   }
+  /* "Invites for you" runs a hotter border than the other panels — it's the
+     one block that must catch the eye the moment it appears. */
+  .scrabble-invites-block { border-color: rgba(211,115,211,0.60); }
+  [data-theme="light"] .scrabble-invites-block { border-color: rgba(186,85,186,0.55); }
 
   /* Centre split: incoming + outgoing side by side */
   .scrabble-lobby-row-pair {
@@ -2183,8 +2187,23 @@
         <div class="scrabble-resume-row" id="scrabbleResumeRow"></div>
       </div>
 
+      <!-- "Invites for you" — pending status='invited' rows across ALL open
+           lobbies. Lives OUTSIDE "My active lobby" on purpose: the old model
+           surfaced an invite only through the single My-lobby slot, so anyone
+           already hosting / joined / requested elsewhere never saw incoming
+           invites at all (the 2026-08-18 helen→arvin invite died unseen
+           exactly this way). -->
+      <div class="scrabble-lobby-block scrabble-invites-block" id="scrabbleInvitesBlock" style="display:none;">
+        <div class="scrabble-lobby-block-head">
+          <h3 class="scrabble-lobby-block-title">Invites for you</h3>
+          <span class="scrabble-lobby-block-count" id="scrabbleInvitesCount"></span>
+        </div>
+        <ul class="scrabble-lobby-list" id="scrabbleInvitesList"></ul>
+      </div>
+
       <!-- "My active lobby" - shown only when I'm currently a member
-           (joined, requested, or invited) of an open lobby. Doubles as
+           (joined or requested) of an open lobby; pending INVITES render
+           in the "Invites for you" strip above instead. Doubles as
            the host's waiting room (with controls) and as the joiner's
            "waiting for host" view. -->
       <div class="scrabble-lobby-block" id="scrabbleMyLobbyBlock" style="display:none;">
@@ -2648,7 +2667,8 @@ const STARTING_POINTS = 100;   /* first-timer rating (matches the server default
 let _me = null;                     // { userId, email, name }
 let _onlineUsers = new Map();       // email → { userId, email, name }
 let _lobbies = [];                  // every open lobby (any host)
-let _myLobby = null;                // the lobby I'm currently a member of (or null)
+let _myLobby = null;                // the lobby I'm joined/requested in (or null)
+let _myInvites = [];                // ALL open lobbies where my row is status='invited'
 let _spectateGames = [];
 let _myActiveGame = null;           // active game I'm a player in (or null) — for the Resume callout
 
@@ -2713,6 +2733,14 @@ const $gameBackBtn     = document.getElementById('scrabbleGameBackBtn');
     if (document.body.classList.contains('scrabble-in-game')) return;
     refreshLobby();
   }, 8000);
+  /* The poll above deliberately skips hidden tabs, so someone tabbing back
+     in could sit up to 8s behind — refresh the instant the tab is visible
+     again so a waiting invite shows immediately. */
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    if (document.body.classList.contains('scrabble-in-game')) return;
+    refreshLobby();
+  });
 })();
 
 /* Re-pull lobbies + active games (online presence updates itself via the
@@ -2799,12 +2827,20 @@ async function loadLobbies() {
       return aT.localeCompare(bT);
     }),
   }));
-  /* Find the lobby I'm currently a member of (any non-left/kicked status). */
+  /* Pending invites get their own strip — EVERY open lobby where my row is
+     'invited', not just the newest. Folding invites into the single My-lobby
+     slot is what used to make them invisible to anyone hosting or joined
+     elsewhere. */
+  _myInvites = _lobbies.filter(l =>
+    (l.players || []).some(p => p.user_id === _me.userId && p.status === 'invited'));
+  /* Find the lobby I'm actively in (joined or requested). */
   _myLobby = _lobbies.find(l =>
-    (l.players || []).some(p => p.user_id === _me.userId && ['joined','requested','invited'].includes(p.status))
+    (l.players || []).some(p => p.user_id === _me.userId && ['joined','requested'].includes(p.status))
   ) || null;
   rewireMyLobbyChannel();
   renderMyLobby();
+  renderMyInvites();
+  updateInviteTitle();
   renderOpenLobbies();
   renderOnlineList();   // so "Invite" buttons appear/disappear the moment my lobby state changes
 }
@@ -3089,9 +3125,10 @@ function friendlyTime(iso) {
 
 /* ─── List renderers ─── */
 /* ─── Render: My active lobby ───
-   Shows the lobby I'm currently a member of (joined / requested /
-   invited). Host gets the full host control set (accept/kick/start);
-   non-host gets the appropriate status + leave / accept-invite. */
+   Shows the lobby I'm actively in (joined / requested). Host gets the
+   full host control set (accept/kick/start); non-host gets the
+   appropriate status + leave. Incoming invites render in their own
+   "Invites for you" strip — see renderMyInvites(). */
 function renderMyLobby() {
   const $block   = document.getElementById('scrabbleMyLobbyBlock');
   const $title   = document.getElementById('scrabbleMyLobbyTitle');
@@ -3163,10 +3200,6 @@ function renderMyLobby() {
         (canStart ? '' : ' disabled title="Need 2+ joined players to start"') +
         '>Start game (' + joinedCount + ')</button>' +
       '<button class="scrabble-lobby-action-btn is-danger" type="button" data-action="scr-cancel-lobby">Cancel lobby</button>';
-  } else if (myStatus === 'invited') {
-    actionsHtml +=
-      '<button class="scrabble-lobby-action-btn is-primary" type="button" data-action="scr-accept-invite">Accept invite</button>' +
-      '<button class="scrabble-lobby-action-btn is-danger"  type="button" data-action="scr-decline-invite">Decline</button>';
   } else if (myStatus === 'requested') {
     actionsHtml +=
       '<button class="scrabble-lobby-action-btn is-danger" type="button" data-action="scr-leave-lobby">Cancel request</button>';
@@ -3175,6 +3208,49 @@ function renderMyLobby() {
       '<button class="scrabble-lobby-action-btn is-danger" type="button" data-action="scr-leave-lobby">Leave lobby</button>';
   }
   $actions.innerHTML = actionsHtml;
+}
+
+/* ─── Render: Invites for you ───
+   Every open lobby where my row is status='invited'. Rendered as its own
+   strip (never folded into "My lobby") so hosting or being joined
+   elsewhere can't hide an incoming invite. */
+function renderMyInvites() {
+  const $block = document.getElementById('scrabbleInvitesBlock');
+  const $list  = document.getElementById('scrabbleInvitesList');
+  const $count = document.getElementById('scrabbleInvitesCount');
+  if (!$block || !$list || !_me) return;
+  if (!_myInvites.length) { $block.style.display = 'none'; $list.innerHTML = ''; return; }
+  $block.style.display = '';
+  if ($count) $count.textContent = String(_myInvites.length);
+  $list.innerHTML = _myInvites.map(l => {
+    const hostName = l.host_name || (l.host_email || '').split('@')[0];
+    const joinedCount = (l.players || []).filter(p => p.status === 'joined').length;
+    const meta = joinedCount + '/' + l.max_players + ' · '
+               + (l.ranked ? 'Ranked' : 'Casual')
+               + ' · ' + formatTurnTime(l.turn_time_seconds)
+               + (l.expires_at ? ' · ' + formatExpiry(l.expires_at) : '');
+    return '<li class="scrabble-lobby-row">' +
+      '<div class="scrabble-lobby-row-name">' +
+        '<strong>' + escapeHtml(hostName) + ' invited you</strong>' +
+        '<div class="scrabble-lobby-row-meta">' + escapeHtml(meta) + '</div>' +
+      '</div>' +
+      '<div class="scrabble-lobby-row-buttons">' +
+        '<button class="scrabble-lobby-mini-btn" data-action="scr-accept-invite" data-lobby="' + escapeHtml(l.id) + '">Accept</button>' +
+        '<button class="scrabble-lobby-mini-btn is-danger" data-action="scr-decline-invite" data-lobby="' + escapeHtml(l.id) + '">Decline</button>' +
+      '</div>' +
+    '</li>';
+  }).join('');
+}
+
+/* Tab-title nudge — a backgrounded tab still shows its owner as "Online
+   now" to hosts, so the title bar is the only surface a tabbed-away
+   invitee can actually see. */
+let _baseDocTitle = null;
+function updateInviteTitle() {
+  if (_baseDocTitle === null) _baseDocTitle = document.title;
+  document.title = _myInvites.length
+    ? '(' + _myInvites.length + ') Invite waiting · ' + _baseDocTitle
+    : _baseDocTitle;
 }
 
 /* ─── Render: Open lobbies (browser) ───
@@ -3310,8 +3386,8 @@ document.addEventListener('click', (ev) => {
   const action = btn.dataset.action;
   switch (action) {
     case 'scr-request-join':   return requestJoinLobby(btn.dataset.lobby);
-    case 'scr-accept-invite':  return acceptInvite();
-    case 'scr-decline-invite': return declineInvite();
+    case 'scr-accept-invite':  return acceptInvite(btn.dataset.lobby);
+    case 'scr-decline-invite': return declineInvite(btn.dataset.lobby);
     case 'scr-accept-request': return acceptJoinRequest(btn.dataset.uid);
     case 'scr-kick':           return kickPlayer(btn.dataset.uid);
     case 'scr-leave-lobby':    return leaveLobby();
@@ -3499,15 +3575,27 @@ async function requestJoinLobby(lobbyId) {
   const { error } = await window.sb.rpc('request_join_scrabble_lobby', { p_lobby_id: lobbyId });
   if (error) alert('Could not join: ' + (error.message || 'unknown error'));
 }
-async function acceptInvite() {
-  if (!_myLobby) return;
-  const { error } = await window.sb.rpc('accept_lobby_invite', { p_lobby_id: _myLobby.id });
+async function acceptInvite(lobbyId) {
+  if (!lobbyId) return;
+  /* The server clears my other commitments atomically on accept (cancels a
+     lobby I host, leaves lobbies I'm joined/requested in) — just make sure
+     that's what the player meant before it happens. */
+  if (_myLobby) {
+    const hosting = _myLobby.host_user_id === (_me && _me.userId);
+    const msg = hosting
+      ? 'Accepting this invite closes the lobby you are hosting. Continue?'
+      : 'Accepting this invite leaves your current lobby. Continue?';
+    if (!confirm(msg)) return;
+  }
+  const { error } = await window.sb.rpc('accept_lobby_invite', { p_lobby_id: lobbyId });
   if (error) alert('Could not accept invite: ' + (error.message || 'unknown error'));
+  await refreshLobby();
 }
-async function declineInvite() {
-  if (!_myLobby) return;
-  const { error } = await window.sb.rpc('decline_lobby_invite', { p_lobby_id: _myLobby.id });
+async function declineInvite(lobbyId) {
+  if (!lobbyId) return;
+  const { error } = await window.sb.rpc('decline_lobby_invite', { p_lobby_id: lobbyId });
   if (error) alert('Could not decline invite: ' + (error.message || 'unknown error'));
+  await refreshLobby();
 }
 async function acceptJoinRequest(userId) {
   if (!_myLobby || !userId) return;
