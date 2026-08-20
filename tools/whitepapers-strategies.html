@@ -2838,7 +2838,7 @@ async function _renderIrLibView() {
     let g = 0; while (!window.sb && g++ < 50) await new Promise(r => setTimeout(r, 100));
     if (!window.sb) throw new Error('not connected');
     const { data, error } = await sb.from('investment_reports')
-      .select('id,address,suburb,market_label,budget,sold_date,metrics')
+      .select('id,address,suburb,market_label,domain,budget,sold_date,metrics')
       .eq('status', 'current').not('metrics->report_pdf', 'is', null)
       .order('sold_date', { ascending: false, nullsFirst: false });
     if (error) throw error;
@@ -2849,16 +2849,31 @@ async function _renderIrLibView() {
     }
     const MONW = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const mon = d => { if (!d) return null; const p = String(d).split('-'); return 'Sold ' + MONW[+p[1] - 1] + ' ' + p[0]; };
+    const tile = r =>
+      '<button type="button" class="ws-type-tile" data-irpdf="' + _esc(r.metrics.report_pdf) + '">' +
+      '<div class="ws-type-icon">' + _iconGlyph('🏠') + '</div>' +
+      '<h3 class="ws-type-title">' + _esc(r.address) + '</h3>' +
+      '<div class="ws-type-count">' + _esc([r.market_label,
+        r.budget != null ? '$' + Math.round(r.budget).toLocaleString() : null,
+        mon(r.sold_date)].filter(Boolean).join(' · ')) + '</div>' +
+      '<span class="ws-type-cta">Open PDF <span>›</span></span></button>';
+    /* grouped by market; commercial pools under "Commercial" */
+    const groupOf = r => r.domain === 'commercial' ? 'Commercial' : (r.domain === 'wholesale' ? 'Wholesale' : (r.market_label || 'Other'));
+    const groups = new Map();
+    for (const r of data) { const g = groupOf(r); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(r); }
+    const tailG = ['Commercial', 'Wholesale', 'Other'];
+    const keysG = [...groups.keys()].sort((a, b) => {
+      const ta = tailG.indexOf(a), tb = tailG.indexOf(b);
+      if (ta !== tb) return (ta === -1 ? -1 : 1) - (tb === -1 ? -1 : 1) || ta - tb;
+      return a.localeCompare(b);
+    });
     root.innerHTML =
       '<div class="ws-empty" style="text-align:left;padding:0 2px 14px">Real settled purchases, published straight from the IR Builder — open any report to show a client what they get. The full library (filters + coverage board) lives in the Vault &rarr; Investment Reports.</div>' +
-      '<div class="ws-types-grid">' + data.map(r =>
-        '<button type="button" class="ws-type-tile" data-irpdf="' + _esc(r.metrics.report_pdf) + '">' +
-        '<div class="ws-type-icon">' + _iconGlyph('🏠') + '</div>' +
-        '<h3 class="ws-type-title">' + _esc(r.address) + '</h3>' +
-        '<div class="ws-type-count">' + _esc([r.market_label,
-          r.budget != null ? '$' + Math.round(r.budget).toLocaleString() : null,
-          mon(r.sold_date)].filter(Boolean).join(' · ')) + '</div>' +
-        '<span class="ws-type-cta">Open PDF <span>›</span></span></button>').join('') + '</div>';
+      keysG.map(k =>
+        '<div style="font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:#00A0B4;margin:16px 2px 9px;display:flex;align-items:center;gap:10px">' +
+        _esc(k) + ' <span style="color:inherit;opacity:.55;letter-spacing:0">' + groups.get(k).length + '</span>' +
+        '<span style="flex:1;height:1px;background:currentColor;opacity:.18"></span></div>' +
+        '<div class="ws-types-grid">' + groups.get(k).map(tile).join('') + '</div>').join('');
     root.querySelectorAll('[data-irpdf]').forEach(b => b.addEventListener('click', async () => {
       const { data: s, error: e2 } = await sb.storage.from('ir-library').createSignedUrl(b.dataset.irpdf, 3600);
       if (e2 || !s) { alert('Could not open the report PDF' + (e2 ? ': ' + e2.message : '')); return; }

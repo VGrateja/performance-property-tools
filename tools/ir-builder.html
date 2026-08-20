@@ -69,6 +69,10 @@ h1{font-size:28px;font-weight:800;letter-spacing:-0.02em;margin:4px 0 2px}
 .ib-chip.warn{background:var(--ib-warn-soft);color:var(--ib-warn)}
 .ib-chip.good{background:var(--ib-good-soft);color:var(--ib-good)}
 .ib-empty{padding:40px 10px;text-align:center;font-size:13px;font-weight:600;color:var(--ib-mut)}
+.ib-ghead{font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--ib-teal);
+  margin:18px 2px 9px;display:flex;align-items:center;gap:10px;grid-column:1/-1}
+.ib-ghead::after{content:"";flex:1;height:1px;background:var(--ib-border)}
+.ib-ghead .n{color:var(--ib-mut);letter-spacing:0;font-weight:700}
 
 /* file header + steps */
 .ib-fhead{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:2px 0 14px}
@@ -386,7 +390,7 @@ async function boot() {
   $('#ibNewBtn').onclick = newFile;
   const [cfg, files] = await Promise.all([
     sb.from('ir_config').select('key,payload'),
-    sb.from('ir_files').select('id,address,suburb,state,market_label,market_slug,status,roles,updated_at,compliance').order('updated_at', { ascending: false }),
+    sb.from('ir_files').select('id,address,suburb,state,market_label,market_slug,status,roles,updated_at,compliance,setup').order('updated_at', { ascending: false }),
   ]);
   if (cfg.error || files.error) {
     $('#ibHome').innerHTML = '<div class="ib-empty">' + (/does not exist|schema cache/i.test((cfg.error || files.error).message)
@@ -421,7 +425,7 @@ function renderHome() {
   }
   const archived = FILES.filter(f => f.status === 'archived');
   const shown = SHOW_ARCH ? FILES : FILES.filter(f => f.status !== 'archived');
-  $('#ibHome').innerHTML = '<div class="ib-files">' + shown.map(f => {
+  const fcard = f => {
     const rv = (f.compliance && f.compliance.review) || {};
     const checked = SECTIONS.filter(s => rv[s]).length;
     return '<button class="ib-fcard" type="button" data-id="' + f.id + '">' +
@@ -431,7 +435,23 @@ function renderHome() {
       (checked ? '<span class="ib-chip good">checked ' + checked + '/' + SECTIONS.length + '</span>' : '') + '</div>' +
       '<div class="r">' + esc(((f.roles || {}).consultant ? 'Consultant ' + f.roles.consultant : '')) +
       ' · updated ' + auTs(f.updated_at) + '</div></button>';
-  }).join('') + '</div>' +
+  };
+  /* grouped by market; the explicit Commercial flag (or a commercial property
+     type) pools under "Commercial" */
+  const groupOf = f => ((f.setup || {}).commercial === true ||
+    /block|industrial|medical|office|retail|commercial/i.test(((f.setup || {}).propertyType) || ''))
+    ? 'Commercial' : (f.market_label || 'No market');
+  const groups = new Map();
+  for (const f of shown) { const g = groupOf(f); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(f); }
+  const tail = ['Commercial', 'No market'];
+  const keys = [...groups.keys()].sort((a, b) => {
+    const ta = tail.indexOf(a), tb = tail.indexOf(b);
+    if (ta !== tb) return (ta === -1 ? -1 : 1) - (tb === -1 ? -1 : 1) || ta - tb;
+    return a.localeCompare(b);
+  });
+  $('#ibHome').innerHTML = '<div class="ib-files">' + keys.map(k =>
+    '<div class="ib-ghead">' + esc(k) + ' <span class="n">' + groups.get(k).length + '</span></div>' +
+    groups.get(k).map(fcard).join('')).join('') + '</div>' +
   (archived.length ? '<div class="ib-note" style="margin-top:12px"><button class="ib-btn sm" id="ibArchTgl" type="button">' +
     (SHOW_ARCH ? 'Hide' : 'Show') + ' archived (' + archived.length + ')</button></div>' : '');
   document.querySelectorAll('.ib-fcard').forEach(c => c.onclick = () => openFile(c.dataset.id));
@@ -450,7 +470,7 @@ async function newFile() {
     market_slug: reg ? reg.slug : null, state: reg ? reg.state : null,
   }).select('id').single();
   if (error) { toast('Create failed: ' + error.message); return; }
-  const { data: rows } = await sb.from('ir_files').select('id,address,suburb,state,market_label,market_slug,status,roles,updated_at,compliance').order('updated_at', { ascending: false });
+  const { data: rows } = await sb.from('ir_files').select('id,address,suburb,state,market_label,market_slug,status,roles,updated_at,compliance,setup').order('updated_at', { ascending: false });
   FILES = rows || FILES; renderHome(); openFile(data.id);
 }
 
@@ -530,7 +550,7 @@ function renderFile() {
 }
 
 async function refreshList() {
-  const { data } = await sb.from('ir_files').select('id,address,suburb,state,market_label,market_slug,status,roles,updated_at,compliance').order('updated_at', { ascending: false });
+  const { data } = await sb.from('ir_files').select('id,address,suburb,state,market_label,market_slug,status,roles,updated_at,compliance,setup').order('updated_at', { ascending: false });
   if (data) FILES = data;
   renderHome();
 }
@@ -555,7 +575,10 @@ function renderSetup(el) {
       '<option value="' + esc(r.label) + '"' + (r.label === CUR.market_label ? ' selected' : '') + '>' + esc(r.label) + '</option>').join('') + '</select></label>' +
     '<label>State<input id="fState" value="' + esc(CUR.state || '') + '"></label>' +
     '<label>Postcode<input id="fPost" value="' + esc(CUR.postcode || '') + '"></label>' +
-    '<label>Property type<input id="fType" value="' + esc(s.propertyType || '') + '" placeholder="House"></label>' +
+    '<label>Property type<input id="fType" list="fTypeDl" value="' + esc(s.propertyType || '') + '" placeholder="House"><datalist id="fTypeDl">' +
+      ['House', 'Unit', 'Townhouse', 'Villa', 'Unit Block', 'Industrial', 'Medical', 'Office', 'Retail'].map(t => '<option value="' + t + '">').join('') + '</datalist></label>' +
+    '<label>Commercial property?<select id="fCommercial"><option value=""' + (s.commercial !== true ? ' selected' : '') + '>No — residential</option>' +
+      '<option value="1"' + (s.commercial === true ? ' selected' : '') + '>Yes — commercial</option></select></label>' +
     '<label>Land size (m²)<input id="fLand" inputmode="numeric" value="' + esc(s.landSize != null ? s.landSize : '') + '"></label>' +
     '<label>Beds<input id="fBeds" inputmode="numeric" value="' + esc(s.beds != null ? s.beds : '') + '"></label>' +
     '<label>Baths<input id="fBaths" inputmode="numeric" value="' + esc(s.baths != null ? s.baths : '') + '"></label>' +
@@ -587,7 +610,8 @@ function renderSetup(el) {
     const reg = regionsL.find(r => r.label === v('#fMkt'));
     const top = { address: v('#fAddr'), suburb: v('#fSub') || null, state: v('#fState') || (reg && reg.state) || null,
       postcode: v('#fPost') || null, market_label: v('#fMkt') || null, market_slug: reg ? reg.slug : null };
-    const setup = { ...CUR.setup, propertyType: v('#fType') || null, landSize: numv('#fLand'), beds: numv('#fBeds'),
+    const setup = { ...CUR.setup, propertyType: v('#fType') || null, commercial: $('#fCommercial').value === '1',
+      landSize: numv('#fLand'), beds: numv('#fBeds'),
       baths: numv('#fBaths'), cars: numv('#fCars'), lga: v('#fLga') || null, strategy: v('#fStrat') || null,
       listingUrl: v('#fList') || null, crmUrl: v('#fCrm') || null, driveUrl: v('#fDrive') || null };
     const roles2 = {}; ['consultant', 'dd_support', 'sales_admin', 'assistant'].forEach(r => { const x = v('#fRole_' + r); if (x) roles2[r] = x; });
@@ -1650,8 +1674,20 @@ function renderReview(el) {
    place (non-null fields only) · the rendered report is captured as a PDF
    into the staff-readable 'ir-library' bucket (migration 106) · publishing
    flips the file to 'final' (read-only until flipped back; flip audited). */
+function pubIsCommercial() {
+  const s = CUR.setup || {};
+  return s.commercial === true || /block|industrial|medical|office|retail|commercial/i.test(s.propertyType || '');
+}
 function pubSegment() {
   const t = ((CUR.setup || {}).propertyType) || '';
+  if (pubIsCommercial()) {
+    if (/block/i.test(t)) return 'unit_block';
+    if (/industrial|warehouse/i.test(t)) return 'industrial';
+    if (/medical/i.test(t)) return 'medical';
+    if (/office/i.test(t)) return 'office';
+    if (/retail|shop/i.test(t)) return 'retail';
+    return 'other';
+  }
   if (/unit|apart|flat/i.test(t)) return 'unit';
   if (/town|villa/i.test(t)) return 'villa_townhouse';
   return 'house';
@@ -1766,7 +1802,8 @@ async function doPublish() {
     }
     if (pdfPath) metrics.report_pdf = pdfPath;
     const rec = {
-      domain: 'residential', market_label: CUR.market_label, market_slug: CUR.market_slug,
+      domain: pubIsCommercial() ? 'commercial' : 'residential',
+      market_label: CUR.market_label, market_slug: CUR.market_slug,
       segment: pubSegment(), strategy: pubStrategy(),
       budget: (((CUR.pricing || {}).adopted) || {}).topPrice || (CUR.cashflow || {}).budget || null,
       address: pubFullAddress(), suburb: CUR.suburb, state: CUR.state, lga: (CUR.setup || {}).lga || null,
