@@ -18,7 +18,7 @@
      from rdp_report_feed via shared/forge-report-adapter.js (NOT the Apps-Script
      cache). Load order: engine → adapter → theme → helpers → chart modules. -->
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" defer integrity="sha384-o5uz97et3bErHvpKfD4Jz4n0JfhJDWABFuF4NP+iEEDxE1VwMWJ19QGR0lqFZnr6" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script src="../shared/present-charts.js?v=1283779f" defer></script>
+<script src="../shared/present-charts.js?v=991463eb" defer></script>
 <script src="../shared/forge-report-adapter.js?v=32336ad1" defer></script>
 <script src="../shared/forge-report-starts.js?v=2b5f48e0" defer></script>
 <script src="../assets/Reports/charts/_theme.js" defer></script>
@@ -1700,14 +1700,25 @@ async function renderHouseUnit(host, slug){
   const money=v=>'$'+Number(v).toLocaleString();
   const pMax=Math.max.apply(null,D.h.concat(D.u));
   const step=[50000,100000,200000,250000,500000].find(s=>pMax/s<=10)||500000, pTop=Math.ceil(pMax/step)*step;
-  /* Right axis was pinned at 0-100%, but this line is the UNIT median as a % of
-     the HOUSE median, and units out-priced houses in several markets' early
-     years — Brisbane peaks at 132% (1981) and stays above 100% right through
-     1980-87 and 1995-2001. ECharts clipped those stretches, so the line read as
-     BROKEN rather than high (Van 2026-07-30 — the series has no nulls at all).
-     Derive the top instead, keeping 100 as the floor so the approved look is
-     untouched in every market where the ratio never breaches it. */
-  const dTop=Math.max(100,Math.ceil(Math.max.apply(null,dvals)/20)*20);
+  /* Right axis = the UNIT median as a % of the HOUSE median. It used to be
+     pinned at 0-100%, which broke twice:
+       - units out-priced houses in several markets' early years (Brisbane peaks
+         at 132% in 1981 and stays above 100% through 1980-87 and 1995-2001), so
+         ECharts clipped those stretches and the line read as BROKEN rather than
+         high (Van 2026-07-30 — the series has no nulls at all);
+       - starting at 0 left the line squashed into the top third of the plot,
+         where the same chart in Online Reports (p15 = display page 5) clips the
+         BOTTOM too so the line spans the plot (Van 2026-08-21).
+     Both are the axis the report already computes, so take the whole window from
+     the report's own helper — PpaCharts.niceAxisRange (assets/Reports/charts/
+     _helpers.js), exactly as chart-house-v-unit-price.js calls it. Same series,
+     same helper, same defaults → the same per-region ladder as the report
+     (Melbourne 60-100/10, Sydney 50-110/10, Brisbane 60-140/20); nothing is
+     hardcoded and neither end can clip. Falls back to the old derived 0-top if
+     the helper somehow hasn't loaded. */
+  const lineAxis=(window.PpaCharts&&window.PpaCharts.niceAxisRange)
+    ? window.PpaCharts.niceAxisRange(Math.min.apply(null,dvals),Math.max.apply(null,dvals))
+    : { min:0, max:Math.max(100,Math.ceil(Math.max.apply(null,dvals)/20)*20), interval:20 };
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
       formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.seriesName.indexOf('%')>=0?(p.value==null?'—':p.value+'%'):money(p.value))+'</b>').join('<br>') },
@@ -1717,7 +1728,7 @@ async function renderHouseUnit(host, slug){
     xAxis:{ type:'category', data:D.years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
     yAxis:[
       { type:'value', min:0, max:pTop, interval:step, axisLabel:{color:'#444',fontSize:9,formatter:money}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
-      { type:'value', min:0, max:dTop, interval:20, axisLabel:{color:'#444',fontSize:9,formatter:v=>v+'%'}, splitLine:{show:false} } ],
+      { type:'value', min:lineAxis.min, max:lineAxis.max, interval:lineAxis.interval, axisLabel:{color:'#444',fontSize:9,formatter:v=>v+'%'}, splitLine:{show:false} } ],
     series:[
       { name:'MHP', type:'bar', data:D.h, itemStyle:{color:'#00A0B4'}, barGap:'10%', barCategoryGap:'40%' },
       { name:'MUP', type:'bar', data:D.u, itemStyle:{color:'#c6c6c6'} },
