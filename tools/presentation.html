@@ -14006,10 +14006,21 @@ const IR_TINT = '#F2F8F9', IR_TINT_BORDER = '#D5EBEE', IR_RULE = '#E4E7EA', IR_M
 
 function _irPen() {
   const ov = [];
-  const T = (x, y, w, html, o) => { o = o || {}; ov.push({ id: _fmtId('t'), type: 'text', x: x, y: y, w: w, h: o.h || 24,
-    html: html, align: o.align || 'left', color: o.color || IR_DARK, bold: !!o.bold, italic: false,
-    fontSize: o.fs || 16, fontFamily: IR_MONT, fontWeight: o.bold ? 700 : (o.fw || 400),
-    ...(o.lh ? { lineHeight: o.lh } : {}) }); };
+  /* The renderer top-aligns text and lays it out at line-height 1.4 unless
+     told otherwise, so a box declared at the glyph size always ends up ~5px
+     short of its own ink. Every box therefore gets a floor of one full line
+     box — the text doesn't move, it just stops overflowing (which also makes
+     the edit-mode selection rectangle match what the eye sees). Pass
+     valign:'middle' to centre text inside a filled shape. */
+  const T = (x, y, w, html, o) => {
+    o = o || {};
+    const fs = o.fs || 16, lh = o.lh || 1.4;
+    ov.push({ id: _fmtId('t'), type: 'text', x: x, y: y, w: w,
+      h: Math.max(o.h || 24, Math.ceil(fs * lh) + 5),
+      html: html, align: o.align || 'left', color: o.color || IR_DARK, bold: !!o.bold, italic: false,
+      fontSize: fs, fontFamily: IR_MONT, fontWeight: o.bold ? 700 : (o.fw || 400),
+      ...(o.lh ? { lineHeight: o.lh } : {}), ...(o.valign ? { valign: o.valign } : {}) });
+  };
   const R = (x, y, w, h, fill, o) => { o = o || {}; ov.push({ id: _fmtId('s'), type: 'shape',
     kind: o.sharp ? 'rectSharp' : 'rect', x: x, y: y, w: w, h: h, fill: fill,
     stroke: o.stroke || fill, strokeWidth: o.sw != null ? o.sw : 0 }); };
@@ -14025,22 +14036,41 @@ function _irPen() {
    the content may start at. */
 function _irSlideHead(pen, row, title) {
   const line = [row.address, row.suburb, row.market_label].filter(Boolean).join(' · ');
-  pen.T(73, 30, 1000, '<span style="letter-spacing:2.4px">' + _fmtEsc(line.toUpperCase()) + '</span>',
+  pen.T(73, 30, 900, '<span style="letter-spacing:2.4px">' + _fmtEsc(line.toUpperCase()) + '</span>',
     { fs: 12, color: IR_TEAL, bold: true, h: 18 });
-  pen.T(73, 52, 1000, _fmtEsc(title), { fs: 30, bold: true, h: 40 });
-  pen.LINE(73, 100, 48, 4, IR_TEAL);
+  pen.T(73, 52, 900, _fmtEsc(title), { fs: 30, bold: true, h: 44 });
+  pen.LINE(73, 104, 48, 4, IR_TEAL);
   return 132;
 }
 function _irLogo(pen) {
   pen.IMG(1030, 666, 200, 31, '../assets/logos/pp-logo-standard.png', { fit: 'contain', pos: '100% 50%' });
 }
-/* Small label-over-value stat tile, and a label/value row with a hair rule. */
-function _irTile(pen, x, y, w, h, label, value, o) {
+/* A filled box holding a small label over a big value. Both lines live in ONE
+   overlay so valign:'middle' centres the PAIR — hand-placing two boxes inside
+   a third is what left these sitting low (measured: 19px above, 9px below). */
+function _irBoxStat(pen, x, y, w, h, label, value, o) {
   o = o || {};
   pen.R(x, y, w, h, o.fill || IR_TINT, { stroke: o.stroke || IR_TINT_BORDER, sw: 1 });
-  pen.T(x + 16, y + 16, w - 32, '<span style="letter-spacing:1.4px">' + _fmtEsc(label.toUpperCase()) + '</span>',
-    { fs: 10, color: IR_TEAL, bold: true, h: 14 });
-  pen.T(x + 16, y + 36, w - 32, _fmtEsc(String(value)), { fs: o.fs || 22, bold: true, h: 30 });
+  const vfs = o.fs || 21, lfs = o.lfs || 9.5, lh = 1.3;
+  const html =
+    '<span style="font-size:' + lfs + 'px;font-weight:700;letter-spacing:1.3px;color:' +
+      (o.lcolor || IR_TEAL) + '">' + _fmtEsc(String(label).toUpperCase()) + '</span><br>' +
+    '<span style="font-size:' + vfs + 'px;font-weight:700;color:' + (o.vcolor || IR_DARK) + '">' +
+      _fmtEsc(String(value)) + '</span>';
+  /* The overlay's OWN font-size sets the line-box strut for every line, so it
+     has to be the small one — at the value's size the two struts add up
+     taller than the box and the pair bleeds through both edges. */
+  pen.T(x + 16, y, w - 32, html, { fs: lfs, h: h, valign: 'middle', lh: lh, align: o.align || 'left' });
+}
+/* A filled band with a label on the left and its value on the right, both
+   vertically centred in the band. */
+function _irBoxRow(pen, x, y, w, h, label, value, o) {
+  o = o || {};
+  pen.R(x, y, w, h, o.fill || IR_TINT, { stroke: o.stroke || IR_TINT_BORDER, sw: 1 });
+  pen.T(x + 16, y, w - 32, _fmtEsc(String(label)),
+    { fs: o.lfs || 11.5, color: o.lcolor || IR_GRAY, h: h, valign: 'middle' });
+  pen.T(x + 16, y, w - 32, _fmtEsc(String(value == null ? '—' : value)),
+    { fs: o.fs || 15, bold: true, align: 'right', color: o.vcolor || IR_DARK, h: h, valign: 'middle' });
 }
 function _irRow(pen, x, y, w, label, value, o) {
   o = o || {};
@@ -14189,7 +14219,7 @@ function _irRateRow(pen, x, y, w, label, rating, o) {
   pen.T(x, y, Math.max(60, w - 120), _fmtEsc(label), { fs: o.fs || 12, h: 17 });
   pen.T(x, y, w, _fmtEsc(String(rating || '—')), { fs: o.fs || 12, bold: true, align: 'right',
     color: _irRatingColour(rating), h: 17 });
-  if (o.rule !== false) pen.LINE(x, y + 19, w, 1, '#EDF0F2');
+  if (o.rule !== false) pen.LINE(x, y + 21, w, 1, '#EDF0F2');
 }
 function _irSectionLabel(pen, x, y, w, text) {
   pen.T(x, y, w, '<span style="letter-spacing:1.8px">' + _fmtEsc(String(text).toUpperCase()) + '</span>',
@@ -14219,10 +14249,8 @@ function _irDdOverlays(row) {
   const flagged = keys.filter(k => /review|failed/i.test((items[k] || {}).rating || ''));
 
   /* verdict chip, top-right of the header band */
-  const vCol = _irRatingColour(verdict);
-  R(1000, 44, 207, 46, '#F7F9FA', { stroke: '#E4E7EA', sw: 1 });
-  T(1016, 52, 175, '<span style="letter-spacing:1.4px">DD RESULT</span>', { fs: 9.5, color: IR_GRAY, bold: true, h: 13 });
-  T(1016, 66, 175, _fmtEsc(verdict || '—'), { fs: 18, bold: true, color: vCol, h: 24 });
+  _irBoxStat(pen, 1000, 42, 207, 58, 'DD result', verdict || '—',
+    { fs: 18, lcolor: IR_GRAY, vcolor: _irRatingColour(verdict), fill: '#F7F9FA', stroke: '#E4E7EA' });
 
   _irSectionLabel(pen, 73, y0, 520, keys.length + ' checks completed');
   const step = Math.min(22, Math.floor(470 / Math.max(1, keys.length)));
@@ -14243,7 +14271,9 @@ function _irDdOverlays(row) {
     flagged.slice(0, 6).forEach(k => {
       T(674, cy, 509, _fmtEsc(_irClip(k.replace(/^\d+\.\d+\s*/, ''), 60)), { fs: 12.5, bold: true, h: 18 });
       const note = (items[k] || {}).notes || '';
-      if (note) T(674, cy + 19, 509, _fmtEsc(_irClip(note, 150)), { fs: 11, color: IR_GRAY, h: 30, lh: 1.35 });
+      /* wrapped blocks carry the overlay's 6px top+bottom padding on top of
+         their line boxes — size for lines + padding or the box under-reads */
+      if (note) T(674, cy + 19, 509, _fmtEsc(_irClip(note, 150)), { fs: 11, color: IR_GRAY, h: 42, lh: 1.35 });
       cy += note ? 60 : 30;
     });
     if (flagged.length > 6) T(674, cy, 509, '+ ' + (flagged.length - 6) + ' more in the full report', { fs: 11, color: IR_MUTE, h: 16 });
@@ -14280,11 +14310,7 @@ function _irGradingOverlays(row, cfg) {
     keys.forEach((k, i) => _irRateRow(pen, x, colY + 24 + i * step, w, _irClip(k, 40), items[k],
       { fs: step < 20 ? 11 : 12, rule: step >= 24 }));
     const by = colY + 30 + keys.length * step;
-    if (band && by < 600) {
-      R(x, by, w, 40, IR_TINT, { stroke: IR_TINT_BORDER, sw: 1 });
-      T(x + 14, by + 12, w - 28, _fmtEsc(band), { fs: 11.5, color: IR_GRAY, h: 16 });
-      T(x + 14, by + 10, w - 28, _fmtEsc(bandVal || '—'), { fs: 15, bold: true, align: 'right', h: 20 });
-    }
+    if (band && by < 600) _irBoxRow(pen, x, by, w, 42, band, bandVal || '—');
   };
   /* commercial rubrics carry lease/tenant rows the residential layout has no
      bucket for — they land in the right column, so label it for what's in it */
@@ -14322,19 +14348,13 @@ function _irCashflowOverlays(row, rates, cfg) {
   costRows.forEach((r, i) => _irRow(pen, 73, y0 + 26 + i * cstep, 520, r[0], _irMoney(r[1]),
     { fs: cstep < 22 ? 11.5 : 13, vfs: cstep < 22 ? 12.5 : 14 }));
   const ty = y0 + 34 + costRows.length * cstep;
-  R(73, ty, 520, 44, IR_DARK, { sharp: false });
-  T(89, ty + 13, 300, 'Total property + acquisition', { fs: 12.5, color: '#ffffff', h: 18 });
-  T(73, ty + 10, 504, _irMoney(pi.totalCost), { fs: 19, bold: true, color: '#ffffff', align: 'right', h: 24 });
+  _irBoxRow(pen, 73, ty, 520, 46, 'Total property + acquisition', _irMoney(pi.totalCost),
+    { fill: IR_DARK, stroke: IR_DARK, lcolor: '#ffffff', vcolor: '#ffffff', lfs: 12.5, fs: 19 });
   /* funding split */
-  const fy = ty + 58;
+  const fy = ty + 60;
   [['Loan at ' + Math.round((+cf.lvr || 0.9) * 100) + '% LVR', _irMoney(pi.loan)],
-   ['Capital required', _irMoney(pi.requiredCapital)]].forEach((b, i) => {
-    const bx = 73 + i * 270;
-    R(bx, fy, 250, 74, IR_TINT, { stroke: IR_TINT_BORDER, sw: 1 });
-    T(bx + 16, fy + 14, 218, '<span style="letter-spacing:1.2px">' + _fmtEsc(b[0].toUpperCase()) + '</span>',
-      { fs: 9.5, color: IR_TEAL, bold: true, h: 14 });
-    T(bx + 16, fy + 32, 218, b[1], { fs: 21, bold: true, h: 28 });
-  });
+   ['Capital required', _irMoney(pi.requiredCapital)]].forEach((b, i) =>
+    _irBoxStat(pen, 73 + i * 270, fy, 250, 74, b[0], b[1]));
 
   /* right — the annual position. Anything the interest rate can't change is
      stated ONCE (repeating it under three columns just reads as noise); the
@@ -14371,7 +14391,7 @@ function _irCashflowOverlays(row, rates, cfg) {
   const note = ((cfg && cfg.boilerplate) || {}).normalised_note;
   T(650, scenY + 58 + metrics.length * 38 + 10, 557,
     _fmtEsc(_irClip(note || 'The normalised column stress-tests the holding cost against the long-run interest rate the Investment Committee sets, not today\'s rate.', 260)),
-    { fs: 10.5, color: IR_MUTE, h: 46, lh: 1.4 });
+    { fs: 10.5, color: IR_MUTE, h: 56, lh: 1.4 });
   _irLogo(pen); return pen.ov;
 }
 
@@ -14433,8 +14453,8 @@ function _irConditionOverlays(row, cfg) {
     ? 'A trading asset: reactive maintenance only, with refurbishment works undertaken before sale if required. Maintenance allowance around 10% of annual rent.'
     : 'A foundation asset: proactive and reactive maintenance as directed by your asset manager, with refurbishment planned inside the window above. Maintenance allowance around 10% of annual rent.';
   R(650, py, 557, 108, IR_TINT, { stroke: IR_TINT_BORDER, sw: 1 });
-  _irSectionLabel(pen, 674, py + 16, 509, 'Directive');
-  T(674, py + 36, 509, _fmtEsc(_irClip(directive, 240)), { fs: 11.5, color: IR_GRAY, h: 58, lh: 1.45 });
+  _irSectionLabel(pen, 674, py + 14, 509, 'Directive');
+  T(674, py + 36, 509, _fmtEsc(_irClip(directive, 240)), { fs: 11.5, color: IR_GRAY, h: 62, lh: 1.45 });
 
   /* bottom — anything flagged at inspection (replace / monitor) */
   const flagged = [];
