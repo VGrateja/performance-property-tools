@@ -21,6 +21,11 @@
      from the stored data. Deferred so they don't block first paint. -->
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" defer integrity="sha384-o5uz97et3bErHvpKfD4Jz4n0JfhJDWABFuF4NP+iEEDxE1VwMWJ19QGR0lqFZnr6" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="../shared/present-charts.js?v=991463eb" defer></script>
+<!-- Buying/Selling Library: the adapter turns an rdp_report_feed payload into
+     the report feed shape, and bss-slides.js builds the SAME chart options the
+     Buying/Selling tool draws (one source of truth). bss-slides.js must come
+     after _helpers.js below, since its options call PpaCharts.niceAxis. -->
+<script src="../shared/forge-report-adapter.js?v=32336ad1" defer></script>
 <script src="../shared/report-cache.js?v=df4322bc" defer></script>
 <!-- Exact online-report chart modules: slide charts render the SAME ECharts
      modules the reports use (assets/Reports/charts/*), so a slide graph is
@@ -29,6 +34,7 @@
      present-charts.js's createFromModule() drives the build animation. -->
 <script src="../assets/Reports/charts/_theme.js" defer></script>
 <script src="../assets/Reports/charts/_helpers.js" defer></script>
+<script src="../shared/bss-slides.js?v=10635190" defer></script>
 <script src="../assets/Reports/charts/chart-median-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-yoy-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-stock-dom.js" defer></script>
@@ -15526,7 +15532,9 @@ function _bssShowMode() {
   if (t) t.textContent = 'Buying/Selling Library';
 }
 function _bssShowRegions(mode) {
+  const prev = _bssMode;
   _bssMode = mode || _bssMode || 'buy';
+  if (_bssMode !== prev) _bssRegionsCache = null;   /* Buying and Selling curate different regions */
   _bssSetView('regions');
   const t = document.getElementById('pres-bss-title');
   if (t) t.textContent = _bssModeLabel(_bssMode) + ' — pick a region';
@@ -15535,22 +15543,42 @@ function _bssShowRegions(mode) {
   _bssRenderRegions('');
   if (search) setTimeout(() => { try { search.focus(); } catch (_) {} }, 30);
 }
+/* Curated slugs come from the shared module (the same reports_state row the B/S
+   tool reads). Names + clusters come from OR_REGIONS, which this file already
+   has for the Online Reports Library — so the two libraries group and label
+   regions identically instead of inventing a second naming scheme. */
+let _bssRegionsCache = null;
+async function _bssLoadRegions() {
+  const api = _bssApi();
+  if (!api || typeof api.curatedSlugs !== 'function') return [];
+  const slugs = await api.curatedSlugs(_bssMode) || [];
+  const titleCase = s => String(s).split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  return slugs.map(slug => {
+    const known = (typeof OR_REGIONS !== 'undefined' ? OR_REGIONS : []).find(r => r.slug === slug);
+    return { slug: slug, name: known ? known.name : titleCase(slug), cluster: known ? known.cluster : 'Other' };
+  }).sort((a, b) => (a.cluster || '').localeCompare(b.cluster || '') || a.name.localeCompare(b.name));
+}
 function _bssRenderRegions(filter) {
   const wrap = document.getElementById('pres-bss-regions');
   if (!wrap) return;
   wrap.innerHTML = '';
   const api = _bssApi();
-  if (!api || typeof api.curatedRegions !== 'function') {
+  if (!api || typeof api.curatedSlugs !== 'function') {
     const e = document.createElement('div');
     e.className = 'pres-fmt-empty';
     e.textContent = 'The Buying/Selling library is still loading — try again in a moment.';
     wrap.appendChild(e);
     return;
   }
+  if (!_bssRegionsCache) {
+    const e = document.createElement('div');
+    e.className = 'pres-fmt-empty'; e.textContent = 'Loading regions…';
+    wrap.appendChild(e);
+    _bssLoadRegions().then(list => { _bssRegionsCache = list; _bssRenderRegions(filter); });
+    return;
+  }
   const q = (filter || '').trim().toLowerCase();
-  /* Curated only — the same set the B/S tool offers for this mode, so the
-     library never lists a region the tool itself would not show. */
-  const regions = api.curatedRegions(_bssMode) || [];
+  const regions = _bssRegionsCache;
   let lastCluster = '', grid = null, shown = 0;
   regions.forEach(r => {
     if (q && r.name.toLowerCase().indexOf(q) < 0) return;
