@@ -34,7 +34,7 @@
      present-charts.js's createFromModule() drives the build animation. -->
 <script src="../assets/Reports/charts/_theme.js" defer></script>
 <script src="../assets/Reports/charts/_helpers.js" defer></script>
-<script src="../shared/bss-slides.js?v=9dca7d3d" defer></script>
+<script src="../shared/bss-slides.js?v=5f8b6763" defer></script>
 <script src="../assets/Reports/charts/chart-median-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-yoy-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-stock-dom.js" defer></script>
@@ -15604,7 +15604,7 @@ function _bssRenderRegions(filter) {
     wrap.appendChild(e);
   }
 }
-function _bssShowSlides(slug, name) {
+async function _bssShowSlides(slug, name) {
   _bssRegionName = name;
   _bssSetView('slides');
   const t = document.getElementById('pres-bss-title');
@@ -15612,7 +15612,23 @@ function _bssShowSlides(slug, name) {
   const wrap = document.getElementById('pres-bss-slides');
   wrap.innerHTML = '';
   const api = _bssApi();
-  const slides = (api && typeof api.slidesFor === 'function') ? (api.slidesFor({ slug: slug, mode: _bssMode }) || []) : [];
+  if (!api || typeof api.slidesFor !== 'function') {
+    const e = document.createElement('div');
+    e.className = 'pres-fmt-empty'; e.textContent = 'The Buying/Selling library is unavailable.';
+    wrap.appendChild(e);
+    return;
+  }
+  /* The list comes from the tool's own built deck (read out of a hidden frame),
+     so it takes a moment on the first region and is exact per region. */
+  const loading = document.createElement('div');
+  loading.className = 'pres-fmt-empty';
+  loading.textContent = 'Loading ' + name + ' ' + _bssModeLabel(_bssMode).toLowerCase() + ' pages…';
+  wrap.appendChild(loading);
+  let slides = [];
+  try { slides = await api.slidesFor({ slug: slug, mode: _bssMode }) || []; } catch (e) { slides = []; }
+  /* the user may have navigated away while we waited */
+  if (getComputedStyle(document.getElementById('pres-bss-slides-view')).display === 'none') return;
+  wrap.innerHTML = '';
   if (!slides.length) {
     const e = document.createElement('div');
     e.className = 'pres-fmt-empty';
@@ -15704,7 +15720,18 @@ async function _bssConfirmCart() {
            A divider replaces the chrome entirely (it is a section break, not a
            content slide); clock and embed sit inside the normal chrome. */
         if (it.kind && it.kind !== 'chart') {
-          const meta = (typeof api.meta === 'function') ? api.meta(it.key, { slug: it.slug, mode: it.mode }) : null;
+          /* 'capture' has no meta — it renders in the tool and comes back as a
+             PNG, so ask for that instead. */
+          let meta = null;
+          if (it.kind === 'capture') {
+            let img = null;
+            try { img = await api.capture(it.key, { slug: it.slug, mode: it.mode }); } catch (e) { img = null; }
+            meta = img ? { kind: 'capture', image: img } : null;
+          } else if (it.kind === 'title') {
+            meta = { kind: 'title' };
+          } else {
+            meta = (typeof api.meta === 'function') ? api.meta(it.key, { slug: it.slug, mode: it.mode }) : null;
+          }
           if (!meta) { failed++; continue; }
           if (meta.kind === 'divider') {
             /* queued like every other slide, NOT appended here — appending
@@ -15714,7 +15741,15 @@ async function _bssConfirmCart() {
             continue;
           }
           const ov2 = _fmtChrome(String(it.label), eyebrow);
-          if (meta.kind === 'clock') {
+          if (meta.kind === 'title') {
+            /* author-your-own template: chrome + heading, nothing else — the deck
+               gets a dressed slide to type onto, which is what the tool's blank
+               Coverpage / Market Positions Clock pages are for. */
+          } else if (meta.kind === 'capture') {
+            /* the tool's own render, as a PNG fitted to the content band */
+            ov2.push({ id: _fmtId('i'), type: 'image', src: meta.image,
+              x: 73, y: 120, w: 1134, h: 520, objectFit: 'contain' });
+          } else if (meta.kind === 'clock') {
             /* the clock JPG is 980x620; fit it to the 520px content band and
                centre it, so it never overlaps the rule above or the logo below */
             const h = 520, w = Math.round(980 * h / 620);
@@ -15735,6 +15770,15 @@ async function _bssConfirmCart() {
         catch (e) { spec = null; }
         if (!spec) { failed++; continue; }
         const ov = _fmtChrome(String(it.label), eyebrow);
+        /* Some pages that sit among the charts are actually DOM (Vacancy Rate
+           Projection, Replacement Cost, the two Sensitivity tables), so the
+           module hands back an image for those instead of a chart spec. */
+        if (spec.image) {
+          ov.push({ id: _fmtId('i'), type: 'image', src: spec.image,
+            x: 73, y: 120, w: 1134, h: 520, objectFit: 'contain' });
+          slideOvs.push({ ov: ov, bg: null });   /* the append loop counts it */
+          continue;
+        }
         ov.push({
           id: _fmtId('c'), type: 'chart',
           /* Same rect as the Online Reports Library. Aligned to the chrome's own

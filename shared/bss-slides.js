@@ -38,6 +38,144 @@
 (function () {
   'use strict';
 
+  /* ─── the Buying/Selling tool, borrowed in a hidden frame ───
+     Moving all 23 chart renderers plus their loaders (rate series, CL rents,
+     consumer confidence, underutilisation, stagnation periods, population
+     projections, sensitivity, rankings, replacement cost) out of
+     buying-selling-slides.html would be a ~2000-line refactor of a
+     manager-approved tool, and every hand-moved line is a chance to change a
+     chart nobody asked to change.
+
+     The tool is SAME ORIGIN, so instead we load it in an offscreen iframe and
+     call its own SLIDE_DEFS render/mount into a detached host. What comes back
+     is the tool's actual chart — not a copy of it — so the two cannot drift, and
+     per-region availability comes from the tool's own built DECK (its onlyIf
+     gates already applied). Measured: frame ready ~200ms, first option ~1.1s,
+     and the frame is reused for every pick in the same region+mode.
+
+     A chart yields an ECharts option (vector, live, editable in the deck). The
+     handful of slides that are bespoke DOM rather than a chart — traffic lights,
+     At a Glance, Major Infrastructure Projects — have no option to read, so they
+     are captured as an image instead. One code path handles both: read an option
+     if there is one, else capture. */
+  const FRAMES = {};            /* 'slug|mode' -> { el, win, ready } */
+  const FRAME_TIMEOUT_MS = 60000;
+
+  function frameKey(ctx) { return (ctx.slug || '') + '|' + (ctx.mode || 'sell'); }
+
+  async function toolFrame(ctx) {
+    const k = frameKey(ctx);
+    if (FRAMES[k] && FRAMES[k].ready) return FRAMES[k].win;
+    if (FRAMES[k] && FRAMES[k].pending) return FRAMES[k].pending;
+    const rec = FRAMES[k] = { ready: false };
+    rec.pending = (async () => {
+      const el = document.createElement('iframe');
+      el.setAttribute('aria-hidden', 'true');
+      el.setAttribute('tabindex', '-1');
+      el.style.cssText = 'position:fixed;left:-10000px;top:0;width:1400px;height:900px;border:0;visibility:hidden';
+      /* the tool lives beside us in tools/, so a bare filename resolves */
+      el.src = 'buying-selling-slides.html?region=' + encodeURIComponent(ctx.slug || '') +
+               '&mode=' + encodeURIComponent(ctx.mode === 'buy' ? 'buy' : 'sell');
+      document.body.appendChild(el);
+      const win = await new Promise(res => {
+        let done = false;
+        el.onload = () => { if (!done) { done = true; res(el.contentWindow); } };
+        setTimeout(() => { if (!done) { done = true; res(null); } }, FRAME_TIMEOUT_MS);
+      });
+      if (!win) { el.remove(); delete FRAMES[k]; return null; }
+      /* wait for the tool's chart layer AND its built deck */
+      const t0 = Date.now();
+      for (;;) {
+        let ok = false;
+        try {
+          /* SLIDE_DEFS and DECK are declared const/let, so they are NOT
+             window properties — only the frame's own eval sees them. */
+          ok = !!win.eval('(function(){ try { return !!(typeof SLIDE_DEFS !== "undefined" && Array.isArray(SLIDE_DEFS) && SLIDE_DEFS.length'
+            + ' && typeof DECK !== "undefined" && Array.isArray(DECK) && DECK.length'
+            + ' && window.echarts && window.ForgeReportAdapter && window.PpaCharts && window.PpaCharts.registry); } catch (e) { return false; } })()');
+        } catch (e) { el.remove(); delete FRAMES[k]; return null; }   /* shouldn't happen: same origin */
+        if (ok) break;
+        if (Date.now() - t0 > FRAME_TIMEOUT_MS) { el.remove(); delete FRAMES[k]; return null; }
+        await new Promise(r => setTimeout(r, 200));
+      }
+      rec.el = el; rec.win = win; rec.ready = true;
+      return win;
+    })();
+    return rec.pending;
+  }
+
+  /* Render one of the tool's slides into a detached host inside the frame and
+     hand back whichever representation exists: an ECharts option, or a captured
+     image for the bespoke-DOM slides. */
+  async function fromTool(key, ctx, want) {
+    const win = await toolFrame(ctx);
+    if (!win) return null;
+    let def = null;
+    try { const defs = win.eval('SLIDE_DEFS') || []; def = defs.find(d => d && d.key === key) || null; } catch (e) { return null; }
+    if (!def) return null;
+    const c = { slug: ctx.slug, mode: ctx.mode === 'buy' ? 'buy' : 'sell' };
+    const doc = win.document;
+    const host = doc.createElement('div');
+    /* .bss-slide so the tool's own CSS applies at its real 1280x720 size */
+    host.className = 'bss-slide';
+    host.style.cssText = 'position:fixed;left:-20000px;top:0;width:1280px;height:720px;background:#fff';
+    try { host.innerHTML = (typeof def.render === 'function') ? (def.render(c) || '') : ''; }
+    catch (e) { host.remove(); return null; }
+    doc.body.appendChild(host);
+    try { if (typeof def.mount === 'function') def.mount(host, c); } catch (e) {}
+
+    /* An ECharts instance appears asynchronously (the tool double-rAFs), so give
+       it a moment — but only a moment. Several pages that LOOK like charts are
+       actually DOM (Vacancy Rate Projection, Replacement Cost, both Sensitivity
+       pages), and waiting the full timeout on those just made them slow before
+       they failed. If no instance turns up, fall through and capture instead:
+       one path, and a page is never offered-but-unbuildable. */
+    const deadline = Date.now() + 9000;
+    let inst = null;
+    while (Date.now() < deadline) {
+      try {
+        const cands = [host, ...host.querySelectorAll('div')];
+        for (const el of cands) { const i = win.echarts.getInstanceByDom(el); if (i) { inst = i; break; } }
+      } catch (e) {}
+      if (inst || want === 'image') break;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    if (inst && want !== 'image') {
+      let opt = null;
+      try { opt = inst.getOption(); } catch (e) { opt = null; }
+      host.remove();
+      if (opt) return { echarts: opt };
+      /* fall through to a capture rather than returning nothing */
+    }
+    /* No chart to read — capture the rendered DOM. html2canvas is lazy in the
+       tool (it only loads it for downloads), so ask the tool to load it via its
+       own _pdfLibs() rather than injecting a second copy. */
+    if (!win.html2canvas && typeof win._pdfLibs === 'function') {
+      try { await win._pdfLibs(); } catch (e) {}
+    }
+    await new Promise(r => setTimeout(r, 1200));   /* let mounts settle */
+    if (!win.html2canvas) { host.remove(); return null; }
+    let url = null;
+    try {
+      const canvas = await win.html2canvas(host, { scale: 2, useCORS: true, logging: false,
+        backgroundColor: null, width: 1280, height: 720, windowWidth: 1280, windowHeight: 720 });
+      url = canvas.toDataURL('image/png');
+    } catch (e) { url = null; }
+    host.remove();
+    return url ? { image: url } : null;
+  }
+
+  /* Which slides the tool actually builds for this region+mode — its own DECK,
+     so onlyIf gates (VIC-only rental bonds and house-price expectations, the
+     4-region infrastructure page, replacement cost where research exists) are
+     already applied and the library can't offer a page the tool would drop. */
+  async function toolDeck(ctx) {
+    const win = await toolFrame(ctx);
+    if (!win) return null;
+    try { return (win.eval('DECK') || []).map(d => ({ key: d.key, title: d.t })); }
+    catch (e) { return null; }
+  }
+
   /* ─── shared data layer ─── */
   const FEED = {};              /* slug -> rdp_report_feed payload | null */
   let CURATED = null;           /* { sell:[], buy:[] } | null until loaded */
@@ -232,28 +370,85 @@
     { key: 'div_value',  kind: 'divider', title: 'VALUE (divider)',      word: 'VALUE' },
     { key: 'div_conf',   kind: 'divider', title: 'CONFIDENCE (divider)', word: 'CONFIDENCE' },
   ];
+
+  /* Every remaining page of the Buying/Selling deck, by kind. Anything not
+     listed here and not in SLIDES above falls through to 'chart', which is the
+     right default — the deck is mostly charts.
+
+       capture — bespoke DOM with no chart to read (traffic lights, At a Glance,
+                 Major Infrastructure Projects). Comes back as an image.
+       title   — the tool's author-your-own templates: it renders them blank and
+                 Van adds overlays. The formatted version is chrome + title, so a
+                 deck gets a properly dressed slide to type onto.
+     f2 (clock), demand_h (embed) and the three dividers are handled above. */
+  const KINDS = {
+    tl_before: 'capture', tl_best: 'capture', tl_revisit: 'capture',
+    glance: 'capture', infra_projects: 'capture',
+    f0: 'title', f1: 'title',
+  };
+  function kindOf(key) {
+    const s = byKey(key);
+    if (s) return s.kind;
+    return KINDS[key] || 'chart';
+  }
   const byKey = k => SLIDES.find(s => s.key === k) || null;
 
-  /* Build one slide's ECharts option for a region. Returns null when the region
-     has no data for it — callers show their own empty state. */
+  /* Build one slide's ECharts option for a region. Two charts are built natively
+     here (they need nothing but the report feed, so there is no reason to boot a
+     frame for them); every other chart comes from the tool itself. Either way
+     there is exactly ONE definition of each chart — never two.
+     Returns null when the region has no data — callers show their own empty state. */
   async function option(key, ctx) {
     const slide = byKey(key);
-    if (!slide) return null;
-    const raw = await regionFeed((ctx || {}).slug);
-    if (!raw) return null;
-    let D = null;
-    try { D = slide.derive(raw, ctx || {}); } catch (e) { D = null; }
-    if (!D) return null;
-    try { return slide.option(D, ctx || {}); } catch (e) { return null; }
+    if (slide && slide.derive) {
+      const raw = await regionFeed((ctx || {}).slug);
+      if (!raw) return null;
+      let D = null;
+      try { D = slide.derive(raw, ctx || {}); } catch (e) { D = null; }
+      if (!D) return null;
+      try { return slide.option(D, ctx || {}); } catch (e) { return null; }
+    }
+    const got = await fromTool(key, ctx || {}, 'option');
+    return (got && got.echarts) ? got.echarts : null;
+  }
+
+  /* What the presentation builder actually needs: whichever representation this
+     page has. A chart comes back as {echarts} (live and editable in the deck);
+     a DOM page comes back as {image}. */
+  async function build(key, ctx) {
+    const slide = byKey(key);
+    if (slide && slide.derive) {
+      const o = await option(key, ctx);
+      return o ? { echarts: o } : null;
+    }
+    return await fromTool(key, ctx || {}, 'option');
   }
 
   window.PP_BSS = {
     version: 1,
-    /* every slide this module can currently build */
+    /* the natively-built slides (no frame needed) */
     slides: function () { return SLIDES.map(s => ({ key: s.key, kind: s.kind, title: s.title })); },
-    /* per-region list. Region-specific gating (the tool's onlyIf) arrives with
-       the slides that need it; for now every moved slide is region-agnostic. */
-    slidesFor: function (ctx) { return SLIDES.map(s => ({ key: s.key, kind: s.kind, title: s.title })); },
+    /* EVERY page the Buying/Selling tool builds for this region + purpose, in
+       the tool's own deck order, with its own titles. Async because it reads the
+       tool's built DECK from the hidden frame — which is what makes per-region
+       gating exact (a non-VIC deck genuinely has no rental-bonds page, so the
+       library doesn't offer one). Falls back to the natively-built slides if the
+       frame can't load, so the library degrades rather than emptying. */
+    slidesFor: async function (ctx) {
+      const deck = await toolDeck(ctx || {});
+      if (!deck || !deck.length) return SLIDES.map(s => ({ key: s.key, kind: s.kind, title: s.title }));
+      return deck.map(d => {
+        const own = byKey(d.key);
+        return { key: d.key, kind: kindOf(d.key), title: (own && own.title) || d.title || d.key };
+      });
+    },
+    kindOf: kindOf,
+    /* bespoke-DOM slides (traffic lights, At a Glance, Infrastructure): a PNG of
+       the tool's own render, to sit inside the deck's chrome */
+    capture: async function (key, ctx) {
+      const got = await fromTool(key, ctx || {}, 'image');
+      return (got && got.image) ? got.image : null;
+    },
     /* the non-chart slides' parameters: word for a divider, iframe src for an
        embed. Returns null for chart slides, which use chartSpec instead. */
     meta: function (key, ctx) {
@@ -270,11 +465,9 @@
       return (c && c[mode === 'buy' ? 'buy' : 'sell']) || [];
     },
     option: option,
-    /* what the presentation builder stores on a chart overlay */
-    chartSpec: async function (key, ctx) {
-      const o = await option(key, ctx);
-      return o ? { echarts: o } : null;
-    },
+    /* what the presentation builder stores on a slide: {echarts} for a chart,
+       {image} for a page that is DOM rather than a chart */
+    chartSpec: build,
     ready: async function () { await loadCurated(); },
     /* exposed for the tool, which already has its own copies of these */
     _alignCols: alignCols,
