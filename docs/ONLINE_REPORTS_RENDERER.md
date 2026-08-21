@@ -35,10 +35,17 @@ You need to do these three steps once. After that, the workflow runs itself mont
 ### 1. Apply the storage bucket migration
 
 ```bash
-supabase db push
+supabase db query --linked -f supabase/migrations/017_online_reports_storage.sql
 ```
 
 or paste `supabase/migrations/017_online_reports_storage.sql` into the SQL Editor. This creates the public bucket and the RLS policies.
+
+> **Never run `supabase db push` against this project.** The remote migration
+> history records only 28 entries, under timestamp versions, while this repo
+> numbers its files `001`–`112` — so the CLI sees *every* local migration as
+> pending and would replay all of them against production, starting with
+> `001_init.sql`. Apply single files with `db query --linked -f <file>` (as
+> above) instead. Verified 2026-08-21: all 112 are in fact applied.
 
 ### 2. Create the renderer service account
 

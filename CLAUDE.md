@@ -261,6 +261,24 @@ docs/                   CADENCE.md, DATA_FORGE_PIPELINE.md, ONLINE_REPORTS_RENDE
   from `main`). After pushing to `main`, kick a build:
   `gh api -X POST repos/VGrateja/performance-property-tools/pages/builds`,
   then it deploys in ~1–2 min.
+- **NEVER run `supabase db push` (or `migration up`) against this project.**
+  The remote history table records only **28** migrations, under *timestamp*
+  versions, while this repo numbers its files `001`–`112`. No version string
+  matches, so the CLI treats every local migration as pending and would replay
+  all of them against production starting with `001_init.sql`. Apply one file at
+  a time instead:
+  `supabase db query --linked -f supabase/migrations/<file>.sql`
+  (the CLI is already logged in and linked; it opens a temporary login role via
+  the Management API, so no DB password is needed). The Supabase **MCP** was the
+  old route but its OAuth client is now rejected by Supabase
+  ("Unrecognized client_id"), so `db query` is the working path.
+  Verified 2026-08-21: all 112 local migrations ARE applied — 176 of 178
+  declared objects exist live and the other 2 were deliberately dropped by
+  `021`. So the mismatch is bookkeeping only, and `migration repair
+  --status applied` for `001`–`112` would make `db push` safe again if that is
+  ever wanted. Also useful: `supabase db advisors --linked --type security`
+  is the authoritative security lint — trust it over reading migration files,
+  which can be stale (it corrected a search_path finding on 2026-08-21).
 - Past mojibake incidents: UTF-8 saved as Windows-1252 (incl. 4-byte emoji).
   Be careful editing files with emoji/curly-quote content.
 
