@@ -500,6 +500,16 @@
   .scrabble-status-badge.is-joined    { background: rgba(110,231,183,0.18); color: #6ee7b7; }
   .scrabble-status-badge.is-requested { background: rgba(255,169,31,0.18); color: #FFA91F; }
   .scrabble-status-badge.is-invited   { background: rgba(211,115,211,0.20); color: #DD92DD; }
+  /* Dev-only ✕ on history rows + the danger button in its confirm modal. */
+  .scrabble-match-del{
+    flex:0 0 auto; margin-left:8px; width:22px; height:22px; border-radius:6px;
+    border:1px solid rgba(231,35,71,0.45); background:rgba(231,35,71,0.12);
+    color:#f07c95; font-size:11px; line-height:1; cursor:pointer;
+  }
+  .scrabble-match-del:hover{ background:rgba(231,35,71,0.30); color:#fff; }
+  .scrabble-modal-btn.is-danger{ background:#E72347; border-color:#E72347; color:#fff; }
+  .scrabble-modal-btn.is-danger:hover{ filter:brightness(1.12); }
+  #scrDelPass{ width:100%; }
 
   /* Online players as a card grid (overrides row stacking). */
   #scrabbleOnlineList {
@@ -2590,6 +2600,26 @@
   </div>
 </div>
 
+<!-- Dev-only: delete a history match. The password re-entry is Van's
+     requested guard; the RPC itself is gated on tier='dev' (mig 110). -->
+<div class="scrabble-modal" id="scrDelModal">
+  <div class="scrabble-modal-card">
+    <div class="scrabble-modal-eyebrow">Dev · history</div>
+    <h3 class="scrabble-modal-title">Delete match</h3>
+    <p id="scrDelSummary" style="font-size:13px;margin:0 0 6px;"></p>
+    <p style="font-size:12px;color:rgba(255,255,255,0.55);line-height:1.5;margin:0;">This permanently removes the row from history. Ranked points recompute from the remaining matches. Enter your password to confirm.</p>
+    <div class="scrabble-modal-field">
+      <label>Password</label>
+      <input type="password" id="scrDelPass" autocomplete="current-password" placeholder="Your password">
+    </div>
+    <div class="scrabble-modal-error" id="scrDelErr"></div>
+    <div class="scrabble-modal-actions">
+      <button class="scrabble-modal-btn is-secondary" type="button" id="scrDelCancel">Cancel</button>
+      <button class="scrabble-modal-btn is-danger" type="button" id="scrDelConfirm">Delete match</button>
+    </div>
+  </div>
+</div>
+
 <!-- ─── Blank-tile letter picker ───
      Shown when placing a blank ('?') tile on the board so the player
      can choose which letter the blank will represent for this play. -->
@@ -2665,6 +2695,8 @@
 const STARTING_POINTS = 100;   /* first-timer rating (matches the server default in start_scrabble_lobby) */
 
 let _me = null;                     // { userId, email, name }
+let _isDev = false;                 // REAL tier (not view-as) — gates the history-delete control
+let _recentMatches = [];            // last-loaded match rows, for the delete modal's summary
 let _onlineUsers = new Map();       // email → { userId, email, name }
 let _lobbies = [];                  // every open lobby (any host)
 let _myLobby = null;                // the lobby I'm joined/requested in (or null)
@@ -2757,6 +2789,14 @@ async function fetchMe() {
   const email  = (sess.session.user.email || '').toLowerCase();
   const name   = email.split('@')[0];
   _me = { userId, email, name };
+
+  /* Real tier from the profile row (own-row read is always allowed) — the
+     dev-only match-delete control must key off the REAL tier, never view-as. */
+  try {
+    const { data: prof } = await window.sb.from('profiles').select('tier').eq('id', userId).single();
+    _isDev = !!prof && prof.tier === 'dev';
+    if (_isDev) loadRecentMatches();   // re-render so the delete buttons appear even if the first paint won
+  } catch (_) { _isDev = false; }
 
   const pts = await getCurrentScrabblePoints(email);
   const $name  = document.getElementById('scrabbleLobbyMeName');
@@ -3044,12 +3084,18 @@ async function loadRecentMatches() {
     $list.innerHTML = '<li class="scrabble-matches-empty">No matches yet.</li>';
     return;
   }
+  _recentMatches = data;
   $list.innerHTML = data.map(m => renderMatchRow(m)).join('');
 }
 
 function renderMatchRow(m) {
   const players = (m.players || []).slice().sort((a, b) => a.finish_rank - b.finish_rank);
   if (!players.length) return '';
+
+  /* Dev-only: a small ✕ that opens the password-confirmed delete modal. */
+  const delBtn = _isDev
+    ? '<button class="scrabble-match-del" type="button" data-mid="' + m.id + '" title="Delete this match from history (dev only)">✕</button>'
+    : '';
 
   /* Voided games are shown plainly as voided (no winner, no points). */
   if (m.termination === 'void') {
@@ -3058,6 +3104,7 @@ function renderMatchRow(m) {
       '<span class="scrabble-match-result is-void">VOID</span>' +
       '<span class="scrabble-match-text">Game voided · ' + players.length + ' players</span>' +
       '<span class="scrabble-match-meta">' + escapeHtml(formatTurnTime(m.turn_time_seconds) + ' · ' + vwhen) + '</span>' +
+      delBtn +
     '</li>';
   }
 
@@ -3088,8 +3135,68 @@ function renderMatchRow(m) {
     '<span class="' + resultClass + '">' + escapeHtml(resultLabel) + '</span>' +
     '<span class="scrabble-match-text">' + story + '</span>' +
     '<span class="scrabble-match-meta">' + escapeHtml(formatTurnTime(m.turn_time_seconds) + ' · ' + when) + '</span>' +
+    delBtn +
   '</li>';
 }
+
+/* ─── Dev-only match delete (password-confirmed) ───
+   The ✕ on a history row opens a modal that re-verifies the signed-in
+   user's PASSWORD (a fresh signInWithPassword — same session user) before
+   calling the dev-gated delete_scrabble_match RPC. The RPC is the real
+   gate (current_tier()='dev'); the password step is Van's requested
+   protection against an unattended signed-in machine. */
+let _delMatch = null;
+function openDelMatchModal(m) {
+  _delMatch = m;
+  const modal = document.getElementById('scrDelModal');
+  const sum = document.getElementById('scrDelSummary');
+  const err = document.getElementById('scrDelErr');
+  const pass = document.getElementById('scrDelPass');
+  if (!modal) return;
+  const players = (m.players || []).map(p => (p.name || (p.email || '').split('@')[0]));
+  sum.textContent = (m.termination === 'void' ? 'Voided game' : (m.ranked ? 'Ranked match' : 'Casual match')) +
+    ' · ' + players.join(', ') + ' · ' + (m.ended_at ? friendlyTime(m.ended_at) : '');
+  err.textContent = ''; err.style.display = 'none';
+  pass.value = '';
+  modal.classList.add('is-open');
+  setTimeout(() => { try { pass.focus(); } catch (_) {} }, 30);
+}
+function closeDelMatchModal() {
+  _delMatch = null;
+  const modal = document.getElementById('scrDelModal');
+  if (modal) modal.classList.remove('is-open');
+}
+async function confirmDelMatch() {
+  if (!_delMatch || !_me) return;
+  const err = document.getElementById('scrDelErr');
+  const pass = document.getElementById('scrDelPass');
+  const btn = document.getElementById('scrDelConfirm');
+  const showErr = t => { err.textContent = t; err.style.display = ''; };
+  if (!pass.value) { showErr('Enter your password to confirm.'); return; }
+  btn.disabled = true; btn.textContent = 'Checking…';
+  try {
+    const { error: authErr } = await window.sb.auth.signInWithPassword({ email: _me.email, password: pass.value });
+    if (authErr) { showErr('Wrong password.'); return; }
+    btn.textContent = 'Deleting…';
+    const { error } = await window.sb.rpc('delete_scrabble_match', { p_match_id: _delMatch.id });
+    if (error) { showErr('Could not delete: ' + (error.message || 'unknown error')); return; }
+    closeDelMatchModal();
+    /* Points may have reverted — refresh everything that shows them. */
+    await Promise.all([loadRecentMatches(), loadLeaderboard()]);
+    if (_me && typeof paintMyRecord === 'function') paintMyRecord(_me.email).catch(() => {});
+  } finally {
+    btn.disabled = false; btn.textContent = 'Delete match';
+  }
+}
+document.getElementById('scrabbleMatchesList').addEventListener('click', (e) => {
+  const btn = e.target.closest('.scrabble-match-del');
+  if (!btn) return;
+  const m = _recentMatches.find(x => String(x.id) === btn.dataset.mid);
+  if (m) openDelMatchModal(m);
+});
+document.getElementById('scrDelCancel').addEventListener('click', closeDelMatchModal);
+document.getElementById('scrDelConfirm').addEventListener('click', confirmDelMatch);
+document.getElementById('scrDelPass').addEventListener('keydown', e => { if (e.key === 'Enter') confirmDelMatch(); });
 
 /* "5 min/turn" / "30s/turn" / "Untimed" — used everywhere we display
    a game's timer setting (lobby cards, match rows, game-view meta). */

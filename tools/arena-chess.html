@@ -758,6 +758,15 @@
     background: rgba(0, 160, 180, 0.85); color: #fff;
   }
   .chess-result-btn.is-primary:hover{ background: #D373D3; }
+  .chess-result-btn.is-danger{ background:#E72347; border-color:#E72347; color:#fff; }
+  .chess-result-btn.is-danger:hover{ filter:brightness(1.12); }
+  /* Dev-only ✕ on history rows. */
+  .chess-match-del{
+    flex:0 0 auto; margin-left:8px; width:22px; height:22px; border-radius:6px;
+    border:1px solid rgba(231,35,71,0.45); background:rgba(231,35,71,0.12);
+    color:#f07c95; font-size:11px; line-height:1; cursor:pointer;
+  }
+  .chess-match-del:hover{ background:rgba(231,35,71,0.30); color:#fff; }
   .chess-result-btn.is-secondary{
     background: transparent;
     color: rgba(255,255,255,0.70);
@@ -1715,6 +1724,26 @@
   </div><!-- /.chess-inner--game -->
 </div><!-- /#chessView -->
 
+<!-- Dev-only: delete a history match. The password re-entry is Van's
+     requested guard; the RPC itself is gated on tier='dev' (mig 110). -->
+<div class="chess-result-modal" id="chessDelModal">
+  <div class="chess-result-card">
+    <div class="chess-result-eyebrow">Dev · history</div>
+    <h3 class="chess-result-title">Delete match</h3>
+    <p id="chessDelSummary" style="font-size:13px;margin:0 0 6px;"></p>
+    <p style="font-size:12px;opacity:0.6;line-height:1.5;margin:0 0 10px;">This permanently removes the row from history. Ranked points recompute from the remaining matches. Enter your password to confirm.</p>
+    <div class="chess-challenge-field">
+      <label for="chessDelPass">Password</label>
+      <input type="password" id="chessDelPass" autocomplete="current-password" placeholder="Your password" style="width:100%;">
+    </div>
+    <div id="chessDelErr" style="display:none;color:#E72347;font-size:12.5px;margin:6px 0 0;"></div>
+    <div class="chess-result-buttons" style="margin-top:14px;">
+      <button class="chess-result-btn is-secondary" type="button" id="chessDelCancel">Cancel</button>
+      <button class="chess-result-btn is-danger" type="button" id="chessDelConfirm">Delete match</button>
+    </div>
+  </div>
+</div>
+
 <!-- ─── Challenge modal ───
      Opened from the lobby's "+ New challenge" button. Lets the user
      pick an opponent, color, ranked toggle, and time control before
@@ -1911,6 +1940,7 @@ async function loadRecentMatches() {
     $list.innerHTML = '<li class="chess-matches-empty">No matches yet.</li>';
     return;
   }
+  _recentMatches = data;
   $list.innerHTML = data.map(m => renderMatchRow(m)).join('');
 }
 
@@ -1941,12 +1971,76 @@ function renderMatchRow(m) {
   } else {
     deltaText = ' · <span class="chess-match-delta is-flat">casual</span>';
   }
+  /* Dev-only: a small ✕ that opens the password-confirmed delete modal. */
+  const delBtn = _isDev
+    ? '<button class="chess-match-del" type="button" data-mid="' + m.id + '" title="Delete this match from history (dev only)">✕</button>'
+    : '';
   return '<li class="chess-match-row">' +
     '<span class="' + resultClass + '">' + resultLabel + '</span>' +
     '<div class="chess-match-text">' + storyText + deltaText + '</div>' +
     '<span class="chess-match-meta">' + formatRelativeTime(m.ended_at) + '</span>' +
+    delBtn +
   '</li>';
 }
+
+/* ─── Dev-only match delete (password-confirmed) ───
+   Same contract as the Scrabble one: the modal re-verifies the signed-in
+   user's PASSWORD (fresh signInWithPassword, same session user) before
+   calling the dev-gated delete_chess_match RPC (mig 110) — the RPC is the
+   real gate; the password step protects an unattended signed-in machine. */
+let _delMatch = null;
+function openDelMatchModal(m) {
+  _delMatch = m;
+  const modal = document.getElementById('chessDelModal');
+  const sum = document.getElementById('chessDelSummary');
+  const err = document.getElementById('chessDelErr');
+  const pass = document.getElementById('chessDelPass');
+  if (!modal) return;
+  const w = (m.white_name || (m.white_email || '').split('@')[0]);
+  const b = (m.black_name || (m.black_email || '').split('@')[0]);
+  sum.textContent = (m.ranked ? 'Ranked' : 'Casual') + ' · ' + w + ' vs ' + b +
+    ' · ' + m.result + ' · ' + formatRelativeTime(m.ended_at);
+  err.textContent = ''; err.style.display = 'none';
+  pass.value = '';
+  modal.classList.add('is-open');
+  setTimeout(() => { try { pass.focus(); } catch (_) {} }, 30);
+}
+function closeDelMatchModal() {
+  _delMatch = null;
+  const modal = document.getElementById('chessDelModal');
+  if (modal) modal.classList.remove('is-open');
+}
+async function confirmDelMatch() {
+  if (!_delMatch || !_me) return;
+  const err = document.getElementById('chessDelErr');
+  const pass = document.getElementById('chessDelPass');
+  const btn = document.getElementById('chessDelConfirm');
+  const showErr = t => { err.textContent = t; err.style.display = ''; };
+  if (!pass.value) { showErr('Enter your password to confirm.'); return; }
+  btn.disabled = true; btn.textContent = 'Checking…';
+  try {
+    const { error: authErr } = await window.sb.auth.signInWithPassword({ email: _me.email, password: pass.value });
+    if (authErr) { showErr('Wrong password.'); return; }
+    btn.textContent = 'Deleting…';
+    const { error } = await window.sb.rpc('delete_chess_match', { p_match_id: _delMatch.id });
+    if (error) { showErr('Could not delete: ' + (error.message || 'unknown error')); return; }
+    closeDelMatchModal();
+    /* Points may have reverted — refresh everything that shows them. */
+    await Promise.all([loadRecentMatches(), loadLeaderboard()]);
+    if (typeof fetchMe === 'function') fetchMe().catch(() => {});
+  } finally {
+    btn.disabled = false; btn.textContent = 'Delete match';
+  }
+}
+document.getElementById('chessMatchesList').addEventListener('click', (e) => {
+  const btn = e.target.closest('.chess-match-del');
+  if (!btn) return;
+  const m = _recentMatches.find(x => String(x.id) === btn.dataset.mid);
+  if (m) openDelMatchModal(m);
+});
+document.getElementById('chessDelCancel').addEventListener('click', closeDelMatchModal);
+document.getElementById('chessDelConfirm').addEventListener('click', confirmDelMatch);
+document.getElementById('chessDelPass').addEventListener('keydown', e => { if (e.key === 'Enter') confirmDelMatch(); });
 
 /* ──────────────────────────────────────────────────────────────────
    Hot-seat board — Phase 1
@@ -2669,6 +2763,8 @@ function closeGameView() {
    ════════════════════════════════════════════════════════════════ */
 
 let _me = null;                 // { userId, email, name }
+let _isDev = false;             // REAL tier (not view-as) — gates the history-delete control
+let _recentMatches = [];        // last-loaded match rows, for the delete modal's summary
 let _onlineUsers = new Map();   // email → { userId, email, name }
 let _incomingChallenges = [];   // pending challenges where I'm challengee
 let _outgoingChallenges = [];   // pending challenges I sent
@@ -2686,6 +2782,14 @@ async function fetchMe() {
   const email  = (sess.session.user.email || '').toLowerCase();
   const name   = email.split('@')[0];
   _me = { userId, email, name };
+
+  /* Real tier from the profile row (own-row read is always allowed) — the
+     dev-only match-delete control must key off the REAL tier, never view-as. */
+  try {
+    const { data: prof } = await window.sb.from('profiles').select('tier').eq('id', userId).single();
+    _isDev = !!prof && prof.tier === 'dev';
+    if (_isDev) loadRecentMatches();   // re-render so the delete buttons appear even if the first paint won
+  } catch (_) { _isDev = false; }
 
   /* Paint my header card with current points + games. */
   const pts = await getCurrentPoints(email);
