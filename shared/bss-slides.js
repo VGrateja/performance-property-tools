@@ -312,6 +312,19 @@
     if (!win) return null;
     const el = slideEl(win, key);
     if (!el) return null;
+    /* The frame is "ready" once DECK is built, but a page's CONTENT arrives
+       later — mountGlance and friends fetch their own data. Asking too early
+       found an empty page and silently fell back to a screenshot, which is why
+       At a Glance kept coming through as a picture. Wait for something real. */
+    const ready = () => !!(el.querySelector('table')
+      || el.querySelector('.bss-tl-body .bss-tlrow')
+      || el.querySelector('.bss-gl3-top .bss-gl3-card')
+      || el.querySelector('.bss-gl3-split .bss-gl3-row')
+      || Array.prototype.some.call(el.querySelectorAll('.bss-ov'), ov =>
+           /url\(["']?.+\.(png|jpe?g|svg|webp)/i.test((ov.style && ov.style.backgroundImage) || '')
+           && !/logo/i.test((ov.style && ov.style.backgroundImage) || '')));
+    const deadline = Date.now() + 12000;
+    while (!ready() && Date.now() < deadline) await new Promise(r => setTimeout(r, 250));
 
     /* a single content image — anything that isn't the logo */
     const imgs = [];
@@ -323,6 +336,91 @@
       const src = im.getAttribute('src') || '';
       if (/\.(png|jpe?g|svg|webp)$/i.test(src) && !/logo/i.test(src)) imgs.push(src);
     });
+
+    /* ── Traffic Lights ──
+       .bss-tl-body holds a head row then one .bss-tlrow per indicator, each with
+       a label and two cells of three .bss-tld dots where the lit one carries a
+       lit-* class. Rebuilt as a native table whose cells hold real dots, taking
+       each dot's COMPUTED colour so a red/amber/green reading survives exactly. */
+    const tlBody = el.querySelector('.bss-tl-body');
+    if (tlBody && tlBody.querySelector('.bss-tlrow')) {
+      const dotHtml = cell => Array.prototype.map.call(cell.querySelectorAll('.bss-tld'), d =>
+        '<span style="display:inline-block;width:13px;height:13px;border-radius:50%;vertical-align:middle;'
+        + 'background:' + win.getComputedStyle(d).backgroundColor + ';margin:0 4px"></span>').join('');
+      const head = Array.prototype.map.call(tlBody.querySelectorAll('.bss-tlhead span'),
+        s => ESC(s.textContent.trim()));
+      const body = Array.prototype.map.call(tlBody.querySelectorAll('.bss-tlrow'), r => {
+        const cells = r.querySelectorAll('.bss-tlcell');
+        return [
+          { html: '<b>' + ESC(((r.querySelector('.bss-tllabel') || {}).textContent || '').trim()) + '</b>', align: 'left' },
+          { html: cells[0] ? dotHtml(cells[0]) : '', align: 'center' },
+          { html: cells[1] ? dotHtml(cells[1]) : '', align: 'center' },
+        ];
+      });
+      if (body.length) {
+        const rows = [(head.length === 3 ? head : ['INDICATOR', 'CURRENT', 'FORECAST'])
+          .map((h, i) => ({ html: h, align: i === 0 ? 'left' : 'center' }))].concat(body);
+        const title = ((el.querySelector('.bss-tl-title') || el.querySelector('.bss-tltop-title') || {}).textContent || '').trim();
+        return { kind: 'table', rows: rows, widths: [454, 340, 340],
+                 heights: [44].concat(body.map(() => 88)), rowH: 44, subtitle: title };
+      }
+    }
+
+    /* ── At a Glance ──
+       .bss-gl3-top is six stat cards, .bss-gl3-split is the Houses/Units pair.
+       The sparklines are self-contained SVG (explicit points, inline stroke, no
+       external CSS), so they can be carried across as VECTOR rather than pixels.
+       Emitted as one inline-styled HTML block — the deck's text overlay renders
+       html — which keeps the whole layout sharp and re-editable. */
+    const glTop = el.querySelector('.bss-gl3-top');
+    const glSplit = el.querySelector('.bss-gl3-split');
+    if (glTop || glSplit) {
+      const svgOf = node => { const s = node ? node.querySelector('svg') : null; return s ? s.outerHTML : ''; };
+      const txt = (node, sel) => { const n = node ? node.querySelector(sel) : null; return n ? ESC(n.textContent.trim()) : ''; };
+      const LBL = 'font:600 9.5px/1.3 Montserrat,sans-serif;letter-spacing:0.07em;text-transform:uppercase;color:#7d8797';
+      const VAL = 'font:700 20px/1.15 Montserrat,sans-serif;color:#171B24';
+      const CARD = 'flex:1;border:1px solid #e4e8ef;border-radius:9px;padding:9px 11px;background:#fff';
+      let html = '<div style="font-family:Montserrat,sans-serif">';
+      if (glTop) {
+        html += '<div style="display:flex;gap:9px;margin-bottom:13px">';
+        Array.prototype.forEach.call(glTop.children, c => {
+          html += '<div style="' + CARD + '"><div style="' + LBL + '">' + txt(c, '.k') + '</div>'
+                + '<div style="' + VAL + '">' + txt(c, '.v') + '</div>'
+                + '<div style="margin-top:4px">' + svgOf(c) + '</div></div>';
+        });
+        html += '</div>';
+      }
+      if (glSplit) {
+        html += '<div style="display:flex;gap:13px;align-items:flex-start">';
+        Array.prototype.forEach.call(glSplit.children, panel => {
+          /* Take .bss-gl3-row itself. Matching "a div whose direct children are
+             .k and .v" instead found the inner label/value WRAPPER, and the
+             sparkline SVG is a sibling of that wrapper — so every panel row came
+             through without its sparkline. */
+          let rowNodes = Array.prototype.slice.call(panel.querySelectorAll('.bss-gl3-row'));
+          if (!rowNodes.length) {
+            rowNodes = Array.prototype.filter.call(panel.querySelectorAll('div'),
+              d => d.querySelector('.k') && d.querySelector('.v') && d.querySelector('svg'));
+          }
+          let headingText = '';
+          const h = panel.firstElementChild;
+          if (h && !h.querySelector('.k') && !h.classList.contains('bss-gl3-row')) headingText = ESC(h.textContent.trim());
+          html += '<div style="' + CARD + ';padding:11px 13px">'
+                + (headingText ? '<div style="font:700 15px/1.2 Montserrat,sans-serif;color:#171B24;margin-bottom:5px">' + headingText + '</div>' : '');
+          rowNodes.forEach((r, i) => {
+            html += '<div style="display:flex;align-items:center;gap:9px;padding:5px 0'
+                  + (i ? ';border-top:1px solid #eef1f6' : '') + '">'
+                  + '<div style="flex:1;min-width:0"><div style="' + LBL + '">' + txt(r, '.k') + '</div>'
+                  + '<div style="font:700 14.5px/1.2 Montserrat,sans-serif;color:#171B24">' + txt(r, '.v') + '</div></div>'
+                  + '<div style="flex:none">' + svgOf(r) + '</div></div>';
+          });
+          html += '</div>';
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+      if (html.length > 120) return { kind: 'html', html: html };
+    }
 
     const table = el.querySelector('table');
     if (!table || !table.rows.length) {
