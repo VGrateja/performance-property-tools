@@ -888,10 +888,12 @@
      as given, which is exactly what the B/S tool does, so a slide pulled into a
      deck matches the tool it came from pixel for pixel.
 
-     No build animation: the B/S options set animation:false themselves, so
-     there are no steps to step through. The controller still honours the full
-     interface (resize/dispose matter — the deck rescales on window resize and
-     disposes charts when a slide is left). */
+     These BUILD like every other chart in the deck. The B/S options ship
+     animation:false (they are authored for a static page), so the animation is
+     layered on here exactly as createFromModule does it for the report modules,
+     and the data-bearing series are revealed one at a time so each one plays its
+     entrance. Autoplay is the default for graphs (Van 2026-08-22), and it can
+     only mean something if there are steps to play. */
   function createFromOption(host, spec) {
     if (!window.echarts) { host.textContent = 'Chart engine unavailable.'; return nullController(); }
     const box = document.createElement('div');
@@ -900,18 +902,63 @@
     let chart;
     try { chart = window.echarts.init(box, null, { renderer: 'canvas' }); }
     catch (e) { host.textContent = 'Chart failed to render.'; return nullController(); }
-    const apply = () => { try { chart.setOption(spec.echarts || {}, true); } catch (_) {} };
-    apply();
-    return {
-      steps: 0, index: 0,
-      isComplete: function () { return true; },
-      next: function () { return false; },
-      prev: function () { return false; },
-      reset: apply,
-      play: function () {},
+
+    const full = spec.echarts || {};
+    const allSeries = Array.isArray(full.series) ? full.series : (full.series ? [full.series] : []);
+    /* Only series that carry data are worth revealing; empty ones exist to hold
+       a legend entry or an axis and must stay visible from the start. */
+    const staticSeries = [], revealSeries = [];
+    allSeries.forEach(function (s) {
+      const hasData = Array.isArray(s && s.data) && s.data.some(function (d) {
+        const v = (d && typeof d === 'object' && 'value' in d) ? d.value : d;
+        return v != null && !(typeof v === 'number' && isNaN(v));
+      });
+      (hasData ? revealSeries : staticSeries).push(s);
+    });
+
+    /* Base = the option exactly as the tool authored it, minus the series
+       (added back step by step), with the build animation switched on. Same
+       easing and duration as the rest of the engine so a B/S slide feels like
+       the report slides beside it. */
+    const base = {};
+    Object.keys(full).forEach(function (k) { if (k !== 'series') base[k] = full[k]; });
+    base.animation = true;
+    base.animationDuration = THEME.drawMs;
+    base.animationEasing = THEME.easing;
+    base.animationDurationUpdate = THEME.drawMs;
+    base.animationEasingUpdate = THEME.easing;
+    base.animationDelay = function (i) { return i * 14; };
+    base.animationDelayUpdate = function (i) { return i * 14; };
+
+    let shown = [];
+    /* replaceMerge drops the revealed series cleanly, so replaying animates
+       again instead of silently keeping the built state. */
+    function showStatic() {
+      try {
+        chart.setOption(Object.assign({}, base, { series: staticSeries.slice() }),
+          { notMerge: true });
+      } catch (_) {}
+    }
+    showStatic();
+
+    const builds = revealSeries.map(function (s) {
+      /* plain merge: series already shown keep their index and don't re-animate;
+         the newly appended one plays its entrance */
+      return function () {
+        shown.push(s);
+        try { chart.setOption({ series: staticSeries.concat(shown) }); } catch (_) {}
+      };
+    });
+    /* An option with no data-bearing series (a pure annotation/graphic slide)
+       still has to render — otherwise it would come out blank. */
+    if (!builds.length) {
+      try { chart.setOption(Object.assign({}, base, { series: allSeries.slice() }), { notMerge: true }); } catch (_) {}
+    }
+    return stepController(builds, {
+      reset: function () { shown = []; showStatic(); },
       resize: function () { try { chart.resize(); } catch (_) {} },
       dispose: function () { try { chart.dispose(); } catch (_) {} },
-    };
+    });
   }
 
   /* ─── Public factory ─── */

@@ -20,7 +20,7 @@
      the report-data snapshot cache (window.PPReportCache) that feeds charts
      from the stored data. Deferred so they don't block first paint. -->
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" defer integrity="sha384-o5uz97et3bErHvpKfD4Jz4n0JfhJDWABFuF4NP+iEEDxE1VwMWJ19QGR0lqFZnr6" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script src="../shared/present-charts.js?v=991463eb" defer></script>
+<script src="../shared/present-charts.js?v=cb29eb4c" defer></script>
 <!-- Buying/Selling Library: the adapter turns an rdp_report_feed payload into
      the report feed shape, and bss-slides.js builds the SAME chart options the
      Buying/Selling tool draws (one source of truth). bss-slides.js must come
@@ -34,7 +34,7 @@
      present-charts.js's createFromModule() drives the build animation. -->
 <script src="../assets/Reports/charts/_theme.js" defer></script>
 <script src="../assets/Reports/charts/_helpers.js" defer></script>
-<script src="../shared/bss-slides.js?v=7e340d1f" defer></script>
+<script src="../shared/bss-slides.js?v=6e17b8e1" defer></script>
 <script src="../assets/Reports/charts/chart-median-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-yoy-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-stock-dom.js" defer></script>
@@ -1777,7 +1777,7 @@
   body.pres-edit-mode .pres-overlay.selected .pres-overlay-del{ display:flex }
 
   /* Per-chart play-mode toggle — top-left tab on a selected chart overlay.
-     Cyan when set to autoplay, dark when manual (the default). */
+     Cyan when set to autoplay (the default), dark when switched to manual. */
   .pres-overlay-autoplay{
     position:absolute; top:-13px; left:-12px;
     height:26px; padding:0 11px;
@@ -6698,10 +6698,9 @@ function openDeck(id) {
      can't undo back into a different deck's state. */
   resetHistory();
   pushHistory();
-  /* Auto-update report-chart data from the latest cache (silent, best-effort).
-     Runs after the first render so the deck appears instantly; charts whose
-     numbers changed re-render a beat later. No-op when nothing changed. */
-  if (typeof refreshReportCharts === 'function') { refreshReportCharts().catch(() => {}); }
+  /* (the data refresh used to fire here as well as below — two calls on every
+     open, and the one here ran before shared/bss-slides.js had booted, so it
+     could only ever see the Online Reports charts. One call, below.) */
   /* Snapshot decks: reveal the "Sync slides" button, and auto-resync from the
      Google source if its revision changed. Writer-only (re-pulling images
      uploads to Storage); advisors just view whatever a writer last synced. */
@@ -6720,6 +6719,28 @@ function openDeck(id) {
   /* Editing chrome is per-deck: my own decks are editable; company decks are
      editable only by writers (advisors view + duplicate). */
   _applyPresReadonly();
+  /* Data refresh, automatic and in the background. Every slide that knows where
+     it came from — an Online Report page, or a Buying/Selling chart, table,
+     panel or graphic — is rebuilt from current data, so a deck opened months
+     later shows today's numbers instead of the numbers it was built with (Van:
+     "they're useless if they do not auto update").
+
+     It PERSISTS what it rebuilds, for whoever may edit the deck —
+     _markDeckDirty runs it through _deckIsEditable, so a viewer opening someone
+     else's deck refreshes their own view and writes nothing (which is also what
+     RLS would enforce). Persisting matters for the people who can't rebuild it
+     themselves: a
+     viewer without access to the Buying/Selling tool can't read the source, so
+     the stored copy is all they get. A writer opening the deck freshens it for
+     them. Silent either way; the toolbar's Refresh is the one that reports.
+
+     Delayed past the first render so the deck appears instantly and nothing
+     waits on the source tool booting. */
+  setTimeout(() => {
+    if (typeof refreshReportCharts === 'function') {
+      refreshReportCharts({ toast: false }).catch(() => {});
+    }
+  }, 400);
 }
 
 /* ─── Thumbnail rail ─── render every slide of the active deck as a
@@ -7610,6 +7631,13 @@ function syncThumbActive() {
 }
 
 function backToPicker() {
+  /* Flush before dropping _activeDeck. Both schedulers call
+     _markDeckDirty(_activeDeck), so leaving with a debounce timer still armed
+     meant the last edits were never even queued — and nothing else on the way
+     out flushed them. */
+  if (typeof _flushPresCloudSave === 'function') {
+    try { _flushPresCloudSave(); } catch (_) {}
+  }
   _activeDeck = null;
   _userZoom = null; /* drop any +/- zoom so the next deck opens fresh */
   document.body.classList.remove('pres-deck-open', 'pres-fullscreen');
@@ -7689,6 +7717,13 @@ function renderSlide(i) {
   syncThumbActive();
 }
 
+/* Does this chart build itself when its slide opens?
+   AUTOPLAY IS THE DEFAULT (Van 2026-08-22: "set it to auto play for default"),
+   so an overlay with no flag at all autoplays — which also switches over every
+   chart inserted before the flag existed. Only an explicit false means Manual,
+   so a chart somebody deliberately set to Manual on the overlay stays Manual. */
+function _ovAutoplays(o) { return !!o && o.autoplay !== false; }
+
 /* Present-mode "advance": if the current slide has a chart still building,
    the advance key reveals its next step (click-to-build); only once every
    chart on the slide is fully built does it move to the next slide. In
@@ -7699,7 +7734,7 @@ function presentBuildOrAdvance() {
     /* Only MANUAL charts step on the presenter's advance; autoplay charts
        build themselves on slide-show, so skip them here (they also must not
        block moving on to the next slide). */
-    const charts = currentOverlays().filter(o => o.type === 'chart' && !o.autoplay);
+    const charts = currentOverlays().filter(o => o.type === 'chart' && !_ovAutoplays(o));
     for (let i = 0; i < charts.length; i++) {
       const c = _chartControllers[charts[i].id];
       if (c && !c.isComplete()) { c.next(); return; }
@@ -9530,12 +9565,27 @@ async function ovAddReportChart(slug, pageId) {
    (re-insert once to enable). Called on deck open + the "Refresh data" button. */
 async function refreshReportCharts(opts) {
   opts = opts || {};
-  if (!_activeDeck || !window.PPReportCache) return { updated: 0, total: 0 };
+  if (!_activeDeck) return { updated: 0, total: 0 };
   const jobs = [];
   Object.keys(_overlays).forEach(k => {
     if (k.indexOf(_activeDeck.id + '/') !== 0) return;
     (_overlays[k] || []).forEach(o => {
-      if (o.type === 'chart' && o.spec && o.source && o.source.slug && o.source.pageId) jobs.push(o);
+      /* Native Buying/Selling pages (image / table / html) refresh too. They are
+         real overlays rather than iframes so they still export, and rebuilding
+         them here is what keeps them current — a stored table is out of date the
+         moment Forge publishes. */
+      if (o.source && o.source.lib === 'bss' && o.source.key && window.PP_BSS
+          && (o.type === 'table' || o.type === 'image' || o.type === 'text')) { jobs.push(o); return; }
+      if (o.type !== 'chart' || !o.spec || !o.source) return;
+      /* Online Reports chart — rebuilt from the report cache */
+      if (o.source.slug && o.source.pageId && window.PPReportCache) jobs.push(o);
+      /* Buying/Selling chart — rebuilt from the tool itself. These were being
+         skipped entirely (no pageId), so a B/S chart kept whatever data it had
+         at insert. Van's rule applies to charts as much as to the DOM pages: a
+         slide that doesn't track Forge is out of date the moment it publishes.
+         Refreshing beats embedding them: they stay vector, exportable (an iframe
+         cannot be painted by html2canvas) and editable. */
+      else if (o.source.lib === 'bss' && o.source.key && window.PP_BSS) jobs.push(o);
     });
   });
   if (!jobs.length) {
@@ -9546,19 +9596,55 @@ async function refreshReportCharts(opts) {
   let updated = 0;
   for (const o of jobs) {
     try {
-      const built = await buildReportChartSpec(o.source.slug, o.source.pageId, snapCache);
+      /* a native page: rebuild its content in place, keeping position and size */
+      if (o.type !== 'chart') {
+        const nat = await window.PP_BSS.native(o.source.key, { slug: o.source.slug, mode: o.source.mode });
+        if (!nat) continue;
+        if (nat.kind === 'image' && o.type === 'image' && nat.src && nat.src !== o.src) { o.src = nat.src; updated++; }
+        else if (nat.kind === 'html' && o.type === 'text' && nat.html && nat.html !== o.html) {
+          o.html = nat.html;
+          /* a transplant reports its own box; keep it in step with the content,
+             or a page whose table grew a row would be clipped */
+          if (Number.isFinite(nat.x) && Number.isFinite(nat.w)) {
+            o.x = nat.x; o.y = nat.y; o.w = nat.w; o.h = nat.h;
+          }
+          updated++;
+        }
+        else if (nat.kind === 'table' && o.type === 'table') {
+          const rebuilt = _bssTableOverlay(nat, o.source, { x: o.x, y: o.y });
+          if (rebuilt && JSON.stringify(rebuilt.cells) !== JSON.stringify(o.cells)) {
+            o.cols = rebuilt.cols; o.rows = rebuilt.rows; o.cells = rebuilt.cells;
+            o.w = rebuilt.w; o.h = rebuilt.h;
+            updated++;
+          }
+        }
+        continue;
+      }
+      let spec = null;
+      if (o.source.lib === 'bss') {
+        const option = await window.PP_BSS.option(o.source.key,
+          { slug: o.source.slug, mode: o.source.mode });
+        if (option) spec = { echarts: option };
+      } else {
+        const built = await buildReportChartSpec(o.source.slug, o.source.pageId, snapCache);
+        if (built && built.spec) spec = built.spec;
+      }
       /* Only replace when the data actually differs, so an unchanged cache
          doesn't churn cloud saves or needlessly re-animate the charts. */
-      if (built && built.spec && JSON.stringify(built.spec) !== JSON.stringify(o.spec)) {
-        o.spec = built.spec;
+      if (spec && JSON.stringify(spec) !== JSON.stringify(o.spec)) {
+        o.spec = spec;
         updated++;
       }
     } catch (_) { /* keep this chart's existing data */ }
   }
-  if (updated) { saveOverlays(); renderOverlays(); }
+  /* save:false is still honoured for any caller that wants a look without a
+     write; the on-open pass deliberately does persist (see openDeck). */
+  if (updated) { if (opts.save !== false) saveOverlays(); renderOverlays(); }
   if (opts.toast) {
-    showPresToast(updated ? ('Chart data refreshed — ' + updated + ' chart' + (updated === 1 ? '' : 's') + ' updated.')
-                          : 'Charts already up to date.', { duration: 4000 });
+    /* "slides", not "charts" — this pass also rebuilds the Buying/Selling
+       tables, panels and graphics, not just the chart pages */
+    showPresToast(updated ? ('Data refreshed — ' + updated + ' slide' + (updated === 1 ? '' : 's') + ' updated.')
+                          : 'All slides already up to date.', { duration: 4000 });
   }
   return { updated: updated, total: jobs.length };
 }
@@ -11867,7 +11953,7 @@ function buildOverlayEl(o) {
          on each presenter advance — so two charts on one slide can mix. */
       if (!document.body.classList.contains('pres-fullscreen')) {
         while (!ctrl.isComplete()) ctrl.next();
-      } else if (o.autoplay && typeof ctrl.play === 'function') {
+      } else if (_ovAutoplays(o) && typeof ctrl.play === 'function') {
         ctrl.play();
       }
     });
@@ -11889,7 +11975,7 @@ function buildOverlayEl(o) {
 
   /* Per-chart play-mode toggle — choose whether THIS chart autoplays its
      build when the slide opens in Presentation mode, or stays manual
-     (presenter clicks to build it step-by-step). Default manual; per-chart,
+     (presenter clicks to build it step-by-step). Default AUTOPLAY; per-chart,
      so two charts on one slide can differ. Chart overlays only; shows as a
      tab opposite the delete badge when the chart is selected. */
   if (o.type === 'chart') {
@@ -11899,10 +11985,11 @@ function buildOverlayEl(o) {
     ap.className = 'pres-overlay-autoplay';
     ap.type = 'button';
     const paintAp = () => {
-      ap.classList.toggle('is-auto', !!o.autoplay);
-      ap.innerHTML = (o.autoplay ? PLAY_ICON : HAND_ICON) +
-        '<span>' + (o.autoplay ? 'Autoplay' : 'Manual') + '</span>';
-      ap.title = o.autoplay
+      const auto = _ovAutoplays(o);
+      ap.classList.toggle('is-auto', auto);
+      ap.innerHTML = (auto ? PLAY_ICON : HAND_ICON) +
+        '<span>' + (auto ? 'Autoplay' : 'Manual') + '</span>';
+      ap.title = auto
         ? 'Autoplay: this chart builds on its own when the slide opens. Click to switch to manual.'
         : 'Manual: you click to build this chart step-by-step in Presentation mode. Click to autoplay it instead.';
     };
@@ -11910,7 +11997,7 @@ function buildOverlayEl(o) {
     ap.addEventListener('pointerdown', (ev) => ev.stopPropagation());
     ap.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      o.autoplay = !o.autoplay;
+      o.autoplay = (o.autoplay === false);
       paintAp();
       saveOverlays();
       pushHistory();
@@ -15849,6 +15936,58 @@ function _bssFitBox(cw, ch) {
   return { x: BX + Math.round((BW - w) / 2), y: BY + Math.round((BH - h) / 2), w: w, h: h };
 }
 
+/* Turn a Buying/Selling table page into a NATIVE deck table.
+   Lives in one place because two callers need identical output: the picker when
+   the page is first added, and refreshReportCharts() when the deck reopens and
+   the numbers have moved. If they drifted, a refresh would silently resize the
+   table. Returns geometry + cells; the caller decides where to put it. */
+function _bssTableOverlay(meta, source, pos) {
+  const BX = 73, BW = 1134, BY = 120, BH = 520;
+  const rowCount = (meta.rows || []).length || 1;
+  const srcW = (meta.widths || []).reduce((a, b) => a + b, 0) || BW;
+  const srcHs = (meta.heights && meta.heights.length) ? meta.heights
+    : Array.from({ length: rowCount }, () => meta.rowH || 36);
+  const srcH = srcHs.reduce((a, b) => a + b, 0) || BH;
+  /* Fill the band's WIDTH, and grow the rows toward filling its height so a
+     short table doesn't sit in a thin strip with dead space above and below
+     (Van: "cover most part of the page"). Row height is capped so a 3-row table
+     doesn't turn into three huge bands. */
+  const capH = meta.subtitle ? 34 : 0;
+  const kx = BW / srcW;
+  const ky = Math.min((BH - capH) / srcH, 2.6);
+  const cols = (meta.widths || []).map(w => ({ w: Math.max(40, Math.round(w * kx)) }));
+  const rowHs = srcHs.map(h => Math.max(26, Math.min(96, Math.round(h * ky))));
+  /* Emphasis has to be in the MARKUP: a deck cell is {html, bgColor, textColor}
+     and ignores any bold flag. The module already wraps bold source cells in
+     <b>; the header row gets it here. */
+  const cells = (meta.rows || []).map((r, ri) => r.map(c => {
+    let html = c.html || '';
+    if (ri === 0 && html && html.indexOf('<b>') < 0) html = '<b>' + html + '</b>';
+    return {
+      html: html,
+      bgColor: ri === 0 ? '#171B24' : (/^rgba\(0, 0, 0, 0\)$/.test(c.bg || '') ? '' : (c.bg || '')),
+      textColor: ri === 0 ? '#ffffff' : (c.color || ''),
+      align: c.align === 'right' ? 'right' : (c.align === 'left' ? 'left' : 'center'),
+      /* the deck's table CSS aligns cells to the top; these tables are grown to
+         fill the content band, so a short cell (a row of traffic-light dots)
+         would otherwise sit at the top of a 96px row with a gap beneath it */
+      vAlign: 'middle',
+    };
+  }));
+  const w = cols.reduce((a, c) => a + c.w, 0);
+  const h = rowHs.reduce((a, b) => a + b, 0);
+  const o = {
+    id: _fmtId('tbl'), type: 'table', source: source || null,
+    x: BX + Math.round((BW - w) / 2),
+    y: BY + capH + Math.max(0, Math.round((BH - capH - h) / 2)),
+    w: w, h: h, cols: cols, rows: rowHs.map(hh => ({ h: hh })), cells: cells,
+  };
+  if (pos && Number.isFinite(pos.x)) o.x = pos.x;
+  if (pos && Number.isFinite(pos.y)) o.y = pos.y;
+  o.capH = capH;
+  return o;
+}
+
 /* A section divider: the same dark treatment as a region header, carrying one
    word. No title/rule/footer chrome — a divider is a break, not a content slide. */
 function _bssDividerOverlays(word, eyebrow) {
@@ -15959,7 +16098,7 @@ async function _bssConfirmCart() {
             slideOvs.push({ ov: ovL, bg: null });
             continue;
           }
-          if (it.kind === 'capture') {
+          if (it.kind === 'capture' || it.kind === 'native') {
             /* Native first: most of these pages are an image asset or a real
                table, and rebuilding them natively keeps the text vector-sharp
                and editable. Only fall back to a photograph when the page is
@@ -16014,77 +16153,52 @@ async function _bssConfirmCart() {
             /* author-your-own template: chrome + heading, nothing else — the deck
                gets a dressed slide to type onto, which is what the tool's blank
                Coverpage / Market Positions Clock pages are for. */
-          } else if (meta.kind === 'image') {
-            /* the page's own asset (e.g. market-position-clock.png) as a real
-               image overlay — sharp at any zoom, no screenshot involved */
-            const fit = _bssFitBox(meta.w || 1134, meta.h || 520);
-            ov2.push({ id: _fmtId('i'), type: 'image', src: meta.src,
+          }
+          /* every native page carries its origin, so the on-open refresh can rebuild
+             it from current data (charts already did this via source.pageId) */
+          const bssSrc = { lib: 'bss', slug: it.slug, mode: it.mode, key: it.key };
+          if (meta.kind === 'image') {
+            /* the page's own asset (e.g. market-position-clock.png), or the
+               Runway v Demand chart shot, as a real image overlay. cw/ch is the
+               source's own size when it knows it, so the box matches the
+               image's aspect and objectFit:contain has nothing to letterbox. */
+            const fit = _bssFitBox(meta.cw || meta.w || 1134, meta.ch || meta.h || 520);
+            ov2.push({ id: _fmtId('i'), type: 'image', src: meta.src, source: bssSrc,
               x: fit.x, y: fit.y, w: fit.w, h: fit.h, objectFit: 'contain' });
           } else if (meta.kind === 'html') {
-            /* a rebuilt layout (At a Glance) — the deck's text overlay renders
-               html, so the cards, values and inline-SVG sparklines all stay
-               vector and editable instead of being a flattened picture */
-            ov2.push({ id: _fmtId('t'), type: 'text', html: meta.html,
-              x: 73, y: 120, w: 1134, h: 520, align: 'left',
+            /* The tool's own content, transplanted. When the module reports its
+               geometry, USE IT VERBATIM: both slides are 1280x720, so placing
+               the content where the tool places it is what makes the page
+               identical rather than merely similar (Van: "the only difference
+               will be the header, logo in the bottom right and
+               performanceproperty.com.au in the bottom left"). */
+            const hasBox = Number.isFinite(meta.x) && Number.isFinite(meta.w);
+            ov2.push({ id: _fmtId('t'), type: 'text', html: meta.html, source: bssSrc,
+              x: hasBox ? meta.x : 73, y: hasBox ? meta.y : 120,
+              w: hasBox ? meta.w : 1134, h: hasBox ? meta.h : 520, align: 'left',
               color: '#171B24', fontSize: 13, fontWeight: 500,
               fontFamily: "'Montserrat',sans-serif" });
           } else if (meta.kind === 'table') {
-            /* rebuilt as a NATIVE deck table: vector text, editable cells, and
-               no cropping to get wrong. Column widths come from the source table
-               so the proportions match, scaled to the content band; the header
-               row takes the deck's navy, and bold/red cells keep their emphasis
-               (Sensitivity marks the current cash rate and the ceiling row). */
-            const BX = 73, BW = 1134, BY = 120, BH = 520;
-            const rowCount = (meta.rows || []).length || 1;
-            const srcW = (meta.widths || []).reduce((a, b) => a + b, 0) || BW;
-            const srcHs = (meta.heights && meta.heights.length) ? meta.heights
-              : Array.from({ length: rowCount }, () => meta.rowH || 36);
-            const srcH = srcHs.reduce((a, b) => a + b, 0) || BH;
-            /* Fill the band's WIDTH, and grow the rows toward filling its height
-               so a short table doesn't sit in a thin strip with dead space above
-               and below (Van: "cover most part of the page"). Row height is
-               capped so a 3-row table doesn't turn into three huge bands. */
-            const kx = BW / srcW;
-            const ky = Math.min(BH / srcH, 2.6);
-            const cols = (meta.widths || []).map(w => ({ w: Math.max(40, Math.round(w * kx)) }));
-            const rowHs = srcHs.map(h => Math.max(26, Math.min(96, Math.round(h * ky))));
-            const rowH = rowHs[0];
-            /* Emphasis has to be in the MARKUP: a deck cell is {html, bgColor,
-               textColor} and ignores any bold flag. The module already wraps
-               bold source cells in <b>; the header row gets it here. */
-            const cells = (meta.rows || []).map((r, ri) => r.map(c => {
-              let html = c.html || '';
-              if (ri === 0 && html && html.indexOf('<b>') < 0) html = '<b>' + html + '</b>';
-              return {
-                html: html,
-                bgColor: ri === 0 ? '#171B24' : (/^rgba\(0, 0, 0, 0\)$/.test(c.bg || '') ? '' : (c.bg || '')),
-                textColor: ri === 0 ? '#ffffff' : (c.color || ''),
-                align: c.align === 'right' ? 'right' : (c.align === 'left' ? 'left' : 'center'),
-              };
-            }));
-            const tW = cols.reduce((a, c) => a + c.w, 0);
-            let tH = rowHs.reduce((a, b) => a + b, 0);
+            /* rebuilt as a NATIVE deck table: vector text, no cropping to get
+               wrong, and — because it's real overlay data — it EXPORTS to PDF/JPG
+               and gets rebuilt from current Forge data every time the deck opens. */
+            const tbl = _bssTableOverlay(meta, bssSrc, null);
             /* the traffic-light pages carry a fuller sentence than the deck
                title ('What people want to see before entering the market') —
                keep it as a caption above the table rather than lose it */
-            let capH = 0;
             if (meta.subtitle) {
-              capH = 34;
-              ov2.push({ id: _fmtId('t'), type: 'text', x: BX, y: BY, w: BW, h: 28,
+              ov2.push({ id: _fmtId('t'), type: 'text', x: 73, y: 120, w: 1134, h: 28,
                 html: _escHtml(meta.subtitle), align: 'center', color: '#4a5361',
                 fontSize: 15, fontWeight: 600, fontFamily: "'Montserrat',sans-serif" });
             }
-            ov2.push({ id: _fmtId('tbl'), type: 'table',
-              x: BX + Math.round((BW - tW) / 2),
-              y: BY + capH + Math.max(0, Math.round((BH - capH - tH) / 2)),
-              w: tW, h: tH, cols: cols,
-              rows: rowHs.map(h => ({ h: h })), cells: cells });
+            delete tbl.capH;
+            ov2.push(tbl);
           } else if (meta.kind === 'capture') {
             /* content only — the tool's header, rule, disclaimer and logo were
                excluded from the capture, so the DECK's chrome above is the only
                header and the footer line is present like every other page */
             const fit = _bssFitBox(meta.cw, meta.ch);
-            ov2.push({ id: _fmtId('i'), type: 'image', src: meta.image,
+            ov2.push({ id: _fmtId('i'), type: 'image', src: meta.image, source: bssSrc,
               x: fit.x, y: fit.y, w: fit.w, h: fit.h, objectFit: 'contain' });
           } else if (meta.kind === 'clock') {
             /* the clock JPG is 980x620; fit it to the 520px content band and
@@ -16134,7 +16248,8 @@ async function _bssConfirmCart() {
           x: 73, y: 120, w: 1134, h: 520, baseW: 1134, baseH: 520,
           spec: spec,
           source: { lib: 'bss', slug: it.slug, mode: it.mode, key: it.key },
-          autoplay: false,   /* B/S options set animation:false — nothing to build */
+          autoplay: true,   /* graphs autoplay by default (Van 2026-08-22) — createFromOption
+                               layers the build animation over the B/S option's animation:false */
         });
         slideOvs.push({ ov: ov, bg: null });
       }
@@ -17600,8 +17715,23 @@ async function _doPresCloudSave() {
     const ids = Array.from(_dirtyDeckIds);
     _dirtyDeckIds.clear();
     for (let i = 0; i < ids.length; i++) {
-      const deck = findDeck(ids[i]);
-      if (!deck || !_deckIsEditable(deck)) continue;
+      let deck = findDeck(ids[i]);
+      /* An OPEN deck that the picker no longer lists — a hydrate rebuilt the
+         list before this deck's INSERT landed — used to fall straight through
+         this `continue` with its id already taken off _dirtyDeckIds. Silent,
+         permanent loss of everything added since. Save it anyway, and put it
+         back in the list so the picker shows it. */
+      if (!deck && _activeDeck && _activeDeck.id === ids[i]) {
+        deck = _activeDeck;
+        if (deck.custom && !_customDecks.some(d => d.id === deck.id)) {
+          _customDecks.push(deck);
+          if (typeof _mirrorDecksLocal === 'function') _mirrorDecksLocal();
+          if (typeof buildPicker === 'function') buildPicker();
+        }
+        console.warn('[presentation] recovered the open deck for saving; it was missing from the deck list:', ids[i]);
+      }
+      if (!deck) { console.warn('[presentation] save skipped — no deck object for', ids[i]); continue; }
+      if (!_deckIsEditable(deck)) continue;
       try {
         await _persistDeckRow(deck);
       } catch (err) {
@@ -17824,6 +17954,43 @@ async function _hydratePresFromCloud() {
       .order('updated_at', { ascending: false });
     if (error) { console.warn('Presentation decks load:', error); return; }
 
+    /* ── KEEP WHAT THE CLOUD CAN'T KNOW ABOUT YET ─────────────────────────
+       This rebuild used to be absolute: wipe _customDecks / _overlays and
+       repopulate from the rows. But this function is un-awaited at boot and runs
+       a slow chain first (identity, tier gate, profiles, presentation_state, the
+       legacy migration, co-editor ids) before it SELECTs the decks — so a deck
+       created in that window is NOT in the rows it gets back. Wiping then
+       deleted it from memory and left _activeDeck pointing at an object the
+       picker no longer listed, and because _doPresCloudSave resolves ids through
+       findDeck(), every later save was silently discarded. That is how a deck
+       built from the Buying/Selling Library came back empty, with no error
+       (Van 2026-08-22, twice).
+
+       So decks whose state is NEWER than the cloud's survive the rebuild:
+         • no _rowId  → its INSERT is still in flight
+         • dirty      → edits are queued and not written yet
+       On a normal boot neither applies (the localStorage mirror carries _rowId
+       and nothing is dirty), so the cloud still wins exactly as before. */
+    const _rowIds = new Set((rows || []).map(r => r.id));
+    const _keep = [];
+    _customDecks.forEach(d => {
+      if (!d || !d.id) return;
+      if (!d._rowId || _dirtyDeckIds.has(d.id)) _keep.push(d);
+    });
+    /* The OPEN deck too, if the rows don't carry it — losing the deck someone is
+       actively editing is the worst version of this bug. */
+    if (_activeDeck && !_keep.some(d => d.id === _activeDeck.id)
+        && !(rows || []).some(r => r.payload && r.payload.deck && r.payload.deck.id === _activeDeck.id)) {
+      _keep.push(_activeDeck);
+    }
+    const _keepOv = {}, _keepBg = {}, _keepTheme = {};
+    _keep.forEach(d => {
+      const pre = d.id + '/';
+      Object.keys(_overlays).forEach(k => { if (k.indexOf(pre) === 0) _keepOv[k] = _overlays[k]; });
+      Object.keys(_slideBgs).forEach(k => { if (k.indexOf(pre) === 0) _keepBg[k] = _slideBgs[k]; });
+      if (_deckActiveTheme && _deckActiveTheme[d.id]) _keepTheme[d.id] = _deckActiveTheme[d.id];
+    });
+
     /* Rebuild in-memory state from the rows. Mutate _customDecks in place so
        existing closures keep the same array reference; reassign the maps. */
     _customDecks.length = 0;
@@ -17845,8 +18012,35 @@ async function _hydratePresFromCloud() {
       if (pl.activeTheme) _deckActiveTheme[deck.id] = pl.activeTheme;
       _customDecks.push(deck);
     });
+    /* Put the newer-than-cloud decks back, BEFORE the prune below (which drops
+       overlays whose deck isn't listed). Where the cloud also returned a copy,
+       the local one wins on content but inherits the row's identity, so the
+       next save UPDATEs that row instead of inserting a duplicate. */
+    _keep.forEach(d => {
+      const i = _customDecks.findIndex(x => x.id === d.id);
+      if (i >= 0) {
+        const cloud = _customDecks[i];
+        if (!d._rowId && cloud._rowId) d._rowId = cloud._rowId;
+        if (d._ownerId   == null) d._ownerId   = cloud._ownerId;
+        if (d._createdBy == null) d._createdBy = cloud._createdBy;
+        if (d._visibility == null) d._visibility = cloud._visibility;
+        d._locked = cloud._locked;
+        _customDecks[i] = d;
+      } else {
+        _customDecks.push(d);
+      }
+    });
+    Object.assign(_overlays, _keepOv);
+    Object.assign(_slideBgs, _keepBg);
+    Object.assign(_deckActiveTheme, _keepTheme);
     scrubLegacyDeckPlaceholders();
     if (typeof _pruneOrphanOverlays === 'function') _pruneOrphanOverlays();
+    /* and make sure they're still queued — the ids may have been drained by a
+       save that ran while this hydrate was in flight */
+    if (_keep.length) {
+      _keep.forEach(d => _markDeckDirty(d));
+      if (_dirtyDeckIds.size) _schedulePresCloudSave();
+    }
 
     /* Mirror to localStorage for the instant pre-hydrate render next time. */
     _safeLsSet(CUSTOM_DECKS_KEY,      JSON.stringify(_customDecks));

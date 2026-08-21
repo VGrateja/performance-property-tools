@@ -227,6 +227,233 @@
     return (box.w > 40 && box.h > 40) ? box : null;
   }
 
+  /* ═══ The tool's own content, transplanted ═══════════════════════════════
+     Van, after seeing the rebuilt versions side by side with the tool: "I want
+     the exact look of the contents we have in b/s tool to be transfered in
+     presentation tool, the only difference will be the header, logo in the
+     bottom right and performanceproperty.com.au in the bottom left."
+
+     He is right, and the earlier attempt was the wrong idea: it RE-INTERPRETED
+     each page as deck primitives — traffic lights became a table of dots,
+     Vacancy Rate Projection became a table and lost the whole gradient track it
+     actually is, Sensitivity lost the two authored text lines that sit under its
+     table. At a Glance was the one he passed, and the only reason is that it was
+     transplanted as the tool's own markup rather than re-drawn.
+
+     So: take the tool's real nodes. Clone the content, inline the computed
+     styles so nothing depends on the tool's stylesheet, and place each piece at
+     the coordinates it occupies in the tool's own 1280x720 slide. Both slides
+     are 1280x720, so the result is positionally identical by construction. The
+     deck's header, footer line and logo are separate overlays as always — which
+     is exactly the difference Van asked for and no other.
+
+     Still real DOM, so it stays sharp, exports, and is rebuilt from the live
+     tool every time the deck opens. */
+
+  /* Curated property list. A full computed dump is 340 properties per node and
+     would bloat the deck payload for no gain; this is what actually carries the
+     look. */
+  const SP = ('display,position,left,top,right,bottom,width,height,min-width,min-height,max-width,max-height,'
+    + 'margin-top,margin-right,margin-bottom,margin-left,'
+    + 'padding-top,padding-right,padding-bottom,padding-left,'
+    + 'flex-direction,flex-wrap,align-items,align-self,justify-content,gap,flex-grow,flex-shrink,flex-basis,'
+    + 'grid-template-columns,grid-template-rows,'
+    + 'font-family,font-size,font-weight,font-style,line-height,letter-spacing,text-transform,text-align,'
+    + 'text-decoration-line,white-space,word-break,text-shadow,'
+    + 'color,background-color,background-image,background-size,background-position,background-repeat,'
+    + 'border-top-width,border-right-width,border-bottom-width,border-left-width,'
+    + 'border-top-style,border-right-style,border-bottom-style,border-left-style,'
+    + 'border-top-color,border-right-color,border-bottom-color,border-left-color,'
+    + 'border-top-left-radius,border-top-right-radius,border-bottom-right-radius,border-bottom-left-radius,'
+    + 'box-shadow,opacity,overflow,box-sizing,border-collapse,border-spacing,vertical-align,transform,'
+    + 'table-layout,list-style-type').split(',');
+  /* values not worth writing out — the default already does this */
+  const BORING = {
+    none: 1, normal: 1, auto: 1, '0px': 1, static: 1, visible: 1, 'rgba(0, 0, 0, 0)': 1,
+    'repeat': 1, 'content-box': 1, start: 1, stretch: 1, '0': 1, '1': 1, baseline: 1,
+    'separate': 1, '0% 0%': 1, 'nowrap': 1,
+  };
+  /* text properties are inherited, so only write them when they CHANGE */
+  const INHERITED = {
+    'font-family': 1, 'font-size': 1, 'font-weight': 1, 'font-style': 1, 'line-height': 1,
+    'letter-spacing': 1, 'text-transform': 1, 'text-align': 1, color: 1, 'white-space': 1,
+    'word-break': 1, 'list-style-type': 1, 'border-collapse': 1, 'border-spacing': 1,
+  };
+
+  /* Walk source and clone together — same shape, since the clone is deep — and
+     write the source's computed style onto the clone. SVG subtrees are left
+     alone: they carry their own presentation attributes and inlining CSS onto
+     them does more harm than good. */
+  function inlineStyles(win, src, dst, parentCS) {
+    if (!src || src.nodeType !== 1) return;
+    const cs = win.getComputedStyle(src);
+    let css = '';
+    for (let i = 0; i < SP.length; i++) {
+      const p = SP[i];
+      const v = cs.getPropertyValue(p);
+      if (!v || BORING[v]) continue;
+      if (INHERITED[p] && parentCS && parentCS.getPropertyValue(p) === v) continue;
+      css += p + ':' + v + ';';
+    }
+    /* the tool's own inline styles (D3 / JS-positioned bits) come along with the
+       clone already; put the computed ones FIRST so they don't override them */
+    dst.setAttribute('style', css + (dst.getAttribute('style') || ''));
+    dst.removeAttribute('class');
+    dst.removeAttribute('id');
+    if (src.tagName === 'svg') return;   /* leave the vector alone */
+    const sk = src.children, dk = dst.children;
+    for (let i = 0; i < sk.length && i < dk.length; i++) inlineStyles(win, sk[i], dk[i], cs);
+  }
+
+  function serialize(win, node) {
+    const clone = node.cloneNode(true);
+    inlineStyles(win, node, clone, null);
+    /* The tool's authored overlays are absolutely positioned inside its slide
+       (the Sensitivity page's wage-growth line is left:98px; top:596px). Each
+       piece is already placed by a wrapper at its measured position, so leaving
+       the node's own offsets on applies them a SECOND time — which is exactly
+       why that line and the source line landed ~600px lower, off the bottom of
+       the slide, and read as "missing text under the table".
+       position:relative at 0,0 adds no offset but still makes the node a
+       containing block for its own absolutely positioned children (the vacancy
+       track's markers depend on that). */
+    clone.style.position = 'relative';
+    clone.style.left = '0px';
+    clone.style.top = '0px';
+    clone.style.right = 'auto';
+    clone.style.bottom = 'auto';
+    clone.style.margin = '0px';
+    return clone.outerHTML;
+  }
+
+  /* Every content piece of a page, each with its position in the tool's slide. */
+  async function domTransplant(key, ctx) {
+    const win = await toolFrame(ctx);
+    if (!win) return null;
+    const el = slideEl(win, key);
+    if (!el) return null;
+    /* content arrives after the frame is "ready" — mountGlance and friends fetch
+       their own data, so ask too early and the page is still empty */
+    const ready = () => !!(el.querySelector('table')
+      || el.querySelector('.bss-tl-body .bss-tlrow')
+      || el.querySelector('.bss-gl3-top .bss-gl3-card')
+      || el.querySelector('.bss-vrproj .bss-vp2-track')
+      || el.querySelector('.bss-vp2-card'));
+    const deadline = Date.now() + 12000;
+    while (!ready() && Date.now() < deadline) await new Promise(r => setTimeout(r, 250));
+
+    const chrome = classifyOverlays(el);
+    const base = el.getBoundingClientRect();
+    const sx = base.width ? 1280 / base.width : 1;   /* the tool's slide is CSS-scaled */
+    /* The page's own render lives in .pad; the tool's authored overlays sit
+       beside it. Both are content once the chrome is set aside — and the
+       overlays are the very things the rebuild dropped (the Sensitivity pages
+       carry their wage-growth line and their source line as overlays). */
+    const parts = [];
+    const pad = el.querySelector('.pad');
+    if (pad) Array.prototype.forEach.call(pad.children, c => parts.push(c));
+    el.querySelectorAll('.bss-ov').forEach(ov => { if (chrome.indexOf(ov) < 0) parts.push(ov); });
+
+    const pieces = [];
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    parts.forEach(node => {
+      if (chrome.indexOf(node) >= 0) return;
+      const q = node.getBoundingClientRect();
+      if (q.width < 4 || q.height < 4) return;
+      if (!(node.textContent || '').trim() && !node.querySelector('svg,img,table,canvas')
+          && !/url\(/.test((node.style && node.style.backgroundImage) || '')) return;
+      const x = (q.left - base.left) * sx, y = (q.top - base.top) * sx;
+      pieces.push({ x: x, y: y, w: q.width * sx, h: q.height * sx, html: serialize(win, node) });
+      l = Math.min(l, x); t = Math.min(t, y);
+      r = Math.max(r, x + q.width * sx); b = Math.max(b, y + q.height * sx);
+    });
+    if (!pieces.length || !isFinite(l)) return null;
+
+    const box = { x: Math.round(l), y: Math.round(t), w: Math.round(r - l), h: Math.round(b - t) };
+    /* Horizontal position is the tool's, untouched. Vertically the two headers
+       differ — the tool prints its title INSIDE the page (the traffic-light card
+       starts at y70), while the deck has its own title and teal rule down to
+       ~y115 — so content that starts above the rule is pushed just below it.
+       The floor is the deck's footer line (y654) less a hair, because the deck
+       puts performanceproperty.com.au bottom-LEFT where the tool puts its source
+       line — they collided, with "August 2026 forecasted cash rate" printing
+       straight through the footer. A page taller than the space is scaled down
+       as a whole, which keeps every proportion the tool's. */
+    const TOP = 120, FLOOR = 646;
+    const dy = Math.max(0, TOP - box.y);
+    const avail = FLOOR - (box.y + dy);
+    const k = box.h > avail ? avail / box.h : 1;
+    let inner = '<div style="position:relative;width:' + box.w + 'px;height:' + box.h + 'px">';
+    pieces.forEach(p => {
+      inner += '<div style="position:absolute;left:' + Math.round(p.x - l) + 'px;top:' + Math.round(p.y - t)
+        + 'px;width:' + Math.round(p.w) + 'px;height:' + Math.round(p.h) + 'px">' + p.html + '</div>';
+    });
+    inner += '</div>';
+    const html = k < 1
+      ? '<div style="width:' + Math.round(box.w * k) + 'px;height:' + Math.round(box.h * k)
+        + 'px;overflow:hidden"><div style="transform:scale(' + (Math.round(k * 1000) / 1000)
+        + ');transform-origin:top left">' + inner + '</div></div>'
+      : inner;
+    return { kind: 'html', html: html, x: box.x, y: box.y + dy,
+             w: Math.round(box.w * k), h: Math.round(box.h * k) };
+  }
+
+  /* ── Runway v Demand ──
+     The one page that can't be rebuilt as deck overlays: it's a D3 SVG scene
+     (runway-demand.html), not a chart with an option we can lift, and pointing
+     an iframe at it means the page exports blank — html2canvas can't paint
+     across an iframe boundary. The Buying/Selling tool already solved exactly
+     this for its own PDF (_rvdChartShots): open the page in a hidden same-origin
+     iframe in embed mode, wait for the chart to settle, and run html2canvas over
+     .chart-wrap. Van: "for the runway v demand, do it how b/s tool do it" — so
+     the deck takes the same shot, and because the shot is re-taken whenever the
+     deck opens, the slide still tracks the live data.
+
+     runway-demand.html loads html2canvas itself (it has its own JPEG export), so
+     the capture uses the frame's copy — the presentation tool doesn't carry one.
+     Cached per (view, wage-growth basis) for the page session: one capture costs
+     ~12s, and a deck can hold several of these. */
+  const RVD_SHOTS = {};
+  function rvdShot(ctx) {
+    const wg = ((ctx || {}).mode === 'buy') ? 5 : 1;   /* Buying = 5yr, Selling = 1yr */
+    const view = ((ctx || {}).view === 'unit') ? 'unit' : 'house';
+    const ck = view + ':' + wg;
+    if (RVD_SHOTS[ck]) return RVD_SHOTS[ck];
+    RVD_SHOTS[ck] = (async () => {
+      const f = document.createElement('iframe');
+      f.src = 'runway-demand.html?embed=1&view=' + view + '&wg=' + wg;
+      f.style.cssText = 'position:fixed;left:-2400px;top:0;width:1136px;height:754px;border:0;pointer-events:none';
+      document.body.appendChild(f);
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      try {
+        const wrap = () => { try { return f.contentDocument.querySelector('#runwayView .chart-wrap'); } catch (e) { return null; } };
+        /* Wait for the DATA to be plotted, not just for the scene to exist.
+           circle.city-dot is one market; the axes, quadrant bands and legend are
+           drawn before the fetch returns, so anything less specific breaks early
+           and photographs an empty plot. (Counting the svg's direct children
+           doesn't work either — D3 nests everything under two <g> groups, so the
+           count stays at 2 and the wait ran the full timeout: 48s per capture.) */
+        const until = Date.now() + 45000;
+        while (Date.now() < until) {
+          const w = wrap();
+          if (w && w.querySelectorAll('circle.city-dot').length > 2) break;
+          await sleep(250);
+        }
+        const el = wrap();
+        if (!el) return null;
+        await sleep(2600);   /* data + the chart's entrance animation settle */
+        const win = f.contentWindow;
+        if (!win || !win.html2canvas) return null;
+        const cv = await win.html2canvas(el, { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' });
+        const r = el.getBoundingClientRect();
+        return { kind: 'image', src: cv.toDataURL('image/jpeg', 0.92),
+                 cw: Math.round(r.width) || 1120, ch: Math.round(r.height) || 700 };
+      } catch (e) { return null; }
+      finally { f.remove(); }
+    })().catch(() => null);
+    return RVD_SHOTS[ck];
+  }
+
   async function captureEl(win, el) {
     if (!win.html2canvas && typeof win._pdfLibs === 'function') { try { await win._pdfLibs(); } catch (e) {} }
     if (!win.html2canvas || !el) return null;
@@ -301,9 +528,14 @@
      So they are handed to the builder as an image overlay or a native table
      overlay: vector text, crisp at any zoom, and editable in the deck.
 
-     Traffic Lights and At a Glance are still captured — the first is dot groups
-     in flex rows, the second is 36 nested panels with 19 sparkline SVGs. They
-     need the same treatment and have not had it yet. */
+     Traffic Lights and At a Glance took more work but got there too:
+       Traffic Lights         = dot groups in flex rows → a table of real dots,
+                                each dot keeping its COMPUTED colour
+       At a Glance            = 36 nested panels with 19 sparklines → one inline
+                                -styled HTML block, sparklines carried as SVG
+     Nothing here returns a screenshot any more, which matters twice over: the
+     text stays vector, and the overlay is real deck data so it EXPORTS —
+     html2canvas cannot paint an iframe, so a live embed would come out blank. */
   const ESC = s => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -344,9 +576,13 @@
        each dot's COMPUTED colour so a red/amber/green reading survives exactly. */
     const tlBody = el.querySelector('.bss-tl-body');
     if (tlBody && tlBody.querySelector('.bss-tlrow')) {
+      /* 21px, not the tool's own 13px: the deck grows this table to fill the
+         content band, so a 13px dot in a 96px row reads as a speck from the back
+         of a room. Colour is the COMPUTED background, so the lit state survives
+         exactly as the tool rendered it. */
       const dotHtml = cell => Array.prototype.map.call(cell.querySelectorAll('.bss-tld'), d =>
-        '<span style="display:inline-block;width:13px;height:13px;border-radius:50%;vertical-align:middle;'
-        + 'background:' + win.getComputedStyle(d).backgroundColor + ';margin:0 4px"></span>').join('');
+        '<span style="display:inline-block;width:21px;height:21px;border-radius:50%;vertical-align:middle;'
+        + 'background:' + win.getComputedStyle(d).backgroundColor + ';margin:0 6px"></span>').join('');
       const head = Array.prototype.map.call(tlBody.querySelectorAll('.bss-tlhead span'),
         s => ESC(s.textContent.trim()));
       const body = Array.prototype.map.call(tlBody.querySelectorAll('.bss-tlrow'), r => {
@@ -377,21 +613,26 @@
     if (glTop || glSplit) {
       const svgOf = node => { const s = node ? node.querySelector('svg') : null; return s ? s.outerHTML : ''; };
       const txt = (node, sel) => { const n = node ? node.querySelector(sel) : null; return n ? ESC(n.textContent.trim()) : ''; };
-      const LBL = 'font:600 9.5px/1.3 Montserrat,sans-serif;letter-spacing:0.07em;text-transform:uppercase;color:#7d8797';
-      const VAL = 'font:700 20px/1.15 Montserrat,sans-serif;color:#171B24';
-      const CARD = 'flex:1;border:1px solid #e4e8ef;border-radius:9px;padding:9px 11px;background:#fff';
+      const LBL = 'font:600 10.5px/1.3 Montserrat,sans-serif;letter-spacing:0.07em;text-transform:uppercase;color:#7d8797';
+      const VAL = 'font:700 23px/1.15 Montserrat,sans-serif;color:#171B24';
+      /* a light tint rather than plain white — Van: "add a little bit of light
+         coloring in the tables so it's not 'too white'". Kept to a very faint
+         cool grey so it reads as a card on a white slide without introducing a
+         colour that isn't in the palette. */
+      const CARD = 'flex:1;border:1px solid #e2e7ef;border-radius:9px;padding:12px 13px;background:#f5f8fc';
+      const STRIPE = '#eef3f9';
       let html = '<div style="font-family:Montserrat,sans-serif">';
       if (glTop) {
-        html += '<div style="display:flex;gap:9px;margin-bottom:13px">';
+        html += '<div style="display:flex;gap:10px;margin-bottom:16px">';
         Array.prototype.forEach.call(glTop.children, c => {
           html += '<div style="' + CARD + '"><div style="' + LBL + '">' + txt(c, '.k') + '</div>'
                 + '<div style="' + VAL + '">' + txt(c, '.v') + '</div>'
-                + '<div style="margin-top:4px">' + svgOf(c) + '</div></div>';
+                + '<div style="margin-top:7px">' + svgOf(c) + '</div></div>';
         });
         html += '</div>';
       }
       if (glSplit) {
-        html += '<div style="display:flex;gap:13px;align-items:flex-start">';
+        html += '<div style="display:flex;gap:14px;align-items:stretch">';
         Array.prototype.forEach.call(glSplit.children, panel => {
           /* Take .bss-gl3-row itself. Matching "a div whose direct children are
              .k and .v" instead found the inner label/value WRAPPER, and the
@@ -405,13 +646,14 @@
           let headingText = '';
           const h = panel.firstElementChild;
           if (h && !h.querySelector('.k') && !h.classList.contains('bss-gl3-row')) headingText = ESC(h.textContent.trim());
-          html += '<div style="' + CARD + ';padding:11px 13px">'
-                + (headingText ? '<div style="font:700 15px/1.2 Montserrat,sans-serif;color:#171B24;margin-bottom:5px">' + headingText + '</div>' : '');
+          html += '<div style="' + CARD + ';padding:13px 15px">'
+                + (headingText ? '<div style="font:700 16.5px/1.2 Montserrat,sans-serif;color:#171B24;margin-bottom:7px">' + headingText + '</div>' : '');
           rowNodes.forEach((r, i) => {
-            html += '<div style="display:flex;align-items:center;gap:9px;padding:5px 0'
-                  + (i ? ';border-top:1px solid #eef1f6' : '') + '">'
+            /* zebra the rows so a tall panel doesn't read as one white block */
+            html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 8px;border-radius:5px'
+                  + (i % 2 ? ';background:' + STRIPE : '') + '">'
                   + '<div style="flex:1;min-width:0"><div style="' + LBL + '">' + txt(r, '.k') + '</div>'
-                  + '<div style="font:700 14.5px/1.2 Montserrat,sans-serif;color:#171B24">' + txt(r, '.v') + '</div></div>'
+                  + '<div style="font:700 16px/1.2 Montserrat,sans-serif;color:#171B24">' + txt(r, '.v') + '</div></div>'
                   + '<div style="flex:none">' + svgOf(r) + '</div></div>';
           });
           html += '</div>';
@@ -442,9 +684,17 @@
         const kids = Array.prototype.filter.call(td.children, c => (c.textContent || '').trim());
         let html;
         if (kids.length >= 2) {
-          /* value + caption, as the projection table does */
-          html = kids.map((k, n) => n === 0 ? ESC(k.textContent.trim())
-            : '<span style="font-size:11px;opacity:0.62">' + ESC(k.textContent.trim()) + '</span>').join('<br>');
+          /* value + caption, as the projection table does. A caption may itself
+             be several spans ("NI +30,157", "IM -9,710", "OM +81,030") and
+             textContent runs them together — "+30,157IM -9,710OM" — so split on
+             the element boundaries and space them out. */
+          const partsOf = node => {
+            const inner = Array.prototype.filter.call(node.children, c => (c.textContent || '').trim());
+            return (inner.length >= 2 ? inner.map(c => c.textContent.trim()) : [(node.textContent || '').trim()])
+              .map(ESC).join('&nbsp;&nbsp;');
+          };
+          html = kids.map((k, n) => n === 0 ? partsOf(k)
+            : '<span style="font-size:11px;opacity:0.62">' + partsOf(k) + '</span>').join('<br>');
         } else {
           /* Keep the cell's own line breaks. Reading textContent glued them
              together — "Growth from" + "Current MHP" came out as
@@ -681,9 +931,13 @@
        Van 2026-08-21: "that insert is not formatted right away. So better create
        a formatted one to make their life easier." */
     { key: 'f2',       kind: 'clock',   title: 'Property Clock' },
+    /* A LIVE embed, as in the B/S tool — interactive on screen, and captured
+       only at export time the way the tool's own PDF does it (Van: "I need the
+       live embed in there. I just want the embed when being exported into a PDF
+       just like how B/S tool do it"). rvdShot below is that export capture.
+       The wage-growth basis follows the purpose: Buying = 5yr, Selling = 1yr,
+       exactly as the B/S tool builds it. */
     { key: 'demand_h', kind: 'embed',   title: 'Demand vs Runway',
-      /* wage-growth basis follows the purpose: Buying = 5yr, Selling = 1yr,
-         exactly as the B/S tool builds this iframe. */
       embed: function (ctx) {
         return { src: 'runway-demand.html?embed=1&view=house&wg=' + (((ctx || {}).mode === 'buy') ? 5 : 1),
                  title: 'Runway v Demand', baseW: 1136, baseH: 754 };
@@ -708,11 +962,24 @@
                  Projects, whose numbers are hardcoded per region and so cannot
                  go stale on a data publish.
      f2 (clock), demand_h (embed) and the three dividers are handled above. */
+  /* 'native' = rebuilt as real deck overlays (image / table / html). Those are
+     EXPORTABLE — html2canvas cannot paint an iframe, so a live embed comes out
+     blank in a PDF or JPG (Van: "it should be exportable just like in B/S
+     Tool"). Freshness therefore comes from refreshing them when the deck opens,
+     exactly as the charts do, not from embedding. */
   const KINDS = {
-    f1: 'live',
-    tl_before: 'live', tl_best: 'live', tl_revisit: 'live',
-    glance: 'live', vr_proj: 'live', f6: 'live', f14: 'live', f15: 'live',
-    infra_projects: 'capture',
+    f1: 'native',
+    tl_before: 'native', tl_best: 'native', tl_revisit: 'native',
+    glance: 'native', vr_proj: 'native', f6: 'native', f14: 'native', f15: 'native',
+    infra_projects: 'native',
+  };
+  /* Pages whose content is bespoke DOM, so they are transplanted node-for-node
+     from the tool rather than rebuilt (see domTransplant). f1 is excluded: its
+     content is one PNG, and an image overlay of that PNG already IS the tool's
+     content exactly. */
+  const DOM_PAGES = {
+    tl_before: 1, tl_best: 1, tl_revisit: 1, glance: 1, vr_proj: 1,
+    f6: 1, f14: 1, f15: 1, infra_projects: 1,
   };
   /* pages the library deliberately does not offer */
   const SKIP = { f0: true };
@@ -788,9 +1055,22 @@
     liveSrc: function (key, ctx) { return LIVE[key] ? liveSrc(key, ctx || {}) : null; },
     /* bespoke-DOM slides (traffic lights, At a Glance, Infrastructure): a PNG of
        the tool's own render, to sit inside the deck's chrome */
-    /* native overlays where the page allows it (image or table); the caller
-       falls back to capture() only when this returns null */
-    native: async function (key, ctx) { try { return await nativeFrom(key, ctx || {}); } catch (e) { return null; } },
+    /* The page's real content as deck overlays. DOM pages are TRANSPLANTED —
+       the tool's own nodes with their styles inlined, at their own coordinates —
+       so they look exactly like the tool. Only the two pages that are a single
+       asset (the clock PNG) or genuinely simple take the older path. */
+    native: async function (key, ctx) {
+      if (DOM_PAGES[key]) {
+        try {
+          const t = await domTransplant(key, ctx || {});
+          if (t) return t;
+        } catch (e) { /* fall through */ }
+      }
+      try { return await nativeFrom(key, ctx || {}); } catch (e) { return null; }
+    },
+    /* the Runway v Demand export shot, for whoever builds deck export: the same
+       hidden-iframe capture the B/S tool's PDF uses */
+    rvdShot: function (ctx) { return rvdShot(ctx || {}); },
     capture: async function (key, ctx) {
       const got = await captureFromTool(key, ctx || {});
       return got || null;   /* { image, fullBleed } */
