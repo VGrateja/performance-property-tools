@@ -14,26 +14,36 @@
    follows the same pattern as shared/report-edit.js, which was pulled out of the
    regional report tool so the research reports could reuse it.
 
-   THE SEAM: every renderer in the B/S tool has the same shape —
-       load the feed → derive a small D → build an ECharts option → mount it.
-   Only the middle two steps are worth sharing; mounting is host-specific (the
-   tool mounts into .bss-chart, the builder into a chart overlay). So this module
-   owns the loaders and the option builders, and returns a plain ECharts option.
-   Callers do their own mounting.
+   HOW IT WORKS — two paths, and the second is the important one:
 
-   The option objects below are moved VERBATIM from buying-selling-slides.html,
-   comments included, so the tool renders byte-identically after delegating.
-   scratch/_bss-golden.mjs captures every option per region before and after and
-   diffs them — that is the proof, not an assumption.
+   1. Two charts (f12 Vacancy v Rent, house_unit House v Unit) are built HERE.
+      They need nothing but the report feed, so the tool delegates to this module
+      for them and there is no second copy of those options anywhere.
+      scratch/_bss-golden.mjs proved that move byte-identical (48/48 captures).
 
-   COVERAGE: charts are being moved incrementally, each proven by the golden
-   diff. Slides not yet moved simply don't appear in the library, so a partial
-   extraction is never a broken one. Not yet moved (they need loaders beyond the
-   report feed — rate series, CL rents, consumer confidence, underutilisation,
-   stagnation periods, population projections, traffic lights, glance, infra):
-   median_combined, yield_rate, stub_cci, stub_underutil, f13, pop_move,
-   vr_proj, tl_before, tl_best, glance, infra_projects, demand_h, f2, f6,
-   stub_dwellings, stub_bonds, stub_hpei, stub_jobads, stub_busfin.
+   2. Everything else is read off the TOOL ITSELF, loaded in an offscreen
+      same-origin iframe. Hand-moving 21 more renderers plus their loaders (rate
+      series, CL rents, consumer confidence, underutilisation, stagnation
+      periods, population projections, sensitivity, rankings, replacement cost)
+      would be a ~2000-line refactor of a manager-approved tool, and every moved
+      line is a chance to change a chart nobody asked to change. Reading the
+      tool's real render instead means the two CANNOT drift.
+
+   The tool's render() lays out every page at once — .bss-slide[data-key] inside
+   #bssStack — mounts each chart, then paints the AUTHORED OVERLAYS from
+   reports_state. That last part matters: most pages carry authored content
+   (Market Positions Clock is 5 overlays, the Sensitivity and traffic-light pages
+   1-6 each), so a page is only complete when read from the tool's own DOM.
+
+   A page comes back as one of two things:
+     • {echarts} — a live chart option, which the builder wraps in deck chrome
+       and keeps editable
+     • {image}   — a photograph of the tool's real page, placed FULL BLEED with
+       no deck chrome, since an authored page already has its own title and logo
+
+   Per-region availability comes from the tool's built DECK, so its onlyIf gates
+   (VIC-only rental bonds, the 4-region infrastructure page, replacement cost
+   where research exists) apply for free.
    =========================================================================== */
 (function () {
   'use strict';
@@ -107,62 +117,67 @@
   /* Render one of the tool's slides into a detached host inside the frame and
      hand back whichever representation exists: an ECharts option, or a captured
      image for the bespoke-DOM slides. */
+  /* Read a page off the tool. Every page is already rendered in the frame with
+     its authored overlays, so this reads the REAL slide rather than re-rendering
+     a copy: a chart page hands back its live ECharts option (vector, editable in
+     the deck), and anything else is photographed. */
   async function fromTool(key, ctx, want) {
     const win = await toolFrame(ctx);
     if (!win) return null;
-    let def = null;
-    try { const defs = win.eval('SLIDE_DEFS') || []; def = defs.find(d => d && d.key === key) || null; } catch (e) { return null; }
-    if (!def) return null;
-    const c = { slug: ctx.slug, mode: ctx.mode === 'buy' ? 'buy' : 'sell' };
-    const doc = win.document;
-    const host = doc.createElement('div');
-    /* .bss-slide so the tool's own CSS applies at its real 1280x720 size */
-    host.className = 'bss-slide';
-    host.style.cssText = 'position:fixed;left:-20000px;top:0;width:1280px;height:720px;background:#fff';
-    try { host.innerHTML = (typeof def.render === 'function') ? (def.render(c) || '') : ''; }
-    catch (e) { host.remove(); return null; }
-    doc.body.appendChild(host);
-    try { if (typeof def.mount === 'function') def.mount(host, c); } catch (e) {}
+    const el = slideEl(win, key);
+    if (!el) return null;
+    if (want !== 'image') {
+      /* charts mount on a double-rAF; wait briefly, then give up and photograph.
+         Several pages LOOK like charts but are DOM (Vacancy Rate Projection,
+         Replacement Cost, both Sensitivity tables), so there is nothing to wait
+         for on those. */
+      const deadline = Date.now() + 9000;
+      while (Date.now() < deadline) {
+        try {
+          for (const d of [el, ...el.querySelectorAll('div')]) {
+            const inst = win.echarts.getInstanceByDom(d);
+            if (inst) { const opt = inst.getOption(); if (opt) return { echarts: opt }; }
+          }
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+    return await captureEl(win, el);
+  }
 
-    /* An ECharts instance appears asynchronously (the tool double-rAFs), so give
-       it a moment — but only a moment. Several pages that LOOK like charts are
-       actually DOM (Vacancy Rate Projection, Replacement Cost, both Sensitivity
-       pages), and waiting the full timeout on those just made them slow before
-       they failed. If no instance turns up, fall through and capture instead:
-       one path, and a page is never offered-but-unbuildable. */
-    const deadline = Date.now() + 9000;
-    let inst = null;
-    while (Date.now() < deadline) {
-      try {
-        const cands = [host, ...host.querySelectorAll('div')];
-        for (const el of cands) { const i = win.echarts.getInstanceByDom(el); if (i) { inst = i; break; } }
-      } catch (e) {}
-      if (inst || want === 'image') break;
-      await new Promise(r => setTimeout(r, 200));
-    }
-    if (inst && want !== 'image') {
-      let opt = null;
-      try { opt = inst.getOption(); } catch (e) { opt = null; }
-      host.remove();
-      if (opt) return { echarts: opt };
-      /* fall through to a capture rather than returning nothing */
-    }
-    /* No chart to read — capture the rendered DOM. html2canvas is lazy in the
-       tool (it only loads it for downloads), so ask the tool to load it via its
-       own _pdfLibs() rather than injecting a second copy. */
-    if (!win.html2canvas && typeof win._pdfLibs === 'function') {
-      try { await win._pdfLibs(); } catch (e) {}
-    }
-    await new Promise(r => setTimeout(r, 1200));   /* let mounts settle */
-    if (!win.html2canvas) { host.remove(); return null; }
-    let url = null;
+  /* The tool's render() lays out EVERY page at once into #bssStack as
+     .bss-slidewrap > .bss-scale > .bss-slide[data-key], mounts each one's chart,
+     then paints the authored overlays. go(i) only scrolls to one.
+
+     So there is nothing to navigate: the page we want is already on screen in
+     the frame, complete with its overlays. Pick it by key. (Selecting
+     '.bss-slide' without the key was the bug behind every capture coming back as
+     the deck's first page.) */
+  function slideEl(win, key) {
+    try { return win.document.querySelector('.bss-slide[data-key="' + String(key).replace(/"/g, '') + '"]'); }
+    catch (e) { return null; }
+  }
+  async function captureEl(win, el) {
+    if (!win.html2canvas && typeof win._pdfLibs === 'function') { try { await win._pdfLibs(); } catch (e) {} }
+    if (!win.html2canvas || !el) return null;
     try {
-      const canvas = await win.html2canvas(host, { scale: 2, useCORS: true, logging: false,
-        backgroundColor: null, width: 1280, height: 720, windowWidth: 1280, windowHeight: 720 });
-      url = canvas.toDataURL('image/png');
-    } catch (e) { url = null; }
-    host.remove();
-    return url ? { image: url } : null;
+      /* same element and the same settings the tool uses for its own PDF export:
+         explicit 1280x720 because html2canvas ignores the ancestor .bss-scale
+         transform */
+      const canvas = await win.html2canvas(el, { scale: 2, useCORS: true, logging: false,
+        backgroundColor: '#ffffff', width: 1280, height: 720, windowWidth: 1280, windowHeight: 720 });
+      return { image: canvas.toDataURL('image/png'), fullBleed: true };
+    } catch (e) { return null; }
+  }
+  async function captureFromTool(key, ctx) {
+    const win = await toolFrame(ctx);
+    if (!win) return null;
+    const el = slideEl(win, key);
+    if (!el) return null;
+    /* charts mount on a double-rAF during render(); give a late-loading one a
+       moment before photographing the page */
+    await new Promise(r => setTimeout(r, 1200));
+    return await captureEl(win, el);
   }
 
   /* Which slides the tool actually builds for this region+mode — its own DECK,
@@ -384,8 +399,13 @@
   const KINDS = {
     tl_before: 'capture', tl_best: 'capture', tl_revisit: 'capture',
     glance: 'capture', infra_projects: 'capture',
-    f0: 'title', f1: 'title',
+    /* Coverpage is NOT offered: a deck already gets its own cover slide, and
+       Van removed this one to avoid two (2026-08-21). Market Positions Clock is
+       a capture, not a blank template — its content is authored overlays. */
+    f1: 'capture',
   };
+  /* pages the library deliberately does not offer */
+  const SKIP = { f0: true };
   function kindOf(key) {
     const s = byKey(key);
     if (s) return s.kind;
@@ -437,7 +457,7 @@
     slidesFor: async function (ctx) {
       const deck = await toolDeck(ctx || {});
       if (!deck || !deck.length) return SLIDES.map(s => ({ key: s.key, kind: s.kind, title: s.title }));
-      return deck.map(d => {
+      return deck.filter(d => !SKIP[d.key]).map(d => {
         const own = byKey(d.key);
         return { key: d.key, kind: kindOf(d.key), title: (own && own.title) || d.title || d.key };
       });
@@ -446,8 +466,8 @@
     /* bespoke-DOM slides (traffic lights, At a Glance, Infrastructure): a PNG of
        the tool's own render, to sit inside the deck's chrome */
     capture: async function (key, ctx) {
-      const got = await fromTool(key, ctx || {}, 'image');
-      return (got && got.image) ? got.image : null;
+      const got = await captureFromTool(key, ctx || {});
+      return got || null;   /* { image, fullBleed } */
     },
     /* the non-chart slides' parameters: word for a divider, iframe src for an
        embed. Returns null for chart slides, which use chartSpec instead. */
