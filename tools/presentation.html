@@ -2226,6 +2226,16 @@
   .pres-fmt-card:active{ transform:scale(0.98); }
   [data-theme="light"] .pres-fmt-card{ background:rgba(0,160,180,0.10); border-color:rgba(0,160,180,0.35); }
   .pres-fmt-card.is-other{ opacity:0.65; }
+  /* Divider pages are section breaks, not content. They were sharing .is-other,
+     which dims to 0.65 and made them read as DISABLED (Van 2026-08-21: "change
+     the colour of the divider so they stand out"). Brand yellow — the same
+     accent as the Buying/Selling Library's toolbar button — marks them out as a
+     different KIND of slide without implying they're unavailable. */
+  .pres-fmt-card.is-divider{
+    border-color:rgba(255,169,31,0.55); background:rgba(255,169,31,0.10);
+    color:#FFA91F; font-weight:700; letter-spacing:0.04em;
+  }
+  .pres-fmt-card.is-divider:hover{ border-color:#FFA91F; background:rgba(255,169,31,0.20); }
   .pres-fmt-empty{ grid-column:1/-1; text-align:center; opacity:0.55; font-size:12.5px; padding:20px; font-weight:500; }
   .pres-fmt-back{ background:none; border:none; color:#00A0B4; cursor:pointer;
     font-size:12px; font-weight:700; padding:2px 0; display:inline-flex; align-items:center; gap:4px; }
@@ -4070,6 +4080,7 @@
   </div>
   <div class="pres-copy-foot">
     <span class="pres-fmt-count" id="pres-fmt-count">No slides selected</span>
+    <button class="pres-copy-cancel" id="pres-fmt-all" type="button">Select all</button>
     <button class="pres-copy-cancel" id="pres-fmt-clear" type="button">Clear</button>
     <button class="pres-copy-go" id="pres-fmt-confirm" type="button" disabled>Add to deck</button>
   </div>
@@ -4120,6 +4131,7 @@
   </div>
   <div class="pres-copy-foot">
     <span class="pres-fmt-count" id="pres-bss-count">No slides selected</span>
+    <button class="pres-copy-cancel" id="pres-bss-all" type="button">Select all</button>
     <button class="pres-copy-cancel" id="pres-bss-clear" type="button">Clear</button>
     <button class="pres-copy-go" id="pres-bss-confirm" type="button" disabled>Add to deck</button>
   </div>
@@ -4154,6 +4166,7 @@
   </div>
   <div class="pres-copy-foot">
     <span class="pres-fmt-count">The overview slide is always added; ticked sections follow it.</span>
+    <button class="pres-copy-cancel" id="pres-ir-all" type="button">Add all</button>
     <button class="pres-copy-cancel" id="pres-ir-close" type="button">Done</button>
   </div>
 </div>
@@ -14635,6 +14648,7 @@ function _fmtShowGraphs(slug, name) {
   graphs.forEach(g => {
     const card = document.createElement('button');
     card.type = 'button'; card.className = 'pres-fmt-card'; card.textContent = g.label;
+    card.dataset.pageId = g.pageId; card.dataset.slug = slug;   /* lets Select all skip what's already in the cart */
     card.addEventListener('click', () => _fmtAddToCart(slug, name, g.pageId, g.label, card));
     grid.appendChild(card);
   });
@@ -15449,6 +15463,14 @@ function closeIrPicker() {
 }
 document.getElementById('pres-add-ir').addEventListener('click', openIrPicker);
 document.getElementById('pres-ir-x').addEventListener('click', closeIrPicker);
+/* Add all — every property currently listed. This picker inserts on click and
+   disables the row's button afterwards, so :not(:disabled) is the dedupe. */
+document.getElementById('pres-ir-all').addEventListener('click', () => {
+  const btns = [...document.querySelectorAll('#pres-ir-list .pres-ir-add:not(:disabled)')];
+  if (!btns.length) { showPresToast('Nothing left to add here.'); return; }
+  btns.forEach(b => b.click());
+  showPresToast('Adding ' + btns.length + ' report' + (btns.length === 1 ? '' : 's') + '…');
+});
 document.getElementById('pres-ir-close').addEventListener('click', closeIrPicker);
 irBackdrop.addEventListener('click', closeIrPicker);
 document.getElementById('pres-ir-search').addEventListener('input', e => { _irRenderList(e.target.value); _irUpdateAddLabels(); });
@@ -15480,6 +15502,20 @@ document.getElementById('pres-fmt-x').addEventListener('click', closeFmtPicker);
 fmtBackdrop.addEventListener('click', closeFmtPicker);
 document.getElementById('pres-fmt-back').addEventListener('click', _fmtBackToRegions);
 document.getElementById('pres-fmt-search').addEventListener('input', e => _fmtRenderRegions(e.target.value));
+/* Select all — every graph listed for the region currently open, skipping any
+   already in the cart so a second press doesn't duplicate them. */
+document.getElementById('pres-fmt-all').addEventListener('click', () => {
+  const cards = [...document.querySelectorAll('#pres-fmt-graphs .pres-fmt-card')];
+  if (!cards.length) { showPresToast('Open a region first.'); return; }
+  const have = new Set(_fmtCart.map(it => it.slug + '|' + it.pageId));
+  let n = 0;
+  cards.forEach(c => {
+    const key = (c.dataset.slug || '') + '|' + (c.dataset.pageId || '');
+    if (c.dataset.pageId && have.has(key)) return;
+    c.click(); n++;
+  });
+  showPresToast(n ? ('Selected ' + n + ' graph' + (n === 1 ? '' : 's') + '.') : 'Everything here is already selected.');
+});
 document.getElementById('pres-fmt-clear').addEventListener('click', () => { _fmtCart = []; _fmtUpdateCart(); });
 document.getElementById('pres-fmt-confirm').addEventListener('click', _fmtConfirmCart);
 /* Options wiring: the client-name input shows only while its box is ticked;
@@ -15515,7 +15551,7 @@ document.getElementById('pres-fmt-confirm').addEventListener('click', _fmtConfir
    source of truth and the two cannot drift. The chrome (eyebrow, title, rule,
    logo) comes from _fmtChrome, which is what makes an imported slide match the
    rest of the deck rather than the tool it came from. */
-let _bssMode = '', _bssCart = [], _bssRegionName = '';
+let _bssMode = '', _bssCart = [], _bssRegionName = '', _bssPickedSlug = '';
 const bssBackdrop = document.getElementById('pres-bss-backdrop');
 const bssModal    = document.getElementById('pres-bss-modal');
 
@@ -15605,7 +15641,7 @@ function _bssRenderRegions(filter) {
   }
 }
 async function _bssShowSlides(slug, name) {
-  _bssRegionName = name;
+  _bssRegionName = name; _bssPickedSlug = slug;
   _bssSetView('slides');
   const t = document.getElementById('pres-bss-title');
   if (t) t.textContent = name + ' · ' + _bssModeLabel(_bssMode) + ' — pick slides';
@@ -15639,7 +15675,8 @@ async function _bssShowSlides(slug, name) {
   const grid = document.createElement('div'); grid.className = 'pres-fmt-grid'; wrap.appendChild(grid);
   slides.forEach(s => {
     const card = document.createElement('button');
-    card.type = 'button'; card.className = 'pres-fmt-card' + (s.kind === 'divider' ? ' is-other' : '');
+    card.type = 'button'; card.className = 'pres-fmt-card' + (s.kind === 'divider' ? ' is-divider' : '');
+    card.dataset.key = s.key;
     card.textContent = s.title;
     /* the divider titles already read "DEMAND (divider)" — same wording as the
        Buying/Selling tool, so the picker says what it is without a legend */
@@ -15850,6 +15887,20 @@ if (document.getElementById('pres-add-bss')) {
   document.getElementById('pres-bss-back-mode').addEventListener('click', _bssShowMode);
   document.getElementById('pres-bss-back-regions').addEventListener('click', () => _bssShowRegions(_bssMode));
   document.getElementById('pres-bss-search').addEventListener('input', e => _bssRenderRegions(e.target.value));
+  /* Select all — every page currently listed for this region, skipping anything
+     already in the cart so pressing it twice doesn't double the deck. */
+  document.getElementById('pres-bss-all').addEventListener('click', () => {
+    const cards = [...document.querySelectorAll('#pres-bss-slides .pres-fmt-card')];
+    if (!cards.length) { showPresToast('Pick a region first.'); return; }
+    const have = new Set(_bssCart.map(it => it.key + '|' + it.slug + '|' + it.mode));
+    let n = 0;
+    cards.forEach(c => {
+      const k = c.dataset.key;
+      if (k && have.has(k + '|' + _bssPickedSlug + '|' + _bssMode)) return;
+      c.click(); n++;
+    });
+    showPresToast(n ? ('Selected ' + n + ' slide' + (n === 1 ? '' : 's') + '.') : 'Everything here is already selected.');
+  });
   document.getElementById('pres-bss-clear').addEventListener('click', () => { _bssCart = []; _bssUpdateCart(); });
   document.getElementById('pres-bss-confirm').addEventListener('click', _bssConfirmCart);
 }
