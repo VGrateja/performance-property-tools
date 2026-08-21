@@ -6,10 +6,12 @@
 
    PRIMARY PATH — createFromModule (spec.module): render the EXACT online-
    report chart module (assets/Reports/charts/chart-*.js) so the slide graph
-   is pixel-identical to the report (colours, staircase axis, legend icons,
-   crisis lines + period bands, axis names — and no title, so it's just the
-   graph), then layer the click-to-build reveal on top. This is what the
-   recipes in presentation.html produce.
+   matches the report (colours, staircase axis, legend icons, crisis lines +
+   period bands, axis names — and no title, so it's just the graph), then
+   layer the click-to-build reveal on top. This is what the recipes in
+   presentation.html produce. ONE deliberate divergence: gridlines are
+   re-tinted darker (THEME.gridSlide) because the report's 6%-black lines
+   vanish on a projector.
 
    At-a-Glance headline stats use the bigNumber type (count-up). The older
    type-based "billboard" renderers (line/bars/dualBarLine/pyramid) are kept
@@ -54,6 +56,11 @@
     ink: '#1a2838',            // report chart text colour, on the white slide
     inkDim: 'rgba(26,40,56,0.58)',
     grid: 'rgba(26,40,56,0.10)',
+    /* Gridlines for the MODULE path. The report theme draws them at
+       rgba(0,0,0,0.06) — fine on a screen a foot away, invisible on a
+       projector — so slides re-tint them (Van, 2026-08-21). Reports and the
+       monthly PDFs render the modules directly and keep the lighter value. */
+    gridSlide: 'rgba(26,40,56,0.18)',
     /* PERFORMANCE PROPERTY BRAND COLOURS lead the palette: brand teal
        (--accent #00b6cb) + brand navy (#1f283f), then the report-chart
        palette colours (assets/Reports/charts/_theme.js) for extra series.
@@ -239,6 +246,21 @@
           }
         } catch (_) {}
         return {};   // couldn't compute a clean grid → leave ECharts to nice it
+      });
+    });
+
+    /* Darken the gridlines for projection — only on axes that actually draw
+       them, and merged into the same axis patch as the lock so the module's
+       own axis config is otherwise untouched. */
+    ['xAxis', 'yAxis'].forEach(function (k) {
+      var defs = full[k]; if (!defs || !axisLock[k]) return;
+      var arr = Array.isArray(defs) ? defs : [defs];
+      axisLock[k] = axisLock[k].map(function (patch, i) {
+        var sl = (arr[i] || {}).splitLine;
+        if (!sl || sl.show === false) return patch;
+        var out = {}; for (var p in patch) if (Object.prototype.hasOwnProperty.call(patch, p)) out[p] = patch[p];
+        out.splitLine = { lineStyle: { color: THEME.gridSlide } };
+        return out;
       });
     });
 
