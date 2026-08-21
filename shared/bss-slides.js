@@ -700,22 +700,33 @@
      listed here and not in SLIDES above falls through to 'chart', which is the
      right default — the deck is mostly charts.
 
-       capture — bespoke DOM with no chart to read (traffic lights, At a Glance,
-                 Major Infrastructure Projects). Comes back as an image.
-       title   — the tool's author-your-own templates: it renders them blank and
-                 Van adds overlays. The formatted version is chrome + title, so a
-                 deck gets a properly dressed slide to type onto.
+       live    — embedded from the tool's own page, so it re-renders from Forge
+                 every time the deck opens. Everything that is DOM rather than a
+                 chart is on this path: a stored copy of any of them is wrong as
+                 soon as new data lands.
+       capture — last resort, still a stored image. Only Major Infrastructure
+                 Projects, whose numbers are hardcoded per region and so cannot
+                 go stale on a data publish.
      f2 (clock), demand_h (embed) and the three dividers are handled above. */
   const KINDS = {
-    tl_before: 'capture', tl_best: 'capture', tl_revisit: 'capture',
-    glance: 'capture', infra_projects: 'capture',
-    /* Coverpage is NOT offered: a deck already gets its own cover slide, and
-       Van removed this one to avoid two (2026-08-21). Market Positions Clock is
-       a capture, not a blank template — its content is authored overlays. */
-    f1: 'capture',
+    f1: 'live',
+    tl_before: 'live', tl_best: 'live', tl_revisit: 'live',
+    glance: 'live', vr_proj: 'live', f6: 'live', f14: 'live', f15: 'live',
+    infra_projects: 'capture',
   };
   /* pages the library deliberately does not offer */
   const SKIP = { f0: true };
+  /* Pages that are embedded LIVE rather than stored. A snapshot of any of these
+     is wrong the moment Forge publishes new data — traffic lights flip, the
+     projection re-forecasts, the sensitivity ladder moves with the cash rate —
+     so the deck points an iframe at the tool's own page instead. Not editable,
+     which Van accepted explicitly, but always current. */
+  const LIVE = { tl_before:1, tl_best:1, tl_revisit:1, glance:1, vr_proj:1, f6:1, f14:1, f15:1, f1:1 };
+  function liveSrc(key, ctx) {
+    return 'buying-selling-slides.html?region=' + encodeURIComponent((ctx && ctx.slug) || '')
+      + '&mode=' + ((ctx && ctx.mode) === 'buy' ? 'buy' : 'sell')
+      + '&page=' + encodeURIComponent(key) + '&embed=1&nochrome=1';
+  }
   function kindOf(key) {
     const s = byKey(key);
     if (s) return s.kind;
@@ -773,6 +784,8 @@
       });
     },
     kindOf: kindOf,
+    /* live-embed source for a page that must stay current */
+    liveSrc: function (key, ctx) { return LIVE[key] ? liveSrc(key, ctx || {}) : null; },
     /* bespoke-DOM slides (traffic lights, At a Glance, Infrastructure): a PNG of
        the tool's own render, to sit inside the deck's chrome */
     /* native overlays where the page allows it (image or table); the caller

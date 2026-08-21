@@ -26,7 +26,7 @@
 <!-- Slide chart definitions shared with the presentation builder's
      Buying/Selling Library (window.PP_BSS). Loads AFTER _helpers.js because the
      options it builds call PpaCharts.niceAxis / niceAxisRange. -->
-<script src="../shared/bss-slides.js?v=95bc321d" defer></script>
+<script src="../shared/bss-slides.js?v=7e340d1f" defer></script>
 <script src="../assets/Reports/charts/chart-median-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-affordability-house.js" defer></script>
 <script src="../assets/Reports/charts/chart-price-to-income.js" defer></script>
@@ -223,6 +223,26 @@ body.bss-present .bss-toc,body.bss-present .appbar{display:none!important;}
    stay out of the backdrop — just the wall behind the glass, like the Online
    Reports chooser */
 body.bss-landing-open .bss-bar,body.bss-landing-open .bss-nav,body.bss-landing-open .bss-toc,body.bss-landing-open .bss-stage{display:none!important;}
+
+/* ══ EMBED MODE ══ ?embed=1&page=<key> — one page, chrome stripped, scaled to
+   the frame. Same pattern runway-demand.html already uses for the Presentation
+   tool's Demand-v-Runway slide, and now used for every non-chart page: the deck
+   iframes the LIVE page instead of storing a snapshot, so when Forge updates,
+   the slide updates. A baked picture is out of date the moment new data lands
+   (Van 2026-08-21: "they're useless if they do not auto update").
+   &nochrome=1 also hides this page's own title, rule, disclaimer and logo,
+   because the deck slide supplies those. */
+body.bss-embed .bss-bar, body.bss-embed .bss-nav, body.bss-embed .bss-toc,
+body.bss-embed .appbar, body.bss-embed #bssLanding, body.bss-embed .wall,
+body.bss-embed .bss-selbar, body.bss-embed #bssCtx { display:none !important; }
+body.bss-embed { overflow:hidden; background:transparent; }
+body.bss-embed .bss-stage{ padding:0; height:100vh; align-items:center; justify-content:center; background:transparent; }
+body.bss-embed .bss-stack{ max-width:none; width:auto; display:block; margin:0 auto; }
+body.bss-embed .bss-slidewrap{ display:none; }
+body.bss-embed .bss-slidewrap.bss-embed-show{ display:block; }
+/* the page keeps ~120px clear at the top for its own title; with nochrome that
+   band is empty, so reclaim it and let the content fill the frame */
+body.bss-embed-nochrome .bss-slide .pad{ padding-top:26px !important; padding-bottom:26px !important; }
 
 /* ── live loading overlay — exact copy of the reports' (dots wave, floating
       card, frosted backdrop); shown on every deck load ── */
@@ -3312,6 +3332,7 @@ function render(){
   setActive(state.idx);
   showSelBar();
   _watchScroll();
+  if (typeof _bssApplyEmbed === "function") _bssApplyEmbed();   /* ?embed=1 — single page, chrome stripped */
 }
 function setActive(i){
   i=Math.max(0,Math.min(DECK.length-1,i));
@@ -3378,6 +3399,67 @@ function go(i){
   }
 }
 function rebuild(){ buildDeck(); render(); }
+
+/* ── embed mode (?embed=1&page=<key>) ──
+   Show exactly one page, scaled to the iframe, with the tool's own chrome out of
+   the way. The Presentation tool's Buying/Selling Library points an embed overlay
+   at this so the slide renders LIVE from Forge every time the deck is opened —
+   no stored snapshot to go stale. */
+let _bssEmbed = false, _bssEmbedPage = '', _bssEmbedNoChrome = false;
+try {
+  const _eq = new URLSearchParams(location.search);
+  _bssEmbed = _eq.get('embed') === '1';
+  _bssEmbedPage = _eq.get('page') || '';
+  _bssEmbedNoChrome = _eq.get('nochrome') === '1';
+} catch (e) {}
+if (_bssEmbed) document.body.classList.add('bss-embed');
+if (_bssEmbed && _bssEmbedNoChrome) document.body.classList.add('bss-embed-nochrome');
+
+function _bssFitEmbed(){
+  const wrap = document.querySelector('.bss-slidewrap.bss-embed-show');
+  if (!wrap) return;
+  const s = Math.min(innerWidth / 1280, innerHeight / 720);
+  const slide = wrap.querySelector('.bss-slide');
+  const scale = wrap.querySelector('.bss-scale');
+  if (slide) slide.style.transform = 'scale(' + s + ')';
+  if (scale) { scale.style.height = (720 * s) + 'px'; scale.style.width = (1280 * s) + 'px'; }
+  wrap.style.width = (1280 * s) + 'px';
+}
+function _bssApplyEmbed(){
+  if (!_bssEmbed) return;
+  const wraps = document.querySelectorAll('.bss-slidewrap');
+  let target = null;
+  wraps.forEach(w => {
+    const sl = w.querySelector('.bss-slide');
+    const hit = !!(sl && sl.dataset && sl.dataset.key === _bssEmbedPage);
+    w.classList.toggle('bss-embed-show', hit);
+    if (hit) target = w;
+  });
+  if (!target && wraps[0]) { target = wraps[0]; target.classList.add('bss-embed-show'); }
+  if (_bssEmbedNoChrome && target) {
+    const sl = target.querySelector('.bss-slide');
+    if (sl) {
+      /* the page's OWN header/rule/disclaimer/logo — the deck slide already has
+         its own, and showing both was the inconsistency Van flagged */
+      sl.querySelectorAll('.bss-ov').forEach(ov => {
+        const r = ov.getBoundingClientRect(), b = sl.getBoundingClientRect();
+        const sc = _slideScale || 1;
+        const top = (r.top - b.top) / sc, wid = r.width / sc;
+        const txt = (ov.textContent || '').trim();
+        const bg = (ov.style && ov.style.backgroundImage) || '';
+        if (/logo/i.test(bg) || /^disclaimer/i.test(txt)
+            || (txt && top < 118) || (!txt && !bg && wid > 900 && top < 160)) {
+          ov.style.display = 'none';
+        }
+      });
+      sl.querySelectorAll('img').forEach(im => {
+        if (/logo/i.test(im.getAttribute('src') || '')) im.style.display = 'none';
+      });
+    }
+  }
+  _bssFitEmbed();
+}
+window.addEventListener('resize', _bssFitEmbed);
 /* ── loading overlay (reports mechanics: min-visible so it never flashes) ── */
 const LIVE_OVERLAY_MIN_MS = 700;   /* anti-flash floor only — real mounts still hold it; reports now floor at 700 too (meeting-lag sweep, 2026-08-10) */
 let _loShownAt = Date.now();        /* overlay starts visible at boot */
