@@ -587,6 +587,31 @@
   .pres-deck-card:hover .pres-deck-delete{ display:block }
   .pres-deck-card .pres-deck-delete:hover{ background:rgba(229,123,123,0.32) }
 
+  /* Lock — sits where the delete button would be, since a locked deck has no
+     delete button. Shown on hover like the others, EXCEPT when it's locked:
+     then it stays visible, because "this deck is protected" is a state worth
+     seeing without hovering every card. */
+  .pres-deck-card .pres-deck-lock{
+    position:absolute; top:10px; right:10px;
+    width:26px; height:26px;
+    background:rgba(255,255,255,0.06);
+    border:1px solid rgba(255,255,255,0.16);
+    border-radius:6px;
+    font-size:12px; line-height:1;
+    cursor:pointer;
+    display:none;
+  }
+  .pres-deck-card:hover .pres-deck-lock{ display:block }
+  .pres-deck-card .pres-deck-lock.is-on{
+    display:block;
+    background:rgba(255,169,31,0.16); border-color:rgba(255,169,31,0.45);
+  }
+  .pres-deck-card .pres-deck-lock:hover{ background:rgba(255,255,255,0.12) }
+  .pres-deck-card .pres-deck-lock.is-on:hover{ background:rgba(255,169,31,0.28) }
+  /* unlocked decks keep the delete button where it always was — nudge the
+     (hover-only) padlock left so the two don't stack */
+  .pres-deck-card .pres-deck-lock:not(.is-on){ right:42px; }
+
   /* Duplicate button — sits just left of the delete button using the
      same hover-reveal pattern. Cyan accent so it doesn't read as
      destructive. Lives on every deck card (built-in + custom) since
@@ -3000,6 +3025,7 @@
      menu and Delete/Backspace key are gated separately in JS. */
   body:not(.pres-edit-mode) .pres-deck-new,
   body:not(.pres-edit-mode) .pres-deck-delete,
+  body:not(.pres-edit-mode) .pres-deck-lock,
   body:not(.pres-edit-mode) .pres-deck-duplicate,
   body:not(.pres-edit-mode) .pres-deck-assign,
   body:not(.pres-edit-mode) .pres-deck-coowners,
@@ -5306,7 +5332,33 @@ function _buildDeckCard(deck) {
       (deck._visibility === 'company' && _iAmWriter) ||                    // company deck (writers)
       (_iAmDeckAdmin && deck._createdBy && deck._createdBy === _myUserId)  // staff: only decks I created
     );
-    if (_canDeleteDeck) {
+    /* Lock — the accident guard (Van 2026-08-21). Offered to whoever could
+       delete the deck, since locking is only meaningful against the × below.
+       The flag lives in a column and the DELETE policies refuse a locked row
+       (mig 113), so this is a real guard rather than a hidden button. */
+    if (_canDeleteDeck && deck._rowId) {
+      const lock = document.createElement('button');
+      lock.type = 'button';
+      lock.className = 'pres-deck-lock' + (deck._locked ? ' is-on' : '');
+      lock.title = deck._locked ? 'Locked — click to unlock so it can be deleted'
+                                : 'Lock this presentation so it can’t be deleted';
+      lock.setAttribute('aria-pressed', deck._locked ? 'true' : 'false');
+      lock.textContent = deck._locked ? '🔒' : '🔓';
+      lock.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const next = !deck._locked;
+        lock.disabled = true;
+        const ok = await _setDeckLocked(deck, next);
+        lock.disabled = false;
+        if (!ok) { showPresToast('Could not change the lock — you may not have permission.'); return; }
+        deck._locked = next;
+        showPresToast(next ? ('“' + deck.title + '” is locked — it can’t be deleted until you unlock it.')
+                           : ('“' + deck.title + '” is unlocked.'), { duration: 3500 });
+        buildPicker();
+      });
+      card.appendChild(lock);
+    }
+    if (_canDeleteDeck && !deck._locked) {
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'pres-deck-delete';
@@ -17348,6 +17400,19 @@ async function _persistDeckRow(deck) {
    NO error but an EMPTY data array, so we check the rows returned via .select(),
    not just `error` — otherwise the caller drops the deck locally and it
    reappears on the next hydrate. */
+/* Flip the deletion guard on one deck. A single-column update on purpose: the
+   payload is never read or rewritten here, so locking a deck from the list can
+   never disturb its slides (mig 113). Returns false if RLS refused. */
+async function _setDeckLocked(deck, on) {
+  if (!deck || !deck._rowId || !window.sb) return false;
+  try {
+    const { data, error } = await window.sb.from('presentation_decks')
+      .update({ locked: !!on }).eq('id', deck._rowId).select('id, locked');
+    if (error) { console.warn('Deck lock:', error); return false; }
+    return Array.isArray(data) && data.length > 0;
+  } catch (e) { console.warn('Deck lock failed:', e); return false; }
+}
+
 async function _deleteDeckRow(deck) {
   if (!deck) return false;
   if (!deck._rowId) return true;          // never persisted — nothing to delete in the cloud
@@ -17611,7 +17676,7 @@ async function _hydratePresFromCloud() {
     /* 3) Per-deck rows. RLS returns my own decks + every company deck + decks I co-edit. */
     const { data: rows, error } = await window.sb
       .from('presentation_decks')
-      .select('id, owner_id, created_by, title, payload, visibility, updated_at')
+      .select('id, owner_id, created_by, title, payload, visibility, updated_at, locked')
       .order('updated_at', { ascending: false });
     if (error) { console.warn('Presentation decks load:', error); return; }
 
@@ -17630,6 +17695,7 @@ async function _hydratePresFromCloud() {
       deck._createdBy  = row.created_by;
       deck._visibility = row.visibility;
       deck._updatedAt  = row.updated_at;
+      deck._locked     = !!row.locked;   /* deletion guard (mig 113) — enforced by RLS too */
       if (pl.overlays && typeof pl.overlays === 'object') Object.assign(_overlays, pl.overlays);
       if (pl.slideBgs && typeof pl.slideBgs === 'object') Object.assign(_slideBgs, pl.slideBgs);
       if (pl.activeTheme) _deckActiveTheme[deck.id] = pl.activeTheme;
