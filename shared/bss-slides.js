@@ -157,6 +157,76 @@
     try { return win.document.querySelector('.bss-slide[data-key="' + String(key).replace(/"/g, '') + '"]'); }
     catch (e) { return null; }
   }
+  /* ─── separating a page's CONTENT from the tool's own chrome ───
+     Capturing the whole slide imported the tool's header, its logo and its
+     disclaimer, so those pages arrived in a deck looking nothing like the chart
+     pages beside them — different title styling, no performanceproperty.com.au
+     footer, and the tool's logo instead of the deck's (Van 2026-08-21, and he was
+     right to call it sloppy).
+
+     The tool's authored overlays make the split identifiable. Market Position
+     Clock, for example, is five overlays: the title text at y47, the rule shape
+     at y113, the DISCLAIMER text at y6, the clock PNG at y128, and the logo at
+     y665. Only the clock is content. So:
+        chrome = a text overlay in the header band, a full-width rule, the
+                 disclaimer, or any logo image
+        content = everything else, plus the page's base render
+     Chrome is hidden, the content's bounding box is measured, and only that box
+     is photographed — which also kills the faint edge line and the off-centre
+     look, both of which came from shooting the full 1280x720 slide. */
+  function classifyOverlays(el) {
+    const chrome = [];
+    const base = el.getBoundingClientRect();
+    el.querySelectorAll('.bss-ov').forEach(ov => {
+      const r = ov.getBoundingClientRect();
+      const top = r.top - base.top, w = r.width;
+      const txt = (ov.textContent || '').trim();
+      /* An image overlay is a DIV with a background-image, never an <img> (see
+         makeOverlayEl) — testing for a child <img> found nothing, which is how
+         the tool's logo kept surviving into the capture. */
+      const bg = (ov.style && ov.style.backgroundImage) || '';
+      const isLogo = /logo/i.test(bg);
+      const isDisclaimer = /^disclaimer/i.test(txt);
+      const isHeaderText = !!txt && top < 118;                 /* the page title */
+      const isRule = !txt && !bg && w > 900 && top < 150;      /* the accent rule */
+      if (isLogo || isDisclaimer || isHeaderText || isRule) chrome.push(ov);
+    });
+    /* Some base renders carry their own logo too (tlSlide emits an
+       <img class="bss-tl-logo"> unless noLogo). The deck supplies the logo, so
+       any of them goes. */
+    el.querySelectorAll('img').forEach(im => {
+      if (/logo/i.test(im.getAttribute('src') || '')) chrome.push(im);
+    });
+    return chrome;
+  }
+  /* Union box of what's actually left: the base render's content plus any
+     content overlays. Returned in the slide's own 1280x720 coordinates. */
+  function contentBox(el, hidden) {
+    const base = el.getBoundingClientRect();
+    const sx = base.width ? 1280 / base.width : 1;   /* the slide is CSS-scaled */
+    const sy = base.height ? 720 / base.height : 1;
+    const parts = [];
+    const pad = el.querySelector('.pad');
+    if (pad) Array.prototype.forEach.call(pad.children, c => parts.push(c));
+    else Array.prototype.forEach.call(el.children, c => { if (!c.classList.contains('bss-ov')) parts.push(c); });
+    el.querySelectorAll('.bss-ov').forEach(ov => { if (hidden.indexOf(ov) < 0) parts.push(ov); });
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    parts.forEach(p => {
+      const q = p.getBoundingClientRect();
+      if (q.width < 4 || q.height < 4) return;
+      l = Math.min(l, q.left); t = Math.min(t, q.top);
+      r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+    });
+    if (!isFinite(l)) return null;
+    const box = {
+      x: Math.max(0, Math.round((l - base.left) * sx)),
+      y: Math.max(0, Math.round((t - base.top) * sy)),
+      w: Math.min(1280, Math.round((r - l) * sx)),
+      h: Math.min(720, Math.round((b - t) * sy)),
+    };
+    return (box.w > 40 && box.h > 40) ? box : null;
+  }
+
   async function captureEl(win, el) {
     if (!win.html2canvas && typeof win._pdfLibs === 'function') { try { await win._pdfLibs(); } catch (e) {} }
     if (!win.html2canvas || !el) return null;
@@ -171,26 +241,48 @@
     const whiten = (node) => {
       if (!node || !node.style) return;
       touched.push([node, node.style.background, node.style.backgroundColor,
-        node.style.backgroundImage, node.style.boxShadow, node.style.borderRadius]);
+        node.style.backgroundImage, node.style.boxShadow, node.style.borderRadius,
+        node.style.display, node.style.border]);
       node.style.background = '#ffffff';
       node.style.backgroundColor = '#ffffff';
       node.style.backgroundImage = 'none';
       node.style.boxShadow = 'none';
       node.style.borderRadius = '0';
+      node.style.border = '0';
+    };
+    const hide = (node) => {
+      if (!node || !node.style) return;
+      touched.push([node, node.style.background, node.style.backgroundColor,
+        node.style.backgroundImage, node.style.boxShadow, node.style.borderRadius,
+        node.style.display, node.style.border]);
+      node.style.display = 'none';
     };
     try {
+      /* 1. drop the tool's own header, rule, disclaimer and logo — the deck
+            supplies all of that, and importing both is what made these pages
+            look unlike every other slide */
+      const chrome = classifyOverlays(el);
+      chrome.forEach(hide);
+      /* 2. white surfaces, no panel shadow or radius — the panel edge was the
+            faint line showing up at the crop boundary */
       whiten(el);
-      el.querySelectorAll('.pad, .bss-light, .bss-chartpanel').forEach(whiten);
-      const canvas = await win.html2canvas(el, { scale: 2, useCORS: true, logging: false,
-        /* same settings the tool uses for its own PDF export: explicit 1280x720
-           because html2canvas ignores the ancestor .bss-scale transform */
-        backgroundColor: '#ffffff', width: 1280, height: 720, windowWidth: 1280, windowHeight: 720 });
-      return { image: canvas.toDataURL('image/png'), fullBleed: true };
+      el.querySelectorAll('.pad, .bss-light, .bss-chartpanel, .bss-tlcard, .bss-tltop, .bss-gl-inner, .bss-vrproj, .bss-rchost').forEach(whiten);
+      /* 3. photograph ONLY the content's bounding box, so there is no dead space
+            baked into the image and the builder can centre it exactly */
+      const box = contentBox(el, chrome);
+      const opts = { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff',
+        /* explicit size because html2canvas ignores the ancestor .bss-scale */
+        width: 1280, height: 720, windowWidth: 1280, windowHeight: 720 };
+      if (box) { opts.x = box.x; opts.y = box.y; opts.width = box.w; opts.height = box.h; }
+      const canvas = await win.html2canvas(el, opts);
+      return { image: canvas.toDataURL('image/png'),
+               cw: box ? box.w : 1280, ch: box ? box.h : 720 };
     } catch (e) { return null; }
     finally {
-      touched.forEach(([node, bg, bgc, bgi, sh, br]) => {
+      touched.forEach(([node, bg, bgc, bgi, sh, br, di, bd]) => {
         node.style.background = bg; node.style.backgroundColor = bgc;
-        node.style.backgroundImage = bgi; node.style.boxShadow = sh; node.style.borderRadius = br;
+        node.style.backgroundImage = bgi; node.style.boxShadow = sh;
+        node.style.borderRadius = br; node.style.display = di; node.style.border = bd;
       });
     }
   }

@@ -34,7 +34,7 @@
      present-charts.js's createFromModule() drives the build animation. -->
 <script src="../assets/Reports/charts/_theme.js" defer></script>
 <script src="../assets/Reports/charts/_helpers.js" defer></script>
-<script src="../shared/bss-slides.js?v=895b5006" defer></script>
+<script src="../shared/bss-slides.js?v=3abf5a9f" defer></script>
 <script src="../assets/Reports/charts/chart-median-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-yoy-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-stock-dom.js" defer></script>
@@ -15829,6 +15829,20 @@ async function _bssShowSlides(slug, name) {
     grid.appendChild(card);
   });
 }
+/* Fit captured content into the slide's content band, centred both ways.
+   The band is the same one the chart overlays use — x 73..1207, y 120..640 — so
+   an imported page lines up with the chart pages either side of it. Scaling by
+   the smaller ratio keeps the capture's aspect (no stretching) while filling as
+   much of the band as it can, and the leftover is split evenly so it is centred
+   rather than leaning left (Van 2026-08-21). */
+function _bssFitBox(cw, ch) {
+  const BX = 73, BY = 120, BW = 1134, BH = 520;
+  const w0 = Math.max(1, Number(cw) || BW), h0 = Math.max(1, Number(ch) || BH);
+  const k = Math.min(BW / w0, BH / h0);
+  const w = Math.round(w0 * k), h = Math.round(h0 * k);
+  return { x: BX + Math.round((BW - w) / 2), y: BY + Math.round((BH - h) / 2), w: w, h: h };
+}
+
 /* A section divider: the same dark treatment as a region header, carrying one
    word. No title/rule/footer chrome — a divider is a break, not a content slide. */
 function _bssDividerOverlays(word, eyebrow) {
@@ -15929,7 +15943,7 @@ async function _bssConfirmCart() {
           if (it.kind === 'capture') {
             let got = null;
             try { got = await api.capture(it.key, { slug: it.slug, mode: it.mode }); } catch (e) { got = null; }
-            meta = (got && got.image) ? { kind: 'capture', image: got.image, fullBleed: got.fullBleed !== false } : null;
+            meta = (got && got.image) ? { kind: 'capture', image: got.image, cw: got.cw, ch: got.ch } : null;
           } else if (it.kind === 'title') {
             meta = { kind: 'title' };
           } else {
@@ -15943,15 +15957,7 @@ async function _bssConfirmCart() {
             slideOvs.push({ ov: _bssDividerOverlays(meta.word, eyebrow), bg: _FMT_HDR_BG });
             continue;
           }
-          /* A captured page goes in FULL BLEED with no deck chrome. It is a
-             photograph of the tool's own page, which already carries its title
-             and logo — wrapping it in chrome gave two titles and left the content
-             shrunk inside a grey box (Van 2026-08-21). */
-          if (meta.kind === 'capture' && meta.fullBleed) {
-            slideOvs.push({ ov: [{ id: _fmtId('i'), type: 'image', src: meta.image,
-              x: 0, y: 0, w: 1280, h: 720, objectFit: 'contain' }], bg: null });
-            continue;
-          }
+
           /* The clock is a WIDE graphic (980x620) that was height-limited inside
              the 520px content band, so it rendered 822px wide and left a strip of
              empty slide either side (Van 2026-08-21: "clock too small, make it
@@ -15977,9 +15983,12 @@ async function _bssConfirmCart() {
                gets a dressed slide to type onto, which is what the tool's blank
                Coverpage / Market Positions Clock pages are for. */
           } else if (meta.kind === 'capture') {
-            /* the tool's own render, as a PNG fitted to the content band */
+            /* content only — the tool's header, rule, disclaimer and logo were
+               excluded from the capture, so the DECK's chrome above is the only
+               header and the footer line is present like every other page */
+            const fit = _bssFitBox(meta.cw, meta.ch);
             ov2.push({ id: _fmtId('i'), type: 'image', src: meta.image,
-              x: 73, y: 120, w: 1134, h: 520, objectFit: 'contain' });
+              x: fit.x, y: fit.y, w: fit.w, h: fit.h, objectFit: 'contain' });
           } else if (meta.kind === 'clock') {
             /* the clock JPG is 980x620; fit it to the 520px content band and
                centre it, so it never overlaps the rule above or the logo below */
@@ -16005,11 +16014,13 @@ async function _bssConfirmCart() {
            Projection, Replacement Cost, the two Sensitivity tables), so the
            module hands back an image for those instead of a chart spec. */
         if (spec.image) {
-          /* a "chart" page that turned out to be DOM — same full-bleed treatment
-             as the other captures, and no chrome, since the photograph includes
-             the tool's own title */
-          slideOvs.push({ ov: [{ id: _fmtId('i'), type: 'image', src: spec.image,
-            x: 0, y: 0, w: 1280, h: 720, objectFit: 'contain' }], bg: null });
+          /* a "chart" page that turned out to be DOM (Vacancy Rate Projection,
+             Replacement Cost, the Sensitivity tables) — content-only capture,
+             centred in the same band, inside the same deck chrome as a chart */
+          const fit = _bssFitBox(spec.cw, spec.ch);
+          ov.push({ id: _fmtId('i'), type: 'image', src: spec.image,
+            x: fit.x, y: fit.y, w: fit.w, h: fit.h, objectFit: 'contain' });
+          slideOvs.push({ ov: ov, bg: null });
           continue;
         }
         ov.push({
