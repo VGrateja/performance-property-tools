@@ -22,11 +22,19 @@
 -- in production; this only makes the rebuild path match what is already live.
 --
 -- Safe to re-run. Enabling RLS that is already enabled is a no-op, and each
--- policy is dropped by name before being recreated. Policies created by hand
--- under different names are left alone: they express the same rule, so the
--- permissive OR of the two is unchanged.
+-- policy is dropped by name before being recreated.
 --
--- rdp_runway_config is deliberately absent — migration 065 already declares it.
+-- The hand-made policies used the suffixes _sel/_ins/_upd/_del. Their
+-- definitions were read out of pg_policy before writing this file and are
+-- character-for-character what the four below express — SELECT using (true),
+-- INSERT/UPDATE/DELETE gated on is_writer(), uniform across all ten tables. So
+-- they are dropped rather than left in place: keeping both sets would mean
+-- eight policies doing the work of four, evaluated on every query, and a future
+-- reader could not tell which set was authoritative. Access is unchanged
+-- because the replacements are identical.
+--
+-- rdp_runway_config is deliberately absent — migration 065 already declares it,
+-- and its three _sel/_ins/_upd policies are left exactly as they are.
 
 do $$
 declare
@@ -63,5 +71,11 @@ begin
     execute format(
       'create policy %I on public.%I for delete to authenticated using (public.is_writer())',
       t || '_delete', t);
+
+    /* retire the hand-made duplicates now that the same rule is declared above */
+    execute format('drop policy if exists %I on public.%I', t || '_sel', t);
+    execute format('drop policy if exists %I on public.%I', t || '_ins', t);
+    execute format('drop policy if exists %I on public.%I', t || '_upd', t);
+    execute format('drop policy if exists %I on public.%I', t || '_del', t);
   end loop;
 end $$;

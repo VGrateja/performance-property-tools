@@ -1,30 +1,37 @@
 -- 112_pin_function_search_path.sql
 --
--- Hardening from the 2026-08-21 security sweep: Supabase lint
--- "function_search_path_mutable".
+-- Clears the last Supabase lint "function_search_path_mutable" warnings.
 --
--- 75 of our functions are SECURITY DEFINER — they run with the definer's
--- rights, not the caller's. Ten of them never pin search_path, so the schemas
--- they resolve unqualified names against are whatever the CALLER's search_path
--- says. Anyone able to create an object in a schema on that path could shadow a
--- table or function the body references and have it run with definer rights.
+-- A function that does not pin search_path resolves unqualified names against
+-- whatever the CALLER's search_path says, so anyone able to create an object in
+-- a schema on that path could shadow a table or function the body references.
 --
--- Ordinary roles should not be able to create objects in public on a modern
--- Postgres, so this is defence in depth rather than an open door. It is worth
--- doing anyway because the unpinned ten include is_writer() and current_tier()
--- — the two functions nearly every RLS policy in this project calls.
+-- WHAT THE LIVE DATABASE ACTUALLY SAYS (supabase db advisors, 2026-08-21):
+-- five functions are unpinned, and every one of them is SECURITY INVOKER:
 --
--- Found unpinned (2026-08-21): current_tier, is_writer, is_staff, is_team_lead,
+--   scorecard_fully_signed, skribbl_norm, skribbl_hint, skribbl_close,
+--   presentation_decks_writer_gate
+--
+-- An earlier pass over the migration FILES suggested ten SECURITY DEFINER
+-- functions were unpinned (current_tier, is_writer, is_staff, is_team_lead,
 -- touch_updated_at, touch_cadence_boards, touch_cadence_cards,
--- log_cadence_card_change, snapshot_reports_state, restore_reports_state.
+-- log_cadence_card_change, snapshot_reports_state, restore_reports_state).
+-- That was wrong: production pinned them at some point after those files were
+-- written — by hand, so no migration records it — and the advisor confirms all
+-- SECURITY DEFINER functions are now pinned. Reading the files is not the same
+-- as reading the database.
 --
--- Rather than list signatures (easy to get wrong, and overloads would be
--- missed), pin every SECURITY DEFINER function in public that lacks the
--- setting. That also catches anything created by hand outside migrations, and
--- makes the file idempotent: a second run finds nothing left to do.
+-- Invoker-rights functions run with the caller's own privileges, so an unpinned
+-- search_path is far less dangerous here than it would be on a definer
+-- function. This is tidy-up that clears the advisor, not a hole being closed.
+-- All five are simple helpers over public objects (text normalisers, a jsonb
+-- sign-off check, a writer-gate trigger), so none of them depends on the
+-- caller's search_path to find anything.
 --
--- pg_temp is included last per Postgres guidance, so a caller's temp schema is
--- searched last and cannot shadow anything.
+-- The loop covers BOTH definer and invoker functions in public, so it also
+-- catches anything created by hand outside migrations, and re-running it is a
+-- no-op once everything is pinned. pg_temp goes last per Postgres guidance so a
+-- caller's temp schema cannot shadow anything.
 
 do $$
 declare
@@ -36,7 +43,7 @@ begin
     from pg_proc p
     join pg_namespace ns on ns.oid = p.pronamespace
     where ns.nspname = 'public'
-      and p.prosecdef                                   -- SECURITY DEFINER only
+      and p.prokind = 'f'                               -- plain functions only
       and not exists (
         select 1
         from unnest(coalesce(p.proconfig, '{}'::text[])) cfg
