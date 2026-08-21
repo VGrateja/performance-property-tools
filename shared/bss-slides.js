@@ -160,14 +160,39 @@
   async function captureEl(win, el) {
     if (!win.html2canvas && typeof win._pdfLibs === 'function') { try { await win._pdfLibs(); } catch (e) {} }
     if (!win.html2canvas || !el) return null;
+    /* WHITEN FIRST. html2canvas's backgroundColor only paints BEHIND the element,
+       so the tool's own light-grey slide background and .bss-light panel came
+       through and every captured page landed on the deck looking darker than the
+       slides around it (Van 2026-08-21). Force those surfaces white — and drop
+       the panel's shadow and radius, which is the "box" that was visible around
+       the content — then put every inline style back exactly as it was, since
+       this is the tool's live DOM and the user may look at it later. */
+    const touched = [];
+    const whiten = (node) => {
+      if (!node || !node.style) return;
+      touched.push([node, node.style.background, node.style.backgroundColor,
+        node.style.backgroundImage, node.style.boxShadow, node.style.borderRadius]);
+      node.style.background = '#ffffff';
+      node.style.backgroundColor = '#ffffff';
+      node.style.backgroundImage = 'none';
+      node.style.boxShadow = 'none';
+      node.style.borderRadius = '0';
+    };
     try {
-      /* same element and the same settings the tool uses for its own PDF export:
-         explicit 1280x720 because html2canvas ignores the ancestor .bss-scale
-         transform */
+      whiten(el);
+      el.querySelectorAll('.pad, .bss-light, .bss-chartpanel').forEach(whiten);
       const canvas = await win.html2canvas(el, { scale: 2, useCORS: true, logging: false,
+        /* same settings the tool uses for its own PDF export: explicit 1280x720
+           because html2canvas ignores the ancestor .bss-scale transform */
         backgroundColor: '#ffffff', width: 1280, height: 720, windowWidth: 1280, windowHeight: 720 });
       return { image: canvas.toDataURL('image/png'), fullBleed: true };
     } catch (e) { return null; }
+    finally {
+      touched.forEach(([node, bg, bgc, bgi, sh, br]) => {
+        node.style.background = bg; node.style.backgroundColor = bgc;
+        node.style.backgroundImage = bgi; node.style.boxShadow = sh; node.style.borderRadius = br;
+      });
+    }
   }
   async function captureFromTool(key, ctx) {
     const win = await toolFrame(ctx);
