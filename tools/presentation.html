@@ -2231,6 +2231,8 @@
      the colour of the divider so they stand out"). Brand yellow — the same
      accent as the Buying/Selling Library's toolbar button — marks them out as a
      different KIND of slide without implying they're unavailable. */
+  .pres-fmt-opt.is-spent{ opacity:0.5; }
+  .pres-fmt-opt.is-spent input{ cursor:not-allowed; }
   .pres-fmt-card.is-divider{
     border-color:rgba(255,169,31,0.55); background:rgba(255,169,31,0.10);
     color:#FFA91F; font-weight:700; letter-spacing:0.04em;
@@ -14538,6 +14540,64 @@ const fmtBackdrop = document.getElementById('pres-fmt-backdrop');
 const fmtModal    = document.getElementById('pres-fmt-modal');
 
 /* ─── Options state (intro / client cover) ─── */
+/* ─── Deck extras: the advisor intro and the client cover ───
+   Both are ONE PER DECK, so they can't be per-library. The options block lives
+   once in the DOM and is moved into whichever picker is open (Online Reports,
+   Buying/Selling, IR), and the slides are tagged so every picker can tell the
+   deck already has them and grey the option out (Van 2026-08-21: "when they're
+   selected already from other library … those option should already be greyed
+   out. So only one intro and client name should be added per deck").
+
+   The tag rides on the slide object, so it survives a save and is still there
+   next session — otherwise reopening a deck would offer a second intro. */
+function _fmtMarkExtra(at, kind) {
+  const s = _activeDeck && _activeDeck.slides && _activeDeck.slides[at];
+  if (s) s.extra = kind;
+}
+function _deckHasExtra(kind) {
+  return !!(_activeDeck && (_activeDeck.slides || []).some(s => s && s.extra === kind));
+}
+/* Append the ticked extras, skipping any the deck already has. Cover first, then
+   the 5-slide intro package — the FMD deck's order. Returns how many landed. */
+function _fmtApplyExtras(opt) {
+  let n = 0;
+  if (opt.cover && !_deckHasExtra('cover')) {
+    _fmtMarkExtra(_fmtAppendSlide(_fmtClientCoverOverlays(opt.clientName), _FMT_HDR_BG), 'cover');
+    n++;
+  }
+  if (opt.intro && !_deckHasExtra('intro')) {
+    _fmtIntroPackage(opt.adv).forEach(function (s) { _fmtMarkExtra(_fmtAppendSlide(s.ov, s.bg), 'intro'); n++; });
+  }
+  return n;
+}
+/* Move the single options block into the picker that's opening. Only one picker
+   is ever open, so one block serves all three and there is one piece of state. */
+function _fmtMountOpts(modalId) {
+  const opts = document.getElementById('pres-fmt-opts');
+  const modal = document.getElementById(modalId);
+  if (!opts || !modal) return;
+  const foot = modal.querySelector('.pres-copy-foot');
+  if (foot && opts.parentNode !== modal) modal.insertBefore(opts, foot);
+  else if (foot && opts.nextElementSibling !== foot) modal.insertBefore(opts, foot);
+  _fmtSyncOpts();
+}
+/* One-shot options: cleared after every insert so the next one starts clean
+   (nobody wants yesterday's client name silently reused), then re-synced so a
+   now-spent option shows as greyed rather than merely unticked. */
+function _fmtResetOpts() {
+  const introCb = document.getElementById('pres-fmt-intro');
+  const clientCb = document.getElementById('pres-fmt-client');
+  const clientIn = document.getElementById('pres-fmt-client-name');
+  if (introCb) introCb.checked = false;
+  if (clientCb) clientCb.checked = false;
+  if (clientIn) { clientIn.value = ''; clientIn.style.display = 'none'; }
+  _fmtSyncOpts();
+}
+/* Whichever picker is open needs its count/Add button re-evaluated. */
+function _fmtOptsChanged() {
+  if (typeof _fmtUpdateCart === 'function') _fmtUpdateCart();
+  if (typeof _bssUpdateCart === 'function') _bssUpdateCart();
+}
 function _fmtOptState() {
   const introOn = !!(document.getElementById('pres-fmt-intro') || {}).checked;
   const clientOn = !!(document.getElementById('pres-fmt-client') || {}).checked;
@@ -14696,8 +14756,7 @@ async function _fmtConfirmCart() {
     /* Extras first: cover (who it's for), then the 5-slide intro PACKAGE
        (disclaimer → advisor intro → about → capabilities → strategies, in the
        FMD deck's order). */
-    if (opt.cover) { _fmtAppendSlide(_fmtClientCoverOverlays(opt.clientName), _FMT_HDR_BG); extras++; }
-    if (opt.intro) { _fmtIntroPackage(opt.adv).forEach(function (s) { _fmtAppendSlide(s.ov, s.bg); extras++; }); }
+    extras += _fmtApplyExtras(opt);
     for (const slug of order) {
       const grp = groups[slug];
       /* Build this region's graph slides first; only add its header if at least
@@ -14737,12 +14796,7 @@ async function _fmtConfirmCart() {
     _fmtCart = [];
     /* One-shot options: reset after every add so the next insert starts clean
        (nobody wants yesterday's client name silently reused). */
-    const introCb = document.getElementById('pres-fmt-intro');
-    const clientCb = document.getElementById('pres-fmt-client');
-    const clientIn = document.getElementById('pres-fmt-client-name');
-    if (introCb) introCb.checked = false;
-    if (clientCb) clientCb.checked = false;
-    if (clientIn) { clientIn.value = ''; clientIn.style.display = 'none'; }
+    _fmtResetOpts();
     _fmtSetLoading(true, 'Finishing…');
     saveOverlays();
     if (typeof saveSlideBgs === 'function') saveSlideBgs();
@@ -14810,6 +14864,33 @@ function _fmtSyncOpts() {
     /* Not an advisor: the option doesn't exist for them. */
     if (cb) cb.checked = false;
     row.style.display = 'none';
+  }
+  /* Already in this deck? Then it's spent — one intro and one client cover per
+     deck, whichever library added it. Grey out rather than hide, so it's obvious
+     the deck HAS one instead of the option having vanished. */
+  const clientCb = document.getElementById('pres-fmt-client');
+  const clientIn = document.getElementById('pres-fmt-client-name');
+  const clientRow = clientCb ? clientCb.closest('.pres-fmt-opt') : null;
+  if (_deckHasExtra('intro')) {
+    if (cb) { cb.checked = false; cb.disabled = true; }
+    if (sel) sel.style.display = 'none';
+    if (who) who.textContent = '(already in this deck)';
+    row.style.display = '';           /* show it, disabled, so the state is legible */
+    row.classList.add('is-spent');
+  } else row.classList.remove('is-spent');
+  if (_deckHasExtra('cover')) {
+    if (clientCb) { clientCb.checked = false; clientCb.disabled = true; }
+    if (clientIn) clientIn.style.display = 'none';
+    if (clientRow) {
+      clientRow.classList.add('is-spent');
+      const note = clientRow.querySelector('.pres-fmt-opt-who');
+      if (note) note.textContent = '— already in this deck';
+    }
+  } else if (clientRow) {
+    if (clientCb) clientCb.disabled = false;
+    clientRow.classList.remove('is-spent');
+    const note = clientRow.querySelector('.pres-fmt-opt-who');
+    if (note) note.textContent = '— a “Prepared for” cover slide';
   }
 }
 
@@ -15408,6 +15489,10 @@ function _irUpdateAddLabels() {
 
 async function _irInsert(row, btn) {
   if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
+  const optState = _fmtOptState();
+  if (optState.clientPending) { showPresToast('Type the client name first.'); return; }
+  /* deck-level extras go in ahead of the report's slides, once per deck */
+  if (_fmtApplyExtras(optState)) { _fmtSyncOpts(); }
   const extras = _irSelectedExtras();
   if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
   try {
@@ -15446,6 +15531,7 @@ async function _irInsert(row, btn) {
 const irBackdrop = document.getElementById('pres-ir-backdrop');
 const irModal = document.getElementById('pres-ir-modal');
 async function openIrPicker() {
+  _fmtMountOpts('pres-ir-modal');
   if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
   const search = document.getElementById('pres-ir-search');
   if (search) search.value = '';
@@ -15481,6 +15567,7 @@ IR_EXTRAS.forEach(x => {
 
 function openFmtPicker() {
   if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
+  _fmtMountOpts('pres-fmt-modal');
   _fmtBackToRegions();
   const search = document.getElementById('pres-fmt-search');
   if (search) search.value = '';
@@ -15525,16 +15612,16 @@ document.getElementById('pres-fmt-confirm').addEventListener('click', _fmtConfir
   const introSel = document.getElementById('pres-fmt-intro-as');
   const clientCb = document.getElementById('pres-fmt-client');
   const clientIn = document.getElementById('pres-fmt-client-name');
-  if (introCb) introCb.addEventListener('change', _fmtUpdateCart);
-  if (introSel) introSel.addEventListener('change', _fmtUpdateCart);
+  if (introCb) introCb.addEventListener('change', _fmtOptsChanged);
+  if (introSel) introSel.addEventListener('change', _fmtOptsChanged);
   if (clientCb) clientCb.addEventListener('change', () => {
     if (clientIn) {
       clientIn.style.display = clientCb.checked ? '' : 'none';
       if (clientCb.checked) setTimeout(() => { try { clientIn.focus(); } catch (_) {} }, 30);
     }
-    _fmtUpdateCart();
+    _fmtOptsChanged();
   });
-  if (clientIn) clientIn.addEventListener('input', _fmtUpdateCart);
+  if (clientIn) clientIn.addEventListener('input', _fmtOptsChanged);
 })();
 
 /* ─── Buying/Selling Library ────────────────────────────────────────────────
@@ -15709,9 +15796,25 @@ function _bssUpdateCart() {
   const count = document.getElementById('pres-bss-count');
   const go = document.getElementById('pres-bss-confirm');
   const n = _bssCart.length;
+  /* The intro/cover count toward the total and can be added on their OWN — a
+     client deck often starts with just those two — so the button can't key off
+     the slide cart alone. Mirrors _fmtUpdateCart. */
+  const opt = _fmtOptState();
+  const extras = (opt.cover ? 1 : 0) + (opt.intro ? 5 : 0);   // intro = the 5-slide package
+  const total = n + extras;
   if (cart) cart.style.display = n ? '' : 'none';
-  if (go) go.disabled = !n;
-  if (count) count.textContent = n ? (n + ' slide' + (n === 1 ? '' : 's') + ' selected') : 'No slides selected';
+  if (go) {
+    go.disabled = !total || opt.clientPending;
+    go.textContent = total ? ('Add ' + total + ' to deck') : 'Add to deck';
+    go.title = opt.clientPending ? 'Type the client name first' : '';
+  }
+  if (count) {
+    const bits = [];
+    if (n) bits.push(n + ' slide' + (n === 1 ? '' : 's'));
+    if (opt.cover) bits.push('cover');
+    if (opt.intro) bits.push('intro pack (5)');
+    count.textContent = bits.length ? (bits.join(' + ') + ' selected') : 'No slides selected';
+  }
   if (chips) {
     chips.innerHTML = '';
     _bssCart.forEach((it, i) => {
@@ -15729,15 +15832,20 @@ function _bssUpdateCart() {
 /* Build + append the picked slides. Grouped by region+mode so each group gets
    one header slide, matching how the Online Reports Library groups by region. */
 async function _bssConfirmCart() {
-  if (!_bssCart.length) { showPresToast('Pick at least one slide first.'); return; }
+  const opt = _fmtOptState();
+  if (opt.clientPending) { showPresToast('Type the client name first.'); return; }
+  if (!_bssCart.length && !opt.cover && !opt.intro) { showPresToast('Pick at least one slide first.'); return; }
   const api = _bssApi();
   if (!api || typeof api.chartSpec !== 'function') { showPresToast('The Buying/Selling library is unavailable.'); return; }
   const items = _bssCart.slice();
   closeBssPicker();
   _fmtSetLoading(true, 'Adding slides…');
   const firstNew = _activeDeck.slides.length;   // first appended slide lands here
-  let added = 0, failed = 0, headers = 0, done = 0;
+  let added = 0, failed = 0, headers = 0, done = 0, extras = 0;
   try {
+    /* Extras first, same order as the Online Reports Library: client cover, then
+       the intro package. Skipped if the deck already has them. */
+    extras += _fmtApplyExtras(opt);
     if (typeof api.ready === 'function') await api.ready();
     const groups = [];
     items.forEach(it => {
@@ -15841,6 +15949,7 @@ async function _bssConfirmCart() {
     }
     _bssCart = [];
     _bssUpdateCart();
+    _fmtResetOpts();
     /* Persist and REBUILD, same tail as the Online Reports Library. Without
        this the slides were appended to the array but the rail and stage still
        showed the old deck, so they only appeared after closing and reopening. */
@@ -15856,6 +15965,7 @@ async function _bssConfirmCart() {
     _fmtSetLoading(false);
   }
   const bits = [];
+  if (extras) bits.push(extras + ' intro/cover slide' + (extras === 1 ? '' : 's'));
   if (added) bits.push(added + ' slide' + (added === 1 ? '' : 's'));
   if (headers) bits.push(headers + ' header' + (headers === 1 ? '' : 's'));
   if (failed) bits.push(failed + ' skipped (no data)');
@@ -15864,6 +15974,7 @@ async function _bssConfirmCart() {
 }
 function openBssPicker() {
   if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
+  _fmtMountOpts('pres-bss-modal');
   _bssShowMode();
   _bssUpdateCart();
   bssBackdrop.classList.add('open');
