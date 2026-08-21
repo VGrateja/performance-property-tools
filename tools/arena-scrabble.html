@@ -3189,7 +3189,16 @@ async function confirmDelMatch() {
   }
 }
 document.getElementById('scrabbleMatchesList').addEventListener('click', (e) => {
-  const btn = e.target.closest('.scrabble-match-del');
+/* Event targets are not always Elements — a click landing on a text node, or
+   inside an SVG in some browsers, gives a target with no .closest(), which threw
+   'ev.target.closest is not a function' in the wild. _elClosest climbs to the
+   nearest Element before asking. */
+function _elClosest(target, sel) {
+  let n = target;
+  while (n && n.nodeType !== 1) n = n.parentNode;   /* 1 = ELEMENT_NODE */
+  return (n && typeof n.closest === 'function') ? n.closest(sel) : null;
+}
+  const btn = _elClosest(e.target, '.scrabble-match-del');
   if (!btn) return;
   const m = _recentMatches.find(x => String(x.id) === btn.dataset.mid);
   if (m) openDelMatchModal(m);
@@ -3488,7 +3497,7 @@ function renderSpectateList() {
 
 /* ─── Event delegation — every clickable lobby button funnels here ─── */
 document.addEventListener('click', (ev) => {
-  const btn = ev.target.closest('[data-action]');
+  const btn = _elClosest(ev.target, '[data-action]');
   if (!btn) return;
   const action = btn.dataset.action;
   switch (action) {
@@ -3809,6 +3818,7 @@ let _livePending      = {};    // { [seat]: [{r,c}] } — other players' tentati
 let _lastPendingSig   = '';    // signature of my last-broadcast pending squares (dedupes sends)
 let _rackCounts       = {};    // { [seat]: n } — opponents' real tile counts for the face-down racks
 let _prevToMove       = null;  // last-seen to_move, so we can chime on turn handoff (#4)
+let _prevStatus       = null;  // last-seen status, so the non-settling client can spot the flip to 'completed'
 
 /* Turn timer state — tracked client-side; the server is authoritative.
    _currentTurnStart caches the last turn_started_at value we saw so
@@ -3873,6 +3883,7 @@ async function openGameInternal(gameId) {
   const mine   = _me ? _gamePlayers.find(p => p.user_id === _me.userId) : null;
   _mySeat      = mine ? mine.seat : null;
   _prevToMove  = game.to_move;     // seed so the first realtime handoff chimes correctly (#4)
+  _prevStatus  = game.status;      // seed likewise, so a flip to 'completed' is detectable
   resetChat();                     // (#3) clear any prior game's chat
 
   /* Load last move so we can highlight its squares. */
@@ -3954,6 +3965,31 @@ function subscribeToGame(gameId) {
             soundTurn();
           }
           if (payload.new && payload.new.to_move != null) _prevToMove = payload.new.to_move;
+          /* Status flip -> 'completed' for the client that did NOT call settle:
+             the settler already showed its modal from the RPC return, this shows
+             the opponent's. Handled HERE, in the one handler, because a second
+             .on('postgres_changes') cannot be added after .subscribe() — the
+             wrapper that used to do that was rejected by supabase-js every game
+             ("cannot add postgres_changes callbacks ... after subscribe()"), so
+             the opponent never saw the modal. Compares against our own
+             _prevStatus rather than payload.old.status, which is absent unless
+             the table is REPLICA IDENTITY FULL (same reason as _prevToMove). */
+          if (payload.new) {
+            const wasActive = _prevStatus === 'active';
+            _prevStatus = payload.new.status;
+            /* looked up by id, NOT via the $resultModal const: that is declared
+               ~1600 lines below this handler, and touching a const before its
+               declaration throws rather than reading undefined. The handler only
+               ever runs after load so it would resolve in practice, but this
+               file has been bitten by that exact trap before. */
+            const modal = document.getElementById('scrabbleResultModal');
+            if (wasActive && payload.new.status === 'completed'
+                && !_settlePending && modal && !modal.classList.contains('is-open')) {
+              fetchLatestMatchForGame(payload.new)
+                .then(match => { if (match) showResultModalFromMatch(match); })
+                .catch(() => {});
+            }
+          }
           /* (Phase 3) On turn handoff the previous mover's tentative tiles are
              gone (committed or passed) — clear everyone's live placeholders. */
           if (payload.new && payload.new.to_move !== prevMover) _livePending = {};
@@ -4568,11 +4604,11 @@ function _hideWordDef() { const el = document.getElementById('scrabbleWordDef');
   const list = document.getElementById('scrabbleWordsList');
   if (!list) return;
   list.addEventListener('mouseover', (ev) => {
-    const w = ev.target.closest('.scrabble-word-main');
+    const w = _elClosest(ev.target, '.scrabble-word-main');
     if (w) _showWordDef(w.dataset.word || w.textContent || '', w);
   });
   list.addEventListener('mouseout', (ev) => {
-    if (ev.target.closest('.scrabble-word-main')) _hideWordDef();
+    if (_elClosest(ev.target, '.scrabble-word-main')) _hideWordDef();
   });
 })();
 
@@ -4862,7 +4898,7 @@ function syncRackFromServer() {
 /* Board: place / pick-up. */
 if ($board) {
   $board.addEventListener('click', (ev) => {
-    const cell = ev.target.closest('.scrabble-square');
+    const cell = _elClosest(ev.target, '.scrabble-square');
     if (!cell || !$board.contains(cell)) return;
     const idx = parseInt(cell.dataset.idx, 10);
     if (isNaN(idx)) return;
@@ -4906,7 +4942,7 @@ if ($board) {
 /* Rack: select / deselect. */
 if ($rack) {
   $rack.addEventListener('click', (ev) => {
-    const slot = ev.target.closest('.scrabble-rack-slot');
+    const slot = _elClosest(ev.target, '.scrabble-rack-slot');
     if (!slot) return;
     if (slot.classList.contains('is-used')) return;   // already on the board
     if (!canPlaceTiles()) return;
@@ -5099,7 +5135,7 @@ if ($rack) {
        pointer (multi-touch) that would clobber _drag and strand its ghost. A
        stale, non-active press: clear it and start fresh. */
     if (_drag) { if (_drag.active) return; _cleanupDragArtifacts(); _drag = null; }
-    const slotEl = ev.target.closest('.scrabble-rack-slot');
+    const slotEl = _elClosest(ev.target, '.scrabble-rack-slot');
     if (!slotEl || !$rack.contains(slotEl) || slotEl.classList.contains('is-used')) return;
     const from = parseInt(slotEl.dataset.slot, 10);
     if (isNaN(from) || from >= _rackOrder.length) return;
@@ -5727,34 +5763,16 @@ function maybeShowDrawOffer() {
   if (!_voidCountdownTimer) _voidCountdownTimer = setInterval(_renderVoidCountdown, 500);
 }
 
-/* Detect status flipping to 'completed' so the OPPOSITE client (the
-   one that didn't call settle) shows the modal. We watch via the
-   existing game-row UPDATE handler — install a subscription wrapper
-   here that fetches the match row when status flips. */
-const _origSubscribeToGame = subscribeToGame;
-subscribeToGame = function(gameId) {
-  _origSubscribeToGame(gameId);
-  /* Layer an extra listener over the game-row channel so we also fire
-     on status flips. */
-  if (_gameWatchChannel) {
-    _gameWatchChannel.on('postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'arena_scrabble_games', filter: 'id=eq.' + gameId },
-      async (payload) => {
-        const oldRow = payload.old;
-        const newRow = payload.new;
-        if (!oldRow || !newRow) return;
-        if (oldRow.status === 'active' && newRow.status === 'completed') {
-          /* I didn't call settle myself — fetch the match row + show
-             the modal. The settler already showed theirs from the
-             RPC return; this branch is for the opponent. */
-          if (!_settlePending && !$resultModal.classList.contains('is-open')) {
-            const match = await fetchLatestMatchForGame(newRow);
-            if (match) showResultModalFromMatch(match);
-          }
-        }
-      });
-  }
-};
+/* The status-flip -> result-modal handling used to live here, as a wrapper that
+   layered a second .on('postgres_changes') onto the already-subscribed game
+   channel. supabase-js rejects that outright ("cannot add postgres_changes
+   callbacks for realtime:scrabble_game_<id> after `subscribe()`"), which showed
+   up in the error log and meant the listener was never installed — the opponent
+   never got the result modal. It also compared payload.old.status, which
+   Realtime doesn't send unless the table is REPLICA IDENTITY FULL.
+
+   It now lives inside subscribeToGame's own UPDATE handler, keyed off the
+   locally-tracked _prevStatus, mirroring how _prevToMove already works. */
 
 async function fetchLatestMatchForGame(gameRow) {
   if (!gameRow) return null;
@@ -6354,7 +6372,7 @@ function wireEmojiPicker(btnId, pickerId, inputId) {
   }
   btn.addEventListener('click', (ev) => { ev.stopPropagation(); picker.classList.toggle('open'); });
   picker.addEventListener('click', (ev) => {
-    const b = ev.target.closest('button');
+    const b = _elClosest(ev.target, 'button');
     if (!b) return;
     ev.stopPropagation();
     insertEmoji(b.textContent);
