@@ -34,7 +34,7 @@
      present-charts.js's createFromModule() drives the build animation. -->
 <script src="../assets/Reports/charts/_theme.js" defer></script>
 <script src="../assets/Reports/charts/_helpers.js" defer></script>
-<script src="../shared/bss-slides.js?v=10635190" defer></script>
+<script src="../shared/bss-slides.js?v=9dca7d3d" defer></script>
 <script src="../assets/Reports/charts/chart-median-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-yoy-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-stock-dom.js" defer></script>
@@ -15623,13 +15623,27 @@ function _bssShowSlides(slug, name) {
   const grid = document.createElement('div'); grid.className = 'pres-fmt-grid'; wrap.appendChild(grid);
   slides.forEach(s => {
     const card = document.createElement('button');
-    card.type = 'button'; card.className = 'pres-fmt-card'; card.textContent = s.title;
-    card.addEventListener('click', () => _bssAddToCart(slug, name, s.key, s.title, card));
+    card.type = 'button'; card.className = 'pres-fmt-card' + (s.kind === 'divider' ? ' is-other' : '');
+    card.textContent = s.title;
+    /* the divider titles already read "DEMAND (divider)" — same wording as the
+       Buying/Selling tool, so the picker says what it is without a legend */
+    card.addEventListener('click', () => _bssAddToCart(slug, name, s.key, s.title, card, s.kind));
     grid.appendChild(card);
   });
 }
-function _bssAddToCart(slug, region, key, label, cardEl) {
-  _bssCart.push({ slug: slug, region: region, mode: _bssMode, key: key, label: label });
+/* A section divider: the same dark treatment as a region header, carrying one
+   word. No title/rule/footer chrome — a divider is a break, not a content slide. */
+function _bssDividerOverlays(word, eyebrow) {
+  return [
+    { id: _fmtId('i'), type: 'image', x: 551, y: -109, w: 1091, h: 1091, opacity: 0.05, storage: _FMT_HDR_WATERMARK },
+    _fmtEyebrow(73, 300, String(eyebrow || '').toUpperCase()),
+    _fmtTitleT(73, 330, 1000, String(word || '').toUpperCase(), { fs: 76, h: 100, color: '#ffffff' }),
+    _fmtRuleS(73, 442),
+    _fmtLogoI(true),
+  ];
+}
+function _bssAddToCart(slug, region, key, label, cardEl, kind) {
+  _bssCart.push({ slug: slug, region: region, mode: _bssMode, key: key, label: label, kind: kind || 'chart' });
   _bssUpdateCart();
   if (cardEl) {
     cardEl.classList.add('is-picked');
@@ -15685,11 +15699,42 @@ async function _bssConfirmCart() {
         done++;
         _fmtSetLoading(true, 'Building ' + grp.region + ' — ' + it.label + ' (' + done + '/' + items.length + ')…');
         await new Promise(r => requestAnimationFrame(() => r()));
+        const eyebrow = grp.region + ' · ' + _bssModeLabel(grp.mode);
+        /* Non-chart slides: the module says what they are, we build the overlays.
+           A divider replaces the chrome entirely (it is a section break, not a
+           content slide); clock and embed sit inside the normal chrome. */
+        if (it.kind && it.kind !== 'chart') {
+          const meta = (typeof api.meta === 'function') ? api.meta(it.key, { slug: it.slug, mode: it.mode }) : null;
+          if (!meta) { failed++; continue; }
+          if (meta.kind === 'divider') {
+            /* queued like every other slide, NOT appended here — appending
+               immediately put dividers ahead of the group's header slide and
+               broke the order the user picked them in. */
+            slideOvs.push({ ov: _bssDividerOverlays(meta.word, eyebrow), bg: _FMT_HDR_BG });
+            continue;
+          }
+          const ov2 = _fmtChrome(String(it.label), eyebrow);
+          if (meta.kind === 'clock') {
+            /* the clock JPG is 980x620; fit it to the 520px content band and
+               centre it, so it never overlaps the rule above or the logo below */
+            const h = 520, w = Math.round(980 * h / 620);
+            ov2.push({ id: _fmtId('i'), type: 'image', clockImage: true,
+              x: Math.round((1280 - w) / 2), y: 120, w: w, h: h });
+          } else if (meta.kind === 'embed') {
+            /* preserve the embed's own aspect (its base size is the tool's stage)
+               so the iframe content isn't squashed */
+            const h = 520, w = Math.round(h * meta.baseW / meta.baseH);
+            ov2.push({ id: _fmtId('e'), type: 'embed', src: meta.src, title: meta.title,
+              x: Math.round((1280 - w) / 2), y: 120, w: w, h: h, baseW: meta.baseW, baseH: meta.baseH });
+          }
+          slideOvs.push({ ov: ov2, bg: null });
+          continue;
+        }
         let spec = null;
         try { spec = await api.chartSpec(it.key, { slug: it.slug, mode: it.mode }); }
         catch (e) { spec = null; }
         if (!spec) { failed++; continue; }
-        const ov = _fmtChrome(String(it.label), grp.region + ' · ' + _bssModeLabel(grp.mode));
+        const ov = _fmtChrome(String(it.label), eyebrow);
         ov.push({
           id: _fmtId('c'), type: 'chart',
           /* Same rect as the Online Reports Library. Aligned to the chrome's own
@@ -15706,12 +15751,12 @@ async function _bssConfirmCart() {
           source: { lib: 'bss', slug: it.slug, mode: it.mode, key: it.key },
           autoplay: false,   /* B/S options set animation:false — nothing to build */
         });
-        slideOvs.push(ov);
+        slideOvs.push({ ov: ov, bg: null });
       }
       if (!slideOvs.length) continue;
       _fmtAppendSlide(_fmtHeaderOverlays(grp.region + ' · ' + _bssModeLabel(grp.mode)), _FMT_HDR_BG);
       headers++;
-      slideOvs.forEach(ov => { _fmtAppendSlide(ov, null); added++; });
+      slideOvs.forEach(s => { _fmtAppendSlide(s.ov, s.bg); added++; });
     }
     _bssCart = [];
     _bssUpdateCart();

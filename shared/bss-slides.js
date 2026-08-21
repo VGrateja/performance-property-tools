@@ -203,8 +203,34 @@
      heading; it matches the B/S tool's own SLIDE_DEFS title so a deck and the
      tool call the same page the same thing. */
   const SLIDES = [
-    { key: 'f12',        title: 'Vacancy v Rent', derive: deriveVacRent,   option: optionVacRent },
-    { key: 'house_unit', title: 'House v Unit',   derive: deriveHouseUnit, option: optionHouseUnit },
+    /* kind:'chart' — an ECharts option the caller mounts. */
+    { key: 'f12',        kind: 'chart', title: 'Vacancy v Rent', derive: deriveVacRent,   option: optionVacRent },
+    { key: 'house_unit', kind: 'chart', title: 'House v Unit',   derive: deriveHouseUnit, option: optionHouseUnit },
+
+    /* The three below aren't charts, so there is no option to build — the module
+       just declares WHAT the slide is and the caller builds the overlays its own
+       way (the B/S tool mounts DOM; the presentation builder makes native
+       overlays). That keeps the seam honest: shared = what the slide is,
+       host-specific = how it's realised.
+
+       These exist as formatted slides because the builder could already insert a
+       clock and an embed manually, but neither arrived with the deck's chrome —
+       Van 2026-08-21: "that insert is not formatted right away. So better create
+       a formatted one to make their life easier." */
+    { key: 'f2',       kind: 'clock',   title: 'Property Clock' },
+    { key: 'demand_h', kind: 'embed',   title: 'Demand vs Runway',
+      /* wage-growth basis follows the purpose: Buying = 5yr, Selling = 1yr,
+         exactly as the B/S tool builds this iframe. */
+      embed: function (ctx) {
+        return { src: 'runway-demand.html?embed=1&view=house&wg=' + (((ctx || {}).mode === 'buy') ? 5 : 1),
+                 title: 'Runway v Demand', baseW: 1136, baseH: 754 };
+      } },
+    /* Dividers carry a single word on the dark section background. The picker
+       label keeps the tool's "(divider)" suffix so it is obvious what it is;
+       `word` is what lands on the slide. */
+    { key: 'div_demand', kind: 'divider', title: 'DEMAND (divider)',     word: 'DEMAND' },
+    { key: 'div_value',  kind: 'divider', title: 'VALUE (divider)',      word: 'VALUE' },
+    { key: 'div_conf',   kind: 'divider', title: 'CONFIDENCE (divider)', word: 'CONFIDENCE' },
   ];
   const byKey = k => SLIDES.find(s => s.key === k) || null;
 
@@ -224,10 +250,20 @@
   window.PP_BSS = {
     version: 1,
     /* every slide this module can currently build */
-    slides: function () { return SLIDES.map(s => ({ key: s.key, title: s.title })); },
+    slides: function () { return SLIDES.map(s => ({ key: s.key, kind: s.kind, title: s.title })); },
     /* per-region list. Region-specific gating (the tool's onlyIf) arrives with
        the slides that need it; for now every moved slide is region-agnostic. */
-    slidesFor: function (ctx) { return SLIDES.map(s => ({ key: s.key, title: s.title })); },
+    slidesFor: function (ctx) { return SLIDES.map(s => ({ key: s.key, kind: s.kind, title: s.title })); },
+    /* the non-chart slides' parameters: word for a divider, iframe src for an
+       embed. Returns null for chart slides, which use chartSpec instead. */
+    meta: function (key, ctx) {
+      const s = byKey(key);
+      if (!s) return null;
+      if (s.kind === 'divider') return { kind: 'divider', word: s.word, title: s.title };
+      if (s.kind === 'embed') return Object.assign({ kind: 'embed' }, s.embed(ctx || {}));
+      if (s.kind === 'clock') return { kind: 'clock', title: s.title };
+      return null;
+    },
     /* slugs the B/S tool curates for this purpose ('buy' | 'sell') */
     curatedSlugs: async function (mode) {
       const c = await loadCurated();
