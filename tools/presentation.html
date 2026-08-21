@@ -1150,6 +1150,23 @@
   #pres-add-table      { --tc:#a78bfa; }   /* Table — violet     */
   #pres-add-connector  { --tc:#f472b6; }   /* Connect — pink     */
   #pres-add-formatted  { --tc:#2dd4bf; }   /* Slide Library — teal */
+  #pres-add-ir         { --tc:#54A6DE; }   /* IR Samples — celestial blue */
+  /* IR Samples picker rows — one property per row, grouped by market. */
+  .pres-ir-row{
+    display:flex; align-items:center; gap:12px;
+    padding:10px 12px; margin-bottom:8px; border-radius:8px;
+    background:rgba(0,160,180,0.08); border:1px solid rgba(0,160,180,0.30);
+  }
+  [data-theme="light"] .pres-ir-row{ background:rgba(0,160,180,0.10); border-color:rgba(0,160,180,0.35); }
+  .pres-ir-row-name{ flex:1 1 auto; min-width:0; }
+  .pres-ir-row-name strong{ font-size:13px; display:block; }
+  .pres-ir-row-meta{ font-size:11.5px; opacity:0.72; margin-top:1px; }
+  .pres-ir-add{
+    flex:0 0 auto; padding:6px 14px; border-radius:7px; cursor:pointer;
+    font-size:12px; font-weight:700; color:#fff;
+    background:#00A0B4; border:1px solid #00A0B4;
+  }
+  .pres-ir-add:disabled{ opacity:0.55; cursor:default; }
   #pres-add-clock      { --tc:#fb7185; }   /* Clock — rose       */
   #pres-refresh-charts { --tc:#fbbf24; }   /* Refresh — amber    */
   #pres-sync-slides    { --tc:#47daff; }   /* Sync — sky         */
@@ -3415,6 +3432,10 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 16l3.5-4 2.5 3 3-4.5"/><line x1="3" y1="20" x2="21" y2="20"/></svg>
     + Slide Library
   </button>
+  <button class="pres-edit-btn" id="pres-add-ir" type="button" title="Insert an investment case-study slide built live from an IR Builder property file — pick a property, get a ready-made slide">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7"/><path d="M5 9.5V20h14V9.5"/><path d="M10 20v-6h4v6"/></svg>
+    + IR Samples
+  </button>
   <button class="pres-edit-btn" id="pres-add-clock" type="button" title="Insert the National Property Clock as an auto-updating image — it refreshes to the latest whenever the Clock tool is saved, and exports cleanly in PDF/JPG.">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></svg>
     + Clock
@@ -3618,6 +3639,29 @@
 <div class="pres-fmt-loading" id="pres-fmt-loading">
   <div class="pres-fmt-spinner" aria-hidden="true"></div>
   <div class="pres-fmt-loading-text" id="pres-fmt-loading-text">Adding slides…</div>
+</div>
+
+<!-- IR Samples picker — mirrors the Slide Library modal. Lists the IR
+     Builder's property files grouped by market; each Add appends ONE
+     ready-made case-study slide (the Option A template Van picked,
+     2026-08-21) to the end of the deck. Reads ir_files directly
+     (staff-wide read via mig 109); the cover photo is COPIED into
+     presentation-images at insert time because ir-evidence signed URLs
+     expire after an hour. -->
+<div class="pres-copy-backdrop" id="pres-ir-backdrop"></div>
+<div class="pres-copy-modal" id="pres-ir-modal" style="width:700px; max-width:92vw">
+  <div class="pres-copy-head">
+    <h3>Insert an IR case study</h3>
+    <button class="pres-copy-x" id="pres-ir-x" type="button" title="Close">×</button>
+  </div>
+  <div class="pres-fmt-body" style="padding:14px 16px 10px">
+    <input type="text" id="pres-ir-search" class="pres-fmt-search" placeholder="Search properties…" autocomplete="off">
+    <div class="pres-fmt-scroll" id="pres-ir-list"></div>
+  </div>
+  <div class="pres-copy-foot">
+    <span class="pres-fmt-count">Each Add appends one case-study slide to the end of the deck.</span>
+    <button class="pres-copy-cancel" id="pres-ir-close" type="button">Done</button>
+  </div>
 </div>
 
 <!-- Shape picker popover — appears under the + Shape button on click.
@@ -13840,6 +13884,209 @@ function _fmtSyncOpts() {
     row.style.display = 'none';
   }
 }
+
+/* ─── IR Samples — investment case-study slides from the IR Builder ─────────
+   Van's pick (2026-08-21): the Option A combined layout (photo panel left,
+   grade/rating/strategy blocks + 6-stat grid right). One ir_files row → one
+   slide, appended to the end of the deck. Missing figures render as an em
+   dash rather than blocking the insert — the slide is editable anyway. */
+let _irRows = null, _irRowsAt = 0;
+
+async function _irFetchRows() {
+  if (_irRows && (Date.now() - _irRowsAt) < 120000) return _irRows;
+  const { data, error } = await window.sb.from('ir_files')
+    .select('id, address, suburb, state, postcode, market_label, status, setup, grading, pricing')
+    .order('market_label', { ascending: true });
+  if (error) throw error;
+  _irRows = data || []; _irRowsAt = Date.now();
+  return _irRows;
+}
+
+function _irGroupOf(r) {
+  const s = r.setup || {};
+  if (s.commercial === true || /block|industrial|medical|office|retail|commercial/i.test(s.propertyType || '')) return 'Commercial';
+  return r.market_label || 'Other';
+}
+function _irMoney(n) { return (n || n === 0) ? ('$' + Math.round(n).toLocaleString('en-AU')) : '—'; }
+function _irPct(v, pa) { return (v || v === 0) ? ((v * 100).toFixed(1) + '%' + (pa ? ' p.a.' : '')) : '—'; }
+
+function _irRenderList(filter) {
+  const wrap = document.getElementById('pres-ir-list');
+  if (!wrap) return;
+  const q = (filter || '').trim().toLowerCase();
+  wrap.innerHTML = '';
+  const rows = (_irRows || []).filter(r =>
+    !q || ((r.address + ' ' + r.suburb + ' ' + (r.market_label || '')).toLowerCase().indexOf(q) >= 0));
+  if (!rows.length) {
+    wrap.innerHTML = '<div style="padding:18px 6px; opacity:0.7; font-size:13px;">' +
+      ((_irRows || []).length ? 'No properties match that search.'
+        : 'No investment reports available yet.') + '</div>';
+    return;
+  }
+  const groups = {};
+  rows.forEach(r => { const g = _irGroupOf(r); (groups[g] = groups[g] || []).push(r); });
+  const keys = Object.keys(groups).sort((a, b) =>
+    (a === 'Commercial') - (b === 'Commercial') || (a === 'Other') - (b === 'Other') || a.localeCompare(b));
+  keys.forEach(g => {
+    const h = document.createElement('div'); h.className = 'pres-fmt-cluster'; h.textContent = g; wrap.appendChild(h);
+    groups[g].forEach(r => {
+      const row = document.createElement('div'); row.className = 'pres-ir-row';
+      const grade = (r.grading || {}).propertyGrade;
+      const top = ((r.pricing || {}).adopted || {}).topPrice;
+      const meta = [r.suburb + (r.state ? ' ' + r.state : ''), grade, top ? _irMoney(top) : null]
+        .filter(Boolean).join(' · ');
+      row.innerHTML =
+        '<div class="pres-ir-row-name"><strong>' + _fmtEsc(r.address) + '</strong>' +
+        '<div class="pres-ir-row-meta">' + _fmtEsc(meta) + '</div></div>';
+      const btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'pres-ir-add'; btn.textContent = '+ Add';
+      btn.addEventListener('click', () => _irInsert(r, btn));
+      row.appendChild(btn);
+      wrap.appendChild(row);
+    });
+  });
+}
+
+/* Copy the property's cover photo out of ir-evidence into THIS deck's
+   presentation-images folder — the deck must not depend on ir-evidence
+   signed URLs (1h expiry). Returns the storage path, or null (no photo /
+   copy failed → the slide falls back to a dark panel). */
+async function _irCopyPhoto(row) {
+  try {
+    const ph = (((row.setup || {}).photos) || [])[0];
+    if (!ph || !ph.path) return null;
+    const dl = await window.sb.storage.from('ir-evidence').download(ph.path);
+    if (dl.error || !dl.data) return null;
+    return await _uploadImageToStorage(dl.data, _activeDeck.id, 'ir-' + String(row.id).slice(0, 8) + '-' + Date.now());
+  } catch (_) { return null; }
+}
+
+/* The Option A case-study overlay pack — matches the approved template on
+   Van's "Template Slides" deck (slide 8) element-for-element. */
+function _irCaseStudyOverlays(row, photoStorage) {
+  const s = row.setup || {}, g = row.grading || {}, p = row.pricing || {};
+  const ad = p.adopted || {}, sub = p.suburb || {};
+  const TEAL = '#00A0B4', DARK = '#171B24', GRAY = '#63666A', LIGHT = '#D9D9D6';
+  const MONT = "'Montserrat',sans-serif";
+  const ov = [];
+  const T = (x, y, w, html, o) => { o = o || {}; ov.push({ id: _fmtId('t'), type: 'text', x: x, y: y, w: w, h: o.h || 24,
+    html: html, align: o.align || 'left', color: o.color || DARK, bold: !!o.bold, italic: false,
+    fontSize: o.fs || 16, fontFamily: MONT, fontWeight: o.bold ? 700 : (o.fw || 400),
+    ...(o.lh ? { lineHeight: o.lh } : {}) }); };
+  const R = (x, y, w, h, fill, o) => { o = o || {}; ov.push({ id: _fmtId('s'), type: 'shape',
+    kind: o.sharp ? 'rectSharp' : 'rect', x: x, y: y, w: w, h: h, fill: fill,
+    stroke: o.stroke || fill, strokeWidth: o.sw != null ? o.sw : 0 }); };
+  const LINE = (x, y, w, h, fill) => ov.push({ id: _fmtId('s'), type: 'shape', kind: 'line',
+    x: x, y: y, w: w, h: h, fill: fill, stroke: fill, strokeWidth: 2 });
+
+  /* photo panel (or a dark fallback when the file has no usable photo) */
+  if (photoStorage) {
+    ov.push({ id: _fmtId('i'), type: 'image', x: 0, y: 0, w: 460, h: 720,
+      storage: photoStorage, objectFit: 'cover', objectPos: '50% 50%' });
+  } else {
+    R(0, 0, 460, 720, '#1f283f', { sharp: true });
+  }
+  R(0, 600, 460, 120, DARK, { sharp: true });
+  T(28, 622, 404, _fmtEsc(row.address || ''), { fs: 24, color: '#ffffff', bold: true, h: 32 });
+  T(28, 658, 404, _fmtEsc([row.suburb, row.state, row.postcode].filter(Boolean).join(' ') +
+    (row.market_label ? ' · ' + row.market_label : '')), { fs: 14, color: LIGHT, h: 20 });
+
+  T(512, 64, 500, '<span style="letter-spacing:2.7px">INVESTMENT CASE STUDY</span>', { fs: 15, color: TEAL, bold: true, h: 22 });
+  /* Headline must stay ONE line — the tool's text metrics run wider than the
+     design harness, and a wrap collides with the accent line below. Size by
+     length so long market names (Sunshine Coast) still fit in 696px. */
+  const headline = 'Example acquisition — ' + (row.market_label || row.suburb || '');
+  const hfs = headline.length <= 26 ? 36 : (headline.length <= 33 ? 30 : 26);
+  T(512, 92, 696, _fmtEsc(headline), { fs: hfs, bold: true, h: 48, lh: 1.1 });
+  LINE(512, 152, 48, 4, TEAL);
+  const specs = [
+    s.propertyType,
+    s.units ? s.units + ' units' : null,
+    s.beds ? s.beds + ' bed' : null,
+    s.baths ? s.baths + ' bath' : null,
+    s.cars ? s.cars + ' car' : null,
+    s.landSize ? s.landSize + 'm² land' : null,
+  ].filter(Boolean).join(' · ');
+  T(512, 176, 696, _fmtEsc(specs), { fs: 18, color: GRAY, h: 26 });
+
+  const blocks = [
+    ['PROPERTY GRADE', g.propertyGrade || '—'],
+    ['SUBURB RATING', g.suburbRating || '—'],
+    ['STRATEGY', g.strategy || s.strategy || '—'],
+  ];
+  blocks.forEach((b, i) => {
+    const bx = 512 + i * 238;
+    R(bx, 226, 218, 92, '#F2F8F9', { stroke: '#D5EBEE', sw: 1 });
+    T(bx + 18, 244, 182, '<span style="letter-spacing:1.5px">' + b[0] + '</span>', { fs: 10.5, color: TEAL, bold: true, h: 16 });
+    T(bx + 18, 266, 182, _fmtEsc(String(b[1])), { fs: String(b[1]).length > 12 ? 17 : 25, bold: true, h: 34 });
+  });
+
+  const grossYield = (ad.rent && ad.topPrice) ? (ad.rent * 52 / ad.topPrice) : null;
+  const stats = [
+    ['Top price', _irMoney(ad.topPrice)],
+    ['Est. market rent', ad.rent ? '$' + ad.rent + '/wk' : '—'],
+    ['Gross yield', _irPct(grossYield)],
+    ['Suburb median', _irMoney(sub.suburbMedian)],
+    ['10-yr growth', _irPct(sub.cagr10, true)],
+    ['Days on market', (sub.dom || sub.dom === 0) ? String(sub.dom) : '—'],
+  ];
+  stats.forEach((st, i) => {
+    const sx = 512 + (i % 3) * 238, sy = 360 + Math.floor(i / 3) * 92;
+    T(sx, sy, 218, st[0], { fs: 13, color: GRAY, h: 18 });
+    T(sx, sy + 22, 218, _fmtEsc(st[1]), { fs: 26, bold: true, h: 34 });
+  });
+
+  LINE(512, 560, 696, 1, '#E4E7EA');
+  const month = new Date().toLocaleDateString('en-AU', { month: 'long', year: 'numeric' });
+  T(512, 580, 696, 'Prepared from the Performance Property Investment Report · ' + month, { fs: 12, color: '#9aa3b1', h: 18 });
+  ov.push({ id: _fmtId('i'), type: 'image', x: 1030, y: 666, w: 200, h: 31,
+    src: '../assets/logos/pp-logo-standard.png', objectFit: 'contain', objectPos: '100% 50%' });
+  return ov;
+}
+
+async function _irInsert(row, btn) {
+  if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+  try {
+    const photo = await _irCopyPhoto(row);
+    const at = _fmtAppendSlide(_irCaseStudyOverlays(row, photo), '#ffffff');
+    saveOverlays();
+    if (typeof saveSlideBgs === 'function') saveSlideBgs();
+    if (typeof saveActiveDeckIfCustom === 'function') saveActiveDeckIfCustom();
+    if (typeof buildThumbnails === 'function') buildThumbnails();
+    if (typeof renderSlide === 'function') renderSlide(at);
+    pushHistory();
+    showPresToast(row.address + ' added as slide ' + (at + 1) + (photo ? '' : ' (no photo on file)') + '.');
+    if (btn) btn.textContent = 'Added ✓';
+  } catch (e) {
+    showPresToast('Could not add the case study: ' + (e && e.message || 'unknown error'), { warn: true });
+    if (btn) { btn.disabled = false; btn.textContent = '+ Add'; }
+  }
+}
+
+const irBackdrop = document.getElementById('pres-ir-backdrop');
+const irModal = document.getElementById('pres-ir-modal');
+async function openIrPicker() {
+  if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
+  const search = document.getElementById('pres-ir-search');
+  if (search) search.value = '';
+  irBackdrop.classList.add('open');
+  irModal.classList.add('open');
+  const wrap = document.getElementById('pres-ir-list');
+  if (wrap) wrap.innerHTML = '<div style="padding:18px 6px; opacity:0.7; font-size:13px;">Loading properties…</div>';
+  try { await _irFetchRows(); _irRenderList(''); }
+  catch (e) { if (wrap) wrap.innerHTML = '<div style="padding:18px 6px; opacity:0.7; font-size:13px;">Could not load the property list: ' + _fmtEsc(e && e.message || 'unknown error') + '</div>'; }
+  if (search) setTimeout(() => { try { search.focus(); } catch (_) {} }, 30);
+}
+function closeIrPicker() {
+  irBackdrop.classList.remove('open');
+  irModal.classList.remove('open');
+}
+document.getElementById('pres-add-ir').addEventListener('click', openIrPicker);
+document.getElementById('pres-ir-x').addEventListener('click', closeIrPicker);
+document.getElementById('pres-ir-close').addEventListener('click', closeIrPicker);
+irBackdrop.addEventListener('click', closeIrPicker);
+document.getElementById('pres-ir-search').addEventListener('input', e => _irRenderList(e.target.value));
 
 function openFmtPicker() {
   if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
