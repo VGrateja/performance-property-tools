@@ -1167,6 +1167,9 @@
     background:#00A0B4; border:1px solid #00A0B4;
   }
   .pres-ir-add:disabled{ opacity:0.55; cursor:default; }
+  .pres-ir-optrow{ display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; }
+  .pres-ir-optrow label{ display:inline-flex; align-items:center; gap:6px; font-size:12.5px; cursor:pointer; }
+  .pres-ir-optlead{ font-size:11px; font-weight:800; letter-spacing:1.4px; text-transform:uppercase; opacity:0.6; }
   #pres-add-clock      { --tc:#fb7185; }   /* Clock — rose       */
   #pres-refresh-charts { --tc:#fbbf24; }   /* Refresh — amber    */
   #pres-sync-slides    { --tc:#47daff; }   /* Sync — sky         */
@@ -3658,8 +3661,18 @@
     <input type="text" id="pres-ir-search" class="pres-fmt-search" placeholder="Search properties…" autocomplete="off">
     <div class="pres-fmt-scroll" id="pres-ir-list"></div>
   </div>
+  <!-- Which pages of the property's Investment Report come across as slides.
+       All on by default (the full client story); untick for a one-slide
+       summary when comparing several properties side by side. -->
+  <div class="pres-fmt-opts pres-ir-optrow">
+    <span class="pres-ir-optlead">Include:</span>
+    <label><input type="checkbox" id="pres-ir-dd" checked> Due diligence</label>
+    <label><input type="checkbox" id="pres-ir-grading" checked> Grading</label>
+    <label><input type="checkbox" id="pres-ir-cash" checked> Cash flow</label>
+    <label><input type="checkbox" id="pres-ir-condition" checked> Condition &amp; plan</label>
+  </div>
   <div class="pres-copy-foot">
-    <span class="pres-fmt-count">Each Add appends one case-study slide to the end of the deck.</span>
+    <span class="pres-fmt-count">The overview slide is always added; ticked sections follow it.</span>
     <button class="pres-copy-cancel" id="pres-ir-close" type="button">Done</button>
   </div>
 </div>
@@ -13892,6 +13905,9 @@ function _fmtSyncOpts() {
    dash rather than blocking the insert — the slide is editable anyway. */
 let _irRows = null, _irRowsAt = 0;
 
+/* The LIST query stays light — the picker only needs identity + the few
+   fields the rows show. The full file (dd / cashflow / inspection, all heavy
+   jsonb) is fetched per property at insert time by _irFullRow(). */
 async function _irFetchRows() {
   if (_irRows && (Date.now() - _irRowsAt) < 120000) return _irRows;
   const { data, error } = await window.sb.from('ir_files')
@@ -13901,14 +13917,34 @@ async function _irFetchRows() {
   _irRows = data || []; _irRowsAt = Date.now();
   return _irRows;
 }
+async function _irFullRow(row) {
+  try {
+    const { data, error } = await window.sb.from('ir_files').select('*').eq('id', row.id).single();
+    if (error || !data) return row;
+    return data;
+  } catch (_) { return row; }
+}
 
 function _irGroupOf(r) {
   const s = r.setup || {};
   if (s.commercial === true || /block|industrial|medical|office|retail|commercial/i.test(s.propertyType || '')) return 'Commercial';
   return r.market_label || 'Other';
 }
-function _irMoney(n) { return (n || n === 0) ? ('$' + Math.round(n).toLocaleString('en-AU')) : '—'; }
+function _irMoney(n) {
+  if (n == null || n === '' || isNaN(n)) return '—';
+  const v = Math.round(+n);
+  return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-AU');
+}
 function _irPct(v, pa) { return (v || v === 0) ? ((v * 100).toFixed(1) + '%' + (pa ? ' p.a.' : '')) : '—'; }
+
+/* Rating → brand colour. Covers the grading scale, the DD verdicts, and
+   returns a neutral for values that aren't ratings at all (Torrens, House…). */
+const IR_RATING_COLOURS = {
+  'excellent': '#3f8f56', 'above average': '#00808f', 'average': '#63666A',
+  'below average': '#c07c10', 'poor': '#c0182f', 'bad': '#c0182f',
+  'approved': '#3f8f56', 'review': '#c07c10', 'rejected': '#c0182f', 'declined': '#c0182f',
+};
+function _irRatingColour(v) { return IR_RATING_COLOURS[String(v || '').trim().toLowerCase()] || IR_GRAY; }
 
 function _irRenderList(filter) {
   const wrap = document.getElementById('pres-ir-list');
@@ -13961,23 +13997,112 @@ async function _irCopyPhoto(row) {
   } catch (_) { return null; }
 }
 
-/* The Option A case-study overlay pack — matches the approved template on
-   Van's "Template Slides" deck (slide 8) element-for-element. */
-function _irCaseStudyOverlays(row, photoStorage) {
-  const s = row.setup || {}, g = row.grading || {}, p = row.pricing || {};
-  const ad = p.adopted || {}, sub = p.suburb || {};
-  const TEAL = '#00A0B4', DARK = '#171B24', GRAY = '#63666A', LIGHT = '#D9D9D6';
-  const MONT = "'Montserrat',sans-serif";
+/* Brand palette + one drawing "pen" shared by every IR slide builder, so the
+   pack can't drift apart element by element. 1280×720 canvas; content must
+   always end above the bottom-right logo strip (y≈650). */
+const IR_TEAL = '#00A0B4', IR_DARK = '#171B24', IR_GRAY = '#63666A', IR_LIGHT = '#D9D9D6';
+const IR_MONT = "'Montserrat',sans-serif";
+const IR_TINT = '#F2F8F9', IR_TINT_BORDER = '#D5EBEE', IR_RULE = '#E4E7EA', IR_MUTE = '#9aa3b1';
+
+function _irPen() {
   const ov = [];
   const T = (x, y, w, html, o) => { o = o || {}; ov.push({ id: _fmtId('t'), type: 'text', x: x, y: y, w: w, h: o.h || 24,
-    html: html, align: o.align || 'left', color: o.color || DARK, bold: !!o.bold, italic: false,
-    fontSize: o.fs || 16, fontFamily: MONT, fontWeight: o.bold ? 700 : (o.fw || 400),
+    html: html, align: o.align || 'left', color: o.color || IR_DARK, bold: !!o.bold, italic: false,
+    fontSize: o.fs || 16, fontFamily: IR_MONT, fontWeight: o.bold ? 700 : (o.fw || 400),
     ...(o.lh ? { lineHeight: o.lh } : {}) }); };
   const R = (x, y, w, h, fill, o) => { o = o || {}; ov.push({ id: _fmtId('s'), type: 'shape',
     kind: o.sharp ? 'rectSharp' : 'rect', x: x, y: y, w: w, h: h, fill: fill,
     stroke: o.stroke || fill, strokeWidth: o.sw != null ? o.sw : 0 }); };
   const LINE = (x, y, w, h, fill) => ov.push({ id: _fmtId('s'), type: 'shape', kind: 'line',
     x: x, y: y, w: w, h: h, fill: fill, stroke: fill, strokeWidth: 2 });
+  const IMG = (x, y, w, h, src, o) => { o = o || {}; ov.push({ id: _fmtId('i'), type: 'image', x: x, y: y, w: w, h: h,
+    ...(o.storage ? { storage: src } : { src: src }), objectFit: o.fit || 'cover', objectPos: o.pos || '50% 50%' }); };
+  return { ov, T, R, LINE, IMG };
+}
+
+/* Every follow-on slide wears the same header (property line + section title
+   + accent rule) so a slide still identifies itself mid-deck. Returns the y
+   the content may start at. */
+function _irSlideHead(pen, row, title) {
+  const line = [row.address, row.suburb, row.market_label].filter(Boolean).join(' · ');
+  pen.T(73, 30, 1000, '<span style="letter-spacing:2.4px">' + _fmtEsc(line.toUpperCase()) + '</span>',
+    { fs: 12, color: IR_TEAL, bold: true, h: 18 });
+  pen.T(73, 52, 1000, _fmtEsc(title), { fs: 30, bold: true, h: 40 });
+  pen.LINE(73, 100, 48, 4, IR_TEAL);
+  return 132;
+}
+function _irLogo(pen) {
+  pen.IMG(1030, 666, 200, 31, '../assets/logos/pp-logo-standard.png', { fit: 'contain', pos: '100% 50%' });
+}
+/* Small label-over-value stat tile, and a label/value row with a hair rule. */
+function _irTile(pen, x, y, w, h, label, value, o) {
+  o = o || {};
+  pen.R(x, y, w, h, o.fill || IR_TINT, { stroke: o.stroke || IR_TINT_BORDER, sw: 1 });
+  pen.T(x + 16, y + 16, w - 32, '<span style="letter-spacing:1.4px">' + _fmtEsc(label.toUpperCase()) + '</span>',
+    { fs: 10, color: IR_TEAL, bold: true, h: 14 });
+  pen.T(x + 16, y + 36, w - 32, _fmtEsc(String(value)), { fs: o.fs || 22, bold: true, h: 30 });
+}
+function _irRow(pen, x, y, w, label, value, o) {
+  o = o || {};
+  pen.T(x, y, w * 0.55, _fmtEsc(label), { fs: o.fs || 13, color: IR_GRAY, h: 18 });
+  pen.T(x, y - 2, w, _fmtEsc(String(value)), { fs: o.vfs || 14.5, bold: o.bold !== false, align: 'right', h: 20 });
+  if (o.rule !== false) pen.LINE(x, y + 24, w, 1, IR_RULE);
+}
+
+/* Live rates for the cash-flow slide: the file's own rate drives the "as
+   modelled" column, the IC's long-run rate drives "normalised". Falls back
+   to the IR Builder's own defaults if the config table isn't readable. */
+let _irRatesCache = null;
+async function _irFetchRates() {
+  if (_irRatesCache) return _irRatesCache;
+  const r = { current: 0.065, normalised: 0.0494 };
+  try {
+    const { data } = await window.sb.from('rdp_runway_config').select('value').eq('key', 'rates').maybeSingle();
+    const v = data && data.value;
+    if (v && v.current && v.current.rate) r.current = v.current.rate;
+    if (v && v.forecast && v.forecast.rate) r.normalised = v.forecast.rate;
+  } catch (_) {}
+  _irRatesCache = r;
+  return r;
+}
+
+/* Cash-flow engine — a straight port of calcCashflow() in ir-builder.html
+   (verified against the acquisition team's workbook to the dollar). Kept
+   identical so a slide can never disagree with the file it came from.
+   mode: '' = P&I at the file's rate · 'io' = interest only · 'norm' = P&I at
+   the normalised rate. */
+function _irCashflow(cf, mode, rates) {
+  cf = cf || {};
+  const n = k => +cf[k] || 0;
+  const budget = n('budget'); if (!budget) return null;
+  const rate = mode === 'norm' ? (rates.normalised || 0.0494) : (n('rate') || rates.current || 0.065);
+  const loan = budget * (n('lvr') || 0.9);
+  const interest = loan * rate;
+  const mPmt = loan * (rate / 12) / (1 - Math.pow(1 + rate / 12, -((n('loanTermYears') || 30) * 12)));
+  const principal = mode === 'io' ? 0 : (mPmt * 12 - interest);
+  const rent = n('rent'), income = rent * (n('weeksLet') || 52);
+  const letting = (n('lettingFeeWeeks') || 0) * rent;
+  const pm = income * (n('pmFeePct') || 0);
+  const repairs = income * (n('repairsPctOfRent') || 0);
+  const fees = (cf.feeLines || []).reduce((a, f) => a + income * (+f.pct || 0) + (+f.amount || 0), 0);
+  const other = n('strata') + n('councilWater') + n('landTax') + n('insurance');
+  const runningLessFin = letting + pm + repairs + fees + other;
+  const acq = n('stampDuty') + n('engagementFee') + n('acquisitionFee') + n('titleTransfer') + n('conveyancing') + n('buildingPest') + n('depreciationSchedule') + n('professionalClean');
+  const works = n('maintenanceAllowance') + n('minRentalStdCost') + n('cosmeticWorks');
+  const totalCost = budget + works + acq;
+  const annual = income - (runningLessFin + interest + principal);
+  return { loan, requiredCapital: totalCost - loan, grossYield: income / budget,
+    netYield: (income - runningLessFin) / budget, annual, weekly: annual / 52,
+    interest, principal, income, outgoings: runningLessFin, acq, works, totalCost, rate };
+}
+
+/* The Option A case-study overlay pack — matches the approved template on
+   Van's "Template Slides" deck (slide 8) element-for-element. */
+function _irCaseStudyOverlays(row, photoStorage) {
+  const s = row.setup || {}, g = row.grading || {}, p = row.pricing || {};
+  const ad = p.adopted || {}, sub = p.suburb || {};
+  const TEAL = IR_TEAL, DARK = IR_DARK, GRAY = IR_GRAY, LIGHT = IR_LIGHT;
+  const pen = _irPen(), ov = pen.ov, T = pen.T, R = pen.R, LINE = pen.LINE;
 
   /* photo panel (or a dark fallback when the file has no usable photo) */
   if (photoStorage) {
@@ -14044,19 +14169,338 @@ function _irCaseStudyOverlays(row, photoStorage) {
   return ov;
 }
 
+/* ── ir_config: the grading layout groups + the report's boilerplate copy.
+   Fetched once per session; every builder degrades gracefully without it. ── */
+let _irCfgCache = null;
+async function _irFetchConfig() {
+  if (_irCfgCache) return _irCfgCache;
+  const cfg = {};
+  try {
+    const { data } = await window.sb.from('ir_config').select('key,payload');
+    (data || []).forEach(r => { cfg[r.key] = r.payload; });
+  } catch (_) {}
+  _irCfgCache = cfg;
+  return cfg;
+}
+
+/* Shared row/label primitives for the data slides. */
+function _irRateRow(pen, x, y, w, label, rating, o) {
+  o = o || {};
+  pen.T(x, y, Math.max(60, w - 120), _fmtEsc(label), { fs: o.fs || 12, h: 17 });
+  pen.T(x, y, w, _fmtEsc(String(rating || '—')), { fs: o.fs || 12, bold: true, align: 'right',
+    color: _irRatingColour(rating), h: 17 });
+  if (o.rule !== false) pen.LINE(x, y + 19, w, 1, '#EDF0F2');
+}
+function _irSectionLabel(pen, x, y, w, text) {
+  pen.T(x, y, w, '<span style="letter-spacing:1.8px">' + _fmtEsc(String(text).toUpperCase()) + '</span>',
+    { fs: 10.5, color: IR_TEAL, bold: true, h: 15 });
+}
+/* The report's DD verdict, unchanged (ddResult in ir-builder.html). */
+function _irDdVerdict(items) {
+  const r = Object.values(items || {}).map(x => x.rating).filter(Boolean);
+  if (r.indexOf('Failed') >= 0) return 'Failed';
+  if (r.indexOf('Review') >= 0) return 'Review';
+  return r.length ? 'Approved' : null;
+}
+function _irClip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+
+/* ── Slide · Preliminary due diligence ─────────────────────────────────────
+   Every check with its rating down the left; whatever needs a second look
+   (with the DD note that explains why) in a panel on the right — the thing a
+   client actually asks about. */
+function _irDdOverlays(row) {
+  const pen = _irPen(), T = pen.T, R = pen.R;
+  const items = ((row.dd || {}).items) || {};
+  /* numeric-aware sort: jsonb hands keys back shortest-first (the DD-order bug) */
+  const keys = Object.keys(items).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  if (!keys.length) return null;   /* nothing on file — skip the slide entirely */
+  const y0 = _irSlideHead(pen, row, 'Preliminary due diligence');
+  const verdict = _irDdVerdict(items);
+  const flagged = keys.filter(k => /review|failed/i.test((items[k] || {}).rating || ''));
+
+  /* verdict chip, top-right of the header band */
+  const vCol = _irRatingColour(verdict);
+  R(1000, 44, 207, 46, '#F7F9FA', { stroke: '#E4E7EA', sw: 1 });
+  T(1016, 52, 175, '<span style="letter-spacing:1.4px">DD RESULT</span>', { fs: 9.5, color: IR_GRAY, bold: true, h: 13 });
+  T(1016, 66, 175, _fmtEsc(verdict || '—'), { fs: 18, bold: true, color: vCol, h: 24 });
+
+  _irSectionLabel(pen, 73, y0, 520, keys.length + ' checks completed');
+  const step = Math.min(22, Math.floor(470 / Math.max(1, keys.length)));
+  keys.forEach((k, i) => {
+    /* the report drops the "1.04 " index prefix too — it's workbook ordering.
+       Rules are dropped on tight pitches: at <24px they cut the descenders. */
+    _irRateRow(pen, 73, y0 + 24 + i * step, 520, _irClip(k.replace(/^\d+\.\d+\s*/, ''), 52),
+      (items[k] || {}).rating, { fs: step < 20 ? 11 : 12, rule: step >= 24 });
+  });
+
+  /* right panel — what needs attention, with the note. Stops above the logo. */
+  R(650, y0 - 6, 557, 512, IR_TINT, { stroke: IR_TINT_BORDER, sw: 1 });
+  _irSectionLabel(pen, 674, y0 + 14, 509, flagged.length ? 'Items flagged for review' : 'Nothing flagged');
+  if (!flagged.length) {
+    T(674, y0 + 40, 509, 'Every check came back approved.', { fs: 13, color: IR_GRAY, h: 20 });
+  } else {
+    let cy = y0 + 40;
+    flagged.slice(0, 6).forEach(k => {
+      T(674, cy, 509, _fmtEsc(_irClip(k.replace(/^\d+\.\d+\s*/, ''), 60)), { fs: 12.5, bold: true, h: 18 });
+      const note = (items[k] || {}).notes || '';
+      if (note) T(674, cy + 19, 509, _fmtEsc(_irClip(note, 150)), { fs: 11, color: IR_GRAY, h: 30, lh: 1.35 });
+      cy += note ? 60 : 30;
+    });
+    if (flagged.length > 6) T(674, cy, 509, '+ ' + (flagged.length - 6) + ' more in the full report', { fs: 11, color: IR_MUTE, h: 16 });
+  }
+  T(73, 622, 520, 'Full checks, sources and evidence in the Investment Report.',
+    { fs: 10.5, color: IR_MUTE, h: 16 });
+  _irLogo(pen); return pen.ov;
+}
+
+/* ── Slide · Property grading ──────────────────────────────────────────────
+   The rubric split the way the report splits it (ir_config.grading_layout):
+   property/site attributes | location attributes, each with its rating. */
+function _irGradingOverlays(row, cfg) {
+  const pen = _irPen(), T = pen.T, R = pen.R;
+  const g = row.grading || {}, items = g.items || {};
+  const layout = (cfg && cfg.grading_layout) || {};
+  const y0 = _irSlideHead(pen, row, 'Property grading');
+  const used = {};
+  const pick = list => (list || []).filter(k => items[k] != null).map(k => { used[k] = 1; return k; });
+  const propKeys = pick(layout.property);
+  const locKeys = pick(layout.location);
+  /* anything the layout doesn't know about (commercial rubrics, new rows) */
+  const extra = Object.keys(items).filter(k => !used[k]);
+  const left = propKeys.length ? propKeys : extra;
+  const right = propKeys.length ? locKeys.concat(extra) : [];
+
+  if (!left.length && !right.length) return null;   /* nothing graded — skip the slide */
+  T(73, y0, 700, 'Strategy: ' + _fmtEsc(g.strategy || (row.setup || {}).strategy || '—'), { fs: 13, color: IR_GRAY, h: 18 });
+  const colY = y0 + 34;
+  const draw = (x, w, label, keys, band, bandVal) => {
+    if (!keys.length) return;
+    _irSectionLabel(pen, x, colY, w, label);
+    const step = Math.min(23, Math.floor(400 / Math.max(1, keys.length)));
+    keys.forEach((k, i) => _irRateRow(pen, x, colY + 24 + i * step, w, _irClip(k, 40), items[k],
+      { fs: step < 20 ? 11 : 12, rule: step >= 24 }));
+    const by = colY + 30 + keys.length * step;
+    if (band && by < 600) {
+      R(x, by, w, 40, IR_TINT, { stroke: IR_TINT_BORDER, sw: 1 });
+      T(x + 14, by + 12, w - 28, _fmtEsc(band), { fs: 11.5, color: IR_GRAY, h: 16 });
+      T(x + 14, by + 10, w - 28, _fmtEsc(bandVal || '—'), { fs: 15, bold: true, align: 'right', h: 20 });
+    }
+  };
+  /* commercial rubrics carry lease/tenant rows the residential layout has no
+     bucket for — they land in the right column, so label it for what's in it */
+  const rightLabel = locKeys.length
+    ? (extra.length ? 'Location & other attributes' : 'Location attributes')
+    : 'Investment attributes';
+  draw(73, 520, 'Property / site attributes', left, 'Property Grade', g.propertyGrade);
+  draw(650, 557, rightLabel, right, 'Suburb Rating', g.suburbRating);
+  /* commercial files carry risk + overall ratings the residential rubric lacks */
+  const tail = [g.riskRating ? 'Risk: ' + g.riskRating : null, g.overallRating ? 'Overall: ' + g.overallRating : null]
+    .filter(Boolean).join('   ·   ');
+  if (tail) T(73, 622, 1100, _fmtEsc(tail), { fs: 12, bold: true, color: IR_TEAL, h: 18 });
+  _irLogo(pen); return pen.ov;
+}
+
+/* ── Slide · Cash flow & funding ───────────────────────────────────────────
+   The report's cashflow page, landscape: what it costs to get in (left) and
+   what it does each year under the three scenarios the IC uses (right). */
+function _irCashflowOverlays(row, rates, cfg) {
+  const pen = _irPen(), T = pen.T, R = pen.R, LINE = pen.LINE;
+  const cf = row.cashflow || {};
+  const y0 = _irSlideHead(pen, row, 'Cash flow & funding');
+  const pi = _irCashflow(cf, 'pi', rates), io = _irCashflow(cf, 'io', rates), nm = _irCashflow(cf, 'norm', rates);
+  if (!pi) return null;   /* no cash-flow inputs — skip the slide */
+  /* left — cost of property + acquisition (the report's row set, nulls dropped) */
+  _irSectionLabel(pen, 73, y0, 520, 'Cost of property & acquisition');
+  const costRows = [['Purchase budget', cf.budget], ['Maintenance allowance', cf.maintenanceAllowance],
+    ['Minimum rental standards', cf.minRentalStdCost], ['Cosmetic works', cf.cosmeticWorks],
+    ['Stamp duty', cf.stampDuty], ['Acquisition fee', cf.acquisitionFee],
+    ['Mortgage & title transfer', cf.titleTransfer], ['Conveyancing / legal', cf.conveyancing],
+    ['Building & pest', cf.buildingPest], ['Depreciation schedule', cf.depreciationSchedule],
+    ['Professional clean', cf.professionalClean], ['Engagement fee', cf.engagementFee]]
+    .filter(r => r[1] != null && +r[1] > 0);
+  const cstep = Math.min(26, Math.floor(300 / Math.max(1, costRows.length)));
+  costRows.forEach((r, i) => _irRow(pen, 73, y0 + 26 + i * cstep, 520, r[0], _irMoney(r[1]),
+    { fs: cstep < 22 ? 11.5 : 13, vfs: cstep < 22 ? 12.5 : 14 }));
+  const ty = y0 + 34 + costRows.length * cstep;
+  R(73, ty, 520, 44, IR_DARK, { sharp: false });
+  T(89, ty + 13, 300, 'Total property + acquisition', { fs: 12.5, color: '#ffffff', h: 18 });
+  T(73, ty + 10, 504, _irMoney(pi.totalCost), { fs: 19, bold: true, color: '#ffffff', align: 'right', h: 24 });
+  /* funding split */
+  const fy = ty + 58;
+  [['Loan at ' + Math.round((+cf.lvr || 0.9) * 100) + '% LVR', _irMoney(pi.loan)],
+   ['Capital required', _irMoney(pi.requiredCapital)]].forEach((b, i) => {
+    const bx = 73 + i * 270;
+    R(bx, fy, 250, 74, IR_TINT, { stroke: IR_TINT_BORDER, sw: 1 });
+    T(bx + 16, fy + 14, 218, '<span style="letter-spacing:1.2px">' + _fmtEsc(b[0].toUpperCase()) + '</span>',
+      { fs: 9.5, color: IR_TEAL, bold: true, h: 14 });
+    T(bx + 16, fy + 32, 218, b[1], { fs: 21, bold: true, h: 28 });
+  });
+
+  /* right — the annual position. Anything the interest rate can't change is
+     stated ONCE (repeating it under three columns just reads as noise); the
+     three IC scenarios then differ only where they actually differ. */
+  _irSectionLabel(pen, 650, y0, 557, 'Annual position');
+  [['Rental income  ·  $' + (cf.rent || 0) + '/wk × ' + (cf.weeksLet || 52) + ' wks', _irMoney(pi.income)],
+   ['Operating outgoings', _irMoney(-pi.outgoings)],
+   ['Gross yield', _irPct(pi.grossYield)],
+   ['Net yield', _irPct(pi.netYield)]]
+    .forEach((r, i) => _irRow(pen, 650, y0 + 28 + i * 30, 557, r[0], r[1], { fs: 12.5 }));
+
+  const scenY = y0 + 168;
+  _irSectionLabel(pen, 650, scenY, 557, 'Funding scenarios');
+  const cols = [
+    { t: 'P&I @ ' + (pi.rate * 100).toFixed(2) + '%', x: 845, v: pi },
+    { t: 'Interest only', x: 965, v: io },
+    { t: 'Norm @ ' + (nm.rate * 100).toFixed(2) + '%', x: 1085, v: nm },
+  ];
+  cols.forEach(c => pen.T(c.x, scenY + 24, 118, _fmtEsc(c.t), { fs: 10.5, bold: true, color: IR_TEAL, align: 'right', h: 15 }));
+  LINE(650, scenY + 44, 557, 1, IR_RULE);
+  const metrics = [
+    ['Interest', x => _irMoney(-x.interest), false],
+    ['Principal', x => x.principal ? _irMoney(-x.principal) : '—', false],
+    ['Annual cash flow', x => _irMoney(x.annual), true],
+    ['Weekly cash flow', x => _irMoney(x.weekly), true],
+  ];
+  metrics.forEach((m, i) => {
+    const ry = scenY + 58 + i * 38, isNet = m[2];
+    pen.T(650, ry, 200, m[0], { fs: 12.5, color: isNet ? IR_DARK : IR_GRAY, bold: isNet, h: 18 });
+    cols.forEach(c => pen.T(c.x, ry - 2, 118, m[1](c.v), { fs: isNet ? 15 : 13, bold: true, align: 'right',
+      color: isNet ? (c.v.annual < 0 ? '#c0182f' : '#3f8f56') : IR_DARK, h: 20 }));
+    if (i === 1) LINE(650, ry + 26, 557, 1, IR_RULE);
+  });
+  const note = ((cfg && cfg.boilerplate) || {}).normalised_note;
+  T(650, scenY + 58 + metrics.length * 38 + 10, 557,
+    _fmtEsc(_irClip(note || 'The normalised column stress-tests the holding cost against the long-run interest rate the Investment Committee sets, not today\'s rate.', 260)),
+    { fs: 10.5, color: IR_MUTE, h: 46, lh: 1.4 });
+  _irLogo(pen); return pen.ov;
+}
+
+/* ── Slide · Condition & asset plan ────────────────────────────────────────
+   The report's inspection-notes and asset-management-plan pages folded into
+   one landscape slide: what we found (left) and what we'll do about it
+   (right), with anything flagged at inspection across the bottom. */
+function _irConditionOverlays(row, cfg) {
+  const pen = _irPen(), T = pen.T, R = pen.R;
+  const insp = row.inspection || {}, s = row.setup || {}, g = row.grading || {}, cf = row.cashflow || {};
+
+  /* left — what the inspection found */
+  const rows0 = [['Year built', insp.yearBuilt], ['Overall condition', insp.condition],
+    ['Construction quality', insp.constructionQuality], ['Street appeal', insp.streetAppeal],
+    ['External walls', insp.wallMaterial], ['Roof', insp.roofMaterial],
+    ['Kitchen age', insp.kitchenAge], ['Bathroom age', insp.bathroomAge],
+    ['Adjoining properties', insp.adjoining], ['Occupancy', insp.occupancy],
+    ['Why selling', insp.whySelling], ['Agent price guide', insp.agentPrice],
+    ['Agent rent guide', insp.agentRent]].filter(r => r[1]);
+  if (!rows0.length && !insp.summaryNotes && !cf.budget) return null;   /* nothing to say — skip
+     the slide rather than shipping an empty one into a client deck */
+  const y0 = _irSlideHead(pen, row, 'Condition & asset plan');
+  _irSectionLabel(pen, 73, y0, 520, 'Inspection findings');
+  const rows = rows0;
+  const step = Math.min(28, Math.floor(370 / Math.max(1, rows.length)));
+  rows.forEach((r, i) => _irRow(pen, 73, y0 + 26 + i * step, 520, r[0], _irClip(r[1], 34),
+    { fs: step < 24 ? 11.5 : 13, vfs: step < 24 ? 12.5 : 14 }));
+  const accom = [s.beds != null ? s.beds + ' bed' : null, s.baths != null ? s.baths + ' bath' : null,
+    insp.living != null ? insp.living + ' living' : null, s.cars != null ? s.cars + ' car' : null,
+    s.landSize ? s.landSize + 'm² land' : null, s.units ? s.units + ' units' : null].filter(Boolean).join(' · ');
+  if (accom) T(73, y0 + 34 + rows.length * step, 520, _fmtEsc(accom), { fs: 12.5, bold: true, color: IR_TEAL, h: 18 });
+
+  /* right — the asset management plan the report generates */
+  const trading = /trading/i.test(g.strategy || s.strategy || '');
+  const refYear = parseInt(String(insp.refurbAge || insp.yearBuilt || '').replace(/\D/g, '').slice(0, 4), 10) || null;
+  const nowY = new Date().getFullYear();
+  const w1 = refYear ? refYear + 11 : null, w2 = refYear ? refYear + 15 : null;
+  _irSectionLabel(pen, 650, y0, 557, 'Asset management plan — ' + (trading ? 'trading' : 'foundation'));
+  const plan = [
+    ['Last refurbishment', refYear ? 'Likely around ' + refYear : '—'],
+    ['Next refurbishment window', w1 ? (w1 + ' to ' + w2 + (w2 < nowY ? ' — overdue' : '')) : '—'],
+    ['Refurbishment provision', cf.budget ? 'Within ' + _irMoney(cf.budget * 0.03) : '—'],
+  ];
+  if (!trading && cf.budget) plan.push(['Renovation provision', 'Within ' + _irMoney(cf.budget * 0.07)]);
+  plan.forEach((p, i) => _irRow(pen, 650, y0 + 26 + i * 30, 557, p[0], p[1], { fs: 12.5 }));
+  let py = y0 + 30 + plan.length * 30;
+  /* The window is derived from the refurb date when the file has one and from
+     the build year when it doesn't — say which, or a 1983 building with a new
+     roof reads as "overdue since 1998". */
+  if (refYear && !insp.refurbAge) {
+    T(650, py, 557, 'Window estimated from year built — no refurbishment date on file.',
+      { fs: 10.5, color: IR_MUTE, h: 16 });
+    py += 24;
+  }
+  /* Directive prose matches the report's page 5 wording. (The boilerplate
+     arrays hold raw workbook LINES — headings and fragments — so they can't
+     be indexed into safely for a sentence.) */
+  const directive = trading
+    ? 'A trading asset: reactive maintenance only, with refurbishment works undertaken before sale if required. Maintenance allowance around 10% of annual rent.'
+    : 'A foundation asset: proactive and reactive maintenance as directed by your asset manager, with refurbishment planned inside the window above. Maintenance allowance around 10% of annual rent.';
+  R(650, py, 557, 108, IR_TINT, { stroke: IR_TINT_BORDER, sw: 1 });
+  _irSectionLabel(pen, 674, py + 16, 509, 'Directive');
+  T(674, py + 36, 509, _fmtEsc(_irClip(directive, 240)), { fs: 11.5, color: IR_GRAY, h: 58, lh: 1.45 });
+
+  /* bottom — anything flagged at inspection (replace / monitor) */
+  const flagged = [];
+  Object.keys(insp.rooms || {}).forEach(rn => ((insp.rooms[rn] || {}).features || []).forEach(f => {
+    if (f && (f.r || f.m)) flagged.push(rn + ' — ' + f.name + (f.cost ? ' (' + _irMoney(f.cost) + ')' : ''));
+  }));
+  const fy = Math.max(py + 122, y0 + 34 + rows.length * step + 30);
+  if (fy < 616) {
+    _irSectionLabel(pen, 73, fy, 1100, flagged.length ? 'Items requiring attention' : 'Items requiring attention — none');
+    T(73, fy + 20, 1100, flagged.length
+      ? _fmtEsc(_irClip(flagged.slice(0, 6).join('  ·  '), 200))
+      : 'Every inspected feature was present and serviceable.',
+      { fs: 11.5, color: IR_GRAY, h: 18 });
+  }
+  _irLogo(pen); return pen.ov;
+}
+
+/* Which follow-on slides the picker is set to add, in deck order. */
+const IR_EXTRAS = [
+  { key: 'dd', id: 'pres-ir-dd', label: 'Due diligence', build: (row, ctx) => _irDdOverlays(row) },
+  { key: 'grading', id: 'pres-ir-grading', label: 'Grading', build: (row, ctx) => _irGradingOverlays(row, ctx.cfg) },
+  { key: 'cash', id: 'pres-ir-cash', label: 'Cash flow', build: (row, ctx) => _irCashflowOverlays(row, ctx.rates, ctx.cfg) },
+  { key: 'condition', id: 'pres-ir-condition', label: 'Condition & plan', build: (row, ctx) => _irConditionOverlays(row, ctx.cfg) },
+];
+function _irSelectedExtras() {
+  return IR_EXTRAS.filter(x => { const el = document.getElementById(x.id); return !el || el.checked; });
+}
+function _irUpdateAddLabels() {
+  const n = 1 + _irSelectedExtras().length;
+  document.querySelectorAll('.pres-ir-add').forEach(b => {
+    if (b.disabled) return;
+    b.textContent = '+ Add ' + n;
+    b.title = 'Append ' + n + ' slide' + (n === 1 ? '' : 's') + ' for this property';
+  });
+}
+
 async function _irInsert(row, btn) {
   if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
+  const extras = _irSelectedExtras();
   if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
   try {
-    const photo = await _irCopyPhoto(row);
-    const at = _fmtAppendSlide(_irCaseStudyOverlays(row, photo), '#ffffff');
+    const [photo, rates, cfg, full] = await Promise.all([
+      _irCopyPhoto(row), _irFetchRates(), _irFetchConfig(), _irFullRow(row)]);
+    const ctx = { rates: rates, cfg: cfg };
+    row = full;   /* the light list row can't feed the DD / cashflow / condition slides */
+    const first = _fmtAppendSlide(_irCaseStudyOverlays(row, photo), '#ffffff');
+    let added = 1;
+    const skipped = [];
+    extras.forEach(x => {
+      let ov = null;
+      try { ov = x.build(row, ctx); } catch (e) { ov = null; }
+      /* a builder returns null when that section is empty on the file — no
+         "nothing recorded" slide goes into a client deck */
+      if (ov && ov.length) { _fmtAppendSlide(ov, '#ffffff'); added++; }
+      else skipped.push(x.label.toLowerCase());
+    });
     saveOverlays();
     if (typeof saveSlideBgs === 'function') saveSlideBgs();
     if (typeof saveActiveDeckIfCustom === 'function') saveActiveDeckIfCustom();
     if (typeof buildThumbnails === 'function') buildThumbnails();
-    if (typeof renderSlide === 'function') renderSlide(at);
+    if (typeof renderSlide === 'function') renderSlide(first);
     pushHistory();
-    showPresToast(row.address + ' added as slide ' + (at + 1) + (photo ? '' : ' (no photo on file)') + '.');
+    showPresToast(row.address + ' — ' + added + ' slide' + (added === 1 ? '' : 's') + ' added from slide ' +
+      (first + 1) + (photo ? '' : ' · no photo on file') +
+      (skipped.length ? ' · nothing on file for ' + skipped.join(', ') : '') + '.',
+      { duration: 6000, warn: !!skipped.length });
     if (btn) btn.textContent = 'Added ✓';
   } catch (e) {
     showPresToast('Could not add the case study: ' + (e && e.message || 'unknown error'), { warn: true });
@@ -14074,7 +14518,7 @@ async function openIrPicker() {
   irModal.classList.add('open');
   const wrap = document.getElementById('pres-ir-list');
   if (wrap) wrap.innerHTML = '<div style="padding:18px 6px; opacity:0.7; font-size:13px;">Loading properties…</div>';
-  try { await _irFetchRows(); _irRenderList(''); }
+  try { await _irFetchRows(); _irRenderList(''); _irUpdateAddLabels(); }
   catch (e) { if (wrap) wrap.innerHTML = '<div style="padding:18px 6px; opacity:0.7; font-size:13px;">Could not load the property list: ' + _fmtEsc(e && e.message || 'unknown error') + '</div>'; }
   if (search) setTimeout(() => { try { search.focus(); } catch (_) {} }, 30);
 }
@@ -14086,7 +14530,11 @@ document.getElementById('pres-add-ir').addEventListener('click', openIrPicker);
 document.getElementById('pres-ir-x').addEventListener('click', closeIrPicker);
 document.getElementById('pres-ir-close').addEventListener('click', closeIrPicker);
 irBackdrop.addEventListener('click', closeIrPicker);
-document.getElementById('pres-ir-search').addEventListener('input', e => _irRenderList(e.target.value));
+document.getElementById('pres-ir-search').addEventListener('input', e => { _irRenderList(e.target.value); _irUpdateAddLabels(); });
+IR_EXTRAS.forEach(x => {
+  const el = document.getElementById(x.id);
+  if (el) el.addEventListener('change', _irUpdateAddLabels);
+});
 
 function openFmtPicker() {
   if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
