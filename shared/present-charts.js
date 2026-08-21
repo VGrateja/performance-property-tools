@@ -881,6 +881,39 @@
              prev: function () { return false; }, reset: function () {}, play: function () {}, resize: function () {}, dispose: function () {} };
   }
 
+  /* ─── Raw ECharts option (spec.echarts) ───
+     Used by the Buying/Selling Library. Those slides are not report chart
+     modules — the Buying/Selling tool authors a complete ECharts option per
+     slide — so there is nothing to look up in the registry. We render the option
+     as given, which is exactly what the B/S tool does, so a slide pulled into a
+     deck matches the tool it came from pixel for pixel.
+
+     No build animation: the B/S options set animation:false themselves, so
+     there are no steps to step through. The controller still honours the full
+     interface (resize/dispose matter — the deck rescales on window resize and
+     disposes charts when a slide is left). */
+  function createFromOption(host, spec) {
+    if (!window.echarts) { host.textContent = 'Chart engine unavailable.'; return nullController(); }
+    const box = document.createElement('div');
+    box.style.cssText = 'width:100%;height:100%';
+    host.appendChild(box);
+    let chart;
+    try { chart = window.echarts.init(box, null, { renderer: 'canvas' }); }
+    catch (e) { host.textContent = 'Chart failed to render.'; return nullController(); }
+    const apply = () => { try { chart.setOption(spec.echarts || {}, true); } catch (_) {} };
+    apply();
+    return {
+      steps: 0, index: 0,
+      isComplete: function () { return true; },
+      next: function () { return false; },
+      prev: function () { return false; },
+      reset: apply,
+      play: function () {},
+      resize: function () { try { chart.resize(); } catch (_) {} },
+      dispose: function () { try { chart.dispose(); } catch (_) {} },
+    };
+  }
+
   /* ─── Public factory ─── */
   function create(container, spec) {
     if (!container || !spec) return nullController();
@@ -890,6 +923,7 @@
        (Recipes that still carry a billboard `type` fall through below; the
        At-a-Glance big numbers use type:'bigNumber'.) */
     if (spec.module) return createFromModule(container, spec);
+    if (spec.echarts) return createFromOption(container, spec);
     switch (spec.type) {
       case 'line':
       case 'multiLine': return createLine(container, spec);
