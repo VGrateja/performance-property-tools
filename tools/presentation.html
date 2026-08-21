@@ -34,7 +34,7 @@
      present-charts.js's createFromModule() drives the build animation. -->
 <script src="../assets/Reports/charts/_theme.js" defer></script>
 <script src="../assets/Reports/charts/_helpers.js" defer></script>
-<script src="../shared/bss-slides.js?v=3abf5a9f" defer></script>
+<script src="../shared/bss-slides.js?v=28b44a8d" defer></script>
 <script src="../assets/Reports/charts/chart-median-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-yoy-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-stock-dom.js" defer></script>
@@ -15947,9 +15947,18 @@ async function _bssConfirmCart() {
              PNG, so ask for that instead. */
           let meta = null;
           if (it.kind === 'capture') {
-            let got = null;
-            try { got = await api.capture(it.key, { slug: it.slug, mode: it.mode }); } catch (e) { got = null; }
-            meta = (got && got.image) ? { kind: 'capture', image: got.image, cw: got.cw, ch: got.ch } : null;
+            /* Native first: most of these pages are an image asset or a real
+               table, and rebuilding them natively keeps the text vector-sharp
+               and editable. Only fall back to a photograph when the page is
+               genuinely bespoke DOM (Traffic Lights, At a Glance). */
+            let nat = null;
+            try { nat = api.native ? await api.native(it.key, { slug: it.slug, mode: it.mode }) : null; } catch (e) { nat = null; }
+            if (nat && nat.kind) { meta = nat; }
+            else {
+              let got = null;
+              try { got = await api.capture(it.key, { slug: it.slug, mode: it.mode }); } catch (e) { got = null; }
+              meta = (got && got.image) ? { kind: 'capture', image: got.image, cw: got.cw, ch: got.ch } : null;
+            }
           } else if (it.kind === 'title') {
             meta = { kind: 'title' };
           } else {
@@ -15973,14 +15982,18 @@ async function _bssConfirmCart() {
              dropped on this slide only, because the clock graphic carries its own
              Performance Property logo and would have shown two. */
           if (meta.kind === 'clock') {
-            const y = 112, h = 604, w = Math.round(980 * h / 620);
-            slideOvs.push({ ov: [
-              _fmtEyebrow(73, 30, String(eyebrow).toUpperCase()),
-              _fmtTitleT(73, 52, 1000, String(it.label), { fs: 30, h: 44 }),
-              _fmtRuleS(73, 104),
-              { id: _fmtId('i'), type: 'image', clockImage: true,
-                x: Math.round((1280 - w) / 2), y: y, w: w, h: h },
-            ], bg: null });
+            /* As big as it can be while KEEPING the footer line and the logo,
+               which the first attempt dropped to gain height (Van 2026-08-21:
+               "the logo and performanceproperty.com.au below is now missing").
+               The footer sits at y654 and the logo at y665, so the graphic must
+               end above 654: y112 + 534 = 646. At the clock's 980x620 aspect
+               that is 844 wide — still wider than the original 822, and now with
+               the same chrome as every other page. */
+            const ov3 = _fmtChrome(String(it.label), eyebrow);
+            const h = 534, w = Math.round(980 * h / 620);
+            ov3.push({ id: _fmtId('i'), type: 'image', clockImage: true,
+              x: Math.round((1280 - w) / 2), y: 112, w: w, h: h });
+            slideOvs.push({ ov: ov3, bg: null });
             continue;
           }
           const ov2 = _fmtChrome(String(it.label), eyebrow);
@@ -15988,6 +16001,51 @@ async function _bssConfirmCart() {
             /* author-your-own template: chrome + heading, nothing else — the deck
                gets a dressed slide to type onto, which is what the tool's blank
                Coverpage / Market Positions Clock pages are for. */
+          } else if (meta.kind === 'image') {
+            /* the page's own asset (e.g. market-position-clock.png) as a real
+               image overlay — sharp at any zoom, no screenshot involved */
+            const fit = _bssFitBox(meta.w || 1134, meta.h || 520);
+            ov2.push({ id: _fmtId('i'), type: 'image', src: meta.src,
+              x: fit.x, y: fit.y, w: fit.w, h: fit.h, objectFit: 'contain' });
+          } else if (meta.kind === 'table') {
+            /* rebuilt as a NATIVE deck table: vector text, editable cells, and
+               no cropping to get wrong. Column widths come from the source table
+               so the proportions match, scaled to the content band; the header
+               row takes the deck's navy, and bold/red cells keep their emphasis
+               (Sensitivity marks the current cash rate and the ceiling row). */
+            const BX = 73, BW = 1134, BY = 120, BH = 520;
+            const rowCount = (meta.rows || []).length || 1;
+            const srcW = (meta.widths || []).reduce((a, b) => a + b, 0) || BW;
+            const srcHs = (meta.heights && meta.heights.length) ? meta.heights
+              : Array.from({ length: rowCount }, () => meta.rowH || 36);
+            const srcH = srcHs.reduce((a, b) => a + b, 0) || BH;
+            /* Fill the band's WIDTH, and grow the rows toward filling its height
+               so a short table doesn't sit in a thin strip with dead space above
+               and below (Van: "cover most part of the page"). Row height is
+               capped so a 3-row table doesn't turn into three huge bands. */
+            const kx = BW / srcW;
+            const ky = Math.min(BH / srcH, 2.6);
+            const cols = (meta.widths || []).map(w => ({ w: Math.max(40, Math.round(w * kx)) }));
+            const rowHs = srcHs.map(h => Math.max(26, Math.min(96, Math.round(h * ky))));
+            const rowH = rowHs[0];
+            /* Emphasis has to be in the MARKUP: a deck cell is {html, bgColor,
+               textColor} and ignores any bold flag. The module already wraps
+               bold source cells in <b>; the header row gets it here. */
+            const cells = (meta.rows || []).map((r, ri) => r.map(c => {
+              let html = c.html || '';
+              if (ri === 0 && html && html.indexOf('<b>') < 0) html = '<b>' + html + '</b>';
+              return {
+                html: html,
+                bgColor: ri === 0 ? '#171B24' : (/^rgba\(0, 0, 0, 0\)$/.test(c.bg || '') ? '' : (c.bg || '')),
+                textColor: ri === 0 ? '#ffffff' : (c.color || ''),
+                align: c.align === 'right' ? 'right' : (c.align === 'left' ? 'left' : 'center'),
+              };
+            }));
+            const tW = cols.reduce((a, c) => a + c.w, 0), tH = rowHs.reduce((a, b) => a + b, 0);
+            ov2.push({ id: _fmtId('tbl'), type: 'table',
+              x: BX + Math.round((BW - tW) / 2), y: BY + Math.round((BH - tH) / 2),
+              w: tW, h: tH, cols: cols,
+              rows: rowHs.map(h => ({ h: h })), cells: cells });
           } else if (meta.kind === 'capture') {
             /* content only — the tool's header, rule, disclaimer and logo were
                excluded from the capture, so the DECK's chrome above is the only

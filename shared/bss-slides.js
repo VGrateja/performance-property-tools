@@ -286,6 +286,101 @@
       });
     }
   }
+  /* ─── native instead of a screenshot ───
+     Photographing these pages was the wrong call and produced exactly the
+     problems Van reported: soft raster text, content clipped, and a crop that
+     leaned left because the tool's slide sits inside a CSS transform, which
+     html2canvas's x/y cropping does not reason about. His answer was the right
+     one — build them the way the tool builds them.
+
+     Inspecting the pages shows most of them need no picture at all:
+       Market Position Clock  = ONE image asset (market-position-clock.png)
+       Replacement Cost       = a 4x4 <table>
+       Sensitivity H / U      = a 10x4 <table>
+       Vacancy Rate Projection= a 4x6 <table> (plus a gradient bar)
+     So they are handed to the builder as an image overlay or a native table
+     overlay: vector text, crisp at any zoom, and editable in the deck.
+
+     Traffic Lights and At a Glance are still captured — the first is dot groups
+     in flex rows, the second is 36 nested panels with 19 sparkline SVGs. They
+     need the same treatment and have not had it yet. */
+  const ESC = s => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  async function nativeFrom(key, ctx) {
+    const win = await toolFrame(ctx);
+    if (!win) return null;
+    const el = slideEl(win, key);
+    if (!el) return null;
+
+    /* a single content image — anything that isn't the logo */
+    const imgs = [];
+    el.querySelectorAll('.bss-ov').forEach(ov => {
+      const m = /url\(["']?(.+?)["']?\)/.exec((ov.style && ov.style.backgroundImage) || '');
+      if (m && /\.(png|jpe?g|svg|webp)$/i.test(m[1]) && !/logo/i.test(m[1])) imgs.push(m[1]);
+    });
+    el.querySelectorAll('img').forEach(im => {
+      const src = im.getAttribute('src') || '';
+      if (/\.(png|jpe?g|svg|webp)$/i.test(src) && !/logo/i.test(src)) imgs.push(src);
+    });
+
+    const table = el.querySelector('table');
+    if (!table || !table.rows.length) {
+      return imgs.length ? { kind: 'image', src: imgs[0] } : null;
+    }
+
+    /* the table, with enough styling carried over to keep the highlighted rows
+       reading as highlighted (Sensitivity marks the current cash rate bold and
+       the AI-ceiling row red) */
+    const base = el.getBoundingClientRect();
+    const sx = base.width ? 1280 / base.width : 1;
+    const rows = [];
+    for (let i = 0; i < table.rows.length; i++) {
+      const tr = table.rows[i];
+      const cells = [];
+      for (let j = 0; j < tr.cells.length; j++) {
+        const td = tr.cells[j];
+        const cs = win.getComputedStyle(td);
+        const kids = Array.prototype.filter.call(td.children, c => (c.textContent || '').trim());
+        let html;
+        if (kids.length >= 2) {
+          /* value + caption, as the projection table does */
+          html = kids.map((k, n) => n === 0 ? ESC(k.textContent.trim())
+            : '<span style="font-size:11px;opacity:0.62">' + ESC(k.textContent.trim()) + '</span>').join('<br>');
+        } else {
+          /* Keep the cell's own line breaks. Reading textContent glued them
+             together — "Growth from" + "Current MHP" came out as
+             "Growth fromCurrent MHP". */
+          html = String(td.innerHTML || '')
+            .replace(/<br\s*\/?>/gi, '')
+            .replace(/<[^>]*>/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          html = ESC(html).split('').map(t => t.trim()).filter(Boolean).join('<br>');
+        }
+        /* The deck's table cells carry html/bgColor/textColor — there is no bold
+           flag — so emphasis has to live in the markup or it silently vanishes
+           (the Sensitivity table's current-rate row lost its bold that way). */
+        if (parseInt(cs.fontWeight, 10) >= 600 && html) html = '<b>' + html + '</b>';
+        cells.push({ html: html, color: cs.color, bg: cs.backgroundColor, align: cs.textAlign });
+      }
+      rows.push(cells);
+    }
+    const widths = [];
+    const head = table.rows[0];
+    for (let j = 0; j < head.cells.length; j++) {
+      widths.push(Math.max(40, Math.round(head.cells[j].getBoundingClientRect().width * sx)));
+    }
+    /* per-row heights too, so the builder can scale the whole table to the
+       band proportionally instead of guessing one uniform row height */
+    const heights = [];
+    for (let i = 0; i < table.rows.length; i++) {
+      heights.push(Math.max(18, Math.round((table.rows[i].getBoundingClientRect().height || 36) * sx)));
+    }
+    return { kind: 'table', rows: rows, widths: widths, heights: heights,
+             rowH: heights[0] || 36 };
+  }
+
   async function captureFromTool(key, ctx) {
     const win = await toolFrame(ctx);
     if (!win) return null;
@@ -582,6 +677,9 @@
     kindOf: kindOf,
     /* bespoke-DOM slides (traffic lights, At a Glance, Infrastructure): a PNG of
        the tool's own render, to sit inside the deck's chrome */
+    /* native overlays where the page allows it (image or table); the caller
+       falls back to capture() only when this returns null */
+    native: async function (key, ctx) { try { return await nativeFrom(key, ctx || {}); } catch (e) { return null; } },
     capture: async function (key, ctx) {
       const got = await captureFromTool(key, ctx || {});
       return got || null;   /* { image, fullBleed } */
