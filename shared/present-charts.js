@@ -985,5 +985,38 @@
     }
   }
 
-  window.PresentChart = { create: create, THEME: THEME, _fmt: fmt };
+  /* ─── Export mode ───
+     A PDF has no animation, so waiting out every chart's build is pure delay:
+     it was 1.5s per chart page, about two thirds of a deck export's entire
+     running time (measured over 35 pages, Van 2026-08-22). With export mode on,
+     charts render at their FINAL state immediately and the exporter can shoot
+     the page as soon as it is laid out.
+
+     Done by wrapping echarts.init rather than editing each builder: every
+     chart type in this file goes through it, including the report modules,
+     which author their own options and would each need the same edit. The
+     wrapper forces animation off on every setOption and is removed again when
+     export finishes, so normal viewing keeps its build animation. */
+  let _initWas = null;
+  function setExporting(on) {
+    if (on && window.echarts && !_initWas) {
+      _initWas = window.echarts.init;
+      window.echarts.init = function () {
+        const inst = _initWas.apply(this, arguments);
+        const so = inst.setOption.bind(inst);
+        inst.setOption = function (opt, o2) {
+          if (opt && typeof opt === 'object' && !Array.isArray(opt)) {
+            opt = Object.assign({}, opt, { animation: false });
+          }
+          return so(opt, o2);
+        };
+        return inst;
+      };
+    } else if (!on && _initWas) {
+      window.echarts.init = _initWas;
+      _initWas = null;
+    }
+  }
+
+  window.PresentChart = { create: create, THEME: THEME, _fmt: fmt, setExporting: setExporting };
 })();

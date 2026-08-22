@@ -20,7 +20,7 @@
      the report-data snapshot cache (window.PPReportCache) that feeds charts
      from the stored data. Deferred so they don't block first paint. -->
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js" defer integrity="sha384-o5uz97et3bErHvpKfD4Jz4n0JfhJDWABFuF4NP+iEEDxE1VwMWJ19QGR0lqFZnr6" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script src="../shared/present-charts.js?v=cb29eb4c" defer></script>
+<script src="../shared/present-charts.js?v=6a618445" defer></script>
 <!-- Buying/Selling Library: the adapter turns an rdp_report_feed payload into
      the report feed shape, and bss-slides.js builds the SAME chart options the
      Buying/Selling tool draws (one source of truth). bss-slides.js must come
@@ -34,7 +34,7 @@
      present-charts.js's createFromModule() drives the build animation. -->
 <script src="../assets/Reports/charts/_theme.js" defer></script>
 <script src="../assets/Reports/charts/_helpers.js" defer></script>
-<script src="../shared/bss-slides.js?v=6e17b8e1" defer></script>
+<script src="../shared/bss-slides.js?v=2e50e390" defer></script>
 <script src="../assets/Reports/charts/chart-median-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-yoy-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-stock-dom.js" defer></script>
@@ -304,6 +304,12 @@
      flows (not fixed) and only shows while a deck is open. */
   #pres-pin-btn{ position:static; top:auto; }
   body:not(.pres-deck-open) #pres-pin-btn{ display:none; }
+  /* Download sits in the bar beside Present, same as the pin — .pres-icon-btn
+     is position:fixed by default, which would strand it in the corner. Only
+     while a deck is open, and never over a live presentation. */
+  #pres-download{ position:static; top:auto; }
+  body:not(.pres-deck-open) #pres-download,
+  body.pres-fullscreen #pres-download{ display:none; }
   [data-theme="light"] .pres-icon-btn{
     background:rgba(255,255,255,.85);
     border-color:rgba(31,40,63,.18);
@@ -1775,6 +1781,34 @@
     box-shadow:0 4px 10px rgba(0,0,0,0.40);
   }
   body.pres-edit-mode .pres-overlay.selected .pres-overlay-del{ display:flex }
+
+  /* ─── Export ───────────────────────────────────────────────────────────
+     While a download is running the slide must contain CONTENT ONLY: the
+     per-overlay badges are editing affordances and would otherwise be baked
+     into the PDF. The slide's fit transform is dropped too, so html2canvas
+     measures true 1280x720 geometry no matter how the window is sized (the
+     Buying/Selling export learned this the hard way — a scaled slide captured
+     with the logo blown off the page edge). */
+  body.pres-exporting .pres-overlay-del,
+  body.pres-exporting .pres-overlay-autoplay,
+  body.pres-exporting .pres-overlay-resize,
+  body.pres-exporting .pres-ruler,
+  body.pres-exporting .pres-guide{ display:none !important; }
+  body.pres-exporting .pres-overlay.selected{ outline:none !important; box-shadow:none !important; }
+  body.pres-exporting #pres-slide{ transform:none !important; }
+
+  /* Progress scrim — also stops clicks landing on the deck mid-capture. */
+  .pres-export-scrim{
+    position:fixed; inset:0; z-index:9999; display:none;
+    align-items:center; justify-content:center; flex-direction:column; gap:14px;
+    background:rgba(10,20,38,0.82); backdrop-filter:blur(3px);
+    font-family:'Montserrat',sans-serif; color:#fff;
+  }
+  body.pres-exporting .pres-export-scrim{ display:flex; }
+  .pres-export-scrim .pes-title{ font-size:19px; font-weight:700; letter-spacing:.01em }
+  .pres-export-scrim .pes-sub{ font-size:14px; font-weight:600; color:#9fb2c9 }
+  .pres-export-scrim .pes-bar{ width:320px; height:6px; border-radius:99px; background:rgba(255,255,255,0.16); overflow:hidden }
+  .pres-export-scrim .pes-bar i{ display:block; height:100%; width:0%; background:#00A0B4; transition:width .25s ease }
 
   /* Per-chart play-mode toggle — top-left tab on a selected chart overlay.
      Cyan when set to autoplay (the default), dark when switched to manual. */
@@ -3728,6 +3762,10 @@
     if (dk) r.insertBefore(dk, r.firstChild);
     var pin = document.getElementById('pres-pin-btn');
     if (pin) { if (dk && dk.parentNode === r) dk.insertAdjacentElement('afterend', pin); else r.insertBefore(pin, r.firstChild); }  // pin sits beside Decks
+    /* Download goes in too, immediately left of Present — a .pres-icon-btn
+       left in the body flows to the top-left corner instead of the bar. */
+    var dl = document.getElementById('pres-download');
+    if (dl) { if (pb && pb.parentNode === r) r.insertBefore(dl, pb); else r.appendChild(dl); }
   });
 </script>
 
@@ -3813,6 +3851,11 @@
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 6 4 3v2H6v-2l4-3z"/><path d="M12 14v7"/></svg>
 </button>
 <!-- Autosave status — sits just left of the Present button. -->
+<!-- Download — available in View as well as Edit: advisors who can't edit a
+     deck still need to take it away as a PDF. -->
+<button class="pres-icon-btn" id="pres-download" type="button" title="Download this deck as a PDF" aria-label="Download this deck as a PDF">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M4 19h16"/></svg>
+</button>
 <div class="pres-savestat" id="pres-savestat"></div>
 <button class="pres-mode-btn" id="pres-mode-btn" type="button" title="Enter Presentation Mode (F)">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -3820,6 +3863,13 @@
   </svg>
   <span>Present</span>
 </button>
+
+<!-- Export progress. Hidden unless body.pres-exporting. -->
+<div class="pres-export-scrim" id="pres-export-scrim" role="status" aria-live="polite">
+  <div class="pes-title" id="pes-title">Preparing…</div>
+  <div class="pes-bar"><i id="pes-bar"></i></div>
+  <div class="pes-sub" id="pes-sub"></div>
+</div>
 
 <!-- Picker — "Choose a Presentation" cards. Visible by default;
      hidden when a deck is open. -->
@@ -18113,6 +18163,451 @@ function applyPresTierGate() {
 applyPresTierGate();
 setTimeout(applyPresTierGate, 200);
 setTimeout(applyPresTierGate, 800);
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   DECK DOWNLOAD (PDF)
+   The point of this tool is combining reports, so a finished deck has to leave
+   as one file — whatever it is made of: Online Reports charts, IR pages,
+   transplanted Buying/Selling pages, the clock, manual text and shapes, and
+   live embeds (Van 2026-08-22).
+
+   Every page is photographed from the real slide, so what you see is what you
+   get. Two things need special handling:
+
+     • LIVE EMBEDS. html2canvas cannot paint across an iframe boundary — the
+       page would come out blank. A same-origin iframe is captured from the
+       INSIDE (the parent's html2canvas can render an element belonging to
+       another same-origin document) and the shot is laid over the iframe for
+       the page capture. This is the Buying/Selling tool's own trick.
+
+     • RUNWAY v DEMAND becomes TWO pages, House then Unit, each built from the
+       chart shot the Runway v Demand tool's own "Download HD JPEG" produces
+       (PP_BSS.rvdShot → #runwayView .chart-wrap). Exactly what the B/S deck
+       PDF does, and what Van asked for here.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+let _presExportBusy = false;
+
+/* html2canvas + jsPDF on demand — this file is already large and most sessions
+   never download. Same versions and SRI digests as the report tools. */
+let _presPdfLibsP = null;
+function _presPdfLibs() {
+  if (window.html2canvas && window.jspdf) return Promise.resolve();
+  if (_presPdfLibsP) return _presPdfLibsP;
+  const load = (src, integrity) => new Promise((res, rej) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.integrity = integrity;
+    el.crossOrigin = 'anonymous';
+    el.referrerPolicy = 'no-referrer';
+    el.onload = res;
+    el.onerror = () => rej(new Error('Failed to load ' + src));
+    document.head.appendChild(el);
+  });
+  _presPdfLibsP = Promise.all([
+    window.html2canvas ? Promise.resolve() : load(
+      'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js',
+      'sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H'),
+    window.jspdf ? Promise.resolve() : load(
+      'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
+      'sha384-JcnsjUPPylna1s1fvi1u12X5qjY5OL56iySh75FdtrwhO/SWXgMjoVqcKyIIWOLk'),
+  ]).catch(e => { _presPdfLibsP = null; throw e; });
+  return _presPdfLibsP;
+}
+
+function _presExportProgress(title, sub, frac) {
+  const t = document.getElementById('pes-title');
+  const u = document.getElementById('pes-sub');
+  const b = document.getElementById('pes-bar');
+  if (t && title != null) t.textContent = title;
+  if (u && sub != null) u.textContent = sub;
+  if (b && frac != null) b.style.width = Math.max(0, Math.min(100, Math.round(frac * 100))) + '%';
+}
+
+/* Is this overlay the Runway v Demand embed, and on which wage-growth basis?
+   The basis lives in the iframe src (wg=5 Buying, wg=1 Selling), so it is read
+   from there rather than re-derived — one deck can hold both. */
+function _presRvdEmbed(o) {
+  if (!o || o.type !== 'embed' || !o.src) return null;
+  if (!/runway-demand\.html/i.test(o.src)) return null;
+  const m = /[?&]wg=(\d+)/.exec(o.src);
+  return { wg: m ? Number(m[1]) : 5 };
+}
+
+/* One entry per PAGE of the finished PDF. Normally one per slide; a Runway v
+   Demand slide yields two. */
+function _presExportPlan() {
+  const pages = [];
+  const slides = (_activeDeck && _activeDeck.slides) || [];
+  for (let i = 0; i < slides.length; i++) {
+    const ovs = _overlays[_activeDeck.id + '/' + i] || [];
+    let rvd = null;
+    for (let k = 0; k < ovs.length; k++) {
+      const r = _presRvdEmbed(ovs[k]);
+      if (r) { rvd = r; break; }
+    }
+    if (rvd) {
+      pages.push({ slide: i, rvd: rvd, view: 'house' });
+      pages.push({ slide: i, rvd: rvd, view: 'unit' });
+    } else {
+      pages.push({ slide: i });
+    }
+  }
+  return pages;
+}
+
+/* Lay a captured image over an iframe so the page capture has something to
+   paint. Returns the undo. */
+function _presCoverIframe(host, dataUrl) {
+  if (!host) return function () {};
+  /* A background-image, NOT an <img object-fit:contain>: html2canvas ignores
+     object-fit and stretches the picture to the box, which is what squashed
+     the Runway v Demand chart in the first export. background-size IS
+     supported, so the aspect survives. */
+  /* An <img>, deliberately. The obvious alternative — a div with the shot as a
+     background-image — put a ~230KB data: URL inside a CSS url(), which
+     html2canvas either could not load or took minutes over: the Runway pages
+     came out blank and the export slowed to ~90s a page. An <img> with a data
+     URL it handles quickly, and _presFlattenImages gives it the right aspect
+     before the capture, so object-fit never has to be honoured. */
+  const img = document.createElement('img');
+  img.src = dataUrl;
+  img.setAttribute('data-pres-cover', '1');
+  img.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;'
+    + 'object-fit:contain;z-index:9;background:#fff';
+  const hostPos = host.style.position;
+  if (!hostPos) host.style.position = 'relative';
+  host.appendChild(img);
+  return function () {
+    try { img.remove(); } catch (_) {}
+    host.style.position = hostPos;
+  };
+}
+
+/* html2canvas 1.4.1 does not implement object-fit: it draws every <img>
+   stretched to fill its box. That turned the Market Positions Clock into an
+   ellipse and distorted the advisor and case-study photos (Van 2026-08-22).
+
+   Fixed by doing the arithmetic ourselves on the LIVE slide — measure the
+   natural size, work out the rectangle contain/cover would have produced, and
+   set that as explicit width/height/offset with object-fit:fill, which every
+   renderer agrees on. Doing it live rather than in onclone matters: the cloned
+   document is not laid out yet, so nothing can be measured there, and a
+   replacement element loses the stylesheet rules that were sizing the <img>.
+   Returns the undo. */
+function _presFlattenImages(root) {
+  const undo = [];
+  Array.prototype.slice.call(root.querySelectorAll('img')).forEach(function (im) {
+    const fit = getComputedStyle(im).objectFit;
+    if (fit !== 'contain' && fit !== 'cover') return;
+    const nw = im.naturalWidth, nh = im.naturalHeight;
+    const bw = im.clientWidth, bh = im.clientHeight;
+    if (!nw || !nh || !bw || !bh) return;
+    const k = (fit === 'cover') ? Math.max(bw / nw, bh / nh) : Math.min(bw / nw, bh / nh);
+    const w = nw * k, h = nh * k;
+    /* object-position drives where the drawn box sits; 50% 50% is the default
+       and the intro photo uses 50% 0% to keep faces in frame. */
+    const pos = (getComputedStyle(im).objectPosition || '50% 50%').split(/\s+/);
+    const px = parseFloat(pos[0]); const py = parseFloat(pos[1] != null ? pos[1] : pos[0]);
+    const ox = (bw - w) * ((isNaN(px) ? 50 : px) / 100);
+    const oy = (bh - h) * ((isNaN(py) ? 50 : py) / 100);
+    const prev = im.getAttribute('style') || '';
+    const parent = im.parentNode;
+    const prevOv = parent ? parent.style.overflow : null;
+    undo.push(function () {
+      if (prev) im.setAttribute('style', prev); else im.removeAttribute('style');
+      if (parent && prevOv !== null) parent.style.overflow = prevOv;
+    });
+    /* cover overflows its box by design — clip it, or the excess would paint
+       over the rest of the slide */
+    if (parent && fit === 'cover') parent.style.overflow = 'hidden';
+    im.style.objectFit = 'fill';
+    im.style.position = 'relative';
+    im.style.width = Math.round(w) + 'px';
+    im.style.height = Math.round(h) + 'px';
+    im.style.left = Math.round(ox) + 'px';
+    im.style.top = Math.round(oy) + 'px';
+  });
+  return function () { undo.forEach(function (fn) { try { fn(); } catch (_) {} }); };
+}
+
+/* Any OTHER same-origin embed (an Online Reports page, say): render the
+   iframe's own document with the parent's html2canvas. Cross-origin or a
+   failure returns null, and the page is captured with the iframe as-is. */
+async function _presShootIframe(iframeEl) {
+  /* Hard timeout: html2canvas over a live third-party document can simply
+     never resolve — that is how one stray iframe froze an export at page 7
+     with 29 pages still to go. A missing still is a blank panel; a hang is a
+     dead download. */
+  return Promise.race([
+    _presShootIframeInner(iframeEl),
+    new Promise(function (r) { setTimeout(function () { r(null); }, 12000); }),
+  ]);
+}
+async function _presShootIframeInner(iframeEl) {
+  try {
+    const doc = iframeEl.contentDocument;
+    if (!doc || !doc.body) return null;
+    const target = doc.scrollingElement || doc.body;
+    const w = target.scrollWidth || iframeEl.clientWidth || 1280;
+    const h = target.scrollHeight || iframeEl.clientHeight || 720;
+    const cv = await window.html2canvas(target, {
+      scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff',
+      width: w, height: h, windowWidth: w, windowHeight: h,
+    });
+    return cv.toDataURL('image/jpeg', 0.9);
+  } catch (e) { return null; }
+}
+
+/* Wait until the slide has settled: fonts in, images decoded, chart
+   controllers finished building, plus a beat for the entrance animation.
+   Without this the first pages come out half-drawn. */
+/* Load every remote picture in the deck ONCE, in parallel, before the page
+   loop starts. Otherwise each page pays its own network round trip inside the
+   capture — the advisor portraits and IR case-study photos come from Storage
+   — and a 4s-per-image worst case lands on the slowest pages. */
+async function _presPreloadImages() {
+  const urls = new Set();
+  Object.keys(_overlays).forEach(function (k) {
+    if (k.indexOf(_activeDeck.id + '/') !== 0) return;
+    (_overlays[k] || []).forEach(function (o) {
+      if (o && o.type === 'image' && o.src && !/^data:/.test(o.src)) urls.add(o.src);
+    });
+  });
+  await Promise.all(Array.from(urls).map(function (u) {
+    return new Promise(function (r) {
+      const im = new Image();
+      im.onload = r; im.onerror = r;
+      setTimeout(r, 8000);
+      im.src = u;
+    });
+  }));
+}
+
+async function _presSlideSettled(hasChart) {
+  const slide = document.getElementById('pres-slide');
+  if (slide) {
+    const imgs = Array.prototype.slice.call(slide.querySelectorAll('img'));
+    await Promise.all(imgs.map(function (im) {
+      return im.complete ? Promise.resolve()
+        : new Promise(function (r) { im.onload = r; im.onerror = r; setTimeout(r, 4000); });
+    }));
+  }
+  try {
+    Object.keys(_chartControllers || {}).forEach(function (id) {
+      const c = _chartControllers[id];
+      if (c && typeof c.isComplete === 'function') {
+        let n = 0;
+        while (!c.isComplete() && n++ < 40) c.next();
+      }
+    });
+  } catch (_) {}
+  /* Charts used to get 1500ms here to sit through their build animation.
+     Export mode renders them at their final state instantly, so this is just
+     a layout beat now. */
+  await new Promise(function (r) { setTimeout(r, hasChart ? 180 : 90); });
+}
+
+async function downloadDeckPDF() {
+  if (_presExportBusy) return;
+  if (!_activeDeck || !(_activeDeck.slides || []).length) {
+    showPresToast('This deck has no pages to download yet.', { warn: true });
+    return;
+  }
+  _presExportBusy = true;
+  const btn = document.getElementById('pres-download');
+  if (btn) btn.disabled = true;
+  const slideIdxWas = _slideIdx;
+  const editWas = !!_editMode;
+  const zoomWas = document.documentElement.style.zoom;
+  document.body.classList.add('pres-exporting');
+  _presExportProgress('Preparing…', '', 0);
+  try {
+    await _presPdfLibs();
+    /* Editing chrome off and nothing selected — a selection ring would
+       otherwise be baked into the page. */
+    if (editWas) { try { setEditMode(false); } catch (_) {} }
+    /* fit-screen's CSS zoom breaks html2canvas measurement the same way it did
+       in the B/S tool; pin it for the duration. */
+    document.documentElement.style.zoom = '1';
+    /* charts render at their final state, no build animation to wait out */
+    try { if (window.PresentChart && window.PresentChart.setExporting) window.PresentChart.setExporting(true); } catch (_) {}
+    try { await document.fonts.ready; } catch (_) {}
+    _presExportProgress('Preparing…', 'Loading images', 0.01);
+    try { await _presPreloadImages(); } catch (_) {}
+    await new Promise(function (r) { setTimeout(r, 150); });
+
+    const plan = _presExportPlan();
+    const total = plan.length;
+
+    /* Runway v Demand shots up front — one hidden iframe load serves every RVD
+       page in the deck, and PP_BSS caches per (view, basis). */
+    const shots = {};
+    const bases = {};
+    plan.forEach(function (p) { if (p.rvd) bases[p.rvd.wg] = true; });
+    const baseList = Object.keys(bases);
+    for (let i = 0; i < baseList.length; i++) {
+      const wg = Number(baseList[i]);
+      const views = ['house', 'unit'];
+      for (let v = 0; v < views.length; v++) {
+        _presExportProgress('Loading Runway v Demand…',
+          views[v] === 'house' ? 'Houses' : 'Units', 0.02);
+        try {
+          const shot = (window.PP_BSS && window.PP_BSS.rvdShot)
+            ? await window.PP_BSS.rvdShot({ wg: wg, view: views[v] }) : null;
+          if (shot && shot.src) shots[wg + ':' + views[v]] = shot.src;
+        } catch (_) {}
+      }
+    }
+
+    const pdf = new window.jspdf.jsPDF({
+      orientation: 'landscape', unit: 'px', format: [1280, 720],
+      compress: true, hotfixes: ['px_scaling'],
+    });
+    const slideEl = document.getElementById('pres-slide');
+    let pageNo = 0;
+
+    for (let n = 0; n < plan.length; n++) {
+      const page = plan[n];
+      _presExportProgress('Rendering ' + (n + 1) + ' of ' + total + '…',
+        'Page ' + (page.slide + 1) + (page.view ? ' · ' + (page.view === 'house' ? 'Houses' : 'Units') : ''),
+        n / total);
+      renderSlide(page.slide);
+      const ovs = _overlays[_activeDeck.id + '/' + page.slide] || [];
+      await _presSlideSettled(ovs.some(function (o) { return o.type === 'chart'; }));
+
+      /* Swap each live embed on this page for a still.
+
+         Driven off the OVERLAY DATA, not off slideEl.querySelectorAll('iframe').
+         Scanning the DOM was wrong twice over: the embed iframe is created
+         lazily, so on the first Runway page there was no iframe yet and the page
+         exported blank; and the PREVIOUS slide's iframe was still in the DOM on
+         the next slide, so the exporter ran html2canvas over the whole live
+         runway-demand document and hung there for the rest of the run.
+         The overlay list is authoritative about what belongs on this page. */
+      const restores = [];
+      /* An embed's overlay element is not in the DOM the instant the slide
+         renders, so a page that carries one has to be waited for — at the short
+         settle this loop simply found nothing and the Runway pages exported
+         blank. Only pages with an embed pay this. */
+      const embeds = ovs.filter(function (o) { return o && o.type === 'embed'; });
+      if (embeds.length) {
+        const until = Date.now() + 3000;
+        while (Date.now() < until) {
+          const missing = embeds.some(function (o) {
+            return !slideEl.querySelector('.pres-overlay[data-id="' + o.id + '"]');
+          });
+          if (!missing) break;
+          await new Promise(function (r) { setTimeout(r, 80); });
+        }
+      }
+      /* Idempotent, and run TWICE.
+         renderSlide re-mounts an embed a beat after the slide renders, which
+         replaces the overlay element and takes any child with it — the second
+         Runway page kept losing its still that way and exported blank. The
+         second pass re-attaches anything that got wiped; a cover that survived
+         is left alone, so nothing is captured twice. */
+      const applyCovers = async function () {
+        for (let k = 0; k < embeds.length; k++) {
+          const o = embeds[k];
+          const host = slideEl.querySelector('.pres-overlay[data-id="' + o.id + '"]');
+          if (!host || host.querySelector('[data-pres-cover]')) continue;
+          let url = null;
+          if (page.rvd && _presRvdEmbed(o)) url = shots[page.rvd.wg + ':' + page.view] || null;
+          if (!url) {
+            const fr = host.querySelector('iframe');
+            if (fr) url = await _presShootIframe(fr);
+          }
+          if (url) restores.push(_presCoverIframe(host, url));
+        }
+      };
+      await applyCovers();
+      /* the covers are freshly created, so they must DECODE before anything
+         measures them — naturalWidth is 0 until then and the flatten below
+         would silently skip them */
+      await Promise.all(Array.prototype.slice.call(slideEl.querySelectorAll('img')).map(function (im) {
+        return im.complete ? Promise.resolve() : new Promise(function (r) {
+          im.onload = r; im.onerror = r; setTimeout(r, 4000);
+        });
+      }));
+      await new Promise(function (r) { setTimeout(r, 60); });
+      if (embeds.length) {
+        await applyCovers();
+        await Promise.all(Array.prototype.slice.call(slideEl.querySelectorAll('img')).map(function (im) {
+          return im.complete ? Promise.resolve() : new Promise(function (r) {
+            im.onload = r; im.onerror = r; setTimeout(r, 4000);
+          });
+        }));
+      }
+      restores.push(_presFlattenImages(slideEl));
+
+      let canvas;
+      try {
+        canvas = await window.html2canvas(slideEl, {
+          scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff',
+          width: 1280, height: 720, windowWidth: 1280, windowHeight: 720,
+          /* Runway v Demand exports as two pages off ONE slide, so they must
+             not arrive looking identical — the reader has no way to tell which
+             is which. Name the view on the deck's own title (the biggest text
+             overlay in the header band), and relabel any 'Houses' copy the page
+             carries on the Units page, which is the substitution the B/S export
+             makes. Done in the CLONE, so the stored slide is untouched. */
+          onclone: function (doc, cloned) {
+            const root = cloned || doc.getElementById('pres-slide') || doc;
+            if (!page.view) return;
+            /* Scoped to the CLONED SLIDE above, not the document: html2canvas
+               clones the whole page, so the thumbnail rail's overlays are in
+               there too and carry the same coordinates — the label was landing
+               on a thumbnail nobody photographs. */
+            const label = page.view === 'unit' ? 'Units' : 'Houses';
+            const heads = Array.prototype.slice.call(root.querySelectorAll('.pres-overlay-text'))
+              .filter(function (el) { return parseFloat(el.style.top || '999') < 118; })
+              .sort(function (a, b) { return parseFloat(b.style.fontSize || 0) - parseFloat(a.style.fontSize || 0); });
+            if (heads[0]) heads[0].innerHTML = heads[0].innerHTML + ' — ' + label;
+            if (page.view === 'unit') {
+              root.querySelectorAll('.pres-overlay-text').forEach(function (el) {
+                if (el.querySelector('canvas,img,svg')) return;
+                if (el === heads[0]) return;
+                if (/houses/i.test(el.textContent || '')) {
+                  el.innerHTML = el.innerHTML.replace(/houses/gi, 'UNITS');
+                }
+              });
+            }
+          },
+        });
+      } finally {
+        restores.forEach(function (fn) { try { fn(); } catch (_) {} });
+      }
+      if (pageNo > 0) pdf.addPage([1280, 720], 'landscape');
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.94), 'JPEG', 0, 0, 1280, 720, undefined, 'FAST');
+      pageNo++;
+    }
+
+    _presExportProgress('Saving…', total + ' pages', 1);
+    const now = new Date();
+    const name = String(_activeDeck.title || 'Presentation').replace(/[\\/:*?"<>|]+/g, ' ').trim()
+      + ' - ' + now.toLocaleString('en-AU', { month: 'long' }) + ' ' + now.getFullYear() + '.pdf';
+    pdf.save(name);
+    showPresToast('Downloaded ' + total + ' page' + (total === 1 ? '' : 's') + '.', { duration: 4000 });
+  } catch (e) {
+    console.error('Deck PDF export:', e);
+    showPresToast('Download failed — ' + ((e && e.message) || 'see the console.'), { duration: 7000, warn: true });
+  } finally {
+    try { if (window.PresentChart && window.PresentChart.setExporting) window.PresentChart.setExporting(false); } catch (_) {}
+    document.body.classList.remove('pres-exporting');
+    document.documentElement.style.zoom = zoomWas || '';
+    try { if (editWas) setEditMode(true); } catch (_) {}
+    try { renderSlide(slideIdxWas); } catch (_) {}
+    try { fitSlide(); } catch (_) {}
+    if (btn) btn.disabled = false;
+    _presExportBusy = false;
+  }
+}
+{
+  const _dlBtn = document.getElementById('pres-download');
+  if (_dlBtn) _dlBtn.addEventListener('click', downloadDeckPDF);
+}
 
 /* ─── Boot ─── */
 loadOverlays();

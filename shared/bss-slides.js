@@ -415,7 +415,11 @@
      ~12s, and a deck can hold several of these. */
   const RVD_SHOTS = {};
   function rvdShot(ctx) {
-    const wg = ((ctx || {}).mode === 'buy') ? 5 : 1;   /* Buying = 5yr, Selling = 1yr */
+    /* The basis can be given outright (the deck export reads wg straight off
+       the embed's iframe src, so a deck holding both a Buying and a Selling
+       Runway page exports each on its own basis) or derived from the mode. */
+    const wg = Number.isFinite((ctx || {}).wg) ? Number(ctx.wg)
+      : (((ctx || {}).mode === 'buy') ? 5 : 1);   /* Buying = 5yr, Selling = 1yr */
     const view = ((ctx || {}).view === 'unit') ? 'unit' : 'house';
     const ck = view + ':' + wg;
     if (RVD_SHOTS[ck]) return RVD_SHOTS[ck];
