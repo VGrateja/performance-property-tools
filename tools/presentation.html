@@ -1810,6 +1810,26 @@
   .pres-export-scrim .pes-bar{ width:320px; height:6px; border-radius:99px; background:rgba(255,255,255,0.16); overflow:hidden }
   .pres-export-scrim .pes-bar i{ display:block; height:100%; width:0%; background:#00A0B4; transition:width .25s ease }
 
+  /* Download format menu — a small dropdown under the Download button. */
+  .pres-dl-menu{
+    position:fixed; z-index:10001; min-width:224px; padding:6px; display:none;
+    background:rgba(15,23,42,.97); border:1px solid rgba(71,85,105,.55);
+    border-radius:10px; box-shadow:0 12px 32px rgba(0,0,0,.45);
+    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    font-family:'Montserrat',sans-serif;
+  }
+  .pres-dl-menu.open{ display:block; }
+  .pres-dl-menu button{
+    display:block; width:100%; padding:9px 11px; text-align:left; cursor:pointer;
+    background:none; border:0; border-radius:7px; color:#e2e8f0; font:600 13px 'Montserrat',sans-serif;
+  }
+  .pres-dl-menu button:hover{ background:rgba(0,160,180,.20); }
+  .pres-dl-menu .pdm-sub{ display:block; margin-top:2px; font:500 10.5px 'Montserrat',sans-serif; color:#94a3b8; }
+  [data-theme="light"] .pres-dl-menu{ background:#fff; border-color:#d7dce4; box-shadow:0 12px 32px rgba(23,27,36,.16); }
+  [data-theme="light"] .pres-dl-menu button{ color:#171B24; }
+  [data-theme="light"] .pres-dl-menu button:hover{ background:rgba(0,160,180,.10); }
+  [data-theme="light"] .pres-dl-menu .pdm-sub{ color:#63666A; }
+
   /* Per-chart play-mode toggle — top-left tab on a selected chart overlay.
      Cyan when set to autoplay (the default), dark when switched to manual. */
   .pres-overlay-autoplay{
@@ -3853,7 +3873,7 @@
 <!-- Autosave status — sits just left of the Present button. -->
 <!-- Download — available in View as well as Edit: advisors who can't edit a
      deck still need to take it away as a PDF. -->
-<button class="pres-icon-btn" id="pres-download" type="button" title="Download this deck as a PDF" aria-label="Download this deck as a PDF">
+<button class="pres-icon-btn" id="pres-download" type="button" title="Download this deck — PDF, PowerPoint or JPG" aria-label="Download this deck">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M4 19h16"/></svg>
 </button>
 <div class="pres-savestat" id="pres-savestat"></div>
@@ -3869,6 +3889,13 @@
   <div class="pes-title" id="pes-title">Preparing…</div>
   <div class="pes-bar"><i id="pes-bar"></i></div>
   <div class="pes-sub" id="pes-sub"></div>
+</div>
+
+<!-- Download format menu — opened by the Download button. -->
+<div class="pres-dl-menu" id="pres-dl-menu" role="menu" aria-label="Download format">
+  <button type="button" data-fmt="pdf" role="menuitem">PDF document<span class="pdm-sub">One file, every page</span></button>
+  <button type="button" data-fmt="pptx" role="menuitem">PowerPoint (.pptx)<span class="pdm-sub">One image slide per page</span></button>
+  <button type="button" data-fmt="jpg" role="menuitem">JPG images (.zip)<span class="pdm-sub">One picture per page</span></button>
 </div>
 
 <!-- Picker — "Choose a Presentation" cards. Visible by default;
@@ -18166,7 +18193,7 @@ setTimeout(applyPresTierGate, 800);
 
 
 /* ══════════════════════════════════════════════════════════════════════════
-   DECK DOWNLOAD (PDF)
+   DECK DOWNLOAD (PDF / PowerPoint / JPG)
    The point of this tool is combining reports, so a finished deck has to leave
    as one file — whatever it is made of: Online Reports charts, IR pages,
    transplanted Buying/Selling pages, the clock, manual text and shapes, and
@@ -18191,29 +18218,31 @@ let _presExportBusy = false;
 
 /* html2canvas + jsPDF on demand — this file is already large and most sessions
    never download. Same versions and SRI digests as the report tools. */
-let _presPdfLibsP = null;
-function _presPdfLibs() {
-  if (window.html2canvas && window.jspdf) return Promise.resolve();
-  if (_presPdfLibsP) return _presPdfLibsP;
-  const load = (src, integrity) => new Promise((res, rej) => {
-    const el = document.createElement('script');
-    el.src = src;
-    el.integrity = integrity;
-    el.crossOrigin = 'anonymous';
-    el.referrerPolicy = 'no-referrer';
-    el.onload = res;
-    el.onerror = () => rej(new Error('Failed to load ' + src));
-    document.head.appendChild(el);
-  });
-  _presPdfLibsP = Promise.all([
-    window.html2canvas ? Promise.resolve() : load(
-      'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js',
-      'sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H'),
-    window.jspdf ? Promise.resolve() : load(
-      'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
-      'sha384-JcnsjUPPylna1s1fvi1u12X5qjY5OL56iySh75FdtrwhO/SWXgMjoVqcKyIIWOLk'),
-  ]).catch(e => { _presPdfLibsP = null; throw e; });
-  return _presPdfLibsP;
+const _presLibP = {};
+function _presLoadScript(src, integrity) {
+  if (!_presLibP[src]) {
+    _presLibP[src] = new Promise(function (res, rej) {
+      const el = document.createElement('script');
+      el.src = src;
+      el.integrity = integrity;
+      el.crossOrigin = 'anonymous';
+      el.referrerPolicy = 'no-referrer';
+      el.onload = res;
+      el.onerror = function () { delete _presLibP[src]; rej(new Error('Failed to load ' + src)); };
+      document.head.appendChild(el);
+    });
+  }
+  return _presLibP[src];
+}
+/* html2canvas always; jsPDF only for PDF; JSZip only for JPG/PPTX. Versions
+   + SRI digests match the report tools (the JSZip digest is computed from
+   the cdnjs 3.10.1 file). */
+function _presExportLibs(format) {
+  const jobs = [];
+  if (!window.html2canvas) jobs.push(_presLoadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js', 'sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H'));
+  if (format === 'pdf' && !window.jspdf) jobs.push(_presLoadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', 'sha384-JcnsjUPPylna1s1fvi1u12X5qjY5OL56iySh75FdtrwhO/SWXgMjoVqcKyIIWOLk'));
+  if ((format === 'jpg' || format === 'pptx') && !window.JSZip) jobs.push(_presLoadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js', 'sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG'));
+  return Promise.all(jobs);
 }
 
 function _presExportProgress(title, sub, frac) {
@@ -18259,6 +18288,28 @@ function _presExportPlan() {
 
 /* Lay a captured image over an iframe so the page capture has something to
    paint. Returns the undo. */
+/* Runway v Demand's still fills the CONTENT BAND (x 73..1207, y 120..640) at
+   the chart's own aspect, not the embed's slide box — the embed is only
+   783px wide on screen and Van wanted the exported chart bigger. Appended to
+   the SLIDE, not the overlay host: renderSlide re-mounts embeds a beat after
+   rendering, and a cover inside the host went with it. The caller hides the
+   live embed host. Exact geometry, so object-fit never has to be honoured. */
+function _presCoverBand(slideEl, shot, ovId) {
+  const BX = 73, BY = 120, BW = 1134, BH = 520;
+  const cw = shot.cw || 2176, ch = shot.ch || 1150;
+  const k = Math.min(BW / cw, BH / ch);
+  const w = Math.round(cw * k), h = Math.round(ch * k);
+  const img = document.createElement('img');
+  img.src = shot.src;
+  img.setAttribute('data-pres-cover', ovId);
+  img.style.cssText = 'position:absolute;z-index:9;'
+    + 'left:' + (BX + Math.round((BW - w) / 2)) + 'px;'
+    + 'top:' + (BY + Math.round((BH - h) / 2)) + 'px;'
+    + 'width:' + w + 'px;height:' + h + 'px';
+  slideEl.appendChild(img);
+  return function () { try { img.remove(); } catch (_) {} };
+}
+
 function _presCoverIframe(host, dataUrl) {
   if (!host) return function () {};
   /* A background-image, NOT an <img object-fit:contain>: html2canvas ignores
@@ -18409,7 +18460,64 @@ async function _presSlideSettled(hasChart) {
   await new Promise(function (r) { setTimeout(r, hasChart ? 180 : 90); });
 }
 
-async function downloadDeckPDF() {
+/* ── PPTX: one full-bleed 16:9 image slide per page. The zip structure is the
+   template proven with PowerPoint earlier (scratch/_build-pptx.mjs built the
+   FMD deck Van received) — theme colours are the brand palette, fonts Arial
+   per the brand rules for PowerPoint. */
+function _presBuildPptx(pages) {
+  const CX = 12192000, CY = 6858000;   /* 16:9 EMU */
+  const zip = new window.JSZip();
+  const N = pages.length;
+  const XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+  const slideXml = XML + '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr><p:pic><p:nvPicPr><p:cNvPr id="2" name="Slide"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + CX + '" cy="' + CY + '"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic></p:spTree></p:cSld><p:clrMapOvr><a:overrideClrMapping bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/></p:clrMapOvr></p:sld>';
+  const themeXml = XML + '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="PP"><a:themeElements><a:clrScheme name="PP"><a:dk1><a:srgbClr val="171B24"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="171B24"/></a:dk2><a:lt2><a:srgbClr val="F6F8FB"/></a:lt2><a:accent1><a:srgbClr val="00A0B4"/></a:accent1><a:accent2><a:srgbClr val="54A6DE"/></a:accent2><a:accent3><a:srgbClr val="3E7967"/></a:accent3><a:accent4><a:srgbClr val="FFA91F"/></a:accent4><a:accent5><a:srgbClr val="71B357"/></a:accent5><a:accent6><a:srgbClr val="E72347"/></a:accent6><a:hlink><a:srgbClr val="00A0B4"/></a:hlink><a:folHlink><a:srgbClr val="63666A"/></a:folHlink></a:clrScheme><a:fontScheme name="PP"><a:majorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Office"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>';
+  const masterXml = XML + '<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst></p:sldMaster>';
+  const layoutXml = XML + '<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank"><p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMapOvr><a:overrideClrMapping bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/></p:clrMapOvr></p:sldLayout>';
+  let ct = XML + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="jpg" ContentType="image/jpeg"/><Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>';
+  for (let i = 1; i <= N; i++) {
+    ct += '<Override PartName="/ppt/slides/slide' + i + '.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>';
+  }
+  ct += '</Types>';
+  zip.file('[Content_Types].xml', ct);
+  zip.file('_rels/.rels', XML + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/></Relationships>');
+  let sldIds = '';
+  let presRels = XML + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>';
+  for (let i = 1; i <= N; i++) {
+    sldIds += '<p:sldId id="' + (255 + i) + '" r:id="rId' + (2 + i) + '"/>';
+    presRels += '<Relationship Id="rId' + (2 + i) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide' + i + '.xml"/>';
+  }
+  presRels += '</Relationships>';
+  zip.file('ppt/presentation.xml', XML + '<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst>' + sldIds + '</p:sldIdLst><p:sldSz cx="' + CX + '" cy="' + CY + '"/><p:notesSz cx="' + CY + '" cy="' + CX + '"/></p:presentation>');
+  zip.file('ppt/_rels/presentation.xml.rels', presRels);
+  zip.file('ppt/theme/theme1.xml', themeXml);
+  zip.file('ppt/slideMasters/slideMaster1.xml', masterXml);
+  zip.file('ppt/slideMasters/_rels/slideMaster1.xml.rels', XML + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>');
+  zip.file('ppt/slideLayouts/slideLayout1.xml', layoutXml);
+  zip.file('ppt/slideLayouts/_rels/slideLayout1.xml.rels', XML + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>');
+  pages.forEach(function (b64, idx) {
+    const i = idx + 1;
+    zip.file('ppt/media/image' + i + '.jpg', b64, { base64: true });
+    zip.file('ppt/slides/slide' + i + '.xml', slideXml);
+    zip.file('ppt/slides/_rels/slide' + i + '.xml.rels', XML + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image' + i + '.jpg"/></Relationships>');
+  });
+  return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 4 } });
+}
+
+/* Hand a produced file to the browser. One seam for every format, which is
+   also what lets the export harness capture the artefact in headless runs. */
+function _presSaveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+}
+
+async function downloadDeck(format) {
+  format = (format === 'jpg' || format === 'pptx') ? format : 'pdf';
   if (_presExportBusy) return;
   if (!_activeDeck || !(_activeDeck.slides || []).length) {
     showPresToast('This deck has no pages to download yet.', { warn: true });
@@ -18424,7 +18532,7 @@ async function downloadDeckPDF() {
   document.body.classList.add('pres-exporting');
   _presExportProgress('Preparing…', '', 0);
   try {
-    await _presPdfLibs();
+    await _presExportLibs(format);
     /* Editing chrome off and nothing selected — a selection ring would
        otherwise be baked into the page. */
     if (editWas) { try { setEditMode(false); } catch (_) {} }
@@ -18442,7 +18550,9 @@ async function downloadDeckPDF() {
     const total = plan.length;
 
     /* Runway v Demand shots up front — one hidden iframe load serves every RVD
-       page in the deck, and PP_BSS caches per (view, basis). */
+       page in the deck, and PP_BSS caches per (view, basis). The WHOLE shot is
+       kept ({src, cw, ch}): the band cover needs the natural size to fill the
+       content band at the right aspect. */
     const shots = {};
     const bases = {};
     plan.forEach(function (p) { if (p.rvd) bases[p.rvd.wg] = true; });
@@ -18456,15 +18566,18 @@ async function downloadDeckPDF() {
         try {
           const shot = (window.PP_BSS && window.PP_BSS.rvdShot)
             ? await window.PP_BSS.rvdShot({ wg: wg, view: views[v] }) : null;
-          if (shot && shot.src) shots[wg + ':' + views[v]] = shot.src;
+          if (shot && shot.src) shots[wg + ':' + views[v]] = shot;
         } catch (_) {}
       }
     }
 
-    const pdf = new window.jspdf.jsPDF({
-      orientation: 'landscape', unit: 'px', format: [1280, 720],
-      compress: true, hotfixes: ['px_scaling'],
-    });
+    const pdf = (format === 'pdf')
+      ? new window.jspdf.jsPDF({
+          orientation: 'landscape', unit: 'px', format: [1280, 720],
+          compress: true, hotfixes: ['px_scaling'],
+        })
+      : null;
+    const pages = [];   /* base64 JPEG per page — the JPG zip and PPTX sinks */
     const slideEl = document.getElementById('pres-slide');
     let pageNo = 0;
 
@@ -18506,20 +18619,34 @@ async function downloadDeckPDF() {
          renderSlide re-mounts an embed a beat after the slide renders, which
          replaces the overlay element and takes any child with it — the second
          Runway page kept losing its still that way and exported blank. The
-         second pass re-attaches anything that got wiped; a cover that survived
-         is left alone, so nothing is captured twice. */
+         second pass re-attaches or re-hides anything the re-mount undid; what
+         survived is left alone, so nothing is captured twice. */
       const applyCovers = async function () {
         for (let k = 0; k < embeds.length; k++) {
           const o = embeds[k];
           const host = slideEl.querySelector('.pres-overlay[data-id="' + o.id + '"]');
-          if (!host || host.querySelector('[data-pres-cover]')) continue;
-          let url = null;
-          if (page.rvd && _presRvdEmbed(o)) url = shots[page.rvd.wg + ':' + page.view] || null;
-          if (!url) {
+          if (!host) continue;
+          if (page.rvd && _presRvdEmbed(o)) {
+            const shot = shots[page.rvd.wg + ':' + page.view];
+            if (!shot) continue;
+            /* hide the live embed EVERY pass — a re-mounted host comes back
+               visible, and the band cover does not necessarily blot all of it */
+            if (host.style.visibility !== 'hidden') {
+              host.style.visibility = 'hidden';
+              restores.push(function () {
+                const h = slideEl.querySelector('.pres-overlay[data-id="' + o.id + '"]');
+                if (h) h.style.visibility = '';
+              });
+            }
+            if (!slideEl.querySelector('img[data-pres-cover="' + o.id + '"]')) {
+              restores.push(_presCoverBand(slideEl, shot, o.id));
+            }
+          } else {
+            if (host.querySelector('[data-pres-cover]')) continue;
             const fr = host.querySelector('iframe');
-            if (fr) url = await _presShootIframe(fr);
+            const url = fr ? await _presShootIframe(fr) : null;
+            if (url) restores.push(_presCoverIframe(host, url));
           }
-          if (url) restores.push(_presCoverIframe(host, url));
         }
       };
       await applyCovers();
@@ -18579,19 +18706,38 @@ async function downloadDeckPDF() {
       } finally {
         restores.forEach(function (fn) { try { fn(); } catch (_) {} });
       }
-      if (pageNo > 0) pdf.addPage([1280, 720], 'landscape');
-      pdf.addImage(canvas.toDataURL('image/jpeg', 0.94), 'JPEG', 0, 0, 1280, 720, undefined, 'FAST');
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.94);
+      if (pdf) {
+        if (pageNo > 0) pdf.addPage([1280, 720], 'landscape');
+        pdf.addImage(dataUrl, 'JPEG', 0, 0, 1280, 720, undefined, 'FAST');
+      } else {
+        pages.push(dataUrl.split(',')[1]);
+      }
       pageNo++;
     }
 
-    _presExportProgress('Saving…', total + ' pages', 1);
+    _presExportProgress(format === 'pdf' ? 'Saving…' : 'Packaging…', total + ' pages', 1);
     const now = new Date();
-    const name = String(_activeDeck.title || 'Presentation').replace(/[\\/:*?"<>|]+/g, ' ').trim()
-      + ' - ' + now.toLocaleString('en-AU', { month: 'long' }) + ' ' + now.getFullYear() + '.pdf';
-    pdf.save(name);
-    showPresToast('Downloaded ' + total + ' page' + (total === 1 ? '' : 's') + '.', { duration: 4000 });
+    const base = String(_activeDeck.title || 'Presentation').replace(/[\\/:*?"<>|]+/g, ' ').trim()
+      + ' - ' + now.toLocaleString('en-AU', { month: 'long' }) + ' ' + now.getFullYear();
+    if (format === 'pdf') {
+      _presSaveBlob(pdf.output('blob'), base + '.pdf');
+    } else if (format === 'jpg') {
+      const zip = new window.JSZip();
+      const pad = String(total).length > 2 ? 3 : 2;
+      pages.forEach(function (b64, i) {
+        zip.file(base + ' - Page ' + String(i + 1).padStart(pad, '0') + '.jpg', b64, { base64: true });
+      });
+      /* STORE, not DEFLATE: the entries are already JPEG — compressing them
+         again buys nothing and costs seconds on a long deck */
+      _presSaveBlob(await zip.generateAsync({ type: 'blob', compression: 'STORE' }), base + ' (JPG).zip');
+    } else {
+      _presSaveBlob(await _presBuildPptx(pages), base + '.pptx');
+    }
+    showPresToast('Downloaded ' + total + ' page' + (total === 1 ? '' : 's') + ' as '
+      + (format === 'pdf' ? 'PDF' : format === 'jpg' ? 'JPG images' : 'PowerPoint') + '.', { duration: 4000 });
   } catch (e) {
-    console.error('Deck PDF export:', e);
+    console.error('Deck export:', e);
     showPresToast('Download failed — ' + ((e && e.message) || 'see the console.'), { duration: 7000, warn: true });
   } finally {
     try { if (window.PresentChart && window.PresentChart.setExporting) window.PresentChart.setExporting(false); } catch (_) {}
@@ -18606,7 +18752,31 @@ async function downloadDeckPDF() {
 }
 {
   const _dlBtn = document.getElementById('pres-download');
-  if (_dlBtn) _dlBtn.addEventListener('click', downloadDeckPDF);
+  const _dlMenu = document.getElementById('pres-dl-menu');
+  const _dlClose = function () { if (_dlMenu) _dlMenu.classList.remove('open'); };
+  if (_dlBtn && _dlMenu) {
+    _dlBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      if (_presExportBusy) return;
+      if (_dlMenu.classList.contains('open')) { _dlClose(); return; }
+      const r = _dlBtn.getBoundingClientRect();
+      _dlMenu.style.top = Math.round(r.bottom + 8) + 'px';
+      _dlMenu.style.right = Math.max(8, Math.round(window.innerWidth - r.right)) + 'px';
+      _dlMenu.classList.add('open');
+    });
+    _dlMenu.addEventListener('click', function (ev) {
+      const b = ev.target.closest('button[data-fmt]');
+      if (!b) return;
+      _dlClose();
+      downloadDeck(b.dataset.fmt);
+    });
+    document.addEventListener('click', function (ev) {
+      if (!_dlMenu.classList.contains('open')) return;
+      if (_dlBtn.contains(ev.target) || _dlMenu.contains(ev.target)) return;
+      _dlClose();
+    });
+    document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') _dlClose(); });
+  }
 }
 
 /* ─── Boot ─── */
