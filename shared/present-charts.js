@@ -75,6 +75,15 @@
     valueSize: 18,
   };
 
+  /* True while a deck export is running (setExporting). ECharts animation is
+     silenced by the init wrapper below, but this file also animates with raw
+     TIMERS — the legend stagger (setTimeout), the count-ups (rAF, 1.2s) and
+     the sparkline wipe (a 1.05s CSS transition). A capture taken during any
+     of them ships half a slide: Van’s PPTX had the industry donut with 4 of
+     14 legend items. While exporting, every one of these jumps straight to
+     its final state instead. */
+  var _exportingNow = false;
+
   function isArr(a) { return Array.isArray(a); }
   function lastNum(a) {
     if (!isArr(a)) return null;
@@ -325,6 +334,7 @@
     function startLegendReveal() {
       if (!legendNames || legendStarted) return;
       legendStarted = true;
+      if (_exportingNow) { chart.setOption({ legend: { data: legendNames.slice() } }); return; }
       var total = legendNames.length;
       var per = Math.max(16, Math.min(40, Math.round((THEME.drawMs || 1100) / (total * 2))));   // snappy stagger
       var i = 0;
@@ -673,6 +683,11 @@
     sparkHost.style.opacity = '1';
     var svg = sparkHost.querySelector('svg');
     if (!svg) return;
+    if (_exportingNow) {
+      svg.style.transition = 'none';
+      svg.style.webkitClipPath = svg.style.clipPath = 'inset(0 0 0 0)';
+      return;
+    }
     svg.style.webkitClipPath = svg.style.clipPath = 'inset(0 100% 0 0)';
     svg.getBoundingClientRect();                 // force reflow so the transition runs
     svg.style.transition = 'clip-path 1.05s ease, -webkit-clip-path 1.05s ease';
@@ -717,6 +732,7 @@
     var fmt = _bnFmt(spec.unit || 'num', (typeof spec.decimals === 'number') ? spec.decimals : 0);
     var raf = null;
     function countUp() {
+      if (_exportingNow) { big.textContent = fmt(target); return; }
       var startT = null, dur = 1200;
       cancelAnimationFrame(raf);
       function tick(ts) {
@@ -811,6 +827,7 @@
 
     var raf = null;
     function countUpAll() {
+      if (_exportingNow) { counters.forEach(function (c) { c.el.textContent = c.fmt(c.target); }); return; }
       var startT = null, dur = 1200;
       cancelAnimationFrame(raf);
       function tick(ts) {
@@ -999,6 +1016,7 @@
      export finishes, so normal viewing keeps its build animation. */
   let _initWas = null;
   function setExporting(on) {
+    _exportingNow = !!on;
     if (on && window.echarts && !_initWas) {
       _initWas = window.echarts.init;
       window.echarts.init = function () {
