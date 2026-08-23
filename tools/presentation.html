@@ -5850,9 +5850,10 @@ function _appendPickerNewTiles() {
 
 /* Spawn a new empty user-created deck. Title comes from a prompt
    (the user can rename later via inline edit on the picker card).
-   `lastUpdated` is stamped on create and re-stamped on every later
-   title / date / slide edit so the picker can show recency. The
-   deck is persisted immediately so a refresh doesn't lose it. */
+   `lastUpdated` is stamped on create and re-stamped automatically by
+   _stampDeckUpdated() on every later edit that queues a save, so the
+   picker's recency chip keeps itself current. The deck is persisted
+   immediately so a refresh doesn't lose it. */
 function createNewDeck() {
   const titleInput = prompt('Name this presentation:', 'Untitled Presentation');
   if (titleInput === null) return; /* Cancel */
@@ -6326,9 +6327,13 @@ function _pickerEditTitle(el, deck) {
   el.addEventListener('keydown', onKey);
 }
 
-/* Swap the "Updated X" span into a date input prefilled with the
-   current lastUpdated. On blur / Enter, persist the new date (as ISO
-   at midnight UTC so the formatter shows a stable day-month-year). */
+/* Swap the "Updated X" span into a date input prefilled with the current
+   lastUpdated. On blur / Enter, persist the new date (as ISO at midnight UTC
+   so the formatter shows a stable day-month-year).
+
+   This is now an OVERRIDE, not the primary path: the date maintains itself on
+   every edit (_stampDeckUpdated). Use it to back-date a deck whose content was
+   really finalised earlier; the next edit re-stamps it to today. */
 function _pickerEditDate(el, deck) {
   if (!deck.custom || !_deckIsEditable(deck)) return;
   const current = deck.lastUpdated ? new Date(deck.lastUpdated) : new Date();
@@ -17876,12 +17881,30 @@ async function _doPresCloudSave() {
   }
 }
 
+/* Re-date the picker card's "Updated …" chip (Van 2026-08-24: it must keep
+   itself current instead of being hand-set). Called ONLY from the two
+   schedulers below, which fire on a real user edit — deliberately NOT from
+   _flushPresCloudSave(), which also runs on a plain open→close and would
+   re-date a deck nobody touched. The stamp rides along in the payload
+   (_cleanDeck keeps every non-underscore key), so it reaches the cloud with
+   the edit itself and every viewer sees the same date.
+
+   Guarded on _dirtyDeckIds membership rather than .size: the queue can still
+   hold OTHER decks, and _markDeckDirty() skips decks RLS won't let us save —
+   stamping one of those would show a date that never persisted. */
+function _stampDeckUpdated(deck) {
+  if (!deck || !_dirtyDeckIds.has(deck.id)) return;
+  deck.lastUpdated = new Date().toISOString();
+  _mirrorDecksLocal();   /* so a refresh shows it before the cloud hydrate lands */
+}
+
 /* Debounced save of the ACTIVE deck (the common edit case). */
 function _schedulePresCloudSave() {
   if (!_canWritePresCloud) return;
   _saveRetryCount = 0;   /* a fresh user edit re-arms the retry budget */
   _markDeckDirty(_activeDeck);
   if (!_dirtyDeckIds.size) return;
+  _stampDeckUpdated(_activeDeck);
   _presSavePending = true;
   _setPresSaveStatus('saving');
   clearTimeout(_presCloudSaveTimer);
@@ -17896,6 +17919,7 @@ function _savePresCloudNow() {
   _saveRetryCount = 0;
   _markDeckDirty(_activeDeck);
   if (!_dirtyDeckIds.size) return;
+  _stampDeckUpdated(_activeDeck);
   _presSavePending = true;
   _setPresSaveStatus('saving');
   clearTimeout(_presCloudSaveTimer);
