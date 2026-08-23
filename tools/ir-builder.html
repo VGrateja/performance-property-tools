@@ -299,7 +299,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-0.02em;margin:4px 0 2px}
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3" integrity="sha384-l8ah+VgaWtk1mvOe9VC+OirC6qHFF4yH7l7mKRidV9MSti3E9F463bMp6ZVN4kuC" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="../shared/supabase-client.js?v=b4bd183c"></script>
-<script src="../shared/tool-registry.js?v=9c2885d9"></script>
+<script src="../shared/tool-registry.js?v=c86a1e24"></script>
 <script src="../shared/desktop-pins.js?v=e2416017"></script>
 <script src="../shared/auth.js?v=7dce203e"></script>
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
@@ -378,6 +378,7 @@ let RATES = { current: 0.065, normalised: 0.0494 };   /* refreshed from rdp_runw
 
 /* ── boot ── */
 async function boot() {
+  _ibResolveDev();   /* async, cheap; the delete gate re-checks per render */
   let g = 0; while (!window.sb && g++ < 80) await new Promise(r => setTimeout(r, 100));
   if (!window.sb) return;
   MY_EMAIL = (typeof getCurrentUserEmail === 'function' && getCurrentUserEmail()) || '';
@@ -457,6 +458,31 @@ function renderHome() {
   document.querySelectorAll('.ib-fcard').forEach(c => c.onclick = () => openFile(c.dataset.id));
   const at = document.getElementById('ibArchTgl');
   if (at) at.onclick = () => { SHOW_ARCH = !SHOW_ARCH; renderHome(); };
+  _ibRenderDeletions();
+}
+
+/* Deletion history — the audit trigger's section='deleted' rows (who + when),
+   appended under the file list so removals are never silent (Van 2026-08-23). */
+async function _ibRenderDeletions() {
+  try {
+    const { data } = await sb.from('ir_files_audit')
+      .select('address, changed_email, changed_at')
+      .eq('section', 'deleted')
+      .order('changed_at', { ascending: false })
+      .limit(30);
+    if (!data || !data.length) return;
+    const host = document.createElement('div');
+    host.className = 'ib-note';
+    host.style.marginTop = '18px';
+    host.innerHTML =
+      '<details><summary style="cursor:pointer;font-weight:800">Deletion history (' + data.length + ')</summary>' +
+      '<div style="margin-top:8px;display:grid;gap:4px">' +
+      data.map(r =>
+        '<div>' + esc(r.address || '(unknown address)') + ' — deleted by ' +
+        esc(r.changed_email || 'unknown') + ' · ' + auTs(r.changed_at) + '</div>').join('') +
+      '</div></details>';
+    $('#ibHome').appendChild(host);
+  } catch (e) { /* history is best-effort */ }
 }
 
 async function newFile() {
@@ -516,6 +542,11 @@ function renderFile() {
     (!CANW && CAN ? '<span class="ib-note">read-only while ' + CUR.status + '</span>' : '') +
     (CAN ? '<button class="ib-btn pri sm" id="ibPublish" type="button" style="margin-left:auto">' +
       ((CUR.compliance || {}).published ? 'Re-publish to library' : 'Publish as example IR') + '</button>' : '') +
+    /* Delete: drafts — anyone who can write here; PUBLISHED files — Vandolf
+       only (Van 2026-08-23). RLS is the real gate (mig 117); this only hides
+       the button from people the database would refuse anyway. */
+    (CAN && (!(CUR.compliance || {}).published || _ibIsDev())
+      ? '<button class="ib-btn sm" id="ibDelete" type="button" style="color:var(--ib-bad);border-color:var(--ib-bad)">Delete</button>' : '') +
     '</div>' +
     '<div class="ib-steps">' + STEPS.map(s =>
       '<button class="ib-step' + (view === s.id ? ' on' : '') + '" type="button" data-step="' + s.id + '">' +
@@ -524,6 +555,8 @@ function renderFile() {
       '</button>').join('') + '</div>' +
     '<div id="ibStepBody"></div>';
   $('#ibBack').onclick = () => { CUR = null; history.replaceState(null, '', location.pathname); refreshList(); };
+  const delBtn = $('#ibDelete');
+  if (delBtn) delBtn.onclick = openDeleteIr;
   const stSel = $('#ibStatus');
   if (stSel) stSel.onchange = async () => {
     const next = stSel.value;
@@ -1723,6 +1756,69 @@ function ensurePubModal() {
   document.body.appendChild(d);
   d.addEventListener('mousedown', e => { if (e.target === d) d.classList.remove('show'); });
 }
+let IB_IS_DEV = false;
+/* resolved from the DATABASE at boot — the sessionStorage tier mirror can be
+   stale for a beat, and the delete gate for published files must not flicker */
+async function _ibResolveDev() {
+  try {
+    const { data } = await sb.rpc('current_tier');
+    IB_IS_DEV = data === 'dev';
+  } catch (e) {
+    try { IB_IS_DEV = typeof getAccessLevel === 'function' && getAccessLevel() === 'dev'; } catch (e2) {}
+  }
+}
+function _ibIsDev() {
+  if (IB_IS_DEV) return true;
+  try { return typeof getAccessLevel === 'function' && getAccessLevel() === 'dev'; } catch (e) { return false; }
+}
+
+/* Delete an IR file. The audit trigger (mig 104) writes a section='deleted'
+   row with who/when BEFORE the row goes — that is the deletion history the
+   home screen shows. Deleting a PUBLISHED file does NOT touch the library
+   entry or its PDF (those are curated in the IR Library tool); RLS allows
+   that delete for the dev tier only (mig 117). */
+function openDeleteIr() {
+  if (!CUR) return;
+  ensurePubModal();
+  const pub = !!(CUR.compliance || {}).published;
+  $('#ibpDlg').innerHTML =
+    '<h2>Delete this IR?</h2>' +
+    '<div class="ib-note" style="margin:10px 0 14px">' +
+    '<b>' + esc(CUR.address) + '</b> will be permanently removed from the Builder. ' +
+    'The deletion is recorded in the audit history (who + when).' +
+    (pub ? '<br><br>This file is <b>published</b> — its IR Library entry and report PDF are NOT removed and stay available.' : '') +
+    '</div>' +
+    '<div class="ib-savebar"><button class="ib-btn" id="delCancel" type="button">Cancel</button>' +
+    '<button class="ib-btn sm" id="delGo" type="button" style="color:#fff;background:var(--ib-bad);border-color:var(--ib-bad)">Delete IR</button>' +
+    '<span class="ib-note" id="delStat"></span></div>';
+  $('#ibpOv').classList.add('show');
+  $('#delCancel').onclick = () => $('#ibpOv').classList.remove('show');
+  $('#delGo').onclick = doDeleteIr;
+}
+async function doDeleteIr() {
+  const stat = m => { const e = $('#delStat'); if (e) e.textContent = m; };
+  $('#delGo').disabled = true;
+  try {
+    /* RLS refusal returns NO error and zero rows — check the rows, not the
+       error (the deck-lock lesson) */
+    const { data, error } = await sb.from('ir_files').delete().eq('id', CUR.id).select('id');
+    if (error) throw error;
+    if (!data || !data.length) {
+      const pub = !!(CUR.compliance || {}).published;
+      stat(pub ? 'Refused — published IRs can only be deleted by Vandolf.' : 'Refused — deleting needs ir-builder access.');
+      $('#delGo').disabled = false;
+      return;
+    }
+    toast('IR deleted — recorded in the audit history');
+    $('#ibpOv').classList.remove('show');
+    CUR = null; history.replaceState(null, '', location.pathname);
+    await refreshList();
+  } catch (e) {
+    stat('Delete failed: ' + (e.message || e));
+    $('#delGo').disabled = false;
+  }
+}
+
 function openPublish() {
   ensurePubModal();
   const pub = (CUR.compliance || {}).published;
