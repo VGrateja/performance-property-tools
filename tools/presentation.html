@@ -5851,9 +5851,10 @@ function _appendPickerNewTiles() {
 /* Spawn a new empty user-created deck. Title comes from a prompt
    (the user can rename later via inline edit on the picker card).
    `lastUpdated` is stamped on create and re-stamped automatically by
-   _stampDeckUpdated() on every later edit that queues a save, so the
-   picker's recency chip keeps itself current. The deck is persisted
-   immediately so a refresh doesn't lose it. */
+   _persistDeckRow() whenever a save carries content that actually differs,
+   so the picker's recency chip keeps itself current without re-dating decks
+   that were merely opened. The deck is persisted immediately so a refresh
+   doesn't lose it. */
 function createNewDeck() {
   const titleInput = prompt('Name this presentation:', 'Untitled Presentation');
   if (titleInput === null) return; /* Cancel */
@@ -6332,8 +6333,8 @@ function _pickerEditTitle(el, deck) {
    so the formatter shows a stable day-month-year).
 
    This is now an OVERRIDE, not the primary path: the date maintains itself on
-   every edit (_stampDeckUpdated). Use it to back-date a deck whose content was
-   really finalised earlier; the next edit re-stamps it to today. */
+   every real edit (_persistDeckRow). Use it to back-date a deck whose content
+   was really finalised earlier; the next actual edit re-stamps it to today. */
 function _pickerEditDate(el, deck) {
   if (!deck.custom || !_deckIsEditable(deck)) return;
   const current = deck.lastUpdated ? new Date(deck.lastUpdated) : new Date();
@@ -6358,6 +6359,10 @@ function _pickerEditDate(el, deck) {
     const next = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0);
     if (isNaN(next.getTime())) { buildPicker(); return; }
     deck.lastUpdated = next.toISOString();
+    /* A date-only change doesn't move the content signature, so the save would
+       be skipped as a no-op — flag it through. _persistDeckRow also honours the
+       date the user picked instead of re-stamping it to now. */
+    deck._forceDateSave = true;
     _mirrorDecksLocal();
     if (typeof _saveDeckNow === 'function') _saveDeckNow(deck);
     buildPicker();
@@ -17715,11 +17720,65 @@ function _deckRowPayload(deck) {
   };
 }
 
+/* The two other columns a save writes, in one place so the change-signature
+   below and the write itself can never disagree about them. */
+function _deckRowTitle(deck)      { return (deck.title || 'Untitled presentation').toString().slice(0, 300); }
+function _deckRowVisibility(deck) { return deck._visibility === 'company' ? 'company' : 'private'; }
+
+/* Signature of everything a save actually writes — payload + the title and
+   visibility COLUMNS (visibility starts with _ so _cleanDeck strips it from the
+   payload; leaving it out here would make a visibility flip look like a no-op
+   and get skipped). `lastUpdated` is excluded: the stamp must never count as
+   the change that justifies itself.
+
+   Keys are SORTED, not left in insertion order: rendering a deck rebuilds its
+   overlay objects, so the same content comes back with a different key order
+   and a plain stringify reports a change that isn't one (this is exactly what
+   kept re-dating decks on open — measured, not assumed). Sorting also makes
+   the signature comparable to a payload that has been through Postgres jsonb,
+   which reorders keys of its own accord. */
+function _deckSaveSig(payload, title, visibility) {
+  const canon = (x) => {
+    if (x === null || typeof x !== 'object') return x;
+    if (Array.isArray(x)) return x.map(canon);          /* array ORDER is content */
+    const out = {};
+    Object.keys(x).sort().forEach(k => { if (k !== 'lastUpdated') out[k] = canon(x[k]); });
+    return out;
+  };
+  return JSON.stringify({ p: canon(payload), t: title, v: visibility });
+}
+
 /* Upsert one deck's row. Insert (no _rowId yet) sets owner_id = me. */
 async function _persistDeckRow(deck) {
   const payload    = _deckRowPayload(deck);
-  const visibility = deck._visibility === 'company' ? 'company' : 'private';
-  const title      = (deck.title || 'Untitled presentation').toString().slice(0, 300);
+  const visibility = _deckRowVisibility(deck);
+  const title      = _deckRowTitle(deck);
+
+  /* ── DID ANYTHING ACTUALLY CHANGE? (Van 2026-08-24) ─────────────────────────
+     Merely OPENING a deck schedules a save: refreshReportCharts() calls
+     saveOverlays() on every deck that has report charts, which queues a cloud
+     write even though the payload is byte-identical. That re-dated decks nobody
+     edited ("it should be an actual update for the date to change") and, since
+     the pre-rendered PDF is keyed on the row's updated_at, threw away a good
+     cached PDF on every visit. So compare against what we last persisted and
+     skip the whole write when it matches.
+
+     Erring on the side of writing is deliberate: _sig is set only AFTER a
+     successful save (and seeded at hydrate for cloud-loaded decks only), so a
+     deck with unsaved work never has a signature that could make us skip it. */
+  const sig = _deckSaveSig(payload, title, visibility);
+  const contentChanged = !deck._rowId || deck._sig !== sig;
+  const forced = !!deck._forceDateSave;   /* manual back-date: date-only write */
+  deck._forceDateSave = false;
+  if (!contentChanged && !forced) return;
+
+  /* A real edit re-dates the deck; a forced date-only save keeps the date the
+     user just picked. The picker card reads deck.lastUpdated. */
+  if (contentChanged) {
+    deck.lastUpdated = new Date().toISOString();
+    payload.deck.lastUpdated = deck.lastUpdated;
+  }
+
   if (deck._rowId) {
     /* ── ANTI-WIPE GUARD ────────────────────────────────────────────────────
        A deck's overlays (its real content) are cached per-browser-ORIGIN in
@@ -17749,6 +17808,7 @@ async function _persistDeckRow(deck) {
        on updated_at, so a stale value here would point every cache lookup
        (and the export-through upload) at a path that no longer matches */
     if (upd && upd[0] && upd[0].updated_at) deck._updatedAt = upd[0].updated_at;
+    _deckSaveSettled(deck, sig);
   } else {
     if (!_myUserId) await _ensurePresIdentity();
     const { data, error } = await window.sb.from('presentation_decks')
@@ -17760,7 +17820,18 @@ async function _persistDeckRow(deck) {
     deck._createdBy = data.created_by;
     deck._updatedAt = data.updated_at;   /* the PDF cache is keyed on this */
     if (deck._visibility == null) deck._visibility = visibility;
+    _deckSaveSettled(deck, sig);
   }
+}
+
+/* Remember what we just persisted (so the next identical save is skipped) and
+   surface the new date. The picker may already be on screen — backToPicker()
+   flushes and rebuilds synchronously, so the save lands a moment later; rebuild
+   once more when no deck is open so the card isn't left showing the old date. */
+function _deckSaveSettled(deck, sig) {
+  deck._sig = sig;
+  if (typeof _mirrorDecksLocal === 'function') _mirrorDecksLocal();
+  if (!_activeDeck && typeof buildPicker === 'function') buildPicker();
 }
 
 /* Returns TRUE only if the row was actually removed (or there was no cloud row
@@ -17881,22 +17952,11 @@ async function _doPresCloudSave() {
   }
 }
 
-/* Re-date the picker card's "Updated …" chip (Van 2026-08-24: it must keep
-   itself current instead of being hand-set). Called ONLY from the two
-   schedulers below, which fire on a real user edit — deliberately NOT from
-   _flushPresCloudSave(), which also runs on a plain open→close and would
-   re-date a deck nobody touched. The stamp rides along in the payload
-   (_cleanDeck keeps every non-underscore key), so it reaches the cloud with
-   the edit itself and every viewer sees the same date.
-
-   Guarded on _dirtyDeckIds membership rather than .size: the queue can still
-   hold OTHER decks, and _markDeckDirty() skips decks RLS won't let us save —
-   stamping one of those would show a date that never persisted. */
-function _stampDeckUpdated(deck) {
-  if (!deck || !_dirtyDeckIds.has(deck.id)) return;
-  deck.lastUpdated = new Date().toISOString();
-  _mirrorDecksLocal();   /* so a refresh shows it before the cloud hydrate lands */
-}
+/* NOTE on the "Updated …" date: it is stamped inside _persistDeckRow(), which
+   is the only place that knows whether the content genuinely differs from what
+   was last persisted. Stamping here instead looked right but was wrong —
+   opening a deck queues a save (refreshReportCharts → saveOverlays) with an
+   identical payload, so every visit re-dated the deck. */
 
 /* Debounced save of the ACTIVE deck (the common edit case). */
 function _schedulePresCloudSave() {
@@ -17904,7 +17964,6 @@ function _schedulePresCloudSave() {
   _saveRetryCount = 0;   /* a fresh user edit re-arms the retry budget */
   _markDeckDirty(_activeDeck);
   if (!_dirtyDeckIds.size) return;
-  _stampDeckUpdated(_activeDeck);
   _presSavePending = true;
   _setPresSaveStatus('saving');
   clearTimeout(_presCloudSaveTimer);
@@ -17919,7 +17978,6 @@ function _savePresCloudNow() {
   _saveRetryCount = 0;
   _markDeckDirty(_activeDeck);
   if (!_dirtyDeckIds.size) return;
-  _stampDeckUpdated(_activeDeck);
   _presSavePending = true;
   _setPresSaveStatus('saving');
   clearTimeout(_presCloudSaveTimer);
@@ -18163,6 +18221,21 @@ async function _hydratePresFromCloud() {
     Object.assign(_deckActiveTheme, _keepTheme);
     scrubLegacyDeckPlaceholders();
     if (typeof _pruneOrphanOverlays === 'function') _pruneOrphanOverlays();
+
+    /* Seed each cloud-loaded deck's content signature, so the spurious save that
+       merely OPENING a deck triggers is recognised as a no-op and neither
+       re-dates the card nor invalidates its pre-rendered PDF. Computed from
+       _deckRowPayload() — the same builder a real save uses — so the two are
+       directly comparable (the raw row payload isn't: jsonb reorders keys).
+       Deliberately SKIPS the _keep decks: those are locally newer with a save
+       pending, and a signature would make us skip writing their work. */
+    const _keepIds = new Set(_keep.map(d => d.id));
+    _customDecks.forEach(d => {
+      if (!d || !d.id || _keepIds.has(d.id) || !d._rowId) return;
+      try { d._sig = _deckSaveSig(_deckRowPayload(d), _deckRowTitle(d), _deckRowVisibility(d)); }
+      catch (_) { /* no signature → the next save just writes, which is the safe side */ }
+    });
+
     /* and make sure they're still queued — the ids may have been drained by a
        save that ran while this hydrate was in flight */
     if (_keep.length) {
