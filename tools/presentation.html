@@ -3899,6 +3899,7 @@
 <!-- Download format menu — opened by the Download button. -->
 <div class="pres-dl-menu" id="pres-dl-menu" role="menu" aria-label="Download format">
   <button type="button" data-fmt="pdf" role="menuitem">PDF document<span class="pdm-sub">One file, every page</span></button>
+  <button type="button" data-fmt="pdf-fresh" role="menuitem" hidden>PDF — fresh render<span class="pdm-sub">Ignore the pre-rendered copy (~1s per page)</span></button>
   <button type="button" data-fmt="pptx" role="menuitem">PowerPoint (.pptx)<span class="pdm-sub">One image slide per page</span></button>
   <button type="button" data-fmt="jpg" role="menuitem">JPG images (.zip)<span class="pdm-sub">One picture per page</span></button>
 </div>
@@ -17719,10 +17720,15 @@ async function _persistDeckRow(deck) {
         }
       } catch (_) { /* guard read failed → fall through to the normal save */ }
     }
-    const { error } = await window.sb.from('presentation_decks')
+    const { data: upd, error } = await window.sb.from('presentation_decks')
       .update({ title: title, payload: payload, visibility: visibility })
-      .eq('id', deck._rowId);
+      .eq('id', deck._rowId)
+      .select('updated_at');
     if (error) throw error;
+    /* keep the in-memory copy in step with the row — the PDF cache is keyed
+       on updated_at, so a stale value here would point every cache lookup
+       (and the export-through upload) at a path that no longer matches */
+    if (upd && upd[0] && upd[0].updated_at) deck._updatedAt = upd[0].updated_at;
   } else {
     if (!_myUserId) await _ensurePresIdentity();
     const { data, error } = await window.sb.from('presentation_decks')
@@ -17732,6 +17738,7 @@ async function _persistDeckRow(deck) {
     deck._rowId     = data.id;
     deck._ownerId   = data.owner_id;
     deck._createdBy = data.created_by;
+    deck._updatedAt = data.updated_at;   /* the PDF cache is keyed on this */
     if (deck._visibility == null) deck._visibility = visibility;
   }
 }
@@ -18674,6 +18681,85 @@ function _presBuildPptx(pages) {
   return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 4 } });
 }
 
+/* ── Pre-rendered PDF cache (mig 114, bucket 'presentation-pdfs') ─────────
+   One object per deck; the deck row’s updated_at is encoded in the PATH
+   (every non-digit stripped), so freshness is a pure existence check: any
+   edit bumps updated_at, the path stops existing, and the next download
+   falls back to a live export. A stale copy can never be served.
+   Two writers fill it: the nightly GitHub Actions renderer, and export-
+   through below — a live export’s bytes are already in hand, so an editor’s
+   first download seeds the cache for everyone after them. */
+const PRES_PDF_BUCKET = 'presentation-pdfs';
+function _presPdfCachePath(deck) {
+  if (!deck || !deck._rowId || !deck._updatedAt) return null;
+  return deck._rowId + '/' + String(deck._updatedAt).replace(/\D/g, '') + '.pdf';
+}
+async function _presPdfCacheUrl(deck, secs) {
+  try {
+    const path = _presPdfCachePath(deck);
+    if (!path || !window.sb) return null;
+    const { data, error } = await window.sb.storage.from(PRES_PDF_BUCKET).createSignedUrl(path, secs || 300);
+    return (!error && data && data.signedUrl) ? data.signedUrl : null;
+  } catch (e) { return null; }
+}
+
+/* Serve the cached PDF if one matches the deck being shown. Returns true
+   when it handled the download; false sends the caller down the live path. */
+async function _presDownloadCachedPdf() {
+  const url = await _presPdfCacheUrl(_activeDeck, 300);
+  if (!url) return false;
+  _presExportBusy = true;
+  const btn = document.getElementById('pres-download');
+  if (btn) btn.disabled = true;
+  document.body.classList.add('pres-exporting');
+  _presExportProgress('Downloading…', 'Pre-rendered copy', 0.7);
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('cache fetch ' + res.status);
+    const blob = await res.blob();
+    _presSaveBlob(blob, _presExportName() + '.pdf');
+    window.__presDownloadSource = 'cache';
+    showPresToast('Downloaded instantly — pre-rendered copy.', { duration: 4000 });
+    return true;
+  } catch (e) {
+    return false;   /* fall back to a live export */
+  } finally {
+    document.body.classList.remove('pres-exporting');
+    if (btn) btn.disabled = false;
+    _presExportBusy = false;
+  }
+}
+
+/* Export-through: after a live PDF export, push the bytes into the cache so
+   the NEXT download is instant — without waiting for the nightly renderer.
+   Fire-and-forget and heavily guarded: only deck editors (RLS refuses
+   anyone else anyway), only when nothing is queued for save locally, and
+   only when the row’s updated_at still matches what this tab exported —
+   otherwise someone else moved the deck and these bytes describe the past. */
+async function _presCacheUpload(deck, blob) {
+  try {
+    if (!deck || !deck._rowId || !blob || !window.sb) return;
+    if (!_deckIsEditable(deck)) return;
+    if (_presSavePending || _presSaveInFlight || _dirtyDeckIds.size) return;
+    const { data: row } = await window.sb.from('presentation_decks').select('updated_at').eq('id', deck._rowId).maybeSingle();
+    if (!row || !deck._updatedAt || row.updated_at !== deck._updatedAt) return;
+    const path = deck._rowId + '/' + String(row.updated_at).replace(/\D/g, '') + '.pdf';
+    const { error } = await window.sb.storage.from(PRES_PDF_BUCKET).upload(path, blob, { upsert: true, contentType: 'application/pdf' });
+    if (error) return;
+    /* prune this deck’s stale copies — the path IS the freshness key, so
+       anything else under the deck’s folder is a superseded render */
+    try {
+      const { data: files } = await window.sb.storage.from(PRES_PDF_BUCKET).list(deck._rowId);
+      const mine = path.split('/')[1];
+      const stale = (files || []).map(function (x) { return x.name; })
+        .filter(function (n) { return n !== mine; })
+        .map(function (n) { return deck._rowId + '/' + n; });
+      if (stale.length) await window.sb.storage.from(PRES_PDF_BUCKET).remove(stale);
+    } catch (e) {}
+    console.info('[presentation] pre-rendered PDF cached for the next download (' + Math.round(blob.size / 1024) + 'KB)');
+  } catch (e) { /* best effort — the cache is an accelerator, never a dependency */ }
+}
+
 /* Hand a produced file to the browser. One seam for every format, which is
    also what lets the export harness capture the artefact in headless runs. */
 function _presSaveBlob(blob, filename) {
@@ -18690,13 +18776,27 @@ function _presSaveBlob(blob, filename) {
   setTimeout(function () { URL.revokeObjectURL(url); }, 300000);
 }
 
-async function downloadDeck(format) {
+function _presExportName() {
+  const now = new Date();
+  return String((_activeDeck && _activeDeck.title) || 'Presentation').replace(/[\\/:*?"<>|]+/g, ' ').trim()
+    + ' - ' + now.toLocaleString('en-AU', { month: 'long' }) + ' ' + now.getFullYear();
+}
+
+async function downloadDeck(format, opts) {
   format = (format === 'jpg' || format === 'pptx') ? format : 'pdf';
+  opts = opts || {};
   if (_presExportBusy) return;
   if (!_activeDeck || !(_activeDeck.slides || []).length) {
     showPresToast('This deck has no pages to download yet.', { warn: true });
     return;
   }
+  /* PDF goes cache-first: a pre-rendered copy matching THIS updated_at is
+     the same file a live export would produce, minus the ~1s-per-page wait.
+     opts.fresh (the menu's “fresh render” row) skips the cache on purpose. */
+  if (format === 'pdf' && !opts.fresh) {
+    if (await _presDownloadCachedPdf()) return;
+  }
+  window.__presDownloadSource = 'live';
   _presExportBusy = true;
   const btn = document.getElementById('pres-download');
   if (btn) btn.disabled = true;
@@ -18904,11 +19004,12 @@ async function downloadDeck(format) {
     }
 
     _presExportProgress(format === 'pdf' ? 'Saving…' : 'Packaging…', total + ' pages', 1);
-    const now = new Date();
-    const base = String(_activeDeck.title || 'Presentation').replace(/[\\/:*?"<>|]+/g, ' ').trim()
-      + ' - ' + now.toLocaleString('en-AU', { month: 'long' }) + ' ' + now.getFullYear();
+    const base = _presExportName();
     if (format === 'pdf') {
-      _presSaveBlob(pdf.output('blob'), base + '.pdf');
+      const pdfBlob = pdf.output('blob');
+      _presSaveBlob(pdfBlob, base + '.pdf');
+      /* export-through: seed the cache with the bytes just produced */
+      _presCacheUpload(_activeDeck, pdfBlob);
     } else if (format === 'jpg') {
       const zip = new window.JSZip();
       const pad = String(total).length > 2 ? 3 : 2;
@@ -18950,12 +19051,23 @@ async function downloadDeck(format) {
       _dlMenu.style.top = Math.round(r.bottom + 8) + 'px';
       _dlMenu.style.right = Math.max(8, Math.round(window.innerWidth - r.right)) + 'px';
       _dlMenu.classList.add('open');
+      /* pre-rendered copy available? mark the PDF row and reveal the
+         fresh-render escape hatch (async — the menu opens immediately) */
+      (async function () {
+        const pdfBtn = _dlMenu.querySelector('button[data-fmt="pdf"]');
+        const freshBtn = _dlMenu.querySelector('button[data-fmt="pdf-fresh"]');
+        const sub = pdfBtn ? pdfBtn.querySelector('.pdm-sub') : null;
+        const hit = !!(await _presPdfCacheUrl(_activeDeck, 60));
+        if (sub) sub.textContent = hit ? '⚡ Instant — pre-rendered copy' : 'One file, every page';
+        if (freshBtn) freshBtn.hidden = !hit;
+      })();
     });
     _dlMenu.addEventListener('click', function (ev) {
       const b = ev.target.closest('button[data-fmt]');
       if (!b) return;
       _dlClose();
-      downloadDeck(b.dataset.fmt);
+      if (b.dataset.fmt === 'pdf-fresh') downloadDeck('pdf', { fresh: true });
+      else downloadDeck(b.dataset.fmt);
     });
     document.addEventListener('click', function (ev) {
       if (!_dlMenu.classList.contains('open')) return;

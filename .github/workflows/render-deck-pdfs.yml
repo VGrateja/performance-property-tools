@@ -1,0 +1,109 @@
+# =============================================================================
+# Presentation deck PDF pre-renderer.
+#
+# Fills the `presentation-pdfs` Storage cache (mig 114) so the Presentation
+# tool's Download button serves company decks INSTANTLY instead of running a
+# ~1s-per-page live export. Freshness is encoded in the object path
+# (<deck row uuid>/<updated_at digits>.pdf), so a stale copy can never be
+# served — a cache miss just means the user gets today's live export.
+#
+# Triggers:
+#   • Nightly cron (17:30 UTC ≈ 3:30am AEST) — renders only decks whose
+#     updated_at has no matching object (edited or new decks). Quiet nights
+#     render nothing and finish in under a minute.
+#   • After every successful Data Forge PUBLISH — with RENDER_ALL=1, because
+#     published data changes what the exporter draws WITHOUT bumping any
+#     deck's updated_at; every company deck is re-rendered under its same
+#     path with fresh bytes.
+#   • Manual workflow_dispatch from the Actions tab.
+#
+# Private decks are deliberately out of scope: the pdf-renderer account can't
+# see them (RLS), and their cache is seeded by their editors' own downloads
+# (export-through in presentation.html).
+#
+# Required GitHub Secrets — IDENTICAL to render-online-reports.yml, nothing
+# new to configure:
+#   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY,
+#   PDF_RENDERER_EMAIL, PDF_RENDERER_PASSWORD, APP_URL
+#   (optional) RESEND_API_KEY, RENDER_ALERT_EMAIL for the failure email
+# =============================================================================
+
+name: Render Deck PDFs
+
+on:
+  schedule:
+    - cron: '30 17 * * *'   # nightly 17:30 UTC ≈ 3:30am AEST
+  workflow_run:
+    workflows: ["Data Forge — 2/ PUBLISH (rebuild mart)"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      render_all:
+        description: 'Re-render every company deck (ignore the up-to-date check)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-deck-pdfs
+  cancel-in-progress: false
+
+jobs:
+  render:
+    name: Render & upload
+    # workflow_run fires on FAILED publishes too — only render when the
+    # publish concluded green (cron + manual dispatch always run).
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45    # ~12 company decks × ~1–2 min worst case
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Render & upload deck PDFs
+        env:
+          SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY:         ${{ secrets.SUPABASE_ANON_KEY }}
+          PDF_RENDERER_EMAIL:        ${{ secrets.PDF_RENDERER_EMAIL }}
+          PDF_RENDERER_PASSWORD:     ${{ secrets.PDF_RENDERER_PASSWORD }}
+          APP_URL:                   ${{ secrets.APP_URL }}
+          # Post-PUBLISH runs refresh EVERY deck's bytes (data moved without
+          # updated_at moving); manual dispatch can opt in via the checkbox.
+          RENDER_ALL: ${{ (github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && inputs.render_all)) && '1' || '' }}
+        run: npm run render-decks
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_TO:       ${{ secrets.RENDER_ALERT_EMAIL }}
+          RUN_URL:        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$RESEND_API_KEY" ]; then
+            echo "::warning::RESEND_API_KEY not set — failure email skipped."
+            exit 0
+          fi
+          TO="${ALERT_TO:-vandolf@performanceproperty.com.au}"
+          HTML="<p style=\"font-family:Arial,sans-serif;font-size:14px;color:#0f172a\">The <strong>deck PDF pre-render</strong> failed.</p><p style=\"font-family:Arial,sans-serif;font-size:13px;color:#475569\">Downloads still work — the Presentation tool falls back to live export on any cache miss — but affected decks won't be instant until this is fixed.</p><p><a href=\"$RUN_URL\" style=\"display:inline-block;background:#00b6cb;color:#0a1520;padding:11px 22px;border-radius:6px;text-decoration:none;font-weight:700;font-size:13px;font-family:Arial,sans-serif\">View the failed run →</a></p>"
+          BODY=$(jq -n \
+            --arg from "Performance Property Alerts <cadence@performanceproperty.com.au>" \
+            --arg to "$TO" \
+            --arg subject "⚠ Deck PDF pre-render FAILED" \
+            --arg html "$HTML" \
+            '{from:$from, to:$to, subject:$subject, html:$html}')
+          curl -sS -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" || echo "::warning::Could not send the failure-alert email."
