@@ -448,9 +448,11 @@
         await sleep(2600);   /* data + the chart's entrance animation settle */
         const win = f.contentWindow;
         if (!win || !win.html2canvas) return null;
-        const cv = await win.html2canvas(el, { scale: 2, useCORS: true, logging: false, backgroundColor: '#ffffff' });
+        /* scale 3 to match the deck exporter's page scale — at 2 the Runway still
+           was the softest thing on an otherwise scale-3 page */
+        const cv = await win.html2canvas(el, { scale: 3, useCORS: true, logging: false, backgroundColor: '#ffffff' });
         const r = el.getBoundingClientRect();
-        return { kind: 'image', src: cv.toDataURL('image/jpeg', 0.92),
+        return { kind: 'image', src: cv.toDataURL('image/jpeg', 0.95),
                  cw: Math.round(r.width) || 1120, ch: Math.round(r.height) || 700 };
       } catch (e) { return null; }
       finally { f.remove(); }
