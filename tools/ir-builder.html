@@ -1774,9 +1774,14 @@ function _ibIsDev() {
 
 /* Delete an IR file. The audit trigger (mig 104) writes a section='deleted'
    row with who/when BEFORE the row goes — that is the deletion history the
-   home screen shows. Deleting a PUBLISHED file does NOT touch the library
-   entry or its PDF (those are curated in the IR Library tool); RLS allows
-   that delete for the dev tier only (mig 117). */
+   home screen shows. Deleting a PUBLISHED file CASCADES (Van 2026-08-23):
+   its IR Library row, its report PDFs in the ir-library bucket, and with
+   them the Documents auto-folder entry all go too (the deck picker reads
+   ir_files live, so it drops out on its own; slides already inserted into
+   decks baked their data and are untouched). RLS gates the whole thing on
+   the ir_files delete — dev tier only for published files (mig 117) — and
+   the cascade only runs after that succeeds, so a refused delete touches
+   nothing. */
 function openDeleteIr() {
   if (!CUR) return;
   ensurePubModal();
@@ -1786,7 +1791,7 @@ function openDeleteIr() {
     '<div class="ib-note" style="margin:10px 0 14px">' +
     '<b>' + esc(CUR.address) + '</b> will be permanently removed from the Builder. ' +
     'The deletion is recorded in the audit history (who + when).' +
-    (pub ? '<br><br>This file is <b>published</b> — its IR Library entry and report PDF are NOT removed and stay available.' : '') +
+    (pub ? '<br><br>This file is <b>published</b> — its IR Library entry, its report PDF and its Documents copy will also be deleted, and it will no longer be offered in the Presentation builder.' : '') +
     '</div>' +
     '<div class="ib-savebar"><button class="ib-btn" id="delCancel" type="button">Cancel</button>' +
     '<button class="ib-btn sm" id="delGo" type="button" style="color:#fff;background:var(--ib-bad);border-color:var(--ib-bad)">Delete IR</button>' +
@@ -1798,18 +1803,25 @@ function openDeleteIr() {
 async function doDeleteIr() {
   const stat = m => { const e = $('#delStat'); if (e) e.textContent = m; };
   $('#delGo').disabled = true;
+  /* Resolve the downstream targets BEFORE the row goes — the publish stamp
+     (compliance.published) is the only pointer to them. */
+  const delId = CUR.id, delAddress = CUR.address;
+  const pubStamp = (CUR.compliance || {}).published || null;
   try {
     /* RLS refusal returns NO error and zero rows — check the rows, not the
        error (the deck-lock lesson) */
-    const { data, error } = await sb.from('ir_files').delete().eq('id', CUR.id).select('id');
+    const { data, error } = await sb.from('ir_files').delete().eq('id', delId).select('id');
     if (error) throw error;
     if (!data || !data.length) {
-      const pub = !!(CUR.compliance || {}).published;
-      stat(pub ? 'Refused — published IRs can only be deleted by Vandolf.' : 'Refused — deleting needs ir-builder access.');
+      stat(pubStamp ? 'Refused — published IRs can only be deleted by Vandolf.' : 'Refused — deleting needs ir-builder access.');
       $('#delGo').disabled = false;
       return;
     }
-    toast('IR deleted — recorded in the audit history');
+    let cascadeFail = null;
+    if (pubStamp) cascadeFail = await _ibDeletePublished(delId, delAddress, pubStamp);
+    toast(cascadeFail
+      ? 'IR deleted, but cleanup hit a snag: ' + cascadeFail
+      : 'IR deleted — recorded in the audit history');
     $('#ibpOv').classList.remove('show');
     CUR = null; history.replaceState(null, '', location.pathname);
     await refreshList();
@@ -1817,6 +1829,38 @@ async function doDeleteIr() {
     stat('Delete failed: ' + (e.message || e));
     $('#delGo').disabled = false;
   }
+}
+/* The published-IR cascade: remove the IR Library row (which is also the
+   Documents "Example Investment Reports" entry — that folder reads
+   investment_reports live) and every report PDF under published/<id>/ in
+   the ir-library bucket (re-publishes stack timestamped files there).
+   Runs only after the ir_files delete succeeded, i.e. as the dev tier, who
+   passes both delete policies (ir_delete = is_writer, storage = ir_can_write).
+   Returns null on success, else a short message for the toast. */
+async function _ibDeletePublished(fileId, address, stamp) {
+  const problems = [];
+  try {
+    /* every PDF this file ever published lives under its own id prefix */
+    const prefix = 'published/' + fileId;
+    const { data: objs } = await sb.storage.from('ir-library').list(prefix, { limit: 100 });
+    const paths = (objs || []).map(o => prefix + '/' + o.name);
+    if (stamp.pdf && paths.indexOf(stamp.pdf) < 0) paths.push(stamp.pdf);
+    if (paths.length) {
+      const { error } = await sb.storage.from('ir-library').remove(paths);
+      if (error) problems.push('PDF: ' + error.message);
+    }
+  } catch (e) { problems.push('PDF: ' + (e.message || e)); }
+  try {
+    /* by the stamp's id when we have it; else the same address match
+       doPublish uses to find its row */
+    let q = sb.from('investment_reports').delete();
+    if (stamp.libraryId) q = q.eq('id', stamp.libraryId);
+    else q = q.eq('source', 'ir-builder').ilike('address', address + '%');
+    const { data, error } = await q.select('id');
+    if (error) problems.push('library row: ' + error.message);
+    else if (!data || !data.length) problems.push('library row not found');
+  } catch (e) { problems.push('library row: ' + (e.message || e)); }
+  return problems.length ? problems.join('; ') : null;
 }
 
 function openPublish() {
