@@ -27,9 +27,9 @@
     /* analytics */
     'clock':            { sec: 'analytics', file: 'property-clock.html',         label: 'National Property Clock' },
     'runway-demand':    { sec: 'analytics', file: 'runway-demand.html',          label: 'Runway v Demand Score' },
-    'runway-workbook':  { sec: 'analytics', file: 'runway-workbook.html',        label: 'Runway Workbook' },
-    'vr-projection':    { sec: 'analytics', file: 'vr-projection.html',          label: 'Vacancy Rate Projection' },
     /* vault */
+    'runway-workbook':  { sec: 'vault',     file: 'runway-workbook.html',        label: 'Runway Workbook' },
+    'vr-projection':    { sec: 'vault',     file: 'vr-projection.html',          label: 'Vacancy Rate Projection' },
     'forge':            { sec: 'vault',     file: 'data-forge.html',             label: 'Data Forge' },
     'data-extractor':   { sec: 'vault',     file: 'data-extractor.html',         label: 'Data Extractor' },
     'traffic-lights':   { sec: 'vault',     file: 'traffic-lights.html',         label: 'Traffic Lights' },
@@ -87,8 +87,12 @@
   /* Pre-migration fallback = EXACTLY today's company-tier-visible hub.
      LOCKSTEP: mirror of the 081 company_baseline seed — change both or none. */
   /* 'results' moved to the Vault 2026-07-28 and OUT of the staff default —
-     it is dev/admin (+ ticked groups) only, like every other Vault tool. */
-  var DEFAULT_BASELINE = ['clock', 'runway-demand', 'runway-workbook', 'vr-projection',
+     it is dev/admin (+ ticked groups) only, like every other Vault tool.
+     'runway-workbook' + 'vr-projection' followed the same path 2026-08-24
+     (Van removed both from the company_baseline group, then moved them into
+     the Vault), so they leave this list too — otherwise a pre-resolution hub
+     would still offer staff two tools they can no longer open. */
+  var DEFAULT_BASELINE = ['clock', 'runway-demand',
     'documents', 'online-reports', 'research-reports',
     'present-new', 'present-company', 'present-mine', 'present-library',
     'arena', 'arena-typing', 'arena-chess', 'arena-scrabble', 'arena-skribbl'];
