@@ -56,9 +56,14 @@
        grant it (the page gate + RLS both demand dev tier), so offering the
        checkbox would imply access that ticking it can never produce. */
     'usage-analytics':  { sec: 'vault',     file: 'usage-analytics.html',        label: 'Usage Analytics', devOnly: true },
-    /* pm */
-    'cadence':          { sec: 'pm',        file: 'cadence.html',                label: 'Cadence' },
-    'tenant-summary':   { sec: 'pm',        file: 'tenant-summary.html',         label: 'Tenant Application Summary' },
+    /* RETIRED 2026-08-24 (Van): the 'pm' (Property Management) and 'people'
+       (People & Culture) sections are gone from the hub — Cadence, Tenant
+       Application Summary and Performance Scorecards are no longer offered
+       anywhere, and Scorecards now lives in the upcoming Performance OS.
+       Their keys are removed so nothing can reference them: no Groups tick,
+       no search hit, no desktop pin, no deep-link gate entry. The tool pages
+       and their Supabase tables are DELIBERATELY left in place for now —
+       Van parked the complete deletion (files, git history, tables). */
     /* arena ('arena' = the arcade landing page itself) */
     'arena':            { sec: 'arena',     file: 'arena.html',                  label: 'Performance Arena' },
     'arena-typing':     { sec: 'arena',     file: 'arena-typing.html',           label: 'Typing Test' },
@@ -79,9 +84,8 @@
        curation controls, 'bs-slides-curated' = only the published set. Ticking
        just this key gives a group the curated card without the master, and the
        tool forces the filtered view for that user however they reach the URL. */
-    'bs-slides-curated':{ sec: 'present',   file: 'buying-selling-slides.html',  label: 'Buying/Selling Slide (curated)' },
-    /* people */
-    'scorecards':       { sec: 'people',    file: 'scorecards.html',             label: 'Performance Scorecards' }
+    'bs-slides-curated':{ sec: 'present',   file: 'buying-selling-slides.html',  label: 'Buying/Selling Slide (curated)' }
+    /* 'people' section retired 2026-08-24 — see the note by the old 'pm' keys */
   };
 
   /* Pre-migration fallback = EXACTLY today's company-tier-visible hub.
@@ -96,7 +100,10 @@
     'documents', 'online-reports', 'research-reports',
     'present-new', 'present-company', 'present-mine', 'present-library',
     'arena', 'arena-typing', 'arena-chess', 'arena-scrabble', 'arena-skribbl'];
-  var DEFAULT_LEADS_EXTRA = ['scorecards'];   /* lockstep with the 081 'leads' seed */
+  /* Was ['scorecards'] — emptied 2026-08-24 with the People & Culture section.
+     The 'leads' tier is already retired (mig 089), so this list now has no
+     members at all; kept as the hook the resolver still reads. */
+  var DEFAULT_LEADS_EXTRA = [];
 
   /* every registry key whose file matches a basename (a file can carry
      several keys — e.g. online-reports.html is 'online-reports' + 'reports-lite') */
