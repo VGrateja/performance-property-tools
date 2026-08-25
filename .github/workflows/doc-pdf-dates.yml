@@ -1,0 +1,77 @@
+# =============================================================================
+# Keep the date on each Whitepaper / Strategy card in step with its PDF.
+#
+# The card date used to be typed by hand (an editor field with a "Today"
+# button), so it drifted the moment someone re-uploaded a PDF without going
+# back to update it — "Interest Rates" was showing 04/08 for a file last
+# modified on the 25th.
+#
+# The PDF host returns a real `last-modified` header but sends no
+# access-control-allow-origin, so the browser CANNOT read it. That is the whole
+# reason this runs here rather than in the tool: the date has to be fetched
+# outside the browser and stored.
+#
+# The script writes `pdfDate` and never touches the hand-entered `date`. The
+# tool prefers pdfDate and falls back to `date`, so an item with a PDF shows the
+# file's real date while an item without one (most Frameworks today) keeps its
+# manual value, and nobody's typed date is destroyed.
+#
+# Triggers:
+#   • Cron — daily, 20:00 UTC (~6am AEST next day), after any evening uploads.
+#     Scheduled runs APPLY.
+#   • Manual — Actions tab → "Doc PDF Dates" → Run workflow. Leave "apply"
+#     unchecked for a DRY RUN: it prints every card, the file's date, the typed
+#     date, and any drift between them, which is a useful audit on its own.
+#
+# Dates are formatted in Australia/Sydney, not UTC — last-modified is GMT and
+# Sydney runs +10/+11, so UTC formatting put afternoon uploads on the previous
+# day and disagreed with what a person would call it.
+#
+# Required GitHub Secrets:
+#   SUPABASE_URL                supabase project URL
+#   SUPABASE_SERVICE_ROLE_KEY   read + write public.documents_state
+# =============================================================================
+
+name: Doc PDF Dates
+
+on:
+  schedule:
+    - cron: '0 20 * * *'   # daily 20:00 UTC ≈ 06:00 AEST the next morning
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Actually write the dates? (unchecked = dry run / report only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: doc-pdf-dates
+  cancel-in-progress: false
+
+jobs:
+  dates:
+    name: Refresh Whitepaper / Strategy PDF dates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # Scheduled runs always write; a manual run writes only if "apply" was
+      # ticked (otherwise it reports drift and changes nothing).
+      - name: Refresh PDF dates
+        env:
+          SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/refresh-doc-pdf-dates.mjs ${{ (github.event_name == 'schedule' || inputs.apply) && '--write' || '' }}
