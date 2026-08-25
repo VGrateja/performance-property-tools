@@ -83,7 +83,13 @@ for (const row of rows) {
     const yrs = Object.keys(p.omByYear).map(Number).sort((a, b) => b - a);
     const omYear = yrs.includes(CUR_YEAR) ? CUR_YEAR : yrs[0];   // auto-advance; past last year → latest
     const om = p.omByYear[omYear];
-    if (om != null) { omUsed = om; expectedPeople = p.nb + p.im + om; }
+    if (om != null) {
+      omUsed = om;
+      /* NIM override (VR_NIM_OVERRIDES in shared/vr-forecast-calc.js) — without
+         this the monthly re-seed would put the workbook figure back. */
+      const ov = globalThis.VrForecastCalc.applyNimOverride(slug, { im: p.im });
+      expectedPeople = p.nb + ov.inp.im + om;
+    }
   }
   if (hhSize == null || expectedPeople == null) { skipped.push(slug + ' (no hhSize/expectedPeople in payload — needs a local full build)'); continue; }
 
