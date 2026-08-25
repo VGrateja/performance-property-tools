@@ -21,6 +21,18 @@
 //                       is exactly what moved.
 // twoYrProps and every supply-side field are left alone: NIM is demand.
 //
+// ⚠ THIS IS ONLY HALF THE JOB. The payload carries TWO demand models:
+//   • the top-level nb/im/om/expectedPeople/forecastVR fields — the older view,
+//     which the Buying/Selling slides read. THIS script owns them.
+//   • payload.demand.{v1,v2} — the CANONICAL block behind the VR Projection
+//     tool's DATA VERSION toggle, built by build-vr-demand.mjs. That tool
+//     PREFERS it and only falls back to the fields above when it is absent.
+// Running this alone leaves the slides showing the override while the VR
+// Projection tool shows the original figure. Always follow with:
+//   node scripts/build-vr-demand.mjs --only=<slug> --write
+// which applies the same override to the IM component series before its window
+// averages, so both versions derive from it.
+//
 // Usage:
 //   node scripts/apply-nim-override.mjs            # dry run, prints before/after
 //   node scripts/apply-nim-override.mjs --write    # writes
