@@ -42,7 +42,7 @@
        no hub card — a dev floating button + modal, like usage-analytics.
        devOnly keeps it out of the Groups panel; the page gates itself. */
     'data-map':         { sec: 'vault',     file: 'data-architecture.html',      label: 'Research Pipeline', devOnly: true },
-    'reports-lite':     { sec: 'vault',     file: 'online-reports.html',         label: 'Lite Online Reports' },
+    'reports-lite':     { sec: 'vault',     file: 'online-reports.html',         label: 'Lite Residential Research Reports' },
     'lite-links':       { sec: 'vault',     file: 'lite-report-links.html',      label: 'Lite Report Links' },
     'results':          { sec: 'vault',     file: 'results.html',                label: 'Results' },
     'bookshelf':        { sec: 'vault',     file: 'bookshelf.html',              label: 'Bookshelf' },
@@ -72,13 +72,14 @@
     'arena-skribbl':    { sec: 'arena',     file: 'arena-skribbl.html',          label: 'Skribbl' },
     /* docs */
     'documents':        { sec: 'docs',      file: 'whitepapers-strategies.html', label: 'Documents' },
-    'online-reports':   { sec: 'docs',      file: 'online-reports.html',         label: 'Online Reports' },
+    'online-reports':   { sec: 'docs',      file: 'online-reports.html',         label: 'Residential Research Reports' },
     'research-reports': { sec: 'docs',      files: ['national-report.html', 'commercial-report.html'], label: 'Research Reports (National + Commercial)' },
     /* present */
     'present-new':      { sec: 'present',   file: 'presentation.html',           label: 'Create a Presentation' },
     'present-company':  { sec: 'present',   file: 'presentation.html',           label: 'Company Presentations' },
     'present-mine':     { sec: 'present',   file: 'presentation.html',           label: 'My Presentations' },
-    'present-library':  { sec: 'present',   file: 'presentations-library.html',  label: 'Presentations Library' },
+    /* moved to the docs section 2026-08-24 with the Decks widget's retirement */
+    'present-library':  { sec: 'docs',      file: 'presentations-library.html',  label: 'Presentations Library' },
     /* Curated Buying/Selling decks — the SAME file as the 'bs-slides' Vault
        master, holding a second key on purpose: 'bs-slides' = every region +
        curation controls, 'bs-slides-curated' = only the published set. Ticking
