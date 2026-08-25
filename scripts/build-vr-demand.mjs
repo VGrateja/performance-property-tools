@@ -56,10 +56,14 @@ import { createClient } from '@supabase/supabase-js';
 import { readFileSync, existsSync } from 'node:fs';
 import '../shared/vr-demand-calc.js';
 import '../shared/vr-workforce.js';
+import '../shared/vr-forecast-calc.js';   // VR_NIM_OVERRIDES
 
 try { if (existsSync('.env')) for (const ln of readFileSync('.env', 'utf8').split(/\r?\n/)) { const m = ln.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/); if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, ''); } } catch {}
 const WRITE = process.argv.includes('--write');
 const CANON = process.argv.includes('--canonical');   // also overwrite the fields other consumers read
+/* Rebuild ONE region. A whole-fleet rebuild moves whatever else has drifted
+   since the last run, which turns a one-region request into a re-forecast. */
+const ONLY = (process.argv.find(a => a.startsWith('--only=')) || '').split('=')[1] || null;
 const BASIS = (process.argv.find(a => a.startsWith('--capitals=')) || '--capitals=gccsa').split('=')[1];
 if (!['gccsa', 'state'].includes(BASIS)) { console.error('--capitals must be gccsa or state'); process.exit(1); }
 
@@ -101,6 +105,7 @@ await globalThis.VrWorkforce.load(sb, fc);
 console.log(`workforce: ${globalThis.VrWorkforce.markets().length} markets from ${globalThis.VrWorkforce.source()}`);
 
 const rows = [], skipped = [];
+const nimApplied = [];   // regions whose IM was forced (VR_NIM_OVERRIDES)
 for (const r of fc) {
   const p = r.payload || {}, slug = r.region_slug;
   const pop = p.population, hhSize = p.hhSize;
@@ -112,9 +117,26 @@ for (const r of fc) {
   const components = F[src];
   if (!components || !components.ni) { skipped.push(`${slug} (no components for ${src})`); continue; }
 
+  if (ONLY && slug !== ONLY) continue;
+
+  /* MANUAL NIM OVERRIDE — VR_NIM_OVERRIDES in shared/vr-forecast-calc.js.
+     Applied to the COMPONENT SERIES, before computeDemand takes its window
+     averages, so imAvg2 / imAvg3 / imCur are all the override and BOTH
+     versions derive from it. Patching the outputs instead would leave V2's
+     year-2 natural increase computed from the old year-1 intake, since that
+     is a per-capita rate applied to the post-intake population. */
+  let componentsUsed = components;
+  const nimOv = globalThis.VrForecastCalc.VR_NIM_OVERRIDES;
+  if (nimOv && slug in nimOv) {
+    const zeroed = {};
+    Object.keys(components.im || {}).forEach(y => { zeroed[y] = nimOv[slug]; });
+    componentsUsed = Object.assign({}, components, { im: zeroed });
+    nimApplied.push(slug + ' (IM forced to ' + nimOv[slug] + ' across ' + Object.keys(zeroed).length + ' years)');
+  }
+
   const wf = globalThis.VrWorkforce.forRegion(slug);   // loaded from public.vr_workforce above
   const res = globalThis.VrDemandCalc.computeDemand({
-    components, population: pop, national, latestYear,
+    components: componentsUsed, population: pop, national, latestYear,
     treasuryNom: { yr1: TREASURY_NOM[latestYear + 1], yr2: TREASURY_NOM[latestYear + 2] },
     wf,
   });
