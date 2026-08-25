@@ -136,7 +136,9 @@ if (sb) {
   }
 }
 
-const results = []; let checks = 0, pass = 0; const fails = []; const unresolved = [];
+const results = [];
+const nimOverrides = [];   // regions whose NIM was forced (VR_NIM_OVERRIDES)
+let checks = 0, pass = 0; const fails = []; const unresolved = [];
 const srcCount = { oe: 0, forge_approvals: 0, workbook: 0 };
 const popSrc = { forge: 0, workbook: 0 }, vrSrc = { forge_sqm: 0, workbook: 0 };
 for (let r = 3; r < g.length; r++) {
@@ -177,11 +179,19 @@ for (let r = 3; r < g.length; r++) {
   const vrSource = forgeVR[slug] != null ? 'forge_sqm' : 'workbook';
   popSrc[popSource]++; vrSrc[vrSource]++;
 
-  const calc = globalThis.VrForecastCalc.computeVrForecast({ ...inp, population: popUsed, currentVR: vrUsed, oeCommencements: oeInput });
+  // NIM override (see VR_NIM_OVERRIDES in shared/vr-forecast-calc.js). Applied
+  // HERE and not above, so the workbook verify keeps comparing like with like.
+  const nimOv = globalThis.VrForecastCalc.applyNimOverride(slug, inp);
+  const inpUsed = nimOv.inp;
+  if (nimOv.applied) nimOverrides.push(slug + ': NIM ' + Math.round(nimOv.raw) + ' -> ' + inpUsed.im);
+
+  const calc = globalThis.VrForecastCalc.computeVrForecast({ ...inpUsed, population: popUsed, currentVR: vrUsed, oeCommencements: oeInput });
   results.push({ region_slug: slug, payload: {
     ...calc, oeCommencements: oeInput, oeSource, oeYear, oeByYear: oy || null,
     population: popUsed, popSource, vrSource, hhSize: inp.hhSize,
-    nb: inp.nb, im: inp.im, om: inp.om,   // population-growth components (natural increase / net interstate / net overseas) — sum = expectedPeople
+    nb: inpUsed.nb, im: inpUsed.im, om: inpUsed.om,
+    imRaw: nimOv.applied ? nimOv.raw : null,        // the workbook figure the override replaced
+    imOverride: nimOv.applied || null,              // so nobody later wonders why this region will not reconcile   // population-growth components (natural increase / net interstate / net overseas) — sum = expectedPeople
     omByYear: omByYearBySlug[slug] || null,   // OM forward projection by year → auto-advances (like oeByYear)
     rentHouseSqm: forgeRentSqm[slug] ? forgeRentSqm[slug].h : null, rentUnitSqm: forgeRentSqm[slug] ? forgeRentSqm[slug].u : null,   // live SQM rents
     rentHouseCot: forgeRentCot[slug] ? forgeRentCot[slug].h : null, rentUnitCot: forgeRentCot[slug] ? forgeRentCot[slug].u : null,   // live CoreLogic rents
