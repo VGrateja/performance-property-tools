@@ -843,22 +843,36 @@
      inline rather than in a tooltip — a note nobody hovers is a note nobody
      reads, and presenting a draft to a client is the thing being prevented. */
   .ws-col-subs{ display:flex; align-items:center; gap:10px; flex:none; margin-right:4px }
+  /* Draft row: has a working doc, no PDF yet. Dimmer than a finished row but
+     NOT the greyed is-disabled treatment — its link works. */
+  .ws-col-item--draft{ opacity:.86 }
+  .ws-col-item--draft .ws-col-item-title{ font-weight:600 }
   .ws-col-sub{ font-size:11.5px; font-weight:700; color:var(--acc,#FFB947); text-decoration:none;
     white-space:nowrap; border-bottom:1px solid transparent }
   .ws-col-sub:hover{ border-bottom-color:currentColor }
   .ws-col-sub em{ display:block; font-style:normal; font-size:9.5px; font-weight:600;
     letter-spacing:.02em; color:var(--mut); text-transform:uppercase }
   @media(max-width:720px){ .ws-col-sub em{ display:none } }
-  .ws-flat-list{ max-width:760px; margin-inline:auto }
+  .ws-flat-list{ max-width:940px; margin-inline:auto }
   .ws-sf-columns{ margin-inline:auto }
   /* In these two views the row IS the whole width, so the actions belong on the
      RIGHT of it rather than wrapped onto a second line — .ws-col-actions is
      flex:1 1 100% by default, which is what made every row two lines tall.
      Scoped so the PDF Reports folder keeps the card shape Van signed off. */
-  .ws-flat-list .ws-col-item--stacked, .ws-sf-columns .ws-col-item--stacked{ flex-wrap:nowrap }
+  /* Was nowrap to keep rows one line tall. With a working doc + caption +
+     Slides + 2 buttons that forced the title to ellipsis, so let it wrap:
+     a taller row beats a hidden name. */
+  .ws-flat-list .ws-col-item--stacked, .ws-sf-columns .ws-col-item--stacked{ flex-wrap:wrap; row-gap:6px }
+  /* The title column keeps a floor so it is never squeezed to nothing, and
+     wraps rather than ellipsing — overflow:hidden on .ws-col-item-title is
+     what silently produced "Debt Reduc…". */
+  .ws-flat-list .ws-col-item-stack, .ws-sf-columns .ws-col-item-stack{ min-width:190px }
+  .ws-flat-list .ws-col-item-title, .ws-sf-columns .ws-col-item-title{
+    white-space:normal; overflow:visible; text-overflow:clip; line-height:1.25;
+  }
   .ws-flat-list .ws-col-actions, .ws-sf-columns .ws-col-actions{ flex:none; margin-top:0; margin-left:auto }
   /* Two-column Strategies / Frameworks */
-  .ws-sf-columns{ grid-template-columns:repeat(2, minmax(0, 1fr)) !important; max-width:1080px }
+  .ws-sf-columns{ grid-template-columns:repeat(2, minmax(0, 1fr)) !important; max-width:1320px }
   .ws-col-empty{ padding:14px 12px; font-size:12.5px; color:var(--mut); font-style:italic }
   @media(max-width:820px){ .ws-sf-columns{ grid-template-columns:1fr !important } }
   .ws-col-list{
@@ -2399,6 +2413,14 @@ async function _loadPdfLinks() {
 }
 function _capturedLinkFor(item) {
   if (!item || !item.title) return null;
+  /* PDF REPORTS ONLY. The keyword tests below are substring matches, so any
+     item titled "...Commercial..." / "...National..." / "...Clock..." in any
+     other folder would silently adopt a report PDF — which is exactly what
+     happened to the "Established Commercial Property" framework (Van
+     2026-08-25: "its being linked automatically to commercial PDF report").
+     Captured links describe the PDF Reports folder and nothing else. */
+  const _sec = (typeof WS_DATA === 'object' && WS_DATA && WS_DATA.sections) ? WS_DATA.sections[_currentSecIdx] : null;
+  if (!_sec || _sec.id !== 'research-links') return null;
   const t = String(item.title);
   const L = _PDF_GCS_LINKS || {};
   /* Regional reports: the renderer titled each card via slugToTitle, so
@@ -2486,7 +2508,7 @@ function _renderItemView(item, ctaLabel, showStatus) {
     a.innerHTML = head +
       '<div class="ws-card-actions">' +
         '<span class="ws-action ws-action-primary">' + _esc(label) + ' <span>›</span></span>' +
-        '<button type="button" class="ws-copy-link" title="Copy shareable link">Copy link</button>' +
+        '<button type="button" class="ws-copy-link" title="Copy the shareable PDF link">Copy PDF Link</button>' +
       '</div>';
     const btn = a.querySelector('.ws-copy-link');
     if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, btn); });
@@ -2591,7 +2613,10 @@ function _renderItemEdit(secIdx, subIdx, itemIdx, item, kind) {
   del.addEventListener('click', () => deleteItem(secIdx, subIdx, itemIdx));
   card.appendChild(del);
 
-  const showStatus = kind === 'whitepaper';
+  /* Frameworks carry an approval state like whitepapers do, and the view
+     already draws their status dot — so they need the field too, or the dot
+     is unchangeable (Van 2026-08-25). */
+  const showStatus = kind === 'whitepaper' || kind === 'framework';
   const statusFieldHtml = showStatus
     ? '<div class="ws-field">' +
         '<label class="ws-field-label">Status</label>' +
@@ -2913,6 +2938,7 @@ function _renderIrLibTile() {
 }
 function enterIrLib() {
   _currentView = 'irlib';
+  _wsSyncUrl('irlib');   /* refresh re-opens it; the tier check re-runs */
   renderAll();
   window.scrollTo({ top: 0, behavior: 'auto' });
 }
@@ -3320,7 +3346,10 @@ function _renderGridSectionView(secIdx, section) {
    item's URL (or a disabled tile when url is blank). Status pill in
    the top-right, title near the top, date pinned to the bottom. */
 function _renderSquareItemView(item, kind) {
-  const showStatus = kind === 'whitepaper';
+  /* Frameworks carry an approval state like whitepapers do, and the view
+     already draws their status dot — so they need the field too, or the dot
+     is unchangeable (Van 2026-08-25). */
+  const showStatus = kind === 'whitepaper' || kind === 'framework';
   const statusKey = item.status || 'in-progress';
   const statusHtml = showStatus
     ? '<div class="ws-square-status ws-square-status--' + _esc(statusKey) + '">' + _esc(_statusLabel(statusKey)) + '</div>'
@@ -3402,7 +3431,10 @@ function _renderSquareItemEdit(secIdx, subIdx, itemIdx, item, kind) {
   del.addEventListener('click', () => deleteItem(secIdx, subIdx, itemIdx));
   card.appendChild(del);
 
-  const showStatus = kind === 'whitepaper';
+  /* Frameworks carry an approval state like whitepapers do, and the view
+     already draws their status dot — so they need the field too, or the dot
+     is unchangeable (Van 2026-08-25). */
+  const showStatus = kind === 'whitepaper' || kind === 'framework';
   const statusFieldHtml = showStatus
     ? '<div class="ws-field">' +
         '<label class="ws-field-label">Status</label>' +
@@ -3417,8 +3449,15 @@ function _renderSquareItemEdit(secIdx, subIdx, itemIdx, item, kind) {
       '<input type="text" class="ws-input ws-input-title" data-field="title" value="' + _esc(item.title) + '" placeholder="Card title">' +
     '</div>' +
     '<div class="ws-field">' +
-      '<label class="ws-field-label">URL</label>' +
+      '<label class="ws-field-label">PDF URL</label>' +
       '<input type="url" class="ws-input" data-field="url" value="' + _esc(item.url) + '" placeholder="https://…">' +
+    '</div>' +
+    /* Working document (Saskia/Kia 2026-08-25): the editable doc behind the
+       PDF. View mode shows it as a "Working doc \u203A" link captioned "for
+       comments, not presenting", so nobody screen-shares a draft. Blank hides it. */
+    '<div class="ws-field">' +
+      '<label class="ws-field-label">Working Doc URL</label>' +
+      '<input type="url" class="ws-input" data-field="docUrl" value="' + _esc(item.docUrl || '') + '" placeholder="https://docs.google.com/… (blank = hidden)">' +
     '</div>' +
     _dateFieldHtml(item, 'Last updated')
   );
@@ -3450,12 +3489,19 @@ function _renderSquareStrategyEdit(secIdx, subIdx, itemIdx, item) {
       '<input type="text" class="ws-input ws-input-title" data-field="title" value="' + _esc(item.title) + '" placeholder="Strategy name">' +
     '</div>' +
     '<div class="ws-field">' +
-      '<label class="ws-field-label">Document URL</label>' +
+      '<label class="ws-field-label">PDF URL</label>' +
       '<input type="url" class="ws-input" data-field="url" value="' + _esc(item.url) + '" placeholder="https://…">' +
     '</div>' +
     '<div class="ws-field">' +
       '<label class="ws-field-label">Slides URL</label>' +
       '<input type="url" class="ws-input" data-field="slidesUrl" value="' + _esc(item.slidesUrl || '') + '" placeholder="https://… (blank = TBC)">' +
+    '</div>' +
+    /* Working document (Saskia/Kia 2026-08-25): the editable doc behind the
+       PDF. View mode shows it as a "Working doc \u203A" link captioned "for
+       comments, not presenting", so nobody screen-shares a draft. Blank hides it. */
+    '<div class="ws-field">' +
+      '<label class="ws-field-label">Working Doc URL</label>' +
+      '<input type="url" class="ws-input" data-field="docUrl" value="' + _esc(item.docUrl || '') + '" placeholder="https://docs.google.com/… (blank = hidden)">' +
     '</div>' +
     _dateFieldHtml(item, 'Last upload')
   );
@@ -3477,7 +3523,7 @@ function _renderSubsectionColumn(secIdx, subIdx, sub) {
   const items = sub.items || [];
   const kind = sub.kind;
   const isStrategy = kind === 'strategy';
-  const showStatusDot = kind === 'strategy' || kind === 'whitepaper';
+  const showStatusDot = kind === 'strategy' || kind === 'whitepaper' || kind === 'framework';
 
   items.forEach((item, itemIdx) => {
     if (_editMode) {
@@ -3539,7 +3585,7 @@ function _renderColumnItemView(item, showStatusDot) {
     a.innerHTML = dotHtml + stackHtml +
       (subLinks ? '<div class="ws-col-subs">' + subLinks + '</div>' : '') +
       '<div class="ws-col-actions">' +
-        '<button type="button" class="ws-col-copy" title="Copy shareable link">Copy link</button>' +
+        '<button type="button" class="ws-col-copy" title="Copy the shareable PDF link">Copy PDF Link</button>' +
       '</div>';
     const acts = a.querySelector('.ws-col-actions');
     const btn = a.querySelector('.ws-col-copy');
@@ -3547,6 +3593,21 @@ function _renderColumnItemView(item, showStatusDot) {
     _addPinBtn(acts, url, item.title, 'ws-col-copy');
     return a;
   }
+  /* WORKING DOC BUT NO PDF — the normal state for a Framework. Surface the
+     doc rather than showing a dead "Not Available Yet" row. The title stays
+     plain text (nothing shareable to point it at) and there is no Copy link
+     button: copying a draft is what the caption warns against. */
+  if (!url && item.docUrl && !locked) {
+    const row = document.createElement('div');
+    row.className = 'ws-col-item ws-col-item--stacked ws-col-item--draft';
+    row.innerHTML = dotHtml + stackHtml +
+      '<div class="ws-col-subs">' +
+        '<a class="ws-col-sub ws-col-sub--doc" href="' + _esc(item.docUrl) + '" target="_blank" rel="noopener noreferrer" title="Working document — for comments, not for presenting">Working doc \u203A<em>for comments, not presenting</em></a>' +
+        (item.slidesUrl ? '<a class="ws-col-sub" href="' + _esc(item.slidesUrl) + '" target="_blank" rel="noopener noreferrer">Slides \u203A</a>' : '') +
+      '</div>';
+    return row;
+  }
+
   const div = document.createElement('div');
   div.className = 'ws-col-item is-disabled';
   div.title = locked ? 'This document is being updated' : 'Not Available Yet';
@@ -3581,7 +3642,10 @@ function _renderColumnStrategyView(item) {
 function _renderColumnItemEdit(secIdx, subIdx, itemIdx, item, kind) {
   const card = document.createElement('div');
   card.className = 'ws-col-edit';
-  const showStatus = kind === 'whitepaper';
+  /* Frameworks carry an approval state like whitepapers do, and the view
+     already draws their status dot — so they need the field too, or the dot
+     is unchangeable (Van 2026-08-25). */
+  const showStatus = kind === 'whitepaper' || kind === 'framework';
 
   const del = document.createElement('button');
   del.type = 'button';
@@ -3847,9 +3911,9 @@ function _wsApplyDeepLink() {
     const want = new URLSearchParams(location.search).get('section');
     if (!want) return false;
     const idx = (WS_DATA.sections || []).findIndex(x => x && x.id === want);
-    const u = new URL(location.href);
-    u.searchParams.delete('section');
-    history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
+    /* The param STAYS. It used to be deleted here for a tidy address bar,
+       which meant a refresh had nothing to restore and dropped the user on
+       the picker — a dead end now that the picker hides these tiles. */
     /* The Example IR folder lives in the Vault now — dev/admin only, so a typed
        URL must not open it for staff. The tier comes from the DATABASE, not
        getAccessLevel(): that reads a sessionStorage mirror which can be stale,
@@ -3874,9 +3938,24 @@ function _wsApplyDeepLink() {
   } catch (e) { return false; }
 }
 
+/* Keep the address bar describing what is on screen, so refresh and
+   copy-paste both do the obvious thing. replaceState, not pushState: the
+   app-bar Desktop button is the way out, and stacking history entries would
+   make the browser Back button walk through folders instead. */
+function _wsSyncUrl(sectionId) {
+  try {
+    const u = new URL(location.href);
+    if (sectionId) u.searchParams.set('section', sectionId);
+    else u.searchParams.delete('section');
+    history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
+  } catch (e) {}
+}
+
 function enterSection(secIdx) {
   _currentSecIdx = secIdx;
   _currentView   = 'section';
+  const _sec = (WS_DATA.sections || [])[secIdx];
+  _wsSyncUrl(_sec && _sec.id);
   renderAll();
   /* Scroll back to the top so the user sees the new view's header
      instead of being stuck at whatever scroll the picker had. */
@@ -3886,6 +3965,7 @@ function enterSection(secIdx) {
 function exitToPicker() {
   _currentSecIdx = -1;
   _currentView   = 'picker';
+  _wsSyncUrl(null);
   renderAll();
   window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
 }
