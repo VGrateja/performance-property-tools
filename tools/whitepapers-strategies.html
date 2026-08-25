@@ -8,8 +8,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../shared/common.css?v=2e33aceb"/>
 <!-- OS chrome: mode/period/shade + legacy data-theme bridge (replaces theme.js) -->
-<script src="../shared/os-chrome.js?v=f6ea2748"></script>
-<link rel="stylesheet" href="../shared/os-theme.css?v=c82b0c67"/>
+<script src="../shared/os-chrome.js?v=ea374003"></script>
+<link rel="stylesheet" href="../shared/os-theme.css?v=bcea6d52"/>
 <!-- Auto-fit: scale the page down to fit smaller screens (scale-down only). -->
 <script src="../shared/fit-screen.js?v=5e41a716"></script>
 <style>
@@ -1539,7 +1539,11 @@
      three buttons read as one cluster. Lives inside #ws-section-view
      so it auto-hides when the picker view is active (display:none on
      the hidden parent cascades to fixed-position children). */
-  .ws-back-types{
+  /* Hidden 2026-08-24: every folder is reached from its own widget now, so
+     "back to types" pointed at a picker nobody came from. The app bar's
+     Desktop button is the way out. Still rendered for edit mode. */
+  .ws-back-types{ display:none !important; }
+  .ws-back-types-was{
     /* the hub pill it used to sit beside is retired — slide to the left edge */
     position:fixed; top:calc(var(--appbar-h, 52px) + 16px); left:16px; z-index:10000;
     display:inline-flex; align-items:center; gap:8px;
@@ -1594,7 +1598,7 @@
      before any chrome paints. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3" integrity="sha384-l8ah+VgaWtk1mvOe9VC+OirC6qHFF4yH7l7mKRidV9MSti3E9F463bMp6ZVN4kuC" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="../shared/supabase-client.js?v=b4bd183c"></script>
-<script src="../shared/tool-registry.js?v=ebd206d2"></script>
+<script src="../shared/tool-registry.js?v=8a39575f"></script>
 <script src="../shared/desktop-pins.js?v=e2416017"></script>
 <script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
 <script src="../shared/auth.js?v=7dce203e"></script>
@@ -2823,17 +2827,22 @@ function renderPicker() {
   const grid = document.getElementById('ws-types-grid');
   if (!grid) return;
   grid.innerHTML = '';
+  /* Whitepapers and Strategies each have their own dock widget now, so their
+     tile here is a duplicate way in (Van 2026-08-24). The SECTIONS stay in
+     WS_DATA — the widgets deep-link into them with ?section=<id> — only the
+     tile is hidden, and only in view mode so the content stays maintainable. */
+  const WS_HIDDEN_TILES = ['whitepapers', 'strategies'];
   WS_DATA.sections.forEach((section, idx) => {
+    if (!_editMode && WS_HIDDEN_TILES.indexOf(section && section.id) >= 0) return;
     grid.appendChild(_renderTypeTile(idx, section));
   });
   if (!WS_DATA.sections.length && !_editMode) {
     grid.innerHTML = '<div class="ws-empty">No document types yet. Switch to Edit to add one.</div>';
   }
-  /* LIVE auto-folder (Saskia's request, wired 2026-08-19): published IR
-     report PDFs from the IR Builder pipeline. NOT part of WS_DATA — it reads
-     the Investment Reports library directly, so it can't drift and there is
-     nothing to edit or persist here. */
-  grid.appendChild(_renderIrLibTile());
+  /* The Example Investment Reports folder MOVED TO THE VAULT 2026-08-24 (Van)
+     — the Vault is dev/admin only, which is what hides it from staff. It is
+     reached from the Vault card via ?section=irlib; _renderIrLibTile() is kept
+     for the day it comes back here. */
   if (_editMode) {
     grid.appendChild(_renderAddTypeTile());
   }
@@ -3658,6 +3667,32 @@ function renderSectionView() {
      a single grid so all subsections sit side-by-side and the page
      reads at a glance. The top-level folder header is skipped because
      the page header (h1) already shows the folder name. */
+  /* PDF Reports reads as ONE flat A–Z list (Van 2026-08-24), matching the
+     Online Reports picker — the state grouping was an extra thing to scan.
+     Balanced into columns so 39 rows stay compact. EDIT mode keeps the real
+     subsections below, so the folder is still maintainable. */
+  if (!_editMode && section.id === 'research-links' && section.subsections && section.subsections.length) {
+    const all = [];
+    section.subsections.forEach(sub => (sub.items || []).forEach(it => all.push({ it: it, kind: sub.kind })));
+    all.sort((a, b) => String(a.it.title || '').localeCompare(String(b.it.title || '')));
+    const flat = document.createElement('div');
+    flat.className = 'ws-columns';
+    const per = Math.ceil(all.length / 4) || 1;
+    for (let c = 0; c < 4; c++) {
+      const slice = all.slice(c * per, (c + 1) * per);
+      if (!slice.length) continue;
+      const col = document.createElement('div');
+      col.className = 'ws-col';
+      const list = document.createElement('div');
+      list.className = 'ws-col-list';
+      slice.forEach(x => list.appendChild(_renderColumnItemView(x.it, x.kind === 'strategy' || x.kind === 'whitepaper')));
+      col.appendChild(list);
+      flat.appendChild(col);
+    }
+    root.appendChild(flat);
+    return;
+  }
+
   if (section.subsections && section.subsections.length) {
     const cols = document.createElement('div');
     cols.className = 'ws-columns';
@@ -3678,6 +3713,16 @@ function renderSectionView() {
 
 /* ─── View navigation ─── */
 
+/* Each folder is opened by its own dock widget, so the chrome should carry
+   THAT name — it used to read "Whitepapers & Strategies" everywhere. */
+const WS_WIDGET_NAMES = {
+  'research-links': 'PDF Reports',
+  'whitepapers':    'Whitepapers',
+  'strategies':     'Strategies & Frameworks'
+};
+function _wsSetChromeName(txt) {
+  try { const n = document.querySelector('.ab-id .nm'); if (n && txt) n.textContent = txt; } catch (e) {}
+}
 function _setPageHeader(view, section) {
   const eyebrow = document.getElementById('ws-page-eyebrow');
   const title   = document.getElementById('ws-page-title');
@@ -3685,14 +3730,54 @@ function _setPageHeader(view, section) {
   if (view === 'picker') {
     if (eyebrow) eyebrow.textContent = 'Library';
     if (title)   title.textContent   = 'Documents';
+    _wsSetChromeName('Documents');
     if (sub)     sub.textContent     = 'Pick a document type to browse — research links, or whitepapers and strategies.';
   } else {
     /* Inside a type — header reflects the current section so the
        user always knows where they are. */
     if (eyebrow) eyebrow.textContent = 'Documents';
-    if (title)   title.textContent   = (section && section.title) || 'Documents';
+    const wn = (section && WS_WIDGET_NAMES[section.id]) || (section && section.title) || 'Documents';
+    if (title)   title.textContent   = wn;
+    _wsSetChromeName(wn);
     if (sub)     sub.textContent     = '';
   }
+}
+
+/* Deep link: ?section=<section id> opens that folder straight away, so the
+   hub can give Whitepapers / Strategies their own dock widgets instead of
+   making everyone land on the picker first. Unknown or missing id = normal
+   picker, and the param is stripped from the URL so a later refresh (or a
+   Back to the picker) does not snap the user into the section again. */
+function _wsApplyDeepLink() {
+  try {
+    const want = new URLSearchParams(location.search).get('section');
+    if (!want) return false;
+    const idx = (WS_DATA.sections || []).findIndex(x => x && x.id === want);
+    const u = new URL(location.href);
+    u.searchParams.delete('section');
+    history.replaceState(null, '', u.pathname + (u.search || '') + u.hash);
+    /* The Example IR folder lives in the Vault now — dev/admin only, so a typed
+       URL must not open it for staff. The tier comes from the DATABASE, not
+       getAccessLevel(): that reads a sessionStorage mirror which can be stale,
+       and a stale mirror let a company-tier user in. Because that check is
+       async we do NOT claim the render — the picker draws for everyone and the
+       folder opens over it only once the DB confirms. Visibility only: the rows
+       stay staff-readable by RLS, as they always were. */
+    if (want === 'irlib') {
+      (async function () {
+        let tier = '';
+        try { const r = await sb.rpc('current_tier'); tier = (r && r.data) || ''; } catch (e) {}
+        if (!tier) {
+          try { const p = (typeof sbCurrentProfile === 'function') ? await sbCurrentProfile() : null; tier = (p && p.tier) || ''; } catch (e) {}
+        }
+        if (tier === 'dev' || tier === 'admin') enterIrLib();
+      })();
+      return false;   /* picker renders now; the folder opens over it if allowed */
+    }
+    if (idx < 0) return false;
+    enterSection(idx);
+    return true;
+  } catch (e) { return false; }
 }
 
 function enterSection(secIdx) {
@@ -3774,7 +3859,8 @@ setTimeout(applyTierGate, 200);
 setTimeout(applyTierGate, 800);
 
 /* ─── Boot ─── */
-renderAll();
+/* deep link (?section=…) renders the target folder itself; otherwise normal boot */
+if (!_wsApplyDeepLink()) renderAll();
 /* Kick off cloud hydration after the synchronous render so the user
    sees something immediately. The cloud version, if present, will
    override and re-render. */

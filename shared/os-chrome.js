@@ -54,14 +54,21 @@
      ends taken from each accent's official tone ramp (p15) — every value below
      is a sanctioned brand tone. PM wears Eucalyptus (the Asset Management
      sub-brand pairing, p27). Snapped from the old near-miss hues 2026-07-15. */
+  /* ONE BRAND ACCENT (Van 2026-08-24). Each section used to carry its own
+     colour, which left the app-bar chip on every tool page — and any .os-kit
+     control that reads --a1/--a2 — in the old per-section hue while the hub
+     widgets went teal. All sections now use Teal #00A0B4 into Dark Teal
+     #171B24: the same pair as .dicon.dtile and the section windows in
+     index.html. Section NAMES and GLYPHS are unchanged. */
+  var BRAND_A1 = '#00A0B4', BRAND_A2 = '#171B24';
   var SECTIONS = {
-    analytics: { name: 'Analytics Hub',       a1: '#ED5A75', a2: '#CA1637', glyph: 'pulse'   }, /* Red */
-    vault:     { name: 'The Vault',           a1: '#7E8CF1', a2: '#233AE7', glyph: 'lock'    }, /* Cobalt Blue */
-    pm:        { name: 'Property Management', a1: '#5DAC96', a2: '#3E7967', glyph: 'check'   }, /* Eucalyptus */
-    arena:     { name: 'Performance Arena',   a1: '#D373D3', a2: '#AB36AB', glyph: 'game'    }, /* Purple */
-    docs:      { name: 'Documents & Reports', a1: '#FFB947', a2: '#E08A00', glyph: 'book'    }, /* Yellow */
-    present:   { name: 'Presentations',       a1: '#54A6DE', a2: '#2478BC', glyph: 'present' }, /* Celestial Blue */
-    people:    { name: 'People & Culture',    a1: '#47DAFF', a2: '#00A3CC', glyph: 'people'  }  /* Bright Blue */
+    analytics: { name: 'Analytics Hub',       a1: BRAND_A1, a2: BRAND_A2, glyph: 'pulse'   },
+    vault:     { name: 'The Vault',           a1: BRAND_A1, a2: BRAND_A2, glyph: 'lock'    },
+    pm:        { name: 'Property Management', a1: BRAND_A1, a2: BRAND_A2, glyph: 'check'   },
+    arena:     { name: 'Performance Arena',   a1: BRAND_A1, a2: BRAND_A2, glyph: 'game'    },
+    docs:      { name: 'Documents & Reports', a1: BRAND_A1, a2: BRAND_A2, glyph: 'book'    },
+    present:   { name: 'Presentations',       a1: BRAND_A1, a2: BRAND_A2, glyph: 'present' },
+    people:    { name: 'People & Culture',    a1: BRAND_A1, a2: BRAND_A2, glyph: 'people'  }
   };
 
   /* ── mode / period / shade (identical rules to the desktop mockup) ──────── */
@@ -174,7 +181,7 @@
      Returns { el, setStatus } for later tweaks. */
   function initChrome(cfg) {
     cfg = cfg || {};
-    var sec = SECTIONS[cfg.section] || { name: cfg.section || '', a1: '#7E8CF1', a2: '#233AE7', glyph: 'pulse' };
+    var sec = SECTIONS[cfg.section] || { name: cfg.section || '', a1: BRAND_A1, a2: BRAND_A2, glyph: 'pulse' };
     var a1 = cfg.a1 || sec.a1, a2 = cfg.a2 || sec.a2;
     var glyph = cfg.glyph ? (GLYPH[cfg.glyph] || cfg.glyph) : GLYPH[sec.glyph];
     doc.body.style.setProperty('--a1', a1);
