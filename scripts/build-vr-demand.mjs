@@ -7,6 +7,21 @@
 // nim_fy / nom_fy, loaded by ingest-abs-popcomponents-regional.mjs). The RULES
 // come from the July 2026 VR Projections workbook; none of its DATA is used.
 //
+// 2026-08-26 — THREE CHANGES (Van Grateja's "VR Projection: three changes"
+// specification), applied to V1 and V2 alike:
+//   1. CAPITALS ON GCCSA — already true here; --capitals=gccsa is and stays the
+//      default, and the ingest reads ERP_COMP_SA_ASGS2021 at the GCCSA level.
+//      No change was needed. (--capitals=state still reproduces the workbook's
+//      state substitution, as a switch.)
+//   2. OVERSEAS MIGRATION — new national source and a per-year share basis.
+//      See NATIONAL_NOM below and the OM block in shared/vr-demand-calc.js.
+//   3. MELBOURNE NIM OVERRIDE — +10,173, applied to the component series
+//      before any window average. See VR_NIM_OVERRIDES in
+//      shared/vr-forecast-calc.js for the value, the date and the rationale.
+// AFTER THESE CHANGES NEITHER VERSION REPRODUCES ITS SOURCE WORKBOOK. That is
+// intended, and payload.demand.departsFromWorkbook records why — do not
+// reconcile the stored figures against those files and report a fault.
+//
 // WHY THIS IS AN IMPROVEMENT, NOT JUST A RE-SOURCE
 // ------------------------------------------------
 // The workbook's multi-year averages are built from MIXED ABS VINTAGES — each
@@ -71,10 +86,55 @@ const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY in .env'); process.exit(1); }
 const sb = createClient(process.env.SUPABASE_URL || 'https://cannojsxduvlewimwoxa.supabase.co', KEY, { auth: { persistSession: false } });
 
-/* Treasury NATIONAL net overseas migration forecast, by financial year ending.
-   Manual — a Budget/MYEFO figure with no machine-readable feed. Revisit each
-   Budget. Matches the July workbook's OM!H3:L3. */
-const TREASURY_NOM = { 2026: 295000, 2027: 245000, 2028: 225000, 2029: 225000, 2030: 225000 };
+/* ── NATIONAL NET OVERSEAS MIGRATION FORECAST ────────────────────────────────
+   By financial year ENDING (2026 = FY2025-26). Source is the CENTRE FOR
+   POPULATION's 2025 Population Statement — NOT Treasury, and NOT the VR
+   Projections workbook.
+
+   CHANGED 2026-08-26 (Van Grateja, "VR Projection — three changes", Change 2).
+   The workbook used 295,000 (FY2025-26) and 245,000 (FY2026-27); those are the
+   FEDERAL BUDGET's figures, not the Population Statement's, and they are now
+   superseded. The national forecast falls 295,000 -> 260,000 for year 1
+   (-12%), so every region's OM falls before the share basis even changes.
+
+   FIGURES AND WHERE EACH ONE WAS READ (read 2026-08-26):
+     FY2025-26  260,000  Population Statement narrative, quoted twice:
+                         Australia overview / snapshot — "Net overseas
+                         migration is expected to be 260,000 in 2025-26."; and
+                         the Migration chapter, "Net overseas migration" —
+                         "NOM was forecast to be 310,000 in 2024-25 and then
+                         decline to 260,000 in 2025-26."
+                         (The publication's own chart data puts the unrounded
+                         figure at 262,400 — the narrative rounds it. 260,000
+                         is the figure the specification fixed, so it is used.)
+     FY2026-27  227,300  The publication states no rounded figure for this
+                         year — the narrative only says "NOM is forecast to
+                         decline further in 2025-26 and 2026-27". The number
+                         is read from the Statement's OWN chart-data workbook
+                         (population-statement-2025-chart-data.xlsx), where
+                         Chart 6 "Overseas migration, year-ending" and Chart 7
+                         "Overseas migration by visa group and direction"
+                         BOTH give 2026-27 = 227,300.
+                         NOTE: this is NOT the 225,000 that secondary sources
+                         report — that figure is not in this publication.
+     FY2027-28  226,100  same chart-data workbook (Chart 7).
+     FY2028-29  225,900  same chart-data workbook (Chart 7).
+   Beyond the forecast horizon the Statement assumes NOM returns to 235,000 a
+   year, so extend with that — do not extrapolate the table.
+
+   Revisit when the next Population Statement lands (annual, ~Dec/Jan). */
+const NATIONAL_NOM = { 2026: 260000, 2027: 227300, 2028: 226100, 2029: 225900, 2030: 235000 };
+const NOM_FORECAST_SOURCE = {
+  publisher: 'Centre for Population (Australian Government Treasury)',
+  publication: '2025 Population Statement',
+  statementUrl: 'https://population.gov.au/publications/statements/2025-population-statement',
+  snapshotUrl: 'https://population.gov.au/publications/snapshots/2025-population-statement-australia-snapshot',
+  chartDataUrl: 'https://population.gov.au/sites/population.gov.au/files/2026-01/population-statement-2025-chart-data.xlsx',
+  readAt: '2026-08-26',
+  yr1Cite: 'FY2025-26 = 260,000 — Statement narrative ("Net overseas migration is expected to be 260,000 in 2025-26"); chart data has the unrounded 262,400.',
+  yr2Cite: 'FY2026-27 = 227,300 — Statement chart data, Chart 6 (Overseas migration, year-ending) and Chart 7 (by visa group and direction). No rounded narrative figure is published for this year; 225,000 is a secondary-source number that does NOT appear in this publication.',
+  supersedes: 'VR Projections workbook OM tab (295,000 FY2025-26 / 245,000 FY2026-27 — federal Budget figures).',
+};
 
 const CAPITAL_STATE = { sydney: 'st-nsw', melbourne: 'st-vic', brisbane: 'st-qld', adelaide: 'st-sa', perth: 'st-wa', hobart: 'st-tas', darwin: 'st-nt', canberra: 'st-act' };
 
@@ -92,8 +152,17 @@ for (const r of comp) {
   const y = +r.period.slice(0, 4), k = MKEY[r.metric];
   ((F[r.region_slug] = F[r.region_slug] || {})[k] = F[r.region_slug][k] || {})[y] = +r.value;
 }
+/* NATIONAL NOM history — the DENOMINATOR of every region's share. This is the
+   ABS national series (region_slug 'australia', from ERP_COMP_SA_ASGS2021's
+   AUS level), NOT the sum of the modelled regions: the 36 markets exclude
+   rest-of-state areas, so summing them would inflate every share. */
 const national = { nom: (F['australia'] || {}).nom || {} };
+if (!Object.keys(national.nom).length) { console.error('No national (australia) nom_fy in rdp_raw_series — the share denominator is missing. Run ingest-abs-popcomponents-regional.mjs --write first.'); process.exit(1); }
 const latestYear = Math.max(...Object.keys(national.nom).map(Number));
+/* Fail loudly rather than silently emitting null OM for every region. */
+for (const y of [latestYear + 1, latestYear + 2]) {
+  if (NATIONAL_NOM[y] == null) { console.error(`No national NOM forecast for FY${y - 1}-${String(y).slice(2)} in NATIONAL_NOM — add it from the latest Population Statement before rebuilding.`); process.exit(1); }
+}
 
 const { data: fc, error: fErr } = await sb.from('rdp_vr_forecast').select('region_slug,payload');
 if (fErr) { console.error('forecast read failed:', fErr.message); process.exit(1); }
@@ -120,48 +189,89 @@ for (const r of fc) {
   if (ONLY && slug !== ONLY) continue;
 
   /* MANUAL NIM OVERRIDE — VR_NIM_OVERRIDES in shared/vr-forecast-calc.js.
-     Applied to the COMPONENT SERIES, before computeDemand takes its window
-     averages, so imAvg2 / imAvg3 / imCur are all the override and BOTH
-     versions derive from it. Patching the outputs instead would leave V2's
-     year-2 natural increase computed from the old year-1 intake, since that
-     is a per-capita rate applied to the post-intake population. */
+     Currently { melbourne: +10,173 } (Greater Melbourne's 2017 net internal
+     migration — a deliberate analyst override; the full rationale lives next
+     to the value in that file).
+
+     Applied by REPLACING every year of the COMPONENT SERIES with the override
+     value, before computeDemand takes its window averages. That makes
+     imAvg2 / imAvg3 / imCur all equal the override, so the override reaches
+     BOTH versions and BOTH forecast years through every IM path there is —
+     V1's 2-year average, V2's current-year actual, and V2's 0.5/0.5 blend —
+     and it lands on the WF-FREE BASE, before the workforce modifier is added.
+     Patching the outputs instead would leave V2's year-2 natural increase
+     computed from the old year-1 intake, since that is a per-capita rate
+     applied to the post-intake population. */
   let componentsUsed = components;
+  let nimRaw = null;                    // the computed IM the override displaced (V1's 2-yr average)
   const nimOv = globalThis.VrForecastCalc.VR_NIM_OVERRIDES;
   if (nimOv && slug in nimOv) {
-    const zeroed = {};
-    Object.keys(components.im || {}).forEach(y => { zeroed[y] = nimOv[slug]; });
-    componentsUsed = Object.assign({}, components, { im: zeroed });
-    nimApplied.push(slug + ' (IM forced to ' + nimOv[slug] + ' across ' + Object.keys(zeroed).length + ' years)');
+    const forced = {};
+    Object.keys(components.im || {}).forEach(y => { forced[y] = nimOv[slug]; });
+    nimRaw = globalThis.VrDemandCalc.windowAvg(components.im, 2, latestYear);   // pre-override, for the audit trail
+    componentsUsed = Object.assign({}, components, { im: forced });
+    nimApplied.push(slug + ' (IM forced to ' + nimOv[slug] + ' across ' + Object.keys(forced).length +
+      ' years; computed 2-yr avg was ' + (nimRaw == null ? '—' : Math.round(nimRaw)) + ')');
   }
 
   const wf = globalThis.VrWorkforce.forRegion(slug);   // loaded from public.vr_workforce above
   const res = globalThis.VrDemandCalc.computeDemand({
     components: componentsUsed, population: pop, national, latestYear,
-    treasuryNom: { yr1: TREASURY_NOM[latestYear + 1], yr2: TREASURY_NOM[latestYear + 2] },
+    nationalNom: { yr1: NATIONAL_NOM[latestYear + 1], yr2: NATIONAL_NOM[latestYear + 2] },
     wf,
   });
   if (!res || !res.v1 || !res.v2) { skipped.push(`${slug} (calc returned null — short window?)`); continue; }
 
-  rows.push({ slug, pop, hhSize, src, res, stored: p });
+  rows.push({ slug, pop, hhSize, src, res, stored: p, nimRaw, nimTarget: (nimOv && slug in nimOv) ? nimOv[slug] : null });
 }
 
 // ── report ─────────────────────────────────────────────────────────────────
 const f0 = v => v == null ? '—' : Math.round(v).toLocaleString('en-AU');
 console.log(`VR demand from Forge — capitals basis: ${BASIS.toUpperCase()} · components through FY${latestYear - 1}-${String(latestYear).slice(2)}`);
-console.log(`Treasury national NOM: yr1 ${f0(TREASURY_NOM[latestYear + 1])} · yr2 ${f0(TREASURY_NOM[latestYear + 2])}`);
+console.log(`National NOM forecast (${NOM_FORECAST_SOURCE.publication}, read ${NOM_FORECAST_SOURCE.readAt}):`);
+console.log(`  yr1 FY${latestYear}-${String(latestYear + 1).slice(2)}  ${f0(NATIONAL_NOM[latestYear + 1])}   (share = region 2-yr avg OM / national 2-yr avg OM)`);
+console.log(`  yr2 FY${latestYear + 1}-${String(latestYear + 2).slice(2)}  ${f0(NATIONAL_NOM[latestYear + 2])}   (share = region 3-yr avg OM / national 3-yr avg OM)`);
+console.log(`  national 2-yr avg ${f0(globalThis.VrDemandCalc.windowAvg(national.nom, 2, latestYear))} · 3-yr avg ${f0(globalThis.VrDemandCalc.windowAvg(national.nom, 3, latestYear))}  (ABS 'australia', not the sum of regions)`);
 console.log(`${rows.length} regions computed${skipped.length ? ` · ${skipped.length} skipped` : ''}\n`);
+
+/* ── OM delta: the whole point of the 2026-08-26 change ─────────────────────
+   Old = the single 3-yr share x the workbook's Budget figures. Recomputed
+   here from the STORED payload so the comparison is against what is live. */
+console.log('OVERSEAS MIGRATION — old (stored) vs new (per-year share x Population Statement)');
+console.log('region            share1   share2 |   OM yr1 old      new    delta |   OM yr2 old      new    delta');
+let shareSum1 = 0, shareSum2 = 0;
+for (const r of rows.sort((a, b) => a.slug.localeCompare(b.slug))) {
+  const inp = r.res.inputs, sv1 = r.stored.demand && r.stored.demand.v1, sv2 = r.stored.demand && r.stored.demand.v2;
+  const oldOm1 = sv1 ? sv1.om1 : null, oldOm2 = sv2 ? sv2.om2 : (sv1 ? sv1.om2 : null);
+  const nOm1 = r.res.v1.om1, nOm2 = r.res.v1.om2;
+  if (r.slug !== 'australia') { shareSum1 += inp.nomShare1 || 0; shareSum2 += inp.nomShare2 || 0; }
+  const d = (a, b) => (a == null || b == null) ? '—' : ((b - a >= 0 ? '+' : '') + f0(b - a));
+  console.log('  ' + r.slug.padEnd(16) + (inp.nomShare1 * 100).toFixed(3).padStart(7) + '%' +
+    (inp.nomShare2 * 100).toFixed(3).padStart(8) + '% |' +
+    f0(oldOm1).padStart(10) + f0(nOm1).padStart(9) + d(oldOm1, nOm1).padStart(9) + ' |' +
+    f0(oldOm2).padStart(10) + f0(nOm2).padStart(9) + d(oldOm2, nOm2).padStart(9));
+}
+console.log(`  shares of the 36 modelled regions sum to ${(shareSum1 * 100).toFixed(1)}% (yr1) / ${(shareSum2 * 100).toFixed(1)}% (yr2).`);
+console.log('  Under 100% is CORRECT — rest-of-state areas are not modelled. Never normalise these to 1.\n');
+
+if (nimApplied.length) console.log('MANUAL NIM OVERRIDES APPLIED (shared/vr-forecast-calc.js):\n  ' + nimApplied.join('\n  ') + '\n');
 
 console.log('region            V1 people   stored     delta  |  V2 yr1     V2 yr2');
 let moved = 0;
 for (const r of rows.sort((a, b) => a.slug.localeCompare(b.slug))) {
-  const v1 = r.res.v1.people1NoWf, st = r.stored.expectedPeople;   // compare like-for-like: stored expectedPeople excludes the workforce
+  /* Compare the SAME field before and after: expectedPeople is what
+     canonicalise() writes, and it carries the workforce (the workbook's IM
+     column G convention). Comparing people1NoWf against it — as this line did
+     until 2026-08-26 — understated the eight workforce markets by their whole
+     workforce and made Darwin look like it moved 900 people when it moved 88. */
+  const v1 = r.res.v1.people1, st = r.stored.expectedPeople;
   const d = (st != null) ? v1 - st : null;
   if (d != null && Math.abs(d) > Math.max(1, Math.abs(st) * 0.02)) moved++;
   console.log('  ' + r.slug.padEnd(16) + f0(v1).padStart(10) + f0(st).padStart(10) +
     (d == null ? '—' : (d >= 0 ? '+' : '') + f0(d)).padStart(10) + '  |' +
     f0(r.res.v2.people1).padStart(9) + f0(r.res.v2.people2).padStart(10));
 }
-console.log(`\n${moved}/${rows.length} regions move V1 expected-people by more than 2% vs the stored workbook value.`);
+console.log(`\n${moved}/${rows.length} regions move V1 expected-people by more than 2% vs the stored value.`);
 if (skipped.length) console.log('skipped: ' + skipped.join(', '));
 console.log('\nNOTE: payload.demand is ADDITIVE. The existing nb/im/om/expectedPeople');
 console.log('fields are untouched, so reports, B/S slides and Demand Score are unaffected');
@@ -192,14 +302,33 @@ function canonicalise(r) {
   const expNewHouseholds = expectedPeople / hhSize;
   const props1 = props + (oe1 || 0), HH1 = HH + expNewHouseholds;
   const forecastVR = props1 > 0 ? Math.max(0.001, (props1 - HH1) / props1) : null;
-  // V1 repeats year-1 formation in year 2
-  const props2 = props1 + (oe2 || 0), HH2 = HH1 + expNewHouseholds;
+  /* Year 2 takes V1's OWN year-2 demand. Until 2026-08-26 this line reused
+     year-1 formation, because V1's year 2 was a straight copy of year 1. It
+     is not any more: Change 2 gives OM its own year-2 figure, so the two
+     years differ by the OM step. Reusing year 1 here would leave the
+     top-level 2-yr forecast (Buying/Selling slides, reports) disagreeing
+     with what the VR Projection tool computes from payload.demand.v1 — the
+     exact split-brain this canonical block exists to prevent. */
+  const newHH2 = v1.people2 / hhSize;
+  const props2 = props1 + (oe2 || 0), HH2 = HH1 + newHH2;
   const forecastVR2 = props2 > 0 ? Math.max(0.001, (props2 - HH2) / props2) : null;
-  return {
+  const out = {
     nb: v1.ni1, im: v1.im1, om: v1.om1,        // im carries the workforce, per the workbook's column G
     expectedPeople, expNewHouseholds, forecastVR, forecastVR2,
+    // derived from forecastVR, so it has to move with it or it silently goes stale
+    changeVR: forecastVR == null ? null : forecastVR - cur,
     twoYrHH: HH2, twoYrProps: props2,
   };
+  /* Keep the top-level override audit trail in step with the demand block, so
+     the Buying/Selling slides and the VR tool tell the same story. Without
+     this the row would carry the new IM under the previous run's note. */
+  if (r.nimTarget != null) {
+    out.imOverride = true;
+    out.imRaw = r.nimRaw;                      // the computed 2-yr average the override displaced
+    out.imOverrideNote = (globalThis.VrForecastCalc.VR_NIM_OVERRIDE_NOTES || {})[r.slug]
+      || ('NIM forced to ' + r.nimTarget + ' — see VR_NIM_OVERRIDES in shared/vr-forecast-calc.js.');
+  }
+  return out;
 }
 
 if (CANON) {
@@ -227,7 +356,28 @@ for (const r of rows) {
     expNewHouseholds: r.stored.expNewHouseholds, forecastVR: r.stored.forecastVR, forecastVR2: r.stored.forecastVR2,
     twoYrHH: r.stored.twoYrHH, twoYrProps: r.stored.twoYrProps, supersededAt: new Date().toISOString() } : null;
   const payload = { ...r.stored, ...(canon || {}), demand: {
-    basis: BASIS, latestYear, treasuryNom: { yr1: TREASURY_NOM[latestYear + 1], yr2: TREASURY_NOM[latestYear + 2] },
+    basis: BASIS, latestYear,
+    nationalNom: { yr1: NATIONAL_NOM[latestYear + 1], yr2: NATIONAL_NOM[latestYear + 2], source: NOM_FORECAST_SOURCE },
+    /* Legacy alias kept so anything still reading `treasuryNom` sees the CURRENT
+       levels rather than the superseded Budget ones. The name is wrong now —
+       these are Centre for Population figures. Read `nationalNom`. */
+    treasuryNom: { yr1: NATIONAL_NOM[latestYear + 1], yr2: NATIONAL_NOM[latestYear + 2] },
+    /* Stored demand DELIBERATELY departs from the VR Projections workbooks as of
+       2026-08-26 — do not reconcile against those files and report a fault. */
+    departsFromWorkbook: {
+      since: '2026-08-26',
+      spec: 'Van Grateja — "VR Projection: three changes, applied to both V1 and V2"',
+      reasons: [
+        'OM: national forecast now the Centre for Population 2025 Population Statement (260,000 / 227,300), not the workbook\'s Budget figures (295,000 / 245,000); and the share is per-year on matching windows (2-yr for yr1, 3-yr for yr2) rather than one 3-yr share for both.',
+        'Capitals read Greater Capital City (GCCSA) components, not the workbook\'s state substitution (notes on NB!J1 / IM!L2).',
+        'Window averages are recomputed from one current ABS release, where the workbook mixes vintages.',
+        'Melbourne carries a manual net-internal-migration override of +10,173.',
+      ],
+    },
+    nimOverride: r.nimTarget == null ? null : {
+      value: r.nimTarget, displaced: r.nimRaw, appliedTo: 'base IM component series, before the workforce modifier, both versions and both years',
+      note: (globalThis.VrForecastCalc.VR_NIM_OVERRIDE_NOTES || {})[r.slug] || null,
+    },
     componentSource: r.src, params: r.res.inputs.params, canonical: !!canon,
     v1: r.res.v1, v2: r.res.v2, inputs: r.res.inputs,
     ...(legacy ? { legacy } : (r.stored.demand && r.stored.demand.legacy ? { legacy: r.stored.demand.legacy } : {})),

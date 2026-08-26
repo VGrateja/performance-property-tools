@@ -25,24 +25,64 @@
   'use strict';
   const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
 
-  /* ── MANUAL NIM OVERRIDE ───────────────────────────────────────────────
-     Davie via Saskia, 2026-08-25: Melbourne's net interstate migration is
-     forced to 0 so the VR forecast reads less negative on the Buying/Selling
-     slides. This is a DELIBERATE departure from the VR Projections workbook,
-     whose own figure for Melbourne is about -9,700 people a year.
+  /* ── MANUAL NIM OVERRIDE — MELBOURNE, +10,173 ──────────────────────────
+     NAMED AND DATED: set 2026-08-26 by Van Grateja, as Change 3 of the
+     "VR Projection — three changes" specification of the same date.
+     It SUPERSEDES the 2026-08-25 instruction (Davie via Saskia) that forced
+     Melbourne's NIM to 0. Zero is no longer the override; +10,173 is.
 
-     It lives HERE because both scripts/build-vr-forecast.mjs and
-     scripts/rebuild-vr-forecast-from-forge.mjs import this module. Patching
-     only the stored row would work until the next monthly re-seed silently
-     put the workbook figure back.
+     WHAT THE NUMBER IS
+     Greater Melbourne's NET INTERNAL MIGRATION in 2017: +10,173 people.
+     It is a DELIBERATE ANALYST OVERRIDE, not a computed value and not a
+     current figure. Do NOT derive it from the components series, and do NOT
+     "correct" it towards recent data — that is undoing the instruction, not
+     fixing a bug.
 
-     Applied to the STORED forecast only — never to the workbook integrity
-     check in build-vr-forecast.mjs, which must keep comparing like with like
-     or the 74/74 verify stops meaning anything.
+     WHY IT LOOKS WRONG (it is not)
+     Greater Melbourne's net internal migration, by year:
+         2017  +10,173      2020   -9,266      2023   -9,466
+         2018   +5,675      2021  -33,501      2024  -10,866
+         2019   +2,252      2022  -36,282      2025   -8,554
+     so the 2-year average is -9,710, the 3-year average is -9,629, and the
+     current-year actual (FY2024-25) is -8,554. The override therefore sits
+     roughly +19,800 people ABOVE whatever the method would otherwise
+     produce, and carries the OPPOSITE SIGN. At Melbourne's household size
+     that is about 7,600 additional households of demand — roughly a fifth
+     of its current surplus — so Melbourne's forecast is deliberately
+     TIGHTER than its own components imply. That is the intent.
+
+     WHERE IT APPLIES
+     To the BASE internal-migration figure, BEFORE the infrastructure
+     workforce modifier is added, in BOTH demand versions (V1 and V2) and
+     BOTH forecast years. Melbourne is not one of the eight workforce
+     markets, so the workforce toggle cannot interact with it.
+
+     WHY IT LIVES HERE
+     build-vr-forecast.mjs, rebuild-vr-forecast-from-forge.mjs,
+     apply-nim-override.mjs and build-vr-demand.mjs all import this module.
+     Patching only the stored row would hold until the next monthly re-seed
+     silently put the computed figure back.
+
+     Applied to the STORED forecast only — never to the legacy workbook
+     parity check in build-vr-forecast.mjs, which must keep comparing like
+     with like or that verify stops meaning anything.
+
+     NO OTHER REGION GETS AN OVERRIDE.
 
      TO REVERT: delete the region's line below. The next seeder run restores
-     the workbook value on its own; nothing else needs touching. */
-  const VR_NIM_OVERRIDES = { melbourne: 0 };
+     the computed value on its own; nothing else needs touching. */
+  const VR_NIM_OVERRIDES = { melbourne: 10173 };
+
+  /* Provenance for the payload + any UI that wants to explain the number,
+     so the rationale travels with the data and not just with this file. */
+  const VR_NIM_OVERRIDE_NOTES = {
+    melbourne: 'Net internal migration forced to +10,173 — Greater Melbourne\'s 2017 net internal migration. '
+      + 'Deliberate analyst override set 2026-08-26 (Van Grateja, "VR Projection — three changes" spec, Change 3); '
+      + 'supersedes the 2026-08-25 force-to-0. NOT computed: Melbourne\'s own 2-yr avg is -9,710, 3-yr avg -9,629, '
+      + 'current-year actual -8,554, so this is ~+19,800 people above the computed figure and the opposite sign. '
+      + 'Applied to the base IM before the workforce modifier, in both versions and both forecast years. '
+      + 'Do not "fix" it back — change VR_NIM_OVERRIDES in shared/vr-forecast-calc.js and re-seed instead.',
+  };
 
   /* Returns a copy of the inputs with the override applied, plus what it
      replaced so the caller can record it on the payload for transparency. */
@@ -69,5 +109,5 @@
     };
   }
 
-  root.VrForecastCalc = { computeVrForecast, VR_NIM_OVERRIDES, applyNimOverride };
+  root.VrForecastCalc = { computeVrForecast, VR_NIM_OVERRIDES, VR_NIM_OVERRIDE_NOTES, applyNimOverride };
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : this));

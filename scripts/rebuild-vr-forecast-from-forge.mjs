@@ -9,10 +9,18 @@
 //     supply       ← OE regions: stored payload.oeByYear[CURRENT year]
 //                    (auto-advances 2026→2027→…); approvals regions: Forge
 //                    Total Approvals (approvals_h+approvals_u, latest yr) × 0.9
-//   REUSED from the stored payload (workbook-side, refreshed only by the local
-//   full build when the workbook changes):
-//     hhSize, expectedPeople (nb+im+om), oeByYear, and all display extras
-//     (2-yr forecast, rents, OO%, surplus — left untouched).
+//   REUSED from the stored payload (refreshed only by the local full build /
+//   build-vr-demand.mjs):
+//     hhSize, oeByYear, and all display extras (rents, OO%, surplus — untouched).
+//   DEMAND (nb/im/om/expectedPeople) is taken from payload.demand.v1 whenever
+//     that canonical block is present — see the branch in the loop. It no
+//     longer auto-advances the workbook's omByYear column, superseded on
+//     2026-08-26 by the Centre for Population national forecast plus the
+//     per-year share basis (Change 2 of the VR Projection spec).
+//   PRE-EXISTING LIMITATION, unchanged: this recomputes the 1-YEAR forecast
+//     only. forecastVR2 / twoYrHH / twoYrProps stay as the last full build left
+//     them, so after a Forge input moves they lag the 1-yr figure until
+//     build-vr-demand.mjs --canonical --write runs again.
 //
 // This closes the gap where GATHER refreshed SQM VR + population but the VR
 // forecast (and therefore Demand Score's Adjusted VR) silently stayed at the
@@ -69,28 +77,46 @@ const forgePop = {}, forgeVR = {}, forgeAppr = {}, forgeRentSqm = {}, forgeRentC
 }
 
 const stamp = new Date().toISOString();
-const updates = []; const skipped = []; const shifts = [];
+const updates = []; const skipped = []; const shifts = []; const demandSrcCount = {};
 
 for (const row of rows) {
   const slug = row.region_slug, p = row.payload || {};
   // Workbook-side inputs the CI run can't source — reuse the stored values.
   const hhSize = p.hhSize;
-  // Demand: NB + IM are fixed 2-yr averages; OM (net overseas migration) is a
-  // Treasury forward projection stored per year → auto-advance to CUR_YEAR like
-  // OE supply. Fall back to the frozen expectedPeople if omByYear isn't present.
-  let expectedPeople = p.expectedPeople, omUsed = p.om;
-  if (p.omByYear && p.nb != null && p.im != null) {
+  /* DEMAND — nb / im / om.
+     The CANONICAL demand block (payload.demand.v1, written by
+     build-vr-demand.mjs --canonical) owns these whenever it is present. It
+     carries the Forge-derived NI/IM and the overseas-migration figure from the
+     Centre for Population's national forecast apportioned on the per-year
+     share basis, plus any manual NIM override, already combined.
+
+     DO NOT go back to auto-advancing payload.omByYear here. That column is the
+     VR Projections WORKBOOK's OM tab — superseded on 2026-08-26 (Change 2).
+     Reading it would silently undo the new OM method on the top-level fields
+     the Buying/Selling slides and the online reports read, one month after it
+     shipped, while the VR Projection tool kept showing the new figure from
+     payload.demand. That split is the exact failure this branch prevents. */
+  let expectedPeople = p.expectedPeople, omUsed = p.om, demandSrc = 'frozen payload';
+  const dv1 = p.demand && p.demand.canonical && p.demand.v1;
+  if (dv1 && dv1.om1 != null && dv1.people1 != null) {
+    omUsed = dv1.om1;
+    expectedPeople = dv1.people1;      // ni1 + im1 (override + workforce) + om1
+    demandSrc = 'payload.demand.v1 (canonical)';
+  } else if (p.omByYear && p.nb != null && p.im != null) {
+    // LEGACY path — only for rows that have never had a canonical demand block.
     const yrs = Object.keys(p.omByYear).map(Number).sort((a, b) => b - a);
     const omYear = yrs.includes(CUR_YEAR) ? CUR_YEAR : yrs[0];   // auto-advance; past last year → latest
     const om = p.omByYear[omYear];
     if (om != null) {
       omUsed = om;
       /* NIM override (VR_NIM_OVERRIDES in shared/vr-forecast-calc.js) — without
-         this the monthly re-seed would put the workbook figure back. */
+         this the monthly re-seed would put the computed figure back. */
       const ov = globalThis.VrForecastCalc.applyNimOverride(slug, { im: p.im });
       expectedPeople = p.nb + ov.inp.im + om;
+      demandSrc = 'workbook omByYear[' + omYear + '] (legacy)';
     }
   }
+  demandSrcCount[demandSrc] = (demandSrcCount[demandSrc] || 0) + 1;
   if (hhSize == null || expectedPeople == null) { skipped.push(slug + ' (no hhSize/expectedPeople in payload — needs a local full build)'); continue; }
 
   const population = forgePop[slug] != null ? forgePop[slug] : p.population;
@@ -132,6 +158,7 @@ for (const row of rows) {
 }
 
 console.log('Recomputed ' + updates.length + '/' + rows.length + ' regions from Forge inputs (' + CUR_YEAR + ' supply year).');
+console.log('demand source: ' + Object.entries(demandSrcCount).map(([k, v]) => v + ' × ' + k).join(' · '));
 console.log(shifts.length + ' forecast(s) shifted >0.05pp:'); shifts.forEach(s => console.log(s));
 if (skipped.length) { console.log('Skipped (kept previous payload):'); skipped.forEach(s => console.log('  ' + s)); }
 

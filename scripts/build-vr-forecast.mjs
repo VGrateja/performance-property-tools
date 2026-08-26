@@ -79,10 +79,15 @@ const oeByYearBySlug = {};
     if (Object.keys(yrs).length) oeByYearBySlug[slug] = yrs;
   }
 }
-// OM (net overseas migration): a Treasury forward projection by FINANCIAL year
-// (2023-24 … 2026-27) on the OM tab. Store per CALENDAR (ending) year so the
-// forecast auto-advances like OE — 2026 uses FY2025-26, 2027 will use FY2026-27.
-// NB + IM are fixed 2-yr averages (no forward years), so only OM advances.
+// OM (net overseas migration): the workbook OM tab's forward projection by
+// FINANCIAL year (2023-24 … 2026-27), stored per CALENDAR (ending) year.
+//
+// SUPERSEDED AS A FORECAST INPUT (2026-08-26). omByYear is still parsed and
+// stored as the workbook's historical record, but nothing computes from it any
+// more: overseas migration now comes from the Centre for Population's national
+// forecast apportioned on the per-year share basis (see NATIONAL_NOM in
+// scripts/build-vr-demand.mjs), and rebuild-vr-forecast-from-forge.mjs no
+// longer auto-advances this column. Do not wire a new consumer to it.
 const omByYearBySlug = {};
 {
   const om = XLSX.utils.sheet_to_json(wb.Sheets['OM'] || {}, { header: 1, raw: true, defval: '' });
@@ -147,9 +152,16 @@ for (let r = 3; r < g.length; r++) {
   const inp = { population: numv(row[C.population]), hhSize: numv(row[C.hhSize]), currentVR: numv(row[C.currentVR]), nb: numv(row[C.nb]), im: numv(row[C.im]), om: numv(row[C.om]) };
   const wbOe = numv(row[C.oe]);
 
-  // Integrity check: does VrForecastCalc reproduce the workbook when fed the
-  // workbook's OWN oe input? (keeps the 74/74 verify meaningful, independent of
-  // the sourcing change below.)
+  /* LEGACY WORKBOOK PARITY CHECK — scope: the CALCULATOR only.
+     Question asked: fed the workbook's OWN inputs (its NB/IM/OM and its OE
+     column), does VrForecastCalc reproduce the workbook's Expected VR and
+     Expected Households? That is arithmetic parity on the legacy method, and
+     it must keep passing — it is how we know the engine is faithful.
+
+     It is NOT a check on the STORED figures. Since 2026-08-26 the stored
+     demand deliberately departs from both workbooks (see the banner printed
+     after the results). The override and the Forge sourcing are applied BELOW
+     this block precisely so this comparison keeps comparing like with like. */
   const calcWb = globalThis.VrForecastCalc.computeVrForecast({ ...inp, oeCommencements: wbOe });
   if (!calcWb) { unresolved.push(label + ' (missing inputs)'); continue; }
   const expVR = numv(row[C.expVR]), expHH = numv(row[C.expHH]);
@@ -236,8 +248,26 @@ for (let r = 3; r < g.length; r++) {
 }
 
 console.log('regions parsed:', results.length, unresolved.length ? '| unresolved: ' + unresolved.join(', ') : '');
-console.log(`VERIFY (calc reproduces workbook, using workbook inputs): ${pass}/${checks} match`);
+console.log(`LEGACY WORKBOOK PARITY (calculator arithmetic only, fed the workbook's own inputs): ${pass}/${checks} match`);
 if (fails.length) for (const f of fails.slice(0, 15)) console.log(`  ${f.slug} ${f.k}: calc=${f.mine} workbook=${f.theirs}`);
+console.log(`
+  ┌─ THIS IS NOT A CHECK ON THE STORED FIGURES ────────────────────────────────
+  │ Since 2026-08-26 the STORED demand deliberately departs from both VR
+  │ Projections workbooks. Van Grateja's "VR Projection: three changes" spec:
+  │   1 capitals read Greater Capital City (GCCSA) components, not the
+  │     workbook's state substitution (its notes on NB!J1 / IM!L2);
+  │   2 overseas migration uses the Centre for Population 2025 Population
+  │     Statement national forecast (260,000 FY2025-26 / 227,300 FY2026-27),
+  │     apportioned per year on matching windows — 2-yr share for year 1,
+  │     3-yr share for year 2 — replacing the workbook's Budget figures
+  │     (295,000 / 245,000) and its single 3-yr share;
+  │   3 Melbourne carries a manual net-internal-migration override of +10,173.
+  │ Window averages are also recomputed from one current ABS release where the
+  │ workbook mixes vintages.
+  │ So a mismatch between a STORED payload and either workbook is EXPECTED and
+  │ is not a fault. The line above is the only workbook comparison that should
+  │ ever be reported as pass/fail, and its scope is the calculator's arithmetic.
+  └────────────────────────────────────────────────────────────────────────────`);
 console.log(`incoming-supply source (year ${CUR_YEAR}): ${srcCount.oe} OE · ${srcCount.forge_approvals} Forge approvals×0.9 · ${srcCount.workbook} workbook`);
 console.log(`population source: ${popSrc.forge} Forge · ${popSrc.workbook} workbook   |   current VR source: ${vrSrc.forge_sqm} Forge SQM · ${vrSrc.workbook} workbook`);
 const adel = results.find(r => r.region_slug === 'adelaide');
@@ -255,6 +285,20 @@ if (!WRITE) {
     n++; process.stdout.write(`\r  upserted ${n}/${results.length}`);
   }
   console.log('');
-  await sb.from('rdp_runs').insert({ dataset: 'vr_forecast', source_month: 'VR Projections 2026-06', row_count: n, status: 'ok', notes: `${n} regions; VrForecastCalc (verified ${pass}/${checks}); supply from OE[year]/Forge approvals×0.9` });
+  await sb.from('rdp_runs').insert({ dataset: 'vr_forecast', source_month: 'VR Projections 2026-06', row_count: n, status: 'ok', notes: `${n} regions; VrForecastCalc (legacy workbook parity ${pass}/${checks}); supply from OE[year]/Forge approvals×0.9` });
   console.log(`✓ Built rdp_vr_forecast for ${n} regions.`);
+  console.log(`
+⚠ THIS RUN JUST WROTE THE WORKBOOK'S nb / im / om OVER THE CANONICAL DEMAND
+  FIELDS, and left payload.demand carrying the newer method. The row is now
+  internally inconsistent: the Buying/Selling slides and the online reports
+  read the top-level fields you just overwrote, while the VR Projection tool
+  reads payload.demand.
+
+  YOU MUST FINISH THE PIPELINE:
+      node scripts/build-vr-demand.mjs --canonical            # dry run first
+      node scripts/build-vr-demand.mjs --canonical --write
+
+  That recomputes both shapes from Forge under the current method (GCCSA
+  capitals, the Centre for Population national NOM forecast on the per-year
+  share basis, and the Melbourne NIM override) and puts them back in step.`);
 }

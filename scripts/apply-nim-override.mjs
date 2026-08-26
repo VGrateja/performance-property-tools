@@ -21,6 +21,16 @@
 //                       is exactly what moved.
 // twoYrProps and every supply-side field are left alone: NIM is demand.
 //
+// ⚠ SINCE 2026-08-26, PREFER build-vr-demand.mjs --canonical --write.
+// That script now writes BOTH payload shapes in one pass (its canonicalise()
+// stamps im / imRaw / imOverride / imOverrideNote on the top level alongside
+// payload.demand), so it no longer leaves the halves disagreeing. This script
+// remains useful for one thing only: changing an override value WITHOUT
+// re-deriving anything else — it holds population, VR, supply and the window
+// averages exactly as stored and moves only what depends on NIM. Use it when
+// you want a surgical override change and nothing more; use build-vr-demand
+// when the method or the source data has moved.
+//
 // ⚠ THIS IS ONLY HALF THE JOB. The payload carries TWO demand models:
 //   • the top-level nb/im/om/expectedPeople/forecastVR fields — the older view,
 //     which the Buying/Selling slides read. THIS script owns them.
@@ -104,7 +114,8 @@ for (const row of rows) {
     im: target,
     imRaw: rawIm,                 // the figure the override replaced
     imOverride: true,             // so nobody later wonders why this will not reconcile
-    imOverrideNote: 'NIM forced to ' + target + ' (Davie via Saskia, 2026-08-25). Revert by removing the region from VR_NIM_OVERRIDES in shared/vr-forecast-calc.js and re-seeding.',
+    imOverrideNote: (globalThis.VrForecastCalc.VR_NIM_OVERRIDE_NOTES || {})[slug]
+      || ('NIM forced to ' + target + ' — see VR_NIM_OVERRIDES in shared/vr-forecast-calc.js for the date and rationale. Revert by removing the region from that map and re-seeding.'),
     twoYrHH, forecastVR2, surplus,
   };
   /* UPDATE, not upsert: this touches the payload only, so source_month and

@@ -201,50 +201,72 @@ const wfFor = slug => (globalThis.VrWorkforce && globalThis.VrWorkforce.forRegio
 const wfMarkets = () => (globalThis.VrWorkforce ? globalThis.VrWorkforce.markets() : []);
 const wfReviewed = () => (globalThis.VrWorkforce && globalThis.VrWorkforce.reviewed()) || 'the current quarter';
 
-/* Demand method. V1 is what the live pipeline carries today: NI and IM are
-   single 2-year averages reused in both forecast years, so year 2 repeats
-   year-1 household formation and the year-2 move comes from supply alone.
+/* Demand method — the arithmetic lives in shared/vr-demand-calc.js and is
+   written into payload.demand by scripts/build-vr-demand.mjs. This block is
+   the summary; that file is the authority.
 
-   V2 SPEC (from Shaene, 2026-08-14) — recorded here so it isn't lost when the
-   components get wired. Per region:
-     NI  yr1 = the 3-year average exactly (the workbook computes rate = 3yrAvg /
-              population then multiplies by population, so population cancels)
-         yr2 = (population + yr1 expected people) x that same rate
-     IM  yr1 = the CURRENT year's actual (FY2024-25) + workforce(2026)
-         yr2 = 0.5 x current + 0.5 x 3-year average + workforce(2027)
-     OM  = a Treasury NATIONAL NOM forecast apportioned by the region's
-           3-year-average share of national. Treasury: 295,000 (FY2025-26),
-           245,000 (FY2026-27), 225,000 thereafter. Not ABS actuals.
+     V1  NI  a single 2-year average, the same value in both forecast years
+         IM  a single 2-year average, the same value in both years, + workforce.
+             Only the YEAR-1 workforce reaches the forecast (the workbook
+             computes IM!G = IM + WF yr2 but never consumes it).
+         OM  year-specific — see below.
+     V2  NI  yr1 = the 3-year average exactly (the workbook computes
+                   rate = 3yrAvg / population then multiplies back by
+                   population, so population cancels; the RATE is kept because
+                   year 2 applies it to a grown population)
+             yr2 = (population + yr1 expected people) x that same rate
+         IM  yr1 = the CURRENT year's actual (FY2024-25) + workforce(2026)
+             yr2 = 0.5 x current + 0.5 x 3-year average + workforce(2027);
+                   the 0.5 weight is workbook IM!K1
+         OM  year-specific — see below.
 
-   Two traps for whoever wires this:
-   1. For the eight CAPITALS the workbook substitutes STATE-level NI and IM
-      (there is a note on IM!L). Melbourne's +441 is VIC net interstate
-      migration; Greater Melbourne's own is about -8,554 — opposite signs, not
-      just different magnitudes. That substitution double-counts within a
-      state, and it is an IDENTITY rather than an approximation: the NB tab's
-      C/D/E columns ARE the state figures for capitals, so V2's Brisbane NI of
-      20,628 is not merely close to Queensland's 3-year average, it IS it —
-      while Gold Coast, Ipswich, Townsville, Cairns, Mackay, Rockhampton,
-      Bundaberg and Gladstone each carry their own on top. Moving to ABS
-      GCCSA/LGA components fixes it but will move every capital, so it is a
-      methodology change, not a like-for-like.
-   2. A single Forge series with a 2-year vs 3-year window switch reproduces NI
-      but NOT the other two: V1's IM is a 2-year average in BOTH years where
-      V2 is current-then-blend, and V1's OM is one forecast year repeated where
-      V2 is year-specific. That design is cleaner, but it makes a NEW V1 rather
-      than the UPDATED workbook — label it as such so nobody tries to reconcile
-      against that file.
-   3. The 3-year window and the 0.5 IM blend weight are CHOICES with expiry
-      dates, not constants. The window is defensible only while it excludes the
-      COVID-affected years — that was the reasoning when it was set, and it
-      stops being true after about two more annual updates. The 0.5 weight
-      (workbook IM!K1) came from a backtest on nine years of components. Both
-      belong in named parameters that get revisited each cycle, never inlined. */
+   OVERSEAS MIGRATION, BOTH VERSIONS (changed 2026-08-26, Change 2 of Van
+   Grateja's "VR Projection: three changes"): a NATIONAL forecast apportioned
+   per year on MATCHING windows —
+       yr1  region 2-yr avg OM / NATIONAL 2-yr avg OM  x  260,000 (FY2025-26)
+       yr2  region 3-yr avg OM / NATIONAL 3-yr avg OM  x  227,300 (FY2026-27)
+   The national levels are the Centre for Population's 2025 Population
+   Statement, NOT Treasury/Budget (which is where the superseded 295,000 /
+   245,000 came from). The denominator is the ABS national series, never the
+   sum of the 36 modelled markets — those exclude rest-of-state areas, so the
+   shares sum to well under 1.0 by design and are not normalised.
+   This replaced V2's single 3-yr share used for both years AND V1's repeated
+   single forecast year, so V1's year 2 is no longer a straight copy of year 1:
+   its NI and IM still repeat, its OM does not.
+
+   MELBOURNE carries a manual net-internal-migration override of +10,173
+   (Change 3) applied to the base IM before the workforce modifier, in both
+   versions and both years. The value, its date and the full rationale live
+   next to it in shared/vr-forecast-calc.js — do not "correct" it.
+
+   CAPITALS ARE ON GCCSA (Change 1 — already true before the spec, confirmed
+   2026-08-26). The workbook substitutes STATE-level NI and IM for the eight
+   capitals (notes on NB!J1 and IM!L2), which double-counts within a state:
+   its Brisbane NI of 20,628 IS Queensland's 3-year average, while Gold Coast,
+   Ipswich, Townsville, Cairns, Mackay, Rockhampton, Bundaberg and Gladstone
+   each carry their own on top; and its Melbourne IM of +441 is VICTORIA's net
+   interstate migration where Greater Melbourne's own is about -8,554, the
+   opposite sign. The pipeline reads ABS GCCSA (ERP_COMP_SA_ASGS2021) for
+   capitals and LGA (ERP_COMP_LGA2025) for regionals, so it never had that
+   substitution.
+
+   NEITHER VERSION REPRODUCES ITS SOURCE WORKBOOK, BY DESIGN. Between the
+   three changes above and the window averages being recomputed from one
+   current ABS release (the workbook mixes vintages, each year captured when
+   it was current and never revised), a reconciliation against those files
+   will not tie out and that is not a fault.
+
+   The 3-year window and the 0.5 IM blend weight are CHOICES with expiry
+   dates, not constants. The window is defensible only while it excludes the
+   COVID-affected years — that was the reasoning when it was set, and it stops
+   being true after about two more annual updates. The 0.5 weight came from a
+   backtest on nine years of components. Both are named parameters that get
+   revisited each cycle, never inlined. */
 const VERSIONS = {
   v1: { label: 'V1 (2yr)', yr2: 'repeat', ready: true,
-        note: 'Natural increase and internal migration are single <b>2-year averages</b> used for both forecast years, overseas migration is one forecast year repeated, and year 2 copies year-1 household formation — so demand is identical in both years and the year-2 movement comes from supply alone.' },
+        note: 'Natural increase and internal migration are single <b>2-year averages</b> used for both forecast years, and only the year-1 infrastructure workforce is applied — so those components repeat and the year-2 movement comes from supply. Overseas migration is the exception: it is year-specific, apportioning the national forecast on a 2-year share in year 1 and a 3-year share in year 2.' },
   v2: { label: 'V2 (3yr)', yr2: 'own', ready: false,
-        note: 'Natural increase is the <b>3-year average</b> in year 1 and grows with projected population in year 2; internal migration uses the current year for year 1 and a 50/50 blend of current and the 3-year average for year 2; overseas migration apportions a Treasury national forecast by the region\'s 3-year-average share — so each year has its own demand and supply.' },
+        note: 'Natural increase is the <b>3-year average</b> in year 1 and grows with projected population in year 2; internal migration uses the current year for year 1 and a 50/50 blend of current and the 3-year average for year 2; overseas migration apportions the national forecast per year, on the region\'s 2-year share in year 1 and its 3-year share in year 2 — so each year has its own demand and supply.' },
 };
 
 let REGIONS = {}, VR = {}, COT = {};   // COT: slug → Cotality (CoreLogic) house VR, as a fraction
@@ -594,8 +616,14 @@ function paint(){
           Total properties are derived as households ÷ (1 − current VR), so changing the VR source also changes the implied dwelling stock — the whole chain shifts, not just the starting point.</div>
         <div class="mnote warn"><b>Household formation.</b> Incoming people are assumed to form households at the region's average size (${hhs} people per dwelling). Recent arrivals, particularly overseas migrants and construction workers, typically share at higher densities — so household formation may be lower than shown and demand is closer to a ceiling than a midpoint.</div>
         <div class="mnote"><b>Infrastructure workforce.</b> A manually-maintained input covering the ${wfMarkets().length} markets with major-project data — ${wfMarkets().map(s => esc(nameOf(s))).join(', ')} — reviewed ${esc(wfReviewed())}. No local-hire, FIFO or camp-accommodation discount is applied; the conversion from jobs to residents is an interim assumption pending calibration against QGSO non-resident population data. Every other market disables the toggle rather than applying a silent zero.</div>
-        ${ch.forge ? `<div class="mnote"><b>Demand comes from Forge, not a workbook.</b> Natural increase, internal and overseas migration are computed from the ABS annual components of population change (financial years, exact persons, per region) held in Forge, using the July 2026 workbook's <i>rules</i> — none of its data. Capitals read their own ${esc((p.demand && p.demand.basis) === 'state' ? 'STATE' : 'Greater Capital City')} figures.
-          Two consequences worth knowing: these will <b>not reconcile with the workbook</b>, because its multi-year averages were built from mixed ABS vintages (each year captured when it was current and never revised); and the averaging windows are parameters — ${esc(String(((p.demand || {}).params || {}).niWindowYears || 3))}-year for natural increase, ${esc(String(((p.demand || {}).params || {}).imYr2WeightCurrent != null ? ((p.demand || {}).params || {}).imYr2WeightCurrent : 0.5))} weight on the current year in year 2 — chosen to exclude the COVID-affected years and due for review each cycle.</div>` : ''}
+        ${ch.forge ? `<div class="mnote"><b>Demand comes from Forge, not a workbook.</b> Natural increase, internal and overseas migration are computed from the ABS annual components of population change (financial years, exact persons, per region) held in Forge. Capitals read their own ${esc((p.demand && p.demand.basis) === 'state' ? 'STATE' : 'Greater Capital City (GCCSA)')} figures, regional markets their own LGA.
+          These will <b>not reconcile with the VR Projections workbooks, by design</b> — the method deliberately departs from them (see below), and its multi-year averages were built from mixed ABS vintages (each year captured when it was current and never revised). The averaging windows are parameters — ${esc(String(((p.demand || {}).params || {}).niWindowYears || 3))}-year for natural increase, ${esc(String(((p.demand || {}).params || {}).imYr2WeightCurrent != null ? ((p.demand || {}).params || {}).imYr2WeightCurrent : 0.5))} weight on the current year in year 2 — chosen to exclude the COVID-affected years and due for review each cycle.</div>
+        ${(() => { const nn = (p.demand || {}).nationalNom; if (!nn) return '';
+          const src = nn.source || {}; const f = v => v == null ? '—' : Math.round(v).toLocaleString('en-AU');
+          return `<div class="mnote"><b>Overseas migration.</b> A national forecast apportioned to this market, each year on its own window: year 1 is this market's <b>2-year</b> average share of national overseas migration &times; ${esc(f(nn.yr1))}, year 2 its <b>3-year</b> average share &times; ${esc(f(nn.yr2))}. The national levels come from the ${esc(src.publisher || 'Centre for Population')}'s ${esc(src.publication || '2025 Population Statement')}${src.readAt ? ' (read ' + esc(src.readAt) + ')' : ''} — not the federal Budget figures the workbook used. The denominator is the national series, never the sum of the modelled markets, so the shares correctly sum to well under 100%: rest-of-state areas are not modelled and are not redistributed.</div>`; })()}
+        ${(() => { const ov = (p.demand || {}).nimOverride || (p.imOverride ? { value: p.im, displaced: p.imRaw, note: p.imOverrideNote } : null); if (!ov) return '';
+          const f = v => v == null ? '—' : (v >= 0 ? '+' : '') + Math.round(v).toLocaleString('en-AU');
+          return `<div class="mnote warn"><b>Manual internal-migration override.</b> This market's net internal migration is set to <b>${esc(f(ov.value))}</b> people, replacing the computed ${esc(f(ov.displaced))}. It is a deliberate analyst override applied to the base figure before the infrastructure workforce, in both versions and both forecast years — not a data error, and not something to "correct" back. ${esc(ov.note || '')}</div>`; })()}` : ''}
         <div class="mnote"><b>Method.</b> Vacancy rate = surplus properties ÷ total properties. Each year adds incoming dwellings and the households formed by incoming people, then recomputes. A <b>0.1% floor</b> applies: a market shown at 0.1% has run out of surplus rather than being forecast at that level, and is labelled as such.</div>
         <div class="mnote"><b>Incoming supply.</b> Whether a market reads OE Commencements or discounted building approvals is decided per region by the workbook's own routing, not by a global rule — a market can have OE data and still be an approvals market. That routing is preserved across every toggle.</div>
       </div>
