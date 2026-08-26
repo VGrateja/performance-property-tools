@@ -162,6 +162,7 @@
     <label class="ctl">VR source<div class="vrseg" id="vrSrc"><button type="button" data-source="sqm" class="on">SQM</button><button type="button" data-source="cotality">Cotality</button></div></label>
     <label class="ctl">Data version<div class="vrseg" id="vrVer"><button type="button" data-ver="v1" class="on">V1 (2yr)</button><button type="button" data-ver="v2">V2 (3yr)</button></div></label>
     <label class="ctl">Infrastructure WF<div class="vrseg" id="vrWf"><button type="button" data-wf="on" class="on">Included</button><button type="button" data-wf="off">Excluded</button></div></label>
+    <label class="ctl">Method<div class="vrseg" id="vrMethod"><button type="button" data-method="stored">Stored</button><button type="button" data-method="preview" class="on">Preview</button></div></label>
   </div>
 
   <div id="vrBody"><div class="msg" id="vrMsg">Loading…</div></div>
@@ -278,6 +279,26 @@ let VER = 'v1';                          // demand method
    persists across regions; markets with no entry are effectively excluded
    regardless (chainFor finds no table row and adds nothing). */
 let WF  = true;
+/* METHOD PREVIEW — Van 2026-08-26, "apply it to localhost for now" (after the
+   Melbourne tightening report). 'preview' recomputes the chain in the browser
+   with the two method changes the report recommends but the team has not yet
+   adopted:
+     • supply = Oxford dwelling COMPLETIONS (the stored forecast, the workbook
+       and the Buying/Selling slides use COMMENCEMENTS — oeCommencements);
+     • household size from a published figure where one is loaded
+       (PREVIEW_HHSIZE) instead of the stored assumption.
+   Nothing is saved: the stored rows are untouched and the slides keep showing
+   them, so the two disagree while this is on. THE DEFAULT IS 'preview' FOR THE
+   LOCAL WORKING TREE ONLY — set METHOD_DEFAULT back to 'stored' before this
+   file ships, unless the team adopts the method (then rebuild the pipeline on
+   completions and retire this switch). ?method=stored|preview overrides. */
+const METHOD_DEFAULT = 'preview';
+let METHOD = (() => { const q = new URLSearchParams(location.search).get('method'); return (q === 'stored' || q === 'preview') ? q : METHOD_DEFAULT; })();
+const PREVIEW_HHSIZE = {
+  /* Victoria in Future 2023 (Release 2, Dec 2023), Dwellings_and_Households sheet, Metro Melbourne, 2026 */
+  melbourne: { value: 2.564, source: 'VIF2023 · Metro Melbourne 2026' },
+};
+let COMPL = {};   // slug → { FY-ending year → Oxford dwelling completions }, loaded with the forecast rows
 let cur = { slug: null };
 
 
@@ -318,11 +339,13 @@ function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearI
 
 async function load(){
   try {
-    const [reg, vr, di, cot] = await Promise.all([
+    const [reg, vr, di, cot, compl] = await Promise.all([
       window.sb.from('rdp_regions').select('slug,name,state,cluster'),
       window.sb.from('rdp_vr_forecast').select('region_slug,payload,computed_at'),
       window.sb.from('forge_demand_inputs').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_cotality').select('data').eq('id', 'rentvacancy').maybeSingle(),
+      // Oxford completions, for the method preview's supply basis (see METHOD_DEFAULT)
+      window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', 'dwellings_completions').gte('period', '2024-01-01'),
     ]);
     if (vr.error){
       $('#vrMsg').innerHTML = /does not exist/i.test(vr.error.message)
@@ -332,6 +355,8 @@ async function load(){
     }
     REGIONS = Object.fromEntries((reg.data || []).map(r => [r.slug, r]));
     VR = Object.fromEntries((vr.data || []).filter(r => r.payload).map(r => [r.region_slug, r.payload]));
+    COMPL = {};
+    for (const r of ((compl && compl.data) || [])) { const y = +String(r.period).slice(0, 4); (COMPL[r.region_slug] = COMPL[r.region_slug] || {})[y] = +r.value; }
     if (!Object.keys(VR).length){ $('#vrMsg').innerHTML = 'No VR forecast rows yet.'; return; }
     // Cotality (CoreLogic) house vacancy per region — capitals + LGA arrays, % → fraction
     { const rv = cot && cot.data && cot.data.data; COT = {};
@@ -411,6 +436,12 @@ function initUI(){
     segW.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
     paint();
   });
+  // Method preview (completions supply + published household size) — see METHOD_DEFAULT.
+  const segM = $('#vrMethod');
+  if (segM) segM.querySelectorAll('button').forEach(b => {
+    b.classList.toggle('on', b.dataset.method === METHOD);
+    b.onclick = () => { METHOD = b.dataset.method; segM.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); paint(); };
+  });
   syncWF();
   paint();
 }
@@ -446,9 +477,19 @@ function deltaTag(v, base){
    the workbook's 2-yr property base). */
 function chainFor(p, raw, slug, wfOn){
   if (!p || p.households == null || p.properties == null || p.currentVR == null) return null;
-  const HH = p.households, props = p.properties, v = p.currentVR;
-  const hhSize = p.hhSize != null ? p.hhSize : (p.expectedPeople && p.expNewHouseholds ? p.expectedPeople / p.expNewHouseholds : (HH ? p.population / HH : null));
-  const newHH = p.expNewHouseholds, oe1 = p.oeCommencements, oeY = p.oeYear || new Date().getFullYear();
+  let HH = p.households, props = p.properties; const v = p.currentVR;
+  let hhSize = p.hhSize != null ? p.hhSize : (p.expectedPeople && p.expNewHouseholds ? p.expectedPeople / p.expNewHouseholds : (HH ? p.population / HH : null));
+  const newHH = p.expNewHouseholds, oeY = p.oeYear || new Date().getFullYear();
+  let oe1 = p.oeCommencements;
+  /* METHOD PREVIEW (see METHOD_DEFAULT): a published household size where one
+     is loaded — households and the property base are re-derived from it so the
+     chain stays internally consistent — and Oxford completions as supply. */
+  const preview = METHOD === 'preview';
+  const ph = preview ? PREVIEW_HHSIZE[slug] : null;
+  if (ph && p.population) { hhSize = ph.value; HH = p.population / hhSize; props = HH / (1 - v); }
+  const cmp = preview ? COMPL[slug] : null;
+  const supplyIsCompletions = !!(cmp && cmp[oeY] != null);
+  if (supplyIsCompletions) oe1 = cmp[oeY];
   const r = raw || p;
   // Year-2 supply: the OE forward column only for regions the workbook sources from
   // OE (oeSource) — approvals regions derive it from the workbook's 2-yr property base.
@@ -463,10 +504,12 @@ function chainFor(p, raw, slug, wfOn){
   // oeCommencements = 89.36) because Bunbury is not an OE market. Better data,
   // but it is the one market where the gap is a deliberate override rather
   // than a vintage difference — if anyone queries it, that is the answer.
-  const oe2 = (r.oeSource === 'oe' && r.oeByYear && r.oeByYear[String(oeY + 1)] != null) ? r.oeByYear[String(oeY + 1)]
+  let oe2 = (r.oeSource === 'oe' && r.oeByYear && r.oeByYear[String(oeY + 1)] != null) ? r.oeByYear[String(oeY + 1)]
     : (r.twoYrProps != null && r.properties != null && r.oeCommencements != null) ? (r.twoYrProps - r.properties - r.oeCommencements)
     : oe1;
-  if (newHH == null || oe1 == null) return { v, HH, props, hhSize, oeY };
+  if (supplyIsCompletions && cmp[oeY + 1] != null) oe2 = cmp[oeY + 1];
+  const pv = { preview, supplyLabel: supplyIsCompletions ? 'completions' : 'commencements', hhsLabel: ph ? ph.source : 'ABS Census', hhsChanged: !!ph };
+  if (newHH == null || oe1 == null) return { v, HH, props, hhSize, oeY, ...pv };
 
   /* DEMAND. Preferred source is payload.demand[version] — computed from Forge's
      financial-year components of population change by build-vr-demand.mjs, with
@@ -509,7 +552,7 @@ function chainFor(p, raw, slug, wfOn){
   const raw1 = props1 > 0 ? (props1 - HH1) / props1 : null;
   const raw2 = props2 > 0 ? (props2 - HH2) / props2 : null;
   return {
-    v, HH, props, hhSize, oeY, oe1, oe2, repeat, comps, forge: !!dem,
+    v, HH, props, hhSize, oeY, oe1, oe2, repeat, comps, forge: !!dem, ...pv,
     hasWF: !!w, wf1: w ? wf1 : null, wf2: w ? wf2 : null,
     people1, people2, newHH: newHH1, newHH2, raw1, raw2,
     // 0.1% floor: a market at the floor has run out of surplus, it is not a
@@ -528,6 +571,8 @@ function paint(){
   const cotMissing = SRC === 'cotality' && COT[cur.slug] == null;   // e.g. National has no CoreLogic VR
   const ch = chainFor(p, VR[cur.slug], cur.slug, WF) || {};
   const alt = ch.hasWF ? chainFor(p, VR[cur.slug], cur.slug, !WF) : null;   // the other side of the WF toggle, for the effect table
+  // the stored-method figures, quoted in the preview banner so the two are never confused
+  const stored = ch.preview ? (() => { const m = METHOD; METHOD = 'stored'; try { return chainFor(p, VR[cur.slug], cur.slug, WF); } finally { METHOD = m; } })() : null;
   const c = ch.v, f1 = ch.v1, f2 = ch.v2;
   const dir = dirOf((f2 != null ? f2 : f1) != null ? ((f2 != null ? f2 : f1) - c) : null);
   const scaleMax = Math.max(0.06, c || 0, f1 || 0, f2 || 0) * 1.05;
@@ -541,7 +586,7 @@ function paint(){
     const line = (k, v, cls) => `<span${v < 0 ? ' class="neg"' : (cls ? ' class="' + cls + '"' : '')}>${k}&nbsp; ${signed(v)}</span>`;
     return `<div class="mig">${line('NI', c.ni)}${line('IM', c.im)}${line('OM', c.om)}${c.wf ? line('WF', c.wf, 'wf') : ''}</div>`;
   };
-  const hhs = ch.hhSize != null ? (Math.round(ch.hhSize * 10) / 10).toFixed(1) : '—';
+  const hhs = ch.hhSize != null ? (ch.hhsChanged ? ch.hhSize.toFixed(3) : (Math.round(ch.hhSize * 10) / 10).toFixed(1)) : '—';
   // A market at the floor has run out of surplus — say so rather than present 0.1% as a forecast.
   const floorTag = rawv => (rawv != null && rawv < FLOOR) ? '<span class="floor">at 0.1% floor</span>' : '';
 
@@ -553,6 +598,7 @@ function paint(){
           <div><div class="region-name">${esc(nameOf(cur.slug))}</div><div class="region-sub">${esc(reg.state || '')}${p.ooPct != null ? ' · ' + (p.ooPct * 100).toFixed(1) + '% owner-occupied' : ''} · pop ${num(p.population)}</div></div>
           <div class="dirchip"><div class="t ${dir.cls}">${dir.arrow} ${dir.word}</div><div class="l">2-yr direction</div></div>
         </div>
+        ${ch.preview ? `<div class="note" style="color:var(--amber);font-weight:700;margin-top:6px">Method preview — supply = Oxford ${esc(ch.supplyLabel)}${ch.hhsChanged ? ', household size ' + hhs + ' (' + esc(ch.hhsLabel) + ')' : ''}. Computed here, nothing saved: the stored forecast${stored && stored.v1 != null ? ' (' + pct2(stored.v1) + ' yr 1 / ' + pct2(stored.v2) + ' yr 2)' : ''} still drives the Buying/Selling slides. Switch “Method” to Stored to compare.</div>` : ''}
 
         <div class="scale-wrap">
           <div class="scale-head"><span>Tighter (undersupplied)</span><span>Looser (oversupplied)</span></div>
@@ -571,7 +617,7 @@ function paint(){
             <tr class="r0">
               <td class="lbl"><i class="dot d0"></i><b>Current</b><span>${fyLbl(ch.oeY - 1)}</span></td>
               <td><b>${num(p.population)}</b><span>total population</span></td>
-              <td><b>${hhs}</b><span>ABS Census</span></td>
+              <td><b>${hhs}</b><span>${esc(ch.hhsLabel || 'ABS Census')}</span></td>
               <td class="hh"><b>${num(ch.HH)}</b><span>total households</span></td>
               <td><b>${num(ch.props)}</b><span>total properties</span></td>
               <td class="vr d0"><b>${pct2(c)}</b><span>surplus ${num(ch.s0)}</span></td>
@@ -581,7 +627,7 @@ function paint(){
               <td><b>${signed(ch.people1)}</b>${migCell(ch.comps && ch.comps.y1)}</td>
               <td><b>${hhs}</b><span>unchanged</span></td>
               <td class="hh"><b>${signed(ch.newHH)}</b><span>new households</span></td>
-              <td><b>${signed(ch.oe1)}</b><span>commencements</span></td>
+              <td><b>${signed(ch.oe1)}</b><span>${esc(ch.supplyLabel || 'commencements')}</span></td>
               <td class="vr d1"><b>${pct2(f1)}</b><span>surplus ${num(ch.s1)}</span>${floorTag(ch.raw1)}</td>
             </tr>
             <tr>
@@ -589,7 +635,7 @@ function paint(){
               <td><b>${signed(ch.people2)}</b>${ch.repeat ? '<span class="amber">held at year-1 level</span>' : migCell(ch.comps && ch.comps.y2)}</td>
               <td><b>${hhs}</b><span>unchanged</span></td>
               <td class="hh"><b>${signed(ch.newHH2)}</b><span>new households</span></td>
-              <td><b>${signed(ch.oe2)}</b><span>commencements</span></td>
+              <td><b>${signed(ch.oe2)}</b><span>${esc(ch.supplyLabel || 'commencements')}</span></td>
               <td class="vr d2"><b>${pct2(f2)}</b><span>surplus ${num(ch.s2)}</span>${floorTag(ch.raw2)}</td>
             </tr>
           </tbody>
