@@ -87,53 +87,47 @@ if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY in .env'); process.
 const sb = createClient(process.env.SUPABASE_URL || 'https://cannojsxduvlewimwoxa.supabase.co', KEY, { auth: { persistSession: false } });
 
 /* ── NATIONAL NET OVERSEAS MIGRATION FORECAST ────────────────────────────────
-   By financial year ENDING (2026 = FY2025-26). Source is the CENTRE FOR
-   POPULATION's 2025 Population Statement — NOT Treasury, and NOT the VR
-   Projections workbook.
+   By financial year ENDING (2026 = FY2025-26). Source is the latest official
+   Treasury forecast: the 2026-27 FEDERAL BUDGET (13 May 2026), Budget Paper
+   No. 3, Appendix A "Parameters and further information", Table A.5 "Net
+   overseas migration, for years ending 30 June" — forecasts prepared by the
+   Centre for Population. NOT the VR Projections workbook (which happened to
+   carry the same 295,000 / 245,000).
 
-   CHANGED 2026-08-26 (Van Grateja, "VR Projection — three changes", Change 2).
-   The workbook used 295,000 (FY2025-26) and 245,000 (FY2026-27); those are the
-   FEDERAL BUDGET's figures, not the Population Statement's, and they are now
-   superseded. The national forecast falls 295,000 -> 260,000 for year 1
-   (-12%), so every region's OM falls before the share basis even changes.
+   HISTORY. 2026-08-26 AM ("VR Projection — three changes", Change 2) loaded
+   the 2025 Population Statement's 260,000 (FY2025-26) / 227,300 (FY2026-27),
+   believing the workbook's 295,000 / 245,000 to be stale Budget figures. Kia
+   pointed out the same afternoon that Treasury had REVISED NOM UP in the May
+   2026 Budget — 260,000 -> 295,000 for FY2025-26 and 225,000 -> 245,000 for
+   FY2026-27 (temporary migrants staying longer, more NZ arrivals) — so the
+   Statement (Dec 2025 / Jan 2026) was the older of the two. Corrected here
+   2026-08-26 PM: newer official forecast wins. Every region's OM RISES vs the
+   morning's figures (+13.5% yr1, +7.8% yr2), tightening every forecast; this
+   is a source correction, not a tuning.
 
-   FIGURES AND WHERE EACH ONE WAS READ (read 2026-08-26):
-     FY2025-26  260,000  Population Statement narrative, quoted twice:
-                         Australia overview / snapshot — "Net overseas
-                         migration is expected to be 260,000 in 2025-26."; and
-                         the Migration chapter, "Net overseas migration" —
-                         "NOM was forecast to be 310,000 in 2024-25 and then
-                         decline to 260,000 in 2025-26."
-                         (The publication's own chart data puts the unrounded
-                         figure at 262,400 — the narrative rounds it. 260,000
-                         is the figure the specification fixed, so it is used.)
-     FY2026-27  227,300  The publication states no rounded figure for this
-                         year — the narrative only says "NOM is forecast to
-                         decline further in 2025-26 and 2026-27". The number
-                         is read from the Statement's OWN chart-data workbook
-                         (population-statement-2025-chart-data.xlsx), where
-                         Chart 6 "Overseas migration, year-ending" and Chart 7
-                         "Overseas migration by visa group and direction"
-                         BOTH give 2026-27 = 227,300.
-                         NOTE: this is NOT the 225,000 that secondary sources
-                         report — that figure is not in this publication.
-     FY2027-28  226,100  same chart-data workbook (Chart 7).
-     FY2028-29  225,900  same chart-data workbook (Chart 7).
-   Beyond the forecast horizon the Statement assumes NOM returns to 235,000 a
-   year, so extend with that — do not extrapolate the table.
+   FIGURES (Table A.5, read 2026-08-26 from
+   https://budget.gov.au/content/bp3/download/bp3_14_appendix_a.pdf):
+     FY2024-25  305,000  (a) ABS estimate, National, state and territory
+                         population, September 2025 — actual, not forecast
+     FY2025-26  295,000
+     FY2026-27  245,000
+     FY2027-28  225,000
+     FY2028-29  225,000
+     FY2029-30  225,000
+   Beyond the table, hold 225,000 — do not extrapolate a further decline.
 
-   Revisit when the next Population Statement lands (annual, ~Dec/Jan). */
-const NATIONAL_NOM = { 2026: 260000, 2027: 227300, 2028: 226100, 2029: 225900, 2030: 235000 };
+   Revisit at each Budget (May) and MYEFO (Dec); the Population Statement
+   (Dec/Jan) restates the same Centre-for-Population numbers a month later. */
+const NATIONAL_NOM = { 2026: 295000, 2027: 245000, 2028: 225000, 2029: 225000, 2030: 225000 };
 const NOM_FORECAST_SOURCE = {
-  publisher: 'Centre for Population (Australian Government Treasury)',
-  publication: '2025 Population Statement',
-  statementUrl: 'https://population.gov.au/publications/statements/2025-population-statement',
-  snapshotUrl: 'https://population.gov.au/publications/snapshots/2025-population-statement-australia-snapshot',
-  chartDataUrl: 'https://population.gov.au/sites/population.gov.au/files/2026-01/population-statement-2025-chart-data.xlsx',
+  publisher: 'Australian Government Treasury — Centre for Population forecasts, as published in the 2026-27 Budget',
+  publication: '2026-27 Budget, Budget Paper No. 3, Appendix A: Parameters and further information, Table A.5 (Net overseas migration, for years ending 30 June)',
+  budgetDate: '2026-05-13',
+  documentUrl: 'https://budget.gov.au/content/bp3/download/bp3_14_appendix_a.pdf',
   readAt: '2026-08-26',
-  yr1Cite: 'FY2025-26 = 260,000 — Statement narrative ("Net overseas migration is expected to be 260,000 in 2025-26"); chart data has the unrounded 262,400.',
-  yr2Cite: 'FY2026-27 = 227,300 — Statement chart data, Chart 6 (Overseas migration, year-ending) and Chart 7 (by visa group and direction). No rounded narrative figure is published for this year; 225,000 is a secondary-source number that does NOT appear in this publication.',
-  supersedes: 'VR Projections workbook OM tab (295,000 FY2025-26 / 245,000 FY2026-27 — federal Budget figures).',
+  yr1Cite: 'FY2025-26 = 295,000 — Table A.5. Revised up from 260,000 in the May 2026 Budget.',
+  yr2Cite: 'FY2026-27 = 245,000 — Table A.5. Revised up from 225,000 in the May 2026 Budget. FY2027-28 onward 225,000.',
+  supersedes: '2025 Population Statement figures (260,000 / 227,300) loaded 2026-08-26 AM — that publication (Dec 2025 / Jan 2026) predates the May 2026 Budget revision. The VR Projections workbook already carried 295,000 / 245,000.',
 };
 
 const CAPITAL_STATE = { sydney: 'st-nsw', melbourne: 'st-vic', brisbane: 'st-qld', adelaide: 'st-sa', perth: 'st-wa', hobart: 'st-tas', darwin: 'st-nt', canberra: 'st-act' };
@@ -161,7 +155,7 @@ if (!Object.keys(national.nom).length) { console.error('No national (australia) 
 const latestYear = Math.max(...Object.keys(national.nom).map(Number));
 /* Fail loudly rather than silently emitting null OM for every region. */
 for (const y of [latestYear + 1, latestYear + 2]) {
-  if (NATIONAL_NOM[y] == null) { console.error(`No national NOM forecast for FY${y - 1}-${String(y).slice(2)} in NATIONAL_NOM — add it from the latest Population Statement before rebuilding.`); process.exit(1); }
+  if (NATIONAL_NOM[y] == null) { console.error(`No national NOM forecast for FY${y - 1}-${String(y).slice(2)} in NATIONAL_NOM — add it from the latest Budget / MYEFO / Population Statement before rebuilding.`); process.exit(1); }
 }
 
 const { data: fc, error: fErr } = await sb.from('rdp_vr_forecast').select('region_slug,payload');
@@ -237,7 +231,7 @@ console.log(`${rows.length} regions computed${skipped.length ? ` · ${skipped.le
 /* ── OM delta: the whole point of the 2026-08-26 change ─────────────────────
    Old = the single 3-yr share x the workbook's Budget figures. Recomputed
    here from the STORED payload so the comparison is against what is live. */
-console.log('OVERSEAS MIGRATION — old (stored) vs new (per-year share x Population Statement)');
+console.log('OVERSEAS MIGRATION — old (stored) vs new (per-year share x national forecast, 2026-27 Budget)');
 console.log('region            share1   share2 |   OM yr1 old      new    delta |   OM yr2 old      new    delta');
 let shareSum1 = 0, shareSum2 = 0;
 for (const r of rows.sort((a, b) => a.slug.localeCompare(b.slug))) {
@@ -368,7 +362,7 @@ for (const r of rows) {
       since: '2026-08-26',
       spec: 'Van Grateja — "VR Projection: three changes, applied to both V1 and V2"',
       reasons: [
-        'OM: national forecast now the Centre for Population 2025 Population Statement (260,000 / 227,300), not the workbook\'s Budget figures (295,000 / 245,000); and the share is per-year on matching windows (2-yr for yr1, 3-yr for yr2) rather than one 3-yr share for both.',
+        'OM: national forecast is the latest Treasury figure (2026-27 Budget, BP3 Table A.5: 295,000 / 245,000 — the same numbers the workbook carried), but the share is per-year on matching windows (2-yr for yr1, 3-yr for yr2) against the ABS national series rather than one 3-yr share for both years.',
         'Capitals read Greater Capital City (GCCSA) components, not the workbook\'s state substitution (notes on NB!J1 / IM!L2).',
         'Window averages are recomputed from one current ABS release, where the workbook mixes vintages.',
         'Melbourne carries a manual net-internal-migration override of +10,173.',
