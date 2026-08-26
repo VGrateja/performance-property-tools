@@ -79,8 +79,14 @@
     v1WindowYears: 2,          // V1's averaging window for NI and IM
     niWindowYears: 3,          // V2's NI window
     imWindowYears: 3,          // V2's IM blend window
-    nomShareWindowYearsYr1: 2, // FORECAST YEAR 1 window for the region's share of national NOM
-    nomShareWindowYears: 3,    // FORECAST YEAR 2 window for that share
+    /* Region's share of national NOM. Kia 2026-08-26 ("update the % national
+       migration share with fresh numbers — I'm aware this will slightly loosen
+       Melbourne but it should be done"): BOTH forecast years now use the LATEST
+       financial-year actual (FY2024-25 = 1-year window), replacing the 2-year /
+       3-year averages set that morning. Fresh beats smoothed; Melbourne's share
+       has eased since the 2023 peak (27.7% -> 26.6%), so this loosens it ~0.03 pp. */
+    nomShareWindowYearsYr1: 1, // FORECAST YEAR 1 window for the region's share of national NOM
+    nomShareWindowYears: 1,    // FORECAST YEAR 2 window for that share
     imYr2WeightCurrent: 0.5,   // workbook IM!K1 — weight on the current year in year 2
   };
 
