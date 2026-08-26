@@ -45,6 +45,39 @@
 //   workbook's capital figures reconcile with NEITHER basis on any ABS year,
 //   so this option does not reproduce that file either.
 //
+// HOUSEHOLD SIZE — SOURCED, NOT ASSUMED (2026-08-26, Kia: "update the household
+// sizes to be more accurate")
+// ----------------------------------------------------------------------------
+// The stored hhSize used to be the VR Projections workbook's ROUNDED assumption
+// (Melbourne 2.6, Sydney 2.7 …), captioned "ABS Census" in the tool. It is now
+// taken from shared/vr-household-size.js, which holds ONE OFFICIAL PROJECTED
+// FIGURE PER MARKET for 2026 with its publisher, vintage and URL beside it.
+//
+// --canonical therefore also RE-DERIVES the two quantities that hang off it:
+//     households = population / hhSize
+//     properties = households / (1 - currentVR)
+// and everything downstream of those (expNewHouseholds, forecastVR, twoYrHH,
+// twoYrProps, forecastVR2, changeVR). `hhSize` and a human-readable
+// `hhSizeSource` string are written onto the payload so the VR Projection tool
+// and the Buying/Selling slides can caption the number honestly instead of
+// saying "ABS Census".
+//
+// Only --canonical touches them. A plain --write still adds payload.demand and
+// nothing else, exactly as before.
+//
+// DEFINITIONAL CAVEAT, CARRIED DELIBERATELY: every official source defines
+// average household size as persons in OCCUPIED PRIVATE DWELLINGS / occupied
+// private dwellings, while this model divides TOTAL ERP by it. That treats the
+// ~1-2% of people living in non-private dwellings (hospitals, prisons, halls of
+// residence, hotels) as if they formed households, so `households` runs ~1-2%
+// above the source's own household count. That is the model's pre-existing
+// convention — see shared/vr-household-size.js for the size of the gap per
+// market — and it is unchanged here; only the divisor got more accurate.
+//
+// IF A LATER `build-vr-forecast.mjs --write` PUTS THE WORKBOOK ASSUMPTION BACK
+// (it reads hhSize from the "median hh size" column of the xlsx), the recovery
+// is one command: node scripts/build-vr-demand.mjs --canonical --write.
+//
 // SHARED TABLE — READ THIS BEFORE --write
 // ---------------------------------------
 // rdp_vr_forecast also feeds the online reports, the Buying/Selling VR slide
@@ -72,6 +105,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import '../shared/vr-demand-calc.js';
 import '../shared/vr-workforce.js';
 import '../shared/vr-forecast-calc.js';   // VR_NIM_OVERRIDES
+import '../shared/vr-household-size.js';  // VR_HOUSEHOLD_SIZE — the sourced hhSize table
 
 try { if (existsSync('.env')) for (const ln of readFileSync('.env', 'utf8').split(/\r?\n/)) { const m = ln.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/); if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, ''); } } catch {}
 const WRITE = process.argv.includes('--write');
@@ -169,9 +203,14 @@ console.log(`workforce: ${globalThis.VrWorkforce.markets().length} markets from 
 
 const rows = [], skipped = [];
 const nimApplied = [];   // regions whose IM was forced (VR_NIM_OVERRIDES)
+/* SOURCED HOUSEHOLD SIZE — shared/vr-household-size.js. A market present in the
+   table takes its figure; a market absent from it keeps whatever is stored, so
+   this can never blank a row out. Only --canonical writes it. */
+const HHTAB = globalThis.VrHouseholdSize.VR_HOUSEHOLD_SIZE;
 for (const r of fc) {
   const p = r.payload || {}, slug = r.region_slug;
-  const pop = p.population, hhSize = p.hhSize;
+  const hh = HHTAB[slug] || null;                       // sourced entry, or null
+  const pop = p.population, hhSize = hh ? hh.value : p.hhSize;
   if (pop == null || hhSize == null) { skipped.push(`${slug} (no population/hhSize)`); continue; }
 
   // Which component series this region reads. Capitals can be flipped to the
@@ -216,15 +255,15 @@ for (const r of fc) {
   });
   if (!res || !res.v1 || !res.v2) { skipped.push(`${slug} (calc returned null — short window?)`); continue; }
 
-  rows.push({ slug, pop, hhSize, src, res, stored: p, nimRaw, nimTarget: (nimOv && slug in nimOv) ? nimOv[slug] : null });
+  rows.push({ slug, pop, hhSize, hh, src, res, stored: p, nimRaw, nimTarget: (nimOv && slug in nimOv) ? nimOv[slug] : null });
 }
 
 // ── report ─────────────────────────────────────────────────────────────────
 const f0 = v => v == null ? '—' : Math.round(v).toLocaleString('en-AU');
 console.log(`VR demand from Forge — capitals basis: ${BASIS.toUpperCase()} · components through FY${latestYear - 1}-${String(latestYear).slice(2)}`);
 console.log(`National NOM forecast (${NOM_FORECAST_SOURCE.publication}, read ${NOM_FORECAST_SOURCE.readAt}):`);
-console.log(`  yr1 FY${latestYear}-${String(latestYear + 1).slice(2)}  ${f0(NATIONAL_NOM[latestYear + 1])}   (share = region 2-yr avg OM / national 2-yr avg OM)`);
-console.log(`  yr2 FY${latestYear + 1}-${String(latestYear + 2).slice(2)}  ${f0(NATIONAL_NOM[latestYear + 2])}   (share = region 3-yr avg OM / national 3-yr avg OM)`);
+console.log(`  yr1 FY${latestYear}-${String(latestYear + 1).slice(2)}  ${f0(NATIONAL_NOM[latestYear + 1])}   (share = region latest-FY OM / national latest-FY OM — 1-yr window, Kia 2026-08-26)`);
+console.log(`  yr2 FY${latestYear + 1}-${String(latestYear + 2).slice(2)}  ${f0(NATIONAL_NOM[latestYear + 2])}   (same latest-FY share)`);
 console.log(`  national 2-yr avg ${f0(globalThis.VrDemandCalc.windowAvg(national.nom, 2, latestYear))} · 3-yr avg ${f0(globalThis.VrDemandCalc.windowAvg(national.nom, 3, latestYear))}  (ABS 'australia', not the sum of regions)`);
 console.log(`${rows.length} regions computed${skipped.length ? ` · ${skipped.length} skipped` : ''}\n`);
 
@@ -283,14 +322,34 @@ console.log('until a consumer reads payload.demand explicitly.');
    The superseded values are kept under demand.legacy so this is reversible. */
 function canonicalise(r) {
   const p = r.stored, v1 = r.res.v1;
-  const hhSize = p.hhSize, HH = p.households, props = p.properties, cur = p.currentVR;
+  const cur = p.currentVR;
+  /* HOUSEHOLD SIZE and the two quantities derived from it. Where the sourced
+     table has the market (r.hh), households and properties are RE-DERIVED from
+     the stored population and current VR rather than carried over — otherwise
+     the row would advertise a new hhSize while still holding the household
+     count the old one produced, and every downstream figure would be computed
+     off a base that no longer matches its own divisor. Markets absent from the
+     table keep the stored trio untouched. */
+  /* All three move together or none of them do. A sourced hhSize is only
+     adopted when the base can be re-derived from it (population and current VR
+     both present) — adopting the divisor while keeping the old household count
+     would be worse than leaving the row alone. */
+  const rederive = !!(r.hh && p.population != null && cur != null);
+  const hhSize = rederive ? r.hh.value : p.hhSize;
+  const HH = rederive ? p.population / hhSize : p.households;
+  const props = rederive ? HH / (1 - cur) : p.properties;
   if (hhSize == null || HH == null || props == null || cur == null) return null;
   const oe1 = p.oeCommencements;
-  // resolve year-2 supply BEFORE twoYrProps is overwritten, using the same
-  // per-region routing the tool uses (OE forward column only for OE markets)
+  /* Resolve year-2 supply BEFORE twoYrProps is overwritten, using the same
+     per-region routing the tool uses (OE forward column only for OE markets).
+     The derived branch MUST read the STORED properties, not the re-derived
+     `props`: p.twoYrProps was built on the old property base, so mixing the new
+     base into that subtraction would corrupt year-2 supply by exactly the
+     household-size shift. Both operands stay on the old basis; the result is
+     the same oe2 as before this change. */
   const oeY = p.oeYear || latestYear + 1;
   const oe2 = (p.oeSource === 'oe' && p.oeByYear && p.oeByYear[String(oeY + 1)] != null) ? p.oeByYear[String(oeY + 1)]
-    : (p.twoYrProps != null && props != null && oe1 != null) ? (p.twoYrProps - props - oe1)
+    : (p.twoYrProps != null && p.properties != null && oe1 != null) ? (p.twoYrProps - p.properties - oe1)
     : oe1;
   const expectedPeople = v1.people1;
   const expNewHouseholds = expectedPeople / hhSize;
@@ -313,6 +372,18 @@ function canonicalise(r) {
     changeVR: forecastVR == null ? null : forecastVR - cur,
     twoYrHH: HH2, twoYrProps: props2,
   };
+  /* The sourced household size travels WITH the figures it produced, so no
+     consumer can pair the new households with the old divisor, and so the tool
+     and the slides can caption the number with its actual publisher instead of
+     the blanket "ABS Census" they used to hard-code. */
+  if (rederive) {
+    out.hhSize = hhSize;
+    out.hhSizeSource = r.hh.source;
+    out.hhSizeMeta = { value: hhSize, source: r.hh.source, publisher: r.hh.publisher, year: r.hh.year,
+      geography: r.hh.geography, url: r.hh.url, basis: r.hh.basis, appliedAt: new Date().toISOString() };
+    out.households = HH;
+    out.properties = props;
+  }
   /* Keep the top-level override audit trail in step with the demand block, so
      the Buying/Selling slides and the VR tool tell the same story. Without
      this the row would carry the new IM under the previous run's note. */
@@ -326,6 +397,24 @@ function canonicalise(r) {
 }
 
 if (CANON) {
+  /* HOUSEHOLD SIZE and the base it rebuilds. Printed before the forecast table
+     because it is the CAUSE of every move below it — a reviewer who reads only
+     the VR deltas cannot tell a demand change from a divisor change. */
+  console.log('\n--canonical: household size and the base re-derived from it');
+  console.log('region            hhSize old   new   |    households old        new   |     properties old        new   | source');
+  let hhMoved = 0, hhKept = [];
+  for (const r of rows.slice().sort((a, b) => a.slug.localeCompare(b.slug))) {
+    if (!r.hh) { hhKept.push(r.slug); continue; }
+    const p = r.stored, HH = p.population / r.hh.value, props = HH / (1 - p.currentVR);
+    if (Math.abs(r.hh.value - (p.hhSize || 0)) > 1e-9) hhMoved++;
+    console.log('  ' + r.slug.padEnd(16) +
+      (p.hhSize == null ? '—' : p.hhSize.toFixed(3)).padStart(10) + r.hh.value.toFixed(3).padStart(8) + '   |' +
+      f0(p.households).padStart(15) + f0(HH).padStart(11) + '   |' +
+      f0(p.properties).padStart(15) + f0(props).padStart(11) + '   | ' + r.hh.source);
+  }
+  console.log(`\n${hhMoved}/${rows.length} markets change household size.` +
+    (hhKept.length ? ` Kept as stored (not in the sourced table): ${hhKept.join(', ')}.` : ' Every market is sourced.'));
+
   console.log('\n--canonical: forecastVR before → after (every consumer of this mart)');
   console.log('region             1yr before   1yr after   |  2yr before   2yr after');
   let bigMoves = 0;
@@ -343,12 +432,18 @@ if (CANON) {
 
 if (!WRITE) { console.log(`\nDry run. Re-run with --write to merge payload.demand${CANON ? ' AND overwrite the canonical fields' : ''}.`); process.exit(0); }
 
+const WROTE_AT = new Date().toISOString();
 let n = 0;
 for (const r of rows) {
   const canon = CANON ? canonicalise(r) : null;
   const legacy = canon ? { nb: r.stored.nb, im: r.stored.im, om: r.stored.om, expectedPeople: r.stored.expectedPeople,
     expNewHouseholds: r.stored.expNewHouseholds, forecastVR: r.stored.forecastVR, forecastVR2: r.stored.forecastVR2,
-    twoYrHH: r.stored.twoYrHH, twoYrProps: r.stored.twoYrProps, supersededAt: new Date().toISOString() } : null;
+    twoYrHH: r.stored.twoYrHH, twoYrProps: r.stored.twoYrProps,
+    /* the household-size trio too, so a rollback restores the base the old
+       forecast was computed on and not just the forecast itself */
+    hhSize: r.stored.hhSize, households: r.stored.households, properties: r.stored.properties,
+    hhSizeSource: r.stored.hhSizeSource === undefined ? null : r.stored.hhSizeSource,
+    supersededAt: new Date().toISOString() } : null;
   const payload = { ...r.stored, ...(canon || {}), demand: {
     basis: BASIS, latestYear,
     nationalNom: { yr1: NATIONAL_NOM[latestYear + 1], yr2: NATIONAL_NOM[latestYear + 2], source: NOM_FORECAST_SOURCE },
@@ -362,7 +457,7 @@ for (const r of rows) {
       since: '2026-08-26',
       spec: 'Van Grateja — "VR Projection: three changes, applied to both V1 and V2"',
       reasons: [
-        'OM: national forecast is the latest Treasury figure (2026-27 Budget, BP3 Table A.5: 295,000 / 245,000 — the same numbers the workbook carried), but the share is per-year on matching windows (2-yr for yr1, 3-yr for yr2) against the ABS national series rather than one 3-yr share for both years.',
+        'OM: national forecast is the latest Treasury figure (2026-27 Budget, BP3 Table A.5: 295,000 / 245,000 — the same numbers the workbook carried), but the share is the region\'s LATEST financial-year share of the ABS national series (FY2024-25, 1-yr window, both years — Kia 2026-08-26) rather than the workbook\'s 3-yr average share.',
         'Capitals read Greater Capital City (GCCSA) components, not the workbook\'s state substitution (notes on NB!J1 / IM!L2).',
         'Window averages are recomputed from one current ABS release, where the workbook mixes vintages.',
         'Melbourne carries a manual net-internal-migration override of +10,173.',
@@ -376,7 +471,10 @@ for (const r of rows) {
     v1: r.res.v1, v2: r.res.v2, inputs: r.res.inputs,
     ...(legacy ? { legacy } : (r.stored.demand && r.stored.demand.legacy ? { legacy: r.stored.demand.legacy } : {})),
   } };
-  const { error } = await sb.from('rdp_vr_forecast').update({ payload }).eq('region_slug', r.slug);
+  /* Stamp computed_at — the VR Projection tool shows it as "Forecast computed",
+     and leaving it at the previous build's timestamp made a fresh rebuild look
+     stale. Only on a write, and only for the rows this run actually touched. */
+  const { error } = await sb.from('rdp_vr_forecast').update({ payload, computed_at: WROTE_AT }).eq('region_slug', r.slug);
   if (error) { console.error('\n' + r.slug + ':', error.message); process.exit(1); }
   n++; process.stdout.write(`\r  updated ${n}/${rows.length}`);
 }
