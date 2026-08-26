@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="../shared/os-theme.css?v=bcea6d52"/>
 <!-- Auto-fit: scale the page down to fit smaller screens (scale-down only). -->
 <script src="../shared/fit-screen.js?v=5e41a716"></script>
-<script src="../shared/color-picker.js?v=a7ec7189" defer></script>
+<script src="../shared/color-picker.js?v=7613bd02" defer></script>
 <!-- Native slide charts (Phase 3): ECharts + the billboard chart engine +
      the report-data snapshot cache (window.PPReportCache) that feeds charts
      from the stored data. Deferred so they don't block first paint. -->
@@ -1217,9 +1217,6 @@
     background:#00A0B4; border:1px solid #00A0B4;
   }
   .pres-ir-add:disabled{ opacity:0.55; cursor:default; }
-  .pres-ir-optrow{ display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; }
-  .pres-ir-optrow label{ display:inline-flex; align-items:center; gap:6px; font-size:12.5px; cursor:pointer; }
-  .pres-ir-optlead{ font-size:11px; font-weight:800; letter-spacing:1.4px; text-transform:uppercase; opacity:0.6; }
   #pres-add-clock      { --tc:#fb7185; }   /* Clock — rose       */
   #pres-refresh-charts { --tc:#fbbf24; }   /* Refresh — amber    */
   #pres-sync-slides    { --tc:#47daff; }   /* Sync — sky         */
@@ -1501,6 +1498,24 @@
   }
   .pres-overlay-text[data-deco="none"],
   .pres-overlay-text[data-deco="none"] a{ text-decoration:none }
+  /* Strikethrough. WHOLE-BOX strike rides on data-strike (set by the
+     renderers from o.strike) rather than an inline style, because an
+     inline text-decoration-line would outrank the data-deco underline
+     rule above and silently drop the underline when a box is both.
+     The combined selector below restores that pairing; it wins on
+     specificity (class + 2 attrs) over either single rule.
+     PARTIAL-selection strikes arrive as inline spans from
+     execCommand('strikeThrough') and need no rule at all — which is
+     also why they survive save → reload → Present → PDF untouched:
+     they live in the overlay's own html, not in a flag. */
+  .pres-overlay-text[data-strike="1"],
+  .pres-overlay-text[data-deco="none"][data-strike="1"]{ text-decoration-line:line-through }
+  .pres-overlay-text[data-deco="underline"][data-strike="1"]{ text-decoration-line:underline line-through }
+  /* Words remembered for a colour being typed into a hex field. The box has
+     left typing mode by then, so the browser's own highlight is gone — this
+     wash is what tells the user which words the colour will land on. It
+     lives in the live DOM only (_tpShowPendingMark) and is never saved. */
+  .pres-overlay .pres-tp-pending{ background:rgba(0,160,180,.28); box-shadow:0 0 0 2px rgba(0,160,180,.28); border-radius:2px; }
   /* Links INHERIT the surrounding text colour so the text-colour control
      applies to linked text (no forced cyan), and the underline uses the
      link's OWN colour via currentColor — so a link's underline always
@@ -2062,6 +2077,7 @@
   .pres-tp-btn.bold{ font-weight:900 }
   .pres-tp-btn.italic{ font-style:italic }
   .pres-tp-btn.underline{ text-decoration:underline }
+  .pres-tp-btn.strike{ text-decoration:line-through }
   .pres-tp-size-row .pres-tp-btn{ width:30px; padding:6px 0 }
   .pres-tp-size-row input{ flex:1 1 auto; text-align:center }
   .pres-tp-style-row .pres-tp-btn,
@@ -2081,6 +2097,15 @@
   .pres-tp-style-row .pres-tp-btn{ flex:initial; min-width:0; }
   .pres-tp-style-row .pres-tp-btn:nth-child(odd):last-child{
     grid-column:1 / -1;
+  }
+  /* The Bold / Italic / Underline / Strikethrough row is the one row
+     whose labels are single letters, so all four fit across without
+     crowding. Without this it inherits the 2-column grid above and
+     stacks into a 2x2 block, pushing the rest of the panel down.
+     Scoped to its own modifier so the Align and List rows keep the
+     2-column layout they were tuned for. */
+  .pres-tp-style-row.pres-tp-fmt-row{
+    grid-template-columns:repeat(4, minmax(0, 1fr));
   }
   [data-theme="light"] .pres-tp-btn{
     background:rgba(0,160,180,0.06);
@@ -4302,18 +4327,8 @@
     <input type="text" id="pres-ir-search" class="pres-fmt-search" placeholder="Search properties…" autocomplete="off">
     <div class="pres-fmt-scroll" id="pres-ir-list"></div>
   </div>
-  <!-- Which pages of the property's Investment Report come across as slides.
-       All on by default (the full client story); untick for a one-slide
-       summary when comparing several properties side by side. -->
-  <div class="pres-fmt-opts pres-ir-optrow">
-    <span class="pres-ir-optlead">Include:</span>
-    <label><input type="checkbox" id="pres-ir-dd" checked> Due diligence</label>
-    <label><input type="checkbox" id="pres-ir-grading" checked> Grading</label>
-    <label><input type="checkbox" id="pres-ir-cash" checked> Cash flow</label>
-    <label><input type="checkbox" id="pres-ir-condition" checked> Condition &amp; plan</label>
-  </div>
   <div class="pres-copy-foot">
-    <span class="pres-fmt-count">The overview slide is always added; ticked sections follow it.</span>
+    <span class="pres-fmt-count">One slide per property — photo, purchase price, rent, yield and suburb median.</span>
     <button class="pres-copy-cancel" id="pres-ir-all" type="button">Add all</button>
     <button class="pres-copy-cancel" id="pres-ir-close" type="button">Done</button>
   </div>
@@ -4420,10 +4435,11 @@
   </div>
   <div class="pres-tp-row">
     <label>Style</label>
-    <div class="pres-tp-style-row">
+    <div class="pres-tp-style-row pres-tp-fmt-row">
       <button class="pres-tp-btn bold"      id="pres-tp-bold"      type="button" title="Bold">B</button>
       <button class="pres-tp-btn italic"    id="pres-tp-italic"    type="button" title="Italic">I</button>
       <button class="pres-tp-btn underline" id="pres-tp-underline" type="button" title="Underline (also removes the auto-underline from links while keeping the link)">U</button>
+      <button class="pres-tp-btn strike"    id="pres-tp-strike"    type="button" title="Strikethrough — highlight words first to strike just those (e.g. a crossed-out price next to the new one)">S</button>
     </div>
   </div>
   <div class="pres-tp-row">
@@ -5118,6 +5134,7 @@ const tpLhPlus      = document.getElementById('pres-tp-lh-plus');
 const tpBold        = document.getElementById('pres-tp-bold');
 const tpItalic      = document.getElementById('pres-tp-italic');
 const tpUnderline   = document.getElementById('pres-tp-underline');
+const tpStrike      = document.getElementById('pres-tp-strike');
 const tpAlignLeft   = document.getElementById('pres-tp-align-left');
 const tpAlignCenter = document.getElementById('pres-tp-align-center');
 const tpAlignRight  = document.getElementById('pres-tp-align-right');
@@ -5161,6 +5178,9 @@ function _buildThumbOverlay(o) {
     if (o.underline === 'underline' || o.underline === 'none') {
       el.dataset.deco = o.underline;
     }
+    /* Whole-box strikethrough — attribute, not inline style, so it can
+       combine with data-deco (see the [data-strike] CSS rules). */
+    if (o.strike) el.dataset.strike = '1';
     el.innerHTML = presResolveTokens(o.html != null ? o.html : '');
     _applyTextVAlign(el, o);
   } else if (o.type === 'image' && (o.src || o.storage || o.clockImage)) {
@@ -6941,6 +6961,9 @@ function buildThumbOverlayEl(o) {
     if (o.underline === 'underline' || o.underline === 'none') {
       el.dataset.deco = o.underline;
     }
+    /* Whole-box strikethrough — attribute, not inline style, so it can
+       combine with data-deco (see the [data-strike] CSS rules). */
+    if (o.strike) el.dataset.strike = '1';
     el.innerHTML = presResolveTokens(o.html != null ? o.html : '');
     _applyTextVAlign(el, o);
   } else if (o.type === 'shape') {
@@ -10297,6 +10320,9 @@ function buildTableEl(o) {
       /* focus → mark this cell as the active edit target so the
          right-rail Text Settings panel reflects + edits its state. */
       td.addEventListener('focus', () => {
+        /* Drop any display-only pending-colour wash (_tpShowPendingMark): blur
+           below captures td.innerHTML, and the wash must never be saved. */
+        if (typeof _tpClearPendingMark === 'function') _tpClearPendingMark();
         /* Show the RAW token while the cell is being edited — blur below writes
            td.innerHTML straight into cell.html, so editing a resolved cell would
            bake this month's figure over the token (same trap as text overlays). */
@@ -11833,6 +11859,9 @@ function buildOverlayEl(o) {
     if (o.underline === 'underline' || o.underline === 'none') {
       el.dataset.deco = o.underline;
     }
+    /* Whole-box strikethrough — attribute, not inline style, so it can
+       combine with data-deco (see the [data-strike] CSS rules). */
+    if (o.strike) el.dataset.strike = '1';
     /* innerHTML so links / formatted spans survive a save+reload. */
     el.innerHTML = presResolveTokens(o.html != null ? o.html : '');
     _applyTextVAlign(el, o);
@@ -11906,7 +11935,7 @@ function buildOverlayEl(o) {
     el.addEventListener('keydown', (ev) => {
       if (el.contentEditable !== 'true') return;
       if (_handleListNestKey(ev)) {
-        o.html = el.innerHTML;
+        o.html = _editableHtml(el);   /* strip the edit-mode handles — see _editableHtml */
         saveOverlays();
         pushHistory();
       }
@@ -12436,16 +12465,18 @@ function syncTextPanel() {
     tpLh.value   = cell.lineHeight || _LH_DEFAULT;
     /* Selection-aware bold/italic/underline indicators — queryCommandState
        reflects the caret's current style inside the contenteditable. */
-    let isBold = false, isItalic = false, isUnderline = false;
+    let isBold = false, isItalic = false, isUnderline = false, isStrike = false;
     try { isBold      = document.queryCommandState('bold');      } catch (_) {}
     try { isItalic    = document.queryCommandState('italic');    } catch (_) {}
     try { isUnderline = document.queryCommandState('underline'); } catch (_) {}
+    try { isStrike    = document.queryCommandState('strikeThrough'); } catch (_) {}
     tpBold.classList.toggle('on', isBold);
     /* Cells only carry inline bold/normal (execCommand), so map the Weight
        dropdown to that: Bold ↔ 700, otherwise Normal (400). */
     if (tpWeight) tpWeight.value = isBold ? '700' : '400';
     tpItalic.classList.toggle('on', isItalic);
     tpUnderline.classList.toggle('on', isUnderline);
+    tpStrike.classList.toggle('on', isStrike);
     const align = cell.align || (td && td.style.textAlign) || 'left';
     tpAlignLeft.classList.toggle('on',   align === 'left');
     tpAlignCenter.classList.toggle('on', align === 'center');
@@ -12479,6 +12510,9 @@ function syncTextPanel() {
   tpBold.classList.toggle('on', !!o.bold);
   tpItalic.classList.toggle('on', !!o.italic);
   tpUnderline.classList.toggle('on', o.underline === 'underline');
+  /* Whole-box indicator only — a per-selection strike lives in the html,
+     not on the record, same as a per-selection bold. */
+  tpStrike.classList.toggle('on', !!o.strike);
   tpAlignLeft.classList.toggle('on',   (o.align || 'left') === 'left');
   tpAlignCenter.classList.toggle('on', o.align === 'center');
   tpAlignRight.classList.toggle('on',  o.align === 'right');
@@ -15180,14 +15214,17 @@ function _fmtSyncOpts() {
 
 /* ─── IR Library — investment case-study slides from the IR Builder ─────────
    Van's pick (2026-08-21): the Option A combined layout (photo panel left,
-   grade/rating/strategy blocks + 6-stat grid right). One ir_files row → one
-   slide, appended to the end of the deck. Missing figures render as an em
-   dash rather than blocking the insert — the slide is editable anyway. */
+   context blocks + stat grid right). Trimmed 2026-08-26 to ONE slide per
+   property: suburb rating + strategy, then purchase price (what we paid, not
+   the top price), rent, yield on that price and the suburb median — property
+   grade, days on market and 10-yr growth are gone, as are the follow-on DD /
+   grading / cash-flow / condition slides. Missing figures render as an em dash
+   rather than blocking the insert — the slide is editable anyway. */
 let _irRows = null, _irRowsAt = 0;
 
-/* The LIST query stays light — the picker only needs identity + the few
-   fields the rows show. The full file (dd / cashflow / inspection, all heavy
-   jsonb) is fetched per property at insert time by _irFullRow(). */
+/* The LIST query stays light — the picker only needs identity + the sections
+   the one slide reads (setup / grading / pricing / compliance). The heavy dd /
+   cashflow / inspection jsonb is never fetched here any more. */
 async function _irFetchRows() {
   if (_irRows && (Date.now() - _irRowsAt) < 120000) return _irRows;
   /* PUBLISHED files only (Van 2026-08-23): an IR reaches client-facing decks
@@ -15196,21 +15233,13 @@ async function _irFetchRows() {
      (his unfinished "test" file did). The publish stamp lives at
      compliance.published (set by doPublish in ir-builder.html). */
   const { data, error } = await window.sb.from('ir_files')
-    .select('id, address, suburb, state, postcode, market_label, status, setup, grading, pricing')
+    .select('id, address, suburb, state, postcode, market_label, status, setup, grading, pricing, compliance')
     .not('compliance->published', 'is', null)
     .order('market_label', { ascending: true });
   if (error) throw error;
   _irRows = data || []; _irRowsAt = Date.now();
   return _irRows;
 }
-async function _irFullRow(row) {
-  try {
-    const { data, error } = await window.sb.from('ir_files').select('*').eq('id', row.id).single();
-    if (error || !data) return row;
-    return data;
-  } catch (_) { return row; }
-}
-
 function _irGroupOf(r) {
   const s = r.setup || {};
   if (s.commercial === true || /block|industrial|medical|office|retail|commercial/i.test(s.propertyType || '')) return 'Commercial';
@@ -15222,15 +15251,6 @@ function _irMoney(n) {
   return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-AU');
 }
 function _irPct(v, pa) { return (v || v === 0) ? ((v * 100).toFixed(1) + '%' + (pa ? ' p.a.' : '')) : '—'; }
-
-/* Rating → brand colour. Covers the grading scale, the DD verdicts, and
-   returns a neutral for values that aren't ratings at all (Torrens, House…). */
-const IR_RATING_COLOURS = {
-  'excellent': '#3f8f56', 'above average': '#00808f', 'average': '#63666A',
-  'below average': '#c07c10', 'poor': '#c0182f', 'bad': '#c0182f',
-  'approved': '#3f8f56', 'review': '#c07c10', 'rejected': '#c0182f', 'declined': '#c0182f',
-};
-function _irRatingColour(v) { return IR_RATING_COLOURS[String(v || '').trim().toLowerCase()] || IR_GRAY; }
 
 function _irRenderList(filter) {
   const wrap = document.getElementById('pres-ir-list');
@@ -15254,8 +15274,10 @@ function _irRenderList(filter) {
     groups[g].forEach(r => {
       const row = document.createElement('div'); row.className = 'pres-ir-row';
       const grade = (r.grading || {}).propertyGrade;
-      const top = ((r.pricing || {}).adopted || {}).topPrice;
-      const meta = [r.suburb + (r.state ? ' ' + r.state : ''), grade, top ? _irMoney(top) : null]
+      /* the slide shows what we paid, so the picker does too — and says so
+         when a file still needs re-publishing with the price */
+      const paid = ((r.compliance || {}).published || {}).price_paid;
+      const meta = [r.suburb + (r.state ? ' ' + r.state : ''), grade, paid ? 'paid ' + _irMoney(paid) : 'no purchase price yet']
         .filter(Boolean).join(' · ');
       row.innerHTML =
         '<div class="pres-ir-row-name"><strong>' + _fmtEsc(r.address) + '</strong>' +
@@ -15320,103 +15342,9 @@ function _irPen() {
 /* Every follow-on slide wears the same header (property line + section title
    + accent rule) so a slide still identifies itself mid-deck. Returns the y
    the content may start at. */
-function _irSlideHead(pen, row, title) {
-  const line = [row.address, row.suburb, row.market_label].filter(Boolean).join(' · ');
-  pen.T(73, 30, 900, '<span style="letter-spacing:2.4px">' + _fmtEsc(line.toUpperCase()) + '</span>',
-    { fs: 12, color: IR_TEAL, bold: true, h: 18 });
-  pen.T(73, 52, 900, _fmtEsc(title), { fs: 30, bold: true, h: 44 });
-  pen.LINE(73, 104, 48, 4, IR_TEAL);
-  return 132;
-}
-function _irLogo(pen) {
-  pen.IMG(1030, 666, 200, 31, '../assets/logos/pp-logo-standard.png', { fit: 'contain', pos: '100% 50%' });
-}
-/* A filled box holding a small label over a big value. Both lines live in ONE
-   overlay so valign:'middle' centres the PAIR — hand-placing two boxes inside
-   a third is what left these sitting low (measured: 19px above, 9px below). */
-function _irBoxStat(pen, x, y, w, h, label, value, o) {
-  o = o || {};
-  pen.R(x, y, w, h, o.fill || IR_TINT, { stroke: o.stroke || IR_TINT_BORDER, sw: 1 });
-  const vfs = o.fs || 21, lfs = o.lfs || 9.5, lh = 1.3;
-  const html =
-    '<span style="font-size:' + lfs + 'px;font-weight:700;letter-spacing:1.3px;color:' +
-      (o.lcolor || IR_TEAL) + '">' + _fmtEsc(String(label).toUpperCase()) + '</span><br>' +
-    '<span style="font-size:' + vfs + 'px;font-weight:700;color:' + (o.vcolor || IR_DARK) + '">' +
-      _fmtEsc(String(value)) + '</span>';
-  /* The overlay's OWN font-size sets the line-box strut for every line, so it
-     has to be the small one — at the value's size the two struts add up
-     taller than the box and the pair bleeds through both edges. */
-  pen.T(x + 16, y, w - 32, html, { fs: lfs, h: h, valign: 'middle', lh: lh, align: o.align || 'left' });
-}
-/* A filled band with a label on the left and its value on the right, both
-   vertically centred in the band. */
-function _irBoxRow(pen, x, y, w, h, label, value, o) {
-  o = o || {};
-  pen.R(x, y, w, h, o.fill || IR_TINT, { stroke: o.stroke || IR_TINT_BORDER, sw: 1 });
-  pen.T(x + 16, y, w - 32, _fmtEsc(String(label)),
-    { fs: o.lfs || 11.5, color: o.lcolor || IR_GRAY, h: h, valign: 'middle' });
-  pen.T(x + 16, y, w - 32, _fmtEsc(String(value == null ? '—' : value)),
-    { fs: o.fs || 15, bold: true, align: 'right', color: o.vcolor || IR_DARK, h: h, valign: 'middle' });
-}
-function _irRow(pen, x, y, w, label, value, o) {
-  o = o || {};
-  pen.T(x, y, w * 0.55, _fmtEsc(label), { fs: o.fs || 13, color: IR_GRAY, h: 18 });
-  pen.T(x, y - 2, w, _fmtEsc(String(value)), { fs: o.vfs || 14.5, bold: o.bold !== false, align: 'right', h: 20 });
-  if (o.rule !== false) pen.LINE(x, y + 24, w, 1, IR_RULE);
-}
-
-/* Live rates for the cash-flow slide: the file's own rate drives the "as
-   modelled" column, the IC's long-run rate drives "normalised". Falls back
-   to the IR Builder's own defaults if the config table isn't readable. */
-let _irRatesCache = null;
-async function _irFetchRates() {
-  if (_irRatesCache) return _irRatesCache;
-  const r = { current: 0.065, normalised: 0.0494 };
-  try {
-    const { data } = await window.sb.from('rdp_runway_config').select('value').eq('key', 'rates').maybeSingle();
-    const v = data && data.value;
-    if (v && v.current && v.current.rate) r.current = v.current.rate;
-    if (v && v.forecast && v.forecast.rate) r.normalised = v.forecast.rate;
-  } catch (_) {}
-  _irRatesCache = r;
-  return r;
-}
-
-/* Cash-flow engine — a straight port of calcCashflow() in ir-builder.html
-   (verified against the acquisition team's workbook to the dollar). Kept
-   identical so a slide can never disagree with the file it came from.
-   mode: '' = P&I at the file's rate · 'io' = interest only · 'norm' = P&I at
-   the normalised rate. */
-function _irCashflow(cf, mode, rates) {
-  cf = cf || {};
-  const n = k => +cf[k] || 0;
-  const budget = n('budget'); if (!budget) return null;
-  const rate = mode === 'norm' ? (rates.normalised || 0.0494) : (n('rate') || rates.current || 0.065);
-  const loan = budget * (n('lvr') || 0.9);
-  const interest = loan * rate;
-  const mPmt = loan * (rate / 12) / (1 - Math.pow(1 + rate / 12, -((n('loanTermYears') || 30) * 12)));
-  const principal = mode === 'io' ? 0 : (mPmt * 12 - interest);
-  const rent = n('rent'), income = rent * (n('weeksLet') || 52);
-  const letting = (n('lettingFeeWeeks') || 0) * rent;
-  const pm = income * (n('pmFeePct') || 0);
-  const repairs = income * (n('repairsPctOfRent') || 0);
-  const fees = (cf.feeLines || []).reduce((a, f) => a + income * (+f.pct || 0) + (+f.amount || 0), 0);
-  const other = n('strata') + n('councilWater') + n('landTax') + n('insurance');
-  const runningLessFin = letting + pm + repairs + fees + other;
-  const acq = n('stampDuty') + n('engagementFee') + n('acquisitionFee') + n('titleTransfer') + n('conveyancing') + n('buildingPest') + n('depreciationSchedule') + n('professionalClean');
-  const works = n('maintenanceAllowance') + n('minRentalStdCost') + n('cosmeticWorks');
-  const totalCost = budget + works + acq;
-  const annual = income - (runningLessFin + interest + principal);
-  return { loan, requiredCapital: totalCost - loan, grossYield: income / budget,
-    netYield: (income - runningLessFin) / budget, annual, weekly: annual / 52,
-    interest, principal, income, outgoings: runningLessFin, acq, works, totalCost, rate };
-}
-
-/* The Option A case-study overlay pack — matches the approved template on
-   Van's "Template Slides" deck (slide 8) element-for-element. */
 function _irCaseStudyOverlays(row, photoStorage) {
   const s = row.setup || {}, g = row.grading || {}, p = row.pricing || {};
-  const ad = p.adopted || {}, sub = p.suburb || {};
+  const ad = p.adopted || {}, sub = p.suburb || {}, pub = (row.compliance || {}).published || {};
   const TEAL = IR_TEAL, DARK = IR_DARK, GRAY = IR_GRAY, LIGHT = IR_LIGHT;
   const pen = _irPen(), ov = pen.ov, T = pen.T, R = pen.R, LINE = pen.LINE;
 
@@ -15450,367 +15378,73 @@ function _irCaseStudyOverlays(row, photoStorage) {
   ].filter(Boolean).join(' · ');
   T(512, 176, 696, _fmtEsc(specs), { fs: 18, color: GRAY, h: 26 });
 
+  /* Two context blocks — the property grade was dropped from client slides
+     (Van 2026-08-26); suburb rating and strategy stay. */
   const blocks = [
-    ['PROPERTY GRADE', g.propertyGrade || '—'],
     ['SUBURB RATING', g.suburbRating || '—'],
     ['STRATEGY', g.strategy || s.strategy || '—'],
   ];
   blocks.forEach((b, i) => {
-    const bx = 512 + i * 238;
-    R(bx, 226, 218, 92, '#F2F8F9', { stroke: '#D5EBEE', sw: 1 });
-    T(bx + 18, 244, 182, '<span style="letter-spacing:1.5px">' + b[0] + '</span>', { fs: 10.5, color: TEAL, bold: true, h: 16 });
-    T(bx + 18, 266, 182, _fmtEsc(String(b[1])), { fs: String(b[1]).length > 12 ? 17 : 25, bold: true, h: 34 });
+    const bx = 512 + i * 358;
+    R(bx, 226, 338, 92, IR_TINT, { stroke: IR_TINT_BORDER, sw: 1 });
+    T(bx + 18, 244, 302, '<span style="letter-spacing:1.5px">' + b[0] + '</span>', { fs: 10.5, color: TEAL, bold: true, h: 16 });
+    T(bx + 18, 266, 302, _fmtEsc(String(b[1])), { fs: String(b[1]).length > 20 ? 17 : 25, bold: true, h: 34 });
   });
 
-  const grossYield = (ad.rent && ad.topPrice) ? (ad.rent * 52 / ad.topPrice) : null;
+  /* What we paid — not the recommended top price — and the yield is on that
+     figure. Price paid is captured at "Publish as example IR" in the Builder
+     (compliance.published.price_paid); files published before the field
+     existed show an em-dash until they are re-published. Days on market and
+     10-yr growth were dropped from the slide the same day. */
+  const paid = pub.price_paid;
+  const grossYield = (ad.rent && paid) ? (ad.rent * 52 / paid) : null;
   const stats = [
-    ['Top price', _irMoney(ad.topPrice)],
+    ['Purchase price', _irMoney(paid)],
     ['Est. market rent', ad.rent ? '$' + ad.rent + '/wk' : '—'],
     ['Gross yield', _irPct(grossYield)],
     ['Suburb median', _irMoney(sub.suburbMedian)],
-    ['10-yr growth', _irPct(sub.cagr10, true)],
-    ['Days on market', (sub.dom || sub.dom === 0) ? String(sub.dom) : '—'],
   ];
   stats.forEach((st, i) => {
-    const sx = 512 + (i % 3) * 238, sy = 360 + Math.floor(i / 3) * 92;
-    T(sx, sy, 218, st[0], { fs: 13, color: GRAY, h: 18 });
-    T(sx, sy + 22, 218, _fmtEsc(st[1]), { fs: 26, bold: true, h: 34 });
+    const sx = 512 + (i % 2) * 358, sy = 360 + Math.floor(i / 2) * 92;
+    T(sx, sy, 338, st[0], { fs: 13, color: GRAY, h: 18 });
+    T(sx, sy + 22, 338, _fmtEsc(st[1]), { fs: 26, bold: true, h: 34 });
   });
 
-  LINE(512, 560, 696, 1, '#E4E7EA');
+  LINE(512, 560, 696, 1, IR_RULE);
   const month = new Date().toLocaleDateString('en-AU', { month: 'long', year: 'numeric' });
-  T(512, 580, 696, 'Prepared from the Performance Property Investment Report · ' + month, { fs: 12, color: '#9aa3b1', h: 18 });
+  T(512, 580, 696, 'Prepared from the Performance Property Investment Report · ' + month, { fs: 12, color: IR_MUTE, h: 18 });
   ov.push({ id: _fmtId('i'), type: 'image', x: 1030, y: 666, w: 200, h: 31,
     src: '../assets/logos/pp-logo-standard.png', objectFit: 'contain', objectPos: '100% 50%' });
   return ov;
 }
 
-/* ── ir_config: the grading layout groups + the report's boilerplate copy.
-   Fetched once per session; every builder degrades gracefully without it. ── */
-let _irCfgCache = null;
-async function _irFetchConfig() {
-  if (_irCfgCache) return _irCfgCache;
-  const cfg = {};
-  try {
-    const { data } = await window.sb.from('ir_config').select('key,payload');
-    (data || []).forEach(r => { cfg[r.key] = r.payload; });
-  } catch (_) {}
-  _irCfgCache = cfg;
-  return cfg;
-}
-
-/* Shared row/label primitives for the data slides. */
-function _irRateRow(pen, x, y, w, label, rating, o) {
-  o = o || {};
-  pen.T(x, y, Math.max(60, w - 120), _fmtEsc(label), { fs: o.fs || 12, h: 17 });
-  pen.T(x, y, w, _fmtEsc(String(rating || '—')), { fs: o.fs || 12, bold: true, align: 'right',
-    color: _irRatingColour(rating), h: 17 });
-  if (o.rule !== false) pen.LINE(x, y + 21, w, 1, '#EDF0F2');
-}
-function _irSectionLabel(pen, x, y, w, text) {
-  pen.T(x, y, w, '<span style="letter-spacing:1.8px">' + _fmtEsc(String(text).toUpperCase()) + '</span>',
-    { fs: 10.5, color: IR_TEAL, bold: true, h: 15 });
-}
-/* The report's DD verdict, unchanged (ddResult in ir-builder.html). */
-function _irDdVerdict(items) {
-  const r = Object.values(items || {}).map(x => x.rating).filter(Boolean);
-  if (r.indexOf('Failed') >= 0) return 'Failed';
-  if (r.indexOf('Review') >= 0) return 'Review';
-  return r.length ? 'Approved' : null;
-}
-function _irClip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
-
-/* ── Slide · Preliminary due diligence ─────────────────────────────────────
-   Every check with its rating down the left; whatever needs a second look
-   (with the DD note that explains why) in a panel on the right — the thing a
-   client actually asks about. */
-function _irDdOverlays(row) {
-  const pen = _irPen(), T = pen.T, R = pen.R;
-  const items = ((row.dd || {}).items) || {};
-  /* numeric-aware sort: jsonb hands keys back shortest-first (the DD-order bug) */
-  const keys = Object.keys(items).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  if (!keys.length) return null;   /* nothing on file — skip the slide entirely */
-  const y0 = _irSlideHead(pen, row, 'Preliminary due diligence');
-  const verdict = _irDdVerdict(items);
-  const flagged = keys.filter(k => /review|failed/i.test((items[k] || {}).rating || ''));
-
-  /* verdict chip, top-right of the header band */
-  _irBoxStat(pen, 1000, 42, 207, 58, 'DD result', verdict || '—',
-    { fs: 18, lcolor: IR_GRAY, vcolor: _irRatingColour(verdict), fill: '#F7F9FA', stroke: '#E4E7EA' });
-
-  _irSectionLabel(pen, 73, y0, 520, keys.length + ' checks completed');
-  const step = Math.min(22, Math.floor(470 / Math.max(1, keys.length)));
-  keys.forEach((k, i) => {
-    /* the report drops the "1.04 " index prefix too — it's workbook ordering.
-       Rules are dropped on tight pitches: at <24px they cut the descenders. */
-    _irRateRow(pen, 73, y0 + 24 + i * step, 520, _irClip(k.replace(/^\d+\.\d+\s*/, ''), 52),
-      (items[k] || {}).rating, { fs: step < 20 ? 11 : 12, rule: step >= 24 });
-  });
-
-  /* right panel — what needs attention, with the note. Stops above the logo. */
-  R(650, y0 - 6, 557, 512, IR_TINT, { stroke: IR_TINT_BORDER, sw: 1 });
-  _irSectionLabel(pen, 674, y0 + 14, 509, flagged.length ? 'Items flagged for review' : 'Nothing flagged');
-  if (!flagged.length) {
-    T(674, y0 + 40, 509, 'Every check came back approved.', { fs: 13, color: IR_GRAY, h: 20 });
-  } else {
-    let cy = y0 + 40;
-    flagged.slice(0, 6).forEach(k => {
-      T(674, cy, 509, _fmtEsc(_irClip(k.replace(/^\d+\.\d+\s*/, ''), 60)), { fs: 12.5, bold: true, h: 18 });
-      const note = (items[k] || {}).notes || '';
-      /* wrapped blocks carry the overlay's 6px top+bottom padding on top of
-         their line boxes — size for lines + padding or the box under-reads */
-      if (note) T(674, cy + 19, 509, _fmtEsc(_irClip(note, 150)), { fs: 11, color: IR_GRAY, h: 42, lh: 1.35 });
-      cy += note ? 60 : 30;
-    });
-    if (flagged.length > 6) T(674, cy, 509, '+ ' + (flagged.length - 6) + ' more in the full report', { fs: 11, color: IR_MUTE, h: 16 });
-  }
-  T(73, 622, 520, 'Full checks, sources and evidence in the Investment Report.',
-    { fs: 10.5, color: IR_MUTE, h: 16 });
-  _irLogo(pen); return pen.ov;
-}
-
-/* ── Slide · Property grading ──────────────────────────────────────────────
-   The rubric split the way the report splits it (ir_config.grading_layout):
-   property/site attributes | location attributes, each with its rating. */
-function _irGradingOverlays(row, cfg) {
-  const pen = _irPen(), T = pen.T, R = pen.R;
-  const g = row.grading || {}, items = g.items || {};
-  const layout = (cfg && cfg.grading_layout) || {};
-  const y0 = _irSlideHead(pen, row, 'Property grading');
-  const used = {};
-  const pick = list => (list || []).filter(k => items[k] != null).map(k => { used[k] = 1; return k; });
-  const propKeys = pick(layout.property);
-  const locKeys = pick(layout.location);
-  /* anything the layout doesn't know about (commercial rubrics, new rows) */
-  const extra = Object.keys(items).filter(k => !used[k]);
-  const left = propKeys.length ? propKeys : extra;
-  const right = propKeys.length ? locKeys.concat(extra) : [];
-
-  if (!left.length && !right.length) return null;   /* nothing graded — skip the slide */
-  T(73, y0, 700, 'Strategy: ' + _fmtEsc(g.strategy || (row.setup || {}).strategy || '—'), { fs: 13, color: IR_GRAY, h: 18 });
-  const colY = y0 + 34;
-  const draw = (x, w, label, keys, band, bandVal) => {
-    if (!keys.length) return;
-    _irSectionLabel(pen, x, colY, w, label);
-    const step = Math.min(23, Math.floor(400 / Math.max(1, keys.length)));
-    keys.forEach((k, i) => _irRateRow(pen, x, colY + 24 + i * step, w, _irClip(k, 40), items[k],
-      { fs: step < 20 ? 11 : 12, rule: step >= 24 }));
-    const by = colY + 30 + keys.length * step;
-    if (band && by < 600) _irBoxRow(pen, x, by, w, 42, band, bandVal || '—');
-  };
-  /* commercial rubrics carry lease/tenant rows the residential layout has no
-     bucket for — they land in the right column, so label it for what's in it */
-  const rightLabel = locKeys.length
-    ? (extra.length ? 'Location & other attributes' : 'Location attributes')
-    : 'Investment attributes';
-  draw(73, 520, 'Property / site attributes', left, 'Property Grade', g.propertyGrade);
-  draw(650, 557, rightLabel, right, 'Suburb Rating', g.suburbRating);
-  /* commercial files carry risk + overall ratings the residential rubric lacks */
-  const tail = [g.riskRating ? 'Risk: ' + g.riskRating : null, g.overallRating ? 'Overall: ' + g.overallRating : null]
-    .filter(Boolean).join('   ·   ');
-  if (tail) T(73, 622, 1100, _fmtEsc(tail), { fs: 12, bold: true, color: IR_TEAL, h: 18 });
-  _irLogo(pen); return pen.ov;
-}
-
-/* ── Slide · Cash flow & funding ───────────────────────────────────────────
-   The report's cashflow page, landscape: what it costs to get in (left) and
-   what it does each year under the three scenarios the IC uses (right). */
-function _irCashflowOverlays(row, rates, cfg) {
-  const pen = _irPen(), T = pen.T, R = pen.R, LINE = pen.LINE;
-  const cf = row.cashflow || {};
-  const y0 = _irSlideHead(pen, row, 'Cash flow & funding');
-  const pi = _irCashflow(cf, 'pi', rates), io = _irCashflow(cf, 'io', rates), nm = _irCashflow(cf, 'norm', rates);
-  if (!pi) return null;   /* no cash-flow inputs — skip the slide */
-  /* left — cost of property + acquisition (the report's row set, nulls dropped) */
-  _irSectionLabel(pen, 73, y0, 520, 'Cost of property & acquisition');
-  const costRows = [['Purchase budget', cf.budget], ['Maintenance allowance', cf.maintenanceAllowance],
-    ['Minimum rental standards', cf.minRentalStdCost], ['Cosmetic works', cf.cosmeticWorks],
-    ['Stamp duty', cf.stampDuty], ['Acquisition fee', cf.acquisitionFee],
-    ['Mortgage & title transfer', cf.titleTransfer], ['Conveyancing / legal', cf.conveyancing],
-    ['Building & pest', cf.buildingPest], ['Depreciation schedule', cf.depreciationSchedule],
-    ['Professional clean', cf.professionalClean], ['Engagement fee', cf.engagementFee]]
-    .filter(r => r[1] != null && +r[1] > 0);
-  const cstep = Math.min(26, Math.floor(300 / Math.max(1, costRows.length)));
-  costRows.forEach((r, i) => _irRow(pen, 73, y0 + 26 + i * cstep, 520, r[0], _irMoney(r[1]),
-    { fs: cstep < 22 ? 11.5 : 13, vfs: cstep < 22 ? 12.5 : 14 }));
-  const ty = y0 + 34 + costRows.length * cstep;
-  _irBoxRow(pen, 73, ty, 520, 46, 'Total property + acquisition', _irMoney(pi.totalCost),
-    { fill: IR_DARK, stroke: IR_DARK, lcolor: '#ffffff', vcolor: '#ffffff', lfs: 12.5, fs: 19 });
-  /* funding split */
-  const fy = ty + 60;
-  [['Loan at ' + Math.round((+cf.lvr || 0.9) * 100) + '% LVR', _irMoney(pi.loan)],
-   ['Capital required', _irMoney(pi.requiredCapital)]].forEach((b, i) =>
-    _irBoxStat(pen, 73 + i * 270, fy, 250, 74, b[0], b[1]));
-
-  /* right — the annual position. Anything the interest rate can't change is
-     stated ONCE (repeating it under three columns just reads as noise); the
-     three IC scenarios then differ only where they actually differ. */
-  _irSectionLabel(pen, 650, y0, 557, 'Annual position');
-  [['Rental income  ·  $' + (cf.rent || 0) + '/wk × ' + (cf.weeksLet || 52) + ' wks', _irMoney(pi.income)],
-   ['Operating outgoings', _irMoney(-pi.outgoings)],
-   ['Gross yield', _irPct(pi.grossYield)],
-   ['Net yield', _irPct(pi.netYield)]]
-    .forEach((r, i) => _irRow(pen, 650, y0 + 28 + i * 30, 557, r[0], r[1], { fs: 12.5 }));
-
-  const scenY = y0 + 168;
-  _irSectionLabel(pen, 650, scenY, 557, 'Funding scenarios');
-  const cols = [
-    { t: 'P&I @ ' + (pi.rate * 100).toFixed(2) + '%', x: 845, v: pi },
-    { t: 'Interest only', x: 965, v: io },
-    { t: 'Norm @ ' + (nm.rate * 100).toFixed(2) + '%', x: 1085, v: nm },
-  ];
-  cols.forEach(c => pen.T(c.x, scenY + 24, 118, _fmtEsc(c.t), { fs: 10.5, bold: true, color: IR_TEAL, align: 'right', h: 15 }));
-  LINE(650, scenY + 44, 557, 1, IR_RULE);
-  const metrics = [
-    ['Interest', x => _irMoney(-x.interest), false],
-    ['Principal', x => x.principal ? _irMoney(-x.principal) : '—', false],
-    ['Annual cash flow', x => _irMoney(x.annual), true],
-    ['Weekly cash flow', x => _irMoney(x.weekly), true],
-  ];
-  metrics.forEach((m, i) => {
-    const ry = scenY + 58 + i * 38, isNet = m[2];
-    pen.T(650, ry, 200, m[0], { fs: 12.5, color: isNet ? IR_DARK : IR_GRAY, bold: isNet, h: 18 });
-    cols.forEach(c => pen.T(c.x, ry - 2, 118, m[1](c.v), { fs: isNet ? 15 : 13, bold: true, align: 'right',
-      color: isNet ? (c.v.annual < 0 ? '#c0182f' : '#3f8f56') : IR_DARK, h: 20 }));
-    if (i === 1) LINE(650, ry + 26, 557, 1, IR_RULE);
-  });
-  const note = ((cfg && cfg.boilerplate) || {}).normalised_note;
-  T(650, scenY + 58 + metrics.length * 38 + 10, 557,
-    _fmtEsc(_irClip(note || 'The normalised column stress-tests the holding cost against the long-run interest rate the Investment Committee sets, not today\'s rate.', 260)),
-    { fs: 10.5, color: IR_MUTE, h: 56, lh: 1.4 });
-  _irLogo(pen); return pen.ov;
-}
-
-/* ── Slide · Condition & asset plan ────────────────────────────────────────
-   The report's inspection-notes and asset-management-plan pages folded into
-   one landscape slide: what we found (left) and what we'll do about it
-   (right), with anything flagged at inspection across the bottom. */
-function _irConditionOverlays(row, cfg) {
-  const pen = _irPen(), T = pen.T, R = pen.R;
-  const insp = row.inspection || {}, s = row.setup || {}, g = row.grading || {}, cf = row.cashflow || {};
-
-  /* left — what the inspection found */
-  const rows0 = [['Year built', insp.yearBuilt], ['Overall condition', insp.condition],
-    ['Construction quality', insp.constructionQuality], ['Street appeal', insp.streetAppeal],
-    ['External walls', insp.wallMaterial], ['Roof', insp.roofMaterial],
-    ['Kitchen age', insp.kitchenAge], ['Bathroom age', insp.bathroomAge],
-    ['Adjoining properties', insp.adjoining], ['Occupancy', insp.occupancy],
-    ['Why selling', insp.whySelling], ['Agent price guide', insp.agentPrice],
-    ['Agent rent guide', insp.agentRent]].filter(r => r[1]);
-  if (!rows0.length && !insp.summaryNotes && !cf.budget) return null;   /* nothing to say — skip
-     the slide rather than shipping an empty one into a client deck */
-  const y0 = _irSlideHead(pen, row, 'Condition & asset plan');
-  _irSectionLabel(pen, 73, y0, 520, 'Inspection findings');
-  const rows = rows0;
-  const step = Math.min(28, Math.floor(370 / Math.max(1, rows.length)));
-  rows.forEach((r, i) => _irRow(pen, 73, y0 + 26 + i * step, 520, r[0], _irClip(r[1], 34),
-    { fs: step < 24 ? 11.5 : 13, vfs: step < 24 ? 12.5 : 14 }));
-  const accom = [s.beds != null ? s.beds + ' bed' : null, s.baths != null ? s.baths + ' bath' : null,
-    insp.living != null ? insp.living + ' living' : null, s.cars != null ? s.cars + ' car' : null,
-    s.landSize ? s.landSize + 'm² land' : null, s.units ? s.units + ' units' : null].filter(Boolean).join(' · ');
-  if (accom) T(73, y0 + 34 + rows.length * step, 520, _fmtEsc(accom), { fs: 12.5, bold: true, color: IR_TEAL, h: 18 });
-
-  /* right — the asset management plan the report generates */
-  const trading = /trading/i.test(g.strategy || s.strategy || '');
-  const refYear = parseInt(String(insp.refurbAge || insp.yearBuilt || '').replace(/\D/g, '').slice(0, 4), 10) || null;
-  const nowY = new Date().getFullYear();
-  const w1 = refYear ? refYear + 11 : null, w2 = refYear ? refYear + 15 : null;
-  _irSectionLabel(pen, 650, y0, 557, 'Asset management plan — ' + (trading ? 'trading' : 'foundation'));
-  const plan = [
-    ['Last refurbishment', refYear ? 'Likely around ' + refYear : '—'],
-    ['Next refurbishment window', w1 ? (w1 + ' to ' + w2 + (w2 < nowY ? ' — overdue' : '')) : '—'],
-    ['Refurbishment provision', cf.budget ? 'Within ' + _irMoney(cf.budget * 0.03) : '—'],
-  ];
-  if (!trading && cf.budget) plan.push(['Renovation provision', 'Within ' + _irMoney(cf.budget * 0.07)]);
-  plan.forEach((p, i) => _irRow(pen, 650, y0 + 26 + i * 30, 557, p[0], p[1], { fs: 12.5 }));
-  let py = y0 + 30 + plan.length * 30;
-  /* The window is derived from the refurb date when the file has one and from
-     the build year when it doesn't — say which, or a 1983 building with a new
-     roof reads as "overdue since 1998". */
-  if (refYear && !insp.refurbAge) {
-    T(650, py, 557, 'Window estimated from year built — no refurbishment date on file.',
-      { fs: 10.5, color: IR_MUTE, h: 16 });
-    py += 24;
-  }
-  /* Directive prose matches the report's page 5 wording. (The boilerplate
-     arrays hold raw workbook LINES — headings and fragments — so they can't
-     be indexed into safely for a sentence.) */
-  const directive = trading
-    ? 'A trading asset: reactive maintenance only, with refurbishment works undertaken before sale if required. Maintenance allowance around 10% of annual rent.'
-    : 'A foundation asset: proactive and reactive maintenance as directed by your asset manager, with refurbishment planned inside the window above. Maintenance allowance around 10% of annual rent.';
-  R(650, py, 557, 108, IR_TINT, { stroke: IR_TINT_BORDER, sw: 1 });
-  _irSectionLabel(pen, 674, py + 14, 509, 'Directive');
-  T(674, py + 36, 509, _fmtEsc(_irClip(directive, 240)), { fs: 11.5, color: IR_GRAY, h: 62, lh: 1.45 });
-
-  /* bottom — anything flagged at inspection (replace / monitor) */
-  const flagged = [];
-  Object.keys(insp.rooms || {}).forEach(rn => ((insp.rooms[rn] || {}).features || []).forEach(f => {
-    if (f && (f.r || f.m)) flagged.push(rn + ' — ' + f.name + (f.cost ? ' (' + _irMoney(f.cost) + ')' : ''));
-  }));
-  const fy = Math.max(py + 122, y0 + 34 + rows.length * step + 30);
-  if (fy < 616) {
-    _irSectionLabel(pen, 73, fy, 1100, flagged.length ? 'Items requiring attention' : 'Items requiring attention — none');
-    T(73, fy + 20, 1100, flagged.length
-      ? _fmtEsc(_irClip(flagged.slice(0, 6).join('  ·  '), 200))
-      : 'Every inspected feature was present and serviceable.',
-      { fs: 11.5, color: IR_GRAY, h: 18 });
-  }
-  _irLogo(pen); return pen.ov;
-}
-
-/* Which follow-on slides the picker is set to add, in deck order. */
-const IR_EXTRAS = [
-  { key: 'dd', id: 'pres-ir-dd', label: 'Due diligence', build: (row, ctx) => _irDdOverlays(row) },
-  { key: 'grading', id: 'pres-ir-grading', label: 'Grading', build: (row, ctx) => _irGradingOverlays(row, ctx.cfg) },
-  { key: 'cash', id: 'pres-ir-cash', label: 'Cash flow', build: (row, ctx) => _irCashflowOverlays(row, ctx.rates, ctx.cfg) },
-  { key: 'condition', id: 'pres-ir-condition', label: 'Condition & plan', build: (row, ctx) => _irConditionOverlays(row, ctx.cfg) },
-];
-function _irSelectedExtras() {
-  return IR_EXTRAS.filter(x => { const el = document.getElementById(x.id); return !el || el.checked; });
-}
-function _irUpdateAddLabels() {
-  const n = 1 + _irSelectedExtras().length;
-  document.querySelectorAll('.pres-ir-add').forEach(b => {
-    if (b.disabled) return;
-    b.textContent = '+ Add ' + n;
-    b.title = 'Append ' + n + ' slide' + (n === 1 ? '' : 's') + ' for this property';
-  });
-}
-
+/* One slide per property (Van 2026-08-26): the photo page with what we paid,
+   the rent, the yield on that price and the suburb median. The DD / grading /
+   cash-flow / condition follow-on slides were removed the same day — git has
+   them (faa74e3) if they are ever wanted back. */
 async function _irInsert(row, btn) {
   if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
   const optState = _fmtOptState();
   if (optState.clientPending) { showPresToast('Type the client name first.'); return; }
   /* deck-level extras go in ahead of the report's slides, once per deck */
   if (_fmtApplyExtras(optState)) { _fmtSyncOpts(); }
-  const extras = _irSelectedExtras();
   if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
   try {
-    const [photo, rates, cfg, full] = await Promise.all([
-      _irCopyPhoto(row), _irFetchRates(), _irFetchConfig(), _irFullRow(row)]);
-    const ctx = { rates: rates, cfg: cfg };
-    row = full;   /* the light list row can't feed the DD / cashflow / condition slides */
+    const photo = await _irCopyPhoto(row);
     const first = _fmtAppendSlide(_irCaseStudyOverlays(row, photo), '#ffffff');
-    let added = 1;
-    const skipped = [];
-    extras.forEach(x => {
-      let ov = null;
-      try { ov = x.build(row, ctx); } catch (e) { ov = null; }
-      /* a builder returns null when that section is empty on the file — no
-         "nothing recorded" slide goes into a client deck */
-      if (ov && ov.length) { _fmtAppendSlide(ov, '#ffffff'); added++; }
-      else skipped.push(x.label.toLowerCase());
-    });
     saveOverlays();
     if (typeof saveSlideBgs === 'function') saveSlideBgs();
     if (typeof saveActiveDeckIfCustom === 'function') saveActiveDeckIfCustom();
     if (typeof buildThumbnails === 'function') buildThumbnails();
     if (typeof renderSlide === 'function') renderSlide(first);
     pushHistory();
-    showPresToast(row.address + ' — ' + added + ' slide' + (added === 1 ? '' : 's') + ' added from slide ' +
-      (first + 1) + (photo ? '' : ' · no photo on file') +
-      (skipped.length ? ' · nothing on file for ' + skipped.join(', ') : '') + '.',
-      { duration: 6000, warn: !!skipped.length });
+    const paid = ((row.compliance || {}).published || {}).price_paid;
+    const notes = [];
+    if (!photo) notes.push('no photo on file');
+    if (!paid) notes.push('no purchase price on file — re-publish the IR with the price paid');
+    showPresToast(row.address + ' — added as slide ' + (first + 1) +
+      (notes.length ? ' · ' + notes.join(' · ') : '') + '.',
+      { duration: 6000, warn: !!notes.length });
     if (btn) btn.textContent = 'Added ✓';
   } catch (e) {
     showPresToast('Could not add the case study: ' + (e && e.message || 'unknown error'), { warn: true });
@@ -15829,7 +15463,7 @@ async function openIrPicker() {
   irModal.classList.add('open');
   const wrap = document.getElementById('pres-ir-list');
   if (wrap) wrap.innerHTML = '<div style="padding:18px 6px; opacity:0.7; font-size:13px;">Loading properties…</div>';
-  try { await _irFetchRows(); _irRenderList(''); _irUpdateAddLabels(); }
+  try { await _irFetchRows(); _irRenderList(''); }
   catch (e) { if (wrap) wrap.innerHTML = '<div style="padding:18px 6px; opacity:0.7; font-size:13px;">Could not load the property list: ' + _fmtEsc(e && e.message || 'unknown error') + '</div>'; }
   if (search) setTimeout(() => { try { search.focus(); } catch (_) {} }, 30);
 }
@@ -15849,11 +15483,7 @@ document.getElementById('pres-ir-all').addEventListener('click', () => {
 });
 document.getElementById('pres-ir-close').addEventListener('click', closeIrPicker);
 irBackdrop.addEventListener('click', closeIrPicker);
-document.getElementById('pres-ir-search').addEventListener('input', e => { _irRenderList(e.target.value); _irUpdateAddLabels(); });
-IR_EXTRAS.forEach(x => {
-  const el = document.getElementById(x.id);
-  if (el) el.addEventListener('change', _irUpdateAddLabels);
-});
+document.getElementById('pres-ir-search').addEventListener('input', e => _irRenderList(e.target.value));
 
 function openFmtPicker() {
   if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
@@ -16848,6 +16478,27 @@ function preserveEditableFocus(container) {
 preserveEditableFocus(textPanel);
 preserveEditableFocus(editBar);
 preserveEditableFocus(shapePicker);
+/* The shared colour-swatch popover (shared/color-picker.js) is
+   appended to <body>, so it sits OUTSIDE textPanel and misses the
+   wiring above. Without this, mousedown on a preset swatch pulls focus
+   off the contenteditable, its blur handler flips contentEditable back
+   to false and re-renders the box — so by the time the colour actually
+   lands there is no selection left and the per-selection colour could
+   never fire. Capture phase because the popover stops propagation of
+   mousedown; buttons only, so the popover's own hex field can still be
+   clicked into and typed in. */
+document.addEventListener('mousedown', (ev) => {
+  const t = ev.target;
+  if (!t || !t.closest) return;
+  const inPopover = !!t.closest('.pp-swatch-popover');
+  if (inPopover && t.closest('button')) ev.preventDefault();
+  /* The hex fields DO take focus (they have to be typed into), which ends
+     typing mode — so remember the highlighted range first, and the typed
+     colour can still land on it (_tpStashSelection / _applyTextOverlayColor).
+     Any other mousedown outside the swatch UI forgets it. */
+  if ((inPopover && t.matches('input')) || t.id === 'pres-tp-color-hex') _tpStashSelection();
+  else if (!inPopover && !t.closest('.pp-swatch-btn')) { _tpStashedRange = null; _tpClearPendingMark(); }
+}, true);
 
 /* ─── External paste sanitiser ───
    Pasting from Google Slides / Docs / PowerPoint / web pages into a
@@ -17028,11 +16679,33 @@ document.addEventListener('paste', function (ev) {
   imageFiles.forEach(f => { try { ovAddImage(f); } catch (_) {} });
 });
 
-/* Bold / Italic / Underline are selection-aware: if the user has
-   highlighted some text inside the contenteditable, the toggle
-   applies to that selection only (via document.execCommand which
-   wraps the range with the appropriate inline tag). Otherwise it
-   toggles the whole overlay's flag — same UX as Word / Google
+/* The editable's innerHTML WITHOUT the edit-mode furniture. The
+   delete badge (which carries a "×" text node) and the resize / edge
+   handles are real child nodes of the overlay box, so reading
+   el.innerHTML raw bakes that markup into o.html — where it would be
+   re-rendered as literal content on the next load, and shipped to the
+   PDF renderer. The blur handler already strips exactly these before
+   it captures; every mid-edit capture has to do the same. Works on a
+   CLONE because the box is still being edited — pulling the real
+   handles out would leave the user without them until the next
+   render. */
+function _editableHtml(el) {
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll('.pres-overlay-del, .pres-overlay-resize, .pres-overlay-edge').forEach(h => h.remove());
+  /* the pending-colour wash (_tpShowPendingMark) is display-only — unwrap
+     it rather than remove it, it holds real text */
+  clone.querySelectorAll('.pres-tp-pending').forEach(m => {
+    while (m.firstChild) m.parentNode.insertBefore(m.firstChild, m);
+    m.remove();
+  });
+  return clone.innerHTML;
+}
+
+/* Bold / Italic / Underline / Strikethrough are selection-aware: if
+   the user has highlighted some text inside the contenteditable, the
+   toggle applies to that selection only (via document.execCommand
+   which wraps the range with the appropriate inline tag). Otherwise
+   it toggles the whole overlay's flag — same UX as Word / Google
    Slides, and matches Online Reports' Bold/Italic behaviour. */
 function _execIfSelectionInside(cmd, overlay) {
   const el = slot.querySelector('.pres-overlay[data-id="' + overlay.id + '"]');
@@ -17048,7 +16721,7 @@ function _execIfSelectionInside(cmd, overlay) {
      the underline actually removable instead of just nested. */
   try { document.execCommand('styleWithCSS', false, true); } catch (_) {}
   document.execCommand(cmd);
-  overlay.html = el.innerHTML;
+  overlay.html = _editableHtml(el);
   saveOverlays();
   pushHistory();
   return true;
@@ -17154,7 +16827,7 @@ function _toggleSelectionUnderline(o) {
     });
   }
 
-  o.html = el.innerHTML;
+  o.html = _editableHtml(el);   /* strip the edit-mode handles — see _editableHtml */
   saveOverlays();
   pushHistory();
   return true;
@@ -17165,6 +16838,22 @@ tpUnderline.addEventListener('click', () => {
   if (!o || o.type !== 'text') return;
   if (_toggleSelectionUnderline(o)) return;
   applyTextChange(oo => oo.underline = (oo.underline === 'underline') ? 'none' : 'underline');
+});
+/* Strikethrough — deliberately routed through the SAME
+   _execIfSelectionInside path as Bold / Italic rather than becoming a
+   second whole-box flag, because the point of it is a partial strike:
+   "$550 inc GST Waived" in ONE box with only the price crossed out.
+   execCommand emits an inline span that lives in o.html, so it
+   persists through save → reload and paints identically in edit mode,
+   Present, the thumbnail rail and the html2canvas PDF pass. With no
+   selection it falls back to the whole-box o.strike flag so the
+   button is never a no-op. */
+tpStrike.addEventListener('click', () => {
+  if (_getFocusedCell()) { applyCellExec('strikeThrough'); return; }
+  const o = getSelectedOverlay();
+  if (!o || o.type !== 'text') return;
+  if (_execIfSelectionInside('strikeThrough', o)) return;
+  applyTextChange(oo => oo.strike = !oo.strike);
 });
 tpAlignLeft.addEventListener('click', () => {
   if (_getFocusedCell()) { applyCellChange(cell => cell.align = 'left'); return; }
@@ -17183,33 +16872,294 @@ tpAlignRight.addEventListener('click', () => {
 tpVAlignTop.addEventListener('click',    () => { if (_getFocusedCell()) applyCellChange(cell => cell.vAlign = 'top');    });
 tpVAlignMiddle.addEventListener('click', () => { if (_getFocusedCell()) applyCellChange(cell => cell.vAlign = 'middle'); });
 tpVAlignBottom.addEventListener('click', () => { if (_getFocusedCell()) applyCellChange(cell => cell.vAlign = 'bottom'); });
-tpColor.addEventListener('input', () => {
-  /* In cell mode, prefer selection-level colour via execCommand
-     when the user has a non-collapsed selection inside the cell;
-     otherwise apply to the whole cell as cell.textColor. */
+/* True when `range` covers every character in the editable box — a
+   triple-click (which does selectNodeContents) or a drag over the lot.
+   Compared on TEXT rather than on boundary points because a drag-select
+   ends INSIDE the first / last text nodes and so would never compare
+   equal to the element-level boundaries. Edit-mode handles are stripped
+   from both sides: they're real children of the box and the delete
+   badge carries a "×", so a raw comparison could never match. */
+function _selectionCoversAllText(el, range) {
+  const textOf = (node) => {
+    const box = document.createElement('div');
+    box.appendChild(node);
+    box.querySelectorAll('.pres-overlay-del, .pres-overlay-resize, .pres-overlay-edge').forEach(h => h.remove());
+    return (box.textContent || '').replace(/\s+/g, ' ').trim();
+  };
+  const all = textOf(el.cloneNode(true));
+  if (!all) return true;                       /* empty box — nothing partial to colour */
+  return textOf(range.cloneContents()) === all;
+}
+
+/* Drop inline `color` from everything inside `root`, leaving every other
+   inline property (size / weight / decoration / background) intact. Used
+   only when the user highlights the WHOLE box and picks a colour: we set
+   the box-level o.color, but an earlier per-selection
+   <span style="color:…"> outranks it, so those words would stubbornly
+   keep the old colour and the click would look broken.
+   Deliberately mutates the LIVE editable rather than the o.html string:
+   the box is still focused, and the re-render that follows DETACHES it,
+   which fires its blur handler — and that handler re-captures
+   el.innerHTML over o.html. A string-level edit would be silently
+   overwritten a moment later; editing the DOM the blur reads from is
+   what makes the change stick. */
+function _clearInlineTextColors(root) {
+  root.querySelectorAll('[style*="color"], font[color]').forEach(n => {
+    n.removeAttribute('color');
+    if (n.style) n.style.removeProperty('color');      /* background-color survives */
+    if (n.getAttribute('style') === '') n.removeAttribute('style');
+  });
+}
+
+/* ─── A highlighted range survives a click into a hex field ───
+   The two hex inputs (the panel's, and the swatch popover's) have to take
+   focus to be typed into, and that focus move blurs the contenteditable:
+   its blur handler ends typing mode and re-renders the box, so by the
+   time Enter commits the value there is no selection left and the colour
+   landed on the whole box — Van's first report on the feature ("when
+   highlighting a certain txt and clicking the change color, the txt will
+   be deselected"). So the selection is STASHED at mousedown on either hex
+   field — the last instant it still exists — as text offsets, and
+   _applyTextOverlayColor replays it on a detached copy of o.html.
+   Offsets, not a Range: the re-render replaces the box's DOM, so a saved
+   Range would be dead. Cleared by a mousedown anywhere else, by use, or
+   after a minute. */
+let _tpStashedRange = null;
+function _tpPlainText(node) {
+  const box = document.createElement('div');
+  box.appendChild(node);
+  box.querySelectorAll('.pres-overlay-del, .pres-overlay-resize, .pres-overlay-edge').forEach(h => h.remove());
+  return box.textContent || '';
+}
+/* Character offsets of `range` within el's text, edit handles excluded. */
+function _textOffsetsOfRange(el, range) {
+  try {
+    const pre = document.createRange();
+    pre.setStart(el, 0);
+    pre.setEnd(range.startContainer, range.startOffset);
+    const start = _tpPlainText(pre.cloneContents()).length;
+    const len = _tpPlainText(range.cloneContents()).length;
+    return len > 0 ? { start: start, end: start + len } : null;
+  } catch (_) { return null; }
+}
+/* Inverse: a Range over root's text nodes covering [start, end). */
+function _rangeFromTextOffsets(root, start, end) {
+  /* skip the text inside edit-mode handles (the delete badge's "×") so the
+     same offsets work on the live box and on a parsed copy of o.html */
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => n.parentElement && n.parentElement.closest('.pres-overlay-del, .pres-overlay-resize, .pres-overlay-edge')
+      ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+  });
+  const r = document.createRange();
+  let at = 0, gotStart = false;
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const next = at + n.data.length;
+    if (!gotStart && start < next) { r.setStart(n, start - at); gotStart = true; }
+    if (gotStart && end <= next) { r.setEnd(n, end - at); return r; }
+    at = next;
+  }
+  return null;
+}
+function _tpStashSelection() {
+  /* A table cell being edited? Same idea (Van 2026-08-26: "do the same for
+     txt inside tables"), but a td stays in the DOM after it blurs — cells
+     don't re-render on blur — so the stash carries the td itself and the
+     replay (_tpRestoreCellStash) just re-selects the words inside it. */
   const fc = _getFocusedCell();
-  if (fc) {
+  if (fc && fc.td && fc.td.isConnected) {
+    _tpStashedRange = null;
+    _tpClearPendingMark();
     const sel = window.getSelection();
-    const inCell = sel && sel.rangeCount && fc.td.contains(sel.anchorNode) && !sel.isCollapsed;
-    if (inCell) { applyCellExec('foreColor', tpColor.value); return; }
-    applyCellChange(cell => cell.textColor = tpColor.value);
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+    const r = sel.getRangeAt(0);
+    /* whole cell highlighted → whole-cell colour, exactly as before */
+    if (!fc.td.contains(r.commonAncestorContainer) || _selectionCoversAllText(fc.td, r)) return;
+    const off = _textOffsetsOfRange(fc.td, r);
+    if (!off) return;
+    _tpStashedRange = { kind: 'cell', overlayId: fc.o.id, row: fc.row, col: fc.col, td: fc.td,
+      start: off.start, end: off.end, text: _tpPlainText(r.cloneContents()), at: Date.now() };
+    setTimeout(_tpShowPendingMark, 0);
     return;
   }
-  applyTextChange(o => o.color = tpColor.value);
+  const o = getSelectedOverlay();
+  if (!o || o.type !== 'text') { _tpStashedRange = null; _tpClearPendingMark(); return; }
+  const el = slot.querySelector('.pres-overlay[data-id="' + o.id + '"]');
+  /* Not in typing mode → nothing new to remember. Keep whatever is already
+     pending: this is the user clicking INTO the hex field a second time. */
+  if (!el || el.contentEditable !== 'true') return;
+  _tpStashedRange = null;
+  _tpClearPendingMark();
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+  const r = sel.getRangeAt(0);
+  /* whole content highlighted → whole-box colour, exactly as before */
+  if (!el.contains(r.commonAncestorContainer) || _selectionCoversAllText(el, r)) return;
+  const off = _textOffsetsOfRange(el, r);
+  if (!off) return;
+  _tpStashedRange = { id: o.id, start: off.start, end: off.end, text: _tpPlainText(r.cloneContents()), at: Date.now() };
+  /* the focus move that follows this mousedown ends typing mode and
+     re-renders the box; mark the words once that has happened */
+  setTimeout(_tpShowPendingMark, 0);
+}
+/* While a stash is pending the box has left typing mode, so the browser's
+   highlight is gone and nothing on screen says which words the typed colour
+   will land on — Van's second report ("the txt has been deselected"). Wash
+   the remembered words in the LIVE DOM only, never in o.html: the commit's
+   re-render, or a mousedown anywhere else, takes it away again. */
+function _tpShowPendingMark() {
+  _tpClearPendingMark();
+  const st = _tpStashedRange;
+  if (!st) return;
+  let el;
+  if (st.kind === 'cell') {
+    el = (st.td && st.td.isConnected) ? st.td : null;          /* the cell is still on screen, just unfocused */
+  } else {
+    el = slot.querySelector('.pres-overlay[data-id="' + st.id + '"]');
+    if (el && el.contentEditable === 'true') el = null;         /* still typing — the browser highlight shows */
+  }
+  if (!el) return;
+  const r = _rangeFromTextOffsets(el, st.start, st.end);
+  if (!r || r.collapsed || _tpPlainText(r.cloneContents()) !== st.text) return;
+  const mark = document.createElement('span');
+  mark.className = 'pres-tp-pending';
+  try { mark.appendChild(r.extractContents()); r.insertNode(mark); } catch (_) {}
+}
+function _tpClearPendingMark() {
+  slot.querySelectorAll('.pres-tp-pending').forEach(m => {
+    while (m.firstChild) m.parentNode.insertBefore(m.firstChild, m);
+    m.remove();
+  });
+}
+/* Table-cell replay: re-select the remembered words inside the (still
+   connected) td so applyCellExec colours that live selection — the same
+   path the swatch popover takes. True when a selection was restored. */
+function _tpRestoreCellStash(fc) {
+  const st = _tpStashedRange;
+  if (!st || st.kind !== 'cell') return false;
+  _tpStashedRange = null;
+  _tpClearPendingMark();
+  if (st.overlayId !== fc.o.id || st.row !== fc.row || st.col !== fc.col) return false;
+  if ((Date.now() - st.at) > 60000 || !fc.td || !fc.td.isConnected) return false;
+  fc.td.focus();                        /* first — the focus handler may swap raw token markup back in */
+  const r = _rangeFromTextOffsets(fc.td, st.start, st.end);
+  if (!r || r.collapsed || _tpPlainText(r.cloneContents()) !== st.text) return false;
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+  return true;
+}
+/* Colour for the focused table cell: the live highlighted words if there
+   are any, else the words remembered when the user clicked into a hex
+   field, else the whole cell. Shared by the swatch input and the hex field. */
+function _applyCellColor(v) {
+  const fc = _getFocusedCell();
+  if (!fc) return false;
+  const sel = window.getSelection();
+  let inCell = !!(sel && sel.rangeCount && fc.td.contains(sel.anchorNode) && !sel.isCollapsed);
+  if (!inCell && _tpRestoreCellStash(fc)) inCell = true;
+  if (inCell) applyCellExec('foreColor', v);
+  else applyCellChange(cell => cell.textColor = v);
+  return true;
+}
+
+/* ─── Text colour, selection-aware ───
+   The Color control used to write the whole overlay's o.color, so
+   recolouring repainted every character in the box. What's wanted is
+   the highlighted words alone — "$550 inc GST" struck through in red
+   next to a dark "Waived", all in ONE text box.
+   Three scopes, mirroring how Bold already behaves:
+     • PARTIAL selection → execCommand('foreColor') wraps just that
+       range in <span style="color:…">. Inline markup is what makes it
+       last: it's stored in o.html, and edit mode, Present, the
+       thumbnail rail and the html2canvas PDF pass all paint o.html, so
+       none of them needed teaching about this.
+     • WHOLE content selected (e.g. triple-click) → whole-box o.color,
+       so the long-standing "select all, then pick a colour" habit
+       still works; inline colours are cleared first or they'd mask it.
+     • NO usable selection → whole-box o.color, exactly as before.
+   o.color stays the BASE colour in every case: spans override only the
+   characters they wrap, and un-spanned text keeps following o.color —
+   or, with no o.color, the .pres-overlay-text default, which is
+   deliberately NOT theme-linked, so a coloured span and its neighbours
+   look the same in dark and light. */
+function _applyTextOverlayColor(v) {
+  const o = getSelectedOverlay();
+  if (!o || o.type !== 'text') return;
+  const el = slot.querySelector('.pres-overlay[data-id="' + o.id + '"]');
+  const live = !!(el && el.contentEditable === 'true');
+  let range = null;
+  if (live) {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount && !sel.isCollapsed) {
+      const r = sel.getRangeAt(0);
+      if (el.contains(r.commonAncestorContainer)) range = r;
+    }
+  }
+  if (range && !_selectionCoversAllText(el, range)) {
+    try { document.execCommand('styleWithCSS', false, true); } catch (_) {}
+    document.execCommand('foreColor', false, v);
+    o.html = _editableHtml(el);
+    saveOverlays();
+    pushHistory();
+    return;
+  }
+  /* No live selection, but one was stashed when the user clicked into a
+     hex field a moment ago (_tpStashSelection) — replay it on a detached
+     copy of o.html. That click already ended typing mode, so there is no
+     pending blur to overwrite a string-level edit here. Inner colour
+     spans lose their colour so the new one wins, matching what
+     execCommand('foreColor') does on the live path. Any mismatch (text
+     changed, tokens resolved differently) falls through to the whole
+     box, as before. */
+  const st = _tpStashedRange;
+  _tpStashedRange = null;
+  if (st && st.id === o.id && !live && (Date.now() - st.at) < 60000) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = o.html || '';
+    const r = _rangeFromTextOffsets(tmp, st.start, st.end);
+    if (r && !r.collapsed && r.toString() === st.text) {
+      const span = document.createElement('span');
+      span.style.color = v;
+      try { span.appendChild(r.extractContents()); r.insertNode(span); } catch (_) { span.textContent = ''; }
+      if (span.textContent) {
+        _clearInlineTextColors(span);
+        applyTextChange(oo => { oo.html = tmp.innerHTML; });
+        return;
+      }
+    }
+  }
+  /* A range here means the user selected the WHOLE content, so the new
+     colour is meant to cover every character — clear the inline colours
+     that would otherwise mask it. (Nothing selected ⇒ no range ⇒ inline
+     colours are left alone, which is exactly the old behaviour.) */
+  if (range) _clearInlineTextColors(el);
+  applyTextChange(oo => {
+    /* applyTextChange re-renders from oo.html, so anything typed since
+       the last blur would otherwise be thrown away — and the toolbar
+       deliberately keeps focus on the editable (preserveEditableFocus),
+       so there often IS uncommitted typing. Capture it before mutating. */
+    if (live) oo.html = _editableHtml(el);
+    oo.color = v;
+  });
+}
+
+tpColor.addEventListener('input', () => {
+  /* In cell mode, colour the highlighted words (live, or remembered from a
+     click into a hex field) via execCommand; otherwise the whole cell as
+     cell.textColor. See _applyCellColor. */
+  if (_applyCellColor(tpColor.value)) return;
+  _applyTextOverlayColor(tpColor.value);
 });
 tpColorHex.addEventListener('change', () => {
   const v = tpColorHex.value.trim();
   if (!/^#[0-9a-fA-F]{6}$/.test(v)) return;
-  const fc = _getFocusedCell();
-  if (fc) {
-    const sel = window.getSelection();
-    const inCell = sel && sel.rangeCount && fc.td.contains(sel.anchorNode) && !sel.isCollapsed;
-    if (inCell) applyCellExec('foreColor', v);
-    else        applyCellChange(cell => cell.textColor = v);
-    _setColorSwatch(tpColor, v);
-    return;
-  }
-  applyTextChange(o => o.color = v);
+  if (_applyCellColor(v)) { _setColorSwatch(tpColor, v); return; }
+  /* The hex field takes focus to be typed into, which blurs the
+     contenteditable — so the highlighted range was stashed at mousedown
+     (_tpStashSelection, wired in the capture-phase mousedown guard near
+     preserveEditableFocus) and _applyTextOverlayColor replays it. With
+     nothing highlighted this still lands on the whole box, as it always did. */
+  _applyTextOverlayColor(v);
   _setColorSwatch(tpColor, v);
 });
 /* Background colour — fills the text overlay box (or the focused
@@ -17285,7 +17235,7 @@ tpLinkAdd.addEventListener('click', () => {
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
   });
-  o.html = el.innerHTML;
+  o.html = _editableHtml(el);   /* strip the edit-mode handles — see _editableHtml */
   saveOverlays();
   pushHistory();
 });
@@ -17311,7 +17261,7 @@ tpLinkRemove.addEventListener('click', () => {
     return;
   }
   document.execCommand('unlink');
-  o.html = el.innerHTML;
+  o.html = _editableHtml(el);   /* strip the edit-mode handles — see _editableHtml */
   saveOverlays();
   pushHistory();
 });
@@ -17469,7 +17419,7 @@ function _wireListButton(buttonId, kind) {
       return;
     }
     _applyListMarker(kind);
-    o.html = el.innerHTML;
+    o.html = _editableHtml(el);   /* strip the edit-mode handles — see _editableHtml */
     saveOverlays();
     pushHistory();
   });
@@ -17585,6 +17535,16 @@ document.addEventListener('pointerdown', (ev) => {
   if (ev.target.closest('.pres-copy-backdrop')) return;
   if (ev.target.closest('.pres-ctx-menu'))   return;  /* right-click menu shouldn't deselect the overlay it's anchored to */
   if (ev.target.closest('.pres-cell-popover')) return; /* table cell colour popover */
+  /* The shared colour-swatch popover (shared/color-picker.js) is
+     appended to <body>, so it is not inside .pres-text-panel and was
+     falling through to _deselectOverlay() below: pointerdown on a
+     preset cleared _selectedId (and _focusedCellCtx), so by the time
+     the swatch dispatched its 'input' the handler had no overlay to
+     colour and the click did nothing at all. Exempt it like the tool's
+     own popovers — the per-selection colour depends on the selection
+     still being there, and this repairs whole-box + table-cell colour
+     through the popover too. */
+  if (ev.target.closest('.pp-swatch-popover')) return;
   if (ev.target.closest('.pres-edit-bar')) return;    /* toolbar buttons (e.g. + Text) shouldn't deselect */
   _deselectOverlay();
 });

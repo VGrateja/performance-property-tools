@@ -1846,11 +1846,16 @@ function openPublish() {
   const pub = (CUR.compliance || {}).published;
   const s = CUR.setup || {};
   const existingSold = pub && pub.sold_date ? String(pub.sold_date).slice(0, 7) : '';
+  /* What we paid. The Presentation tool's property slide shows this figure
+     (and the yield on it) instead of the recommended top price — Van
+     2026-08-26. Files published before the field existed re-publish with it. */
+  const existingPaid = pub && pub.price_paid != null ? String(pub.price_paid) : '';
   $('#ibpDlg').innerHTML =
     '<h2>' + (pub ? 'Re-publish to the Investment Reports library' : 'Publish as example IR') + '</h2>' +
     '<div class="ib-note">Creates (or updates) the library entry advisors browse by budget — everything maps from this file. No client names, ever.</div>' +
     '<div class="ib-form">' +
     '<label>Settlement / purchase month<input id="pubMonth" type="month" value="' + esc(existingSold) + '"></label>' +
+    '<label>Purchase price — what we paid ($)<input id="pubPrice" type="number" min="0" step="1000" inputmode="numeric" value="' + esc(existingPaid) + '" placeholder="e.g. 1150000"></label>' +
     '<label>Master file link (Drive folder)<input id="pubLink" value="' + esc(s.driveUrl || '') + '" placeholder="https://drive.google.com/…"></label>' +
     '<label class="full" style="grid-column:1/-1">Summary note (editable)<textarea id="pubNotes" style="min-height:96px">' + esc(pubDraftSummary()) + '</textarea></label>' +
     '<label style="grid-column:1/-1;flex-direction:row;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:12px;color:var(--ib-ink)">' +
@@ -1896,6 +1901,11 @@ async function doPublish() {
   const stat = m => { const e = $('#pubStat'); if (e) e.textContent = m; };
   const month = $('#pubMonth').value;
   if (!month) { stat('Pick the settlement / purchase month first.'); return; }
+  /* What we paid — the Presentation tool's property slide shows this figure
+     (and the yield on it) instead of the recommended top price, so it is
+     required here the same way the month is. */
+  const pricePaid = Math.round(Number(String($('#pubPrice').value || '').replace(/[^0-9.]/g, '')));
+  if (!pricePaid) { stat('Enter the purchase price — the property slide shows what we paid.'); return; }
   $('#pubGo').disabled = true;
   try {
     const pi = calcCashflow(CUR.cashflow || {}, 'pi');
@@ -1919,6 +1929,7 @@ async function doPublish() {
       } catch (e) { pdfPath = null; stat('PDF render failed — publishing without it…'); }
     }
     if (pdfPath) metrics.report_pdf = pdfPath;
+    metrics.price_paid = pricePaid;   /* also on the library row, so it never has to be re-keyed there */
     const rec = {
       domain: pubIsCommercial() ? 'commercial' : 'residential',
       market_label: CUR.market_label, market_slug: CUR.market_slug,
@@ -1944,7 +1955,7 @@ async function doPublish() {
       libId = data.id;
     }
     /* stamp the file + flip to final */
-    const comp = { ...(CUR.compliance || {}), published: { at: new Date().toISOString(), libraryId: libId, sold_date: month + '-01', pdf: pdfPath || null } };
+    const comp = { ...(CUR.compliance || {}), published: { at: new Date().toISOString(), libraryId: libId, sold_date: month + '-01', price_paid: pricePaid, pdf: pdfPath || null } };
     await saveSection('compliance', comp, true);
     if (CUR.status !== 'final') {
       await sb.from('ir_files').update({ status: 'final' }).eq('id', CUR.id);

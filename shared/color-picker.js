@@ -136,9 +136,19 @@
       }
       return /^#[0-9a-f]{6}$/.test(s) ? s : null;
     }
+    /* One commit per popover. Enter commits and closes the popover, and
+       removing it blurs this very field, whose blur handler commits AGAIN —
+       so every hex typed here used to fire input/change twice. Harmless
+       when both landed on the same whole box; wrong once a consumer acts
+       on the first event only (presentation.html replays a stashed text
+       selection on the first and would paint the whole box on the second),
+       and the re-entrant close threw a removeChild error in the tool. */
+    var committed = false;
     function _commitHex() {
+      if (committed) return false;
       var hex = _normalizeHex(hexInput.value);
       if (!hex) return false;
+      committed = true;
       input.value = hex;
       input.dispatchEvent(new Event('input',  { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
