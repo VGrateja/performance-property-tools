@@ -155,14 +155,13 @@
 <div class="wrap">
   <div class="eyebrow">Performance Property · Rental Supply</div>
   <h1>Vacancy Rate Projection</h1>
-  <p class="lede">Where each market's vacancy rate is heading over the next 1–2 years — incoming supply (approvals &amp; commencements) weighed against incoming demand (population growth → new households). Lower VR = tighter rental market. Directional, not precise.</p>
+  <p class="lede">Where each market's vacancy rate is heading over the next 1–2 years — incoming supply (95% of building approvals, one-year lag) weighed against incoming demand (population growth → new households). Lower VR = tighter rental market. Directional, not precise.</p>
 
   <div class="controls" id="vrControls" style="display:none">
     <label class="ctl">Region<select id="vrRegion"></select></label>
     <label class="ctl">VR source<div class="vrseg" id="vrSrc"><button type="button" data-source="sqm" class="on">SQM</button><button type="button" data-source="cotality">Cotality</button></div></label>
     <label class="ctl">Data version<div class="vrseg" id="vrVer"><button type="button" data-ver="v1" class="on">V1 (2yr)</button><button type="button" data-ver="v2">V2 (3yr)</button></div></label>
     <label class="ctl">Infrastructure WF<div class="vrseg" id="vrWf"><button type="button" data-wf="on" class="on">Included</button><button type="button" data-wf="off">Excluded</button></div></label>
-    <label class="ctl">Method<div class="vrseg" id="vrMethod"><button type="button" data-method="stored">Stored</button><button type="button" data-method="preview" class="on">Preview</button></div></label>
   </div>
 
   <div id="vrBody"><div class="msg" id="vrMsg">Loading…</div></div>
@@ -279,37 +278,22 @@ let VER = 'v1';                          // demand method
    persists across regions; markets with no entry are effectively excluded
    regardless (chainFor finds no table row and adds nothing). */
 let WF  = true;
-/* METHOD PREVIEW — Van 2026-08-26, "apply it to localhost for now" (after the
-   Melbourne tightening report). 'preview' recomputes the chain in the browser
-   with the ONE method change the team is trialling but has not yet adopted:
-     • supply = SUPPLY_FACTOR × the market's CURRENT ANNUAL BUILDING APPROVALS
-       (ABS, houses + units, latest year in Forge), held for both forecast
-       years. Saskia 2026-08-26, from Kia's approvals→completions study
-       (92–98% of approvals complete; ~1-year average lag): "assume a 1 year
-       lag from approval to completion with a 5% discount … apply that as the
-       stock number across the board." The stored forecast, the workbook and
-       the Buying/Selling slides use Oxford COMMENCEMENTS (oeCommencements).
-       Earlier the same day this preview trialled Oxford COMPLETIONS instead;
-       the approvals rule supersedes it. Year 2 holds the same figure because
-       no forward approvals exist to lag from — Kia's 0.35/0.35/0.25 three-year
-       weighting is the refinement if the team wants one later.
-   IT USED TO CARRY A SECOND OVERRIDE, a published household size from a local
-   PREVIEW_HHSIZE table (Melbourne 2.564). That half is GONE, and deliberately
-   so: the sourced household sizes were written into the mart itself later the
-   same day (shared/vr-household-size.js + build-vr-demand.mjs --canonical), so
-   the stored rows now carry them and the preview would have been overriding a
-   figure with itself. Do not re-add a household-size override here — change the
-   shared table and rebuild, or the tool and the slides drift apart again.
-   Nothing is saved: the stored rows are untouched and the slides keep showing
-   them, so the two disagree on SUPPLY while this is on. THE DEFAULT IS
-   'preview' FOR THE LOCAL WORKING TREE ONLY — set METHOD_DEFAULT back to
-   'stored' before this file ships, unless the team adopts the method (then
-   rebuild the pipeline on the approvals rule and retire this switch).
-   ?method=stored|preview overrides. */
-const METHOD_DEFAULT = 'preview';
-let METHOD = (() => { const q = new URLSearchParams(location.search).get('method'); return (q === 'stored' || q === 'preview') ? q : METHOD_DEFAULT; })();
-const SUPPLY_FACTOR = 0.95;   // Saskia's rule: completions next year ≈ 95% of this year's approvals
-let APPR = {};   // slug → { year, total } — latest annual ABS building approvals (houses + units), loaded with the forecast rows
+/* SUPPLY — this tool shows the STORED forecast and nothing else. Incoming
+   dwellings come from the mart's supply rule (VR_SUPPLY_RULE in
+   shared/vr-forecast-calc.js): 95% of the market's latest annual ABS building
+   approvals (houses + units), a one-year lag from approval to completion,
+   held for year 2 — Saskia's rule from Kia's approvals→completions study,
+   adopted for every market on 2026-08-27 after Kia approved the Melbourne
+   preview. Rows on the rule carry oeSource 'approvals95' and a `supplyRule`
+   audit block (approvals, year, what it displaced); the Buying/Selling slides
+   read the same fields, so the two can only ever show the same number.
+   HISTORY: 2026-08-26 this file carried a browser-side "Method: Stored |
+   Preview" switch (METHOD_DEFAULT / SUPPLY_FACTOR / APPR) so the rule could
+   be reviewed on staging without touching the DB. Retired 2026-08-27 once
+   the rule went into the mart — a preview that equals the stored figure is
+   only a source of confusion. Do not bring a browser-side method override
+   back: change the shared rule and rebuild, or the tool and the slides
+   drift apart again. */
 let cur = { slug: null };
 
 
@@ -350,13 +334,11 @@ function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearI
 
 async function load(){
   try {
-    const [reg, vr, di, cot, appr] = await Promise.all([
+    const [reg, vr, di, cot] = await Promise.all([
       window.sb.from('rdp_regions').select('slug,name,state,cluster'),
       window.sb.from('rdp_vr_forecast').select('region_slug,payload,computed_at'),
       window.sb.from('forge_demand_inputs').select('updated_at').eq('id', 'latest').maybeSingle(),
       window.sb.from('forge_cotality').select('data').eq('id', 'rentvacancy').maybeSingle(),
-      // ABS building approvals (houses + units), for the method preview's supply basis (see METHOD_DEFAULT)
-      window.sb.from('rdp_raw_series').select('region_slug,metric,period,value').in('metric', ['approvals_h', 'approvals_u']).eq('source', 'abs').eq('freq', 'A').gte('period', '2024-01-01'),
     ]);
     if (vr.error){
       $('#vrMsg').innerHTML = /does not exist/i.test(vr.error.message)
@@ -366,11 +348,6 @@ async function load(){
     }
     REGIONS = Object.fromEntries((reg.data || []).map(r => [r.slug, r]));
     VR = Object.fromEntries((vr.data || []).filter(r => r.payload).map(r => [r.region_slug, r.payload]));
-    /* latest annual approvals per market: houses + units for the most recent year present */
-    APPR = {};
-    { const by = {};
-      for (const r of ((appr && appr.data) || [])) { const y = +String(r.period).slice(0, 4); ((by[r.region_slug] = by[r.region_slug] || {})[y] = by[r.region_slug][y] || { h: null, u: null })[r.metric === 'approvals_h' ? 'h' : 'u'] = +r.value; }
-      for (const s of Object.keys(by)) { const ys = Object.keys(by[s]).map(Number).sort((a, b) => b - a); for (const y of ys) { const rec = by[s][y]; if (rec.h != null || rec.u != null) { APPR[s] = { year: y, total: (rec.h || 0) + (rec.u || 0) }; break; } } } }
     if (!Object.keys(VR).length){ $('#vrMsg').innerHTML = 'No VR forecast rows yet.'; return; }
     // Cotality (CoreLogic) house vacancy per region — capitals + LGA arrays, % → fraction
     { const rv = cot && cot.data && cot.data.data; COT = {};
@@ -450,12 +427,6 @@ function initUI(){
     segW.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
     paint();
   });
-  // Method preview (95%-of-approvals supply) — see METHOD_DEFAULT.
-  const segM = $('#vrMethod');
-  if (segM) segM.querySelectorAll('button').forEach(b => {
-    b.classList.toggle('on', b.dataset.method === METHOD);
-    b.onclick = () => { METHOD = b.dataset.method; segM.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); paint(); };
-  });
   syncWF();
   paint();
 }
@@ -484,44 +455,39 @@ function deltaTag(v, base){
   return `<span class="${dir.cls}">${d >= 0 ? '+' : ''}${(d * 100).toFixed(1)} pp</span>`;
 }
 
+/* What the stored supply figure IS, from the row's own oeSource tag — shown under
+   the dwellings cell in the chain and on the Buying/Selling slide 13 alike. */
+function supplyLabelOf(p){
+  const s = p && p.oeSource;
+  return s === 'approvals95' ? '95% of approvals' : s === 'forge_approvals' ? 'approvals × 0.9' : 'commencements';
+}
+
 /* Projection chain (mirrors the workbook + the V1 slide design): every cell is
    arithmetically consistent with its neighbours. Year-1 VR equals the mart's
    forecastVR exactly (same formula, same inputs); Year-2 chains a further year
-   of people/households + that year's commencements (oeByYear, else derived from
-   the workbook's 2-yr property base). */
+   of people/households + that year's supply (held at year 1 under the rule,
+   else derived from the stored 2-yr property base). */
 function chainFor(p, raw, slug, wfOn){
   if (!p || p.households == null || p.properties == null || p.currentVR == null) return null;
   let HH = p.households, props = p.properties; const v = p.currentVR;
   let hhSize = p.hhSize != null ? p.hhSize : (p.expectedPeople && p.expNewHouseholds ? p.expectedPeople / p.expNewHouseholds : (HH ? p.population / HH : null));
   const newHH = p.expNewHouseholds, oeY = p.oeYear || new Date().getFullYear();
-  let oe1 = p.oeCommencements;
-  /* METHOD PREVIEW (see METHOD_DEFAULT): supply = SUPPLY_FACTOR × current annual
-     approvals, and nothing else. Household size is NOT overridden here — the
-     stored rows carry the sourced figure (payload.hhSize + payload.hhSizeSource),
-     so both methods read the same divisor and the preview isolates the supply
-     question on its own. */
-  const preview = METHOD === 'preview';
-  const ap = preview ? APPR[slug] : null;
-  const supplyIsApprovals = !!(ap && ap.total != null);
-  if (supplyIsApprovals) oe1 = SUPPLY_FACTOR * ap.total;
+  /* Year-1 supply is the stored figure. Since 2026-08-27 every market carries
+     the supply rule (oeSource 'approvals95': 95% of the latest annual ABS
+     approvals), so oeCommencements IS that figure; the label follows oeSource
+     so a row that somehow predates the rule still says what it holds. */
+  const oe1 = p.oeCommencements;
   const r = raw || p;
-  // Year-2 supply: the OE forward column only for regions the workbook sources from
-  // OE (oeSource) — approvals regions derive it from the workbook's 2-yr property base.
-  // This per-region routing is authoritative and must survive any version switch:
-  // a market can HAVE OE data and still be an approvals market (Bunbury), where
-  // reading the OE column overstates supply by ~16x.
-  //
-  // BUNBURY WON'T RECONCILE WITH WORKBOOK-V1, AND THAT IS INTENTIONAL. The
-  // workbook holds approvals of 117.0, discounts to 105.3 and reuses that in
-  // BOTH years. We use live Forge approvals x 0.9 = 115.2 for year 1, and
-  // year 2 falls to the derived branch below (twoYrProps - properties -
-  // oeCommencements = 89.36) because Bunbury is not an OE market. Better data,
-  // but it is the one market where the gap is a deliberate override rather
-  // than a vintage difference — if anyone queries it, that is the answer.
-  let oe2 = (r.oeSource === 'oe' && r.oeByYear && r.oeByYear[String(oeY + 1)] != null) ? r.oeByYear[String(oeY + 1)]
+  // Year-2 supply. Under the rule it is held at the year-1 figure, and the
+  // canonical build writes twoYrProps = properties + supply1 + supply2, so the
+  // derived branch below reproduces it exactly. The OE forward column is read
+  // ONLY for a row still routed to Oxford (oeSource 'oe') — the workbook's
+  // per-region routing, kept so a pre-rule row renders the way it was built.
+  // (Bunbury has OE data but was never an OE market; reading the OE column
+  // there overstated supply ~16x — the routing, not a global rule, decides.)
+  const oe2 = (r.oeSource === 'oe' && r.oeByYear && r.oeByYear[String(oeY + 1)] != null) ? r.oeByYear[String(oeY + 1)]
     : (r.twoYrProps != null && r.properties != null && r.oeCommencements != null) ? (r.twoYrProps - r.properties - r.oeCommencements)
     : oe1;
-  if (supplyIsApprovals) oe2 = SUPPLY_FACTOR * ap.total;   // year 2 holds the same figure — no forward approvals exist to lag from
   /* The household-size caption comes from the mart, not from this file: rows
      rebuilt by build-vr-demand.mjs --canonical carry `hhSizeSource` (e.g.
      "VIF2023 · Metro Melbourne 2026"). "ABS Census" survives only as the
@@ -530,8 +496,7 @@ function chainFor(p, raw, slug, wfOn){
      drives the display precision: a sourced figure is quoted to 3 decimals, an
      unsourced one stays at the single decimal it was ever accurate to. */
   const hhsSourced = !!p.hhSizeSource;
-  const pv = { preview, supplyLabel: supplyIsApprovals ? '95% of approvals' : 'commencements',
-               apprYear: ap ? ap.year : null, apprTotal: ap ? ap.total : null,
+  const pv = { supplyLabel: supplyLabelOf(p), supplyRule: p.supplyRule || null,
                hhsLabel: p.hhSizeSource || 'ABS Census', hhsSourced };
   if (newHH == null || oe1 == null) return { v, HH, props, hhSize, oeY, ...pv };
 
@@ -595,8 +560,6 @@ function paint(){
   const cotMissing = SRC === 'cotality' && COT[cur.slug] == null;   // e.g. National has no CoreLogic VR
   const ch = chainFor(p, VR[cur.slug], cur.slug, WF) || {};
   const alt = ch.hasWF ? chainFor(p, VR[cur.slug], cur.slug, !WF) : null;   // the other side of the WF toggle, for the effect table
-  // the stored-method figures, quoted in the preview banner so the two are never confused
-  const stored = ch.preview ? (() => { const m = METHOD; METHOD = 'stored'; try { return chainFor(p, VR[cur.slug], cur.slug, WF); } finally { METHOD = m; } })() : null;
   const c = ch.v, f1 = ch.v1, f2 = ch.v2;
   const dir = dirOf((f2 != null ? f2 : f1) != null ? ((f2 != null ? f2 : f1) - c) : null);
   const scaleMax = Math.max(0.06, c || 0, f1 || 0, f2 || 0) * 1.05;
@@ -622,8 +585,6 @@ function paint(){
           <div><div class="region-name">${esc(nameOf(cur.slug))}</div><div class="region-sub">${esc(reg.state || '')}${p.ooPct != null ? ' · ' + (p.ooPct * 100).toFixed(1) + '% owner-occupied' : ''} · pop ${num(p.population)}</div></div>
           <div class="dirchip"><div class="t ${dir.cls}">${dir.arrow} ${dir.word}</div><div class="l">2-yr direction</div></div>
         </div>
-        ${ch.preview ? `<div class="note" style="color:var(--amber);font-weight:700;margin-top:6px">Method preview — <b>supply only</b>: ${Math.round(SUPPLY_FACTOR * 100)}% of current building approvals${ch.apprTotal != null ? ' (ABS, ' + ch.apprYear + ': ' + num(ch.apprTotal) + ' → ' + num(Math.round(SUPPLY_FACTOR * ch.apprTotal)) + ')' : ''}, one-year lag, held for both years — in place of Oxford commencements. Household size is the stored ${hhs} (${esc(ch.hhsLabel)}) under both methods. Computed here, nothing saved: the stored forecast${stored && stored.v1 != null ? ' (' + pct2(stored.v1) + ' yr 1 / ' + pct2(stored.v2) + ' yr 2)' : ''} still drives the Buying/Selling slides. Switch “Method” to Stored to compare.</div>` : ''}
-
         <div class="scale-wrap">
           <div class="scale-head"><span>Tighter (undersupplied)</span><span>Looser (oversupplied)</span></div>
           <div class="scale">
@@ -696,7 +657,9 @@ function paint(){
           const f = v => v == null ? '—' : (v >= 0 ? '+' : '') + Math.round(v).toLocaleString('en-AU');
           return `<div class="mnote warn"><b>Manual internal-migration override.</b> This market's net internal migration is set to <b>${esc(f(ov.value))}</b> people, replacing the computed ${esc(f(ov.displaced))}. It is a deliberate analyst override applied to the base figure before the infrastructure workforce, in both versions and both forecast years — not a data error, and not something to "correct" back. ${esc(ov.note || '')}</div>`; })()}` : ''}
         <div class="mnote"><b>Method.</b> Vacancy rate = surplus properties ÷ total properties. Each year adds incoming dwellings and the households formed by incoming people, then recomputes. A <b>0.1% floor</b> applies: a market shown at 0.1% has run out of surplus rather than being forecast at that level, and is labelled as such.</div>
-        <div class="mnote"><b>Incoming supply.</b> Whether a market reads OE Commencements or discounted building approvals is decided per region by the workbook's own routing, not by a global rule — a market can have OE data and still be an approvals market. That routing is preserved across every toggle.</div>
+        ${(() => { const sr = p.supplyRule; if (!sr) return `<div class="mnote"><b>Incoming supply.</b> This row predates the supply rule: it reads ${esc(supplyLabelOf(p))} as the workbook routed it. Rebuild the mart (build-vr-demand.mjs --canonical --write) to bring it onto the 95%-of-approvals rule.</div>`;
+          const f = v => v == null ? '—' : Math.round(v).toLocaleString('en-AU');
+          return `<div class="mnote"><b>Incoming supply.</b> <b>${esc(f(p.oeCommencements))}</b> new dwellings a year = <b>${Math.round((sr.factor || 0.95) * 100)}%</b> of the market's latest annual ABS building approvals (houses + units, ${esc(String(sr.approvalsYear || ''))}: ${esc(f(sr.approvals))}), a one-year lag from approval to completion, held for year 2 because no forward approvals exist to lag from. Saskia's rule (2026-08-26) from Kia's approvals→completions study — 92–98% of approvals complete, about a year later — adopted for every market on 2026-08-27; it replaces Oxford commencements${sr.displaced && sr.displaced.oeCommencements != null ? ' (' + esc(f(sr.displaced.oeCommencements)) + ' here)' : ''}. Refreshed automatically as ABS approvals land in Forge, and the Buying/Selling slides read the same stored figure.</div>`; })()}
       </div>
 
       <div class="card ov" id="vrOv"></div>

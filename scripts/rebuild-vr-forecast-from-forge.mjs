@@ -123,8 +123,19 @@ for (const row of rows) {
   const currentVR = forgeVR[slug] != null ? forgeVR[slug] : p.currentVR;
 
   // Supply: same per-region decision the local build stamped into the payload.
-  let oeInput, oeYear = p.oeYear, oeSource = p.oeSource;
-  if (p.oeSource === 'oe' && p.oeByYear) {
+  let oeInput, oeYear = p.oeYear, oeSource = p.oeSource, onRule = false;
+  /* SUPPLY RULE (VR_SUPPLY_RULE in shared/vr-forecast-calc.js) — 95% of the
+     latest annual ABS approvals, held for year 2. A market on the rule, or a
+     row already stamped 'approvals95', stays on it here: without this branch
+     the monthly PUBLISH rebuild would put Oxford commencements back one month
+     after the rule was adopted (Melbourne, Kia 2026-08-27), while the VR tool
+     kept showing the rule — the same split-brain the demand branch above
+     prevents. */
+  const rule = globalThis.VrForecastCalc.supplyRuleFor(slug);
+  if ((rule || p.oeSource === 'approvals95') && forgeAppr[slug]) {
+    oeInput = globalThis.VrForecastCalc.supplyFromApprovals(forgeAppr[slug].total);
+    oeYear = forgeAppr[slug].year; oeSource = 'approvals95'; onRule = true;
+  } else if (p.oeSource === 'oe' && p.oeByYear) {
     const yrs = Object.keys(p.oeByYear).map(Number).sort((a, b) => b - a);
     oeYear = yrs.includes(CUR_YEAR) ? CUR_YEAR : yrs[0];   // auto-advance; past 2029 → latest OE year
     oeInput = p.oeByYear[oeYear];
@@ -143,15 +154,32 @@ for (const row of rows) {
   if (Math.abs((calc.forecastVR ?? 0) - (p.forecastVR ?? 0)) > 0.0005) {
     shifts.push('  ' + slug + ': ' + pct(p.forecastVR || 0) + ' → ' + pct(calc.forecastVR) + '  (VR ' + pct(p.currentVR || 0) + '→' + pct(currentVR) + ', supply ' + Math.round(p.oeCommencements || 0) + '→' + Math.round(oeInput) + ')');
   }
+  /* Year 2 for a market on the supply rule: supply is held at the year-1 figure,
+     so twoYrProps must follow the refreshed base + 2 × supply, and forecastVR2
+     is re-read off the stored year-2 household formation (twoYrHH − households
+     − expNewHouseholds is V1's year-2 demand, a base-independent quantity that
+     the canonical build owns). Leaving twoYrProps alone would make the slides'
+     derived year-2 supply (twoYrProps − properties − oeCommencements) drift by
+     exactly the approvals change. Other markets keep the previous behaviour. */
+  const yr2 = (() => {
+    if (!onRule || p.twoYrHH == null || p.households == null || p.expNewHouseholds == null) return {};
+    const newHH2 = p.twoYrHH - p.households - p.expNewHouseholds;
+    const props2 = calc.properties + oeInput + oeInput, HH2 = calc.households + calc.expNewHouseholds + newHH2;
+    return { twoYrProps: props2, twoYrHH: HH2, forecastVR2: props2 > 0 ? Math.max(0.001, (props2 - HH2) / props2) : p.forecastVR2,
+      supplyRule: { ...(p.supplyRule || {}), rule: 'approvals95', factor: globalThis.VrForecastCalc.VR_SUPPLY_RULE.factor,
+        approvals: forgeAppr[slug].total, approvalsYear: forgeAppr[slug].year, refreshedAt: stamp } };
+  })();
   // Merge: fresh calc + refreshed inputs over the stored payload; every
   // workbook-side extra (forecastVR2, rents, ooPct, surplus, twoYr*, oeByYear,
-  // hhSize) survives untouched via the spread base.
+  // hhSize) survives untouched via the spread base — except the year-2 trio
+  // above for markets on the supply rule.
   updates.push({
     region_slug: slug,
     payload: { ...p, ...calc, om: omUsed,
       rentHouseSqm: forgeRentSqm[slug] ? forgeRentSqm[slug].h : p.rentHouseSqm, rentUnitSqm: forgeRentSqm[slug] ? forgeRentSqm[slug].u : p.rentUnitSqm,
       rentHouseCot: forgeRentCot[slug] ? forgeRentCot[slug].h : p.rentHouseCot, rentUnitCot: forgeRentCot[slug] ? forgeRentCot[slug].u : p.rentUnitCot,
-      oeCommencements: oeInput, oeSource, oeYear, population, popSource: forgePop[slug] != null ? 'forge' : p.popSource, vrSource: forgeVR[slug] != null ? 'forge_sqm' : p.vrSource },
+      oeCommencements: oeInput, oeSource, oeYear, population, popSource: forgePop[slug] != null ? 'forge' : p.popSource, vrSource: forgeVR[slug] != null ? 'forge_sqm' : p.vrSource,
+      ...yr2 },
     source_month: row.source_month,
     computed_at: stamp,
   });

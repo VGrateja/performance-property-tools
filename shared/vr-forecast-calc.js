@@ -109,5 +109,53 @@
     };
   }
 
-  root.VrForecastCalc = { computeVrForecast, VR_NIM_OVERRIDES, VR_NIM_OVERRIDE_NOTES, applyNimOverride };
+  /* ── SUPPLY RULE — incoming dwellings = 95% of the latest annual ABS building
+     approvals, one-year lag, held for year 2 ──────────────────────────────────
+     Saskia 2026-08-26, from Kia's approvals→completions study (92–98% of
+     approvals complete, about a one-year average lag): "assume a 1 year lag
+     from approval to completion with a 5% discount … apply that as the stock
+     number across the board." Year 2 holds the same figure because no forward
+     approvals exist to lag from (Kia's 0.35/0.35/0.25 weighting is the
+     refinement if one is wanted later).
+
+     ROLL-OUT. Kia approved the VR Projection on 2026-08-27 and asked for the
+     Buying/Selling slides to follow it automatically; the go-signal for ALL
+     markets came the same day (Van). `regions` is the switch — `null` applies
+     the rule to all 37; a list would confine it to those markets, which then
+     keep the workbook's routing elsewhere (Oxford commencements for OE
+     markets, approvals × 0.9 for the rest). Rows on the rule carry
+     oeSource = 'approvals95'; nothing reads Oxford commencements any more.
+
+     WHY IT LIVES HERE. Two scripts write rdp_vr_forecast — build-vr-demand.mjs
+     (--canonical) and the monthly PUBLISH rebuild (rebuild-vr-forecast-from-
+     forge.mjs). Both consult this, so a rebuild can never put commencements
+     back for a market that is on the rule. Rows on the rule carry
+     oeSource = 'approvals95' plus a `supplyRule` audit block; the VR
+     Projection tool and the Buying/Selling slides read both.
+
+     TO ROLL OUT TO ALL: set regions to null, then
+       node scripts/build-vr-demand.mjs --canonical            # dry run, every consumer's before → after
+       node scripts/build-vr-demand.mjs --canonical --write
+     TO REVERT A MARKET: remove it from the list and rebuild the same way; the
+     stored `supplyRule.displaced` block records what it replaced. */
+  const VR_SUPPLY_RULE = {
+    source: 'approvals95',            // the oeSource tag rows on the rule carry
+    factor: 0.95,                     // completions ≈ 95% of approvals
+    lagYears: 1,                      // this year's approvals → next year's stock
+    holdYear2: true,                  // year 2 reuses the year-1 figure
+    regions: null,                    // null = all 37 markets (go-signal Van 2026-08-27); a list confines it
+    approvedBy: 'Rule: Saskia 2026-08-26. Adopted: Kia 2026-08-27 ("VR Projection looks good"); all markets on Van\'s go-signal the same day.',
+  };
+  /* The rule for a market, or null when the market is not (yet) on it. */
+  function supplyRuleFor(slug) {
+    const r = VR_SUPPLY_RULE, key = String(slug || '').toLowerCase();
+    return (r.regions == null || r.regions.indexOf(key) >= 0) ? r : null;
+  }
+  /* Incoming supply from an annual approvals total under the rule (null-safe). */
+  function supplyFromApprovals(total) {
+    return num(total) == null ? null : VR_SUPPLY_RULE.factor * total;
+  }
+
+  root.VrForecastCalc = { computeVrForecast, VR_NIM_OVERRIDES, VR_NIM_OVERRIDE_NOTES, applyNimOverride,
+    VR_SUPPLY_RULE, supplyRuleFor, supplyFromApprovals };
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : this));

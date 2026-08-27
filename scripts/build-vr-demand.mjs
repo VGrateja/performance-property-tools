@@ -195,6 +195,22 @@ for (const y of [latestYear + 1, latestYear + 2]) {
 const { data: fc, error: fErr } = await sb.from('rdp_vr_forecast').select('region_slug,payload');
 if (fErr) { console.error('forecast read failed:', fErr.message); process.exit(1); }
 
+/* SUPPLY RULE INPUT — latest annual ABS building approvals (houses + units) per
+   region, for the markets VR_SUPPLY_RULE (shared/vr-forecast-calc.js) puts on
+   the 95%-of-approvals rule. Same series and same "latest year with any value"
+   pick as the VR Projection tool's preview, so the stored figure reproduces
+   what Kia approved on screen. Period floor because of the 1000-row cap. */
+const APPR = {};
+{
+  const { data: appr, error: aErr } = await sb.from('rdp_raw_series').select('region_slug,metric,period,value')
+    .in('metric', ['approvals_h', 'approvals_u']).eq('source', 'abs').eq('freq', 'A').gte('period', '2020-01-01');
+  if (aErr) { console.error('approvals read failed:', aErr.message); process.exit(1); }
+  const by = {};
+  for (const r of (appr || [])) { const y = +String(r.period).slice(0, 4); ((by[r.region_slug] = by[r.region_slug] || {})[y] = by[r.region_slug][y] || { h: null, u: null })[r.metric === 'approvals_h' ? 'h' : 'u'] = +r.value; }
+  for (const s of Object.keys(by)) { const ys = Object.keys(by[s]).map(Number).sort((a, b) => b - a); for (const y of ys) { const rec = by[s][y]; if (rec.h != null || rec.u != null) { APPR[s] = { year: y, total: (rec.h || 0) + (rec.u || 0) }; break; } } }
+}
+const supplyMissing = [];   // markets on the rule with no approvals in Forge — kept on their stored supply, reported
+
 // Workforce figures come from public.vr_workforce — never from this repo, which
 // is public. `fc` is handed over as the fallback source for the window before
 // migration 100 is applied.
@@ -351,9 +367,35 @@ function canonicalise(r) {
   const oe2 = (p.oeSource === 'oe' && p.oeByYear && p.oeByYear[String(oeY + 1)] != null) ? p.oeByYear[String(oeY + 1)]
     : (p.twoYrProps != null && p.properties != null && oe1 != null) ? (p.twoYrProps - p.properties - oe1)
     : oe1;
+  /* SUPPLY RULE — VR_SUPPLY_RULE in shared/vr-forecast-calc.js. For a market on
+     the rule both years' supply become 95% of the latest annual ABS approvals
+     (held for year 2), replacing the workbook routing above. The stored
+     oeCommencements / oeSource / expProperties move WITH the forecast so the
+     Buying/Selling slides (slide-5 cards + the slide-13 chain, which derives
+     year-2 supply as twoYrProps − properties − oeCommencements) and the VR tool
+     all read one consistent basis — a rule applied to forecastVR alone would
+     leave the slides quoting the old dwelling count under the new rate. */
+  const rule = globalThis.VrForecastCalc.supplyRuleFor(r.slug), ap = APPR[r.slug];
+  let s1 = oe1, s2 = oe2, supplyOut = null;
+  if (rule) {
+    if (ap && ap.total != null) {
+      s1 = globalThis.VrForecastCalc.supplyFromApprovals(ap.total);
+      s2 = rule.holdYear2 ? s1 : s1;
+      supplyOut = {
+        oeCommencements: s1, oeSource: rule.source, oeYear: ap.year, expProperties: s1,
+        supplyRule: {
+          rule: rule.source, factor: rule.factor, lagYears: rule.lagYears, holdYear2: rule.holdYear2,
+          approvals: ap.total, approvalsYear: ap.year,
+          approvalsSource: 'ABS building approvals, houses + units, annual — Forge rdp_raw_series approvals_h + approvals_u (source abs, freq A), latest year',
+          displaced: { oeCommencements: p.oeCommencements, oeSource: p.oeSource, yr2Supply: oe2 },
+          approvedBy: rule.approvedBy, appliedAt: new Date().toISOString(),
+        },
+      };
+    } else if (!supplyMissing.includes(r.slug)) supplyMissing.push(r.slug);
+  }
   const expectedPeople = v1.people1;
   const expNewHouseholds = expectedPeople / hhSize;
-  const props1 = props + (oe1 || 0), HH1 = HH + expNewHouseholds;
+  const props1 = props + (s1 || 0), HH1 = HH + expNewHouseholds;
   const forecastVR = props1 > 0 ? Math.max(0.001, (props1 - HH1) / props1) : null;
   /* Year 2 takes V1's OWN year-2 demand. Until 2026-08-26 this line reused
      year-1 formation, because V1's year 2 was a straight copy of year 1. It
@@ -363,7 +405,7 @@ function canonicalise(r) {
      with what the VR Projection tool computes from payload.demand.v1 — the
      exact split-brain this canonical block exists to prevent. */
   const newHH2 = v1.people2 / hhSize;
-  const props2 = props1 + (oe2 || 0), HH2 = HH1 + newHH2;
+  const props2 = props1 + (s2 || 0), HH2 = HH1 + newHH2;
   const forecastVR2 = props2 > 0 ? Math.max(0.001, (props2 - HH2) / props2) : null;
   const out = {
     nb: v1.ni1, im: v1.im1, om: v1.om1,        // im carries the workforce, per the workbook's column G
@@ -371,6 +413,7 @@ function canonicalise(r) {
     // derived from forecastVR, so it has to move with it or it silently goes stale
     changeVR: forecastVR == null ? null : forecastVR - cur,
     twoYrHH: HH2, twoYrProps: props2,
+    ...(supplyOut || {}),
   };
   /* The sourced household size travels WITH the figures it produced, so no
      consumer can pair the new households with the old divisor, and so the tool
@@ -416,17 +459,25 @@ if (CANON) {
     (hhKept.length ? ` Kept as stored (not in the sourced table): ${hhKept.join(', ')}.` : ' Every market is sourced.'));
 
   console.log('\n--canonical: forecastVR before → after (every consumer of this mart)');
-  console.log('region             1yr before   1yr after   |  2yr before   2yr after');
-  let bigMoves = 0;
+  console.log('region             1yr before   1yr after   |  2yr before   2yr after   |  supply yr1 before → after   basis');
+  let bigMoves = 0, onRule = 0;
   for (const r of rows.sort((a, b) => a.slug.localeCompare(b.slug))) {
     const c = canonicalise(r); if (!c) continue;
     const pc = v => v == null ? '—' : (v * 100).toFixed(2) + '%';
     const d1 = (c.forecastVR != null && r.stored.forecastVR != null) ? Math.abs(c.forecastVR - r.stored.forecastVR) : 0;
     if (d1 > 0.002) bigMoves++;
+    if (c.supplyRule) onRule++;
+    const sNew = c.oeCommencements != null ? c.oeCommencements : r.stored.oeCommencements;
     console.log('  ' + r.slug.padEnd(16) + pc(r.stored.forecastVR).padStart(11) + pc(c.forecastVR).padStart(12) + '   |' +
-      pc(r.stored.forecastVR2).padStart(12) + pc(c.forecastVR2).padStart(12) + (d1 > 0.002 ? '   <-- moves >0.2pp' : ''));
+      pc(r.stored.forecastVR2).padStart(12) + pc(c.forecastVR2).padStart(12) + '   |' +
+      f0(r.stored.oeCommencements).padStart(11) + ' → ' + f0(sNew).padStart(9) + '   ' +
+      (c.supplyRule ? '95% of ' + f0(c.supplyRule.approvals) + ' approvals (' + c.supplyRule.approvalsYear + ')' : (r.stored.oeSource || '')) +
+      (d1 > 0.002 ? '   <-- moves >0.2pp' : ''));
   }
   console.log(`\n${bigMoves}/${rows.length} regions move their 1-year forecast VR by more than 0.2pp.`);
+  const rule = globalThis.VrForecastCalc.VR_SUPPLY_RULE;
+  console.log(`Supply rule (95% of approvals): ${onRule}/${rows.length} region(s) on it — VR_SUPPLY_RULE.regions = ${rule.regions == null ? 'ALL' : JSON.stringify(rule.regions)}.` +
+    (supplyMissing.length ? ` NO approvals in Forge for: ${supplyMissing.join(', ')} — kept on stored supply.` : ''));
   console.log('This is what the B/S VR slide, the online reports and Demand Score will show.');
 }
 
@@ -443,6 +494,10 @@ for (const r of rows) {
        forecast was computed on and not just the forecast itself */
     hhSize: r.stored.hhSize, households: r.stored.households, properties: r.stored.properties,
     hhSizeSource: r.stored.hhSizeSource === undefined ? null : r.stored.hhSizeSource,
+    /* the supply basis too, so a rollback restores the dwelling count the old
+       forecast was computed on (the rule rewrites oeCommencements/oeSource) */
+    oeCommencements: r.stored.oeCommencements, oeSource: r.stored.oeSource === undefined ? null : r.stored.oeSource,
+    oeYear: r.stored.oeYear === undefined ? null : r.stored.oeYear, expProperties: r.stored.expProperties === undefined ? null : r.stored.expProperties,
     supersededAt: new Date().toISOString() } : null;
   const payload = { ...r.stored, ...(canon || {}), demand: {
     basis: BASIS, latestYear,

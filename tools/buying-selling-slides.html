@@ -2609,12 +2609,26 @@ function _vrChain(adj, raw){
   const v=adj.currentVR, HH=raw.households, props=HH/(1-v);
   const hhSize=raw.hhSize!=null?raw.hhSize:((raw.expectedPeople&&raw.expNewHouseholds)?raw.expectedPeople/raw.expNewHouseholds:(HH?raw.population/HH:null));
   const newHH=raw.expNewHouseholds, oe1=raw.oeCommencements, oeY=raw.oeYear||(new Date().getFullYear());
+  /* Year-2 supply: held at year 1 under the supply rule (oeSource 'approvals95',
+     every market since 2026-08-27) — the canonical build writes twoYrProps =
+     properties + supply1 + supply2, so the derived branch reproduces it. The OE
+     forward column is read only for a row still routed to Oxford. */
   const oe2=(raw.oeSource==='oe'&&raw.oeByYear&&raw.oeByYear[String(oeY+1)]!=null)?raw.oeByYear[String(oeY+1)]
     :((raw.twoYrProps!=null&&raw.properties!=null&&raw.oeCommencements!=null)?(raw.twoYrProps-raw.properties-raw.oeCommencements):oe1);
-  const props1=props+(oe1||0), HH1=HH+(newHH||0), props2=props1+(oe2||0), HH2=HH1+(newHH||0);
+  /* Year-2 households: V1's OWN year-2 formation (twoYrHH − households −
+     expNewHouseholds, a base-independent quantity the canonical build writes),
+     not a repeat of year 1 — since 2026-08-26 the two years differ by the
+     overseas-migration step, and repeating year 1 here left this slide's
+     year-2 rate disagreeing with the VR Projection tool and the stored
+     forecastVR2 (Kia 2026-08-27: the slides must follow the tool). Falls back
+     to the year-1 figure only for a row that predates the canonical build. */
+  const newHH2=(raw.twoYrHH!=null&&raw.households!=null&&raw.expNewHouseholds!=null)?(raw.twoYrHH-raw.households-raw.expNewHouseholds):newHH;
+  const yr2Held=!(raw.twoYrHH!=null&&raw.households!=null&&raw.expNewHouseholds!=null);
+  const props1=props+(oe1||0), HH1=HH+(newHH||0), props2=props1+(oe2||0), HH2=HH1+(newHH2||0);
   const v1=(newHH!=null&&oe1!=null&&props1>0)?Math.max(0.001,(props1-HH1)/props1):null;
   const v2=(v1!=null&&props2>0)?Math.max(0.001,(props2-HH2)/props2):null;
-  return { v, v1, v2, HH, HH1, HH2, props, props1, props2, hhSize, newHH, oe1, oe2, oeY };
+  const supplyLabel=raw.oeSource==='approvals95'?'95% of approvals':(raw.oeSource==='forge_approvals'?'approvals × 0.9':'commencements');
+  return { v, v1, v2, HH, HH1, HH2, props, props1, props2, hhSize, newHH, newHH2, yr2Held, people2:(hhSize&&newHH2!=null)?newHH2*hhSize:null, oe1, oe2, oeY, supplyLabel };
 }
 function mountVRProjection(slideEl, slug){ const host=slideEl.querySelector('.bss-vrproj'); if(host) renderVRProjection(host, slug); }
 async function renderVRProjection(host, slug){
@@ -2671,13 +2685,15 @@ async function renderVRProjection(host, slug){
         +'<td><b>'+SG(raw.expectedPeople)+'</b>'+mig+'</td>'
         +'<td><b>'+hhs+'</b><span>unchanged</span></td>'
         +'<td class="hh"><b>'+SG(newHH)+'</b><span>new households</span></td>'
-        +'<td><b>'+SG(oe1)+'</b><span>commencements</span></td>'
+        +'<td><b>'+SG(oe1)+'</b><span>'+esc(C.supplyLabel)+'</span></td>'
         +'<td class="vr d1"><b>'+P(v1)+'</b><span>surplus '+N(props1-HH1)+'</span></td></tr>'
       +'<tr><td class="lbl"><i class="dot d2"></i><b>Year 2</b><span>'+fy(oeY+1)+'</span></td>'
-        +'<td><b>'+SG(raw.expectedPeople)+'</b><span class="amber">held at year-1 level</span></td>'
+        +(C.yr2Held
+          ? '<td><b>'+SG(raw.expectedPeople)+'</b><span class="amber">held at year-1 level</span></td>'
+          : '<td><b>'+SG(C.people2)+'</b><span>year-2 demand</span></td>')
         +'<td><b>'+hhs+'</b><span>unchanged</span></td>'
-        +'<td class="hh"><b>'+SG(newHH)+'</b><span>new households</span></td>'
-        +'<td><b>'+SG(oe2)+'</b><span>commencements</span></td>'
+        +'<td class="hh"><b>'+SG(C.newHH2)+'</b><span>new households</span></td>'
+        +'<td><b>'+SG(oe2)+'</b><span>'+esc(C.supplyLabel)+(C.supplyLabel==='95% of approvals'?' · held':'')+'</span></td>'
         +'<td class="vr d2"><b>'+P(v2)+'</b><span>surplus '+N(props2-HH2)+'</span></td></tr>'
     +'</tbody></table></div>';
 }
