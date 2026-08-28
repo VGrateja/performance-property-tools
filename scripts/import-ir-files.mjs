@@ -65,6 +65,9 @@ const ARGS = process.argv.slice(2);
 const FOLDER = ARGS.find(a => !a.startsWith('--'));
 const WRITE = ARGS.includes('--write'), PUBLISH = ARGS.includes('--publish'), REFRESH = ARGS.includes('--refresh'), NO_PHOTOS = ARGS.includes('--no-photos');
 const ONLY = (ARGS.find(a => a.startsWith('--only=')) || '').split('=').slice(1).join('=') || null;
+const LIB_FORCE = (ARGS.find(a => a.startsWith('--lib=')) || '').split('=').slice(1).join('=') || null;
+if (LIB_FORCE && !ONLY) { console.error('--lib needs --only=<one file> (it retargets EVERY planned file otherwise)'); process.exit(1); }   // --lib=<library row id>: publish the --only'd file into THIS row (repair tool)
+const SKIP = ((ARGS.find(a => a.startsWith('--skip=')) || '').split('=').slice(1).join('=') || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);   // --skip=a,b : files whose name contains a or b are left alone (e.g. a half-filled workbook)
 if (!FOLDER || !existsSync(FOLDER)) { console.error('usage: node scripts/import-ir-files.mjs "<folder>" [--write] [--publish] [--only=<name part>] [--refresh] [--no-photos]'); process.exit(1); }
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY in .env'); process.exit(1); }
@@ -664,10 +667,15 @@ async function assemble(parsed, csv) {
 // ── main ──────────────────────────────────────────────────────────────────────
 await loadConfig();
 const register = loadRegister(FOLDER);
-const files = readdirSync(FOLDER).filter(f => /\.(xlsx|pdf)$/i.test(f) && !/^~\$/.test(f) && (!ONLY || f.toLowerCase().includes(ONLY.toLowerCase()))).sort();
+const files = readdirSync(FOLDER).filter(f => /\.(xlsx|pdf)$/i.test(f) && !/^~\$/.test(f) && (!ONLY || f.toLowerCase().includes(ONLY.toLowerCase())) && !SKIP.some(s => f.toLowerCase().includes(s))).sort();
+if (LIB_FORCE && files.length !== 1) { console.error('--lib: --only must match exactly one file, matched ' + files.length + ': ' + files.join(' | ')); process.exit(1); }
+if (SKIP.length) console.log('skipping files matching: ' + SKIP.join(', '));
 console.log(`folder: ${FOLDER}\nfiles: ${files.length} (${files.filter(f => /\.xlsx$/i.test(f)).length} xlsx, ${files.filter(f => /\.pdf$/i.test(f)).length} pdf) · register rows: ${register.rows.length}${WRITE ? '' : ' · DRY RUN'}${PUBLISH ? ' · PUBLISH' : ''}`);
 const { data: existingFiles } = await sb.from('ir_files').select('id,address,suburb,state,compliance,setup');
 const existingByKey = new Map(); for (const r of (existingFiles || [])) existingByKey.set(addrKey(r.address, r.suburb), r);
+/* redacted wholesale files have no address — their row is found by the LABEL the importer
+   gives them ("Wholesale example — …"); without this a re-run inserted the file again */
+const existingByLabel = new Map(); for (const r of (existingFiles || [])) if (r.address) existingByLabel.set(String(r.address).trim().toLowerCase(), r);
 const { data: libRows } = await sb.from('investment_reports').select('id,address,suburb,link_url,budget,sold_date,domain,segment,strategy,market_label,lga,notes,metrics,source');
 const libByKey = new Map(); for (const r of (libRows || [])) { if (r.address) { const a = parseAddress(r.address); if (a) libByKey.set(addrKey(a.street, a.suburb), r); } }
 const libByLink = new Map(); for (const r of (libRows || [])) if (r.link_url) libByLink.set(r.link_url.replace(/\/view.*$/, ''), r);
@@ -697,8 +705,10 @@ for (const p of parsedAll) {
   let csv = p.key && register.byKey.get(p.key) || null;
   if (!csv && p.kind === 'wholesale') { const stem = basename(p.file, '.pdf').toLowerCase(); csv = register.rows.find(r => r.section && /wholesale/i.test(r.section) && r.market && (stem.includes(r.market.toLowerCase().replace(/wholesale investment report\s*/i, '').replace(/\.pdf$/, '').replace(/_/g, ' ').replace(/house.villa/, 'house_villa')) || (r.budget && (stem.includes('$' + Math.round(r.budget / 1000) + 'k') || stem.includes('$' + (r.budget / 1e6) + 'm'))))) || null; }
   const row = await assemble(p, csv);
-  const lib = (p.key && libByKey.get(p.key)) || (csv && csv.link && libByLink.get(csv.link.replace(/\/view.*$/, ''))) || null;
-  const existing = p.key ? existingByKey.get(p.key) : null;
+  /* --lib=new forces a FRESH library row (skips the address / register-link match) */
+  const lib = LIB_FORCE === 'new' ? null : LIB_FORCE ? ((libRows || []).find(r => r.id === LIB_FORCE) || null) : ((p.key && libByKey.get(p.key)) || (csv && csv.link && libByLink.get(csv.link.replace(/\/view.*$/, ''))) || null);
+  if (LIB_FORCE && LIB_FORCE !== 'new' && !lib) { console.error('--lib row not found: ' + LIB_FORCE); process.exit(1); }
+  const existing = (p.key ? existingByKey.get(p.key) : null) || existingByLabel.get(String(row.address || '').trim().toLowerCase()) || null;
   const ad = row.pricing.adopted || {};
   console.log(((row.address || '?') + (row.suburb ? ', ' + row.suburb : '')).slice(0, 43).padEnd(44) + String(row.market_label || '?').padEnd(11) + String(row.setup.propertyType || '?').slice(0, 11).padEnd(12) + fmt(ad.topPrice).padStart(10) + fmt(row.cashflow.rent).padStart(7) + String(row.grading.propertyGrade || '—').slice(0, 17).padEnd(18) + String(row.grading.suburbRating || '—').slice(0, 17).padEnd(18) + String((row.pricing.compSales || []).length).padStart(6) + String((p.photos || []).length + (p.pdfImages || []).length).padStart(7) + (csv ? '  ✓' : '  ·').padStart(4) + (lib ? '  ✓' : '  ·').padStart(4) + (existing ? (REFRESH ? '  refresh' : '     skip') : '      new') + '  ' + (p.warn || []).join('; '));
   plan.push({ p, row, csv, lib, existing });
@@ -723,7 +733,12 @@ for (const item of plan) {
     const cols = { address: row.address, suburb: row.suburb, state: row.state, postcode: row.postcode, market_slug: row.market_slug, market_label: row.market_label, roles: row.roles, setup: { ...row.setup, importedFrom: row.provenance.importedFrom, importedAt: row.provenance.importedAt, preparedAt: row.provenance.preparedISO, preparedBy: row.provenance.preparedBy }, dd: row.dd, inspection: row.inspection, grading: row.grading, pricing: row.pricing, cashflow: row.cashflow, suburb_stats: row.suburb_stats || {} };
     if (row.cashflowMeta && Object.keys(row.cashflowMeta).length) cols.cashflow = { ...cols.cashflow, sourceSummary: row.cashflowMeta };
     if (!existing) { const { data, error } = await sb.from('ir_files').insert({ ...cols, status: 'active', compliance: row.compliance }).select('id').single(); if (error) throw new Error('insert: ' + error.message); fileId = data.id; nNew++; }
-    else if (REFRESH) { const { error } = await sb.from('ir_files').update(cols).eq('id', fileId); if (error) throw new Error('update: ' + error.message); nUpd++; }
+    else if (REFRESH) {
+      /* keep what the row already carries that a re-parse cannot reproduce: uploaded photos (2026-08-28 lesson — a refresh wiped 95 rows' photos) */
+      const keepPhotos = existing && existing.setup && Array.isArray(existing.setup.photos) ? existing.setup.photos : [];
+      if (keepPhotos.length) cols.setup = { ...cols.setup, photos: keepPhotos };
+      const { error } = await sb.from('ir_files').update(cols).eq('id', fileId); if (error) throw new Error('update: ' + error.message); nUpd++;
+    }
     item.fileId = fileId;
     // photos (skip if the row already has some)
     const existingPhotos = (existing && existing.setup && existing.setup.photos) || [];
