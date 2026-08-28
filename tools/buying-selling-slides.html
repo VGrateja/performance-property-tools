@@ -680,8 +680,8 @@ body.bss-present .bss-presd{display:flex}
 
 <div class="bss-bar">
   <span class="bss-seg" id="bssMode">
-    <button data-mode="sell" class="on">Selling</button>
-    <button data-mode="buy">Buying</button>
+    <button data-mode="sell">Selling</button>
+    <button data-mode="buy" class="on">Buying</button>
   </span>
   <span class="bss-ctl"><select id="bssRegion" title="Switch region"></select></span>
   <span class="sep">|</span>
@@ -762,7 +762,13 @@ body.bss-present .bss-presd{display:flex}
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="cmScope" value="deck" checked> Whole deck</label>
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="cmScope" value="slide"> Current slide only</label>
     </div>
-    <p class="cm-note" id="cmNote">Copies the layout (text, shapes, images, backgrounds, added pages) of <b id="cmFrom">this deck</b> to the regions you pick, for the <b id="cmMode">Selling</b> deck. Each region keeps its own charts &amp; data — only the manual layer is copied. <b>Overwrites</b> any existing edits on the targets.</p>
+    <!-- purpose selector: the BASE deck (Melbourne Buying) rolls to both families by default (Van 2026-08-28); any other deck defaults to its own purpose -->
+    <div class="cm-scope" id="cmPurpose" style="display:flex;gap:16px;margin:2px 0 8px;font-size:13px">
+      <span style="color:var(--bss-mut)">Apply to:</span>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" name="cmPurpose" value="buy"> Buying decks</label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" name="cmPurpose" value="sell"> Selling decks</label>
+    </div>
+    <p class="cm-note" id="cmNote">Copies the layout (text, shapes, images, backgrounds, added pages) of <b id="cmFrom">this deck</b> to the regions you pick, for the <b id="cmMode">Selling</b> decks. Each region keeps its own charts &amp; data — only the manual layer is copied. <b>Overwrites</b> any existing edits on the targets.</p>
     <div class="cm-list" id="cmList"></div>
     <div class="cm-actions"><label class="cm-all"><input type="checkbox" id="cmAll"> Select all</label><span class="grow"></span><button class="bss-btn" data-cm="cancel">Cancel</button><button class="bss-btn primary" data-cm="apply">Copy</button></div>
   </div>
@@ -836,7 +842,7 @@ const REVIEW_YEAR = now.getFullYear();
 let DB = null;
 let _slugs = [];   /* NAVIGABLE region list (capitals first) — dropdown, landing, double-tap switch. Curated-filtered. */
 let _allSlugs = [];   /* every region with runway data — the master list; editor features (Copy to…, Curate…) use this */
-let state = { slug:'adelaide', mode:'sell', idx:0, custom:null };
+let state = { slug:'adelaide', mode:'buy', idx:0, custom:null };   /* Buying is the default purpose (Van 2026-08-28; was Selling) — ?mode= deep links and the toggle still switch */
 /* ── CUSTOM decks — the landing's "Other" cluster (Van 2026-08-10) ─ hand-built
    variants of a region deck (e.g. an advisor's combined meeting deck) that keep
    their OWN overlay/page state, so the shared regional deck stays untouched for
@@ -2321,26 +2327,25 @@ async function renderBusFinance(host, slug){
   ]);
 }
 /* ── RTBA Rental Bonds Held — Consumer Affairs Victoria annual reports.
-      Bonds lodged + repaid as bars, Gain/Loss (lodged − repaid) as a line on a
-      SECOND axis, by financial year. VICTORIA ONLY: the RTBA is a Victorian
-      authority and no other state publishes a comparable series, so non-VIC
-      decks get an explicit "not published for this state" panel rather than a
-      blank chart. Gain/Loss is DERIVED, never stored. ── */
+      TOTAL BONDS HELD at 30 June, one bar per financial year (DM's request via
+      the team, 2026-08-28 — replaces the earlier lodged vs repaid bars + gain/loss
+      line; that design and its dual-axis rule are retired). VICTORIA ONLY: the
+      RTBA is a Victorian authority and no other state publishes a comparable
+      series, so non-VIC decks get an explicit "not published for this state"
+      panel rather than a blank chart (the page is also gated by onlyIf). ── */
 let _rbCache;
 async function getRentalBonds(){
   if(_rbCache!==undefined) return _rbCache;
   let out=null;
   try{
-    const {data}=await window.sb.from('rdp_raw_series').select('metric,period,value')
-      .eq('region_slug','st-vic').eq('source','cav')
-      .in('metric',['bonds_lodged','bonds_repaid']).order('period');
+    const {data}=await window.sb.from('rdp_raw_series').select('period,value')
+      .eq('region_slug','st-vic').eq('source','cav').eq('metric','bonds_held').order('period');
     if(data&&data.length){
-      const L={},R={},ys=new Set();
+      const H={},ys=new Set();
       data.forEach(r=>{ const v=Number(r.value); if(!isFinite(v))return;
-        const fy=+String(r.period).slice(0,4); ys.add(fy);
-        (r.metric==='bonds_lodged'?L:R)[fy]=v; });
+        const fy=+String(r.period).slice(0,4); ys.add(fy); H[fy]=v; });   /* period = FY START month */
       const fys=[...ys].sort((a,b)=>a-b);
-      if(fys.length) out={ fys:fys, L:L, R:R };
+      if(fys.length) out={ fys:fys, H:H };
     }
   }catch(e){}
   _rbCache=out||null; return _rbCache;
@@ -2363,48 +2368,29 @@ async function renderRentalBonds(host, slug){
   if(!D){ host.innerHTML='<div class="bss-chartload">No rental-bond data.</div>'; return; }
   const lab=fy=>fy+'-'+String(fy+1).slice(2);
   const cats=D.fys.map(lab);
-  const LOD=D.fys.map(y=>D.L[y]!=null?Math.round(D.L[y]):null);
-  const REP=D.fys.map(y=>D.R[y]!=null?Math.round(D.R[y]):null);
-  const GL =D.fys.map(y=>(D.L[y]!=null&&D.R[y]!=null)?Math.round(D.L[y]-D.R[y]):null);
+  const HELD=D.fys.map(y=>D.H[y]!=null?Math.round(D.H[y]):null);
   const nInt=v=>v==null?'—':Number(v).toLocaleString();
-  /* BOTH axes: 7 intervals with exactly ONE below zero, so the two zero lines
-     land on the same gridline and the negative Gain/Loss years have room —
-     that's how the sample is built (left −50,000…300,000, right −10,000…60,000).
-     Left step covers the bars in 6 upward intervals; right step must ALSO
-     contain the largest negative within its single interval below zero. */
-  const NICE=[500,1000,2000,2500,5000,10000,20000,25000,50000,100000,250000];
+  /* Zero-based axis (it is a stock, not a flow), 6 equal intervals on a nice step
+     so the top gridline clears the tallest bar with a little headroom. */
+  const NICE=[10000,20000,25000,50000,100000,150000,200000,250000,500000];
   const nice=v=>NICE.find(n=>n>=v)||NICE[NICE.length-1];
-  const barMax=Math.max.apply(null,LOD.concat(REP).filter(v=>v!=null));
-  const barStep=nice(barMax/6), barTop=barStep*6, barMin=-barStep;
-  const glOk=GL.filter(v=>v!=null);
-  const glMax=Math.max.apply(null,glOk), glMin=Math.min.apply(null,glOk);
-  const glStep=nice(Math.max(glMax/6, Math.abs(Math.min(0,glMin))));
-  const glTop=glStep*6, glBot=-glStep;
+  const top=Math.max.apply(null,HELD.filter(v=>v!=null));
+  const step=nice(top/6), yTop=step*6;
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
-      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'
-        +params.filter(p=>p.value!=null).map(p=>p.marker+p.seriesName+': <b>'
-          +((p.seriesName==='Gain / Loss'&&p.value>=0?'+':'')+nInt(p.value))+'</b>').join('<br>') },
-    legend:{ top:2, left:'center', itemWidth:12, itemHeight:8, itemGap:20, textStyle:{fontSize:11,color:'#222'},
-      data:[{name:'Bonds Lodgements'},{name:'Bonds Repayments'},{name:'Gain / Loss',icon:'path://M0,0h24v3h-24z'}] },
-    grid:{left:66,right:62,top:40,bottom:58},
-    xAxis:{ type:'category', data:cats, axisLabel:{color:'#444',fontSize:9,interval:0,rotate:90},
+      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params[0].marker+'Total bonds held: <b>'+nInt(params[0].value)+'</b>' },
+    grid:{left:72,right:36,top:34,bottom:44},
+    xAxis:{ type:'category', data:cats, axisLabel:{color:'#444',fontSize:10,interval:0},
       axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
-    yAxis:[
-      { type:'value', min:barMin, max:barTop, interval:barStep,
-        axisLabel:{color:'#444',fontSize:9.5,formatter:v=>Number(v).toLocaleString()},
-        splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}}, axisLine:{show:false}, axisTick:{show:false} },
-      { type:'value', min:glBot, max:glTop, interval:glStep,
-        axisLabel:{color:'#444',fontSize:9.5,formatter:v=>Number(v).toLocaleString()},
-        splitLine:{show:false}, axisLine:{show:false}, axisTick:{show:false} } ],
+    yAxis:{ type:'value', min:0, max:yTop, interval:step,
+      axisLabel:{color:'#444',fontSize:9.5,formatter:v=>Number(v).toLocaleString()},
+      splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}}, axisLine:{show:false}, axisTick:{show:false} },
     series:[
-      { name:'Bonds Lodgements', type:'bar', data:LOD, itemStyle:{color:'#00A0B4'}, barGap:'6%', barCategoryGap:'34%' },
-      { name:'Bonds Repayments', type:'bar', data:REP, itemStyle:{color:'#c6c6c6'} },
-      { name:'Gain / Loss', type:'line', yAxisIndex:1, data:GL, smooth:0.3, showSymbol:false,
-        lineStyle:{color:'#171B24',width:2.6}, itemStyle:{color:'#171B24'} } ] };
+      { name:'Total bonds held', type:'bar', data:HELD, itemStyle:{color:'#00A0B4'}, barCategoryGap:'32%',
+        label:{ show:true, position:'top', color:'#222', fontSize:9.5, fontFamily:'Montserrat, sans-serif', formatter:p=>nInt(p.value) } } ] };
   _drawEChart(host, option);
   _bssSlideLines(host, [
-    { text:'Source: Residential Tenancies Bond Authority; Consumer Affairs Victoria',
+    { text:'Source: Residential Tenancies Bond Authority; Consumer Affairs Victoria (bonds held at 30 June)',
       x:36, y:692, size:12, color:'#7a7f87', italic:true },
   ]);
 }
@@ -4209,38 +4195,54 @@ function setEditMode(on){ EDIT=on; document.body.classList.toggle('bss-edit',on)
   document.querySelectorAll('#bssEditMode button').forEach(b=>b.classList.toggle('on', (b.dataset.em==='edit')===on));
   if(!on){ deselect(); $('#bssBgPop').hidden=true; } renderOverlays(); showSelBar(); }
 /* Replication: copy THIS deck's manual layer (overlays/backgrounds/pages) to
-   other regions for the current mode. Data slides stay each region's own. */
+   other regions for the ticked purpose(s). Data slides stay each region's own. */
+/* BASE deck = Melbourne Buying (Van 2026-08-28): every layout change is authored there
+   and rolled to BOTH purposes. Any other deck copies to its own purpose unless the
+   editor ticks the other one too. */
+const BSS_BASE={ slug:'melbourne', mode:'buy' };
+function _isBaseDeck(){ return state.slug===BSS_BASE.slug && state.mode===BSS_BASE.mode && !state.custom; }
+function _cmPurposes(){ return Array.from(document.querySelectorAll('#cmPurpose input:checked')).map(i=>i.value); }
+function _cmPurposeLabel(){ const ps=_cmPurposes(); return ps.length===2 ? 'Buying and Selling' : ps[0]==='buy' ? 'Buying' : ps[0]==='sell' ? 'Selling' : (state.mode==='buy'?'Buying':'Selling'); }
+function _cmSyncLabel(){ document.querySelectorAll('#bssCopyModal #cmMode').forEach(el=>el.textContent=_cmPurposeLabel()); }
 function openCopyModal(){ if(!_bsCanEdit)return; const m=$('#bssCopyModal');
   $('#cmFrom').textContent=((DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug);
-  $('#cmMode').textContent=(state.mode==='buy'?'Buying':'Selling');
+  document.querySelectorAll('#cmPurpose input').forEach(i=>{ i.checked = i.value===state.mode || _isBaseDeck(); });
+  _cmSyncLabel();
   const slugs=Object.keys(DB.runway).filter(s=>s!==state.slug).sort((a,b)=>((DB.meta[a]&&DB.meta[a].name)||a).localeCompare((DB.meta[b]&&DB.meta[b].name)||b));
   $('#cmList').innerHTML=slugs.map(s=>'<label class="cm-item"><input type="checkbox" value="'+s+'"> '+esc((DB.meta[s]&&DB.meta[s].name)||s)+'</label>').join('');
   $('#cmAll').checked=false; m.hidden=false;
 }
 async function applyCopyTo(){
   const sel=Array.from($('#cmList').querySelectorAll('input:checked')).map(i=>i.value);
-  if(!sel.length){ $('#bssCopyModal').hidden=true; return; }
+  const purposes=_cmPurposes().length?_cmPurposes():[state.mode];
+  /* targets = every ticked region × every ticked purpose, plus this region's own
+     deck for the OTHER purpose when that purpose is ticked (the region list hides
+     the current region, but rolling the base to "Selling" must reach its own twin) */
+  const targets=[];
+  purposes.forEach(m=>{ sel.forEach(s=>targets.push({slug:s,mode:m})); if(m!==state.mode) targets.push({slug:state.slug,mode:m}); });
+  if(!targets.length){ $('#bssCopyModal').hidden=true; return; }
   const scope=($('#bssCopyModal').querySelector('input[name="cmScope"]:checked')||{}).value||'deck';
   const btn=$('#bssCopyModal').querySelector('[data-cm="apply"]'); btn.disabled=true; btn.textContent='Copying…';
-  let n=0;
+  const done={buy:0,sell:0};
   if(scope==='slide'){
     /* Merge ONLY the current slide's manual layer into each target deck —
        their other slides (and added pages) stay untouched. */
     const key=curKey(), ovl=JSON.parse(JSON.stringify(OVL[key]||[])), bg=BGS[key];
-    for(const slug of sel){ try{
-      const row='bss-'+slug+'-'+state.mode;
+    for(const tg of targets){ try{
+      const row='bss-'+tg.slug+'-'+tg.mode;
       const {data}=await window.sb.from('reports_state').select('payload').eq('region',row).maybeSingle();
       const p=(data&&data.payload)||{}; p.overlays=p.overlays||{}; p.bgs=p.bgs||{}; p.customPages=p.customPages||[];
       p.overlays[key]=ovl; if(bg)p.bgs[key]=bg; else delete p.bgs[key];
       if(!/^f\d+$/.test(key) && p.customPages.indexOf(key)<0) p.customPages.push(key);   /* copying a custom +Page → ensure the page exists on the target */
-      const {error}=await window.sb.from('reports_state').upsert({region:row,payload:p},{onConflict:'region'}); if(!error)n++;
+      const {error}=await window.sb.from('reports_state').upsert({region:row,payload:p},{onConflict:'region'}); if(!error)done[tg.mode]++;
     }catch(e){} }
   } else {
     const payload=JSON.parse(JSON.stringify(_edPayload()));
-    for(const slug of sel){ try{ const {error}=await window.sb.from('reports_state').upsert({region:'bss-'+slug+'-'+state.mode,payload:payload},{onConflict:'region'}); if(!error)n++; }catch(e){} }
+    for(const tg of targets){ try{ const {error}=await window.sb.from('reports_state').upsert({region:'bss-'+tg.slug+'-'+tg.mode,payload:payload},{onConflict:'region'}); if(!error)done[tg.mode]++; }catch(e){} }
   }
   btn.disabled=false; btn.textContent='Copy'; $('#bssCopyModal').hidden=true;
-  alert('Copied '+(scope==='slide'?'this slide':'this deck’s layout')+' to '+n+' region'+(n===1?'':'s')+' ('+(state.mode==='buy'?'Buying':'Selling')+').');
+  const parts=[]; if(done.buy) parts.push(done.buy+' Buying'); if(done.sell) parts.push(done.sell+' Selling');
+  alert('Copied '+(scope==='slide'?'this slide':'this deck’s layout')+' to '+(parts.length?parts.join(' + '):'0')+' deck'+((done.buy+done.sell)===1?'':'s')+'.');
 }
 /* Copy the SELECTED text box onto other slides in this same deck (repeating
    headers/footers). Each target gets an independent clone. */
@@ -4361,9 +4363,10 @@ function setupEditor(){
   $('#bssSlidesModal').addEventListener('click',e=>{ if(e.target.id==='bssSlidesModal'){ $('#bssSlidesModal').hidden=true; return; } const b=e.target.closest('[data-cs]'); if(!b)return; if(b.dataset.cs==='cancel')$('#bssSlidesModal').hidden=true; else if(b.dataset.cs==='apply')applyCopySlides(); });
   $('#cmAll').addEventListener('change',e=>{ $('#cmList').querySelectorAll('input').forEach(i=>i.checked=e.target.checked); });
   $('#bssCopyModal').addEventListener('click',e=>{ if(e.target.id==='bssCopyModal'){ $('#bssCopyModal').hidden=true; return; }
+    if(e.target.name==='cmPurpose'){ if(!_cmPurposes().length){ e.target.checked=true; } _cmSyncLabel(); return; }
     if(e.target.name==='cmScope'){ $('#cmNote').innerHTML = e.target.value==='slide'
-      ? 'Copies ONLY the current slide’s manual layer (text, shapes, images, background) onto the <b>same slide</b> of the regions you pick, for the <b id="cmMode">'+(state.mode==='buy'?'Buying':'Selling')+'</b> deck. Their other slides are untouched. <b>Overwrites</b> that one slide’s existing edits on the targets.'
-      : 'Copies the layout (text, shapes, images, backgrounds, added pages) of <b id="cmFrom">'+esc((DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug)+'</b> to the regions you pick, for the <b id="cmMode">'+(state.mode==='buy'?'Buying':'Selling')+'</b> deck. Each region keeps its own charts &amp; data — only the manual layer is copied. <b>Overwrites</b> any existing edits on the targets.'; return; }
+      ? 'Copies ONLY the current slide’s manual layer (text, shapes, images, background) onto the <b>same slide</b> of the regions you pick, for the <b id="cmMode">'+_cmPurposeLabel()+'</b> decks. Their other slides are untouched. <b>Overwrites</b> that one slide’s existing edits on the targets.'
+      : 'Copies the layout (text, shapes, images, backgrounds, added pages) of <b id="cmFrom">'+esc((DB.meta[state.slug]&&DB.meta[state.slug].name)||state.slug)+'</b> to the regions you pick, for the <b id="cmMode">'+_cmPurposeLabel()+'</b> decks. Each region keeps its own charts &amp; data — only the manual layer is copied. <b>Overwrites</b> any existing edits on the targets.'; return; }
     const b=e.target.closest('[data-cm]'); if(!b)return; if(b.dataset.cm==='cancel')$('#bssCopyModal').hidden=true; else if(b.dataset.cm==='apply')applyCopyTo(); });
   $('#bssEditMode').addEventListener('click',e=>{ const b=e.target.closest('button[data-em]'); if(b) setEditMode(b.dataset.em==='edit'); });
   $('#bssEdBtns').addEventListener('click',e=>{ const b=e.target.closest('button[data-add]'); if(!b)return; const a=b.dataset.add;
@@ -4652,7 +4655,7 @@ $('#bssLandClose').addEventListener('click',()=>{
    current mode so the tab opens on the purpose the user was already in. */
 $('#bssLandRegionGrid').addEventListener('click',e=>{ const t=e.target.closest('.bssrcm-tile'); if(!t)return;
   const slug=t.dataset.slug, custom=t.dataset.custom||null;
-  const mode=custom ? (t.dataset.mode||'sell') : (state.mode==='buy'?'buy':'sell');
+  const mode=custom ? (t.dataset.mode||'buy') : (state.mode==='sell'?'sell':'buy');
   const url='?region='+encodeURIComponent(slug)+'&mode='+encodeURIComponent(mode)
     +(custom?('&custom='+encodeURIComponent(custom)):'')
     +(_isCurated?'&curated=1':'');
