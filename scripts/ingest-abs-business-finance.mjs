@@ -63,6 +63,7 @@ for (const sz of SIZES) for (const p of PURPOSES) {
   for (const [k, v] of Object.entries(obs)) {
     const ix = k.split(':').map(Number);
     const slug = REG[dims[rI].values[ix[rI]].id];
+    if (v[0] == null) continue;   // ABS OBS_STATUS "n" = not available for publication: NO row, never a 0 (2026-09-02 fix — Number(null) used to store $0)
     const val = Number(v[0]);
     if (!slug || !isFinite(val)) continue;
     out.push({ source: 'abs', region_slug: slug, metric, freq: 'Q', period: qToPeriod(dims[tI].values[ix[tI]].id), value: Math.round(val * 100) / 100 });
