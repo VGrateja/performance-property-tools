@@ -527,7 +527,7 @@
      one — build them the way the tool builds them.
 
      Inspecting the pages shows most of them need no picture at all:
-       Market Position Clock  = ONE image asset (market-position-clock.png)
+       Market Position Clock  = the clock, DRAWN LIVE (see below)
        Replacement Cost       = a 4x4 <table>
        Sensitivity H / U      = a 10x4 <table>
        Vacancy Rate Projection= a 4x6 <table> (plus a gradient bar)
@@ -545,7 +545,38 @@
   const ESC = s => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+  /* ── Market Position Clock (f1) ──
+     This page used to hand the builder ONE image overlay of
+     assets/Reports/market-position-clock.png, because the page's whole content
+     was that picture. The picture is the Property Clock's face plus rim
+     annotations, so it went stale the moment the IC moved a band — which it did
+     on 2026-09-07 (green Momentum now ends at 10:00, not 9:30).
+
+     Now the clock is DRAWN from the same clock_state.partitions the Property
+     Clock draws from (shared/market-clock.js) and handed over as an image
+     overlay whose src is the rendered SVG. Still an image overlay, so it
+     exports and crops exactly as before — but because it keeps
+     source:{lib:'bss',key:'f1'}, refreshReportCharts() re-renders it every time
+     an editor opens the deck, and a band edit lands on the slide by itself.
+     svgString() is deterministic, so an unchanged clock produces an identical
+     string and the refresh doesn't churn a cloud save.
+
+     No frame needed: the page has no data to read off the tool. If the module
+     isn't on the page we fall back to the old asset rather than fail. */
+  const MCLOCK_PNG = '../assets/Reports/market-position-clock.png';
+  async function marketClock() {
+    const mc = window.PP_MARKET_CLOCK;
+    if (mc && typeof mc.dataUri === 'function') {
+      try {
+        const src = await mc.dataUri();
+        if (src) return { kind: 'image', src: src, cw: mc.VIEW.w, ch: mc.VIEW.h };
+      } catch (e) { /* fall back to the asset */ }
+    }
+    return { kind: 'image', src: MCLOCK_PNG, cw: 1600, ch: 1588 };
+  }
+
   async function nativeFrom(key, ctx) {
+    if (key === 'f1') return await marketClock();
     const win = await toolFrame(ctx);
     if (!win) return null;
     const el = slideEl(win, key);

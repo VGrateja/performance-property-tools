@@ -16,7 +16,13 @@
 <script src="../shared/os-chrome.js?v=ea374003"></script>
 <link rel="stylesheet" href="../shared/os-theme.css?v=bcea6d52"/>
 <!-- Auto-fit: scale the page down to fit smaller screens (scale-down only). -->
-<script src="../shared/fit-screen.js?v=5e41a716"></script>
+<script>
+  /* The clock is a fixed composition, so fit it to the viewport HEIGHT too —
+     a laptop used to get a face taller than the screen with no way to zoom
+     out (Saskia 2026-09-07). Embed/export modes keep their own zoom-to-fit. */
+  if (!/[?&](embed|exportMode)=1\b/.test(location.search)) window.PP_FIT_HEIGHT = true;
+</script>
+<script src="../shared/fit-screen.js?v=1ea58579"></script>
 <script src="../shared/color-picker.js?v=7613bd02" defer></script>
 <style>
 /* Static futuristic gradient — same phase-1 palette as the hub
@@ -1729,8 +1735,10 @@ const WALL_PAD=0.2; // hugs the chart edge — labels can be dragged right up to
 */
 let PARTITIONS = [
   {id:'red',    label:'Correction / Hold',      color:'#D93025', a1:30,  a2:135},
-  {id:'green',  label:'Buy / Value / Momentum', color:'#4DB648', a1:135, a2:285},
-  {id:'orange', label:'Selling Window / Peak',  color:'#F47C20', a1:285, a2:30 },
+  /* green runs to 10:00 (300°) since the IC's 2026-09-07 decision — the
+     Momentum band grew by 30 minutes; it used to end at 9:30 (285°). */
+  {id:'green',  label:'Buy / Value / Momentum', color:'#4DB648', a1:135, a2:300},
+  {id:'orange', label:'Selling Window / Peak',  color:'#F47C20', a1:300, a2:30 },
 ];
 
 const DEF_PARTITIONS = JSON.parse(JSON.stringify(PARTITIONS));
@@ -3176,6 +3184,17 @@ async function _flushClockPdfLink(){
    Tier 3 (client)        — blocked: view-only, no downloads.
    Tier 4 (guest)         — blocked: hub blur wall keeps them out
                             entirely; this guard is defence-in-depth. */
+/* Every capture (PDF, JPEG, the shared clock snapshot on Save) goes through
+   here. html2canvas measures with getBoundingClientRect, which under the
+   auto-fit's root CSS zoom (fit-screen.js, height mode since 2026-09-07)
+   returns scaled boxes and yields a shrunken/offset capture — so the zoom is
+   lifted for the duration of the capture and put back straight after. */
+async function _h2cUnzoomed(el, opts){
+  const root=document.documentElement, z=root.style.zoom;
+  if(z) root.style.zoom='';
+  try{ return await html2canvas(el, opts); }
+  finally{ if(z) root.style.zoom=z; }
+}
 async function exportPDF(){
   if(isViewOnly()){toast('PDF download is not available for viewer accounts.');return;}
   await bakeClockLogo();
@@ -3191,7 +3210,7 @@ async function exportPDF(){
     el.classList.add('pdf-export-mode');
     await new Promise(r=>setTimeout(r,40)); // let CSS apply
     const scaleF = hd ? 3 : 2;
-    const canvas=await html2canvas(el,{scale:scaleF,useCORS:true,backgroundColor:'#e8ebef',logging:false});
+    const canvas=await _h2cUnzoomed(el,{scale:scaleF,useCORS:true,backgroundColor:'#e8ebef',logging:false});
     el.classList.remove('pdf-export-mode');
     const{jsPDF}=window.jspdf;
     const pdf=new jsPDF({orientation:'landscape',unit:'mm',format:'a4',compress:true});
@@ -3227,7 +3246,7 @@ async function exportClockJPEG(){
     const el=document.getElementById('clock-capture');
     el.classList.add('pdf-export-mode');
     await new Promise(r=>setTimeout(r,40));
-    const canvas=await html2canvas(el,{scale:3,useCORS:true,backgroundColor:'#e8ebef',logging:false});
+    const canvas=await _h2cUnzoomed(el,{scale:3,useCORS:true,backgroundColor:'#e8ebef',logging:false});
     el.classList.remove('pdf-export-mode');
     const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
     const link = document.createElement('a');
@@ -4026,7 +4045,7 @@ async function _uploadClockImage(){
     let canvas;
     el.classList.add('pdf-export-mode');
     await new Promise(r=>setTimeout(r,40));
-    try{ canvas=await html2canvas(el,{scale:3,useCORS:true,backgroundColor:'#e8ebef',logging:false}); }
+    try{ canvas=await _h2cUnzoomed(el,{scale:3,useCORS:true,backgroundColor:'#e8ebef',logging:false}); }
     finally{ el.classList.remove('pdf-export-mode'); }
 
     // 1. JPG for the Presentation embed (unchanged behaviour)

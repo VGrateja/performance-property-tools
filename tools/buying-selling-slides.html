@@ -7,7 +7,7 @@
 <title>Performance Property — Buying / Selling Slides</title>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&family=DM+Sans:wght@300;400;500;600;700;800&family=Roboto:wght@300;400;500;700;900&family=Carlito:wght@400;700&family=Montserrat:wght@300;400;500;600;700;800&family=Raleway:wght@300;400;500;600;700;800&family=Ubuntu:wght@300;400;500;700&family=Playfair+Display:ital,wght@0,400;0,600;0,700;0,800;1,400;1,600;1,700&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="../shared/common.css?v=2e33aceb"/>
-<script src="../shared/fit-screen.js?v=5e41a716"></script>
+<script src="../shared/fit-screen.js?v=1ea58579"></script>
 <!-- OS chrome: appbar (Desktop back) + mode/shade — copying the Online Reports look (Van 2026-07-18) -->
 <script src="../shared/os-chrome.js?v=ea374003"></script>
 <link rel="stylesheet" href="../shared/os-theme.css?v=bcea6d52"/>
@@ -26,7 +26,11 @@
 <!-- Slide chart definitions shared with the presentation builder's
      Buying/Selling Library (window.PP_BSS). Loads AFTER _helpers.js because the
      options it builds call PpaCharts.niceAxis / niceAxisRange. -->
-<script src="../shared/bss-slides.js?v=7e2fc88c" defer></script>
+<script src="../shared/bss-slides.js?v=f264fef5" defer></script>
+<!-- Market Indicators Clock (window.PP_MARKET_CLOCK): draws the Market
+     Positions Clock page LIVE from the Property Clock's saved bands instead of
+     the flat market-position-clock.png the page used to carry. -->
+<script src="../shared/market-clock.js?v=196e3920" defer></script>
 <script src="../assets/Reports/charts/chart-median-price.js" defer></script>
 <script src="../assets/Reports/charts/chart-affordability-house.js" defer></script>
 <script src="../assets/Reports/charts/chart-price-to-income.js" defer></script>
@@ -513,6 +517,10 @@ table.bss-vp2-t{width:100%;border-collapse:collapse}
 body.bss-edit .bss-ov{cursor:move}
 .bss-ov-text{white-space:pre-wrap;line-height:1.2;padding:2px 4px;max-width:1120px;outline:none}
 .bss-ov-image{background-size:contain;background-repeat:no-repeat;background-position:center}
+/* Live Market Indicators Clock inside an image overlay. A CHILD of the overlay,
+   not the overlay itself, so the async render can't wipe the resize handle; and
+   pointer-events:none so the drawing never swallows a drag. */
+.bss-mclock{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none}
 body.bss-edit .bss-ov:hover{outline:1px dashed rgba(0,160,180,.6)}
 .bss-ov.sel{outline:2px solid var(--bss-cyan) !important}
 .bss-ov.editing{cursor:text;outline:2px solid var(--bss-cyan)}
@@ -3933,6 +3941,20 @@ function selectSentenceAt(x,y){ const sel=window.getSelection(); if(!sel)return;
   let e=i; while(e<txt.length && !/[.!?]/.test(txt[e])) e++; if(e<txt.length) e++; if(e<=s) e=txt.length;
   const rng=document.createRange(); rng.setStart(node,Math.min(s,txt.length)); rng.setEnd(node,Math.min(e,txt.length));
   sel.removeAllRanges(); sel.addRange(rng); }
+/* ─── Market Indicators Clock ───────────────────────────────────────────────
+   Page f1's clock was an AUTHORED image overlay pointing at
+   ../assets/Reports/market-position-clock.png. That picture is the Property
+   Clock's face with rim annotations, so it goes stale the moment the IC moves a
+   band — as it did on 2026-09-07, when the green Momentum band's end went from
+   9:30 to 10:00. So the overlay is now DRAWN, live, from the same
+   clock_state.partitions the Property Clock uses (shared/market-clock.js), in
+   exactly the same box: same x/y/w/h, and the SVG letterboxes inside it the way
+   background-size:contain did, so the page looks unchanged apart from the band.
+   The overlay row in reports_state is untouched — the PNG stays as the src and
+   is still what renders if the module fails to load. */
+const MCLOCK_ASSET=/market-position-clock\.(png|jpe?g|webp|svg)$/i;
+function _isMarketClockOv(o){ return !!(o && o.type==='image' && !o.path && typeof o.src==='string' && MCLOCK_ASSET.test(o.src)); }
+
 function makeOverlayEl(o){
   let el=document.createElement('div'); el.className='bss-ov bss-ov-'+o.type; el.dataset.id=o.id;
   if(o.type==='text'){ el.innerHTML=resolveTokens(o.html!=null?o.html:(o.text||'Text')); el.style.color=o.color||'#ffffff'; el.style.fontSize=(o.fontSize||34)+'px';
@@ -3940,7 +3962,12 @@ function makeOverlayEl(o){
     el.style.textDecoration=o.underline?'underline':'none'; el.style.textAlign=o.align||'left'; el.style.lineHeight=String(o.lineHeight||1.2); el.style.width=o.w?(o.w+'px'):'auto';
     if(o.bg){ el.style.background=o.bg; el.style.padding='6px 12px'; } else { el.style.background=''; el.style.padding=''; } }
   else if(o.type==='image'){ el.style.width=(o.w||300)+'px'; el.style.height=(o.h||200)+'px'; el.style.backgroundSize='contain'; el.style.backgroundPosition='center'; el.style.opacity=(o.opacity==null?1:o.opacity/100);
-    if(o.src){ el.style.backgroundImage='url('+(window.PP_IMG?window.PP_IMG(o.src,1280):o.src)+')'; }   /* repo-asset src (PP_IMG optimizes on Vercel only) */
+    if(_isMarketClockOv(o) && window.PP_MARKET_CLOCK){
+      const host=document.createElement('div'); host.className='bss-mclock'; el.appendChild(host);
+      /* if the live draw fails for any reason, put the authored picture back */
+      window.PP_MARKET_CLOCK.render(host).catch(()=>{ host.remove(); el.style.backgroundImage='url('+(window.PP_IMG?window.PP_IMG(o.src,1280):o.src)+')'; });
+    }
+    else if(o.src){ el.style.backgroundImage='url('+(window.PP_IMG?window.PP_IMG(o.src,1280):o.src)+')'; }   /* repo-asset src (PP_IMG optimizes on Vercel only) */
     else if(o.path){ const c=_imgUrl.get(o.path); if(c&&c.exp>Date.now()){ el.style.backgroundImage='url('+c.url+')'; }
       else { const id=o.id; imgSignedUrl(o.path).then(u=>{ if(!u)return; const cur=document.querySelector('.bss-ov[data-id="'+id+'"]'); if(cur)cur.style.backgroundImage='url('+u+')'; }); } }
   }
