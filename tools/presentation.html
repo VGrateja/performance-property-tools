@@ -69,6 +69,9 @@
      contract; ported from their inline renderers into shared modules. -->
 <script src="../assets/Reports/charts/national-charts.js" defer></script>
 <script src="../assets/Reports/charts/commercial-charts.js" defer></script>
+<!-- Deck-only extras for the one-click Commercial Market deck (loads AFTER
+     commercial-charts.js — it builds on its baseOption/applyDefaults). -->
+<script src="../assets/Reports/charts/commercial-market-charts.js" defer></script>
 <script>
   /* Slide charts are CSS-scaled (rendered once at a fixed base size), so
      ECharts never needs to resize on window changes — and the report
@@ -2353,6 +2356,14 @@
     color:#FFA91F; font-weight:700; letter-spacing:0.04em;
   }
   .pres-fmt-card.is-divider:hover{ border-color:#FFA91F; background:rgba(255,169,31,0.20); }
+  /* One-click deck builder (the Commercial Market deck). Full-width, solid
+     teal — it is not "another graph to pick", it BUILDS a whole new deck, so it
+     must not look like a sibling of the graph cards. */
+  .pres-fmt-build{ grid-column:1/-1; flex-direction:column; gap:3px; min-height:64px;
+    background:#00A0B4; border-color:#00A0B4; color:#06222a; font-size:13.5px; font-weight:800; }
+  .pres-fmt-build:hover{ background:#00b4cb; border-color:#00b4cb; }
+  [data-theme="light"] .pres-fmt-build{ background:#00A0B4; border-color:#00A0B4; }
+  .pres-fmt-build small{ font-size:11px; font-weight:600; opacity:0.78; letter-spacing:0.01em; }
   .pres-fmt-empty{ grid-column:1/-1; text-align:center; opacity:0.55; font-size:12.5px; padding:20px; font-weight:500; }
   .pres-fmt-back{ background:none; border:none; color:#00A0B4; cursor:pointer;
     font-size:12px; font-weight:700; padding:2px 0; display:inline-flex; align-items:center; gap:4px; }
@@ -9733,13 +9744,19 @@ async function refreshReportCharts(opts) {
          Refreshing beats embedding them: they stay vector, exportable (an iframe
          cannot be painted by html2canvas) and editable. */
       else if (o.source.lib === 'bss' && o.source.key && window.PP_BSS) jobs.push(o);
+      /* Commercial Market deck chart — the four deck-only charts that have no
+         report page behind them (bond spread, retail split, Treasury population
+         growth, health waterfall). Rebuilt from the same snapshot / mart rows
+         they were built from, so they auto-update like everything else. */
+      else if (o.source.lib === 'cmk' && o.source.key
+               && typeof CMK_CHART_BUILDERS !== 'undefined' && CMK_CHART_BUILDERS[o.source.key]) jobs.push(o);
     });
   });
   if (!jobs.length) {
     if (opts.toast) showPresToast('No auto-updating charts on this deck yet — re-insert report charts to enable.', { duration: 5000, warn: true });
     return { updated: 0, total: 0 };
   }
-  const snapCache = {};
+  const snapCache = {}, cmkCache = {};
   let updated = 0;
   for (const o of jobs) {
     try {
@@ -9772,6 +9789,9 @@ async function refreshReportCharts(opts) {
         const option = await window.PP_BSS.option(o.source.key,
           { slug: o.source.slug, mode: o.source.mode });
         if (option) spec = { echarts: option };
+      } else if (o.source.lib === 'cmk') {
+        const rebuilt = await _cmkBuildChartSpec(o.source.key, cmkCache);
+        if (rebuilt) spec = rebuilt;
       } else {
         const built = await buildReportChartSpec(o.source.slug, o.source.pageId, snapCache);
         if (built && built.spec) spec = built.spec;
@@ -11193,7 +11213,11 @@ function shapeSVG(o) {
   const strokeStr =                       _psResolvePaint(o.stroke, 'stroke', gid, defs);
   const fa = _psEscapeAttr(fillStr);
   const sa = _psEscapeAttr(strokeStr);
-  const baseAttrs = 'fill="' + fa + '" stroke="' + sa + '" stroke-width="' + sw + '" vector-effect="non-scaling-stroke"';
+  /* Optional dashed outline (o.dash = an SVG stroke-dasharray, e.g. '10 8').
+     Only the closed shapes read it — it exists so a "drop an image here"
+     placeholder box reads as a placeholder rather than a real filled panel. */
+  const da = o.dash ? ' stroke-dasharray="' + _psEscapeAttr(String(o.dash)) + '"' : '';
+  const baseAttrs = 'fill="' + fa + '" stroke="' + sa + '" stroke-width="' + sw + '" vector-effect="non-scaling-stroke"' + da;
 
   let body = '';
   if (o.kind === 'rect' || o.kind === 'rectSharp') {
@@ -15023,6 +15047,22 @@ function _fmtShowGraphs(slug, name) {
     return;
   }
   const grid = document.createElement('div'); grid.className = 'pres-fmt-grid'; wrap.appendChild(grid);
+  /* Commercial only: the whole-deck builder rides ABOVE the individual graphs.
+     It does not go in the cart — it creates and opens a NEW private deck (see
+     _cmkBuildDeck), so it is a different kind of action and looks like one.
+     No dataset.pageId, so "Select all" skips it. */
+  if (slug === 'commercial' && typeof _cmkBuildDeck === 'function') {
+    const build = document.createElement('button');
+    build.type = 'button'; build.className = 'pres-fmt-card pres-fmt-build';
+    build.id = 'pres-fmt-build-cmk';
+    build.title = 'Creates a new private deck in My Presentations and opens it';
+    build.appendChild(document.createTextNode('Build the Commercial Market deck'));
+    const sub = document.createElement('small');
+    sub.textContent = 'New private deck — cover, narrative pages and the full report appendix';
+    build.appendChild(sub);
+    build.addEventListener('click', () => { _cmkBuildDeck(); });
+    grid.appendChild(build);
+  }
   graphs.forEach(g => {
     const card = document.createElement('button');
     card.type = 'button'; card.className = 'pres-fmt-card'; card.textContent = g.label;
@@ -15210,6 +15250,581 @@ function _fmtSyncOpts() {
     const note = clientRow.querySelector('.pres-fmt-opt-who');
     if (note) note.textContent = '— a “Prepared for” cover slide';
   }
+}
+
+/* ═══ Commercial Market deck — one click, whole deck ════════════════════════
+   Saskia's 2026-09-07 brief ("rework the commercial report but as a slide
+   deck"). Reachable from the Online Reports Library: + Slide Library →
+   Commercial Research Report → "Build the Commercial Market deck".
+
+   It builds a NEW PRIVATE deck owned by whoever clicked (so it lands in their
+   own "My Presentations"), fills it with the slide list below and opens it.
+   Nothing is stored as a template: the report pages come from the same
+   buildReportChartSpec() the library uses, the cover/chrome from the same
+   _fmtHeaderOverlays/_fmtChrome, and the four charts the report doesn't have
+   are modules in assets/Reports/charts/commercial-market-charts.js fed by
+   CMK_CHART_BUILDERS below — so they auto-refresh on deck open like every
+   other slide (refreshReportCharts, source.lib === 'cmk').
+
+   FIRST CRACK, deliberately. Where we have no data the slide carries a
+   LABELLED placeholder in brand yellow rather than a number nobody sourced:
+   Shaene's matrix (image to drop in), the TEU forecast, a retail-spend
+   forecast, the commercial-yield series, the yields-by-grade table, and the
+   state split on the healthcare waterfall (the ABS publishes Patient
+   Experiences by remoteness only — state sits in the microdata, TableBuilder
+   territory — so the shipped waterfall is the national change by year). */
+const CMK_EYEBROW = 'Commercial market';
+/* Sentence-case slide titles (brand rule; the report's own labels are title
+   case). Keyed by the commercial report's page id. */
+const CMK_TITLES = {
+  p3:  'Risk v long-term return',        p5:  'Cash rate v inflation',
+  p6:  'Building price indices',         p7:  'Building approvals',
+  p8:  'Retail turnover',                p9:  'Population growth',
+  p11: 'Return on stocks and gold',      p12: 'Government bond yield',
+  p13: 'Corporate bond yield',           p16: 'Industrial vacancy rate',
+  p17: 'Container trade (TEU)',          p19: 'Individuals accessing a GP',
+  p20: 'Population pyramid',             p21: 'GP visits by age',
+  p22: 'Federal health budget',          p23: 'Work from home',
+  p24: 'E-commerce sales',
+};
+/* The appendix = every remaining commercial page that has a chart recipe, in
+   report order. p8 and p17 are pulled forward into the narrative, so they are
+   not repeated here. */
+const CMK_APPENDIX = ['p3', 'p5', 'p6', 'p7', 'p9', 'p11', 'p12', 'p13', 'p16',
+                      'p19', 'p20', 'p21', 'p22', 'p23', 'p24'];
+/* State/territory series for the Treasury (Centre for Population) chart.
+   Colours follow the commercial report's own palette — NSW/VIC/QLD/WA/SA are
+   exactly the five the report's Population Growth page uses. */
+const CMK_STATES = [
+  ['st-nsw', 'NSW', '#f5a623'], ['st-vic', 'VIC', '#000000'],
+  ['st-qld', 'QLD', '#5cc8e0'], ['st-wa',  'WA',  '#c2a4d6'],
+  ['st-sa',  'SA',  '#3ecf8e'], ['st-tas', 'TAS', '#e58fa8'],
+  ['st-nt',  'NT',  '#86a8ff'], ['st-act', 'ACT', '#9aa3b1'],
+];
+const CMK_GREY = '#63666A', CMK_FLAG = '#FFA91F', CMK_TINT = '#F2F8F9';
+const CMK_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function _cmkNum(v) {
+  if (v === '' || v == null) return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+}
+/* "2026-08-01" → "Aug 26" (mirrors the commercial charts' own crShortDate). */
+function _cmkShortDate(iso) {
+  const m = String(iso == null ? '' : iso).match(/^(\d{4})-(\d{2})/);
+  return m ? (CMK_MON[parseInt(m[2], 10) - 1] + ' ' + m[1].slice(2)) : String(iso == null ? '' : iso);
+}
+/* "2026-08-01" → "August 2026" (for narrative copy). */
+function _cmkLongDate(iso) {
+  const m = String(iso == null ? '' : iso).match(/^(\d{4})-(\d{2})/);
+  if (!m) return String(iso == null ? '' : iso);
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+                  'July', 'August', 'September', 'October', 'November', 'December'];
+  return MONTHS[parseInt(m[2], 10) - 1] + ' ' + m[1];
+}
+
+/* ─── Data readers (memoised through the caller's cache object) ───────────── */
+/* The commercial report's stored snapshot — same row buildReportChartSpec reads,
+   so a deck slide can never disagree with the report page beside it. */
+async function _cmkTabs(cache) {
+  cache = cache || {};
+  if (cache.tabs !== undefined) return cache.tabs;
+  let tabs = null;
+  try {
+    if (window.PPReportCache) {
+      const snap = await window.PPReportCache.readSnapshot('commercial');
+      tabs = (snap && snap.tabs) ? snap.tabs : null;
+    }
+  } catch (e) { console.warn('[cmk] commercial snapshot unavailable', e); }
+  cache.tabs = tabs;
+  return tabs;
+}
+/* Centre for Population projections out of the Forge mart. NI + NOM + NIM is
+   the year's TOTAL growth (nationally NIM nets to zero, by definition). */
+async function _cmkPopRows(cache) {
+  cache = cache || {};
+  if (cache.pop !== undefined) return cache.pop;
+  let rows = null;
+  try {
+    const slugs = CMK_STATES.map(s => s[0]).concat(['australia']);
+    const { data, error } = await window.sb.from('rdp_raw_series')
+      .select('region_slug, metric, period, value')
+      .in('region_slug', slugs)
+      .in('metric', ['pop_proj_ni', 'pop_proj_nom', 'pop_proj_nim'])
+      .eq('freq', 'A');
+    if (error) throw error;
+    rows = data || [];
+  } catch (e) { console.warn('[cmk] population projections unavailable', e); }
+  cache.pop = rows;
+  return rows;
+}
+/* The report's OWN intro paragraphs (reports_state, slug 'commercial'), so the
+   deck opens in the report's voice rather than a paraphrase of it. Headings and
+   token chrome ({REGION} / © {year}) are filtered out; the longest remaining
+   body text on each of pages 2–4 is the paragraph. */
+async function _cmkIntroCopy(cache) {
+  cache = cache || {};
+  if (cache.intro !== undefined) return cache.intro;
+  let out = null;
+  try {
+    const { data } = await window.sb.from('reports_state').select('payload').eq('region', 'commercial').maybeSingle();
+    const texts = (data && data.payload && Array.isArray(data.payload.texts)) ? data.payload.texts : [];
+    const paras = [];
+    ['p2', 'p3', 'p4'].forEach(pid => {
+      let best = '';
+      texts.forEach(t => {
+        if (!t || t.pageId !== pid) return;
+        const s = String(t.text == null ? '' : t.text).replace(/\s+/g, ' ').trim();
+        if (s.length < 60) return;
+        if (s.indexOf('{') >= 0) return;          /* {REGION} / {year} page chrome */
+        if (s === s.toUpperCase()) return;        /* a heading, not body copy */
+        if (s.length > best.length) best = s;
+      });
+      if (best) paras.push(best);
+    });
+    if (paras.length) out = paras;
+  } catch (e) { console.warn('[cmk] report intro copy unavailable', e); }
+  cache.intro = out;
+  return out;
+}
+
+/* ─── The four deck-only chart specs ──────────────────────────────────────
+   Each returns a { module, data } spec (plain JSON — the module rebuilds the
+   ECharts option, formatter functions included, at every render) or null when
+   its source has no usable data. Keyed the same way the overlay's
+   source.lib='cmk' / source.key is, so refreshReportCharts can rebuild them. */
+const CMK_CHART_BUILDERS = {
+  /* Government + corporate 10-yr bond yields on one axis: the risk-free anchor
+     a commercial yield is quoted against, and what the market charges a
+     corporate borrower over it. Values are FRACTIONS in the snapshot. */
+  'bond-spread': async function (cache) {
+    const tabs = await _cmkTabs(cache);
+    const g = tabs && tabs['govt-bonds-data'];
+    const c = tabs && tabs['corporate-bond-data'];
+    if (!g || !Array.isArray(g['10YearGovernmentBondYield']) || !Array.isArray(g.yield)) return null;
+    const corpBy = {};
+    if (c && Array.isArray(c.date) && Array.isArray(c.data)) {
+      c.date.forEach((d, i) => {
+        const v = _cmkNum(c.data[i]);
+        if (v != null) corpBy[String(d).slice(0, 7)] = v;
+      });
+    }
+    const labels = [], gov = [], corp = [];
+    let maxV = 0, pair = null, lastGovIso = '';
+    g['10YearGovernmentBondYield'].forEach((d, i) => {
+      const yr = parseInt(String(d).slice(0, 4), 10);
+      if (!(yr >= 2004)) return;                 /* the window the report's p12 uses */
+      const gv = _cmkNum(g.yield[i]);
+      const cv = corpBy[String(d).slice(0, 7)];
+      labels.push(_cmkShortDate(d));
+      gov.push(gv);
+      corp.push(cv == null ? null : cv);
+      if (gv != null && gv > maxV) maxV = gv;
+      if (cv != null && cv > maxV) maxV = cv;
+      if (gv != null) lastGovIso = String(d);
+      if (gv != null && cv != null) pair = { iso: String(d), gov: gv, corp: cv };
+    });
+    if (!labels.length) return null;
+    let callout = '';
+    if (pair) {
+      callout = 'CORPORATE OVER GOVT\n' + _cmkLongDate(pair.iso).toUpperCase() + '\n+' +
+        Math.round((pair.corp - pair.gov) * 10000) + ' BPS';
+    }
+    return { module: 'cmk-bond-spread', data: {
+      labels: labels, gov: gov, corp: corp, maxV: maxV,
+      tickEvery: Math.max(1, Math.round(labels.length / 14)), callout: callout,
+      /* the narrative on the slide reads the level off these, so the month is
+         spelled out ("August 2026") rather than the axis's short "Aug 26" */
+      lastGovIso: lastGovIso,
+    } };
+  },
+
+  /* In-store v online retail spending. Total retail turnover is MONTHLY $m in
+     the snapshot; e-commerce sales are ANNUAL $bn — so the monthly series is
+     summed into calendar years (complete years only) and divided by 1000
+     before the two can sit in the same bar. In-store is the residual. */
+  'retail-split': async function (cache) {
+    const tabs = await _cmkTabs(cache);
+    const rt = tabs && tabs['retail-turnover-data'];
+    const ec = tabs && tabs['national-e-commerce-sales-data'];
+    if (!rt || !Array.isArray(rt.date) || !Array.isArray(rt.data)) return null;
+    if (!ec || !Array.isArray(ec.date) || !Array.isArray(ec.data)) return null;
+    const months = {};
+    rt.date.forEach((d, i) => {
+      const y = parseInt(String(d).slice(0, 4), 10);
+      const v = _cmkNum(rt.data[i]);
+      if (!y || v == null) return;
+      (months[y] = months[y] || []).push(v);
+    });
+    const online = {};
+    ec.date.forEach((d, i) => {
+      const m = String(d).match(/(\d{4})/);
+      const v = _cmkNum(ec.data[i]);
+      if (m && v != null) online[parseInt(m[1], 10)] = v;
+    });
+    const years = [], instore = [], onl = [], share = [];
+    Object.keys(months).map(Number).sort((a, b) => a - b).forEach(y => {
+      if (months[y].length < 12) return;          /* a part-year would understate the bar */
+      if (online[y] == null) return;
+      const totalBn = months[y].reduce((a, b) => a + b, 0) / 1000;
+      const onBn = online[y];
+      if (!(totalBn > 0) || onBn > totalBn) return;
+      years.push(y);
+      instore.push(Math.round((totalBn - onBn) * 10) / 10);
+      onl.push(Math.round(onBn * 10) / 10);
+      share.push(Math.round((onBn / totalBn) * 1000) / 10);
+    });
+    if (!years.length) return null;
+    return { module: 'cmk-retail-split', data: { years: years, instore: instore, online: onl, share: share } };
+  },
+
+  /* Treasury / Centre for Population projected growth: state bars, national
+     line. Restricted to the years EVERY state covers so the groups line up
+     (the national row runs one year further). */
+  'pop-growth': async function (cache) {
+    const rows = await _cmkPopRows(cache);
+    if (!rows || !rows.length) return null;
+    const tot = {};
+    rows.forEach(r => {
+      const y = parseInt(String(r.period).slice(0, 4), 10);
+      const v = _cmkNum(r.value);
+      if (!y || v == null) return;
+      tot[r.region_slug] = tot[r.region_slug] || {};
+      tot[r.region_slug][y] = (tot[r.region_slug][y] || 0) + v;
+    });
+    let years = null;
+    CMK_STATES.forEach(s => {
+      const ys = Object.keys(tot[s[0]] || {}).map(Number).sort((a, b) => a - b);
+      years = (years == null) ? ys : years.filter(y => ys.indexOf(y) >= 0);
+    });
+    if (!years || !years.length) return null;
+    const states = CMK_STATES.filter(s => tot[s[0]]).map(s => ({
+      name: s[1], color: s[2],
+      data: years.map(y => (tot[s[0]][y] != null ? Math.round(tot[s[0]][y]) : null)),
+    }));
+    if (!states.length) return null;
+    const national = years.map(y => {
+      const v = (tot.australia || {})[y];
+      return v != null ? Math.round(v) : null;
+    });
+    /* period = the FY-ENDING calendar year, so 2026 → "2025-26" */
+    return { module: 'cmk-pop-growth', data: {
+      years: years.map(y => (y - 1) + '-' + String(y).slice(2)),
+      states: states, national: national,
+    } };
+  },
+
+  /* Healthcare waterfall — INTERIM (national). Cumulative growth in the number
+     of people who saw a GP, one step per financial year, closed by a total
+     bar. Zero-based on the CHANGE (not the level) so 0.4m steps are legible
+     instead of slivers on a 23m axis. Down steps are drawn from the lower of
+     the two cumulative positions, which is the only way an ECharts stack will
+     hang a bar downwards. */
+  'health-waterfall': async function (cache) {
+    const tabs = await _cmkTabs(cache);
+    const t = tabs && tabs['individuals-who-accessed-gp-data'];
+    if (!t || !Array.isArray(t.date) || !Array.isArray(t.peopleWhoSawAGp)) return null;
+    const pts = [];
+    t.date.forEach((d, i) => {
+      const v = _cmkNum(t.peopleWhoSawAGp[i]);
+      if (v != null) pts.push({ fy: String(d), v: v });
+    });
+    if (pts.length < 3) return null;
+    const cats = [], base = [], delta = [], dir = [];
+    let cum = 0, peak = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const ch = pts[i].v - pts[i - 1].v;
+      const next = cum + ch;
+      cats.push(pts[i].fy);
+      base.push(Math.min(cum, next));
+      delta.push(Math.abs(ch));
+      dir.push(ch < 0 ? 'down' : 'up');
+      cum = next;
+      if (cum > peak) peak = cum;
+    }
+    cats.push('Total'); base.push(0); delta.push(cum); dir.push('total');
+    const top = Math.max(peak, cum);
+    return { module: 'cmk-waterfall', data: {
+      cats: cats, base: base, delta: delta, dir: dir,
+      div: 1e6, suffix: 'm', dp: 2, name: 'Cumulative growth',
+      axis: { min: 0, max: Math.ceil(top / 1e6) * 1e6, interval: 1e6 },
+    } };
+  },
+};
+
+/* Build one deck-only chart spec. Never throws — a chart that can't be built
+   leaves its slide with a labelled gap instead of killing the whole deck. */
+async function _cmkBuildChartSpec(key, cache) {
+  const fn = CMK_CHART_BUILDERS[key];
+  if (typeof fn !== 'function') return null;
+  try { return await fn(cache || {}); }
+  catch (e) { console.warn('[cmk] chart build failed:', key, e); return null; }
+}
+
+/* ─── Slide parts ─────────────────────────────────────────────────────────── */
+/* A footnote / flag line under a chart. flag:true = brand yellow + bold, for
+   "we do not have this yet" — it has to be impossible to mistake for data. */
+function _cmkNote(y, text, o) {
+  o = o || {};
+  return { id: _fmtId('t'), type: 'text', x: 73, y: y, w: (o.w || 940), h: (o.h || 18),
+    html: _fmtEsc(text), bold: !!o.flag, italic: false, align: 'left',
+    color: o.flag ? CMK_FLAG : CMK_GREY, fontSize: (o.fs || 11.5),
+    fontWeight: o.flag ? 700 : 500, lineHeight: 1.4, fontFamily: "'Montserrat',sans-serif" };
+}
+/* A library graph slide: the standard chrome + one chart in the content band,
+   with room reserved under the chart for up to two footnotes. Geometry matches
+   _fmtConfirmCart exactly (x 73, w 1134 = baseW, so the chart scales 1:1 and
+   clears the footer line at 654 and the logo at 648). */
+function _cmkGraphSlide(title, spec, source, notes) {
+  const ov = _fmtChrome(title, CMK_EYEBROW);
+  notes = (notes || []).filter(Boolean);
+  const h = notes.length ? 452 : 520;
+  ov.push({
+    id: _fmtId('c'), type: 'chart',
+    x: 73, y: 120, w: 1134, h: h, baseW: 1134, baseH: h,
+    spec: spec, autoplay: true,
+    ...(source ? { source: source } : {}),
+  });
+  let y = 584;
+  notes.forEach(n => { ov.push(_cmkNote(y, n.text, n)); y += (n.h || 18) + 4; });
+  return ov;
+}
+/* Intro — the report's own opening paragraphs, one editable overlay each. */
+function _cmkIntroOverlays(paras) {
+  const M = "'Montserrat',sans-serif";
+  const copy = (paras && paras.length) ? paras.slice(0, 4) : [
+    'Commercial property earns its place in a portfolio for income: long leases, contracted rent reviews and tenants who carry the outgoings.',
+    'Every asset is judged on the return it pays for each unit of risk taken on — the test commercial property is built to pass.',
+    'This deck sets out the drivers behind that income: the risk-free rate and the premium above it, the tenants’ own demand signals, and the structural shifts in retail, logistics and healthcare.',
+  ];
+  const ov = [
+    _fmtEyebrow(73, 64, CMK_EYEBROW.toUpperCase()),
+    _fmtTitleT(73, 92, 1000, 'What this deck covers', { fs: 39, h: 52 }),
+    _fmtRuleS(73, 158),
+  ];
+  let y = 200;
+  copy.forEach(p => {
+    /* One line box per paragraph, sized off its length (Montserrat 17px in a
+       1090px measure fits ~115 characters a line). */
+    const lines = Math.max(1, Math.ceil(p.length / 112));
+    const h = Math.round(lines * 17 * 1.55) + 6;
+    ov.push({ id: _fmtId('t'), type: 'text', x: 73, y: y, w: 1090, h: h,
+      html: '<span style="color:#00A0B4;font-weight:700">—</span>&nbsp;&nbsp;' + _fmtEsc(p),
+      bold: false, italic: false, align: 'left', color: CMK_GREY,
+      fontSize: 17, fontWeight: 400, lineHeight: 1.55, fontFamily: M });
+    y += h + 16;
+  });
+  ov.push(_cmkNote(Math.max(y + 8, 560), 'In this deck — risk premium · container trade · retail spending · population · healthcare · yields', { w: 1000, fs: 13, h: 22 }));
+  ov.push({ id: _fmtId('t'), type: 'text', x: 73, y: 654, w: 600, h: 20,
+    html: 'performanceproperty.com.au', bold: false, italic: false, align: 'left',
+    color: _FMT_MUTE, fontSize: 11, fontWeight: 500, fontFamily: M });
+  ov.push(_fmtLogoI(false));
+  return ov;
+}
+/* Shaene's matrix — an empty, clearly-marked drop zone. No image: the graphic
+   is hers and lives outside this repo, so the deck asks for it rather than
+   inventing something that looks like it. */
+function _cmkMatrixOverlays() {
+  const ov = _fmtChrome('Shaene’s commercial matrix', CMK_EYEBROW);
+  ov.push({ id: _fmtId('s'), type: 'shape', kind: 'rectSharp', x: 143, y: 168,
+    w: 994, h: 400, fill: CMK_TINT, stroke: '#00A0B4', strokeWidth: 2, dash: '12 9' });
+  ov.push({ id: _fmtId('t'), type: 'text', x: 173, y: 350, w: 934, h: 26,
+    html: _fmtEsc('Drop Shaene’s commercial matrix image here'),
+    bold: true, italic: false, align: 'center', color: '#00A0B4',
+    fontSize: 17, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" });
+  ov.push(_cmkNote(590, 'Placeholder — the matrix graphic is supplied by Shaene; use Insert → Image to drop it into the box.', { flag: true, w: 940 }));
+  return ov;
+}
+/* Risk premium — the two bond lines, then the narrative that turns the
+   risk-free rate into a target commercial yield. Numbers in the copy are read
+   off the chart's own data; nothing is assumed. */
+function _cmkRiskPremiumOverlays(spec) {
+  const M = "'Montserrat',sans-serif";
+  const d = (spec && spec.data) || {};
+  let lastGov = null;
+  (d.gov || []).forEach(v => { if (v != null) lastGov = v; });
+  const lastLabel = d.lastGovIso ? _cmkLongDate(d.lastGovIso) : '';
+  const PREMIUM = 0.04;   /* Saskia's worked example: ~400 bps over the bond */
+  const govPct = (lastGov != null) ? (lastGov * 100).toFixed(2) + '%' : null;
+  const impliedPct = (lastGov != null) ? ((lastGov + PREMIUM) * 100).toFixed(2) + '%' : null;
+  const narrative = (lastGov != null)
+    ? ('The 10-year Commonwealth bond is the risk-free anchor every commercial yield is quoted against. ' +
+       (lastLabel ? 'At ' + lastLabel + ' it sits at ' : 'It currently sits at ') + govPct + '. A general commercial asset is bought for a risk premium over that anchor — on Melbourne stock, of the order of 400 basis points — which implies a target yield near ' +
+       impliedPct + '. That premium, not the headline yield, is what a commercial buyer is actually paid for.')
+    : ('The 10-year Commonwealth bond is the risk-free anchor every commercial yield is quoted against. A general commercial asset is bought for a risk premium over that anchor — on Melbourne stock, of the order of 400 basis points. That premium, not the headline yield, is what a commercial buyer is actually paid for.');
+  const ov = _fmtChrome('Risk premium over the 10-year bond', CMK_EYEBROW);
+  ov.push({
+    id: _fmtId('c'), type: 'chart',
+    x: 73, y: 124, w: 1134, h: 384, baseW: 1134, baseH: 384,
+    spec: spec, autoplay: true, source: { lib: 'cmk', key: 'bond-spread' },
+  });
+  ov.push({ id: _fmtId('s'), type: 'shape', kind: 'rectSharp', x: 73, y: 520, w: 1134, h: 104,
+    fill: CMK_TINT, stroke: '#D5EBEE', strokeWidth: 1 });
+  ov.push({ id: _fmtId('t'), type: 'text', x: 93, y: 534, w: 400, h: 16,
+    html: '<span style="letter-spacing:1.5px">THE SPREAD</span>', bold: true, italic: false,
+    align: 'left', color: '#00A0B4', fontSize: 10.5, fontWeight: 700, fontFamily: M });
+  ov.push({ id: _fmtId('t'), type: 'text', x: 93, y: 554, w: 1094, h: 62,
+    html: _fmtEsc(narrative), bold: false, italic: false, align: 'left',
+    color: CMK_GREY, fontSize: 14, fontWeight: 400, lineHeight: 1.45, fontFamily: M });
+  ov.push(_cmkNote(630, 'Commercial yield series: to be sourced — the premium above is an illustration, not a measured spread.', { flag: true, w: 940 }));
+  return ov;
+}
+/* Yields by asset grade — deliberately EMPTY. Saskia asked for a blank table
+   rather than a hunt; an editable table is what she can fill in place. */
+function _cmkYieldsOverlays() {
+  const ov = _fmtChrome('Yields by asset grade', CMK_EYEBROW);
+  const cols = [{ w: 300 }, { w: 340 }, { w: 340 }];
+  const rows = [{ h: 56 }, { h: 92 }, { h: 92 }, { h: 92 }];
+  const head = ['', 'Industrial', 'Retail'];
+  const grades = ['Prime', 'Modern', 'Secondary'];
+  const cells = [head.map(h => ({ html: h ? '<b>' + _fmtEsc(h) + '</b>' : '', bgColor: '#171B24', textColor: '#ffffff', align: 'center', vAlign: 'middle' }))];
+  grades.forEach(g => {
+    cells.push([
+      { html: '<b>' + _fmtEsc(g) + '</b>', bgColor: '#F1F3F4', textColor: '#171B24', align: 'left', vAlign: 'middle' },
+      { html: '', bgColor: '', textColor: '', align: 'center', vAlign: 'middle' },
+      { html: '', bgColor: '', textColor: '', align: 'center', vAlign: 'middle' },
+    ]);
+  });
+  const w = cols.reduce((a, c) => a + c.w, 0);
+  const h = rows.reduce((a, r) => a + r.h, 0);
+  ov.push({ id: _fmtId('tbl'), type: 'table', x: Math.round((1280 - w) / 2), y: 170,
+    w: w, h: h, cols: cols, rows: rows, cells: cells });
+  ov.push({ id: _fmtId('t'), type: 'text', x: 73, y: 560, w: 940, h: 20,
+    html: _fmtEsc('Source: to be confirmed'), bold: false, italic: false, align: 'left',
+    color: CMK_GREY, fontSize: 13, fontWeight: 500, fontFamily: "'Montserrat',sans-serif" });
+  ov.push(_cmkNote(590, 'Left blank on purpose — prime / modern / secondary yields for industrial and retail still need a source we can stand behind.', { flag: true, w: 940 }));
+  return ov;
+}
+
+/* ─── The generator ───────────────────────────────────────────────────────── */
+/* One click: create a private deck for the signed-in user, build every slide,
+   persist, open it. Progress rides the same full-screen overlay "Add to deck"
+   uses. Any slide that cannot be built is skipped and reported in the closing
+   toast rather than aborting the run. */
+async function _cmkBuildDeck() {
+  if (!_canWritePresCloud) { showPresToast('You need edit access to build a deck.', { warn: true }); return; }
+  if (!window.PPReportCache) { showPresToast('Chart-data module not loaded — reload the page and try again.', { warn: true }); return; }
+  closeFmtPicker();
+  const stamp = new Date().toLocaleDateString('en-AU', { month: 'short', year: 'numeric' });
+  const title = 'Commercial Market deck — ' + stamp;
+  _fmtSetLoading(true, 'Creating “' + title + '”…');
+  const step = (t) => new Promise(r => { _fmtSetLoading(true, t); requestAnimationFrame(() => r()); });
+  const cache = {}, snapCache = {}, skipped = [];
+  let deck = null;
+  try {
+    /* 1 — the deck itself. PRIVATE + owned by whoever clicked, so it lands in
+           their own "My Presentations" (the visibility toggle can publish it
+           later). Persisted straight away so a refresh can't lose it. */
+    const now = new Date().toISOString();
+    deck = {
+      id: 'user-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+      custom: true, title: title, titleHtml: title, sub: '',
+      meta: new Date().toLocaleDateString('en-AU', { month: 'long', year: 'numeric' }),
+      icon: '🏢', slides: [], lastUpdated: now,
+    };
+    deck._visibility = 'private';
+    _customDecks.push(deck);
+    _mirrorDecksLocal();
+    if (typeof _saveDeckNow === 'function') _saveDeckNow(deck);
+    openDeck(deck.id);
+
+    /* 2 — cover + intro */
+    await step('Cover and intro…');
+    _fmtAppendSlide(_fmtHeaderOverlays('Commercial Research Report'), _FMT_HDR_BG);
+    _fmtAppendSlide(_cmkIntroOverlays(await _cmkIntroCopy(cache)), null);
+
+    /* 3 — Shaene's matrix (placeholder) */
+    _fmtAppendSlide(_cmkMatrixOverlays(), null);
+
+    /* 4 — risk premium */
+    await step('Risk premium v the 10-year bond…');
+    const bond = await _cmkBuildChartSpec('bond-spread', cache);
+    if (bond) _fmtAppendSlide(_cmkRiskPremiumOverlays(bond), null);
+    else skipped.push('risk premium');
+
+    /* 5 — container trade (the report's own Freight Movement page) */
+    await step('Container trade…');
+    const teu = await buildReportChartSpec('commercial', 'p17', snapCache);
+    if (teu && teu.spec) {
+      _fmtAppendSlide(_cmkGraphSlide(CMK_TITLES.p17, teu.spec, { slug: 'commercial', pageId: 'p17' }, [
+        { text: 'Container volumes through the five mainland container ports, in twenty-foot equivalent units.' },
+        { text: 'Forecast: to be added (Port of Melbourne 2050 strategy).', flag: true },
+      ]), null);
+    } else skipped.push('container trade');
+
+    /* 6 — retail: in-store v online */
+    await step('Retail spending — in-store v online…');
+    const split = await _cmkBuildChartSpec('retail-split', cache);
+    if (split) {
+      _fmtAppendSlide(_cmkGraphSlide('Retail spending — in-store v online', split, { lib: 'cmk', key: 'retail-split' }, [
+        { text: 'National only — the ABS publishes no state split for online retail. In-store is total retail turnover less online sales; the two series come from different collections, so read the split as indicative. Complete calendar years only.', h: 34 },
+        { text: 'Forecast: not available from a public source.', flag: true },
+      ]), null);
+    } else skipped.push('retail split');
+
+    /* 7 — retail turnover (the report's own page, for context) */
+    const turnover = await buildReportChartSpec('commercial', 'p8', snapCache);
+    if (turnover && turnover.spec) {
+      _fmtAppendSlide(_cmkGraphSlide(CMK_TITLES.p8, turnover.spec, { slug: 'commercial', pageId: 'p8' }, [
+        { text: 'Monthly Australian retail turnover, the total the split above is drawn from.' },
+      ]), null);
+    } else skipped.push('retail turnover');
+
+    /* 8 — Treasury population growth */
+    await step('Treasury population growth…');
+    const pop = await _cmkBuildChartSpec('pop-growth', cache);
+    if (pop) {
+      _fmtAppendSlide(_cmkGraphSlide('Projected population growth', pop, { lib: 'cmk', key: 'pop-growth' }, [
+        { text: 'Total growth = natural increase + net overseas migration + net interstate migration. Years are financial years.' },
+        { text: 'Source: Centre for Population, Australian Treasury — population statement projections.' },
+      ]), null);
+    } else skipped.push('population growth');
+
+    /* 9 — healthcare waterfall (interim, national) */
+    await step('Healthcare access…');
+    const health = await _cmkBuildChartSpec('health-waterfall', cache);
+    if (health) {
+      _fmtAppendSlide(_cmkGraphSlide('People accessing healthcare — change by year', health, { lib: 'cmk', key: 'health-waterfall' }, [
+        { text: 'Cumulative growth in the number of Australians who saw a GP, one step per financial year.' },
+        { text: 'Interim: national change by year — state split to follow (the ABS publishes Patient Experiences by remoteness, not by state).', flag: true, h: 34 },
+      ]), null);
+    } else skipped.push('healthcare waterfall');
+
+    /* 10 — yields by grade (blank) */
+    _fmtAppendSlide(_cmkYieldsOverlays(), null);
+
+    /* 11 — appendix: the rest of the commercial report, in report order */
+    _fmtAppendSlide(_bssDividerOverlays('Appendix', CMK_EYEBROW), _FMT_HDR_BG);
+    let done = 0;
+    for (const pid of CMK_APPENDIX) {
+      done++;
+      await step('Appendix — ' + (CMK_TITLES[pid] || pid) + ' (' + done + '/' + CMK_APPENDIX.length + ')…');
+      let built = null;
+      try { built = await buildReportChartSpec('commercial', pid, snapCache); } catch (_) { built = null; }
+      if (!built || !built.spec) { skipped.push(CMK_TITLES[pid] || pid); continue; }
+      _fmtAppendSlide(_cmkGraphSlide(CMK_TITLES[pid] || pid, built.spec, { slug: 'commercial', pageId: pid }), null);
+    }
+
+    /* 12 — persist + show it */
+    await step('Finishing…');
+    saveOverlays();
+    if (typeof saveSlideBgs === 'function') saveSlideBgs();
+    if (typeof saveActiveDeckIfCustom === 'function') saveActiveDeckIfCustom();
+    if (typeof buildThumbnails === 'function') buildThumbnails();
+    if (typeof renderSlide === 'function') renderSlide(0);
+    if (typeof resetHistory === 'function') resetHistory();
+    pushHistory();
+  } catch (e) {
+    console.error('[cmk] deck build failed', e);
+    showPresToast('Could not finish the Commercial Market deck: ' + ((e && e.message) || 'unknown error'), { warn: true, duration: 8000 });
+    return;
+  } finally {
+    _fmtSetLoading(false);
+  }
+  const n = deck ? deck.slides.length : 0;
+  showPresToast(title + ' — ' + n + ' slide' + (n === 1 ? '' : 's') + ' built' +
+    (skipped.length ? (', ' + skipped.length + ' skipped (no data): ' + skipped.join(', ')) : '') + '.',
+    { duration: 8000, warn: !!skipped.length });
 }
 
 /* ─── IR Library — investment case-study slides from the IR Builder ─────────

@@ -81,11 +81,48 @@
         }
       });
     }
+    /* Category x-axis labels — the SAME rule commercial-report.html's
+       _mountChart applies, ported here 2026-09-07 so a slide and the report
+       page it came from agree. It used to force interval:0 + the staircase on
+       every category axis: fine for a yearly axis, but on the sub-yearly ones
+       (Retail Turnover p8 ≈ 258 monthly rows, Government/Corporate Bonds
+       p12/p13 ≈ 260) it painted every month and the axis came out a black
+       smear on every library slide. Sub-yearly axes now thin to ONE label per
+       year, rotated 45°, exactly as the report does; yearly axes keep today's
+       staircase, unchanged. A module that sets its own axisLabel.formatter
+       still opts out of all of it. */
+    var isDateLabel = function (s) {
+      s = String(s).trim();
+      return /^\d{4}\b/.test(s) ||
+             /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*\d{2,4}$/i.test(s);
+    };
+    var yearOf = function (s) {
+      s = String(s);
+      var m = s.match(/^(\d{4})\b/);
+      if (m) return m[1];
+      m = s.match(/(\d{2,4})\s*$/);
+      return m ? m[1] : s;
+    };
     var xAxes = Array.isArray(option.xAxis) ? option.xAxis : (option.xAxis ? [option.xAxis] : []);
     xAxes.forEach(function (ax) {
       if (!ax || ax.type !== 'category') return;
       var al = ax.axisLabel = Object.assign({}, ax.axisLabel || {});
-      if (typeof al.formatter !== 'function') {
+      if (typeof al.formatter === 'function') return;
+      var data = Array.isArray(ax.data) ? ax.data : [];
+      var dated = data.filter(isDateLabel);
+      var uniqYears = {}, uniqN = 0;
+      dated.forEach(function (v) { var y = yearOf(v); if (!uniqYears[y]) { uniqYears[y] = 1; uniqN++; } });
+      if (uniqN && dated.length > uniqN + 4) {
+        var prevY = null, showIdx = {};
+        data.forEach(function (v, i) {
+          if (!isDateLabel(v)) return;
+          var y = yearOf(v);
+          if (y !== prevY) { showIdx[i] = 1; prevY = y; }
+        });
+        al.interval = function (idx) { return !!showIdx[idx]; };
+        al.rotate = 45;
+        delete al.lineHeight;
+      } else {
         al.interval = 0; al.rotate = 0; al.lineHeight = 14;
         al.formatter = function (v, i) { return (i % 2 === 0) ? String(v) : '\n' + String(v); };
       }
