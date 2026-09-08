@@ -2660,8 +2660,27 @@ async function rsBoot() {
     await rsDoSave();
   }
   if (cacheNeedsUpdate) {
-    setTimeout(() => location.reload(), 60);
-    return;
+    /* Reload so the renderers re-paint from the updated cache — ONE-SHOT per
+       region per tab, exactly as online-reports.html does. If the cache STILL
+       differs after that reload (rsApplyToCache swallows a full-localStorage
+       QuotaExceededError, so the write can silently never land), reloading
+       again loops forever: Saskia's "it refreshes over and over … and crashed
+       my computer" on this page, 2026-09-08. Continue without reloading
+       instead — decorations may be a boot behind; the next successful write
+       self-heals. */
+    const onceKey = 'ppa-rs-sync-reloaded-' + slug;
+    let already = false;
+    try { already = sessionStorage.getItem(onceKey) === '1'; } catch (_) {}
+    if (!already) {
+      try { sessionStorage.setItem(onceKey, '1'); } catch (_) {}
+      setTimeout(() => location.reload(), 60);
+      return;
+    }
+    console.warn('[commercial-report] state cache still divergent after a sync reload — continuing without another reload (storage may be full).');
+  } else {
+    /* Converged — clear the one-shot so a FUTURE genuine server change can
+       trigger its own single reload. */
+    try { sessionStorage.removeItem('ppa-rs-sync-reloaded-' + slug); } catch (_) {}
   }
   rsSetStatus('saved');
 }
