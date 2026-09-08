@@ -971,10 +971,20 @@ function sensitivity(slug, type, years){
   const income = inc0 * Math.pow(1+wg, years);
   const margin = DB.cfg.rates.forecast.margin + (DB.cfg.rates.forecast.apra||0);
   const curCash = DB.cfg.rates.current.cash, fcCash = DB.cfg.rates.forecast.cash;
+  /* The rate the ladder PRINTS (Saskia + Shaene, 2026-09-08): each rung shows
+     the PP variable rate the Runway Workbook produces when that cash rate is
+     typed into its forecast cell — cash + bank margin + APRA — and the current
+     rung shows today's ACTUAL bank rate from the workbook's Current column
+     (variable base + APRA = 6.72%), because typing the current cash rate gives
+     6.60%, not the real 6.72%. The ceiling maths is unchanged: every rung,
+     the current one included, is still assessed at cash + margin (the CSV
+     model), so the three value columns stay as they were. */
+  const curRate = (DB.cfg.rates.current && DB.cfg.rates.current.rate!=null) ? DB.cfg.rates.current.rate : (curCash+margin);
   const ladder = [...new Set([0.05,0.045,0.035,0.03,0.02,0.015,0.01,curCash,fcCash])].sort((a,b)=>b-a);
   const rows = ladder.map(cash=>{ const rate=cash+margin; const m=income*52*ai/12; const ceil=(m*(1-Math.pow(1+rate/12,-360))/(rate/12))/0.8; const g=ceil-median;
-    return { cash, ceil, g, gp:g/median*100, isCur:cash===curCash, isFc:cash===fcCash }; });
-  return { median, ceilRows:rows, curCash, fcCash };
+    const isCur=cash===curCash;
+    return { cash, rate, rateShow:isCur?curRate:rate, ceil, g, gp:g/median*100, isCur, isFc:cash===fcCash }; });
+  return { median, ceilRows:rows, curCash, fcCash, curRate, fcRate:fcCash+margin };
 }
 
 /* ── slide builders (deck order matches the sample) ── */
@@ -1129,11 +1139,12 @@ function mountSens(slideEl, c, type){
   const mLab=type==='h'?'MHP':'MUP';
   const smoney=v=>{ const r=Math.round(v); return (r<0?'-':'')+'$'+Math.abs(r).toLocaleString(); };
   const rows=s.ceilRows.map(r=>'<tr class="'+(r.isFc?'fc':(r.isCur?'cur':''))+'">'
-    +'<td>'+(r.cash*100).toFixed(2)+'%</td><td>'+smoney(r.ceil)+'</td><td>'+smoney(r.g)+'</td><td>'+r.gp.toFixed(2)+'%</td></tr>').join('');
+    +'<td>'+(r.rateShow*100).toFixed(2)+'%</td><td>'+smoney(r.ceil)+'</td><td>'+smoney(r.g)+'</td><td>'+r.gp.toFixed(2)+'%</td></tr>').join('');
   /* Column header renamed 2026-08-25 (Saskia/Kia via Van): "Rate of Borrowing"
-     rather than "Cash Rate". TEXT ONLY — the ladder values are unchanged and
-     are still cash rates; the ceiling maths continues to assess at cash +
-     margin + APRA. Van's explicit call after being shown the difference. */
+     rather than "Cash Rate" — text only at the time, the rungs still printed
+     cash rates. 2026-09-08 (Saskia + Shaene): the rungs now print the rate of
+     borrowing itself (see sensitivity() — cash + margin + APRA, current rung =
+     the actual 6.72%); the value columns are untouched. */
   host.innerHTML='<table class="bss-senst"><thead><tr><th>Rate of Borrowing</th><th>Ceiling Price</th><th>Growth from<br>Current '+mLab+'</th><th>% Growth</th></tr></thead><tbody>'+rows+'</tbody></table>';
 }
 
