@@ -1196,8 +1196,9 @@ async function renderPopForecastChart(host, slug){
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
   await whenChartsReady();
   if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
-  const f=forecastPop(slug,3);
+  const f=forecastPop(slug, state.summary?5:3);   /* Summary: every projection year the Centre for Population publishes (4 for a state-based region, 5 for a capital) */
   if(!f){ host.innerHTML='<div class="bss-chartload">No population projection for this region.</div>'; return; }
+  if(state.summary){ _renderPopForecastSummary(host, slug, f); return; }
   const cm=v=>Math.round(v).toLocaleString();
   const fyLabel=y=>(y-1)+'-'+String(y).slice(-2);   /* pop year-key Y → FY label (2025 → "2024-25") */
   const S=popSeries(slug)||{};                       /* GCCSA for capitals, SUA for regionals */
@@ -1225,6 +1226,45 @@ async function renderPopForecastChart(host, slug){
     try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
+}
+/* Summary-deck variant of Forecasted Population (Van + Shaene review
+   2026-09-07: "just the additional people + historical average", "make it look
+   better"). One bar per projection year = the people ADDED that year (projected
+   population less the year before), the number written on each bar, and a
+   dashed line at the region's long-run average annual gain over its FULL ERP
+   history (Van: "Full"). Same forecastPop() inputs as the Full Report, which
+   keeps its cumulative-population chart above. */
+function _renderPopForecastSummary(host, slug, f){
+  const S=popSeries(slug)||{};
+  const yrs=Object.keys(S).map(Number).sort((a,b)=>a-b);
+  const diffs=[]; for(let i=1;i<yrs.length;i++){ const a=S[String(yrs[i-1])], b=S[String(yrs[i])]; if(a!=null&&b!=null&&isFinite(a)&&isFinite(b)) diffs.push(b-a); }
+  const avg=diffs.length?diffs.reduce((s,v)=>s+v,0)/diffs.length:null;
+  const fy=y=>(y-1)+'-'+String(y).slice(-2);
+  const histLabel=(yrs.length>1)?fy(yrs[1])+' to '+fy(yrs[yrs.length-1]):'';
+  const cats=[], vals=[]; let prev=f.base;
+  f.rows.forEach(r=>{ cats.push(r.label); vals.push(Math.round(r.pop-prev)); prev=r.pop; });
+  const cm=v=>(v<0?'−':'+')+Math.abs(Math.round(v)).toLocaleString();
+  const all=vals.concat(avg==null?[]:[avg]);
+  const maxV=Math.max.apply(null, all.map(v=>Math.abs(v)));
+  const anyNeg=all.some(v=>v<0);
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
+      formatter:params=>{ const p=params[0]; return '<b>'+p.axisValue+'</b><br>'+p.marker+'Additional people: <b>'+cm(p.value)+'</b>'+(avg!=null?'<br>Historical average: <b>'+cm(avg)+'</b> a year':''); } },
+    grid:{left:82,right:170,top:46,bottom:34},
+    xAxis:{ type:'category', data:cats, axisLabel:{color:'#555',fontSize:10.5,interval:0}, axisTick:{show:false}, axisLine:{lineStyle:{color:'#cfd4da'}} },
+    /* no explicit max — ECharts picks round ticks (an explicit 1.25× max printed
+       stray "116,000"/"62,000" top labels); the taller grid top is the headroom
+       for the value labels above the tallest bar */
+    yAxis:{ type:'value', min:anyNeg?undefined:0,
+      axisLabel:{color:'#7a7f87',fontSize:10,formatter:v=>v.toLocaleString()}, axisLine:{show:false}, axisTick:{show:false}, splitLine:{lineStyle:{color:'#e4e7ec'}},
+      name:'Additional people per year', nameLocation:'middle', nameGap:64, nameTextStyle:{color:'#555',fontSize:10} },
+    series:[{ type:'bar', barCategoryGap:'38%', data:vals, itemStyle:{color:'#00A0B4', borderRadius:[3,3,0,0]},
+      label:{show:true, position:'top', fontSize:11.5, fontWeight:700, color:'#171B24', formatter:p=>cm(p.value)},
+      markLine: avg==null?undefined:{ silent:true, symbol:['none','none'], lineStyle:{color:'#171B24',type:'dashed',width:1.6},
+        label:{position:'end', color:'#171B24', fontSize:9.5, fontWeight:600, lineHeight:13,
+          formatter:'Historical average\n'+cm(avg)+' a year'+(histLabel?'\n'+histLabel:'')},
+        data:[{ yAxis: avg }] } }] };
+  _drawEChart(host, option);
 }
 /* Pages 14-15: Sensitivity Analysis — sample-deck look (Van 2026-07-19):
    headless slide, live TABLE only (black header band, white cells, thin grey
@@ -1834,10 +1874,12 @@ async function renderPopMovement(host, slug){
   const has=o=>o&&Object.keys(o).length;
   const src=has(DB.nom[slug])?slug:(st&&has(DB.nom[st])?st:slug);
   const ni=DB.ni[src]||{}, nim=DB.nim[src]||{}, nom=DB.nom[src]||{};
-  const years=Array.from(new Set([].concat(Object.keys(ni),Object.keys(nim),Object.keys(nom)))).map(Number).filter(y=>y>=1990).sort((a,b)=>a-b);
+  const yFrom=state.summary?2010:1990;   /* Summary deck starts at 2010 (Shaene 2026-09-07: "IM – 2010") */
+  const years=Array.from(new Set([].concat(Object.keys(ni),Object.keys(nim),Object.keys(nom)))).map(Number).filter(y=>y>=yFrom).sort((a,b)=>a-b);
   if(!years.length){ host.innerHTML='<div class="bss-chartload">No population-movement data for this region.</div>'; return; }
   const col=(o,y)=>{ const v=o[String(y)]; return (v==null||!isFinite(v))?null:Math.round(v); };
   const NI=years.map(y=>col(ni,y)), NIM=years.map(y=>col(nim,y)), NOM=years.map(y=>col(nom,y));
+  if(state.summary){ _renderPopMovementSummary(host, src, slug, years, NI, NIM, NOM); return; }
   const cm=v=>v==null?'—':Number(v).toLocaleString();
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
@@ -1851,6 +1893,40 @@ async function renderPopMovement(host, slug){
       { name:'Natural Increase', type:'bar', data:NI, itemStyle:{color:'#00A0B4'}, barGap:'10%', barCategoryGap:'32%' },
       { name:'NIM', type:'bar', data:NIM, itemStyle:{color:'#c6c6c6'} },
       { name:'NOM', type:'bar', data:NOM, itemStyle:{color:'#171B24'} } ] };
+  _drawEChart(host, option);
+}
+/* Summary-deck variant of Population Movement (Shaene 2026-09-07: "IM – 2010,
+   instead of the actual number check if we can use percentage of people who
+   left Sydney"; Van: build it, Saskia approves). Same three components from
+   2010 on, each as a PERCENTAGE of that year's population — so on the Sydney
+   deck the interstate bar reads as the share of the population that left, and
+   on a regional deck the share that arrived. Forge holds only NET interstate
+   moves (no origin), so a true "share of the people who left Sydney" for other
+   markets is not computable. Population = the movement source's own ERP (the
+   state for a capital, the city for a regional); the tooltip keeps the head
+   count. The Full Report keeps the raw counts from 1990. */
+function _renderPopMovementSummary(host, src, slug, years, NI, NIM, NOM){
+  const P=(DB.pop&&DB.pop[src]&&Object.keys(DB.pop[src]).length)?DB.pop[src]:(popSeries(slug)||{});
+  const popAt=y=>{ for(let k=y;k>=y-3;k--){ const v=P[String(k)]; if(v!=null&&isFinite(v)&&v>0) return v; } return null; };
+  const pct=arr=>arr.map((v,i)=>{ const p=popAt(years[i]); return (v==null||p==null)?null:+(v/p*100).toFixed(2); });
+  const pNI=pct(NI), pNIM=pct(NIM), pNOM=pct(NOM);
+  if(!pNI.some(v=>v!=null)&&!pNIM.some(v=>v!=null)&&!pNOM.some(v=>v!=null)){ host.innerHTML='<div class="bss-chartload">No population series to express movement as a share.</div>'; return; }
+  const fp=v=>v==null?'—':(v>0?'+':'')+Number(v).toFixed(2)+'%';
+  const cm=v=>v==null?'—':Number(v).toLocaleString();
+  const raw={ 'Natural Increase':NI, 'NIM':NIM, 'NOM':NOM };
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
+      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+fp(p.value)+'</b> ('+cm((raw[p.seriesName]||[])[p.dataIndex])+' people)').join('<br>') },
+    legend:{ top:2, left:'center', itemWidth:9, itemHeight:9, itemGap:16, textStyle:{fontSize:9,color:'#222'},
+      data:[{name:'Natural Increase',icon:'rect'},{name:'NIM',icon:'rect'},{name:'NOM',icon:'rect'}] },
+    grid:{left:70,right:24,top:40,bottom:36},
+    xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:9.5,interval:0}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
+    yAxis:{ type:'value', axisLabel:{color:'#444',fontSize:9,formatter:v=>Number(v).toFixed(1)+'%'}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
+      name:'% of population', nameLocation:'middle', nameGap:50, nameTextStyle:{color:'#555',fontSize:10} },
+    series:[
+      { name:'Natural Increase', type:'bar', data:pNI, itemStyle:{color:'#00A0B4'}, barGap:'10%', barCategoryGap:'32%' },
+      { name:'NIM', type:'bar', data:pNIM, itemStyle:{color:'#c6c6c6'} },
+      { name:'NOM', type:'bar', data:pNOM, itemStyle:{color:'#171B24'} } ] };
   _drawEChart(host, option);
 }
 /* ── House v Unit (slide 18) — MHP (teal) + MUP (grey) bars, unit-as-%-of-house
@@ -1946,7 +2022,12 @@ async function renderHousingFinance(host, slug){
   /* QUARTERLY resample (quarter-end months): the sample's curve bends once per
      quarter — plotting the monthly series shows seasonal notches it never had */
   let periods=Array.from(pset).sort().filter(p=>['03','06','09','12'].indexOf(p.slice(5,7))>=0);
-  const from=periods.filter(p=>p>='2019-09');   /* the sample window starts Sep-2019 */
+  /* Full Report: the sample window starts Sep-2019. Summary deck: ten years back
+     from the latest quarter (Van 2026-09-07 "Housing Finance – 10 years data";
+     the series runs from Jan-2004, national — Van: "should be national"). */
+  let fromP='2019-09';
+  if(state.summary&&periods.length){ const last=periods[periods.length-1]; fromP=String(+last.slice(0,4)-10)+last.slice(4); }
+  const from=periods.filter(p=>p>=fromP);
   if(from.length>=8) periods=from;
   const fmtP=p=>{ const [y,mo]=p.split('-'); return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+mo-1]+'-'+y; };
   const OO=periods.map(p=>oo[p]!=null?Math.round(oo[p]):null), INV=periods.map(p=>inv[p]!=null?Math.round(inv[p]):null);
@@ -1958,7 +2039,7 @@ async function renderHousingFinance(host, slug){
     legend:{ top:6, left:'center', itemWidth:9, itemHeight:9, itemGap:16, textStyle:{fontSize:10,color:'#222'},
       data:[{name:'Owner Occupiers',icon:'path://M0,0h24v4h-24z'},{name:'Investors',icon:'path://M0,0h24v4h-24z'}] },
     grid:{left:74,right:30,top:44,bottom:64},
-    xAxis:{ type:'category', data:periods.map(fmtP), axisLabel:{color:'#444',fontSize:8.5,rotate:90,interval:0}, axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
+    xAxis:{ type:'category', data:periods.map(fmtP), axisLabel:{color:'#444',fontSize:8.5,rotate:90,interval:(state.summary?1:0)}, axisTick:{alignWithLabel:true,lineStyle:{color:'#999'}}, axisLine:{lineStyle:{color:'#999'}} },
     yAxis:{ type:'value', min:0, max:yTop, interval:5000, axisLabel:{color:'#444',fontSize:9,formatter:v=>'$'+Number(v).toLocaleString()}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}},
       axisLine:{show:true,lineStyle:{color:'#999'}}, axisTick:{show:true,lineStyle:{color:'#999'}},
       name:'in $ Millions', nameLocation:'middle', nameGap:56, nameRotate:90, nameTextStyle:{color:'#444',fontSize:10} },
@@ -3525,11 +3606,11 @@ const SLIDE_DEFS = [
    scratch/_bss-summary-walk.mjs to eval it against a stub DOM. */
 const SUMMARY_ORDER = [
   'f0',                                                                                   /* cover */
-  'sum_verdict','sum_drivers','sum_next',                                                 /* the executive summary */
+  'sum_verdict',                                                                          /* the executive summary — "What's driving" + "Confidence and next steps" REMOVED (Van + Shaene review 2026-09-07) */
   'f1','f2','demand_h','glance',                                                          /* where the market sits */
-  'div_value','median_combined','house_unit','f8','f10','f6','f14','cap_yield',           /* value */
+  'div_value','median_combined','house_unit','f8','f10','f6','f14','f15','yield_rate',    /* value — Units sensitivity added, Capital Cities Yield → Yield v Variable Rate (2026-09-07) */
   'div_demand','pop_move','f13','infra_projects','vr_proj','f12',                         /* demand */
-  'div_conf','stub_bizconf','stub_bizfin','housing_fin',                                  /* confidence */
+  'div_conf','stub_cci','stub_hpei','stub_bizconf','stub_bizfin','housing_fin',           /* confidence — Consumer Confidence + House Price Expectation added back (2026-09-07; HPEI keeps its VIC-only gate) */
   'tl_revisit',                                                                           /* the verdict, revisited */
   'sum_examples',                                                                         /* hand off to the IR samples */
 ];
