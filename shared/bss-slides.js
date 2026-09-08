@@ -84,8 +84,12 @@
       el.setAttribute('tabindex', '-1');
       el.style.cssText = 'position:fixed;left:-10000px;top:0;width:1400px;height:900px;border:0;visibility:hidden';
       /* the tool lives beside us in tools/, so a bare filename resolves */
+      /* &frame=1 asks the tool for the FULL deck: since 2026-09-08 a plain open
+         boots the client slides (the Full Report is hidden from advisors), but
+         this library offers the full page set and its frame runs under the
+         advisor's own session, so it cannot use the writer-only ?full=1. */
       el.src = 'buying-selling-slides.html?region=' + encodeURIComponent(ctx.slug || '') +
-               '&mode=' + encodeURIComponent(ctx.mode === 'buy' ? 'buy' : 'sell');
+               '&mode=' + encodeURIComponent(ctx.mode === 'buy' ? 'buy' : 'sell') + '&frame=1';
       document.body.appendChild(el);
       const win = await new Promise(res => {
         let done = false;
