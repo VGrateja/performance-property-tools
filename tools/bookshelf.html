@@ -302,6 +302,10 @@ body.bk-lite .bk-flip{display:none}
 .pgc figure{margin:10px 0;text-align:center}
 .pgc figure img{max-width:100%;height:auto;border:1px solid var(--pg-line);border-radius:6px}
 .pgc figcaption{font-size:10px;font-style:italic;color:var(--pg-mut);margin-top:5px}
+/* live Market Indicator Clock host — same frame the picture had; the SVG fills it */
+.pgc .pp-mic-host{position:relative;display:block;width:100%;max-width:100%;margin:0 auto;border:1px solid var(--pg-line);border-radius:6px;overflow:hidden;background:#fff}
+.pgc .pp-mic-host img{border:0;border-radius:0;display:block;width:100%;height:auto}
+.pgc .pp-mic-host svg{display:block;width:100%;height:100%}
 /* ── measured auto-density: source-page-faithful pagination means a page holds
    exactly what the document page holds — dense document pages tighten their
    own typography (two notches, applied by fitDensity() after render). ── */
@@ -481,6 +485,8 @@ body.bk-fs .bk-progrow{padding:8px 0 10px}
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
 <script src="../shared/pp-telemetry.js?v=a1e39d4f"></script>
 <script src="../shared/fit-screen.js?v=1ea58579"></script>
+<!-- the Playbook's Market Indicator Clock is drawn live from the Property Clock's saved bands -->
+<script src="../shared/market-clock.js?v=196e3920"></script>
 <script>
 'use strict';
 PP_OS.initChrome({ name: 'Bookshelf', section: 'vault', backHref: '../' });
@@ -729,9 +735,20 @@ function blockHtml(b, book) {
           return r.g ? '<tr class="grp"><td colspan="2">' + esc(r.g) + '</td></tr>'
                      : '<tr><td>' + esc(r.l) + '</td><td>' + esc(r.r) + '</td></tr>';
         }).join('') + '</table>';
-    case 'img':
-      return '<figure><img src="' + book.assets[b.src] + '" alt="' + esc(b.cap || '') + '" width="' + b.w + '" height="' + b.h + '"/>' +
+    case 'img': {
+      var src = book.assets[b.src];
+      /* The Market Indicator Clock is drawn LIVE from the Property Clock's saved
+         bands (shared/market-clock.js; Van 2026-09-08 "swap the Playbook's old
+         clock image"). The stored book keeps the PNG: it is the fallback the
+         module replaces on render, and what shows if the module cannot draw.
+         Matched on the asset URL so a rebuilt book needs no change. */
+      var live = /market-position-clock/i.test(String(src || ''));
+      return '<figure' + (live ? ' class="pp-mic"' : '') + '>' +
+        (live ? '<div class="pp-mic-host" data-market-clock style="aspect-ratio:' + b.w + '/' + b.h + '">' : '') +
+        '<img src="' + src + '" alt="' + esc(b.cap || '') + '" width="' + b.w + '" height="' + b.h + '"/>' +
+        (live ? '</div>' : '') +
         (b.cap ? '<figcaption>' + esc(b.cap) + '</figcaption>' : '') + '</figure>';
+    }
     default: return '';
   }
 }
@@ -940,6 +957,20 @@ function setPage(el, idx) {
   var p = state.book && state.book.pages[idx];
   if (p && KIND_CLS[p.kind]) el.classList.add(KIND_CLS[p.kind]);
   el.innerHTML = renderPage(idx);
+  mountMarketClocks(el);
+}
+/* Draw the live Market Indicator Clock into every host the page carries. The
+   module replaces the host's content with inline SVG built from clock_state's
+   partitions (cached per page load); if it rejects, the PNG inside the host is
+   simply left standing. */
+function mountMarketClocks(root) {
+  if (!root || !window.PP_MARKET_CLOCK || typeof PP_MARKET_CLOCK.render !== 'function') return;
+  root.querySelectorAll('[data-market-clock]').forEach(function (host) {
+    if (host.dataset.live) return;
+    host.dataset.live = '1';
+    Promise.resolve().then(function () { return PP_MARKET_CLOCK.render(host); })
+      .catch(function (e) { delete host.dataset.live; console.warn('[bookshelf] live clock unavailable — keeping the picture', e && e.message || e); });
+  });
 }
 /* dense document pages tighten their own type — measure AFTER the node is in
    the DOM (scrollHeight is 0 detached). Two notches, then accept. */
