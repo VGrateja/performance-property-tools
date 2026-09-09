@@ -1837,6 +1837,7 @@
 <script src="../shared/auth.js?v=7dce203e"></script>
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
 <script src="../shared/pp-telemetry.js?v=a1e39d4f"></script>
+<script src="../shared/copy-link.js?v=4e146114"></script>
 
 <!-- Floating chrome — Back-to-Hub (top:16 left:16), Back-to-Types
      (top:16 left:160, only visible inside section view via the hidden
@@ -2645,10 +2646,16 @@ function _copyFallback(text, cb) {
     document.execCommand('copy'); document.body.removeChild(ta); cb && cb();
   } catch (_) {}
 }
-function _copyReportLink(url, btn) {
+/* linkLabel = the document's own name. PP_COPY_LINK puts the URL on the
+   clipboard as text/plain AND "<a href=url>name</a>" as text/html, so an email
+   or a Doc gets a clickable name while the address bar still gets the URL
+   (Tommy via Saskia, 2026-09-09). The old chain stays as the guard for a
+   browser that loaded the page before copy-link.js was cached. */
+function _copyReportLink(url, btn, linkLabel) {
   if (!btn.dataset.orig) btn.dataset.orig = btn.textContent;   /* strategy cards label theirs "Copy slides" — restore whatever the button said */
   const restore = () => { btn.classList.remove('copied'); btn.textContent = btn.dataset.orig; };
   const done = () => { btn.classList.add('copied'); btn.textContent = 'Copied'; clearTimeout(btn._t); btn._t = setTimeout(restore, 1500); };
+  if (window.PP_COPY_LINK && linkLabel) { PP_COPY_LINK.copy(url, linkLabel).then(done, () => _copyFallback(url, done)); return; }
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, () => _copyFallback(url, done));
     else _copyFallback(url, done);
@@ -2680,12 +2687,12 @@ function _addPinBtn(container, url, label, cls, btnText) {
 
 /* ── "Copy link": same treatment as the PDF Reports rows (Van 2026-08-10) —
    copies the item's shareable URL without opening it. Sits beside Pin. ── */
-function _addCopyBtn(container, url, cls, label) {
+function _addCopyBtn(container, url, cls, label, linkLabel) {
   try {
     if (!container || !url) return;
     const b = document.createElement('button');
     b.type = 'button'; b.className = cls || 'ws-square-copy'; b.title = 'Copy shareable link'; b.textContent = label || 'Copy';
-    b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, b); });
+    b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, b, linkLabel); });
     container.appendChild(b);
   } catch (e) {}
 }
@@ -2714,7 +2721,7 @@ function _renderItemView(item, ctaLabel, showStatus) {
         '<button type="button" class="ws-copy-link" title="Copy the shareable PDF link">Copy PDF Link</button>' +
       '</div>';
     const btn = a.querySelector('.ws-copy-link');
-    if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, btn); });
+    if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, btn, item.title); });
     return a;
   }
   const div = document.createElement('div');
@@ -2747,16 +2754,18 @@ function _renderStrategyView(item) {
      cards + the PDF Reports rows: copy the shareable URL without opening it.
      Strategies carry up to TWO links, so each gets its own labelled button. */
   const acts = card.querySelector('.ws-card-actions');
-  const addCopy = (url, text, title) => {
+  const addCopy = (url, text, title, linkLabel) => {
     if (!url) return;
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'ws-copy-link'; b.title = title; b.textContent = text;
-    b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, b); });
+    b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, b, linkLabel); });
     acts.appendChild(b);
   };
   if (!locked) {
-    addCopy(item.url, 'Copy link', 'Copy shareable Document link');
-    addCopy(item.slidesUrl, 'Copy slides', 'Copy shareable Slides link');
+    /* two links on one card, so the hyperlinked names have to differ — same
+       wording the Pin buttons already use for the pair */
+    addCopy(item.url, 'Copy link', 'Copy shareable Document link', item.title);
+    addCopy(item.slidesUrl, 'Copy slides', 'Copy shareable Slides link', (item.title || 'Document') + ' — Slides');
   }
   return card;
 }
@@ -3581,7 +3590,7 @@ function _renderSquareItemView(item, kind) {
     a.className = 'ws-square-card';
     a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
     a.innerHTML = statusHtml + iconHtml + titleHtml + '<div class="ws-square-foot">' + dateHtml + '<div class="ws-square-footbtns"></div></div>';
-    _addCopyBtn(a.querySelector('.ws-square-footbtns'), item.url);
+    _addCopyBtn(a.querySelector('.ws-square-footbtns'), item.url, null, null, item.title);
     _addPinBtn(a.querySelector('.ws-square-footbtns'), item.url, item.title, 'ws-square-pin');
     return a;
   }
@@ -3624,9 +3633,9 @@ function _renderSquareStrategyView(item) {
     '<div class="ws-res-list">' + resRow('doc', 'Document', item.url) + resRow('slides', 'Slides', item.slidesUrl) + '</div>';
   const btns = (col) => card.querySelector('.ws-res-row[data-col="' + col + '"] .ws-res-btns');
   if (!locked) {
-    _addCopyBtn(btns('doc'), item.url, 'ws-res-btn', 'Copy');
+    _addCopyBtn(btns('doc'), item.url, 'ws-res-btn', 'Copy', item.title);
     _addPinBtn(btns('doc'), item.url, (item.title || '') + ' — Document', 'ws-res-btn', 'Pin');
-    _addCopyBtn(btns('slides'), item.slidesUrl, 'ws-res-btn', 'Copy');
+    _addCopyBtn(btns('slides'), item.slidesUrl, 'ws-res-btn', 'Copy', (item.title || 'Document') + ' — Slides');
     _addPinBtn(btns('slides'), item.slidesUrl, (item.title || '') + ' — Slides', 'ws-res-btn', 'Pin');
   }
   return card;
@@ -3804,7 +3813,7 @@ function _renderColumnItemView(item, showStatusDot) {
       '</div>';
     const acts = a.querySelector('.ws-col-actions');
     const btn = a.querySelector('.ws-col-copy');
-    if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, btn); });
+    if (btn) btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); _copyReportLink(url, btn, item.title); });
     _addPinBtn(acts, url, item.title, 'ws-col-copy');
     return a;
   }
@@ -3995,7 +4004,8 @@ function _wsxMatch(item) {
   return [item.title, item.blurb, item.category].some(v => String(v || '').toLowerCase().indexOf(q) >= 0);
 }
 
-function _wsxCopyBtn(url, title) {
+/* linkLabel = the row's own name; see _copyReportLink for why both flavours */
+function _wsxCopyBtn(url, title, linkLabel) {
   const b = document.createElement('button');
   b.type = 'button'; b.className = 'wsx-copy'; b.textContent = 'Copy link';
   b.title = title || 'Copy shareable PDF link'; b.setAttribute('aria-live', 'polite');
@@ -4005,6 +4015,7 @@ function _wsxCopyBtn(url, title) {
       b.classList.add('is-copied'); b.textContent = 'Copied';
       clearTimeout(b._t); b._t = setTimeout(() => { b.classList.remove('is-copied'); b.textContent = 'Copy link'; }, 1600);
     };
+    if (window.PP_COPY_LINK && linkLabel) { PP_COPY_LINK.copy(url, linkLabel).then(done, () => _copyFallback(url, done)); return; }
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, () => _copyFallback(url, done));
       else _copyFallback(url, done);
@@ -4094,7 +4105,7 @@ function _wsxRow(item, withSlides) {
     if (withSlides && item.slidesUrl) html += '<a class="wsx-slides" href="' + _esc(item.slidesUrl) + '" target="_blank" rel="noopener noreferrer" title="Open the Slides deck — safe to present">Slides ›</a>';
     if (html) html += '<span class="wsx-divider" aria-hidden="true"></span>';
     acts.innerHTML = html;
-    acts.appendChild(_wsxCopyBtn(item.url));
+    acts.appendChild(_wsxCopyBtn(item.url, null, item.title));
     const pin = _wsxPinBtn(item.url, item.title);
     if (pin) acts.appendChild(pin);
   }
@@ -4354,7 +4365,7 @@ function _wsxVideoRow(item) {
       acts.appendChild(pv);
       const d = document.createElement('span'); d.className = 'wsx-divider'; d.setAttribute('aria-hidden', 'true'); acts.appendChild(d);
     }
-    acts.appendChild(_wsxCopyBtn(item.url, 'Copy the video link'));
+    acts.appendChild(_wsxCopyBtn(item.url, 'Copy the video link', item.title));
     acts.appendChild(_wsxMailBtn(item));
     const pin = _wsxPinBtn(item.url, item.title);
     if (pin) acts.appendChild(pin);

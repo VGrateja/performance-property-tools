@@ -1,13 +1,22 @@
 /* ============================================================================
- * traffic-lights-engine.js — the Traffic Lights scoring model, ported verbatim
- * from Traffic Lights.xlsx (Scoring Model sheet, 2026-08 revision). PURE where
- * it can be: scoreRegion()/confInputsFrom()/dampedForecast() have no I/O.
+ * traffic-lights-engine.js — the Traffic Lights scoring model. Value and
+ * Supply & Demand are still ported verbatim from Traffic Lights.xlsx (Scoring
+ * Model sheet, 2026-08 revision); CONFIDENCE was realigned 2026-09-09 to the
+ * DESIGN SPEC written by Shaene Salino, which the 2026-08 workbook did not
+ * implement (see the CONF table below). PURE where it can be:
+ * scoreRegion()/confInputsFrom()/dampedForecast() have no I/O.
+ *
+ * NOTE: scripts/verify-traffic-lights.mjs checks this file against the
+ * workbook's cached Confidence cells and therefore now FAILS on the Confidence
+ * rows by design — the workbook is the thing that is out of date, not this
+ * engine. Its Value / S&D checks are still valid.
  *
  * 2026-08 model (replaces the 9-indicator version):
  *  · CONFIDENCE = 6 indicators — Job Ads, Business Finance, Housing Finance,
- *    Consumer Confidence, Business Confidence, Underutilisation. Current
- *    verdict = simple average of 2/1/0 scores vs 1.5/0.7 (the any-RED veto is
- *    OFF — workbook B21="NO"; a red now just drags the average). Forecast =
+ *    Business Confidence, Unemployment, Underutilisation. Current
+ *    verdict = simple average of 2/1/0 scores vs 1.5/0.7, then CAPPED at
+ *    ORANGE if any indicator is red (the spec's any-RED veto, current side
+ *    only). Forecast =
  *    per-indicator DAMPED-TREND projection (Gardner–McKenzie, phi=0.8, slope
  *    over the last 6 observations, clamped to the series' historical min/max),
  *    aggregated as Σ(score×weight)/Σweight with weights [1,1.5,2,1,1,0.5].
@@ -26,7 +35,12 @@
   'use strict';
 
   var PHI = 0.8;           // damping factor (workbook B23)
-  var ANY_RED_VETO = false; // workbook B21 = "NO" (was YES in the 2026-07 model)
+  // Shaene's spec: "Confidence is capped at ORANGE if any indicator is red
+  // (current side only)". Turning this back ON restores the 2026-07 behaviour
+  // on the designer's instruction — the 2026-08 workbook had set B21="NO".
+  // "Capped" is applied as a CAP, not a clamp: a red pulls GREEN down to
+  // ORANGE but never lifts a sub-0.7 score UP to ORANGE (see confidence below).
+  var ANY_RED_VETO = true;
 
   var verdict = function (score, g, o) { return score >= g ? 'GREEN' : score >= o ? 'ORANGE' : 'RED'; };
   var sigOf = function (s) { return s === 2 ? 'GREEN' : s === 1 ? 'ORANGE' : 'RED'; };   // 2/1/0 -> signal
@@ -35,35 +49,53 @@
   // (neutral; the workbook's sample sheets are always populated, we must not crash).
   var normTo = function (v, red, green) { return (v == null || isNaN(v)) ? 0.5 : clamp01((v - red) / (green - red)); };
 
-  // Confidence indicators, workbook rows 10..15.
-  //   basis 'chg' : current = YoY change vs ±thresholds; forecast = damped level → (V/C−1)
-  //   basis 'lvl' : current = level vs thresholds (higher better); forecast = damped level
-  //   basis 'ut'  : level+trend current (≤g AND falling → GREEN; ≥r OR rose >0.3pp → RED);
-  //                 forecast = damped LEVEL only.
+  // Confidence indicators — Shaene Salino's design spec (realigned 2026-09-09).
+  //   basis 'chg'  : current = YoY change vs ±thresholds; forecast = damped level → (V/C−1)
+  //   basis 'lvl'  : level vs thresholds, HIGHER is better (no indicator uses this
+  //                  today; kept as the generic non-inverted level path)
+  //   basis 'lvli' : level vs thresholds, LOWER is better — green ≤ g, red ≥ r
   //   kc = current weight (all 1 → simple average), kf = forecast weight, h = damping
-  //   horizon in native periods (jobads 12 months, quarterly finance 4, levels 1;
-  //   business confidence resolves at shape time from its data cadence).
+  //   horizon in native periods (jobads 12 months, quarterly finance 4, annual
+  //   levels 1; business confidence resolves at shape time from its data cadence).
+  //
+  // What changed from the 2026-08 workbook port, and why:
+  //  · Consumer Confidence REMOVED — not in the spec, and it is a NATIONAL
+  //    series, so every market got the identical value (0G·36O·0R live): it
+  //    could not discriminate between markets by construction.
+  //  · Unemployment ADDED (market-level, state fallback), inverted level.
+  //  · Underutilisation lost its trend gate — the spec scores it on LEVEL
+  //    alone. The old gate (green also required dC ≤ 0; red fired on a
+  //    >0.3pp rise) is what produced 17 reds off an 8-value state series.
+  //  · Business Confidence DIRECTION REVERSED — see the warning below.
+  //
+  // ⚠ BUSINESS CONFIDENCE IS AWAITING SHAENE'S EXPLICIT CONFIRMATION.
+  //   The spec reads it CONTRARIAN: green ≤ −10, red ≥ 0 — buy into a market
+  //   when businesses are gloomy. The workbook read it CONVENTIONALLY: green
+  //   ≥ 0, red ≤ −5. Both are defensible; they are opposite. This file now
+  //   implements the SPEC, and that single line flips 34 of 36 markets from
+  //   RED to GREEN. Do not ship to production before she confirms the sign.
   var CONF = [
-    { key: 'jobads',   name: 'Job Ads',             basis: 'chg', g: 0.03,  r: -0.03, kc: 1, kf: 1,   h: 12 },
-    { key: 'bizfin',   name: 'Business Finance',    basis: 'chg', g: 0.03,  r: -0.03, kc: 1, kf: 1.5, h: 4 },
-    { key: 'housfin',  name: 'Housing Finance',     basis: 'chg', g: 0.03,  r: -0.03, kc: 1, kf: 2,   h: 4 },
-    { key: 'cci',      name: 'Consumer Confidence', basis: 'lvl', g: 100,   r: 97,    kc: 1, kf: 1,   h: 1 },
-    { key: 'bizconf',  name: 'Business Confidence', basis: 'lvl', g: 0,     r: -5,    kc: 1, kf: 1,   h: 12 },
-    { key: 'underemp', name: 'Underutilisation',    basis: 'ut',  g: 0.06,  r: 0.075, kc: 1, kf: 0.5, h: 1 }
+    { key: 'jobads',   name: 'Job Ads',             basis: 'chg',  g: 0.03,  r: -0.03, kc: 1, kf: 1,   h: 12 },
+    { key: 'bizfin',   name: 'Business Finance',    basis: 'chg',  g: 0.03,  r: -0.03, kc: 1, kf: 1.5, h: 4 },
+    { key: 'housfin',  name: 'Housing Finance',     basis: 'chg',  g: 0.03,  r: -0.03, kc: 1, kf: 2,   h: 4 },
+    { key: 'bizconf',  name: 'Business Confidence', basis: 'lvli', g: -10,   r: 0,     kc: 1, kf: 1,   h: 12 },
+    // Unemployment / Underutilisation are stored as FRACTIONS in rdp_raw_series
+    // (0.052 = 5.2%), never as percentage points — thresholds must match.
+    // NOTE: the spec's own expected spread for Unemployment (15G·15O·6R) is
+    // reproduced EXACTLY by 0.042 / 0.052, and not by the 0.04 / 0.055 written
+    // beside it (which gives 12G·22O·2R). Implementing the stated thresholds;
+    // flagged for Shaene — if she confirms 4.2/5.2 it is this line only.
+    { key: 'unemp',    name: 'Unemployment',        basis: 'lvli', g: 0.04,  r: 0.055, kc: 1, kf: 1,   h: 1 },
+    { key: 'underemp', name: 'Underutilisation',    basis: 'lvli', g: 0.06,  r: 0.075, kc: 1, kf: 0.5, h: 1 }
   ];
 
   function scoreConf(spec, inp) {
-    if (spec.basis === 'ut') {
-      var C = inp.underemp_level, dC = inp.underemp_change;
-      if (C == null || isNaN(C)) return 1;
-      if (C <= spec.g && dC != null && dC <= 0) return 2;
-      if (C >= spec.r || (dC != null && dC > 0.003)) return 0;
-      return 1;
-    }
-    if (spec.basis === 'lvl') {
+    if (spec.basis === 'lvl' || spec.basis === 'lvli') {
       var L = inp[spec.key + '_level'];
       if (L == null || isNaN(L)) return 1;
-      return L >= spec.g ? 2 : L <= spec.r ? 0 : 1;
+      return spec.basis === 'lvli'
+        ? (L <= spec.g ? 2 : L >= spec.r ? 0 : 1)   // inverted: LOWER is better
+        : (L >= spec.g ? 2 : L <= spec.r ? 0 : 1);
     }
     var E = inp[spec.key];                 // the YoY change for this indicator
     if (E == null || isNaN(E)) return 1;
@@ -74,15 +106,12 @@
   // scored against the SAME thresholds. Missing projection (the IFERROR case)
   // defaults to ORANGE/1.
   function scoreConfFcst(spec, inp) {
-    if (spec.basis === 'ut') {             // LEVEL only (workbook W15)
-      var C = inp.fc_underemp_level;
-      if (C == null || isNaN(C)) return 1;
-      return C <= spec.g ? 2 : C >= spec.r ? 0 : 1;
-    }
-    if (spec.basis === 'lvl') {
+    if (spec.basis === 'lvl' || spec.basis === 'lvli') {
       var L = inp['fc_' + spec.key + '_level'];
       if (L == null || isNaN(L)) return 1;
-      return L >= spec.g ? 2 : L <= spec.r ? 0 : 1;
+      return spec.basis === 'lvli'
+        ? (L <= spec.g ? 2 : L >= spec.r ? 0 : 1)   // inverted: LOWER is better
+        : (L >= spec.g ? 2 : L <= spec.r ? 0 : 1);
     }
     var E = inp['fc_' + spec.key];         // projected change (V/C − 1)
     if (E == null || isNaN(E)) return 1;
@@ -128,20 +157,29 @@
 
   function scoreRegion(inp) {
     // ── Confidence (6 indicators) ──
-    var indicators = [], lc = 0, kcSum = 0, lf = 0, kfSum = 0, anyRedCur = false, anyRedF = false;
+    /* `inverted` = a RISE in this reading is bad news (unemployment, underutilisation,
+       and business confidence under the contrarian reading the design specifies).
+       The tools colour a change arrow green-for-up by default, which is backwards
+       on these three; the flag lets the display flip it rather than guessing by name. */
+    var indicators = [], lc = 0, kcSum = 0, lf = 0, kfSum = 0, anyRedCur = false;
     for (var i = 0; i < CONF.length; i++) {
       var s = scoreConf(CONF[i], inp);            // current score (2/1/0)
       var fs = scoreConfFcst(CONF[i], inp);       // forecast score from the damped projection
       if (s === 0) anyRedCur = true;
-      if (fs === 0) anyRedF = true;
       lc += s * CONF[i].kc; kcSum += CONF[i].kc;
       lf += fs * CONF[i].kf; kfSum += CONF[i].kf;
       indicators.push({ key: CONF[i].key, name: CONF[i].name, score: s, signal: sigOf(s), fscore: fs, fsignal: sigOf(fs) });
     }
     var confScore = lc / kcSum;                   // current weights are all 1 → simple average
     var confFcstScore = lf / kfSum;               // Σ(score×fcstWeight)/Σweights (Σ = 7)
-    var confidence = (ANY_RED_VETO && anyRedCur) ? 'ORANGE' : verdict(confScore, 1.5, 0.7);
-    var confFcst = (ANY_RED_VETO && anyRedF) ? 'ORANGE' : verdict(confFcstScore, 1.5, 0.7);
+    // The spec caps Confidence at ORANGE when any indicator is red, CURRENT
+    // SIDE ONLY — so the forecast verdict is deliberately left un-vetoed.
+    // Applied as a cap (GREEN → ORANGE) rather than an assignment, so a
+    // genuinely bad score can still read RED instead of being lifted to ORANGE.
+    var capOrange = function (v) { return v === 'GREEN' ? 'ORANGE' : v; };
+    var confidence = verdict(confScore, 1.5, 0.7);
+    if (ANY_RED_VETO && anyRedCur) confidence = capOrange(confidence);
+    var confFcst = verdict(confFcstScore, 1.5, 0.7);
 
     // ── Value: continuous norms — (4·avg(rank norms) + avg(runway norms)) / 2.5 ──
     var rankScore = function (gap) { return gap == null ? 1 : gap >= 3 ? 2 : gap <= -3 ? 0 : 1; };
@@ -194,9 +232,11 @@
   // ── shared shaping: raw series bundle → the confidence fields of `inp` ──────
   // Used by BOTH the live assembly (Forge) and the verification harness (the
   // workbook's own columns), so the shaping math is tested against the sheet.
-  // bundle = { jobads[], bizfinQ[], housfinQ[], cciAnnual[], bizconf[],
-  //            bizconfFreq ('M'|'Q'), underemp[] }  — plain numeric arrays in
-  // period order (nulls allowed).
+  // bundle = { jobads[], bizfinQ[], housfinQ[], bizconf[],
+  //            bizconfFreq ('M'|'Q'), unemp[], underemp[] }  — plain numeric
+  // arrays in period order (nulls allowed). Missing arrays are tolerated:
+  // a null level scores ORANGE/1, which is the workbook's IFERROR behaviour.
+  // (cciAnnual[] was dropped 2026-09-09 with the Consumer Confidence indicator.)
   var lastN = function (a) { for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) return +a[i]; return null; };
   var priorN = function (a) { var seen = 0; for (var i = a.length - 1; i >= 0; i--) if (a[i] != null && !isNaN(a[i])) { seen++; if (seen === 2) return +a[i]; } return null; };
   // value k rows before the last populated one — the workbook's INDEX(col, MATCH(last)-k).
@@ -207,21 +247,25 @@
 
   function confInputsFrom(b) {
     var bizconfBack = (b.bizconfFreq === 'Q') ? 4 : 12;   // workbook AJ1 flag
-    var ueL = lastN(b.underemp), ueP = priorN(b.underemp);
+    var A = function (a) { return a || []; };             // tolerate a missing series
+    var ueL = lastN(A(b.underemp)), ueP = priorN(A(b.underemp));
+    var unL = lastN(A(b.unemp)), unP = priorN(A(b.unemp));
     return {
-      jobads: chgVs(lastN(b.jobads), backN(b.jobads, 12)),
-      bizfin: chgVs(lastN(b.bizfinQ), backN(b.bizfinQ, 4)),
-      housfin: chgVs(lastN(b.housfinQ), backN(b.housfinQ, 4)),
-      cci_level: lastN(b.cciAnnual),
-      bizconf_level: lastN(b.bizconf),
+      jobads: chgVs(lastN(A(b.jobads)), backN(A(b.jobads), 12)),
+      bizfin: chgVs(lastN(A(b.bizfinQ)), backN(A(b.bizfinQ), 4)),
+      housfin: chgVs(lastN(A(b.housfinQ)), backN(A(b.housfinQ), 4)),
+      bizconf_level: lastN(A(b.bizconf)),
+      // levels are FRACTIONS (0.052 = 5.2%); *_change is display-only (pp)
+      unemp_level: unL,
+      unemp_change: (unL != null && unP != null) ? unL - unP : null,
       underemp_level: ueL,
       underemp_change: (ueL != null && ueP != null) ? ueL - ueP : null,
-      fc_jobads: fcChg(b.jobads, 12),
-      fc_bizfin: fcChg(b.bizfinQ, 4),
-      fc_housfin: fcChg(b.housfinQ, 4),
-      fc_cci_level: dampedForecast(b.cciAnnual, 1),
-      fc_bizconf_level: dampedForecast(b.bizconf, bizconfBack),
-      fc_underemp_level: dampedForecast(b.underemp, 1)
+      fc_jobads: fcChg(A(b.jobads), 12),
+      fc_bizfin: fcChg(A(b.bizfinQ), 4),
+      fc_housfin: fcChg(A(b.housfinQ), 4),
+      fc_bizconf_level: dampedForecast(A(b.bizconf), bizconfBack),
+      fc_unemp_level: dampedForecast(A(b.unemp), 1),
+      fc_underemp_level: dampedForecast(A(b.underemp), 1)
     };
   }
 
@@ -261,13 +305,23 @@
     var METRICS = ['ranking_h', 'ranking_u', 'job_creation_index',
       'owner_occupier', 'investor',
       'bus_fin_sm_construction', 'bus_fin_sm_property', 'bus_fin_med_construction', 'bus_fin_med_property',
-      'consumer_confidence', 'business_confidence', 'underemployment'];
+      'business_confidence', 'unemployment', 'underemployment'];
+    // 'consumer_confidence' dropped 2026-09-09 with the CCI indicator — nothing
+    // else in this engine reads it. The Forge / B-S Slides / Data Extractor
+    // pages that chart CCI issue their own queries and are unaffected.
     var regSet = { australia: 1 };
     for (var mi = 0; mi < markets.length; mi++) { regSet[markets[mi].slug] = 1; regSet[markets[mi].state] = 1; }
     var REGIONS = Object.keys(regSet);
     var rows = [];
     for (var pg = 0; pg < 80; pg++) {
-      var q = await sb.from('rdp_raw_series').select('metric,region_slug,period,value').in('metric', METRICS).in('region_slug', REGIONS).order('period').range(pg * 1000, pg * 1000 + 999);
+      // .order('period') ALONE IS NOT A TOTAL ORDER — thousands of rows share a
+      // period, and range() paging over a non-unique sort silently returns some
+      // rows twice and never returns others. Measured 2026-09-09 against this
+      // project: 51 of 15,593 rows lost on the old metric list, 98 of 16,475 on
+      // the new one, which is what made a market's Value verdict depend on
+      // which metrics happened to be in METRICS. (metric, region_slug, period)
+      // is unique across this result set, so these tie-breaks make it total.
+      var q = await sb.from('rdp_raw_series').select('metric,region_slug,period,value').in('metric', METRICS).in('region_slug', REGIONS).order('period').order('metric').order('region_slug').range(pg * 1000, pg * 1000 + 999);
       if (q.error) throw q.error;
       rows = rows.concat(q.data || []);
       if (!q.data || q.data.length < 1000) break;
@@ -298,17 +352,6 @@
     }
     return Object.keys(by).sort().filter(function (k) { return cnt[k] === 3; }).map(function (k) { return by[k]; });
   }
-  // monthly {p,v} → calendar-year MEANS, current partial year included (CCI — the
-  // workbook's CCI column is annual)
-  function yearMeans(recs) {
-    var by = {}, cnt = {};
-    for (var i = 0; i < (recs || []).length; i++) {
-      var y = recs[i].p.slice(0, 4);
-      by[y] = (by[y] || 0) + recs[i].v; cnt[y] = (cnt[y] || 0) + 1;
-    }
-    return Object.keys(by).sort().map(function (y) { return by[y] / cnt[y]; });
-  }
-
   function buildRegion(cap, ctx) {
     var R = function (metric, region) { return ctx.series[metric + '|' + region] || []; };
     var S = function (metric, region) { return valsOf(R(metric, region)); };
@@ -321,10 +364,16 @@
     var rkH = S('ranking_h', cap.slug), rkU = S('ranking_u', cap.slug);
 
     // confidence bundle — state-level for finance/underemployment, market-level
-    // job ads, national CCI, state NAB confidence with a national fallback
+    // job ads and unemployment, state NAB confidence with a national fallback
     // (NAB doesn't publish ACT/NT — the workbook's sample sheets do the same).
     var bizconfRecs = R('business_confidence', cap.state);
     if (!bizconfRecs.length) bizconfRecs = R('business_confidence', 'australia');
+    // Unemployment is published per MARKET (35 of the 36 — Canberra has no
+    // market series), which is what makes it discriminate; fall back to the
+    // state series, then national, exactly like business confidence above.
+    var unempRecs = R('unemployment', cap.slug);
+    if (!unempRecs.length) unempRecs = R('unemployment', cap.state);
+    if (!unempRecs.length) unempRecs = R('unemployment', 'australia');
     var housfinMonthly = [];
     var oo = R('owner_occupier', cap.state), inv = R('investor', cap.state);
     var invBy = {}; inv.forEach(function (r) { invBy[r.p] = r.v; });
@@ -333,9 +382,9 @@
       jobads: S('job_creation_index', cap.slug),
       bizfinQ: sumByPeriod([R('bus_fin_sm_construction', cap.state), R('bus_fin_sm_property', cap.state), R('bus_fin_med_construction', cap.state), R('bus_fin_med_property', cap.state)]),
       housfinQ: quarterSums(housfinMonthly),
-      cciAnnual: yearMeans(R('consumer_confidence', 'australia')),
       bizconf: valsOf(bizconfRecs),
       bizconfFreq: 'M',
+      unemp: valsOf(unempRecs),
       underemp: S('underemployment', cap.state)
     };
     var conf = confInputsFrom(bundle);
@@ -356,7 +405,6 @@
     var out = scoreRegion(inp);
     return formatForTool(cap, inp, out, {
       jobads: lastN(bundle.jobads), bizfin: lastN(bundle.bizfinQ), housfin: lastN(bundle.housfinQ),
-      cci: lastN(bundle.cciAnnual), cciPrior: priorN(bundle.cciAnnual),
       bizconf: lastN(bundle.bizconf), bizconfPrior: backN(bundle.bizconf, 12)
     });
   }
@@ -376,9 +424,9 @@
       { name: 'Job Ads', latest: intS(raw.jobads), change: pctS(inp.jobads), signal: byKey.jobads, fsignal: byF.jobads },
       { name: 'Business Finance ($m)', latest: intS(raw.bizfin), change: pctS(inp.bizfin), signal: byKey.bizfin, fsignal: byF.bizfin },
       { name: 'Housing Finance ($m)', latest: intS(raw.housfin), change: pctS(inp.housfin), signal: byKey.housfin, fsignal: byF.housfin },
-      { name: 'Consumer Confidence', latest: oneS(inp.cci_level), change: d1S(raw.cci != null && raw.cciPrior != null ? raw.cci - raw.cciPrior : null), signal: byKey.cci, fsignal: byF.cci },
-      { name: 'Business Confidence', latest: oneS(inp.bizconf_level), change: d1S(raw.bizconf != null && raw.bizconfPrior != null ? raw.bizconf - raw.bizconfPrior : null), signal: byKey.bizconf, fsignal: byF.bizconf },
-      { name: 'Underutilisation', latest: lvlS(inp.underemp_level), change: ppS(inp.underemp_change), signal: byKey.underemp, fsignal: byF.underemp }
+      { inverted: true, name: 'Business Confidence', latest: oneS(inp.bizconf_level), change: d1S(raw.bizconf != null && raw.bizconfPrior != null ? raw.bizconf - raw.bizconfPrior : null), signal: byKey.bizconf, fsignal: byF.bizconf },
+      { inverted: true, name: 'Unemployment', latest: lvlS(inp.unemp_level), change: ppS(inp.unemp_change), signal: byKey.unemp, fsignal: byF.unemp },
+      { inverted: true, name: 'Underutilisation', latest: lvlS(inp.underemp_level), change: ppS(inp.underemp_change), signal: byKey.underemp, fsignal: byF.underemp }
     ];
     var gapS = function (v) { return (v == null || isNaN(v)) ? '--' : (v >= 0 ? '+' : '') + (+v).toFixed(1); };
     var vi = out.value_inds;

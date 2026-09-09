@@ -138,6 +138,27 @@
 
   var FONT = "'Montserrat','Segoe UI','Helvetica Neue',Arial,sans-serif";
 
+  /* ── the MINI dial ───────────────────────────────────────────────────────
+     A second, much smaller face for ONE market: the same three bands from the
+     same partitions, the band the market sits in highlighted and the other two
+     dropped back, and a hand at the market's hour. It carries none of the
+     Market Indicators Clock's annotations, rim arrows or map watermark —
+     at 110px they would be illegible, and the point here is position, not
+     commentary. Asked for by Saskia (2026-09-09) for the Buying/Selling
+     verdict pages: "a small clock where the buy value txt is ... plus the pie
+     being highlighted based on what time the region is in".
+     It reads the SAME partitions as the big face, so a band the Investment
+     Committee moves moves here too. */
+  var MINI = {
+    vb: 200, cx: 100, cy: 100,
+    r: 70,          /* wedge radius                                     */
+    arcR: 77,       /* the highlight arc outside the active band        */
+    dotR: 59,       /* the twelve hour dots, on top of the wedges       */
+    numR: 90,       /* 12 / 3 / 6 / 9 — clear of the arc at 78.5        */
+    handR: 58       /* hand length; the tip halo then ends at 65, inside
+                       the wedge radius of 70                           */
+  };
+
   /* Australia watermark: the same base64 the Property Clock uses (AUS_MAP). */
   var AUS_MAP = 'data:image/png;base64,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';
   /* assets/Reports/logo-white.png, byte-for-byte — the white "Performance
@@ -376,6 +397,82 @@
            ' preserveAspectRatio="xMidYMid meet">' + body(parts, 'x') + '</svg>';
   }
 
+  /* One market's dial, as a self-contained SVG string.
+       opts.hour        0-12 on the property clock (8.5 = 8:30). Not finite ->
+                        '' is returned, because a market with no clock position
+                        must show no dial rather than an unmarked face.
+       opts.partitions  the saved bands; falls back to the Property Clock's
+                        defaults exactly as everything else here does.
+       opts.label       the accessible name.
+       opts.size        rendered px (default: fluid, 100% of its box). */
+  function markupMini(parts, opts) {
+    /* Number(null) and Number('') are both 0, i.e. twelve o'clock — so an
+       absent hour has to be rejected BEFORE the coercion, or a caller with no
+       clock position silently gets a dial pointing at the top of the cycle.
+       The Buying/Selling pages guard this themselves; a shared export cannot
+       rely on every caller doing so. */
+    var raw = opts ? opts.hour : null;
+    if (raw == null || raw === '') return '';
+    var hour = Number(raw);
+    if (!isFinite(hour)) return '';
+    var deg = ((((hour % 12) * 30) % 360) + 360) % 360;
+    var here = partitionAt(parts, deg);
+    var C = MINI, out = [];
+
+    /* the face: a soft ring so the dial reads as an object on a white card */
+    out.push('<circle cx="' + C.cx + '" cy="' + C.cy + '" r="' + (C.r + 4) + '" fill="#ffffff"/>');
+    out.push('<circle cx="' + C.cx + '" cy="' + C.cy + '" r="' + (C.r + 3) + '" fill="none" stroke="#e6e7e9" stroke-width="2"/>');
+
+    /* the three bands. The one the market is in keeps its colour; the other
+       two drop back, which is what makes the position readable at a glance. */
+    parts.forEach(function (p) {
+      var on = here && p === here;
+      out.push('<path d="' + wedgePath(C.cx, C.cy, C.r, p.a1, p.a2) + '" fill="' + p.color +
+               '" opacity="' + (on ? '1' : '.22') + '"/>');
+    });
+    /* white separators on the band boundaries, as on the big face */
+    parts.forEach(function (p) {
+      var e = toXY(C.cx, C.cy, C.r, p.a1);
+      out.push('<line x1="' + C.cx + '" y1="' + C.cy + '" x2="' + f(e[0]) + '" y2="' + f(e[1]) +
+               '" stroke="#ffffff" stroke-width="2"/>');
+    });
+    /* and an arc just outside the active band, so the highlight survives even
+       where two bands happen to be close in tone */
+    if (here) {
+      out.push('<path d="' + openArc(C.cx, C.cy, C.arcR, here.a1, here.a2) +
+               '" fill="none" stroke="' + here.color + '" stroke-width="3" stroke-linecap="round"/>');
+    }
+
+    /* twelve hour dots, the quarters larger — the big face's own treatment */
+    for (var h = 0; h < 12; h++) {
+      var d = toXY(C.cx, C.cy, C.dotR, h * 30);
+      out.push('<circle cx="' + f(d[0]) + '" cy="' + f(d[1]) + '" r="' + (h % 3 === 0 ? 2.6 : 1.6) +
+               '" fill="#ffffff" opacity=".85"/>');
+    }
+    /* 12 / 3 / 6 / 9 outside the face */
+    [[0, '12'], [90, '3'], [180, '6'], [270, '9']].forEach(function (n) {
+      var q = toXY(C.cx, C.cy, C.numR, n[0]);
+      out.push('<text x="' + f(q[0]) + '" y="' + f(q[1]) + '" text-anchor="middle" dominant-baseline="central"' +
+               ' font-family="' + FONT + '" font-size="15" font-weight="800" fill="#63666A">' + n[1] + '</text>');
+    });
+
+    /* the market: a hand from the centre, a tip dot in the band's own colour */
+    var t = toXY(C.cx, C.cy, C.handR, deg);
+    out.push('<line x1="' + C.cx + '" y1="' + C.cy + '" x2="' + f(t[0]) + '" y2="' + f(t[1]) +
+             '" stroke="#171B24" stroke-width="3.4" stroke-linecap="round"/>');
+    out.push('<circle cx="' + f(t[0]) + '" cy="' + f(t[1]) + '" r="7" fill="#ffffff"/>');
+    out.push('<circle cx="' + f(t[0]) + '" cy="' + f(t[1]) + '" r="4.8" fill="#171B24"/>');
+    out.push('<circle cx="' + C.cx + '" cy="' + C.cy + '" r="4.6" fill="#171B24"/>');
+
+    var sz = (opts && Number(opts.size) > 0)
+      ? (' width="' + Number(opts.size) + '" height="' + Number(opts.size) + '"')
+      : ' width="100%" height="100%"';
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + C.vb + ' ' + C.vb + '"' + sz +
+           ' preserveAspectRatio="xMidYMid meet" role="img" aria-label="' +
+           esc((opts && opts.label) || 'Position on the property clock') +
+           '" style="display:block;overflow:visible">' + out.join('') + '</svg>';
+  }
+
   function paint(host, parts, opts) {
     host.innerHTML = markupInline(parts, (opts && opts.uid) || 'm', opts && opts.title);
     return host.firstElementChild;
@@ -423,6 +520,18 @@
         return 'data:image/svg+xml;charset=utf-8,' +
           encodeURIComponent(svg).replace(/\(/g, '%28').replace(/\)/g, '%29');
       });
+    },
+
+    /* One market's position as a small dial — SVG markup, SYNCHRONOUS, so a
+       slide that already holds the bands can draw it inside its own render
+       without a second await. Returns '' when the market has no clock hour
+       (a dial with no hand would say something untrue). */
+    mini: function (opts) {
+      try {
+        var parts = (opts && Array.isArray(opts.partitions) && opts.partitions.length)
+          ? norm(opts.partitions) : (_parts || deep(DEFAULT_PARTITIONS));
+        return markupMini(parts, opts || {});
+      } catch (e) { return ''; }
     },
 
     /* exposed for tests / callers that want the band maths */
