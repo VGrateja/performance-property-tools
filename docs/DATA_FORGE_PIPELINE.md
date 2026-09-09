@@ -81,11 +81,17 @@ All write **`rdp_raw_series`** (long format, upsert `onConflict: source,region_s
 | 20 | ingest-sqm-rents | SQM Research (HTML scrape) | house/unit rents | — | **forge_demand_inputs** (keeps manual REA listings) |
 | 21 | ingest-sqm-vacancy | SQM Research (HTML scrape) | `vr` | — | **forge_demand_inputs** |
 
-### 3b. The one local-run source
+### 3b. The local-run sources
+
+Two API points are fetched from the laptop rather than CI, because the source
+breaks or blocks **for the GitHub runners specifically**. Both are driven by the
+one launcher, `scripts/run-jsa-jobcreation.cmd`.
 
 - **`ingest-jsa-jobcreation.mjs`** — JSA Internet Vacancy Index (`.xlsx`). Metrics `job_creation_index` (36 cities) + `internet_vacancies`, source=`jsa`, freq M → `rdp_raw_series` (upsert-only + `rdp_runs` + `forge_data_status`).
 - **Not in CI:** jobsandskills.gov.au hard-blocks GitHub runner IPs at the network layer (a gov WAF — connection refused, not a UA filter; a browser UA + retry both failed).
-- **How it runs:** manually each month from a non-blocked machine (the laptop): `node scripts/ingest-jsa-jobcreation.mjs --write`.
+- **`ingest-oecd-consumer-confidence.mjs`** — OECD CCI for Australia, monthly, amplitude adjusted. Moved out of CI on **2026-09-10**.
+- **Not in CI:** `sdmx.oecd.org` returns HTTP 500 `languageTag1` to the GitHub runners while the *identical* request from Australia returns 200. Proven on 2026-09-09 across two runs minutes apart — 4 JSON retries plus the CSV fallback failed in CI both times, while 10 consecutive local attempts all succeeded. It had already reddened the 2026-08 GATHER the same way. The script's three resilience layers (retries → CSV → skip-if-fresh) cannot help, because the skip only applies while the series is fresh and the hard failure is precisely the case where it is not. Leaving it in CI turned a healthy pipeline red every month, which is how a real alert gets ignored.
+- **How they run:** each month from a non-blocked machine (the laptop): `node scripts/ingest-jsa-jobcreation.mjs --write` and `node scripts/ingest-oecd-consumer-confidence.mjs --write`.
 - **The scheduled task exists.** The launcher `scripts/run-jsa-jobcreation.cmd` is committed, and the Windows task *"Performance Forge - JSA Job Creation (monthly)"* is registered and Ready on the laptop (10th, noon). If the registration is ever lost, `scripts/register-jsa-task.ps1` re-creates it.
 
 ### 3c. Upsert / history rules
