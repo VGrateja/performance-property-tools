@@ -1794,33 +1794,70 @@ function tlBandAtHour(hour){
    THIS IS DELIBERATELY NOT THE TRAFFIC LIGHTS TOOL. The vault tool keeps the
    engine's raw score, so the two disagree for most markets by design — that
    is the decision, not drift. Do not 'fix' one to match the other.
-   The five phases below are Van's; the seven keys are the clock's own
-   sub-phases, so the band edges stay editable in the clock tool and nothing
-   here hard-codes an hour:
-     sell window       sellwin + peak        g / r / y
-     downturn          correction -> hold    r / r|y / r|y   (the 'red to yellow'
-                       transition IS the existing 3:00 Correction/Hold split)
-     before the value  buymom                y / y / r
-     value             buyval                y / g / y
-     momentum          momentum              g / g / g */
-const TL_CLOCK_PATTERN = {
-  sellwin:    ['GREEN','RED','ORANGE'],
-  peak:       ['GREEN','RED','ORANGE'],
-  correction: ['RED','RED','RED'],
-  hold:       ['RED','ORANGE','ORANGE'],
-  buymom:     ['ORANGE','ORANGE','RED'],
-  buyval:     ['ORANGE','GREEN','ORANGE'],
-  momentum:   ['GREEN','GREEN','GREEN']
-};
-/* FORECAST = the next of Van's five phases, not the next sub-phase: the clock
-   turns one way, so the forecast column answers 'what do these lights read
-   once this market moves on'. Correction and Hold are one phase (downturn),
-   so both look through to 'before the value'. */
-const TL_CLOCK_NEXT = { sellwin:'correction', peak:'correction', correction:'buymom',
-  hold:'buymom', buymom:'buyval', buyval:'momentum', momentum:'sellwin' };
+   THE TABLE IS VAN'S, 2026-09-10 (his second, finer spec — it replaced a
+   five-phase version the same day). TEN steps, in DEGREES clockwise from
+   twelve so they share the convention clock_state.payload.partitions uses,
+   and [a1, a2) so a market sitting exactly on a boundary belongs to the step
+   it is entering. The steps TILE THE THREE SAVED BANDS EXACTLY:
+     300 = 10:00 and 30 = 1:00 are the Selling Window edges,
+     30 = 1:00 and 135 = 4:30 are the Correction / Hold edges,
+     135 = 4:30 and 300 = 10:00 are the Buy / Value / Momentum edges.
+   ⚠ Unlike the version before it, this table DOES pin its own hours, because
+   the sub-steps (3:30, 4:00, 7:30) exist nowhere in the saved partitions.
+   If the IC moves a band edge in the Property Clock tool, THIS TABLE MUST
+   MOVE WITH IT — the walk harness asserts the two still agree and will fail
+   loudly if they drift, which is how the 2026-09-09 Albury defect (a phase
+   word from one ladder over dots from another) is kept from returning.
+
+      #   phase                    time            S&D  Value  Conf
+      1   Selling                  10:00 - 11:00    G     R     G
+      2   Selling                  11:00 - 12:00    Y     R     G
+      3   Selling                  12:00 - 1:00     Y     R     Y
+      4   Downturn / correction     1:00 - 2:00     R     R     R
+      5   Downturn / correction     2:00 - 3:00     R     Y     R
+      6   Before the buy value      3:00 - 3:30     Y     Y     R
+      7   Before the buy value      3:30 - 4:00     G     Y     R
+      8   Before the buy value      4:00 - 4:30     G     G     R
+      9   Buy value                 4:30 - 7:30     G     G     Y
+     10   Momentum                  7:30 - 10:00    G     G     G   */
+const TL_CLOCK_STEPS = [
+  { a1:300, a2:330, ph:'Selling',               tl:['GREEN', 'RED',    'GREEN']  },
+  { a1:330, a2:360, ph:'Selling',               tl:['ORANGE','RED',    'GREEN']  },
+  { a1:0,   a2:30,  ph:'Selling',               tl:['ORANGE','RED',    'ORANGE'] },
+  { a1:30,  a2:60,  ph:'Downturn / correction', tl:['RED',   'RED',    'RED']    },
+  { a1:60,  a2:90,  ph:'Downturn / correction', tl:['RED',   'ORANGE', 'RED']    },
+  { a1:90,  a2:105, ph:'Before the buy value',  tl:['ORANGE','ORANGE', 'RED']    },
+  { a1:105, a2:120, ph:'Before the buy value',  tl:['GREEN', 'ORANGE', 'RED']    },
+  { a1:120, a2:135, ph:'Before the buy value',  tl:['GREEN', 'GREEN',  'RED']    },
+  { a1:135, a2:225, ph:'Buy value',             tl:['GREEN', 'GREEN',  'ORANGE'] },
+  { a1:225, a2:300, ph:'Momentum',              tl:['GREEN', 'GREEN',  'GREEN']  },
+];
+/* index of the step a market's hour falls in, -1 for no hour at all */
+function tlStepAtHour(hour){
+  if(!_sumOk(hour)) return -1;
+  const deg=((((Number(hour)*30)%360)+360)%360);
+  for(let i=0;i<TL_CLOCK_STEPS.length;i++){
+    const st=TL_CLOCK_STEPS[i];
+    let off=deg-st.a1; if(off<0) off+=360;
+    let sp=st.a2-st.a1; if(sp<=0) sp+=360;
+    if(off<sp) return i;
+  }
+  return -1;
+}
+/* the table's own phase name for an hour — NOT the same vocabulary as
+   CLOCK_PHASES, which still supplies the word printed on the verdict page */
+function tlPhaseAtHour(hour){ const i=tlStepAtHour(hour); return i<0?null:TL_CLOCK_STEPS[i].ph; }
 function tlRowsFromClock(hour){
-  const k=clockSubPhase(hour); if(!k||!TL_CLOCK_PATTERN[k]) return null;
-  const now=TL_CLOCK_PATTERN[k], nxt=TL_CLOCK_PATTERN[TL_CLOCK_NEXT[k]]||now;
+  const i=tlStepAtHour(hour); if(i<0) return null;
+  const now=TL_CLOCK_STEPS[i].tl;
+  /* FORECAST = the next PHASE, not the next step. Three steps can share a
+     phase, and 'what will these lights read once this market moves on' is not
+     a thirty-minute question. */
+  let nxt=now;
+  for(let n=1;n<=TL_CLOCK_STEPS.length;n++){
+    const k=(i+n)%TL_CLOCK_STEPS.length;
+    if(TL_CLOCK_STEPS[k].ph!==TL_CLOCK_STEPS[i].ph){ nxt=TL_CLOCK_STEPS[k].tl; break; }
+  }
   return [['Supply & Demand',now[0],nxt[0]],['Value',now[1],nxt[1]],['Confidence',now[2],nxt[2]]];
 }
 /* The stored clock hour for a MARKET, for one property type — the input the
