@@ -1844,8 +1844,8 @@ function tlStepAtHour(hour){
   }
   return -1;
 }
-/* the table's own phase name for an hour — NOT the same vocabulary as
-   CLOCK_PHASES, which still supplies the word printed on the verdict page */
+/* the table's own phase name for an hour. TL_PHASE_WORD turns it into the
+   word the verdict page prints; clockPhase() is the only caller that needs it */
 function tlPhaseAtHour(hour){ const i=tlStepAtHour(hour); return i<0?null:TL_CLOCK_STEPS[i].ph; }
 function tlRowsFromClock(hour){
   const i=tlStepAtHour(hour); if(i<0) return null;
@@ -4102,51 +4102,42 @@ async function getClockPos(){
    plain English for someone who has never seen a property clock. The WORDS are
    the clock's own and never change; only the one-line reading flips to the
    seller's side of the same phase when mode==='sell'. */
-const CLOCK_PHASES={
-  peak:       ['Peak',           'At the top of the cycle — growth is running out of room',
-                                 'At the top of the cycle — the strongest selling conditions'],
-  sellwin:    ['Selling window', 'Just past the top — better for selling than for buying',
-                                 'Just past the top — still a seller’s market, but the window is closing'],
-  correction: ['Correction',     'Prices are easing back from the peak',
-                                 'Prices are easing back from the peak — buyers have more leverage'],
-  hold:       ['Hold',           'Flat and close to the bottom — patience pays here',
-                                 'Flat and close to the bottom — a hard time to get a premium'],
-  buymom:     ['Buy momentum',   'Off the bottom and starting to move',
-                                 'Off the bottom and starting to move — sellers gain ground from here'],
-  buyval:     ['Buy value',      'Near the bottom — the best value in the cycle',
-                                 'Near the bottom — selling now means selling at the cycle’s low'],
-  momentum:   ['Momentum',       'Rising, with growth already underway',
-                                 'Rising, with growth still ahead'],
+/* ONE LADDER FOR THE WORD AND THE DOTS (Van 2026-09-10).
+   CLOCK_PHASES was a seven-rung ladder (Peak · Selling window · Correction ·
+   Hold · Buy momentum · Buy value · Momentum) with its own hour thresholds.
+   Once the lights moved to TL_CLOCK_STEPS the two disagreed, and Van caught
+   it on Darwin units: at 7:30 the page printed the WORD "Buy value" (the old
+   ladder ran Buy value to 8:00) over MOMENTUM's green/green/green dots. That
+   is the 2026-09-09 Albury defect again — a phase word off one ladder over
+   dots off another — so the second ladder is gone rather than re-tuned.
+   The word is now the display name of the step's own phase. Three phase
+   words RETIRE with the ladder: "Peak" (Van's table calls 11:45-12:15
+   Selling), "Hold" (3:00-4:30 is now Before the buy value) and "Buy
+   momentum" (4:30-6:00 is now Buy value). The per-purpose BLURBS go too —
+   they had been dead since the phase blurb came off the verdict page on
+   2026-09-10; git history has all fourteen if they are ever wanted.
+   ASKED AND ANSWERED 2026-09-10: Van produced the older six-phase clock
+   graphic (Hold · Peak · Downside risk · Stagnation · Buy value · Buy
+   momentum), whose wedges map 1:1 onto his ten steps within thirty minutes —
+   step 1 is its Hold, steps 2-3 its Peak, 4-5 Downside risk, 6-8 Stagnation,
+   9 Buy value, 10 Buy momentum. He chose to KEEP the five words below rather
+   than restore that vocabulary. Do not re-raise it. Worth knowing if it ever
+   comes back: the old clock puts HOLD near the TOP (9:00-11:00, you have
+   missed it) while the retired ladder put Hold at the BOTTOM (3:00-4:30, be
+   patient) — the same word for opposite things, and the old clock calls that
+   bottom phase Stagnation. */
+const TL_PHASE_WORD = {
+  'Selling':               'Selling window',
+  'Downturn / correction': 'Correction',
+  'Before the buy value':  'Before the buy value',
+  'Buy value':             'Buy value',
+  'Momentum':              'Momentum',
 };
-function clockSubPhase(hour){
-  if(!_sumOk(hour)) return null;
-  let h=((Number(hour)%12)+12)%12; if(h===0) h=12;
-  /* WHICH BAND first, from the SAVED bands, and only then which sub-phase
-     inside it. Every phase name is a subdivision of one of the clock's three
-     bands, so the band EDGES have to come from clock_state.partitions — a
-     second, hand-kept copy of them here drifts, and it had (2026-09-09): the
-     ladder put the selling window at 10:15–2:00 while the saved bands put it
-     at 10:00–1:00, so Albury at 10:00 read "Momentum" when the clock had it in
-     the selling window, and Port Macquarie at 1:00 read "Selling window" when
-     the clock had it in correction. Harmless while the words stood alone —
-     not harmless now the LIGHTS take their selling-window override off those
-     same bands, because the page would print yellow-because-selling-window
-     dots over the word "Momentum". One source, no contradiction.
-     The sub-phase thresholds inside each band are untouched.
-     No bands readable at all → the original ladder, unchanged. */
-  const band=tlBandAtHour(hour);
-  if(band==='sell')    return (h>=11.75||h<0.25)?'peak':'sellwin';
-  if(band==='correct') return (h<3)?'correction':'hold';
-  if(band==='buy')     return (h<6)?'buymom':(h<8)?'buyval':'momentum';
-  return (h>=11.75||h<0.25)?'peak':(h>=10.25||h<2)?'sellwin':(h<3)?'correction':(h<4)?'hold':(h<6)?'buymom':(h<8)?'buyval':'momentum';
-}
-/* the phase WORD + blurb, off the same ladder the DOTS use. Splitting those
-   two readers is what let the page print a yellow dot over the word
-   'Momentum' before 2026-09-09; they share clockSubPhase() now. */
-function clockPhase(hour,mode){
-  const k=clockSubPhase(hour); if(!k) return null;
-  const p=CLOCK_PHASES[k];
-  return { word:p[0], blurb:((mode==='sell')?p[2]:p[1]) };
+/* The phase WORD, off the SAME step the dots come from — so a page can never
+   again name one phase while painting another's colours. */
+function clockPhase(hour){
+  const ph=tlPhaseAtHour(hour); if(!ph) return null;
+  return { word: TL_PHASE_WORD[ph] || ph };
 }
 function clockHourLabel(hour){
   if(!_sumOk(hour)) return null;
@@ -4361,7 +4352,7 @@ async function mountSumVerdict(slideEl,c){
       out.tVr=out.vrTyped?(isU?T.vrU:T.vrH):T.vr; }),
     getClockPos().then(function(m){ const e=m&&m[type][String(c.name).toUpperCase()];
       /* the raw hour as well as its label: the dial needs the angle */
-      if(e){ out.hour=e.hour; out.phase=clockPhase(e.hour,c.mode); out.hourLabel=clockHourLabel(e.hour); } }),
+      if(e){ out.hour=e.hour; out.phase=clockPhase(e.hour); out.hourLabel=clockHourLabel(e.hour); } }),
   ];
   try{ await Promise.all(jobs); }catch(e){}
   if(!host.isConnected) return;
