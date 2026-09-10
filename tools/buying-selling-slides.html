@@ -159,6 +159,11 @@ body.bss-landing-open .bss-land-glow{display:block;}
   margin:0; flex:1; min-width:0; overflow-wrap:anywhere; }
 .bss-landing .bssrcm-tile .bssrcm-count{ flex:none; margin:0; font-size:.64rem; letter-spacing:.08em; opacity:1;
   border:1px solid var(--brd); border-radius:6px; padding:3px 7px; color:var(--tx2); }
+/* purpose pill — only drawn when a region is curated for one purpose */
+.bss-landing .bssrcm-tile .bssrcm-purpose{ flex:none; margin:0; font-size:.6rem; font-weight:800;
+  letter-spacing:.08em; text-transform:uppercase; border-radius:6px; padding:3px 7px; border:1px solid; }
+.bss-landing .bssrcm-tile .bssrcm-purpose.buy{ color:#00A0B4; border-color:rgba(0,160,180,.5); }
+.bss-landing .bssrcm-tile .bssrcm-purpose.sell{ color:#FFA91F; border-color:rgba(255,169,31,.5); }
 .bss-landnone{ color:var(--tx2); font-size:.85rem; padding:14px 4px; display:none; }
 [data-theme="light"] .bss-land-glow{opacity:.45;}
 .bssrcm-inner{
@@ -1022,6 +1027,26 @@ let _isCurated = false;    /* is THIS page load the curated view? */
 const _curSet = mode => new Set((CURATED && CURATED[mode]) || []);
 /* regions offered for one purpose — unfiltered when this isn't the curated view */
 function curSlugs(mode){ if(!_isCurated) return _allSlugs; const s=_curSet(mode); return _allSlugs.filter(x=>s.has(x)); }
+/* which purposes offer this region: ['buy'], ['sell'], both, or neither */
+function curModesFor(slug){
+  if(!_isCurated) return ['buy','sell'];
+  const out=[]; if(_curSet('buy').has(slug)) out.push('buy'); if(_curSet('sell').has(slug)) out.push('sell');
+  return out;
+}
+/* THE LANDING LIST IS THE UNION OF BOTH PURPOSES (Van 2026-09-10).
+   curSlugs() is per purpose and is right for the in-deck dropdown and the
+   next/prev region walk: you are inside a BUYING deck, so those offer buying
+   regions. It is wrong for a list headed "Buying / Selling Decks". Once the
+   curation was split so a region is offered for one purpose only, a
+   purpose-scoped landing hid every selling-only market — Adelaide, Brisbane,
+   Toowoomba, Ipswich, Rockhampton, Gladstone, Rockingham, Bunbury, Mandurah
+   all vanished, leaving the three buy-only markets — behind a toggle that is
+   not on that screen. */
+function landingSlugs(){
+  if(!_isCurated) return _allSlugs;
+  const b=_curSet('buy'), sl=_curSet('sell');
+  return _allSlugs.filter(x=>b.has(x)||sl.has(x));
+}
 async function loadCurated(){
   try{
     const {data}=await window.sb.from('reports_state').select('payload').eq('region','bss-visibility').maybeSingle();
@@ -5147,7 +5172,7 @@ async function saveCurate(){
      the picker if the region on screen was just unticked */
   if(_isCurated){
     _slugs=curSlugs(state.mode);
-    syncModeButtons(); buildLanding(_slugs);
+    syncModeButtons(); buildLanding(landingSlugs());
     if(!_slugs.includes(state.slug)){
       $('#bssLanding').classList.add('show'); document.body.classList.add('bss-landing-open');
     } else fillRegionSelect();
@@ -5384,8 +5409,8 @@ async function boot(){
   /* landing: a bare open (no ?region deep-link) shows the region picker over a
      CLEAN backdrop — the deck only loads after a region is chosen (like the
      Online Reports chooser). Pins / Library links / deep-links go straight in. */
-  buildLanding(slugs);
-  if (_isCurated && !slugs.length) {   /* nothing curated at all — say so rather than showing an empty picker */
+  buildLanding(landingSlugs());
+  if (_isCurated && !landingSlugs().length) {   /* nothing curated for EITHER purpose — say so rather than showing an empty picker */
     $('#bssStack').innerHTML='<div class="bss-boot">No decks have been published yet. An administrator curates them from the Buying/Selling Slides tool in the Vault.</div>';
     hideLiveLoadingOverlay(); return;
   }
@@ -5441,10 +5466,14 @@ function buildLanding(slugs){
   /* i = position in the WHOLE list, so the stagger keeps running past the
      10 delays the stylesheet defines (those only covered a cluster page). */
   const stagger=i=>(0.16+Math.min(i,26)*0.035).toFixed(3)+'s';
-  const row=(attrs,icon,name,chip,i)=>
-    '<button class="bssrcm-tile" '+attrs+' type="button" style="animation-delay:'+stagger(i)+'" data-filter="'+esc(String(name).toLowerCase())+'">'
+  /* `tag` = the purpose pill, when a region is offered for one purpose only.
+     It also joins the filter text, so typing "sell" narrows the list to the
+     selling decks now that the list mixes both. */
+  const row=(attrs,icon,name,chip,i,tag)=>
+    '<button class="bssrcm-tile" '+attrs+' type="button" style="animation-delay:'+stagger(i)+'" data-filter="'+esc((String(name)+' '+(tag?tag.txt:'')).trim().toLowerCase())+'">'
     +'<span class="bss-lic">'+icon+'</span>'
     +'<h3>'+esc(name)+'</h3>'
+    +(tag?('<span class="bssrcm-purpose '+tag.cls+'">'+esc(tag.txt)+'</span>'):'')
     +'<span class="bssrcm-count">'+esc(chip)+'</span></button>';
   /* ONE deck per region, ONE tile (Saskia + Van 2026-09-08): the tile opens the
      B/S report in its new order for whichever purpose toggle is active — no
@@ -5455,11 +5484,20 @@ function buildLanding(slugs){
      names (Van's screenshot). The three-slice tile of 2026-09-02 is retired;
      its .bss-t3 CSS stays harmless. */
   const sorted=slugs.slice().sort(byName);
-  const regionTiles=sorted.map((sl,i)=>row(
-    'data-slug="'+esc(sl)+'"',
-    BSS_ICONS[sl]||'📄',
-    (DB.meta[sl]&&DB.meta[sl].name)||sl,
-    ((DB.meta[sl]&&DB.meta[sl].state)||'').toUpperCase(), i)).join('');
+  const regionTiles=sorted.map((sl,i)=>{
+    /* A curated set can offer a region for ONE purpose only, so the tile
+       pins the purpose it opens and labels it — "Adelaide" quietly opening a
+       SELLING deck is a surprise. A region offered for both, and every region
+       in the master view, keeps the old behaviour: it opens whichever purpose
+       is currently active. */
+    const md=curModesFor(sl), only=(md.length===1)?md[0]:null;
+    return row(
+      'data-slug="'+esc(sl)+'"'+(only?(' data-mode="'+only+'"'):''),
+      BSS_ICONS[sl]||'📄',
+      (DB.meta[sl]&&DB.meta[sl].name)||sl,
+      ((DB.meta[sl]&&DB.meta[sl].state)||'').toUpperCase(), i,
+      only?{cls:only,txt:(only==='sell'?'Selling':'Buying')}:null);
+  }).join('');
   const customTiles=_customsOffered().map((d,i)=>row(
     'data-custom="'+esc(d.custom)+'" data-slug="'+esc(d.slug)+'" data-mode="'+esc(d.mode)+'"',
     '🗂️', d.label, String(d.sub||'Custom deck').toUpperCase(), sorted.length+i)).join('');
@@ -5526,7 +5564,7 @@ $('#bssLandClose').addEventListener('click',()=>{
 /* appbar Cluster action — reopen the region picker over the deck */
 (function(){ const b=document.getElementById('bss-cluster-btn'); if(!b) return;
   b.addEventListener('click',()=>{
-    buildLanding(_slugs && _slugs.length ? _slugs : _landSlugs);   /* single flat view — rebuild + replay the stagger */
+    buildLanding(landingSlugs());   /* single flat view — rebuild + replay the stagger */
     document.body.classList.add('bss-landing-open');
     $('#bssLanding').classList.add('show');
   });
@@ -5540,7 +5578,9 @@ $('#bssLandRegionGrid').addEventListener('click',e=>{
   const btn=e.target.closest('[data-open]');
   const t=e.target.closest('.bssrcm-tile'); if(!t)return;
   const slug=t.dataset.slug, custom=t.dataset.custom||null;
-  const mode=custom ? (t.dataset.mode||'buy') : (state.mode==='sell'?'sell':'buy');
+  /* a region tile carries data-mode only when it is curated for ONE purpose;
+     without it the tile opens whichever purpose is active, as before */
+  const mode=custom ? (t.dataset.mode||'buy') : (t.dataset.mode || (state.mode==='sell'?'sell':'buy'));
   /* the tile opens the client slides; only the writer-side "Full report"
      button (dev/admin) opens the Full Report */
   const wantFull = !custom && !!btn && btn.dataset.open==='full';
@@ -5576,7 +5616,7 @@ $('#bssMode').addEventListener('click',e=>{ const b=e.target.closest('button[dat
      it, otherwise land on the first one it does — then refresh dropdown + picker */
   _slugs=curSlugs(state.mode);
   if(!_slugs.includes(state.slug)) state.slug=_slugs[0]||state.slug;
-  fillRegionSelect(); buildLanding(_slugs);
+  fillRegionSelect(); buildLanding(landingSlugs());
   state.idx=0; syncURL(); reloadDeck(); });
 /* "Pin to desktop" — pins THIS region+mode deck as a deep-link on the hub (PP_PINS). */
 (function(){ const btn=$('#bssPin'); if(!btn) return; btn.addEventListener('click',function(){ try{
