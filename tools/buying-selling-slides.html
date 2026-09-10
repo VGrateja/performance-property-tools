@@ -1724,7 +1724,7 @@ function tlPill(sig){
    on both clock lists (Perth houses are in the selling window while Perth
    units are still in buy/value), and the house/unit split of these slides is
    the next piece of work. When it lands, a unit page passes 'u' to
-   tlClockBand() and this rule follows it; nothing below has to change.
+   tlClockHour() and the lights follow it; nothing below has to change.
    ════════════════════════════════════════════════════════════════════════ */
 
 /* The three canonical bands, named by the partition id the Property Clock
@@ -1766,15 +1766,6 @@ function tlBandAtHour(hour){
   }
   return null;
 }
-/* The band a MARKET sits in, for one property type.
-   `type`: 'u' = units · anything else (and undefined, today's every caller) =
-   houses. A market the clock does not carry — Mandurah is deliberately off it
-   (Saskia 2026-09-08) — has no band, so no override applies to it. */
-async function tlClockBand(name, type){
-  const m=await getClockPos();
-  const e=m && m[(type==='u')?'u':'h'][String(name||'').toUpperCase()];
-  return e ? tlBandAtHour(e.hour) : null;
-}
 /* ── THE RULE ── one engine signal in, the signal this deck displays out. */
 /* THE RULE, and it is the SAME on both decks (Van 2026-09-10: "traffic
    lights should be the same for buying/selling").
@@ -1791,15 +1782,57 @@ async function tlClockBand(name, type){
    lights" inside the selling window; the sentence it complained about has
    since been removed from the page, and the owner has chosen consistency
    between the decks over the mirror. */
-function tlOnClock(sig, band){ return (band==='sell' && sig==='GREEN') ? 'ORANGE' : sig; }
-/* the same rule across a [label, current, forecast] row set.
-   The FORECAST column is overridden too. "Green never displays in the selling
-   window" is absolute, and the cycle agrees with it: a market at the top
-   cannot be a buy inside the forecast horizon either — it has to come down
-   through correction first. Showing a green forecast beside a yellowed
-   current would also re-open the contradiction this rule exists to close. */
-function tlRowsOnClock(rows, band){
-  return (rows||[]).map(function(r){ return [r[0], tlOnClock(r[1],band), tlOnClock(r[2],band)]; });
+/* ── THE CLOCK *IS* THE TRAFFIC LIGHT — B/S DECK ONLY (Van 2026-09-10) ──
+   Until today these three lights were the Traffic Lights engine's score with
+   a selling-window veto laid over the top. They are now read STRAIGHT off
+   where the property clock puts the market; the engine is kept only as a
+   fallback for a market the clock does not carry.
+   Why: measured across all 36 markets on 2026-09-10, the engine agreed with
+   the cycle on 11 of 70 house/unit readings (16%). Supply & Demand scored
+   GREEN almost everywhere — 21 of 21 in Momentum but also 18 of 19 inside the
+   selling window — so that column barely responded to the cycle at all. The
+   deck states a cycle position; the lights now state the same one.
+   THIS IS DELIBERATELY NOT THE TRAFFIC LIGHTS TOOL. The vault tool keeps the
+   engine's raw score, so the two disagree for most markets by design — that
+   is the decision, not drift. Do not 'fix' one to match the other.
+   The five phases below are Van's; the seven keys are the clock's own
+   sub-phases, so the band edges stay editable in the clock tool and nothing
+   here hard-codes an hour:
+     sell window       sellwin + peak        g / r / y
+     downturn          correction -> hold    r / r|y / r|y   (the 'red to yellow'
+                       transition IS the existing 3:00 Correction/Hold split)
+     before the value  buymom                y / y / r
+     value             buyval                y / g / y
+     momentum          momentum              g / g / g */
+const TL_CLOCK_PATTERN = {
+  sellwin:    ['GREEN','RED','ORANGE'],
+  peak:       ['GREEN','RED','ORANGE'],
+  correction: ['RED','RED','RED'],
+  hold:       ['RED','ORANGE','ORANGE'],
+  buymom:     ['ORANGE','ORANGE','RED'],
+  buyval:     ['ORANGE','GREEN','ORANGE'],
+  momentum:   ['GREEN','GREEN','GREEN']
+};
+/* FORECAST = the next of Van's five phases, not the next sub-phase: the clock
+   turns one way, so the forecast column answers 'what do these lights read
+   once this market moves on'. Correction and Hold are one phase (downturn),
+   so both look through to 'before the value'. */
+const TL_CLOCK_NEXT = { sellwin:'correction', peak:'correction', correction:'buymom',
+  hold:'buymom', buymom:'buyval', buyval:'momentum', momentum:'sellwin' };
+function tlRowsFromClock(hour){
+  const k=clockSubPhase(hour); if(!k||!TL_CLOCK_PATTERN[k]) return null;
+  const now=TL_CLOCK_PATTERN[k], nxt=TL_CLOCK_PATTERN[TL_CLOCK_NEXT[k]]||now;
+  return [['Supply & Demand',now[0],nxt[0]],['Value',now[1],nxt[1]],['Confidence',now[2],nxt[2]]];
+}
+/* The stored clock hour for a MARKET, for one property type — the input the
+   lights are now built from. `type`: 'u' = units · anything else = houses.
+   A market the clock does not carry — Mandurah is deliberately off the face
+   (Saskia 2026-09-08) — returns null, and the caller falls back to the
+   engine's own score rather than showing nothing. */
+async function tlClockHour(name, type){
+  const m=await getClockPos();
+  const e=m && m[(type==='u')?'u':'h'][String(name||'').toUpperCase()];
+  return e ? e.hour : null;
 }
 
 /* dark=true → navy slide + white wordmark (the sample's "Revisiting" slide) */
@@ -1852,7 +1885,7 @@ async function renderTL(host, slug, staticRows, type){
        on purpose, so a difference here is the decision, not drift.
        LIVE rows only — the two static slides below are the model's archetypes,
        not any market's reading, and the clock has nothing to say about them. */
-    rows=tlRowsOnClock(rows, await tlClockBand((DB.meta[slug]||{}).name||slug, type));
+    rows=tlRowsFromClock(await tlClockHour((DB.meta[slug]||{}).name||slug, type)) || rows;
   }
   host.innerHTML='<div class="bss-tlhead"><span>INDICATOR</span><span>CURRENT</span><span>FORECAST</span></div>'
     + rows.map(r=>'<div class="bss-tlrow"><div class="bss-tllabel">'+esc(r[0])+'</div>'
@@ -3814,7 +3847,12 @@ const SUMMARY_ORDER = [
      "you are definitely right - we will add them back in ASAP"). */
   'div_demand','pop_move','f13','infra_projects','stub_dwellings','vr_proj','f12',         /* demand + supply */
   'div_conf','stub_cci','stub_hpei','stub_bizconf','stub_bizfin','housing_fin',           /* confidence — Consumer Confidence + House Price Expectation added back (2026-09-07; HPEI keeps its VIC-only gate) */
-  'tl_revisit',                                                                           /* the verdict, revisited */
+  /* 'tl_revisit' — "Revisiting the Traffic Lights" — was REMOVED from the
+     client deck on 2026-09-10 (Van). The lights now come off the property
+     clock, so the closing recap restated the verdict page's three dots and
+     added only a FORECAST column that, under the clock model, is just the
+     next phase of the cycle rather than data. The slide and its def stay in
+     SLIDE_DEFS and the Full Report still carries it. */
   /* 'sum_examples' — the hand-off to the IR Samples — is PARKED (Saskia
      2026-09-08: the IR Samples tool must be reviewed before advisors see it).
      The slide and its builder stay; put the key back here once it is approved. */
@@ -3971,8 +4009,9 @@ function _sumDir(t,metric,mode){
    braces so a card can never print an arrow above an em dash */
 function _sumDirFor(t,metric,mode,level){ return _sumOk(level) ? _sumDir(t,metric,mode) : ''; }
 
-/* ── plain-English readings of the LIVE traffic lights (same rows renderTL
-      draws for tl_revisit) ── */
+/* ── the LIVE traffic lights: the rows the verdict page displays ──────────
+      renderTL draws the same rows for tl_revisit, which the Full Report
+      still carries — the client deck dropped that page on 2026-09-10. */
 /* signal -> the dot's colour class. Still very much in use: the dot IS the
    statement now that the caption under it has gone. */
 function _sumSigClass(s){ return s==='GREEN'?'g':s==='ORANGE'?'y':(s==='RED'||s==='RED_AMBER')?'r':''; }
@@ -3981,9 +4020,10 @@ function _sumSigClass(s){ return s==='GREEN'?'g':s==='ORANGE'?'y':(s==='RED'||s=
    between the buying and the selling voice, were deleted on 2026-09-10 when
    the captions came off the card. Git history has the wording if it is ever
    wanted back. */
-/* The rows the verdict page DISPLAYS: the engine's signals with the clock
-   override applied (Saskia 2026-09-09 — see "THE CLOCK OVERRULES THE
-   TRAFFIC-LIGHT BASE" above tlSlide), exactly as tl_revisit shows them.
+/* The rows the verdict page DISPLAYS: read STRAIGHT off the market's clock
+   hour (Van 2026-09-10 — see "THE CLOCK *IS* THE TRAFFIC LIGHT" above),
+   with the engine kept only as a fallback for a market the clock does not
+   carry.
    Overridden ONCE, here, so the three dots, their plain-English readings and
    the "N of 3 green lights" sentence are all read off the same row set and can
    never contradict each other — a page saying "2 of 3 green" over two yellow
@@ -3995,7 +4035,7 @@ async function sumTLRows(slug,type){
     const d=DATA[((DB.meta[slug]||{}).name)] || DATA[tlName(slug)];   /* the exact lookup renderTL uses */
     if(!d) return null;
     const rows=[['Supply & Demand',d.sd,d.sd_fcst],['Value',d.value,d.value_fcst],['Confidence',d.confidence,d.conf_fcst]];
-    return tlRowsOnClock(rows, await tlClockBand((DB.meta[slug]||{}).name||slug, type));
+    return tlRowsFromClock(await tlClockHour((DB.meta[slug]||{}).name||slug, type)) || rows;
   }catch(e){ return null; }
 }
 
@@ -4057,7 +4097,7 @@ const CLOCK_PHASES={
   momentum:   ['Momentum',       'Rising, with growth already underway',
                                  'Rising, with growth still ahead'],
 };
-function clockPhase(hour,mode){
+function clockSubPhase(hour){
   if(!_sumOk(hour)) return null;
   let h=((Number(hour)%12)+12)%12; if(h===0) h=12;
   /* WHICH BAND first, from the SAVED bands, and only then which sub-phase
@@ -4074,11 +4114,16 @@ function clockPhase(hour,mode){
      The sub-phase thresholds inside each band are untouched.
      No bands readable at all → the original ladder, unchanged. */
   const band=tlBandAtHour(hour);
-  let k;
-  if(band==='sell')         k=(h>=11.75||h<0.25)?'peak':'sellwin';
-  else if(band==='correct') k=(h<3)?'correction':'hold';
-  else if(band==='buy')     k=(h<6)?'buymom':(h<8)?'buyval':'momentum';
-  else k=(h>=11.75||h<0.25)?'peak':(h>=10.25||h<2)?'sellwin':(h<3)?'correction':(h<4)?'hold':(h<6)?'buymom':(h<8)?'buyval':'momentum';
+  if(band==='sell')    return (h>=11.75||h<0.25)?'peak':'sellwin';
+  if(band==='correct') return (h<3)?'correction':'hold';
+  if(band==='buy')     return (h<6)?'buymom':(h<8)?'buyval':'momentum';
+  return (h>=11.75||h<0.25)?'peak':(h>=10.25||h<2)?'sellwin':(h<3)?'correction':(h<4)?'hold':(h<6)?'buymom':(h<8)?'buyval':'momentum';
+}
+/* the phase WORD + blurb, off the same ladder the DOTS use. Splitting those
+   two readers is what let the page print a yellow dot over the word
+   'Momentum' before 2026-09-09; they share clockSubPhase() now. */
+function clockPhase(hour,mode){
+  const k=clockSubPhase(hour); if(!k) return null;
   const p=CLOCK_PHASES[k];
   return { word:p[0], blurb:((mode==='sell')?p[2]:p[1]) };
 }
@@ -4546,7 +4591,7 @@ const SUMMARY_DEFS = [
 /* ── render + nav ── */
 /* A page's context. It carries no property type, and that is the documented
    default: a page that does not ask for one is about HOUSES, so the clock
-   lookups (tlClockBand / the verdict page's cycle card) fall through to the
+   lookups (tlClockHour / the verdict page's cycle card) fall through to the
    house clock. A page that IS about one declares `ptype:'h'|'u'` on its slide
    definition and buildDeck() merges it in below — which is how the summary
    deck's two verdict pages differ, and how the selling-window traffic-light
