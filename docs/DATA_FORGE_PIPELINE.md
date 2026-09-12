@@ -81,6 +81,7 @@ All write **`rdp_raw_series`** (long format, upsert `onConflict: source,region_s
 | 20 | ingest-sqm-rents | SQM Research (HTML scrape) | house/unit rents | — | **forge_demand_inputs** (keeps manual REA listings) |
 | 21 | ingest-sqm-vacancy | SQM Research (HTML scrape) | `vr` | — | **forge_demand_inputs** |
 | 22 | ingest-westpac-hpei | Westpac–Melbourne Institute Consumer Sentiment bulletin — the PUBLIC monthly PDF on Westpac's library, parsed | `house_price_expectations` (national) | M | rdp_raw_series (source `wmi`, same lineage as the CSV) + forge_data_status `hpei_national` |
+| 23 | ingest-abs-patient-experiences | ABS 4839.0 Patient Experiences — data cube "Tables 1 to 3" (.xlsx linked from the release page; annual, ~November) | `gp_share` (by FY, period = FY start 1 July) + `gp_share_<band>` (8 age bands, latest release) | A | rdp_raw_series (region australia) + forge_data_status `gp_access` → feeds the two Commercial GP tabs at PUBLISH |
 
 ### 3b. The local-run sources
 
@@ -122,7 +123,7 @@ Editing is gated by `_forgeCanEdit` (dev/admin tier; **defaults to DENY** until 
 | **Cotality** (the main monthly drop) | `forge_cotality` (`latest` + `rentvacancy`) | COTALITY view: drop the Market Trends `.xlsx` + two Vacancy/Rent `.csv`. Parsed in-browser, filtered to capitals + 28 LGAs (matched/missing QC pill), upserts. The `.xlsx` also appends `forge_monthly_price` and recomputes CIV. Each drop replaces `latest`/`rentvacancy`. |
 | **Mortgage Arrears** | `forge_arrears` | ARR view: drop the S&P SPIN `.xlsx`; parser maps National + state columns, normalises to %, upserts (replaces the series). |
 | **Industry (Value Added)** | `forge_industry` | IND view: pick region → open its REMPLAN link → grab "Value added by industry" → drop file. Each drop **merges** regions into the store. Canberra is auto (ABS); never uploaded. |
-| **Commercial** | `forge_commercial` (23 tabs) | COMMERCIAL view **in-place editor**: pick tab → ✏️ Edit → add/delete rows, edit cells → Save writes the whole jsonb straight to the store. No spreadsheet, no re-seed. Editing a ⚡ wired tab is allowed but a banner warns it's overwritten on the 10th by PUBLISH. |
+| **Commercial** | `forge_commercial` (17 tabs) | COMMERCIAL view **in-place editor**: pick tab → ✏️ Edit → add/delete rows, edit cells → Save writes the whole jsonb straight to the store. No spreadsheet, no re-seed. Editing a ⚡ wired tab is allowed but a banner warns it's overwritten on the 10th by PUBLISH. |
 | **Demand listings (REA)** | `forge_demand_inputs` | DEMANDINPUTS → Listings tab: type House/Unit counts or use the one-click **"REA → Forge" bookmarklet**. Save merges only changed fields (re-fetches the store first to avoid stale-tab clobber). Rent house/unit + VR tabs are **read-only** — refreshed only by the SQM scripts. |
 | **National Only (3 seeded series)** | `forge_national_only` | NATONLY view is read-only. The 3 manual series (federalBudget, govtDebtGdp, householdComposition) are updated by editing the lists in `scripts/ingest-national-only.mjs` then running `node … --write`. No in-tool write path. |
 
@@ -167,7 +168,7 @@ The run's outcome is recorded to `forge_data_status` as **`pipeline_publish`** (
 | 6 | **enrich-marts** | `rdp_report_feed`, `rdp_raw_series`, `forge_cotality`/`forge_monthly_price`/`forge_industry`/`forge_population_pyramid` | `rdp_report_feed` — `{...payload, extras}` (pyramid, industry, arrears, jci, CIV yields, lending, national + Perth extras); writes `extras._sources` provenance and **names any stale-fallback regions** |
 | 7 | **rebuild-vr-forecast-from-forge** | `rdp_vr_forecast`, `rdp_raw_series` (population, approvals_h/u), `forge_demand_inputs` | `rdp_vr_forecast` |
 | 8 | **build-runway** | `rdp_runway_config`, `rdp_report_feed` | `rdp_runway` |
-| 9 | **build-commercial-from-rdp** | `forge_commercial`, `rdp_raw_series` | `forge_commercial` (API tabs only; manual tabs passed through; **fails the run on >25% divergence** instead of just warning) |
+| 9 | **build-commercial-from-rdp** | `forge_commercial`, `rdp_raw_series` | `forge_commercial` (the 11 Forge-wired tabs only — incl. building price indices, cash rate v inflation, population pyramid [latest ERP year v 20 earlier], the two GP tabs since 2026-09-12; manual tabs passed through; the six dead tabs stripped; **fails the run on >25% divergence** instead of just warning) |
 | 10 | **refresh-snapshots-from-forge** | `rdp_report_feed`, `rdp_raw_series`, `forge_national_only`/`forge_arrears`/`forge_population_pyramid`/`forge_cotality`/`forge_commercial` | `report_data_cache` (one row per cluster: capital/qld/nsw/vicwatas/national/commercial); logs `rdp_runs` |
 | 11 | **post-publish-verify** | `rdp_report_feed`/`rdp_vr_forecast`/`rdp_runway`, `forge_cotality` + `forge_arrears`, `report_data_cache` | nothing — **OUTPUT gate**; fails the run if the marts didn't absorb the stores, arrears/median parity breaks (month-aligned), or snapshots are stale |
 

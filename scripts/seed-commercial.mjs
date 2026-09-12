@@ -33,7 +33,9 @@ const WRITE = process.argv.includes('--write');
 const DD = join(homedir(), 'Downloads', 'Commercial Report Data for Looker.xlsx');
 if (!existsSync(DD)) { console.error('Missing workbook:', DD); process.exit(1); }
 
-const SKIP = /^(README|INSTRUCTIONS|GUIDE|DASHBOARD GUIDE|CHECKLIST)$/i;
+// The last six are the dead tabs removed 2026-09-12 (no chart reads them) — a re-seed
+// must not bring them back; build-commercial-from-rdp strips them too.
+const SKIP = /^(README|INSTRUCTIONS|GUIDE|DASHBOARD GUIDE|CHECKLIST|Sheet15|Bond Data|Offices 2|Job Creation|Return on Stocks (and|&) Gold|Copy of Building Price Indices)$/i;
 const slug = s => String(s).trim().toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const camel = s => String(s).replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim().split(' ').map((w, i) => i === 0 ? w.toLowerCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join('');
 const ERR = /^#(REF|N\/A|VALUE|NAME|NUM|ERROR|DIV\/0)/;

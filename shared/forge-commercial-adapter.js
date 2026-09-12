@@ -9,14 +9,13 @@
    Store shape:  { tabs: { <tab>: { name, columns:{ <col>:[vals] }, headers } }, _meta }
    Feed shape:   { _meta, tabs: { <tab>: { <col>:[vals] } } }
 
-   So: out.tabs[<tab>] = store.tabs[<tab>].columns. Three store tab names
+   So: out.tabs[<tab>] = store.tabs[<tab>].columns. Two store tab names
    were truncated to ~30 chars at seed time — restore the full feed names
    the report reads. The feed's "checklist" tab is a sheet-status meta tab
    (no chart) and is intentionally not in the store.
    ════════════════════════════════════════════════════════════════════ */
 (function (root) {
   var RENAME = {
-    'copy-of-building-price-indices': 'copy-of-building-price-indices-data',
     'individuals-who-accessed-gp-dat': 'individuals-who-accessed-gp-data',
     'pop-accessing-health-services': 'pop-accessing-health-services-data',
   };

@@ -123,6 +123,28 @@ try {
   }
 } catch (e) { console.error('\n✗ Census G04 (regional) fetch failed:', e.message); await recordStatus('error', `Census G04 fetch failed: ${e.message}`); process.exit(1); }
 
+// ── NATIONAL HISTORY → rdp_raw_series pyr_* (australia, freq A, every ERP year 2001→latest).
+//   The Commercial report's population-pyramid tab compares the latest year with the
+//   year 20 before it (build-commercial-from-rdp.mjs), so the store's latest-only
+//   vintage is not enough. Upsert-only; enrich-marts keeps reading the latest period.
+let histYears = [];
+const histRows = [];
+try {
+  const hj = await getJson(`${API}/data/ERP_ASGS2021/.3...AUS.?startPeriod=2001&dimensionAtObservation=AllDimensions&format=jsondata`);
+  const od = (hj.data.structure || hj.data.structures[0]).dimensions.observation;
+  const sI = od.findIndex(d => d.id === 'SEX'), aI = od.findIndex(d => d.id === 'AGE'), tI = od.findIndex(d => d.id === 'TIME_PERIOD');
+  const byYear = {};
+  for (const [k, v] of Object.entries(hj.data.dataSets[0].observations)) {
+    const ix = k.split(':').map(Number);
+    if (od[sI].values[ix[sI]].id !== '3') continue;
+    const label = AGE_LABEL[od[aI].values[ix[aI]].id]; if (!label) continue;
+    (byYear[od[tI].values[ix[tI]].id] ||= {})[label] = Math.round(v[0]);
+  }
+  histYears = Object.keys(byYear).filter(y => AGE_GROUPS.every(g => byYear[y][g] != null)).sort();
+  for (const y of histYears) for (const g of AGE_GROUPS) histRows.push({ source: 'abs', region_slug: 'australia', metric: 'pyr_' + g.replace(/[^0-9a-z]+/gi, '_'), freq: 'A', period: `${y}-01-01`, value: byYear[y][g] });
+  console.log(`National ERP-by-age history: ${histYears.length} complete years (${histYears[0]}–${histYears[histYears.length - 1]}) → ${histRows.length} pyr_* rows${WRITE ? '' : ' (dry run — not written)'}`);
+} catch (e) { console.error('\n✗ National history fetch failed (non-fatal — the pyramid store still updates):', e.message); }
+
 // ── report ──
 const slugs = [...Object.values(CODE_SLUG).map(e => e[0]), ...regionalSlugs];
 console.log(`ABS population pyramid — ${slugs.length} regions (${Object.keys(CODE_SLUG).length} ERP ${latest} + ${regionalSlugs.length} Census ${censusYear}), ${AGE_GROUPS.length} age groups\n`);
@@ -152,6 +174,15 @@ for (const slug of slugs) if (regions[slug] && !merged.regions[slug]) merged.reg
 const now = new Date().toISOString();
 const { error: upErr } = await sb.from('forge_population_pyramid').upsert({ id: 'latest', data: merged, uploaded_by: 'abs-api', uploaded_at: now, updated_at: now }, { onConflict: 'id' });
 if (upErr) { console.error('\n', upErr.message); await recordStatus('error', upErr.message); process.exit(1); }
+
+// national history → rdp_raw_series (upsert on the 5-column key; nothing deleted)
+if (histRows.length) {
+  for (let i = 0; i < histRows.length; i += 500) {
+    const { error } = await sb.from('rdp_raw_series').upsert(histRows.slice(i, i + 500), { onConflict: 'source,region_slug,metric,freq,period' });
+    if (error) { console.error('\n✗ pyr_* history upsert failed:', error.message); break; }
+  }
+  console.log(`✓ ${histRows.length} national pyr_* rows upserted (${histYears[0]}–${histYears[histYears.length - 1]}).`);
+}
 
 const kept = Object.values(merged.regions).filter(r => r.src === 'upload').length;
 await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS pop-pyramid ${now.slice(0, 7)}`, row_count: slugs.length, status: incomplete.length ? 'partial' : 'ok', notes: `pop pyramid age×sex persons: ${Object.keys(CODE_SLUG).length} ERP ${latest} (national/states/capitals) + ${regionalSlugs.length} Census ${censusYear} regionals (C21_G04_LGA)${kept ? `; ${kept} manual upload(s) preserved` : ''}` });

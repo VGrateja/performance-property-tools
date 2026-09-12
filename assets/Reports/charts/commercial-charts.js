@@ -562,14 +562,20 @@
     return o;
   });
 
-  /* ── p20 — Population Pyramid (HORIZONTAL grouped bars, 2000 vs 2020) ── */
+  /* ── p20 — Population Pyramid (HORIZONTAL grouped bars, two ERP years 20 apart) ── */
   reg('commercial-p20', function (tabs) {
     var t = tabs['population-pyramid-data'];
     if (!t || !t.ageGroupYears) return null;
     var ageStart = function (label) { var m = String(label).match(/\d+/); return m ? +m[0] : 0; };
     var ages = t.ageGroupYears.map(String);
-    var d2000 = t['2000'] || [];
-    var d2020 = t['2020'] || [];
+    /* the two year columns are whatever the store carries: build-commercial-from-rdp
+       writes the latest ERP year and the year 20 before it (2026: 2005 v 2025) and the
+       pair rolls forward each year; '2000'/'2020' are only the legacy seed's names */
+    var yrs = Object.keys(t).filter(function (k) { return /^\d{4}$/.test(k) && Array.isArray(t[k]); }).sort();
+    var yA = yrs.length >= 2 ? yrs[yrs.length - 2] : '2000';
+    var yB = yrs.length ? yrs[yrs.length - 1] : '2020';
+    var d2000 = t[yA] || [];
+    var d2020 = t[yB] || [];
     var order = ages.map(function (_, i) { return i; }).sort(function (a, b) { return ageStart(ages[a]) - ageStart(ages[b]); });
     var cats = order.map(function (i) { return ages[i]; });
     var s2000 = order.map(function (i) { return d2000[i]; });
@@ -579,7 +585,7 @@
       backgroundColor: 'transparent',
       textStyle: o.textStyle,
       grid: { left: 64, right: 30, top: 50, bottom: 40 },
-      legend: Object.assign(o.legend, { data: ['2000', '2020'] }),
+      legend: Object.assign(o.legend, { data: [yA, yB] }),
       tooltip: o.tooltip,
       xAxis: {
         type: 'value', min: 0, max: 0.09, interval: 0.01,
@@ -592,8 +598,8 @@
         axisLabel: { color: '#1a2236', fontSize: 11 },
       },
       series: [
-        { name: '2000', type: 'bar', data: s2000, itemStyle: { color: COLORS[2] } },
-        { name: '2020', type: 'bar', data: s2020, itemStyle: { color: COLORS[3] } },
+        { name: yA, type: 'bar', data: s2000, itemStyle: { color: COLORS[2] } },
+        { name: yB, type: 'bar', data: s2020, itemStyle: { color: COLORS[3] } },
       ],
     };
   });
