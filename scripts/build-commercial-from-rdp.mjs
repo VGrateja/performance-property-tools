@@ -17,7 +17,8 @@
 //   population-pyramid-data         ← abs pyr_* (A, australia): latest ERP year vs 20 years earlier
 //   individuals-who-accessed-gp-dat ← abs gp_share (A, FY) × abs population (A)
 //   pop-accessing-health-services   ← abs gp_share_<band> (A, latest release)
-// (the last five were hand-typed until 2026-09-12 — Van: "do the five")
+//   fed-gov-health-budget-data      ← budget fed_health_expenses (A, $m; each year = its newest Budget estimate)
+// (the five above were hand-typed until 2026-09-12 — Van: "do the five"; the budget tab followed the same day)
 //
 // DEAD tabs: six tabs no chart or tool reads (sheet15, bond-data, offices-2,
 // job-creation, return-on-stocks-and-gold, copy-of-building-price-indices) are
@@ -98,6 +99,12 @@ const GP  = { tab: 'individuals-who-accessed-gp-dat', source: 'abs', shareMetric
   cols: { date: 'date', pop: 'ausPop', share: 'sawAGeneralPractitioner', people: 'peopleWhoSawAGp' } };
 const GP_AGE = { tab: 'pop-accessing-health-services', source: 'abs', rangeCol: 'range', valCol: 'sawAGeneralPractitioner',
   bands: [['gp_share_15_24', '15–24'], ['gp_share_25_34', '25–34'], ['gp_share_35_44', '35–44'], ['gp_share_45_54', '45–54'], ['gp_share_55_64', '55–64'], ['gp_share_65_74', '65–74'], ['gp_share_75_84', '75–84'], ['gp_share_85p', '85+']] };
+// Federal health budget — Budget Paper No. 1 "Estimates of expenses by function", Health
+// row ($m), from the Department of Finance tables on data.gov.au (ingest-budget-
+// health-expenses). Each year carries the newest Budget's estimate for it. The tab
+// runs to the newest BUDGET YEAR only (2026-27 for the 2026-27 Budget) — the three
+// forward-estimate years stay in rdp but off the chart, as the seed always did.
+const FED = { tab: 'fed-gov-health-budget-data', source: 'budget', metric: 'fed_health_expenses', statusKey: 'fed_health_budget', cols: { date: 'date', val: 'data' } };
 const DEAD_TABS = ['sheet15', 'bond-data', 'offices-2', 'job-creation', 'return-on-stocks-and-gold', 'copy-of-building-price-indices'];
 
 async function fetchSeries(metric, freq, regions, source) {
@@ -347,6 +354,31 @@ async function main() {
         tab.columns = { [GP_AGE.rangeCol]: GP_AGE.bands.map(b => b[1]), [GP_AGE.valCol]: GP_AGE.bands.map(b => vals.get(b[0])) };
         tab.headers = Object.keys(tab.columns);
         touched.push(GP_AGE.tab);
+      }
+    }
+  }
+
+  // ── FEDERAL HEALTH BUDGET — Health function expenses by FY, to the newest Budget year ──
+  {
+    const tab = tabs[FED.tab];
+    if (!tab) console.log(`skip ${FED.tab}: not in store`);
+    else {
+      const series = await fetchSeries(FED.metric, 'A', ['australia'], FED.source);
+      let budgetYear = null;
+      try { const { data } = await sb.from('forge_data_status').select('latest_year').eq('data_key', FED.statusKey).maybeSingle(); budgetYear = data && data.latest_year ? +data.latest_year : null; } catch {}
+      if (!series.length) console.log(`skip ${FED.tab}: rdp has no ${FED.metric} — tab left as is (run ingest-budget-health-expenses.mjs --write)`);
+      else {
+        const c = FED.cols;
+        const label = y => `${y}-${String(+y + 1).slice(2)}`;
+        const oldDate = (tab.columns[c.date] || []).map(String), oldVal = tab.columns[c.val] || [];
+        const om = new Map(oldDate.map((d, i) => [d, oldVal[i]]));
+        const cut = budgetYear || Math.max(...series.map(r => +yr(r.period)));   // no status row → show everything stored
+        const rdpMap = new Map(series.filter(r => +yr(r.period) <= cut).map(r => [label(yr(r.period)), Math.round(+r.value)]));
+        const labels = [...new Set([...oldDate, ...rdpMap.keys()])].sort();
+        parity(`${FED.tab}.${c.val} FYs ${oldDate.length}→${labels.length} (to the ${label(cut)} Budget year)`, labels, rdpMap, om, 0.03);
+        tab.columns = { [c.date]: labels, [c.val]: labels.map(k => rdpMap.has(k) ? rdpMap.get(k) : (om.has(k) ? om.get(k) : null)) };
+        tab.headers = Object.keys(tab.columns);
+        touched.push(FED.tab);
       }
     }
   }
