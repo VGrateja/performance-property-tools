@@ -10,10 +10,10 @@
  *     1980-Q1, currently through 2026-Q2. Six state capitals + the weighted
  *     average of the 6.
  *   • CANBERRA and DARWIN are NOT in that ABS series (it is six STATE capitals
- *     only). They come from Rawlinsons, which is a paid publication with no
- *     API, so they are loaded from the exported CSV and are STATIC until
- *     someone refreshes that export. Source tag `rawlinsons` keeps them
- *     distinguishable from the automated rows.
+ *     only). Their HISTORY comes from the Rawlinsons handbook export (the CSV
+ *     below, annual to 2024/25); from 2025 on they refresh themselves from
+ *     Rawlinsons' free quarterly Market Insight PDF (ingest-rawlinsons-bpi.mjs,
+ *     found 2026-09-12). Source tag `rawlinsons` keeps them distinguishable.
  *
  * PERIOD CONVENTION: the annual figure is the average of the four quarters of
  * the FINANCIAL year ending 30 June (Sep, Dec, Mar, Jun) — the convention the
@@ -143,12 +143,12 @@ for (let i = 0; i < rows.length; i += 500) {
 }
 const now = new Date().toISOString();
 await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `Building price index ${now.slice(0, 7)}`,
-  row_count: written, status: 'ok', notes: 'ABS PPI T18 house construction inputs (6 capitals + weighted avg, quarterly + FY-to-June annual) · Canberra/Darwin from the Rawlinsons CSV export' });
+  row_count: written, status: 'ok', notes: 'ABS PPI T18 house construction inputs (6 capitals + weighted avg, quarterly + FY-to-June annual) · Canberra/Darwin history from the Rawlinsons CSV export (current quarters: ingest-rawlinsons-bpi)' });
 await sb.from('forge_data_status').upsert({
   data_key: 'building_price_index', label: 'Building Price Index',
-  source: 'ABS PPI Table 18 (house construction inputs) · Rawlinsons for Canberra & Darwin',
+  source: 'ABS PPI Table 18 (house construction inputs) · Rawlinsons Building Price Index for Canberra & Darwin (Market Insight, quarterly)',
   status: 'ok',
-  message: `ABS via API back to 1980 (6 capitals + weighted average); Canberra/Darwin static from the Rawlinsons export`,
+  message: `ABS via API back to 1980 (6 capitals + weighted average); Canberra/Darwin: handbook history + Rawlinsons quarterly (ingest-rawlinsons-bpi)`,
   row_count: written, region_count: 9, latest_year: +(annual.at(-1) || {}).period?.slice(0, 4) || null,
   last_run_at: now, last_ok_at: now, updated_at: now,
 }, { onConflict: 'data_key' });

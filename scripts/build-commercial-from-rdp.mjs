@@ -11,8 +11,8 @@
 //   govt-bonds-data                 ← rba govt_bond_yield (M, 2013+)           → 10YearGovernmentBondYield,yield
 //   building-approvals-data         ← abs building_approvals_total (A)         → date + {nsw,vic,qld,sa,wa}Ba, nationalBa
 //   population-growth-data          ← abs population (A, ERP levels)           → date + nsw,vic,qld,wa,sa, national
-//   building-price-indices-data     ← abs building_price_index (Q → calendar-year mean) for the 6 ABS
-//                                     capitals + rawlinsons (A) for Canberra/Darwin, × 10,000 (see BPI)
+//   building-price-indices-data     ← abs building_price_index (Q → calendar-year mean) for the 6 ABS capitals;
+//                                     rawlinsons (Q → calendar-year mean, handbook A as fallback) for Canberra/Darwin, × 10,000 (see BPI)
 //   cash-rateinflation-rate-data    ← rba cash_rate (M) + abs cpi (Q, year-ended) on a monthly axis
 //   population-pyramid-data         ← abs pyr_* (A, australia): latest ERP year vs 20 years earlier
 //   individuals-who-accessed-gp-dat ← abs gp_share (A, FY) × abs population (A)
@@ -72,7 +72,9 @@ const ANNUAL = [
 // "JUNE 30" but the numbers are calendar years — 2023/24/25 reproduce to the
 // cent); the chart's axis prints that as "1.6m", so the scale is kept to leave
 // the picture exactly as it was. The ABS table has only the six state capitals;
-// Canberra/Darwin come from the Rawlinsons annual index Forge already holds.
+// Canberra/Darwin come from the Rawlinsons Building Price Index — quarterly from
+// Rawlinsons' free Market Insight PDF (ingest-rawlinsons-bpi, 2025 on), averaged
+// the same calendar-year way; the handbook's annual export fills the years before.
 const BPI = {
   tab: 'building-price-indices-data', dateCol: 'periodyearJune30', scale: 10000, metric: 'building_price_index',
   quarterly: { source: 'abs', cols: { adelaide: 'adel', brisbane: 'bris', hobart: 'hob', melbourne: 'mel', perth: 'per', sydney: 'syd' } },
@@ -207,6 +209,7 @@ async function main() {
     else {
       const qSeries = await fetchSeries(BPI.metric, 'Q', Object.keys(BPI.quarterly.cols), BPI.quarterly.source);
       const aSeries = await fetchSeries(BPI.metric, 'A', Object.keys(BPI.annual.cols), BPI.annual.source);
+      const rawQ = await fetchSeries(BPI.metric, 'Q', Object.keys(BPI.annual.cols), BPI.annual.source);   // Rawlinsons quarterly (2025 on)
       if (!qSeries.length) console.log(`skip ${BPI.tab}: rdp has no quarterly ${BPI.metric} — tab left as is`);
       else {
         const oldYears = (tab.columns[BPI.dateCol] || []).map(v => String(v).trim());
@@ -219,9 +222,14 @@ async function main() {
           byCol[col] = new Map();
           for (const [y, vals] of Object.entries(acc[region] || {})) byCol[col].set(y, Math.round(vals.reduce((a, b) => a + b, 0) / vals.length * BPI.scale * 100) / 100);
         }
+        const rawAcc = {};   // region -> year -> [quarterly values]
+        for (const r of rawQ) ((rawAcc[r.region_slug] ||= {})[yr(r.period)] ||= []).push(+r.value);
         for (const [region, col] of Object.entries(BPI.annual.cols)) {
           byCol[col] = new Map();
           for (const r of aSeries) if (r.region_slug === region) byCol[col].set(yr(r.period), Math.round(+r.value * BPI.scale * 100) / 100);
+          let fromQ = 0;
+          for (const [y, vals] of Object.entries(rawAcc[region] || {})) { byCol[col].set(y, Math.round(vals.reduce((a, b) => a + b, 0) / vals.length * BPI.scale * 100) / 100); fromQ++; }   // quarterly mean wins where it exists
+          if (fromQ) console.log(`${BPI.tab}.${col}: ${fromQ} year(s) from the Rawlinsons quarterly index (calendar-year mean), the rest from the handbook export`);
         }
         const years = [...new Set([...oldYears.filter(isYear), ...Object.values(byCol).flatMap(m => [...m.keys()])])].filter(y => y >= start).sort();
         const out = { [BPI.dateCol]: years };
