@@ -80,6 +80,7 @@ All write **`rdp_raw_series`** (long format, upsert `onConflict: source,region_s
 | 19 | ingest-abs-act-industry | ABS 5220.0 Table 9 (ACT GVA by industry) | — | — | **forge_industry** (Canberra only; keeps REMPLAN regions) |
 | 20 | ingest-sqm-rents | SQM Research (HTML scrape) | house/unit rents | — | **forge_demand_inputs** (keeps manual REA listings) |
 | 21 | ingest-sqm-vacancy | SQM Research (HTML scrape) | `vr` | — | **forge_demand_inputs** |
+| 22 | ingest-westpac-hpei | Westpac–Melbourne Institute Consumer Sentiment bulletin — the PUBLIC monthly PDF on Westpac's library, parsed | `house_price_expectations` (national) | M | rdp_raw_series (source `wmi`, same lineage as the CSV) + forge_data_status `hpei_national` |
 
 ### 3b. The local-run sources
 
@@ -101,6 +102,12 @@ one launcher, `scripts/run-jsa-jobcreation.cmd`.
 - SQM ingests refuse to write when nothing parsed ("Nothing parsed — refusing to write") to avoid wiping good data with an empty scrape.
 
 ### 3d. Explicitly out of GATHER scope (manual)
+
+> **Sentiment, split 2026-09-12.** The Westpac–MI **House Price Expectations Index (national, monthly)** is now
+> gathered automatically by `ingest-westpac-hpei.mjs` from the public bulletin PDF (its own Forge card,
+> `hpei_national`). The bulletin has **no state table**, so the **VIC** index that B/S page 31 charts, and
+> **NAB Business Confidence** (numbers only in charts; the data is a NAB subscriber product), stay on the
+> manual Sentiment card / the CSV export.
 
 Cotality, Mortgage Arrears (S&P SPIN), Industry REMPLAN uploads, and the REA listings in the Demand card. (`ingest-data-dump.mjs` / `ingest-deferred.mjs` exist but are one-off historical seeders — not referenced by the workflow and not scheduled.)
 
