@@ -16,20 +16,31 @@
 // Both legs are GCCSA, so the series is continuous — no boundary seam.
 //
 // NOTE this is DELIBERATELY a separate metric from the live 'population'
-// point: the reports' capital populations are SUA-based (Sydney SUA is ~9%
-// smaller than Greater Sydney), so this series must never mix into it.
-// Nothing consumes population_gccsa yet; tools opt in explicitly.
+// point, which the monthly ingest-abs-population.mjs writes SUA-based (Sydney
+// SUA is ~9% smaller than Greater Sydney). CONSUMED since 2026-07-30: every
+// PUBLISH runs sync-gccsa-to-population-capitals.mjs, which copies this series
+// over the 8 capitals' `population` for the years both carry. So this ingest
+// MUST keep pace with the SUA one — a year present in `population` but missing
+// here would leave that capital on SUA for that year (a ~9% step down).
+// In the monthly GATHER loop (forge-ingests.yml) since 2026-09-14; before that
+// it was run once by hand (2026-07-18) and the pipeline board flagged it stale.
 //
 // ISOLATED: writes ONLY rdp_raw_series (source='abs', metric='population_gccsa',
 // freq='A', period 'YYYY-01-01', 8 capital slugs) + logs rdp_runs + records
 // health in forge_data_status (data_key='population_gccsa').
+//
+// LEG 1 IS READ BACK FROM THE DATABASE once seeded: the HPDC3 file is a static
+// 2021-Census vintage that never changes, and ABS website downloads (unlike
+// the ABS Data API) may be blocked from CI the way the JSA site is. If the
+// 1980-2000 rows are complete in rdp_raw_series they are used as-is; otherwise
+// (first seed, or --from earlier than what is stored) the file is downloaded.
 //
 // COMPLETENESS GUARD: every capital must resolve every year 1980..latest
 // (the two legs must also butt join exactly — no gap, no overlap conflict).
 //
 // Dry-run by DEFAULT (prints the series + the 2000->2001 leg seam). Pass
 // --write to upsert.
-//   --file=path   use a local HPDC3.xlsx instead of downloading from the ABS
+//   --file=path   use a local HPDC3.xlsx instead of the DB copy / download
 //   --from=YYYY   history start (default 1980)
 //
 // Usage:
@@ -80,12 +91,33 @@ async function recordStatus(status, message, extra = {}) {
 }
 
 const rows = [];
+let leg1From = 'HPDC3 download';
 try {
 
 // ── LEG 1: HPDC3 Table 1, 1980-2000 (GCCSA from 1971; static 2021-vintage file) ──
-{
+// Database first: the file never changes, so once the FROM..2000 rows are stored
+// they are the file. Only a --file, an incomplete store, or an earlier --from
+// goes back to the spreadsheet.
+let leg1Done = false;
+if (!FILE) {
+  const { data: stored, error } = await sb.from('rdp_raw_series').select('region_slug,period,value')
+    .eq('source', 'abs').eq('metric', 'population_gccsa').eq('freq', 'A')
+    .in('region_slug', SLUGS).gte('period', `${FROM}-01-01`).lt('period', '2001-01-01');
+  if (error) throw new Error('rdp_raw_series read failed: ' + error.message);
+  const want = SLUGS.length * (2000 - FROM + 1);
+  const seen = new Set((stored || []).map(r => r.region_slug + '|' + r.period.slice(0, 4)));
+  if (seen.size === want && (stored || []).every(r => Number.isFinite(+r.value) && +r.value > 0)) {
+    for (const r of stored) rows.push({ source: 'abs', region_slug: r.region_slug, metric: 'population_gccsa', freq: 'A', period: r.period.slice(0, 10), value: +r.value });
+    leg1From = 'rdp_raw_series (stored HPDC3 rows)';
+    leg1Done = true;
+    console.log(`Leg 1 (${FROM}-2000): ${stored.length} rows read back from rdp_raw_series — HPDC3 not downloaded.`);
+  } else {
+    console.log(`Leg 1 (${FROM}-2000): store has ${seen.size}/${want} city-years — fetching HPDC3.`);
+  }
+}
+if (!leg1Done) {
   let buf;
-  if (FILE) buf = readFileSync(FILE);
+  if (FILE) { buf = readFileSync(FILE); leg1From = 'HPDC3 local file'; }
   else {
     const cache = join(tmpdir(), 'HPDC3.xlsx');
     if (existsSync(cache)) buf = readFileSync(cache);
@@ -167,6 +199,6 @@ for (let i = 0; i < rows.length; i += 500) {
   if (error) { console.error('\n', error.message); await recordStatus('error', error.message); process.exit(1); }
   written += chunk.length; process.stdout.write(`\r  upserted ${written}/${rows.length}`);
 }
-await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS GCCSA hist ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `population_gccsa: HPDC3 Table 1 (${FROM}-2000) + ABS API GCCSA (2001-${latest}), 8 capitals` });
+await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `ABS GCCSA hist ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `population_gccsa: HPDC3 Table 1 (${FROM}-2000, via ${leg1From}) + ABS API GCCSA (2001-${latest}), 8 capitals` });
 await recordStatus('ok', `All 8 capitals continuous ${FROM}..${latest} (GCCSA).`, { row_count: written, region_count: SLUGS.length, latest_year: latest });
 console.log(`\n✓ Upserted ${written} rows (metric population_gccsa).`);

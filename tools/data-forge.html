@@ -836,7 +836,7 @@ function dfIcon(e){ e = String(e || '').replace(/\uFE0F/g, ''); return DF_EMG[e]
 
 const CLUSTERS = [
   { key:'cotality',   icon:'📊', ingest:'manual', label:'Cotality',   desc:'CoreLogic / Cotality .xlsx — capital cities + 28 LGA regions. Manual upload, filtered in-browser.', view:'cotality' },
-  { key:'population', icon:'👥', ingest:'api',    label:'Population',  desc:'ABS Data API — national, 8 states, 8 capital SUAs, 28 regional LGAs (45 regions).', view:'population' },
+  { key:'population', icon:'👥', ingest:'api',    label:'Population',  desc:'ABS Data API — national, 8 states, 8 capitals, 28 regional LGAs (45 regions). Capitals are <b>GCCSA</b> (Greater): a separate 1980+ history leg that PUBLISH copies over the capitals; this card is only as fresh as the older of its two legs.', view:'population' },
   { key:'income',     icon:'💵', ingest:'api',    label:'Income',     desc:'ABS Average Weekly Earnings — national + 8 states (each region uses its state’s income).', view:'income' },
   { key:'lending',    icon:'🏦', ingest:'api',    label:'Lending — Owner Occupier', desc:'ABS new owner-occupier loan commitments ($m) — national + 8 states. Quarterly, stored monthly.', view:'lending' },
   { key:'investor',   icon:'🏘️', ingest:'api',    label:'Lending — Investors', desc:'ABS new investor loan commitments ($m) — national + 8 states. Quarterly, stored monthly.', view:'investor' },
@@ -1083,6 +1083,22 @@ async function loadStatus(){
   // they must never feed the per-card statusMap / aging-stale lists.
   const pipe = {};
   for (const k of Object.keys(statusMap)) if (k.startsWith('pipeline_')) { pipe[k] = statusMap[k]; delete statusMap[k]; }
+  // The capitals' population is GCCSA, copied over at PUBLISH from the separate
+  // `population_gccsa` history leg (ingest-abs-population-hist.mjs), which has
+  // its own status row but no card. Fold it into the Population card: the card
+  // is only as fresh as its OLDER leg, and an error in either leg shows here.
+  // Before this the pipeline board (which reads EVERY status row) flagged the
+  // GCCSA leg stale while this grid stayed green (Van 2026-09-14).
+  if (statusMap.population_gccsa && statusMap.population) {
+    const p = statusMap.population, g = statusMap.population_gccsa;
+    const older = (a, b) => !a ? b : !b ? a : (Date.parse(a) < Date.parse(b) ? a : b);
+    statusMap.population = Object.assign({}, p, {
+      last_ok_at: older(p.last_ok_at, g.last_ok_at),
+      status: g.status === 'error' ? 'error' : p.status,
+      message: g.status === 'error' ? 'GCCSA capitals leg: ' + (g.message || 'failed') : p.message,
+      _legs: { sua: p.last_ok_at, gccsa: g.last_ok_at, gccsaYear: g.latest_year },
+    });
+  }
   // The Commercial card's 5 automated feeders report under their own keys —
   // roll an error in any of them up to the card (otherwise a failed commercial
   // ingest shows no error anywhere on the grid).
@@ -1130,6 +1146,9 @@ async function loadStatus(){
       : c.key === 'monthly_price' ? 'Appends from the Cotality drop'
       : c.key === 'cl_suburbs' ? 'Recorded by the Cotality drop'   /* no "Last activity" — the date read as its own update cadence (Van 2026-08-11) */
       : c.key === 'ranking' ? 'Rebuilt from Monthly Median Price'
+      : (c.key === 'population' && st._legs)
+      ? ('Regions ' + (st._legs.sua ? fmtDate(st._legs.sua) : '—') + ' · GCCSA capitals ' + (st._legs.gccsa ? fmtDate(st._legs.gccsa) : 'never')
+         + (st._legs.gccsaYear ? ' (to ' + st._legs.gccsaYear + ')' : '') + (st.region_count ? ' · ' + st.region_count + ' regions' : ''))
       : (c.key === 'population' || c.key === 'population_pyramid')
       ? (st.last_ok_at ? 'Updated ' + fmtDate(st.last_ok_at) + (st.region_count ? ' · ' + st.region_count + ' regions' : '') : 'Not yet run via the monitored path')
       : (_act ? 'Last activity ' + fmtDate(_act) : 'Manual upload');
