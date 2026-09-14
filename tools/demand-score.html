@@ -848,6 +848,9 @@ const PP_DEMAND_ENGINE = (function () {
   const _i0 = v => (_n(v) == null ? "—" : Math.round(+v).toLocaleString());
   const _day = iso => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" }) : "an earlier date"; };
   const _isPostcode = sqm => /postcode=/.test(String(sqm || ""));
+  // supply-rule codes as stored in rdp_vr_forecast.payload.supplyRule.rule → plain words for the note
+  const RULE_LABEL = { approvals95: "95% of building approvals", approvals90: "90% of building approvals", oe: "Oxford Economics commencements", forge_approvals: "Forge building approvals" };
+  const _rule = code => RULE_LABEL[code] || (code ? String(code).replace(/[_-]+/g, " ") : "new");
   const _basis = (sqm, small) => { if (!sqm) return ""; const pc = String(sqm).match(/postcode=(\d{4})/); const rg = String(sqm).match(/region=([^&]+)/); const lab = pc ? "postcode " + pc[1] : rg ? decodeURIComponent(rg[1].replace(/\+/g, " ")) : String(sqm); return " (SQM basis: " + lab + (small && pc ? " — a single postcode, small sample" : "") + ")"; };
   function benchmark(rows) {
     const Fs = rows.map(r => { const pop = Number(r.population) || 0, list = Number(r.listings) || 0; return pop > 0 ? list / pop * E1 : 0; });
@@ -875,59 +878,67 @@ const PP_DEMAND_ENGINE = (function () {
     const Nb = _n(ctx.Nb), canScore = Nb != null && domCur != null;
     const dsBase = canScore ? scoreOne(base, Nb) : null;
     const eff = patch => canScore ? dsBase - scoreOne(Object.assign({}, base, patch), Nb) : null;
+    /* Each driver: effect (its share of the move, in points), cls (method | market |
+       source | capture), note (one short clause, no numbers the table already
+       shows), detail (the full explanation — said ONCE, in the verdict), summary
+       (a two-word token for the "other inputs" roll-up), rec (recommendation). */
     const drivers = [];
+    const pctTxt = (a, b) => (a ? ((b - a) / a * 100) : null);
+    const sgn = v => (v > 0 ? "+" : "") + Math.round(v) + "%";
     if (_n(cur.avr) != null && _n(prev.avr) != null && cur.avr !== prev.avr) {
       const methodBreak = (cur.vrRule && prev.vrRule && cur.vrRule !== prev.vrRule) || (!!cur.vrAt && !!ctx.prevAt && cur.vrAt > ctx.prevAt && (!ctx.curAt || cur.vrAt <= ctx.curAt));
-      let cls = "market", note, rec = null;
-      if (methodBreak) { cls = "method"; note = "Expected — method change: the VR Projection moved to the “" + (cur.vrRule || "new") + "” supply rule on " + _day(cur.vrAt) + ", after the previous capture. The previous month’s adjusted VR is on the old basis, so this is a method break, not a market move."; }
+      let cls = "market", note, detail = null, rec = null, summary = "adjusted VR moved";
+      if (methodBreak) { cls = "method"; note = "method change"; detail = "The VR Projection moved to the “" + _rule(cur.vrRule) + "” supply rule on " + _day(cur.vrAt) + ", after the previous capture, so last month’s adjusted VR is on the old basis."; }
       else if (_n(cur.vrr) != null && _n(prev.vrr) != null && Math.abs(cur.vrr - prev.vrr) >= TH.sqmVR) {
-        note = "SQM vacancy rate moved " + _f2(prev.vrr) + "% → " + _f2(cur.vrr) + "%" + _basis(cur.sqm) + ".";
-        if (Math.abs(cur.vrr - prev.vrr) >= TH.sqmVRBig) { cls = "source"; note += " A move this size in one month is unusual — check SQM for this basis."; rec = (ctx.knownCase && ctx.knownCase.vr) || null; }
+        summary = "SQM vacancy moved"; note = "SQM vacancy " + _f2(prev.vrr) + "% → " + _f2(cur.vrr) + "%" + _basis(cur.sqm);
+        if (Math.abs(cur.vrr - prev.vrr) >= TH.sqmVRBig) { cls = "source"; note = "unusual: SQM vacancy jumped " + _f2(prev.vrr) + "% → " + _f2(cur.vrr) + "% in one month" + _basis(cur.sqm, true); rec = (ctx.knownCase && ctx.knownCase.vr) || null; }
       }
-      else note = "The VR Projection’s inputs moved (SQM vacancy, population or approvals) — normal.";
-      drivers.push({ key: "avr", label: "Adjusted VR", prev: prev.avr, cur: cur.avr, fmt: v => _f2(v) + "%", effect: eff({ vr: prev.avr }), cls, note, rec });
+      else note = "the VR Projection’s inputs moved (vacancy, population or approvals)";
+      drivers.push({ key: "avr", label: "Adjusted VR", prev: prev.avr, cur: cur.avr, fmt: v => _f2(v) + "%", effect: eff({ vr: prev.avr }), cls, note, detail, rec, summary });
     }
     if (_n(cur.rg) != null && _n(prev.rg) != null && cur.rg !== prev.rg) {
       const d = Math.abs(cur.rg - prev.rg);
-      let cls = "market", note, rec = null;
-      if (d >= TH.rg) { cls = "source"; note = "Unusual — a 3-year growth figure should not move " + Math.round(d) + " points in one month. This is SQM series noise" + _basis(cur.sqm, true) + ", not a rent move."; rec = (ctx.knownCase && ctx.knownCase.rg) || (_isPostcode(cur.sqm) ? "Check SQM’s page for this postcode and consider SQM’s region-level series for this market." : "Check SQM’s page for this market."); }
-      else if (d >= TH.rgSoft) note = "SQM revised its 3-year change " + _f2(prev.rg) + "% → " + _f2(cur.rg) + "% — within the normal range.";
-      else note = "Small SQM revision — normal.";
-      drivers.push({ key: "rg", label: "Rental growth (36m)", prev: prev.rg, cur: cur.rg, fmt: v => _f2(v) + "%", effect: eff({ rentGrowth: (prev.rg || 0) / 100 }), cls, note, rec });
+      let cls = "market", note, rec = null, summary = "rent growth revised";
+      if (d >= TH.rg) { cls = "source"; summary = "rent growth jumped"; note = "unusual: a 3-year growth figure moved " + Math.round(d) + " points in one month. SQM series noise" + _basis(cur.sqm, true) + ", not a rent move"; rec = (ctx.knownCase && ctx.knownCase.rg) || (_isPostcode(cur.sqm) ? "Check SQM’s page for this postcode and consider SQM’s region-level series for this market." : "Check SQM’s page for this market."); }
+      else if (d >= TH.rgSoft) note = "SQM revised its 3-year change, within the normal range";
+      else note = "a small SQM revision";
+      drivers.push({ key: "rg", label: "Rental growth", prev: prev.rg, cur: cur.rg, fmt: v => _f2(v) + "%", effect: eff({ rentGrowth: (prev.rg || 0) / 100 }), cls, note, detail: null, rec, summary });
     }
     if (_n(cur.listings) != null && _n(prev.listings) != null && cur.listings !== prev.listings) {
-      const pct = prev.listings ? (cur.listings - prev.listings) / prev.listings * 100 : null;
-      let cls = "market", note = "Listings " + (pct != null ? (pct > 0 ? "+" : "") + Math.round(pct) + "%" : "changed") + " month on month — normal movement.", rec = null;
-      if (pct != null && Math.abs(pct) >= TH.listingsPct) { cls = "capture"; note = "Unusual — listings moved " + (pct > 0 ? "+" : "") + Math.round(pct) + "% in one month. Check the REA capture for this market (search filters, region boundary)."; rec = (ctx.knownCase && ctx.knownCase.listings) || null; }
-      drivers.push({ key: "listings", label: "Listings", prev: prev.listings, cur: cur.listings, fmt: _i0, effect: eff({ listings: prev.listings }), cls, note, rec });
+      const pct = pctTxt(prev.listings, cur.listings);
+      let cls = "market", note = "listings " + (pct != null ? sgn(pct) : "changed") + " month on month, normal", rec = null, summary = "listings " + (pct != null ? sgn(pct) : "changed");
+      if (pct != null && Math.abs(pct) >= TH.listingsPct) { cls = "capture"; note = "unusual: listings moved " + sgn(pct) + " in one month. Check the REA capture for this market (search filters, region boundary)"; rec = (ctx.knownCase && ctx.knownCase.listings) || null; }
+      drivers.push({ key: "listings", label: "Listings", prev: prev.listings, cur: cur.listings, fmt: _i0, effect: eff({ listings: prev.listings }), cls, note, detail: null, rec, summary });
     }
     if (_n(cur.pop) != null && _n(prev.pop) != null && cur.pop !== prev.pop) {
-      const pct = prev.pop ? (cur.pop - prev.pop) / prev.pop * 100 : 0;
-      let cls = "method", note = "Annual ABS population update — expected once a year.";
-      if (Math.abs(pct) >= TH.popPct) { cls = "source"; note = "Large population change (" + (pct > 0 ? "+" : "") + pct.toFixed(1) + "%) — more than a yearly update; check the boundary basis (SUA v GCCSA)."; }
-      drivers.push({ key: "pop", label: "Population", prev: prev.pop, cur: cur.pop, fmt: _i0, effect: eff({ population: prev.pop }), cls, note, rec: null });
+      const pct = pctTxt(prev.pop, cur.pop) || 0;
+      let cls = "method", note = "annual ABS update", detail = "The population input took its annual ABS update — expected once a year.", summary = "population updated";
+      if (Math.abs(pct) >= TH.popPct) { cls = "source"; detail = null; note = "large population change (" + (pct > 0 ? "+" : "") + pct.toFixed(1) + "%), more than a yearly update; check the boundary basis (SUA v GCCSA)"; }
+      drivers.push({ key: "pop", label: "Population", prev: prev.pop, cur: cur.pop, fmt: _i0, effect: eff({ population: prev.pop }), cls, note, detail, rec: null, summary });
     }
     let unexplained = null;
     if (domPrev != null && domCur != null && domPrev !== domCur) {
-      const d = Math.abs(domCur - domPrev);
-      let cls = "market", note = "Days on market moved with the Cotality drop — normal.";
-      if (d >= TH.dom) { cls = "source"; note = "Days on market moved " + Math.round(d) + " days in one month — verify against the Cotality drop."; }
-      drivers.push({ key: "dom", label: "Days on market", prev: domPrev, cur: domCur, fmt: _i0, effect: eff({ dom: domPrev }), cls, note, rec: null });
+      const d = domCur - domPrev;
+      let cls = "market", note = "days on market moved with the Cotality drop, normal", summary = "days on market " + (d > 0 ? "+" : "") + Math.round(d) + " days";
+      if (Math.abs(d) >= TH.dom) { cls = "source"; note = "days on market moved " + Math.round(Math.abs(d)) + " days in one month; verify against the Cotality drop"; }
+      drivers.push({ key: "dom", label: "Days on market", prev: domPrev, cur: domCur, fmt: _i0, effect: eff({ dom: domPrev }), cls, note, detail: null, rec: null, summary });
     } else if (domPrev == null && canScore) {
       const recon = scoreOne({ population: prev.pop, listings: prev.listings, vr: prev.avr, dom: domCur, rentGrowth: (_n(prev.rg) || 0) / 100 }, Nb);
-      unexplained = { pts: prev.ds - recon, why: "days on market was not stored for the earlier month" };
+      unexplained = { pts: Math.abs(prev.ds - recon), dom: domCur };
     }
     drivers.sort((a, b) => Math.abs(b.effect || 0) - Math.abs(a.effect || 0));
-    let verdict, vcls;
-    if (size === "small") { verdict = "Normal — a small month-to-month move."; vcls = "ok"; }
-    else {
-      const flagged = drivers.filter(d => d.cls === "source" || d.cls === "capture");
-      const top = drivers[0];
-      if (flagged.length) { vcls = flagged[0].cls; verdict = (vcls === "source" ? "Check the source" : "Check the capture") + " — " + flagged.map(d => d.label).join(", ") + " moved more than a month should."; }
-      else if (top && top.cls === "method") { vcls = "method"; verdict = "Expected — a method change, not a market move."; }
-      else { vcls = "market"; verdict = "Market move — the inputs moved within their normal ranges."; }
-    }
-    return { delta, size, drivers, verdict, vcls, unexplained, dsBase };
+    /* Verdict: a flagged input only carries the verdict when it MATTERED (≥ 3 pts,
+       or its share is unknown); a flagged input that barely moved the score is a
+       side check, so a +21% listings capture cannot out-shout a 14-point method break. */
+    const MATERIAL = 3;
+    const material = d => d.effect == null || Math.abs(d.effect) >= MATERIAL;
+    const flagged = drivers.filter(d => d.cls === "source" || d.cls === "capture");
+    const flaggedMain = flagged.filter(material), sideChecks = flagged.filter(d => !material(d)).map(d => { const t = d.note.replace(/^unusual:\s*/i, ""); return t.charAt(0).toUpperCase() + t.slice(1) + (d.rec ? ". " + d.rec : ""); });
+    let verdict;
+    if (size === "small") verdict = { cls: "ok", headline: "Normal — a small month-to-month move.", detail: null };
+    else if (flaggedMain.length) { const f = flaggedMain[0]; verdict = { cls: f.cls, headline: (f.cls === "source" ? "Check the source" : "Check the capture") + " — " + f.label.toLowerCase() + " moved more than one month of data should.", detail: null }; }
+    else { const top = drivers[0]; verdict = (top && top.cls === "method") ? { cls: "method", headline: "Expected — method change, not a market move.", detail: top.detail } : { cls: "market", headline: "Market move — the inputs moved within their normal ranges.", detail: null }; }
+    return { delta, size, drivers, verdict, vcls: verdict.cls, sideChecks, unexplained, dsBase, material: MATERIAL };
   }
   return { compute, grade, median, BENCH, _A: A, benchmark, scoreOne, explain, TH };
 })();
@@ -2405,13 +2416,29 @@ const DS_BENCH = { houses: null, units: null };
 function _explainText(ex) {
   if (!ex) return "";
   if (ex.size === "small") return "\n\nSmall move — within the normal range.";
-  const pts = e => (e == null ? "" : " (≈ " + (e > 0 ? "+" : "") + Math.round(e) + " pts)");
-  const lines = ["", "— Why it moved (rule-based) —", "Verdict: " + ex.verdict];
-  ex.drivers.forEach(d => { if (d.effect != null && Math.abs(d.effect) < 0.5 && d.cls === "market") return;   // silent on inputs that did nothing
-    lines.push("• " + d.label + " " + d.fmt(d.prev) + " → " + d.fmt(d.cur) + pts(d.effect) + " — " + d.note);
-    if (d.rec) lines.push("   ↳ Recommendation: " + d.rec); });
-  if (ex.unexplained && Math.abs(ex.unexplained.pts) >= 1) lines.push("(≈ " + Math.round(Math.abs(ex.unexplained.pts)) + " pts unexplained — " + ex.unexplained.why + ")");
-  return "\n" + lines.join("\n");
+  const pts = e => { if (e == null) return "share unknown"; const r = Math.round(e); return "≈ " + (r > 0 ? "+" : "") + r + (Math.abs(r) === 1 ? " pt" : " pts"); };
+  const L = ["", "Why it moved", "Verdict: " + ex.verdict.headline + (ex.verdict.detail ? " " + ex.verdict.detail : "")];
+  const minor = []; let minorPts = 0;
+  ex.drivers.forEach(d => {
+    const big = d.effect == null || Math.abs(d.effect) >= ex.material;
+    if (d.cls === "method") {   // the explanation lives in the verdict when it IS the verdict; otherwise say it here, once
+      const det = d.detail || d.note;
+      L.push("• " + d.label + ": " + pts(d.effect) + (ex.verdict.cls === "method" ? " (method change, see verdict)" : " — method change: " + det.charAt(0).toLowerCase() + det.slice(1)));
+      return;
+    }
+    if (d.cls === "source" || d.cls === "capture") {   // a flagged input that barely moved the score is listed under "Also check" instead
+      if (!big) return;
+      L.push("• " + d.label + ": " + pts(d.effect) + " — " + d.note + ".");
+      if (d.rec) L.push("   ↳ Recommendation: " + d.rec);
+      return;
+    }
+    if (big) { L.push("• " + d.label + ": " + pts(d.effect) + " — " + d.note + "."); return; }
+    if (d.effect == null || Math.abs(d.effect) >= 0.5) { minor.push(d.summary || d.label.toLowerCase()); minorPts += d.effect || 0; }
+  });
+  if (minor.length) L.push("• Other inputs (" + minor.join(", ") + "): " + pts(minorPts) + " together, within normal ranges.");
+  (ex.sideChecks || []).forEach(s => L.push("Also check — " + s + "."));
+  if (ex.unexplained && ex.unexplained.pts >= 1) L.push("Days on market" + (ex.unexplained.dom != null ? " (now " + Math.round(ex.unexplained.dom) + ")" : "") + " was not stored for the earlier month, so " + pts(ex.unexplained.pts).replace("+", "") + " of the move cannot be assigned.");
+  return "\n" + L.join("\n");
 }
 // Runway: same idea for the RW columns. Attribution by substitution needs the
 // inputs on both sides (median, income, AI ceiling, forecast rate); when the
@@ -2426,21 +2453,23 @@ function _rwExplain(cur, prev, ctx) {
   const full = RC && [cur.median, cur.inc, cur.ai, cur.rate, prev.median, prev.inc, prev.ai, prev.rate].every(v => typeof v === "number" && isFinite(v));
   const rwOf = (median, inc, ai, rate) => { const o = RC.computeRunway({ median, income: inc, aiCeiling: ai, currentRate: rate, forecastRate: rate }); return o && o.forecast_pct; };
   const eff = full ? (patch) => { const b = rwOf(cur.median, cur.inc, cur.ai, cur.rate), p = Object.assign({ median: cur.median, inc: cur.inc, ai: cur.ai, rate: cur.rate }, patch); const v = rwOf(p.median, p.inc, p.ai, p.rate); return (b != null && v != null) ? (b - v) * 100 : null; } : () => null;
-  const pts = e => (e == null ? "" : " (≈ " + (e > 0 ? "+" : "") + Math.round(e) + " pts)");
-  const lines = ["", "— Why it moved (rule-based) —"];
+  const pts = e => { if (e == null) return ""; const r = Math.round(e); return " (≈ " + (r > 0 ? "+" : "") + r + (Math.abs(r) === 1 ? " pt" : " pts") + ")"; };
+  const pc = v => (v > 0 ? "+" : "") + v.toFixed(1) + "%";
+  const lines = ["", "Why it moved"];
   const aiBreak = !!ctx.aiAt && !!ctx.prevAt && ctx.aiAt > ctx.prevAt && (!ctx.curAt || ctx.aiAt <= ctx.curAt);
   const medPct = (prev.median && cur.median) ? (cur.median - prev.median) / prev.median * 100 : null;
+  const aiDay = aiBreak ? new Date(ctx.aiAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" }) : null;
   let verdict = "Market move — the inputs moved within their normal ranges.";
-  if (aiBreak) verdict = "Expected — a method change, not a market move.";
-  else if (medPct != null && Math.abs(medPct) >= 10) verdict = "Check the source — the median moved " + (medPct > 0 ? "+" : "") + medPct.toFixed(1) + "% in one month (Cotality).";
+  if (aiBreak) verdict = "Expected — method change, not a market move. The AI ceiling was re-based to the 3-peak rule on " + aiDay + ", after the previous capture, so last month’s runway sits on the old ceiling.";
+  else if (medPct != null && Math.abs(medPct) >= 10) verdict = "Check the source — the median moved " + pc(medPct) + " in one month; verify against the Cotality drop.";
   lines.push("Verdict: " + verdict);
-  if (medPct != null && cur.median !== prev.median) lines.push("• Median price " + fmtPrice(prev.median) + " → " + fmtPrice(cur.median) + " (" + (medPct > 0 ? "+" : "") + medPct.toFixed(1) + "%)" + pts(eff({ median: prev.median })) + (Math.abs(medPct) >= 10 ? " — unusual for one month; verify against the Cotality drop." : " — the Cotality median moved."));
-  if (aiBreak) lines.push("• AI ceiling" + (typeof cur.ai === "number" && typeof prev.ai === "number" ? " " + (prev.ai * 100).toFixed(2) + "% → " + (cur.ai * 100).toFixed(2) + "%" : "") + pts(eff({ ai: prev.ai })) + " — Expected — method change: the ceiling was re-based to the 3-peak rule on " + new Date(ctx.aiAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" }) + ", after the previous capture; the previous month’s runway sits on the old ceiling.");
-  else if (typeof cur.ai === "number" && typeof prev.ai === "number" && cur.ai !== prev.ai) lines.push("• AI ceiling " + (prev.ai * 100).toFixed(2) + "% → " + (cur.ai * 100).toFixed(2) + "%" + pts(eff({ ai: prev.ai })) + " — the yearly ceiling refresh.");
-  if (typeof cur.rate === "number" && typeof prev.rate === "number" && cur.rate !== prev.rate) lines.push("• PP variable (forecast) rate " + (prev.rate * 100).toFixed(2) + "% → " + (cur.rate * 100).toFixed(2) + "%" + pts(eff({ rate: prev.rate })) + " — the 20-year cash-rate average moved.");
-  if (typeof cur.inc === "number" && typeof prev.inc === "number" && cur.inc !== prev.inc) lines.push("• Income $" + Math.round(prev.inc).toLocaleString() + " → $" + Math.round(cur.inc).toLocaleString() + "/wk" + pts(eff({ inc: prev.inc })) + " — the yearly income update.");
-  if (cur.rw >= 1.3 - 1e-9 || prev.rw >= 1.3 - 1e-9) lines.push("(runway is capped at 130% — moves above the cap do not show)");
-  if (!full) lines.push("(input-by-input split needs both months’ stored inputs — available from the Sep-2026 capture on)");
+  // bullets carry the share and a short clause; the table above already shows the median itself
+  if (medPct != null && cur.median !== prev.median) lines.push("• Median price: " + pc(medPct) + pts(eff({ median: prev.median })) + (Math.abs(medPct) >= 10 ? " — unusual for one month." : " — normal monthly movement."));
+  if (typeof cur.ai === "number" && typeof prev.ai === "number" && cur.ai !== prev.ai) lines.push("• AI ceiling: " + (prev.ai * 100).toFixed(2) + "% → " + (cur.ai * 100).toFixed(2) + "%" + pts(eff({ ai: prev.ai })) + (aiBreak ? " (method change, see verdict)" : " — the yearly ceiling refresh."));
+  if (typeof cur.rate === "number" && typeof prev.rate === "number" && cur.rate !== prev.rate) lines.push("• PP variable rate: " + (prev.rate * 100).toFixed(2) + "% → " + (cur.rate * 100).toFixed(2) + "%" + pts(eff({ rate: prev.rate })) + " — the 20-year cash-rate average moved.");
+  if (typeof cur.inc === "number" && typeof prev.inc === "number" && cur.inc !== prev.inc) lines.push("• Income: $" + Math.round(prev.inc).toLocaleString() + " → $" + Math.round(cur.inc).toLocaleString() + " a week" + pts(eff({ inc: prev.inc })) + " — the yearly income update.");
+  if (cur.rw >= 1.3 - 1e-9 || prev.rw >= 1.3 - 1e-9) lines.push("Runway is capped at 130%, so moves above the cap do not show.");
+  if (!full) lines.push("The point split needs both months’ stored inputs — available from the Sep 2026 capture on.");
   return "\n" + lines.join("\n");
 }
 const _MONS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -2594,14 +2623,14 @@ function compareView(tab) {
     const c = curMap[slug] || {}, p = prevMap[slug] || {};
     const nm = nameBySlug[slug] || { name: slug, st: "" };
     const live = liveBySlug[slug] || {};
-    const domLine = (p.dom != null || c.dom != null) ? "\nDays on market: " + _arrow(p.dom, c.dom, _int0) : "";
+    const domLine = (p.dom != null && c.dom != null) ? "\nDays on market: " + _arrow(p.dom, c.dom, _int0) : "";   // both months or nothing — a lone dash reads as noise
     let ex = null;
     try { ex = PP_DEMAND_ENGINE.explain(c, p, { Nb: DS_BENCH[key], prevAt, curAt, domFallback: live.dom, knownCase: DS_KNOWN_CASES[slug] }); } catch (e) { ex = null; }
     const dsTitle = "What changed (prev → now):\n"
       + "Population: " + _arrow(p.pop, c.pop, _int0) + "\n"
       + "Listings: " + _arrow(p.listings, c.listings, _int0) + "\n"
-      + "Adjusted VR: " + _arrow(p.avr, c.avr, v => v.toFixed(2)) + "\n"
-      + "Rental Growth: " + _arrow(p.rg, c.rg, v => v.toFixed(2) + "%") + domLine
+      + "Adjusted VR: " + _arrow(p.avr, c.avr, v => v.toFixed(2) + "%") + "\n"
+      + "Rental growth: " + _arrow(p.rg, c.rg, v => v.toFixed(2) + "%") + domLine
       + _explainText(ex);
     const rwTitle = "What changed (prev → now):\n"
       + "Median " + (tab === "Houses" ? "house" : "unit") + " price: " + _arrow(p.median, c.median, fmtPrice)
