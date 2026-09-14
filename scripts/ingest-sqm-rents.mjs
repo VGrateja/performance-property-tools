@@ -29,7 +29,7 @@ const WRITE = process.argv.includes('--write');
 const UA = SQM_UA;
 
 // slug → SQM weekly-rents URL (shared region map; National kept as 'australia').
-const REGIONS = SQM_REGIONS.map(r => [r.slug, sqmUrl('weekly-rents', r.qs)]);
+const REGIONS = SQM_REGIONS.map(r => [r.slug, sqmUrl('weekly-rents', r.qs), r.qs]);   // qs is stored as sqm_basis so the dashboard can name the series behind a move
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -74,7 +74,7 @@ const round2 = n => Math.round(n * 100) / 100;
 
 const results = {}; let weekEnding = null, ok = 0; const failed = [];
 for (let i = 0; i < REGIONS.length; i++) {
-  const [slug, url] = REGIONS[i];
+  const [slug, url, qs] = REGIONS[i];
   try {
     const html = await fetchHtml(url);
     if (weekEnding == null) weekEnding = getWeekEnding(html);
@@ -86,6 +86,7 @@ for (let i = 0; i < REGIONS.length; i++) {
       rent_h: round2(d.houseRent), rent_u: round2(d.unitRent),
       rent_h_3yr: round2(h3), rent_u_3yr: round2(u3),
       rent_h_pa: d.house3YrPa, rent_u_pa: d.unit3YrPa,
+      sqm_basis: qs,
     };
     ok++;
     console.log(`  ${slug}: H $${d.houseRent} U $${d.unitRent} (3yr-ago H $${round2(h3)} U $${round2(u3)})`);

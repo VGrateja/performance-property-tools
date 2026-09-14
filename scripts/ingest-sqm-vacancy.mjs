@@ -49,7 +49,7 @@ for (const r of SQM_REGIONS) {
   try {
     const v = parseVacancy(await fetchHtml(sqmUrl('vacancy-rates', r.qs)));
     if (!v) { console.log(`  ${r.slug}: no data parsed`); failed.push(r.slug); continue; }
-    results[r.slug] = v;
+    results[r.slug] = Object.assign(v, { basis: r.qs });   // stored as sqm_basis so the dashboard can name the series behind a move
     if (asOf == null) asOf = v.asOf;
     ok++;
     console.log(`  ${r.slug}: VR ${v.vr}% (as of ${v.asOf})`);
@@ -77,7 +77,7 @@ if (!store.regions) store.regions = {};
 const nowIso = new Date().toISOString();
 for (const [slug, v] of Object.entries(results)) {
   const rec = store.regions[slug] || (store.regions[slug] = {});
-  rec.vr = v.vr; rec.vr_as_of = v.asOf; rec.vr_fetched_at = nowIso;
+  rec.vr = v.vr; rec.vr_as_of = v.asOf; rec.vr_fetched_at = nowIso; if (v.basis) rec.sqm_basis = v.basis;
 }
 store.vr_as_of = asOf || null;
 const { error } = await sb.from('forge_demand_inputs').upsert({ id: 'latest', data: store, updated_at: nowIso, uploaded_at: nowIso, uploaded_by: 'ingest-sqm-vacancy' }, { onConflict: 'id' });
