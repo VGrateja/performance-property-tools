@@ -1896,6 +1896,66 @@ function tlSlide(title, noLogo, dark, headed){
    slide argue against its own caption. */
 const TL_IDEAL = [['Supply & Demand','GREEN','GREEN'],['Value','GREEN','GREEN'],['Confidence','GREEN','GREEN']];
 const TL_BEST  = [['Supply & Demand','GREEN','GREEN'],['Value','GREEN','GREEN'],['Confidence','RED_AMBER','GREEN']];
+
+/* ═══ HARD-CODED LIGHTS — VAN'S SHEET, 2026-09-15 ════════════════════════════
+   The CURRENT column for the thirteen markets the curated card offers, taken
+   from Van's own sheet rather than derived. It OVERRULES TL_CLOCK_STEPS, which
+   stays in place for everything else: the twenty-three markets not curated, and
+   the FORECAST column on all of them.
+
+   WHY IT IS HERE AND NOT COMPUTED. The step table reads a colour off where the
+   clock puts a market, which is a rule, and the research team's reading of a
+   market is not always that rule. Measured over Van's sheet on 2026-09-15: the
+   clock POSITIONS agree exactly — 72 of 72 times and phases — while 82 of the
+   216 colour cells do not. Perth houses sit in Momentum and the table says
+   Value is green; the sheet says orange, because Perth is a market we are
+   selling out of. That judgement has nowhere to live in a function of the hour,
+   so it lives here.
+
+   THE THIRTEEN ARE THE CURATED SET, and that is not a coincidence — the sheet's
+   B/S column is exactly `reports_state['bss-visibility']`: buy = darwin,
+   melbourne, townsville; sell = adelaide, brisbane, perth, gladstone, ipswich,
+   rockhampton, toowoomba, bunbury, mandurah, rockingham. So every deck an
+   advisor can open shows authored colours, and the master view's other markets
+   go on showing the clock's.
+
+   ORDER IS THE SLIDE'S, NOT THE SHEET'S: [Supply & Demand, Value, Confidence].
+   The sheet's columns run Value, Supply & Demand, Confidence — they were
+   transposed on the way in, so do not read the two side by side and "fix" one.
+
+   ⚠ THESE DO NOT FOLLOW THE CLOCK. If the Investment Committee moves a market,
+   its colours here stay where they are until somebody edits this table. That is
+   the point of hard-coding, and it is the cost: this is a dated snapshot of a
+   judgement, not a live reading. The times in Van's sheet matched the clock on
+   the day it was written, so nothing needs to be hard-coded about position. */
+const TL_HARDCODED = {
+  /*              houses                              units                          */
+  melbourne:   { h:['GREEN', 'GREEN', 'ORANGE'], u:['GREEN', 'GREEN', 'ORANGE'] },
+  darwin:      { h:['GREEN', 'GREEN', 'ORANGE'], u:['GREEN', 'GREEN', 'ORANGE'] },
+  gladstone:   { h:['GREEN', 'ORANGE','ORANGE'], u:['GREEN', 'GREEN', 'ORANGE'] },
+  bunbury:     { h:['GREEN', 'ORANGE','GREEN' ], u:['GREEN', 'GREEN', 'ORANGE'] },
+  townsville:  { h:['GREEN', 'GREEN', 'GREEN' ], u:['GREEN', 'GREEN', 'ORANGE'] },
+  perth:       { h:['GREEN', 'ORANGE','GREEN' ], u:['GREEN', 'ORANGE','GREEN' ] },
+  mandurah:    { h:['GREEN', 'ORANGE','GREEN' ], u:['GREEN', 'ORANGE','GREEN' ] },
+  rockingham:  { h:['GREEN', 'ORANGE','GREEN' ], u:['GREEN', 'ORANGE','GREEN' ] },
+  rockhampton: { h:['ORANGE','ORANGE','GREEN' ], u:['GREEN', 'ORANGE','GREEN' ] },
+  ipswich:     { h:['ORANGE','ORANGE','GREEN' ], u:['GREEN', 'ORANGE','GREEN' ] },
+  toowoomba:   { h:['ORANGE','ORANGE','GREEN' ], u:['GREEN', 'ORANGE','GREEN' ] },
+  adelaide:    { h:['ORANGE','RED',   'ORANGE'], u:['ORANGE','ORANGE','GREEN' ] },
+  brisbane:    { h:['ORANGE','RED',   'ORANGE'], u:['ORANGE','ORANGE','GREEN' ] },
+};
+/* The three display rows for a market, CURRENT hard-coded and FORECAST still
+   read off the clock's next phase — the sheet carries no forecast, and a
+   forecast that merely repeats the current reading would be a column that says
+   nothing. Returns null for a market not in the table, so every caller falls
+   through to the behaviour it had before. */
+function tlRowsHardcoded(slug, type, hour){
+  const e = TL_HARDCODED[slug]; if(!e) return null;
+  const now = e[(type==='u') ? 'u' : 'h']; if(!now) return null;
+  const derived = tlRowsFromClock(hour);
+  const nxt = derived ? [derived[0][2], derived[1][2], derived[2][2]] : now;
+  return [['Supply & Demand',now[0],nxt[0]],['Value',now[1],nxt[1]],['Confidence',now[2],nxt[2]]];
+}
 /* `type` = the property type the PAGE is about ('u' units, else houses) — it
    only reaches the clock-band lookup, and only the LIVE page has a market to
    look up. See "THE CLOCK OVERRULES THE TRAFFIC-LIGHT BASE" above. */
@@ -1924,8 +1984,12 @@ async function renderTL(host, slug, staticRows, type){
        TRAFFIC-LIGHT BASE" above tlSlide). The vault tool keeps the raw values
        on purpose, so a difference here is the decision, not drift.
        LIVE rows only — the two static slides below are the model's archetypes,
-       not any market's reading, and the clock has nothing to say about them. */
-    rows=tlRowsFromClock(await tlClockHour((DB.meta[slug]||{}).name||slug, type)) || rows;
+       not any market's reading, and the clock has nothing to say about them.
+       …and above BOTH of them sits TL_HARDCODED: for the thirteen curated
+       markets the CURRENT column is Van's own sheet (2026-09-15), not a reading
+       of anything. See the table for why. */
+    const _tlHour=await tlClockHour((DB.meta[slug]||{}).name||slug, type);
+    rows=tlRowsHardcoded(slug, type, _tlHour) || tlRowsFromClock(_tlHour) || rows;
   }
   host.innerHTML='<div class="bss-tlhead"><span>INDICATOR</span><span>CURRENT</span><span>FORECAST</span></div>'
     + rows.map(r=>'<div class="bss-tlrow"><div class="bss-tllabel">'+esc(r[0])+'</div>'
@@ -4060,7 +4124,11 @@ async function sumTLRows(slug,type){
     const d=DATA[((DB.meta[slug]||{}).name)] || DATA[tlName(slug)];   /* the exact lookup renderTL uses */
     if(!d) return null;
     const rows=[['Supply & Demand',d.sd,d.sd_fcst],['Value',d.value,d.value_fcst],['Confidence',d.confidence,d.conf_fcst]];
-    return tlRowsFromClock(await tlClockHour((DB.meta[slug]||{}).name||slug, type)) || rows;
+    /* Same three-deep fall-through renderTL uses, and it must STAY the same:
+       the dots and the "N of 3 green lights" sentence are read off these rows,
+       so a page that sourced them differently could contradict itself. */
+    const hour=await tlClockHour((DB.meta[slug]||{}).name||slug, type);
+    return tlRowsHardcoded(slug, type, hour) || tlRowsFromClock(hour) || rows;
   }catch(e){ return null; }
 }
 
