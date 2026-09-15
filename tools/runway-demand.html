@@ -337,6 +337,21 @@ body.user-d-robbins .month-display{color:#0C186E}
 .tl-tick{flex:1;height:5px;border-radius:3px;background:rgba(255,255,255,.07);cursor:pointer;transition:background .18s}
 .tl-tick.past{background:rgba(0,160,180,.28)}.tl-tick.active{background:var(--accent)}.tl-tick:hover{background:rgba(0,160,180,.55)}
 .tl-label{font-size:.62rem;color:var(--muted);white-space:nowrap}
+/* ── LEADER LINES ────────────────────────────────────────────────────────────
+   The dashes from a market's name to its dot. Broken rather than solid on
+   purpose: a continuous hairline in a scatter reads as a trail, which is a
+   thing this chart already draws and means something else.
+   Faint at rest so thirty-six of them do not become the picture; on hover the
+   one you are pointing at darkens and its dashes march toward the dot, which is
+   what makes the pairing legible in a crowded corner. `pointer-events:none`
+   keeps the lines from stealing hovers from the dots they cross. */
+.leader{stroke:rgba(0,0,0,.22);stroke-width:.7;stroke-dasharray:3.5 3;pointer-events:none;
+        transition:stroke .15s ease,stroke-width .15s ease}
+.leader.lead-hot{stroke:rgba(0,0,0,.6);stroke-width:1.3;animation:leadMarch .55s linear infinite}
+@keyframes leadMarch{to{stroke-dashoffset:-13}}
+.city-label{cursor:default}
+.city-label.label-hot{fill:#000;font-weight:700}
+@media (prefers-reduced-motion:reduce){.leader.lead-hot{animation:none}}
 .legend{width:100%;max-width:1120px;display:flex;gap:16px;margin-top:12px;align-items:center;flex-wrap:nowrap}
 .legend-item{display:flex;align-items:center;gap:7px;font-size:.76rem;color:var(--muted)}
 .legend-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
@@ -472,6 +487,7 @@ body.embed-mode #rw-theme-toggle,
 body.embed-mode #runwayPdfBtn,
 body.embed-mode #runwayJpegBtn,
 body.embed-mode #runwayManageBtn,
+body.embed-mode #basisGroup,
 body.embed-mode .header,
 body.embed-mode .appbar,
 body.embed-mode .mobile-control-bar,
@@ -627,6 +643,19 @@ body.embed-mode html { overflow: hidden; }
         <div id="regionList"></div>
       </div>
     </div>
+  </div>
+
+  <!-- Which vacancy and rent series the demand score is built on. Sits with the
+       other controls because it is a view setting, not a download. Revealed to
+       dev/admin only by the same pass that reveals Manage Pushed Months: two
+       demand scores in front of an advisor, with nothing on the slide saying
+       which, is worse than one they can question. -->
+  <div class="ctrl-group" id="basisGroup" style="display:none">
+    <label>VR / Rent Source</label>
+    <select id="basisSelect" title="Which vacancy and rent series the demand score is built on">
+      <option value="sqm">V1 — SQM</option>
+      <option value="cotality">V2 — Cotality</option>
+    </select>
   </div>
 
   <div class="ctrl-group">
@@ -791,6 +820,53 @@ const PUSH_STORAGE_KEY='ppt-runway-pushed-data';
 // months win (localStorage stays the same-month manual override); Forge fills
 // in what this browser doesn't have, then the timeline/chart refresh in place.
 // Fail-soft — on any error the chart shows the local timeline exactly as before.
+/* ── WHICH VACANCY AND RENT THE POINTS ARE BUILT ON (Saskia 2026-09-15) ───────
+   The demand score is computed in the Demand Score Dashboard and pushed here as
+   a snapshot, so this tool does not re-score anything — it chooses which pushed
+   SERIES to merge. 'rvd-' months are scored on SQM vacancy and rent; 'rvdcot-'
+   months are the V2, scored on the Cotality drop. Same key as the dashboard's
+   own switch, so the two tools cannot disagree about which basis is on screen.
+
+   A market is only on the Cotality basis for months somebody has pushed on it;
+   the baseline months baked into this file are SQM and always will be, which is
+   why the timeline shortens when the switch is flipped rather than silently
+   mixing the two. That is the intended behaviour: a short honest series beats a
+   long one whose points come from two different vacancy series. */
+const RVD_BASIS_KEY = 'ppa-ds-basis';
+/* AN EMBED IS ALWAYS SQM, whatever the browser remembers. The setting is shared
+   with the Demand Score Dashboard, so a researcher who left the switch on
+   Cotality would otherwise open a client deck and find the slide either showing
+   V2 numbers or — worse — raising the "nothing pushed yet" alert in the middle
+   of a presentation. Decks show the published basis, full stop. */
+function rvdIsEmbed(){
+  try { return new URLSearchParams(location.search).get('embed') === '1'; } catch(e){ return false; }
+}
+function rvdBasis(){
+  if (rvdIsEmbed()) return 'sqm';
+  try { return localStorage.getItem(RVD_BASIS_KEY) === 'cotality' ? 'cotality' : 'sqm'; }
+  catch(e){ return 'sqm'; }
+}
+function rvdBasisPrefix(){ return rvdBasis() === 'cotality' ? 'rvdcot-' : 'rvd-'; }
+function setRunwayBasis(v){
+  const next = v === 'cotality' ? 'cotality' : 'sqm';
+  if(next === rvdBasis()) return;
+  try { localStorage.setItem(RVD_BASIS_KEY, next); } catch(e){}
+  /* Reload rather than re-render: the two bases are different SERIES with
+     different months, so the timeline, the region list and every point have to
+     be rebuilt from scratch. A partial repaint is how a chart ends up showing
+     one basis under the other's month. */
+  location.reload();
+}
+(function wireBasisSelect(){
+  function apply(){
+    const sel = document.getElementById('basisSelect');
+    if(!sel) return;
+    sel.value = rvdBasis();
+    sel.addEventListener('change', e => setRunwayBasis(e.target.value));
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', apply); else apply();
+})();
+
 window.__forgePushed = null;
 (function mergeForgeMonths(){
   let tries = 0;
@@ -798,11 +874,39 @@ window.__forgePushed = null;
     if (!window.sb && ++tries < 60) return;   // wait for supabase-client (≤6s), else give up quietly
     clearInterval(t);
     if (!window.sb) return;
-    window.sb.from('forge_demand_snapshots').select('label,data').like('version', 'rvd-%')
-      .then(({ data, error }) => {
+    /* 'rvd-%' also matches 'rvdcot-%', so the SQM read has to exclude it or the
+       V2 months would join the published timeline unannounced. */
+    const _cot = rvdBasis() === 'cotality';
+    let _q = window.sb.from('forge_demand_snapshots').select('label,data');
+    _q = _cot ? _q.like('version', 'rvdcot-%') : _q.like('version', 'rvd-%').not('version', 'like', 'rvdcot-%');
+    _q.then(({ data, error }) => {
+        if (_cot && (error || !data || !data.length)) {
+          /* Nothing has been pushed on the Cotality basis yet. Silently showing
+             the SQM timeline under a picker reading "Cotality" is the exact
+             mislabelling this switch exists to prevent, so say so and go back. */
+          try { localStorage.setItem(RVD_BASIS_KEY, 'sqm'); } catch(e) {}
+          const sel = document.getElementById('basisSelect');
+          if (sel) sel.value = 'sqm';
+          alert('No months have been pushed on the Cotality basis yet.\n\nCapture and push a month from the Demand Score Dashboard with VR/Rent set to Cotality, then switch again. Showing SQM.');
+          /* Reload rather than carry on: this pass has already skipped the SQM
+             merge, so staying put would leave the viewer on the baked baseline
+             with the newest pushed months missing and nothing saying why. */
+          location.reload();
+          return;
+        }
         if (error || !data || !data.length) return;
+        /* Built BEFORE the Cotality reset below: smooth-versus-workforce is a
+           property of the market, it rides on the baked months, and a lookup
+           taken after the reset would be empty — every market would fall back
+           to 'smooth' and the chart would lose the pink half of its legend. */
         const typeLookup = {};
         Object.values(RAW).flat().forEach(d => { if (d && d.city && d.type && !typeLookup[d.city]) typeLookup[d.city] = d.type; });
+        if (_cot) {
+          /* The baked baseline months in this file are SQM and cannot be
+             re-scored here, so the Cotality timeline is ONLY what has been
+             pushed on that basis. Shorter, and every point from one series. */
+          for (const k of Object.keys(RAW)) delete RAW[k];
+        }
         const pushed = {};
         let addedAny = false;
         const atEnd = currentIdx >= months.length - 1;   // follow the timeline end only if the user was on it
@@ -1154,7 +1258,12 @@ const BASELINE_MONTHS=['Jan 2025','Feb 2025','Mar 2025','Apr 2025','May 2025','J
 const MONTH_ORDER={Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
 function _monthKeyToNum(s){const p=(s||'').split(' ');const mi=MONTH_ORDER[p[0]];const y=Number(p[1]);return (Number.isFinite(y)?y:0)*12+(mi==null?0:mi);}
 function _computeMonths(){
-  const all=new Set(BASELINE_MONTHS);
+  /* BASELINE_MONTHS is the baked SQM timeline. On the Cotality basis it must
+     NOT seed the list: the merge clears RAW and refills it from the pushed
+     Cotality months only, so any baseline month left in here becomes a tick on
+     the timeline with no points behind it — an empty chart that reads as a
+     market with no demand rather than as a month nobody has recorded. */
+  const all=new Set(rvdBasis()==='cotality' ? [] : BASELINE_MONTHS);
   Object.keys(RAW).forEach(k=>{const i=k.indexOf('_');if(i>0) all.add(k.slice(i+1));});
   return [...all].sort((a,b)=>_monthKeyToNum(a)-_monthKeyToNum(b));
 }
@@ -1520,7 +1629,7 @@ function render(animate=false){
     const arr=dotLayer.selectAll('path.city-arrow').data(data,d=>d._key);
     const arrEnter=arr.enter().append('path').attr('class','city-arrow')
       .attr('d',arrowD).attr('transform',arrowTF).attr('fill',typeColor).attr('opacity',dotOp).attr('pointer-events','all')
-      .on('mouseover',(e,d)=>showTip(e,d)).on('mousemove',e=>moveTip(e)).on('mouseout',()=>hideTip()).on('click',clickCity);
+      .on('mouseover',(e,d)=>{showTip(e,d);leaderHot(d&&d.city,true);}).on('mousemove',e=>moveTip(e)).on('mouseout',(e,d)=>{hideTip();leaderHot(d&&d.city,false);}).on('click',clickCity);
     arr.merge(arrEnter).attr('d',arrowD).attr('fill',typeColor)
       .transition(trans).attr('opacity',dotOp).attr('transform',arrowTF);
     arr.exit().remove();
@@ -1534,7 +1643,7 @@ function render(animate=false){
       /* Hollow Unit dots (fill:none) capture pointer events only on the ring by
          default — pointer-events:all makes the whole disc trigger tooltip/click. */
       .attr('pointer-events',d=>(combined && d._kind==='unit')?'all':null)
-      .on('mouseover',(e,d)=>showTip(e,d)).on('mousemove',e=>moveTip(e)).on('mouseout',()=>hideTip()).on('click',clickCity);
+      .on('mouseover',(e,d)=>{showTip(e,d);leaderHot(d&&d.city,true);}).on('mousemove',e=>moveTip(e)).on('mouseout',(e,d)=>{hideTip();leaderHot(d&&d.city,false);}).on('click',clickCity);
     dots.merge(enterDots).transition(trans)
       .attr('cx',dotCX).attr('cy',d=>dataY(d.ds))
       .attr('r',dotR).attr('fill',dotFill).attr('opacity',dotOp)
@@ -1546,7 +1655,23 @@ function render(animate=false){
   let visibleData=highlight ? data.filter(d=>selectedCities.has(d.city)) : data;
   if(combined) visibleData=visibleData.filter(d=>d._kind==='house');   // one label per region (on the House point)
   const charW=5.8, lh=11;
-  const candidates=[[8,-8],[8,16],[-8,-8],[-8,16],[8,-20],[8,28],[-8,-20],[-8,28],[18,-8],[-18,-8],[0,-20],[0,20]];
+  /* ── WHERE A LABEL IS ALLOWED TO STAND ──────────────────────────────────────
+     Eight directions at seven distances, nearest first. The old set was twelve
+     positions all within about 28px of the dot, so in a crowded corner every
+     one of them overlapped something and the code took the least-bad — which is
+     how the lower-middle cluster ended up a stack of unreadable names.
+     Reaching out to ~110px gives a dense market somewhere to go, and the
+     scoring below still prefers the closest clear spot, so nothing drifts away
+     from its dot unless it has to. */
+  const LABEL_DIRS=[[1,0],[1,-0.5],[1,-1],[0.5,-1],[0,-1],[-0.5,-1],[-1,-1],[-1,-0.5],
+                    [-1,0],[-1,0.5],[-1,1],[-0.5,1],[0,1],[0.5,1],[1,1],[1,0.5]];
+  const LABEL_RADII=[9,16,24,34,46,60,76,95,118,145];
+  const candidates=[];
+  for(const r of LABEL_RADII) for(const [ux,uy] of LABEL_DIRS){
+    /* vertical reach is tightened a little: the plot is far wider than it is
+       tall, so a tall detour runs out of chart before a sideways one does */
+    candidates.push([ux,uy,r,Math.round(ux*r),Math.round(uy*r*0.62)]);
+  }
   const placed=[];
 
   // Pre-populate placed with all dot positions so labels won't render on top of dots
@@ -1558,25 +1683,43 @@ function render(animate=false){
 
   // Compute target positions for all visible labels
   const labelTargets=[];
-  visibleData.forEach(d=>{
+  /* Densest first. A market hemmed in on all sides should get to choose before
+     one with open space around it — the other order leaves the crowded ones
+     with nothing left and they are exactly the ones that were unreadable. */
+  const crowding=d=>{ const cx=dotCX(d), cy=dataY(d.ds); let n=0;
+    data.forEach(o=>{ const ox=dotCX(o), oy=dataY(o.ds);
+      if(Math.abs(ox-cx)<55 && Math.abs(oy-cy)<26) n++; });
+    return n; };
+  const ordered=visibleData.slice().sort((a,b)=>crowding(b)-crowding(a));
+  ordered.forEach(d=>{
     const cx=dotCX(d), cy=dataY(d.ds);
     const tw=d.city.length*charW;
     let best=null, bestScore=Infinity;
-    candidates.forEach(([dx,dy])=>{
-      const lx=cx+dx, ly=cy+dy;
-      if(lx<0||lx+tw>iW+20||ly-lh<-10||ly>iH+10) return;
+    candidates.forEach(([ux,uy,r,dx,dy])=>{
+      /* A label to the LEFT has to END at the offset, not start there —
+         otherwise it runs back across its own dot. */
+      const lx=(ux<0) ? cx+dx-tw : (ux===0 ? cx-tw/2 : cx+dx);
+      const ly=cy+dy+(uy>0?lh:0);
+      if(lx<-6||lx+tw>iW+6||ly-lh<-6||ly>iH+6) return;
+      /* A two-pixel margin on every side: boxes that merely touch still read as
+         one run-on word at this size. */
+      const PAD=2;
       let overlap=0;
       placed.forEach(p=>{
-        const ox=Math.max(0,Math.min(lx+tw,p.x+p.w)-Math.max(lx,p.x));
-        const oy=Math.max(0,Math.min(ly,p.y)-Math.max(ly-lh,p.y-p.h));
+        const ox=Math.max(0,Math.min(lx+tw+PAD,p.x+p.w+PAD)-Math.max(lx-PAD,p.x-PAD));
+        const oy=Math.max(0,Math.min(ly+PAD,p.y+PAD)-Math.max(ly-lh-PAD,p.y-p.h-PAD));
         overlap+=ox*oy;
       });
-      if(overlap<bestScore){bestScore=overlap;best=[lx,ly,dx,dy];}
+      /* Overlap dominates and distance only breaks ties, so a label moves far
+         away ONLY when every nearer spot is taken. */
+      const score=overlap*10000+r;
+      if(score<bestScore){bestScore=score;best={lx,ly,ux,uy,r,overlap};}
     });
-    if(!best) best=[cx+6,cy-7,6,-7];
-    const [lx,ly]=best;
-    placed.push({x:lx,y:ly,w:tw,h:lh});
-    labelTargets.push({city:d.city,cx,cy,lx,ly,dx:best[2],isSelected:highlight&&selectedCities.has(d.city)});
+    /* Nothing clear anywhere — sit beside the dot as before rather than vanish. */
+    if(!best) best={lx:cx+6,ly:cy-7,ux:1,uy:0,r:6,overlap:1};
+    placed.push({x:best.lx,y:best.ly,w:tw,h:lh});
+    labelTargets.push({city:d.city,cx,cy,lx:best.lx,ly:best.ly,tw,ux:best.ux,r:best.r,
+      isSelected:highlight&&selectedCities.has(d.city)});
   });
 
   // Animated labels: use D3 enter/update/exit with transition (same as dots)
@@ -1585,7 +1728,12 @@ function render(animate=false){
     .attr('x',d=>d.lx).attr('y',d=>d.ly)
     .attr('fill',d=>d.isSelected?'#000':'rgba(0,0,0,.65)')
     .attr('font-weight',d=>d.isSelected?'700':'400')
-    .attr('font-family','Montserrat,sans-serif').attr('font-size','10px').attr('pointer-events','none')
+    .attr('font-family','Montserrat,sans-serif').attr('font-size','10px')
+    /* The label is now a hover target — it was pointer-events:none while it
+       always sat on its own dot and had nothing to point at. */
+    .attr('pointer-events','auto')
+    .on('mouseover',(e,d)=>leaderHot(d.city,true))
+    .on('mouseout',(e,d)=>leaderHot(d.city,false))
     .text(d=>d.city);
   labels.merge(enterLabels).transition(trans)
     .attr('x',d=>d.lx).attr('y',d=>d.ly)
@@ -1593,17 +1741,34 @@ function render(animate=false){
     .attr('font-weight',d=>d.isSelected?'700':'400');
   labels.exit().transition(trans).attr('opacity',0).remove();
 
-  // Leader lines (re-draw, no animation needed)
+  /* ── LEADER LINES ───────────────────────────────────────────────────────────
+     Dashed, so they read as a pointer rather than as data — a solid hairline in
+     a scatter looks like a trail. Drawn from the dot to the label's NEAR edge,
+     so the line never crosses the words. Only where the label actually sits
+     away from its dot; a name tucked against its own point needs no line. */
   labelLayer.selectAll('line.leader').remove();
   labelTargets.forEach(t=>{
-    const dist=Math.sqrt((t.lx-(t.cx+3))**2+(t.ly-3-(t.cy-3))**2);
-    if(dist>18){
-      labelLayer.insert('line','text').attr('class','leader')
-        .attr('x1',t.cx).attr('y1',t.cy)
-        .attr('x2',t.lx+(t.dx<0?t.city.length*charW:0)).attr('y2',t.ly-3)
-        .attr('stroke','rgba(0,0,0,.2)').attr('stroke-width',0.7).attr('pointer-events','none');
-    }
+    if(t.r<=18) return;
+    const ex = t.ux>0 ? t.lx-2 : t.ux<0 ? t.lx+t.tw+2 : t.lx+t.tw/2;
+    const ey = t.ly-3;
+    labelLayer.insert('line','text').attr('class','leader')
+      .attr('data-city',t.city)
+      .attr('x1',t.cx).attr('y1',t.cy).attr('x2',ex).attr('y2',ey);
   });
+}
+
+/* Hovering a name lights its own leader and marches the dashes along it, so in
+   a crowded corner you can tell at a glance WHICH dot a label belongs to —
+   which is the whole reason the labels were allowed to move away in the first
+   place. Driven by a class, not by inline attributes, so the animation lives in
+   CSS and a re-render cannot leave a line stuck in the lit state. */
+function leaderHot(city,on){
+  try{
+    labelLayer.selectAll('line.leader').classed('lead-hot',function(){
+      return on && this.getAttribute('data-city')===city;
+    });
+    labelLayer.selectAll('text.city-label').classed('label-hot',d=>on&&d&&d.city===city);
+  }catch(e){}
 }
 
 function goTo(idx,animate=false){
@@ -2163,10 +2328,13 @@ function openManageMonthsModal(){
 (function showManageBtnIfAdmin(){
   function apply(){
     try{
-      const btn=document.getElementById('runwayManageBtn');
-      if(!btn) return;
       const admin = (typeof isAdmin==='function' && isAdmin());
-      btn.style.display = admin ? '' : 'none';
+      const btn=document.getElementById('runwayManageBtn');
+      if(btn) btn.style.display = admin ? '' : 'none';
+      /* The VR/Rent source picker rides the same gate, for the same reason. */
+      const basis=document.getElementById('basisGroup');
+      if(basis) basis.style.display = admin ? '' : 'none';
+      if(!btn) return;
     }catch(e){}
   }
   if(document.readyState==='loading'){

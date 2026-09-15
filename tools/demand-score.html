@@ -1921,8 +1921,39 @@ function render() {
                   }
                 }, icon("clock", 11), "Synced " + state.lastUpdated.toLocaleTimeString()) : null
               ),
-              // ── Actions cluster: secondary (Refresh) + primary (Push)
+              // ── Actions cluster: basis (dev/admin) + secondary (Refresh) + primary (Push)
               h("div", { style:{ display:"inline-flex", alignItems:"center", gap:"8px" } },
+                /* THE BASIS SWITCH (Saskia 2026-09-15) — which vacancy and rent
+                   series the score is built on. Dev/admin only: two different
+                   demand scores in front of an advisor, with no way to tell
+                   which deck carries which, is worse than one they can question.
+                   Reloading rather than re-rendering is deliberate — every score
+                   on the screen, both property types and the whole compare view,
+                   is derived from these inputs, and a partial repaint is how a
+                   table ends up showing one basis under another's heading. */
+                ((typeof isAdmin === "function" && isAdmin())
+                  ? h("button", {
+                      className:"ds-icon-btn",
+                      title: dsBasis() === "cotality"
+                        ? "Scored on COTALITY vacancy and rent (V2). Click for SQM."
+                        : "Scored on SQM vacancy and rent (today's published basis). Click for Cotality (V2).",
+                      style:{
+                        display:"inline-flex", alignItems:"center", gap:"6px",
+                        fontSize:"11px",
+                        color: dsBasis() === "cotality" ? "#0b1120" : ac,
+                        background: dsBasis() === "cotality" ? "#00C4F5" : "var(--ds-hero-tile-bg-faint, rgba(255,255,255,0.03))",
+                        border: `1px solid ${dsBasis() === "cotality" ? "#00C4F5" : ac + "33"}`,
+                        padding:"6px 14px", borderRadius:"8px", cursor:"pointer",
+                        fontWeight:"700", letterSpacing:"0.06em", textTransform:"uppercase"
+                      },
+                      onClick: () => {
+                        setDsBasis(dsBasis() === "cotality" ? "sqm" : "cotality");
+                        location.reload();
+                      }
+                    },
+                      h("i", { "data-lucide":"database", style:{ width:"12px", height:"12px" } }),
+                      "VR/Rent: " + DS_BASIS_LABEL[dsBasis()])
+                  : null),
                 h("button", {
                   className:"ds-icon-btn",
                   style:{
@@ -2389,7 +2420,13 @@ async function loadSnapshots() {
     // ALL captured monthly snapshots, newest first. Exclude the 'rvd-*' Runway-v-Demand
     // push mirrors — they're a different payload shape and not part of the month history.
     const { data } = await window.sb.from("forge_demand_snapshots").select("version,label,data,captured_at").not("version", "like", "rvd-%").order("version", { ascending: false });
-    state.snapshots = data || [];
+    /* Keep the two bases apart (Saskia 2026-09-15). A Cotality capture is
+       versioned 'cot-YYYY-MM' and an SQM one 'YYYY-MM'; showing them in one
+       month list would let the compare view put a Cotality month against an SQM
+       month and label the difference a market move. The month history a basis
+       shows is its own. */
+    const wantCot = dsBasis() === "cotality";
+    state.snapshots = (data || []).filter(r => /^cot-/.test(String(r.version)) === wantCot);
     if (state.view === "compare") render();
   } catch (e) { /* table may not exist yet */ }
 }
@@ -2401,7 +2438,12 @@ async function loadSnapshots() {
 // input. Older captures lack them — the explanation says so instead of guessing.
 const _snapMap = arr => { const o = {}; (arr || []).forEach(m => { const s = _fSlug(m.name); if (s) o[s] = {
   ds: m.demandScore, rw: m.runway, pop: m.population, listings: m.listings, avr: m.adjustedVR, rg: m.rentalGrowth36m, median: m.medianPrice,
-  dom: m.dom, vrr: m.vrRaw, rent: m.rentNow, rent3: m.rent3, sqm: m.sqmBasis, vrRule: m.vrRule, vrAt: m.vrRuleAt, inc: m.income, ai: m.aiCeiling, rate: m.fcRate }; }); return o; };
+  dom: m.dom, vrr: m.vrRaw, rent: m.rentNow, rent3: m.rent3, sqm: m.sqmBasis, vrRule: m.vrRule, vrAt: m.vrRuleAt, inc: m.income, ai: m.aiCeiling, rate: m.fcRate,
+  /* Which vacancy/rent series THIS market was scored on. Frozen per market, not
+     per capture, because on the Cotality basis a market the drop does not carry
+     falls back to SQM — and a later reader explaining its move needs to know
+     which series the numbers beside it came from. */
+  basis: m.basis }; }); return o; };
 // Markets whose SQM basis is known to be a poor proxy — the explanation's
 // recommendation text when that input misbehaves. Keep this to CONFIRMED cases.
 const DS_KNOWN_CASES = {
@@ -2687,10 +2729,13 @@ async function captureMonth() {
   const now = new Date();
   const label = (prompt("Freeze the current live numbers (latest Runway Workbook + VR Projection) as which month?\nThis becomes the newest month; the previous capture becomes its comparison baseline.", _monthLabel(now)) || "").trim();
   if (!label) return;
-  const ver = _labelToVer(label) || _monthVer(now);
+  /* A Cotality capture carries its basis in the version, so the two never
+     collide in the one-row-per-version table and neither can overwrite the
+     other's month. */
+  const ver = (dsBasis() === "cotality" ? "cot-" : "") + (_labelToVer(label) || _monthVer(now));
   // Re-pull live data so we snapshot the very latest RW Workbook + VR Projection marts.
   try { await loadData(); } catch (e) { /* fall back to the data already in state */ }
-  const data = { houses: _snapMap(state.houseData), units: _snapMap(state.unitData) };
+  const data = { houses: _snapMap(state.houseData), units: _snapMap(state.unitData), basis: dsBasis() };
   let email = null; try { const p = await sbCurrentProfile(); email = p && p.email; } catch (e) {}
   const { error } = await window.sb.from("forge_demand_snapshots").upsert({ version: ver, label, data, captured_at: new Date().toISOString(), captured_by: email }, { onConflict: "version" });
   if (error) { alert("Save failed (writers only): " + error.message); return; }
@@ -2911,7 +2956,10 @@ function openPushModal() {
                Write is RLS-gated (is_writer); a viewer's push stays local. */
             let forgeErr = null;
             try {
-              const ver = 'rvd-' + live.y + '-' + String(live.m + 1).padStart(2, '0');
+              /* 'rvdcot-' on the Cotality basis: Runway v Demand merges by
+                 prefix, so a Cotality month pushed under 'rvd-' would join the
+                 SQM timeline as if it were the same series. */
+              const ver = (dsBasis() === 'cotality' ? 'rvdcot-' : 'rvd-') + live.y + '-' + String(live.m + 1).padStart(2, '0');
               let email = null; try { const p = await sbCurrentProfile(); email = p && p.email; } catch (e) {}
               const { error } = await window.sb.from('forge_demand_snapshots').upsert(
                 { version: ver, label: key, data: payload, captured_at: new Date().toISOString(), captured_by: email },
@@ -3017,6 +3065,50 @@ function hideDashboardSyncOverlay(){
    Month-over-month deltas (prev*) are 0 — no computed-score snapshots in Forge yet.
    ============================================================================ */
 
+/* ── WHICH VACANCY AND RENT THE SCORE IS BUILT ON ─────────────────────────────
+   'sqm' is what the dashboard has always used and stays the default: nothing
+   about today's published numbers changes until somebody asks for it.
+   'cotality' is the V2 Saskia asked for on 2026-09-15.
+
+   It lives in localStorage rather than in the URL because a capture writes the
+   basis into the snapshot and the compare view reads it back; a basis that
+   vanished on reload would let somebody compare a Cotality month against an SQM
+   one without either screen saying so. */
+const DS_BASIS_KEY = 'ppa-ds-basis';
+function dsBasis(){
+  try { return localStorage.getItem(DS_BASIS_KEY) === 'cotality' ? 'cotality' : 'sqm'; }
+  catch (e) { return 'sqm'; }
+}
+function setDsBasis(b){
+  try { localStorage.setItem(DS_BASIS_KEY, b === 'cotality' ? 'cotality' : 'sqm'); } catch (e) {}
+}
+const DS_BASIS_LABEL = { sqm: 'SQM', cotality: 'Cotality' };
+
+/* Cotality's OBSERVED vacancy (percent) -> the PROJECTED vacancy (percent),
+   using the projection's own stored inputs for everything else.
+
+   This is `shared/vr-forecast-calc.js`'s computeVrForecast with only
+   `currentVR` swapped, which is the whole point: the model touches the current
+   vacancy in exactly one place, so running it on Cotality's reading makes the
+   two bases differ by their SOURCE and by nothing else. Feeding the engine a
+   raw observation on one side and a forecast on the other would have mixed
+   "different series" with "different kind of number".
+
+   Returns null where a market has no projection inputs — the caller then keeps
+   that market on SQM and tags the row, rather than scoring one market on an
+   observation while its neighbours carry a forecast. */
+function _cotProjectedVR(inputs, observedPct){
+  if (!inputs || typeof observedPct !== 'number' || !isFinite(observedPct)) return null;
+  const vr = observedPct / 100;
+  if (!(vr < 1)) return null;
+  const households = inputs.population / inputs.hhSize;
+  const properties = households / (1 - vr);
+  const total = properties + inputs.expProperties;
+  if (!(total > 0)) return null;
+  /* the calculator's own floor: a vacancy of zero is not a number it returns */
+  return Math.max(0.001, (total - households - inputs.expNewHouseholds) / total) * 100;
+}
+
 function _fSlug(s){
   s = String(s == null ? '' : s).trim(); if (/^national$/i.test(s)) return 'australia';
   return s.replace(/\([^)]*\)/g, ' ').replace(/,\s*(act|nsw|nt|qld|sa|tas|vic|wa)\b/ig, ' ')
@@ -3034,7 +3126,7 @@ function _mpStats(arr){
 async function loadForgeAll(){
   for (let i = 0; i < 50 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
   if (!window.sb) throw new Error('No database connection.');
-  const [reg, di, vr, rw, mp, pop, cot, rc] = await Promise.all([
+  const [reg, di, vr, rw, mp, pop, cot, rc, cotRV, rentHist] = await Promise.all([
     window.sb.from('rdp_regions').select('slug,name,state,cluster'),
     window.sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle(),
     window.sb.from('rdp_vr_forecast').select('region_slug,payload'),
@@ -3043,17 +3135,45 @@ async function loadForgeAll(){
     window.sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', 'population').gte('period', '2020-01-01'),
     window.sb.from('forge_cotality').select('data').eq('id', 'latest').maybeSingle(),
     window.sb.from('rdp_runway_config').select('key,value').in('key', ['rates', 'wage_growth', 'ai_ceiling_meta']),
+    /* V2 BASIS (Saskia 2026-09-15) — the Cotality vacancy + rent drop, so the
+       dashboard can be scored on it instead of on SQM. Read ALWAYS, not only
+       when the toggle is on, because the compare view names the basis of the
+       month it is showing and an absent read would make a stored Cotality
+       capture unexplainable. */
+    window.sb.from('forge_cotality').select('data,uploaded_at').eq('id', 'rentvacancy').maybeSingle(),
+    /* The 3-YEARS-AGO rent on the Cotality basis. `rdp_raw_series` tags these
+       rows `sqm`, which is a legacy SHEET-HEADER label: the values are the
+       monthly Cotality drop, written by sync-cotality-medians-to-rdp.mjs. See
+       the source-tag decoder — the tag lies, the data is Cotality. */
+    window.sb.from('rdp_raw_series').select('region_slug,metric,period,value')
+      .in('metric', ['rent_h', 'rent_u']).eq('source', 'sqm').gte('period', '2018-01-01'),
   ]);
   // Check EVERY read — a silent cot/mp/rc failure would zero DOM/medians/legend
   // and corrupt the computed scores without surfacing the error UI.
   const err = reg.error || di.error || vr.error || rw.error || pop.error || cot.error || mp.error || rc.error;
   if (err) throw new Error(err.message || 'Forge read failed');
+  /* The two V2 reads are NOT in that guard on purpose. A dashboard on the SQM
+     basis must still open if the Cotality drop is missing or the series read
+     fails; the toggle reports the basis as unavailable instead. Failing the
+     whole load would take the live tool down for a comparison feature. */
+  const cotErr = cotRV.error || rentHist.error;
 
   const M = { name: {}, state: {}, pop: {}, adjVR: {}, runway: {}, domH: {}, domU: {}, mp: {}, vrMeta: {}, rwIn: {} };
   (reg.data || []).forEach(r => { M.name[r.slug] = r.name; M.state[r.slug] = r.state; });
   // Provenance the compare view's "why it moved" notes need: which VR supply
   // rule produced the forecast (and when it was applied), and the runway inputs.
   (vr.data || []).forEach(r => { const sr = (r.payload && r.payload.supplyRule) || {}; M.vrMeta[r.region_slug] = { rule: sr.rule || null, at: sr.appliedAt || null }; });
+  /* The projection's own inputs, kept so the Cotality basis can RE-RUN it on
+     Cotality's reading instead of being handed a raw observation (Van
+     2026-09-15). The vacancy enters the model in one place —
+     properties = households / (1 - currentVR) — so swapping only that is the
+     whole difference between the two bases. */
+  M.vrIn = {};
+  (vr.data || []).forEach(r => { const p = r.payload || {};
+    if (typeof p.population === 'number' && typeof p.hhSize === 'number' && p.hhSize > 0) {
+      M.vrIn[r.region_slug] = { population: p.population, hhSize: p.hhSize,
+        expNewHouseholds: +p.expNewHouseholds || 0, expProperties: +p.expProperties || 0 };
+    } });
   (rw.data || []).forEach(r => { const p = r.payload || {}; M.rwIn[r.region_slug] = { income: p.inputs && p.inputs.income, ai: p.ai_ceiling || null, rate: p.rates && p.rates.forecast }; });
   { const latest = {}; for (const r of (pop.data || [])) { const s = r.region_slug; if (!latest[s] || r.period > latest[s]) { latest[s] = r.period; M.pop[s] = +r.value; } } }
   (vr.data || []).forEach(r => { const f = r.payload && r.payload.forecastVR; if (f != null) M.adjVR[r.region_slug] = f * 100; });
@@ -3068,6 +3188,60 @@ async function loadForgeAll(){
   const DI = ((di.data && di.data.data && di.data.data.regions)) || {};
   if (!Object.keys(DI).length) throw new Error('No Demand Score Dashboard Data in Forge yet.');
 
+  /* ── THE COTALITY BASIS (V2) ───────────────────────────────────────────────
+     Saskia 2026-09-15, after the September jump: score the dashboard on
+     Cotality vacancy and rent instead of SQM's, and see whether the jump
+     survives. Only TWO inputs move — vacancy and rent. Days on market was
+     already Cotality, and population, listings, medians and the runway are
+     untouched, so a difference between the two bases is a difference in those
+     two series and nothing else.
+
+     The vacancy substitution is a RE-BASE, not a replacement, and that is the
+     part worth reading twice. The engine does not consume today's vacancy: it
+     consumes the FORECAST vacancy from rdp_vr_forecast, which is modelled on
+     SQM's current reading. Dropping Cotality's current rate in its place would
+     compare a forecast with an observation. So the forecast is shifted by the
+     gap between the two CURRENT readings — the same move the Buying/Selling VR
+     slide already makes, floor included — which keeps the supply model intact
+     and changes only the level it is anchored to.
+
+     Floored at 0.1%: the gap can exceed the forecast itself (Darwin's two
+     readings are 1.40 and 0.27), and a negative vacancy is not a number. */
+  M.cot = { vr: {}, rentH: {}, rentU: {}, rentH3: {}, rentU3: {}, asOf: null, monthEnd: null, err: cotErr ? (cotErr.message || String(cotErr)) : null };
+  if (!cotErr) {
+    const rv = (cotRV.data && cotRV.data.data) || {};
+    M.cot.monthEnd = rv.monthEnd || null;
+    M.cot.asOf = cotRV.data && cotRV.data.uploaded_at ? String(cotRV.data.uploaded_at).slice(0, 10) : null;
+    /* `_fSlug` strips "Greater", so Cotality's "Greater Hobart" lands on
+       `hobart` without an alias of its own. */
+    for (const row of [...(rv.capitals || []), ...(rv.regions || [])]) {
+      const slug = _fSlug(row && row.name); if (!slug) continue;
+      if (typeof row.vacHouse === 'number' && isFinite(row.vacHouse)) M.cot.vr[slug] = row.vacHouse;
+      if (typeof row.rentHouse === 'number' && isFinite(row.rentHouse)) M.cot.rentH[slug] = row.rentHouse;
+      if (typeof row.rentUnit === 'number' && isFinite(row.rentUnit)) M.cot.rentU[slug] = row.rentUnit;
+    }
+    /* Three years back, off the annual series. Take each region's newest year,
+       then the row three years before it — rather than a fixed calendar year,
+       because a region whose series stops early would otherwise silently
+       compare across a different span than its neighbours. */
+    const byRegion = {};
+    for (const r of (rentHist.data || [])) {
+      const y = +String(r.period).slice(0, 4); if (!isFinite(y)) continue;
+      const key = r.region_slug + '|' + r.metric;
+      (byRegion[key] || (byRegion[key] = {}))[y] = +r.value;
+    }
+    for (const key of Object.keys(byRegion)) {
+      const [slug, metric] = key.split('|');
+      const years = Object.keys(byRegion[key]).map(Number).sort((a, b) => a - b);
+      if (!years.length) continue;
+      const newest = years[years.length - 1], want = newest - 3;
+      const v = byRegion[key][want];
+      if (typeof v !== 'number' || !isFinite(v) || v <= 0) continue;
+      (metric === 'rent_u' ? M.cot.rentU3 : M.cot.rentH3)[slug] = v;
+    }
+  }
+  M.cot.markets = Object.keys(M.cot.vr).length;
+
   // Wage-growth years + PP variable rate ← rdp_runway_config (Runway Workbook config).
   // Legend text is "Runway - <year> Year Wage Growth | PP Variable Rate: <rate>%".
   //   year = wage_growth.years ; rate = rates.forecast.rate (the FORECAST variable
@@ -3080,23 +3254,65 @@ async function loadForgeAll(){
   const aiMeta = cfg.ai_ceiling_meta || {};
 
   return { houses: buildForgeMarkets('houses', DI, M), units: buildForgeMarkets('units', DI, M), legend,
-           meta: { aiCeilingAt: aiMeta.appliedAt || null, aiCeilingBasis: aiMeta.basis || null } };
+           meta: { aiCeilingAt: aiMeta.appliedAt || null, aiCeilingBasis: aiMeta.basis || null,
+                   basis: dsBasis(),
+                   cot: { markets: M.cot.markets, monthEnd: M.cot.monthEnd, asOf: M.cot.asOf, err: M.cot.err } } };
 }
 
 function buildForgeMarkets(propertyType, DI, M){
   const isU = propertyType === 'units';
+  /* On the Cotality basis, swap the two inputs that came from SQM. A market the
+     drop does not carry keeps its SQM figures rather than dropping off the
+     chart — a missing market reads as "no demand" at the origin, which is a
+     worse lie than a market scored on the old basis and named as such. */
+  const COT = (M.cot && M.cot.markets) ? M.cot : null;
+  const onCot = dsBasis() === 'cotality' && COT != null;
   const rawRows = Object.keys(DI).map(slug => {
     const d = DI[slug] || {};
-    const rentNow = isU ? d.rent_u : d.rent_h, rent3 = isU ? d.rent_u_3yr : d.rent_h_3yr;
+    let rentNow = isU ? d.rent_u : d.rent_h, rent3 = isU ? d.rent_u_3yr : d.rent_h_3yr;
+    let vrPct = M.adjVR[slug] != null ? M.adjVR[slug] : 0;
+    let basisUsed = onCot ? 'sqm-fallback' : 'sqm';
+    if (onCot) {
+      const cVr = COT.vr[slug], cNow = isU ? COT.rentU[slug] : COT.rentH[slug], c3 = isU ? COT.rentU3[slug] : COT.rentH3[slug];
+      const sqmNow = typeof d.vr === 'number' ? d.vr : null;
+      /* All three must be present or the row is not on the Cotality basis at
+         all: a Cotality rent over an SQM rent-three-years-ago is a growth rate
+         from two different series, which is worse than either. */
+      const proj = _cotProjectedVR(M.vrIn && M.vrIn[slug], cVr);
+      if (typeof cVr === 'number' && typeof cNow === 'number' && typeof c3 === 'number' && sqmNow != null && proj != null) {
+        /* OBSERVED Cotality vacancy, used as-is.
+           An earlier cut re-based the SQM FORECAST by the gap between the two
+           current readings. That kept the supply model but made this screen
+           disagree with Runway v Demand's Cotality timeline, which has no
+           forecast to re-base: the history comes from a monthly record of
+           observed readings and no Cotality vacancy forecast exists at all.
+           One basis has to mean one thing on both screens, so the whole
+           Cotality side is observed and the SQM side keeps its forecast.
+           That asymmetry is the point rather than a flaw — September's jump was
+           traced partly to the `approvals95` change to the FORECAST rule, and a
+           series that never passes through that rule is what tells you whether
+           the jump was the market or the method. The consequence to state out
+           loud: SQM against Cotality at one month mixes source with
+           observed-versus-forecast, so the honest read is Cotality against
+           Cotality over time. */
+        vrPct = proj;
+        rentNow = cNow; rent3 = c3;
+        basisUsed = 'cotality';
+      }
+    }
     return {
+      _basisUsed: basisUsed, _vrCot: onCot ? (COT.vr[slug] ?? null) : null,
       slug,
       name: M.name[slug] || (slug === 'australia' ? 'National' : slug),
       state: M.state[slug] || '',
       population: M.pop[slug] || 0,
       listings: (isU ? d.listings_u : d.listings_h) || 0,
-      vr: M.adjVR[slug] != null ? M.adjVR[slug] : 0,               // adjusted VR (percent)
+      vr: vrPct,                                                   // adjusted VR (percent), re-based on the Cotality basis
       dom: (isU ? M.domU[slug] : M.domH[slug]) || 0,
       rentGrowth: (rentNow != null && rent3 != null && rent3 > 0) ? (rentNow - rent3) / rent3 : 0,
+      /* carried so the market row below reports the numbers the score was
+         actually built from, not the SQM ones it used to read back off DI */
+      _rentNow: rentNow, _rent3: rent3,
       isNational: slug === 'australia',
     };
   });
@@ -3109,7 +3325,9 @@ function buildForgeMarkets(propertyType, DI, M){
     const d = DI[r.slug] || {};
     const st = _mpStats((M.mp[r.slug] || {})[isU ? 'u' : 'h']);
     const rw = M.runway[r.slug] || {};
-    const rent = isU ? d.rent_u : d.rent_h;
+    /* The rent the SCORE used, so the table and the tooltip can never show one
+       series while the number beside them was computed from another. */
+    const rent = r._rentNow;
     const vm = (M.vrMeta || {})[r.slug] || {}, ri = (M.rwIn || {})[r.slug] || {};
     markets.push({
       name: r.name, state: r.state, population: r.population, listings: r.listings,
@@ -3122,8 +3340,14 @@ function buildForgeMarkets(propertyType, DI, M){
       weeklyRent: rent != null ? Math.round(rent) : 0,
       marketType: classifyMarket(r.name, propertyType),
       // provenance frozen into captures so a later month can be explained input by input
-      vrRaw: d.vr != null ? +d.vr : null, rentNow: rent != null ? Math.round(rent * 100) / 100 : null,
-      rent3: (isU ? d.rent_u_3yr : d.rent_h_3yr) != null ? +(isU ? d.rent_u_3yr : d.rent_h_3yr) : null,
+      vrRaw: r._basisUsed === 'cotality' ? (r._vrCot != null ? +r._vrCot : null) : (d.vr != null ? +d.vr : null),
+      rentNow: rent != null ? Math.round(rent * 100) / 100 : null,
+      rent3: r._rent3 != null ? +r._rent3 : null,
+      /* Which series this ROW was scored on. Not the dashboard's setting: on
+         the Cotality basis a market the drop does not carry stays on SQM, and
+         a capture has to say which, market by market, or a later reader will
+         explain a number with the wrong series. */
+      basis: r._basisUsed,
       sqmBasis: d.sqm_basis || null, vrRule: vm.rule || null, vrRuleAt: vm.at || null,
       income: typeof ri.income === 'number' ? ri.income : null,
       aiCeiling: ri.ai && typeof ri.ai[isU ? 'u' : 'h'] === 'number' ? ri.ai[isU ? 'u' : 'h'] : null,
