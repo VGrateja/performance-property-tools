@@ -412,26 +412,36 @@ console.log('\nmonths built: ' + out.length + '   ' + (have[0] || '—') + ' .. 
 }
 for (const n of notes.slice(0, 10)) console.log('  ' + n);
 
-/* Anything this run did not produce is stale — an earlier cut labelled the
-   newest point by a different clock. Clear it rather than leave one reading on
-   the chart twice. */
-const { data: existing } = await sb.from('forge_demand_snapshots').select('version').like('version', 'rvdcot-%');
-const keep = new Set(out.map(o => o.version));
-const stale = (existing || []).map(r => r.version).filter(v => !keep.has(v));
-if (stale.length) console.log('\nstale rvdcot months to remove: ' + stale.join(', '));
+if (!WRITE) { console.log('\nDry run. Re-run with --write to store this timeline.'); process.exit(0); }
 
-if (!WRITE) { console.log('\nDry run. Re-run with --write to upsert these snapshots.'); process.exit(0); }
-
-for (const v of stale) {
-  const { error } = await sb.from('forge_demand_snapshots').delete().eq('version', v);
-  console.log(error ? '  could not remove ' + v + ': ' + error.message : '  removed ' + v);
-}
-let n = 0;
-for (const row of out) {
-  const { error } = await sb.from('forge_demand_snapshots').upsert(
-    { version: row.version, label: row.label, data: row.data, captured_at: new Date().toISOString(), captured_by: 'build-cotality-rvd-history.mjs' },
-    { onConflict: 'version' });
-  if (error) { console.error('  ' + row.version + ' FAILED: ' + error.message); continue; }
-  n++;
-}
-console.log('\nupserted ' + n + ' of ' + out.length + ' snapshots.');
+/* WHERE THIS GOES, and why it is not forge_demand_snapshots.
+ *
+ * It used to be written there, one 'rvdcot-YYYY-MM' row per month. The Demand
+ * Score Dashboard builds its month list from that table and excludes only
+ * 'rvd-%' -- which 'rvdcot-' does not match, the fourth character being a 'c' --
+ * so all 21 rows arrived in its compare view carrying THIS payload shape
+ * instead of a capture's: market names rendered as array indices and runway
+ * read 2614% where the market was on 26.14% (2026-09-16, on production).
+ *
+ * A deny-list on a table two tools share is the wrong shape. So the timeline is
+ * ONE row in forge_cotality, whose eight readers all query `.eq('id', ...)` and
+ * therefore cannot see a new id. Rewriting the whole row each run also makes
+ * "stale months" impossible: what is not in this build is not in the store.
+ */
+const payload = {
+  builtAt: new Date().toISOString(),
+  builtBy: 'build-cotality-rvd-history.mjs',
+  note: 'Runway v Demand V2 — the Cotality-based timeline. Deliberately NOT in forge_demand_snapshots; see the comment in this script.',
+  months: out.map((o) => ({
+    month: o.version.replace('rvdcot-', ''),
+    label: o.label,
+    houses: o.data.houses,
+    units: o.data.units,
+  })),
+};
+const { error: writeErr } = await sb.from('forge_cotality').upsert(
+  { id: 'rvd_cotality', data: payload, file_name: 'runway-demand V2 timeline', uploaded_by: 'build-cotality-rvd-history.mjs' },
+  { onConflict: 'id' });
+if (writeErr) { console.error('\nFAILED to write forge_cotality/rvd_cotality: ' + writeErr.message); process.exit(1); }
+console.log('\nstored ' + payload.months.length + ' months in forge_cotality id=rvd_cotality ('
+  + Math.round(JSON.stringify(payload).length / 1024) + ' kB).');

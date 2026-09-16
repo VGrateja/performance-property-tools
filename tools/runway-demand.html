@@ -823,16 +823,29 @@ const PUSH_STORAGE_KEY='ppt-runway-pushed-data';
 /* ── WHICH VACANCY AND RENT THE POINTS ARE BUILT ON (Saskia 2026-09-15) ───────
    The demand score is computed in the Demand Score Dashboard and pushed here as
    a snapshot, so this tool does not re-score anything — it chooses which pushed
-   SERIES to merge. 'rvd-' months are scored on SQM vacancy and rent; 'rvdcot-'
-   months are the V2, scored on the Cotality drop. Same key as the dashboard's
-   own switch, so the two tools cannot disagree about which basis is on screen.
+   SERIES to merge. V1 is scored on SQM vacancy and rent — the months pushed
+   into forge_demand_snapshots. V2 is scored on the Cotality drop and is built
+   offline into forge_cotality (RVD_COTALITY_ID below).
 
-   A market is only on the Cotality basis for months somebody has pushed on it;
-   the baseline months baked into this file are SQM and always will be, which is
+   The switch is THIS TOOL'S ALONE. The Demand Score Dashboard is SQM only
+   (Van 2026-09-16), so nothing over there reads or writes this key.
+
+   The baseline months baked into this file are SQM and always will be, which is
    why the timeline shortens when the switch is flipped rather than silently
    mixing the two. That is the intended behaviour: a short honest series beats a
    long one whose points come from two different vacancy series. */
 const RVD_BASIS_KEY = 'ppa-ds-basis';
+/* WHERE V2 LIVES, and why it is not in forge_demand_snapshots.
+   It used to be, as 21 'rvdcot-YYYY-MM' rows. The Demand Score Dashboard builds
+   its month list from that table and excludes only 'rvd-%' — which 'rvdcot-'
+   does not match, because the fourth character is a 'c' — so every one of those
+   rows arrived in the dashboard's compare view carrying the timeline's payload
+   shape instead of a capture's. Market names came out as array indices and
+   runway read 2614% where the market was on 26.14% (2026-09-16).
+   So V2 lives in forge_cotality under ONE id. Every reader of that table
+   queries `.eq('id', …)`, so a new id is invisible to all of them, and there is
+   no prefix for two tools to have to agree about. */
+const RVD_COTALITY_ID = 'rvd_cotality';
 /* AN EMBED IS ALWAYS SQM, whatever the browser remembers. The setting is shared
    with the Demand Score Dashboard, so a researcher who left the switch on
    Cotality would otherwise open a client deck and find the slide either showing
@@ -846,7 +859,6 @@ function rvdBasis(){
   try { return localStorage.getItem(RVD_BASIS_KEY) === 'cotality' ? 'cotality' : 'sqm'; }
   catch(e){ return 'sqm'; }
 }
-function rvdBasisPrefix(){ return rvdBasis() === 'cotality' ? 'rvdcot-' : 'rvd-'; }
 function setRunwayBasis(v){
   const next = v === 'cotality' ? 'cotality' : 'sqm';
   if(next === rvdBasis()) return;
@@ -874,12 +886,23 @@ window.__forgePushed = null;
     if (!window.sb && ++tries < 60) return;   // wait for supabase-client (≤6s), else give up quietly
     clearInterval(t);
     if (!window.sb) return;
-    /* 'rvd-%' also matches 'rvdcot-%', so the SQM read has to exclude it or the
-       V2 months would join the published timeline unannounced. */
+    /* The two bases come from two different places, deliberately (see
+       RVD_COTALITY_ID). V1 is whatever somebody pushed, one row per month in
+       forge_demand_snapshots; V2 is built offline by
+       scripts/build-cotality-rvd-history.mjs and kept as ONE row in
+       forge_cotality. The Cotality read is reshaped into the same
+       [{label, data:{houses,units}}] the merge below already expects, so only
+       the source changes and none of the merging does. */
     const _cot = rvdBasis() === 'cotality';
-    let _q = window.sb.from('forge_demand_snapshots').select('label,data');
-    _q = _cot ? _q.like('version', 'rvdcot-%') : _q.like('version', 'rvd-%').not('version', 'like', 'rvdcot-%');
-    _q.then(({ data, error }) => {
+    const _read = _cot
+      ? window.sb.from('forge_cotality').select('data').eq('id', RVD_COTALITY_ID).maybeSingle()
+          .then(({ data, error }) => ({
+            error,
+            data: (data && data.data && Array.isArray(data.data.months) ? data.data.months : [])
+              .map(m => ({ label: m.label, data: { houses: m.houses, units: m.units } })),
+          }))
+      : window.sb.from('forge_demand_snapshots').select('label,data').like('version', 'rvd-%');
+    _read.then(({ data, error }) => {
         if (_cot && (error || !data || !data.length)) {
           /* Nothing has been pushed on the Cotality basis yet. Silently showing
              the SQM timeline under a picker reading "Cotality" is the exact
@@ -887,7 +910,7 @@ window.__forgePushed = null;
           try { localStorage.setItem(RVD_BASIS_KEY, 'sqm'); } catch(e) {}
           const sel = document.getElementById('basisSelect');
           if (sel) sel.value = 'sqm';
-          alert('No months have been pushed on the Cotality basis yet.\n\nCapture and push a month from the Demand Score Dashboard with VR/Rent set to Cotality, then switch again. Showing SQM.');
+          alert('The Cotality timeline has not been built yet.\n\nIt is built by scripts/build-cotality-rvd-history.mjs from Cotality’s own monthly exports, not captured from the Demand Score Dashboard — that dashboard is SQM only. Showing SQM.');
           /* Reload rather than carry on: this pass has already skipped the SQM
              merge, so staying put would leave the viewer on the baked baseline
              with the newest pushed months missing and nothing saying why. */
