@@ -23,6 +23,7 @@
      cmk-retail-split  in-store v online retail, stacked $bn + online-share line
      cmk-pop-growth    Centre for Population growth: state bars + national line
      cmk-waterfall     generic waterfall (base + delta stack), used for health
+     cmk-lines         generic N-series line over one category axis (JLL series)
 
    Loads AFTER commercial-charts.js. ECharts required.
    ───────────────────────────────────────────────────────────────────── */
@@ -283,6 +284,99 @@
           },
         } },
     ];
+    return o;
+  });
+
+  /* ── cmk-lines ───────────────────────────────────────────────────────────
+     Generic multi-series line chart over one shared category axis. The other
+     four modules here each hard-code their shape; this one does not, so any
+     "N named series over the same periods" chart is a DATA change from now on
+     rather than a new module.
+
+     data = { cats:['Q1 2000',…],
+              series:[{ name:'Sydney', color:'#00A0B4', data:[0.0943,…] },…],
+              scale:100, unit:'%', prefix:'', dp:2,        // label formatting
+              min:, max:, interval:,                       // y-axis, in DISPLAY units
+              tickEvery:8, smooth:false, endLabel:true }
+
+     Values are stored in SOURCE units and multiplied by `scale` for display —
+     yields sit in the deck as 0.0521 and render as 5.21%, matching how
+     cmk-bond-spread already stores fractions. Nulls are connected so a series
+     that starts late (Perth vacancy) stays one line instead of fragmenting.
+     `endLabel` writes the series name + latest value at the right of each
+     line, which is why grid.right is generous — a legend costs a whole row
+     and still makes the reader match colours by eye. */
+  reg('cmk-lines', function (d) {
+    if (!d || !Array.isArray(d.cats) || !d.cats.length) return null;
+    var series = (d.series || []).filter(function (s) {
+      return s && Array.isArray(s.data) && s.data.length;
+    });
+    if (!series.length) return null;
+
+    var scale = (d.scale == null ? 1 : d.scale);
+    var unit  = d.unit || '';
+    var pre   = d.prefix || '';
+    var dp    = (d.dp == null ? 2 : d.dp);
+    var fmt = function (v) {
+      if (v == null || !isFinite(v)) return '';
+      return pre + (v * scale).toFixed(dp) + unit;
+    };
+    /* Axis ticks carry no decimals unless asked — "6%" reads better than
+       "6.00%" next to a 5.21% end label. */
+    var adp = (d.axisDp == null ? 0 : d.axisDp);
+    var fmtAxis = function (v) { return pre + (v * scale).toFixed(adp) + unit; };
+
+    /* Category axis: label every Nth point, else a 106-quarter axis is a
+       smear. tickEvery counts POINTS, not years. */
+    var every = d.tickEvery || Math.ceil(d.cats.length / 12);
+    var o = baseOption();
+    o.grid = { left: 62, right: 118, top: 30, bottom: 46, containLabel: false };
+    o.legend = { show: false };
+    o.xAxis = Object.assign(o.xAxis, {
+      data: d.cats.map(String),
+      axisLabel: {
+        color: '#1a2236', fontSize: 10, interval: function (i) { return i % every === 0; },
+        formatter: function (v) { return d.stripPrefix ? String(v).slice(3) : String(v); },
+      },
+    });
+    o.yAxis = Object.assign(o.yAxis, {
+      min: (d.min != null ? d.min / scale : null),
+      max: (d.max != null ? d.max / scale : null),
+      interval: (d.interval != null ? d.interval / scale : null),
+      axisLabel: { color: '#1a2236', fontSize: 11, formatter: fmtAxis },
+    });
+    o.tooltip = {
+      trigger: 'axis',
+      backgroundColor: 'rgba(15,25,34,0.95)', borderColor: '#2a3a48',
+      textStyle: { color: '#fff', fontFamily: FONT, fontSize: 12 },
+      formatter: function (params) {
+        var arr = Array.isArray(params) ? params : [params];
+        var head = arr.length ? arr[0].axisValue : '';
+        var body = arr.filter(function (p) { return p.value != null; })
+          .map(function (p) { return p.marker + p.seriesName + ': <strong>' + fmt(p.value) + '</strong>'; })
+          .join('<br>');
+        return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + body;
+      },
+    };
+    var PAL = [C_CYAN, C_BLACK, C_AMBER, C_LILAC, C_GREEN, C_PINK, C_BLUE, C_GREY];
+    o.series = series.map(function (s, i) {
+      var col = s.color || PAL[i % PAL.length];
+      return {
+        name: s.name || ('Series ' + (i + 1)),
+        type: 'line',
+        smooth: !!d.smooth,
+        showSymbol: false,
+        connectNulls: true,
+        data: s.data,
+        lineStyle: { width: 2.2, color: col },
+        itemStyle: { color: col },
+        endLabel: (d.endLabel === false) ? { show: false } : {
+          show: true, fontSize: 10, fontWeight: 600, color: col,
+          formatter: function (p) { return (s.name || '') + ' ' + fmt(p.value); },
+        },
+        labelLayout: { moveOverlap: 'shiftY' },
+      };
+    });
     return o;
   });
 })(window.PpaCharts);
