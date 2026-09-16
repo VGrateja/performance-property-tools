@@ -15393,7 +15393,89 @@ async function _cmkIntroCopy(cache) {
   return out;
 }
 
-/* ─── The four deck-only chart specs ──────────────────────────────────────
+/* ─── JLL commercial markets (rdp_raw_series, source='jll') ───────────────
+   Quarterly series loaded from the JLL Q2-2026 data packs. Markets, not
+   states, so they do not reuse CMK_STATES. S.E. Queensland is JLL's own
+   retail market name — it is wider than Brisbane, so it keeps its own slug
+   rather than being folded in. */
+const CMK_JLL_MARKETS = [
+  ['sydney',        'Sydney',           '#00A0B4'],
+  ['melbourne',     'Melbourne',        '#171B24'],
+  ['brisbane',      'Brisbane',         '#5cc8e0'],
+  ['se-queensland', 'S.E. Queensland',  '#3ecf8e'],
+  ['perth',         'Perth',            '#c2a4d6'],
+  ['adelaide',      'Adelaide',         '#f5a623'],
+];
+
+/* '2026-04-01' → 'Q2 2026'. Periods are stored as the quarter's FIRST day,
+   matching the ABS quarterly rows already in rdp_raw_series. */
+function _cmkQLabel(period) {
+  const s = String(period || '');
+  const y = s.slice(0, 4), m = +s.slice(5, 7);
+  return 'Q' + (Math.floor((m - 1) / 3) + 1) + ' ' + y;
+}
+
+/* One JLL metric → the { cats, series } shape cmk-lines wants. Cached per
+   metric on the shared deck cache, so four JLL slides on one deck open cost
+   four queries rather than one per slide. Regions keep CMK_JLL_MARKETS order
+   (and colour) so the same city is the same colour on every JLL slide.
+   Missing quarters stay null — cmk-lines connects through them, which is what
+   keeps a late-starting market one line instead of several. */
+async function _cmkJllSeries(cache, metric) {
+  cache = cache || {};
+  cache.jll = cache.jll || {};
+  if (cache.jll[metric] !== undefined) return cache.jll[metric];
+  let out = null;
+  try {
+    const { data, error } = await window.sb.from('rdp_raw_series')
+      .select('region_slug, period, value')
+      .eq('source', 'jll').eq('metric', metric).eq('freq', 'Q')
+      .order('period').limit(5000);
+    if (error) throw error;
+    const rows = data || [];
+    if (rows.length) {
+      const periods = Array.from(new Set(rows.map(r => r.period))).sort();
+      const byRegion = {};
+      rows.forEach(r => {
+        (byRegion[r.region_slug] = byRegion[r.region_slug] || {})[r.period] = _cmkNum(r.value);
+      });
+      const series = CMK_JLL_MARKETS
+        .filter(m => byRegion[m[0]])
+        .map(m => ({
+          name: m[1], color: m[2],
+          data: periods.map(p => (byRegion[m[0]][p] == null ? null : byRegion[m[0]][p])),
+        }));
+      if (series.length) out = { cats: periods.map(_cmkQLabel), series: series };
+    }
+  } catch (e) { console.warn('[cmk] JLL series unavailable:', metric, e); }
+  cache.jll[metric] = out;
+  return out;
+}
+
+/* Nice y-axis bounds for a cmk-lines spec, in DISPLAY units. Rounds OUT to the
+   nearest step and no further — an extra step of padding either side turned a
+   3.6-10.6% range into a 2-12% axis, which is a fifth of the frame wasted.
+   A step is only added when a line would otherwise sit exactly on the edge.
+   floorZero keeps rates off a negative axis, and stops a vacancy chart
+   starting at 1% and exaggerating every move. */
+function _cmkJllBounds(spec, scale, step, floorZero) {
+  let lo = Infinity, hi = -Infinity;
+  (spec.series || []).forEach(s => (s.data || []).forEach(v => {
+    if (v == null || !isFinite(v)) return;
+    const d = v * scale;
+    if (d < lo) lo = d;
+    if (d > hi) hi = d;
+  }));
+  if (!isFinite(lo) || !isFinite(hi)) return {};
+  let min = Math.floor(lo / step) * step;
+  let max = Math.ceil(hi / step) * step;
+  if (max === hi) max += step;           /* top line would touch the frame */
+  if (min === lo) min -= step;
+  if (floorZero && min < 0) min = 0;
+  return { min: min, max: max, interval: step };
+}
+
+/* ─── The deck-only chart specs ───────────────────────────────────────────
    Each returns a { module, data } spec (plain JSON — the module rebuilds the
    ECharts option, formatter functions included, at every render) or null when
    its source has no usable data. Keyed the same way the overlay's
@@ -15554,6 +15636,60 @@ const CMK_CHART_BUILDERS = {
       div: 1e6, suffix: 'm', dp: 2, name: 'Cumulative growth',
       axis: { min: 0, max: Math.ceil(top / 1e6) * 1e6, interval: 1e6 },
     } };
+  },
+
+  /* ── JLL commercial markets ────────────────────────────────────────────
+     All four read rdp_raw_series (source='jll', freq='Q') and hand cmk-lines
+     the same shape, so the only difference between them is the metric and how
+     the numbers are formatted. Yields and vacancy are stored as FRACTIONS and
+     scaled ×100 for display; rents are already dollars per sqm. */
+
+  /* Prime industrial midpoint yield, precincts averaged per city, back to
+     Q1 2000 — long enough to show the GFC widening as well as the 2021-22
+     compression, so "is this normal?" has an answer on the slide. */
+  'jll-ind-yield': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_prime_yield_mid');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 100, unit: '%', dp: 2, axisDp: 0, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 100, 1, true)) };
+  },
+
+  /* Large-format retail midpoint yield, same span and formatting. */
+  'jll-lfr-yield': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_lfr_yield_mid');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 100, unit: '%', dp: 2, axisDp: 0, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 100, 1, true)) };
+  },
+
+  /* Large-format retail specialty vacancy. Half-yearly and only from Q4 2016,
+     so the axis keeps its quarter labels rather than stripping to the year —
+     'Q2 2020' and 'Q4 2020' would both read '2020'. Smoothed on request; note
+     a spline between 20 points draws curvature the data does not contain. */
+  'jll-lfr-vacancy': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_lfr_vacancy_rate');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 100, unit: '%', dp: 2, axisDp: 0, smooth: true, tickEvery: 2,
+    }, _cmkJllBounds(spec, 100, 2, true)) };
+  },
+
+  /* Prime industrial net face rent. Adelaide is absent from the table on
+     purpose: its precinct rent column returns non-rent values (yields and
+     capital values land in it for several precincts) and has not been
+     resolved, so the builder simply renders whatever markets ARE loaded. */
+  'jll-ind-rent': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_prime_net_rent_sqm');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 1, prefix: '$', dp: 0, axisDp: 0, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 1, 25, true)) };
   },
 };
 
