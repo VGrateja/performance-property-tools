@@ -339,12 +339,19 @@
         formatter: function (v) { return d.stripPrefix ? String(v).slice(3) : String(v); },
       },
     });
-    o.yAxis = Object.assign(o.yAxis, {
+    /* WRAPPED IN AN ARRAY ON PURPOSE. commercial-charts.js applyDefaults()
+       runs after every module builds, and its slideFill rule rewrites
+       grid.right to 34 whenever grid.right >= 50 — which squeezed the 118 set
+       above and clipped the end labels to "Melbo…". That rule skips charts
+       whose yAxis is an array (it is aimed at single value-axis charts), so a
+       one-element array is the supported way to keep the margin. ECharts
+       treats [axis] and axis identically. Do not unwrap this. */
+    o.yAxis = [Object.assign(o.yAxis, {
       min: (d.min != null ? d.min / scale : null),
       max: (d.max != null ? d.max / scale : null),
       interval: (d.interval != null ? d.interval / scale : null),
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: fmtAxis },
-    });
+    })];
     o.tooltip = {
       trigger: 'axis',
       backgroundColor: 'rgba(15,25,34,0.95)', borderColor: '#2a3a48',
