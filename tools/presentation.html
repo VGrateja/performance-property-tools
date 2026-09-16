@@ -12116,9 +12116,24 @@ function buildOverlayEl(o) {
     el.appendChild(cont);
     /* Create after layout — echarts.init needs the element connected
        (buildOverlayEl runs before el is appended). cont has an explicit
-       px size, so it sizes correctly regardless of flow. */
-    requestAnimationFrame(() => {
-      if (!cont.isConnected || !window.PresentChart || !o.spec) return;
+       px size, so it sizes correctly regardless of flow.
+
+       KEEP RETRYING until it IS connected. This used to be a single
+       requestAnimationFrame that returned silently when cont.isConnected was
+       still false, which made mounting a race the chart could simply lose:
+       one frame is only enough when the caller appends the overlay promptly.
+       On a long deck it often isn't — appending 30+ overlays, rebuilding
+       source-backed specs and a full localStorage mirror all land between the
+       two, so late slides came up as an empty chart box with no error, no
+       controller and no way to recover short of a reload. Retrying costs a
+       few frames on the slides that were already fine and fixes the rest.
+       ~60 frames ≈ 1s, then give up so a genuinely orphaned host can't spin. */
+    const _mountChart = (tries) => {
+      if (!cont.isConnected) {
+        if (tries < 60) requestAnimationFrame(() => _mountChart(tries + 1));
+        return;
+      }
+      if (!window.PresentChart || !o.spec) return;
       /* bigNumber overlays carry optional style overrides in o.bigStyle (kept
          OFF o.spec so a data refresh — which rebuilds o.spec — never wipes
          them). Merge them into the spec the engine renders, and force the
@@ -12138,7 +12153,8 @@ function buildOverlayEl(o) {
       } else if (_ovAutoplays(o) && typeof ctrl.play === 'function') {
         ctrl.play();
       }
-    });
+    };
+    requestAnimationFrame(() => _mountChart(0));
   }
 
   /* Delete badge — visible only when this overlay is selected and
