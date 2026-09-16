@@ -877,7 +877,7 @@ const CLUSTERS = [
   { key:'building_price_index', icon:'🧱', ingest:'api', label:'Building Price Index', desc:'ABS Producer Price Index <b>Table 18</b> — input prices for house construction (materials, not finished homes). Six state capitals + the weighted average, quarterly back to <b>1980</b> and annual on the financial year to 30 June, base 2011-12 = 100, over the ABS API. <b>Canberra &amp; Darwin</b> (not in the ABS series) now refresh themselves too: Rawlinsons&rsquo; <b>free quarterly Market Insight PDF</b> carries their Building Price Index for all eight capitals (<code>ingest-rawlinsons-bpi.mjs</code>, found 2026-09-12); the handbook export covers the years before 2025. Both halves run on the 10th.', view:'buildidx' },
   { key:'cpi', icon:'🏙️', ingest:'api', label:'CPI by Capital City', desc:'ABS All-groups CPI, year-ended % — national + all 8 capital cities, quarterly. Derived from <b>Table 17</b> index numbers (this quarter vs same quarter last year). Auto-fetched from the ABS CPI release. (The 2026-08 Traffic Lights model no longer uses the real-cash-rate signal; CPI keeps feeding the reports and affordability points.)', view:'cpi' },
   { key:'cash_rate', icon:'🏦', ingest:'api', label:'Cash Rate', desc:'RBA cash rate target — national, monthly + annual. The 216-month average feeds the Runway Workbook.', view:'cashrate' },
-  { key:'bank_rate', icon:'💳', ingest:'api', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual.', view:'bankrate' },
+  { key:'bank_rate', icon:'💳', ingest:'api', label:'Bank Rate', desc:'RBA housing variable rate (FLRHOFVA) + 0.5pp — national, monthly + annual. The 18-year average is the long-run interest-rate reference.', view:'bankrate' },
   { key:'demand_inputs', icon:'🎯', ingest:'hybrid', label:'Demand Score Dashboard Data', desc:'The Demand Score engine inputs that aren’t elsewhere in Forge: REA listings (house &amp; unit) entered by hand / bookmarklet (REA has no API), plus SQM house &amp; unit rents and SQM vacancy rate auto-fetched from SQM Research — per region.', view:'demandinputs' },
   { key:'replacement_cost', icon:'🧱', ingest:'hybrid', label:'Replacement Cost', desc:'Discount to replacement cost per region — recent vacant-land sales (RP Data / REA research) + build cost (ABS avg completed-home cost chained by the construction cost index, +5% other costs) vs the comparable new-build MHP. Build-cost leg auto-prefills from ABS; land &amp; comps are researched per region (workbook or CSV drop). Feeds B/S Slides page 6.', view:'replcost' },
 ];
@@ -3604,9 +3604,38 @@ async function loadRate(o){
   const mLast = monthly[monthly.length - 1], mPrev = monthly[monthly.length - 2];
   let delta = '';
   if (mLast && mPrev && +mPrev.value !== 0){ const d = (+mLast.value - +mPrev.value) * 100; const up = d >= 0; delta = ' <span class="df-delta ' + (up ? 'up' : 'dn') + '">' + (up ? '▲' : '▼') + Math.abs(d).toFixed(2) + 'pp</span>'; }
-  // 216-month average (cash rate → Runway Workbook)
-  let avgStat = '', avgNote = '';
-  if (o.show216 && monthly.length){ const last216 = monthly.slice(-216).map(r => +r.value); const avg = last216.reduce((a, b) => a + b, 0) / last216.length; avgStat = dfStat('216-month avg', fmtR(avg) + ' <small>' + last216.length + 'mo</small>'); avgNote = ' The <b>' + last216.length + '-month average (' + fmtR(avg) + ')</b> is the long-run cash-rate assumption used by the <b>Runway Workbook</b>.'; }
+  /* ── Long-run average — the 216-month (18-year) window ──────────────────
+     CASH RATE: the monthly series reaches 1990, so this is literally the mean
+     of the last 216 monthly readings — the number the Runway Workbook consumes.
+
+     BANK RATE (the interest rate): its monthly series starts 2019-07, FLRHOFVA's
+     first month, so 216 monthly readings do not exist and will not before 2037.
+     The SAME 18-year window is averaged over the last 18 ANNUAL points instead
+     (the annual series reaches 1980). That substitution is measured, not
+     assumed: on the CASH rate, where both can be computed, the 216-month mean
+     is 2.64% and the 18-point annual mean is 2.66% — 0.03pp apart.
+     scratch/ir216-options.mjs recomputes both.
+
+     Deliberately NOT done: back-filling monthly bank_rate from an RBA F5 series
+     to force a literal 216 months. Every candidate is a different basis —
+     standard variable (FILRHLBVS) sits 1.68pp above ours, discounted variable
+     (FILRHLBVD) 0.35pp — so it would take an invented offset constant; and
+     buying-selling-slides.html reads bank_rate with NO freq filter, so injected
+     monthly rows would silently redraw slide 20. */
+  let avgStat = '', avgNote = '', covFoot = '';
+  const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  if (o.avg === 'monthly216' && monthly.length){
+    const win = monthly.slice(-216).map(r => +r.value), a = mean(win);
+    avgStat = dfStat('216-month avg', fmtR(a) + ' <small>' + win.length + 'mo</small>');
+    avgNote = ' The <b>' + win.length + '-month average (' + fmtR(a) + ')</b> is the long-run cash-rate assumption used by the <b>Runway Workbook</b>.';
+  } else if (o.avg === 'annual18' && annual.length){
+    const win = annual.slice(-18), a = mean(win.map(r => +r.value));
+    avgStat = dfStat('18-year avg', fmtR(a) + ' <small>' + win.length + 'y annual</small>');
+    /* Coverage reads the MONTHLY range; say so, or the 18-year average looks
+       like it was taken from a 7-year series sitting next to it. */
+    covFoot = '<div class="df-stat-foot">monthly — the average uses annual points</div>';
+    avgNote = ' The <b>' + win.length + '-year average (' + fmtR(a) + ')</b> is the long-run interest-rate reference — the same 216-month window the cash rate uses, taken over the year-end points ' + esc(win[0].period.slice(0, 4)) + '–' + esc(win[win.length - 1].period.slice(0, 4)) + ' because the monthly series only begins ' + (monthly[0] ? esc(monthly[0].period.slice(0, 7)) : '2019-07') + '. Measured on the cash rate, where both are available, the annual and monthly windows agree to 0.03pp. It is a reference figure: nothing consumes it.';
+  }
   const isErr = st.status === 'error';
   const hero = '<div class="df-hero"><div class="df-hero-top"><div>'
     + '<div class="df-eyebrow">' + esc(o.eyebrow) + '</div><div class="df-title">' + esc(o.title) + '</div>'
@@ -3614,7 +3643,7 @@ async function loadRate(o){
     + '<div class="df-stats">'
     + dfStat('Latest · ' + (mLast ? esc(mLast.period.slice(0, 7)) : '—'), (mLast ? fmtR(+mLast.value) : '—') + delta, true)
     + (avgStat || dfStat('Annual points', String(annual.length)))
-    + dfStat('Coverage', '<span class="sm">' + (monthly[0] ? esc(monthly[0].period.slice(0, 7)) : '') + ' – ' + (mLast ? esc(mLast.period.slice(0, 7)) : '') + '</span>')
+    + dfStat('Coverage', '<span class="sm">' + (monthly[0] ? esc(monthly[0].period.slice(0, 7)) : '') + ' – ' + (mLast ? esc(mLast.period.slice(0, 7)) : '') + '</span>' + covFoot)
     + dfStat('Source', '<span class="sm">' + esc(st.source || o.source) + '</span><div class="df-stat-foot">' + ingestChip('api') + ' updated ' + fmtDate(st.last_ok_at || st.updated_at) + '</div>')
     + '</div></div>';
   const tbl = (title, sub, rows, sliceN, labelFn) => {
@@ -3629,12 +3658,12 @@ async function loadRate(o){
     + tbl(o.title, 'Annual (year-end)', annual, 12, p => p.slice(0, 4))
     + '<div class="df-note">' + esc(o.note || '') + avgNote + '</div>';
 }
-const loadCashRate = () => loadRate({ outId:'cashrateOut', key:'cash_rate', metric:'cash_rate', show216:true,
+const loadCashRate = () => loadRate({ outId:'cashrateOut', key:'cash_rate', metric:'cash_rate', avg:'monthly216',
   title:'Cash Rate', eyebrow:'RBA · Cash Rate Target', source:'RBA cash rate target', defaultMsg:'RBA cash rate target — monthly month-end + annual.',
   note:'RBA cash rate target (the round, step series), month-end each month; annual = the year’s last month. Confirmed against RBA Statistical Table F1 (FIRMMCRTD); the change history reaches 1990 so the full 216-month average can be computed.' });
-const loadBankRate = () => loadRate({ outId:'bankrateOut', key:'bank_rate', metric:'bank_rate', show216:false,
+const loadBankRate = () => loadRate({ outId:'bankrateOut', key:'bank_rate', metric:'bank_rate', avg:'annual18',
   title:'Bank Rate', eyebrow:'RBA · Housing lending rate', source:'RBA F6 (FLRHOFVA + 0.5pp)', defaultMsg:'RBA housing variable rate + 0.5pp.',
-  note:'RBA Table F6 series FLRHOFVA (new owner-occupier variable housing rate) plus 0.5 percentage points; monthly, with annual = the year’s last month. History before 2019 (FLRHOFVA’s start) retained from the prior source.' });
+  note:'RBA Table F6 series FLRHOFVA (new owner-occupier variable housing rate) plus 0.5 percentage points; monthly, with annual = the year’s last month. History before 2019 (FLRHOFVA’s start) retained from the prior source — which is why the long-run average is taken over annual points rather than 216 monthly ones.' });
 
 /* ═══════════════════════ COTALITY view (CoreLogic column filter — unchanged logic) ═══════════════════════ */
 // 'A'->0, 'H'->7, 'Q'->16, 'AK'->36, 'AO'->40
