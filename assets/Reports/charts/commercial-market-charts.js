@@ -190,18 +190,26 @@
       data: d.years.map(String),
       axisLabel: { color: '#1a2236', fontSize: 11, interval: 0, formatter: same },
     });
+    /* The Australia axis only exists to carry the national line. Without it a
+       second axis is an empty label and a second scale the reader has to rule
+       out — so it is added only when there is a national series. The first
+       axis is named for what it measures when it stands alone; "States and
+       territories" is only meaningful as a contrast with "Australia". */
+    var hasNational = (d.national || []).length > 0;
     o.yAxis = [
-      { type: 'value', name: 'States and territories', min: 0,
+      { type: 'value', name: hasNational ? 'States and territories' : 'Annual increase', min: 0,
         max: Math.ceil(maxS / 20000) * 20000, interval: 20000,
         axisLine: { show: false }, axisTick: { show: false },
         axisLabel: { color: '#1a2236', fontSize: 11, formatter: thou },
         splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
-      { type: 'value', name: 'Australia', min: 0,
+    ];
+    if (hasNational) {
+      o.yAxis.push({ type: 'value', name: 'Australia', min: 0,
         max: Math.ceil(maxN / 50000) * 50000, interval: 50000,
         axisLine: { show: false }, axisTick: { show: false },
         axisLabel: { color: '#1a2236', fontSize: 11, formatter: thou },
-        splitLine: { show: false } },
-    ];
+        splitLine: { show: false } });
+    }
     o.series = states.map(function (s) {
       return { name: s.name, type: 'bar', barMaxWidth: 22, data: s.data,
         itemStyle: { color: s.color || C_GREY } };
@@ -234,8 +242,17 @@
     /* `delta` is always POSITIVE (an ECharts stack sums negatives on the other
        side of zero, so a down step is carried by a lower base instead of a
        negative value). The sign therefore comes from `dir`, not the number. */
+    /* The STEP labels can carry their own units, because a waterfall's steps
+       and its total are often different magnitudes. Health runs ~0.4m steps
+       against a 5m total: at two decimals in millions the small years read
+       "+0.05m" and "-0.05m" — two different numbers printed identically.
+       In thousands they read "+46k" and "-51k". Defaults to div/suffix/dp so
+       every existing waterfall is untouched. */
+    var ddiv = d.deltaDiv || div,
+        dsuf = (d.deltaSuffix != null ? d.deltaSuffix : suffix),
+        ddp  = (d.deltaDp == null ? dp : d.deltaDp);
     var fmtDelta = function (v, kind) {
-      return (kind === 'down' ? '−' : '+') + (Math.abs(v) / div).toFixed(dp) + suffix;
+      return (kind === 'down' ? '−' : '+') + (Math.abs(v) / ddiv).toFixed(ddp) + dsuf;
     };
     var o = baseOption();
     o.grid = { left: 58, right: 28, top: 34, bottom: 52, containLabel: false };
