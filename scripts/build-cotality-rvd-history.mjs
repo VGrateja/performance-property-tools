@@ -114,6 +114,19 @@ const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!KEY) { console.error('Missing SUPABASE_SERVICE_ROLE_KEY in .env'); process.exit(1); }
 const sb = createClient(process.env.SUPABASE_URL, KEY, { auth: { persistSession: false } });
 const WRITE = process.argv.includes('--write');
+/* WHICH LISTINGS, AND THEREFORE WHICH SERIES THIS BUILDS.
+     --listings=cl   Cotality's listings1  -> V2, pure Cotality        (default)
+     --listings=rea  the REA count         -> V3, Cotality rent and
+                                             vacancy with REA listings
+   Saskia, 2026-09-17: "make everything CL - NO SQM AT ALL - but keep the SOM
+   from REA". V2 and V3 then differ in exactly ONE input, which is what makes
+   the pair worth having: if the scale problem is the listings measure, this is
+   the comparison that shows it. Everything else -- the projection, the 95%
+   supply rule, the engine, the vintages -- is shared, so nothing else can be
+   blamed for a difference between them. */
+const LISTINGS = (process.argv.find(a => a.startsWith('--listings=')) || '--listings=cl').slice(11) === 'rea' ? 'rea' : 'cl';
+const ROW_ID = LISTINGS === 'rea' ? 'rvd_v3' : 'rvd_cotality';
+console.log('building ' + (LISTINGS === 'rea' ? 'V3 (Cotality rent + vacancy, REA listings)' : 'V2 (pure Cotality)') + ' -> forge_cotality id=' + ROW_ID);
 const DIR = (process.argv.find(a => a.startsWith('--dir=')) || '').slice(6) || join(homedir(), 'Downloads');
 
 const MONTH_NAME = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -327,16 +340,22 @@ console.log('markets with projection inputs: ' + Object.keys(VRFC).length);
 const { data: rwLive } = await sb.from('rdp_runway').select('region_slug,payload');
 const { data: popLive } = await sb.from('rdp_raw_series').select('region_slug,period,value')
   .eq('metric', 'population').gte('period', '2020-01-01');
-/* No listings read here any more: every label, the newest included, takes them
-   from the Cotality archive at its own data month. */
+/* On the Cotality basis the listings come from the archive at the data month,
+   so nothing is read here. On the REA basis the newest label has no snapshot to
+   take them from, so it reads the live demand-inputs card -- the same REA count
+   the Demand Score Dashboard is showing for that month. */
+const { data: diLive } = LISTINGS === 'rea'
+  ? await sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle()
+  : { data: null };
+const DI = (diLive && diLive.data && diLive.data.regions) || {};
 const LIVE = { h: {}, u: {} };
 {
   const pop = {}; const at = {};
   for (const r of popLive || []) if (!at[r.region_slug] || r.period > at[r.region_slug]) { at[r.region_slug] = r.period; pop[r.region_slug] = +r.value; }
   for (const r of rwLive || []) {
-    const p = r.payload || {};
-    LIVE.h[r.region_slug] = { rw: p.house && (p.house.forecast_wg_pct ?? p.house.runway_pct), pop: pop[r.region_slug] };
-    LIVE.u[r.region_slug] = { rw: p.unit && (p.unit.forecast_wg_pct ?? p.unit.runway_pct), pop: pop[r.region_slug] };
+    const p = r.payload || {}, d = DI[r.region_slug] || {};
+    LIVE.h[r.region_slug] = { rw: p.house && (p.house.forecast_wg_pct ?? p.house.runway_pct), pop: pop[r.region_slug], listings: num(d.listings_h) };
+    LIVE.u[r.region_slug] = { rw: p.unit && (p.unit.forecast_wg_pct ?? p.unit.runway_pct), pop: pop[r.region_slug], listings: num(d.listings_u) };
   }
 }
 
@@ -376,17 +395,19 @@ for (const month of labels) {
       const snap = useLive ? (LIVE[t][slug] || {}) : (SNAP[month][t][slug] || {});
       if (back == null || !(back > 0)) { missing.rent3.push(slug); continue; }
       if (cl.dom == null) { missing.dom.push(slug); continue; }
-      /* Cotality's listings, same row and same vintage as the days on market
-         above. A market without them is DROPPED rather than quietly served the
-         REA figure -- mixing the two sources inside one series is the thing
-         this change exists to stop. */
-      if (cl.listings == null) { missing.listings.push(slug); continue; }
+      /* The supply count: Cotality's for V2, the snapshot's REA figure for V3.
+         Either way a market missing it is DROPPED rather than quietly served
+         the other source -- mixing the two inside one series is exactly what
+         makes a timeline impossible to reason about. */
+      const listings = LISTINGS === 'rea' ? snap.listings : cl.listings;
+      if (listings == null) { missing.listings.push(slug); continue; }
       if (snap.pop == null || typeof snap.rw !== 'number') { missing.pop.push(slug); continue; }
       const projected = projectVR(slug, cur.vr);
       if (projected == null) { missing.proj.push(slug); continue; }
       raw.push({
-        /* listings = Cotality's listings1 at the DATA month; see the header */
-        slug, population: snap.pop, listings: cl.listings,
+        /* listings: Cotality's listings1 at the DATA month, or the REA count
+           the label month recorded -- see LISTINGS at the top. */
+        slug, population: snap.pop, listings,
         /* the PROJECTED vacancy, run on Cotality's own reading — the same KIND
            of number the SQM side feeds the engine. See section 3a. */
         vr: projected, dom: cl.dom,
@@ -464,8 +485,8 @@ const payload = {
   })),
 };
 const { error: writeErr } = await sb.from('forge_cotality').upsert(
-  { id: 'rvd_cotality', data: payload, file_name: 'runway-demand V2 timeline', uploaded_by: 'build-cotality-rvd-history.mjs' },
+  { id: ROW_ID, data: payload, file_name: 'runway-demand ' + (LISTINGS === 'rea' ? 'V3' : 'V2') + ' timeline', uploaded_by: 'build-cotality-rvd-history.mjs' },
   { onConflict: 'id' });
-if (writeErr) { console.error('\nFAILED to write forge_cotality/rvd_cotality: ' + writeErr.message); process.exit(1); }
-console.log('\nstored ' + payload.months.length + ' months in forge_cotality id=rvd_cotality ('
+if (writeErr) { console.error('\nFAILED to write forge_cotality/' + ROW_ID + ': ' + writeErr.message); process.exit(1); }
+console.log('\nstored ' + payload.months.length + ' months in forge_cotality id=' + ROW_ID + ' ('
   + Math.round(JSON.stringify(payload).length / 1024) + ' kB).');
