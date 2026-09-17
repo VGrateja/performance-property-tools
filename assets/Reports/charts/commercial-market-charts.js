@@ -190,18 +190,26 @@
       data: d.years.map(String),
       axisLabel: { color: '#1a2236', fontSize: 11, interval: 0, formatter: same },
     });
+    /* The Australia axis only exists to carry the national line. Without it a
+       second axis is an empty label and a second scale the reader has to rule
+       out — so it is added only when there is a national series. The first
+       axis is named for what it measures when it stands alone; "States and
+       territories" is only meaningful as a contrast with "Australia". */
+    var hasNational = (d.national || []).length > 0;
     o.yAxis = [
-      { type: 'value', name: 'States and territories', min: 0,
+      { type: 'value', name: hasNational ? 'States and territories' : 'Annual increase', min: 0,
         max: Math.ceil(maxS / 20000) * 20000, interval: 20000,
         axisLine: { show: false }, axisTick: { show: false },
         axisLabel: { color: '#1a2236', fontSize: 11, formatter: thou },
         splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } } },
-      { type: 'value', name: 'Australia', min: 0,
+    ];
+    if (hasNational) {
+      o.yAxis.push({ type: 'value', name: 'Australia', min: 0,
         max: Math.ceil(maxN / 50000) * 50000, interval: 50000,
         axisLine: { show: false }, axisTick: { show: false },
         axisLabel: { color: '#1a2236', fontSize: 11, formatter: thou },
-        splitLine: { show: false } },
-    ];
+        splitLine: { show: false } });
+    }
     o.series = states.map(function (s) {
       return { name: s.name, type: 'bar', barMaxWidth: 22, data: s.data,
         itemStyle: { color: s.color || C_GREY } };
@@ -234,8 +242,17 @@
     /* `delta` is always POSITIVE (an ECharts stack sums negatives on the other
        side of zero, so a down step is carried by a lower base instead of a
        negative value). The sign therefore comes from `dir`, not the number. */
+    /* The STEP labels can carry their own units, because a waterfall's steps
+       and its total are often different magnitudes. Health runs ~0.4m steps
+       against a 5m total: at two decimals in millions the small years read
+       "+0.05m" and "-0.05m" — two different numbers printed identically.
+       In thousands they read "+46k" and "-51k". Defaults to div/suffix/dp so
+       every existing waterfall is untouched. */
+    var ddiv = d.deltaDiv || div,
+        dsuf = (d.deltaSuffix != null ? d.deltaSuffix : suffix),
+        ddp  = (d.deltaDp == null ? dp : d.deltaDp);
     var fmtDelta = function (v, kind) {
-      return (kind === 'down' ? '−' : '+') + (Math.abs(v) / div).toFixed(dp) + suffix;
+      return (kind === 'down' ? '−' : '+') + (Math.abs(v) / ddiv).toFixed(ddp) + dsuf;
     };
     var o = baseOption();
     o.grid = { left: 58, right: 28, top: 34, bottom: 52, containLabel: false };
@@ -297,7 +314,8 @@
               series:[{ name:'Sydney', color:'#00A0B4', data:[0.0943,…] },…],
               scale:100, unit:'%', prefix:'', dp:2,        // label formatting
               min:, max:, interval:,                       // y-axis, in DISPLAY units
-              tickEvery:8, smooth:false, endLabel:true }
+              tickEvery:8, smooth:false, endLabel:true,
+              kind:'bar', diverging:true, overlapBars:true, stack:true } // bar variants
 
      Values are stored in SOURCE units and multiplied by `scale` for display —
      yields sit in the deck as 0.0521 and render as 5.21%, matching how
@@ -324,7 +342,21 @@
     /* Axis ticks carry no decimals unless asked — "6%" reads better than
        "6.00%" next to a 5.21% end label. */
     var adp = (d.axisDp == null ? 0 : d.axisDp);
-    var fmtAxis = function (v) { return pre + (v * scale).toFixed(adp) + unit; };
+
+    /* diverging bars are read AGAINST a zero line, so the sign is half the
+       message and has to survive into every label — "0.46" below the axis and
+       "0.66" above it look like the same number. Declared up here because the
+       tooltip, the axis and the column labels all have to agree. */
+    var isBar = (d.kind === 'bar');
+    var isDiv = isBar && !!d.diverging;
+    var sign = function (v) { return (v > 0 ? '+' : ''); };
+    var fmtV = isDiv ? function (v) {
+      if (v == null || !isFinite(v)) return '';
+      return sign(v) + fmt(v);
+    } : fmt;
+    var fmtAxis = function (v) {
+      return (isDiv ? sign(v) : '') + pre + (v * scale).toFixed(adp) + unit;
+    };
 
     /* Category axis: label every Nth point, else a 106-quarter axis is a
        smear. tickEvery counts POINTS, not years. */
@@ -336,15 +368,28 @@
       data: d.cats.map(String),
       axisLabel: {
         color: '#1a2236', fontSize: 10, interval: function (i) { return i % every === 0; },
+        /* rotateCats is for NAME categories, not periods. Twenty precinct
+           names across one axis collide flat — "Outer Central West" alone is
+           wider than its slot — and ECharts does not drop or angle them on its
+           own, it just overprints. Quarters never need it; they are short and
+           thinned by tickEvery. */
+        rotate: d.rotateCats || 0,
         formatter: function (v) { return d.stripPrefix ? String(v).slice(3) : String(v); },
       },
     });
-    o.yAxis = Object.assign(o.yAxis, {
+    /* WRAPPED IN AN ARRAY ON PURPOSE. commercial-charts.js applyDefaults()
+       runs after every module builds, and its slideFill rule rewrites
+       grid.right to 34 whenever grid.right >= 50 — which squeezed the 118 set
+       above and clipped the end labels to "Melbo…". That rule skips charts
+       whose yAxis is an array (it is aimed at single value-axis charts), so a
+       one-element array is the supported way to keep the margin. ECharts
+       treats [axis] and axis identically. Do not unwrap this. */
+    o.yAxis = [Object.assign(o.yAxis, {
       min: (d.min != null ? d.min / scale : null),
       max: (d.max != null ? d.max / scale : null),
       interval: (d.interval != null ? d.interval / scale : null),
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: fmtAxis },
-    });
+    })];
     o.tooltip = {
       trigger: 'axis',
       backgroundColor: 'rgba(15,25,34,0.95)', borderColor: '#2a3a48',
@@ -353,14 +398,87 @@
         var arr = Array.isArray(params) ? params : [params];
         var head = arr.length ? arr[0].axisValue : '';
         var body = arr.filter(function (p) { return p.value != null; })
-          .map(function (p) { return p.marker + p.seriesName + ': <strong>' + fmt(p.value) + '</strong>'; })
+          .map(function (p) { return p.marker + p.seriesName + ': <strong>' + fmtV(p.value) + '</strong>'; })
           .join('<br>');
         return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + body;
       },
     };
     var PAL = [C_CYAN, C_BLACK, C_AMBER, C_LILAC, C_GREEN, C_PINK, C_BLUE, C_GREY];
+    /* kind:'bar' draws the same data as columns instead of lines. The module
+       keeps its name for the sake of the decks already pointing at it — what
+       it really is, either way, is "N named series over one category axis".
+       Bars want their value ON the column and no end label: a single-period
+       chart has no right-hand edge to run a label off, and the reader is
+       comparing heights, not following a line. grid.right shrinks to match,
+       since the room reserved for end labels is dead space without them. */
+    if (isBar) o.grid = Object.assign({}, o.grid, { right: 28 });
+    /* Legend mode, for when end labels stop working. Ten series on one axis
+       (five cities x two grades) cannot carry a readable label each, so the
+       chart instead colours by city, distinguishes the grade with a dashed
+       line, and lists the cities once in a legend. Series opt out of the
+       legend with inLegend:false, which is how the second grade stays off it.
+       End labels are suppressed here — a legend and ten end labels is two
+       answers to the same question. */
+    var useLegend = !!d.legend;
+    if (useLegend) {
+      o.grid = Object.assign({}, o.grid, { right: 28, top: 44 });
+      o.legend = {
+        show: true, top: 4, itemGap: 18, itemWidth: 22, itemHeight: 12,
+        textStyle: { color: '#1a2236', fontSize: 11, fontWeight: 600 },
+        data: series.filter(function (s) { return s.inLegend !== false; })
+                    .map(function (s) { return s.name; }),
+      };
+    }
+    /* Angled labels need the room back from the plot, or they are clipped by
+       the frame instead of colliding with each other — no improvement. Applied
+       last so the bar and legend grids above do not overwrite it. */
+    if (d.rotateCats) o.grid = Object.assign({}, o.grid, { bottom: 96 });
     o.series = series.map(function (s, i) {
       var col = s.color || PAL[i % PAL.length];
+      if (isBar) {
+        /* Label position is per DATUM, not per series: ECharts puts 'top' at
+           the top EDGE of a bar, which for a negative column is the zero end —
+           so a whole set of below-axis labels piles up on the axis line.
+           'bottom' is the outer end down there, and only the datum knows which
+           side it is on. */
+        var bars = s.data.map(function (v) {
+          if (v == null || !isFinite(v)) return v;
+          if (!isDiv) return v;
+          return { value: v, label: { position: v < 0 ? 'bottom' : 'top' } };
+        });
+        var ser = {
+          name: s.name || ('Series ' + (i + 1)),
+          type: 'bar',
+          barMaxWidth: d.barMaxWidth || 64,
+          data: bars,
+          itemStyle: { color: col },
+          label: {
+            show: true, position: 'top', fontSize: 11, fontWeight: 600, color: '#1a2236',
+            formatter: function (p) { return fmtV(p.value); },
+          },
+        };
+        /* overlapBars stacks every series into the SAME slot instead of
+           side-by-side. It is what lets one column per category be split
+           across N series — the sparse city series behind the precinct bars —
+           without ECharts reserving an empty sliver for each series that has
+           no value there. */
+        if (d.overlapBars) { ser.barGap = '-100%'; ser.z = 2 + i; }
+        /* stack makes the N series ONE column per category — the development
+           stages of a pipeline rather than six bars side by side. Segment
+           labels come off with it: six numbers inside one column is
+           unreadable at slide size, and the chart is hoverable, so the
+           tooltip is the better place for the breakdown. */
+        if (d.stack) { ser.stack = 'total'; ser.label = { show: false }; }
+        /* One zero line for the chart, hung off the first series. */
+        if (isDiv && i === 0) {
+          ser.markLine = {
+            silent: true, symbol: 'none', animation: false,
+            lineStyle: { color: '#1a2236', width: 1.2, type: 'solid' },
+            label: { show: false }, data: [{ yAxis: 0 }],
+          };
+        }
+        return ser;
+      }
       return {
         name: s.name || ('Series ' + (i + 1)),
         type: 'line',
@@ -368,9 +486,11 @@
         showSymbol: false,
         connectNulls: true,
         data: s.data,
-        lineStyle: { width: 2.2, color: col },
+        /* dashed marks a second series of the same colour — the other grade
+           of the same city — so colour reads as place and pattern as grade. */
+        lineStyle: { width: 2.2, color: col, type: s.dashed ? 'dashed' : 'solid' },
         itemStyle: { color: col },
-        endLabel: (d.endLabel === false) ? { show: false } : {
+        endLabel: (d.endLabel === false || useLegend) ? { show: false } : {
           show: true, fontSize: 10, fontWeight: 600, color: col,
           formatter: function (p) { return (s.name || '') + ' ' + fmt(p.value); },
         },

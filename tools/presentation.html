@@ -12116,9 +12116,24 @@ function buildOverlayEl(o) {
     el.appendChild(cont);
     /* Create after layout — echarts.init needs the element connected
        (buildOverlayEl runs before el is appended). cont has an explicit
-       px size, so it sizes correctly regardless of flow. */
-    requestAnimationFrame(() => {
-      if (!cont.isConnected || !window.PresentChart || !o.spec) return;
+       px size, so it sizes correctly regardless of flow.
+
+       KEEP RETRYING until it IS connected. This used to be a single
+       requestAnimationFrame that returned silently when cont.isConnected was
+       still false, which made mounting a race the chart could simply lose:
+       one frame is only enough when the caller appends the overlay promptly.
+       On a long deck it often isn't — appending 30+ overlays, rebuilding
+       source-backed specs and a full localStorage mirror all land between the
+       two, so late slides came up as an empty chart box with no error, no
+       controller and no way to recover short of a reload. Retrying costs a
+       few frames on the slides that were already fine and fixes the rest.
+       ~60 frames ≈ 1s, then give up so a genuinely orphaned host can't spin. */
+    const _mountChart = (tries) => {
+      if (!cont.isConnected) {
+        if (tries < 60) requestAnimationFrame(() => _mountChart(tries + 1));
+        return;
+      }
+      if (!window.PresentChart || !o.spec) return;
       /* bigNumber overlays carry optional style overrides in o.bigStyle (kept
          OFF o.spec so a data refresh — which rebuilds o.spec — never wipes
          them). Merge them into the spec the engine renders, and force the
@@ -12138,7 +12153,8 @@ function buildOverlayEl(o) {
       } else if (_ovAutoplays(o) && typeof ctrl.play === 'function') {
         ctrl.play();
       }
-    });
+    };
+    requestAnimationFrame(() => _mountChart(0));
   }
 
   /* Delete badge — visible only when this overlay is selected and
@@ -15452,6 +15468,160 @@ async function _cmkJllSeries(cache, metric) {
   return out;
 }
 
+/* The other shape: ONE region, SEVERAL metrics, each metric becoming a series.
+   _cmkJllSeries is one metric across regions (cities on a chart); this is for
+   a chart whose series are grades rather than places. `defs` is an ordered
+   [metric, label, colour] list so the grade order and colours are fixed here
+   rather than left to whatever order the rows come back in. */
+async function _cmkJllByMetric(cache, region, defs) {
+  cache = cache || {};
+  cache.jllm = cache.jllm || {};
+  const ck = region + '|' + defs.map(d => d[0]).join(',');
+  if (cache.jllm[ck] !== undefined) return cache.jllm[ck];
+  let out = null;
+  try {
+    const { data, error } = await window.sb.from('rdp_raw_series')
+      .select('metric, period, value')
+      .eq('source', 'jll').eq('region_slug', region).eq('freq', 'Q')
+      .in('metric', defs.map(d => d[0]))
+      .order('period').limit(5000);
+    if (error) throw error;
+    const rows = data || [];
+    if (rows.length) {
+      const periods = Array.from(new Set(rows.map(r => r.period))).sort();
+      const byMetric = {};
+      rows.forEach(r => { (byMetric[r.metric] = byMetric[r.metric] || {})[r.period] = _cmkNum(r.value); });
+      const series = defs.filter(d => byMetric[d[0]]).map(d => ({
+        name: d[1], color: d[2],
+        data: periods.map(p => (byMetric[d[0]][p] == null ? null : byMetric[d[0]][p])),
+      }));
+      if (series.length) out = { cats: periods.map(_cmkQLabel), series: series };
+    }
+  } catch (e) { console.warn('[cmk] JLL metrics unavailable:', region, e); }
+  cache.jllm[ck] = out;
+  return out;
+}
+
+/* ─── JLL industrial PRECINCTS, grouped under their own city ──────────────
+   The city rows above are the average of these. Note 7 asks how a precinct
+   compares WITH ITS OWN CITY, so the city — not the country — is the unit of
+   comparison, and the list is ordered city-by-city so twenty bars read as five
+   blocks. Colour is the city's, reused from CMK_JLL_MARKETS.
+
+   Names are JLL's own, taken from the "Vacancy % by Precinct" sheet rather
+   than from the per-precinct tab names. The tab names are NOT reliable: Excel
+   caps a sheet name at 31 characters and "Rents & Ylds (I3) - Outer Centr" is
+   exactly 31, so the Sydney outer precincts arrive truncated. The real names
+   carry a "West" the tabs drop — Outer Central West, Outer North West, Outer
+   South West — and "South Sydne" is likewise short of its "y". */
+const CMK_JLL_PRECINCTS = [
+  ['Sydney',    '#00A0B4', ['Inner West', 'Outer South West', 'Outer Central West', 'South Sydney', 'North', 'Outer North West']],
+  ['Melbourne', '#171B24', ['City Fringe', 'South East', 'North', 'West']],
+  ['Brisbane',  '#5cc8e0', ['Northern', 'Trade Coast', 'Southern']],
+  ['Perth',     '#c2a4d6', ['East', 'South', 'North']],
+  ['Adelaide',  '#f5a623', ['Inner', 'Inner South', 'Inner West', 'North', 'North East', 'North West', 'Outer North', 'Outer South']],
+];
+const _cmkSlug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+/* Every precinct yield in one query, indexed [city][precinct][period]. Both
+   note-7 charts read from this, so opening the deck costs one round trip for
+   the pair rather than one each. Precincts come and go — four Adelaide ones
+   stop reporting after Q4 2025 — so nothing here assumes a fixed basket; each
+   quarter is averaged over whoever actually reported THAT quarter. */
+async function _cmkJllPrecincts(cache) {
+  cache = cache || {};
+  if (cache.jllprec !== undefined) return cache.jllprec;
+  let out = null;
+  try {
+    const slugs = [];
+    CMK_JLL_PRECINCTS.forEach(([city, , precs]) =>
+      precs.forEach(p => slugs.push(_cmkSlug(city) + '-' + _cmkSlug(p))));
+    /* PAGED ON PURPOSE. PostgREST caps a response at 1000 rows server-side and
+       a bigger .limit() does not lift it — it just returns 1000 and no error.
+       Twenty-four precincts x 106 quarters is 2245 rows, so an unpaged fetch
+       would quietly lose the last two-thirds and the chart would look fine
+       while being wrong. The other JLL loaders sit under the cap; this one
+       does not. */
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await window.sb.from('rdp_raw_series')
+        .select('region_slug, period, value')
+        .eq('source', 'jll').eq('metric', 'jll_ind_prime_yield_mid').eq('freq', 'Q')
+        .in('region_slug', slugs).order('region_slug').order('period')
+        .range(from, from + 999);
+      if (error) throw error;
+      const page = data || [];
+      rows.push(...page);
+      if (page.length < 1000) break;
+    }
+    if (rows.length) {
+      const periods = Array.from(new Set(rows.map(r => r.period))).sort();
+      const bySlug = {};
+      rows.forEach(r => { (bySlug[r.region_slug] = bySlug[r.region_slug] || {})[r.period] = _cmkNum(r.value); });
+      const cities = CMK_JLL_PRECINCTS.map(([city, color, precs]) => ({
+        city: city, color: color,
+        precincts: precs.map(p => ({
+          name: p, slug: _cmkSlug(city) + '-' + _cmkSlug(p), by: bySlug[_cmkSlug(city) + '-' + _cmkSlug(p)] || {},
+        })).filter(p => Object.keys(p.by).length),
+      })).filter(c => c.precincts.length);
+      if (cities.length) out = { periods: periods, cities: cities };
+    }
+  } catch (e) { console.warn('[cmk] JLL precinct yields unavailable:', e); }
+  cache.jllprec = out;
+  return out;
+}
+
+/* ─── JLL industrial development pipeline ─────────────────────────────────
+   Every project JLL tracks, bucketed by the year it is due to complete and by
+   how far it has actually got. The stage is the point of the chart: 1.1m sqm
+   of "Plans Approved" is not the same supply risk as 1.1m sqm under
+   construction, and the deck's vacancy slides cannot tell them apart.
+   Ordered firmest-first so the column reads bottom-up from built to hoped-for. */
+const CMK_JLL_PIPELINE_STAGES = [
+  ['completed',          'Completed',          '#00A0B4'],
+  ['under_construction', 'Under construction', '#5cc8e0'],
+  ['plans_approved',     'Plans approved',     '#f5a623'],
+  ['plans_submitted',    'Plans submitted',    '#c2a4d6'],
+  ['proposed',           'Proposed',           '#9aa3b1'],
+  ['on_hold',            'On hold',            '#e57b7b'],
+];
+
+/* The pipeline as { cats:[year…], series:[stage…] }, summed across the five
+   capitals. Annual rows (freq 'A'), so the period is the completion year.
+   A stage with nothing in it anywhere is dropped rather than carried as an
+   empty legend entry. */
+async function _cmkJllPipeline(cache) {
+  cache = cache || {};
+  if (cache.jllpipe !== undefined) return cache.jllpipe;
+  let out = null;
+  try {
+    const metrics = CMK_JLL_PIPELINE_STAGES.map(s => 'jll_ind_pipeline_' + s[0] + '_sqm');
+    const { data, error } = await window.sb.from('rdp_raw_series')
+      .select('metric, period, value')
+      .eq('source', 'jll').eq('freq', 'A').in('metric', metrics)
+      .order('period').limit(1000);
+    if (error) throw error;
+    const rows = data || [];
+    if (rows.length) {
+      const years = Array.from(new Set(rows.map(r => r.period.slice(0, 4)))).sort();
+      const tot = {};
+      rows.forEach(r => {
+        const y = r.period.slice(0, 4);
+        (tot[r.metric] = tot[r.metric] || {})[y] = (tot[r.metric][y] || 0) + (_cmkNum(r.value) || 0);
+      });
+      const series = CMK_JLL_PIPELINE_STAGES
+        .filter(s => tot['jll_ind_pipeline_' + s[0] + '_sqm'])
+        .map(s => ({
+          name: s[1], color: s[2],
+          data: years.map(y => tot['jll_ind_pipeline_' + s[0] + '_sqm'][y] || 0),
+        }));
+      if (series.length) out = { cats: years, series: series };
+    }
+  } catch (e) { console.warn('[cmk] JLL pipeline unavailable:', e); }
+  cache.jllpipe = out;
+  return out;
+}
+
 /* Nice y-axis bounds for a cmk-lines spec, in DISPLAY units. Rounds OUT to the
    nearest step and no further — an extra step of padding either side turned a
    3.6-10.6% range into a 2-12% axis, which is a fifth of the frame wasted.
@@ -15590,14 +15760,20 @@ const CMK_CHART_BUILDERS = {
       data: years.map(y => (tot[s[0]][y] != null ? Math.round(tot[s[0]][y]) : null)),
     }));
     if (!states.length) return null;
-    const national = years.map(y => {
-      const v = (tot.australia || {})[y];
-      return v != null ? Math.round(v) : null;
-    });
+    /* NO national series, deliberately. It was a red dashed line on a second
+       0-400k axis while the bars sat on 0-120k, so the slide carried two
+       scales to say one thing: the national line reconciles to the sum of the
+       bars within 0.08% (370,900 v 371,200 in 2025-26, exact in two of the
+       four years). It restated the bars rather than adding to them, and the
+       second axis cost more than it earned. cmk-pop-growth drops its second
+       axis when national is absent.
+
+       The bars are ALREADY the annual increase — natural increase plus net
+       overseas plus net interstate migration — not a population level. */
     /* period = the FY-ENDING calendar year, so 2026 → "2025-26" */
     return { module: 'cmk-pop-growth', data: {
       years: years.map(y => (y - 1) + '-' + String(y).slice(2)),
-      states: states, national: national,
+      states: states,
     } };
   },
 
@@ -15634,7 +15810,17 @@ const CMK_CHART_BUILDERS = {
     return { module: 'cmk-waterfall', data: {
       cats: cats, base: base, delta: delta, dir: dir,
       div: 1e6, suffix: 'm', dp: 2, name: 'Cumulative growth',
-      axis: { min: 0, max: Math.ceil(top / 1e6) * 1e6, interval: 1e6 },
+      /* Steps in THOUSANDS, total in millions. The yearly changes run from
+         46k to 754k; at two decimals in millions the two smallest years both
+         printed "0.05m" despite being 46k and 51k. The total stays in
+         millions, where 5.17m is the right precision. */
+      deltaDiv: 1e3, deltaSuffix: 'k', deltaDp: 0,
+      /* Half-million gridlines, and an axis that stops just above the total
+         instead of a whole million above it — ceiling to 1e6 turned a 5.17m
+         series into a 6m axis and wasted a sixth of the frame. axisDp 1 is
+         required: at 0 decimals the 0.5m steps would render "0m, 1m, 1m, 2m". */
+      axisDp: 1,
+      axis: { min: 0, max: Math.ceil(top / 5e5) * 5e5, interval: 5e5 },
     } };
   },
 
@@ -15654,6 +15840,125 @@ const CMK_CHART_BUILDERS = {
       cats: spec.cats, series: spec.series,
       scale: 100, unit: '%', dp: 2, axisDp: 0, stripPrefix: true, tickEvery: 8,
     }, _cmkJllBounds(spec, 100, 1, true)) };
+  },
+
+  /* Industrial land value, median $/sqm, 2000sqm lots — the longest series in
+     the JLL packs at 106 quarters, and the only one that reaches back before
+     the deck's other charts. Small lots carry a per-sqm premium over big
+     ones, so this and the 1HA chart below are not alternative cuts of the
+     same number: Adelaide is $1,050 on 2000sqm and $350 on 1HA. */
+  'jll-ind-land-2000sqm': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_land_value_med_2000sqm');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 1, prefix: '$', dp: 0, axisDp: 0, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 1, 250, true)) };
+  },
+
+  /* The same, for 1HA lots — the size a distribution facility actually sits
+     on, so this is the one a development feasibility starts from. Brisbane,
+     Perth and Adelaide start later than 2000 (Q1 2005, Q4 2004, Q2 2003);
+     cmk-lines connects through the leading nulls. */
+  'jll-ind-land-1ha': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_land_value_med_1ha');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 1, prefix: '$', dp: 0, axisDp: 0, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 1, 250, true)) };
+  },
+
+  /* Industrial supply pipeline: sqm due to complete each year, stacked by how
+     firm the project actually is. The vacancy slides say what is empty now;
+     this says what is coming and how much of it is committed. Read the colour,
+     not just the height — 2028 is mostly plans, 2026 mostly built. */
+  'jll-ind-pipeline': async function (cache) {
+    const spec = await _cmkJllPipeline(cache);
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      kind: 'bar', stack: true, legend: true, tickEvery: 1, barMaxWidth: 68,
+      scale: 1e-6, unit: 'm', dp: 2, axisDp: 1,
+    }, _cmkJllBounds({ series: [{ data: spec.cats.map((_, i) =>
+        spec.series.reduce((s, x) => s + (x.data[i] || 0), 0)) }] }, 1e-6, 0.5, true)) };
+  },
+
+  /* NOTE 7 — the precinct against its OWN city, latest quarter.
+     A precinct's yield next to the national spread says almost nothing: a
+     Sydney precinct on 5.9% and an Adelaide one on 5.9% are not the same
+     asset. What the question is actually asking is "am I being paid more or
+     less than the rest of my own market?", so every bar here is the precinct's
+     midpoint yield MINUS the average of the precincts reporting in its city
+     that quarter, in percentage points. Zero means "priced like its city".
+     Five colours, five blocks; the legend carries the city, because the
+     precinct names repeat across cities ("North" is in four of them). */
+  'jll-ind-yield-vs-city': async function (cache) {
+    const pr = await _cmkJllPrecincts(cache);
+    if (!pr) return null;
+    /* Latest quarter in which ANY precinct reported. Precincts that have
+       stopped reporting (four in Adelaide, after Q4 2025) drop out of both the
+       bars and the average — the comparison stays within one quarter. */
+    const q = pr.periods[pr.periods.length - 1];
+    const cats = [], series = [];
+    let n = 0;
+    pr.cities.forEach(c => {
+      const live = c.precincts.filter(p => p.by[q] != null);
+      if (!live.length) return;
+      const avg = live.reduce((s, p) => s + p.by[q], 0) / live.length;
+      const row = new Array(n).fill(null);
+      live.forEach(p => { cats.push(p.name); row.push(p.by[q] - avg); });
+      series.push({ name: c.city, color: c.color, data: row });
+      n = cats.length;
+    });
+    if (!cats.length) return null;
+    series.forEach(s => { while (s.data.length < n) s.data.push(null); });
+    const spec = { cats: cats, series: series };
+    /* A column's value is printed OUTSIDE the bar, so an extreme that lands on
+       a gridline puts its label on the frame — Adelaide Outer South at +1.00pp
+       against a max of exactly 1.00 did. _cmkJllBounds rounds out to the step
+       and stops, which is right for a line; a labelled bar wants the step. */
+    const b = _cmkJllBounds(spec, 100, 0.25, false);
+    const all = series.reduce((a, s) => a.concat(s.data.filter(v => v != null)), []).map(v => v * 100);
+    if (b.max - Math.max(...all) < 0.125) b.max += 0.25;
+    if (Math.min(...all) - b.min < 0.125) b.min -= 0.25;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: series,
+      kind: 'bar', diverging: true, overlapBars: true, legend: true, tickEvery: 1, rotateCats: 42,
+      barMaxWidth: 36, scale: 100, unit: 'pp', dp: 2, axisDp: 2,
+    }, b) };
+  },
+
+  /* NOTE 7, the same question over time: how far apart are a city's OWN
+     precincts? One line per city, plotting the gap between its widest and
+     tightest precinct yield each quarter. A rising line means the choice of
+     precinct is worth more than it used to be; a flat line at zero (Perth)
+     means JLL prices every precinct in that city identically, which is a
+     finding about the data as much as the market.
+
+     Starts Q1 2008 because that is where Adelaide's basket settles — before
+     it, precincts enter and leave often enough that a step in the line is a
+     change of membership rather than a change of pricing. */
+  'jll-ind-yield-dispersion': async function (cache) {
+    const pr = await _cmkJllPrecincts(cache);
+    if (!pr) return null;
+    const periods = pr.periods.filter(p => p >= '2008-01-01');
+    if (!periods.length) return null;
+    const series = pr.cities.map(c => ({
+      name: c.city, color: c.color,
+      data: periods.map(q => {
+        const vals = c.precincts.map(p => p.by[q]).filter(v => v != null);
+        if (vals.length < 2) return null;
+        return Math.max(...vals) - Math.min(...vals);
+      }),
+    })).filter(s => s.data.some(v => v != null));
+    if (!series.length) return null;
+    const spec = { cats: periods, series: series };
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: periods.map(_cmkQLabel), series: series,
+      legend: true, scale: 100, unit: 'pp', dp: 2, axisDp: 2,
+      stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 100, 0.25, true)) };
   },
 
   /* Large-format retail midpoint yield, same span and formatting. */
@@ -15690,6 +15995,137 @@ const CMK_CHART_BUILDERS = {
       cats: spec.cats, series: spec.series,
       scale: 1, prefix: '$', dp: 0, axisDp: 0, stripPrefix: true, tickEvery: 8,
     }, _cmkJllBounds(spec, 1, 25, true)) };
+  },
+
+  /* Total industrial vacancy per city. JLL only populates vacancy from Q2 2024
+     and staggers the starts by market (Sydney and Melbourne Q2 2024, Brisbane
+     Q4 2024, Perth Q1 2025, Adelaide Q3 2025), so the series legitimately have
+     different lengths — cmk-lines connects through the leading nulls and each
+     market stays one line from wherever it actually begins. Quarter labels are
+     kept in full: nine quarters over two years would collapse to a repeated
+     year if stripped. */
+  'jll-ind-vacancy': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_vacancy_rate');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 100, unit: '%', dp: 2, axisDp: 0, tickEvery: 1,
+    }, _cmkJllBounds(spec, 100, 1, true)) };
+  },
+
+  /* Industrial vacancy by grade, STOCK-WEIGHTED across the reporting markets:
+     total vacant sqm over total stock sqm, not an average of each city's rate
+     — Adelaide would otherwise count the same as Sydney. Computed from JLL's
+     "Total Stock By Grade" and "Total Vacancy by Grade" sheets and stored
+     against `australia`; it reconciles to JLL's own published city rates
+     (Sydney Q2 2026 prime: 277,710 / 5,015,040 = 5.54%, published 5.5375%).
+
+     Coverage grows from two markets at Q2 2024 to five by Q3 2025, so the
+     earliest points are not the same "national" as the latest. The later
+     markets have LOWER prime vacancy, so the aggregate understates the rise
+     rather than flattering it — on a constant Sydney+Melbourne basis prime
+     runs 2.24% to 4.68% against 2.24% to 4.15% here. The slide note carries
+     both so the caveat travels with the chart. */
+  /* Industrial rents by GRADE: prime and secondary, every capital, one axis.
+     Colour is the city, a dashed line is the secondary grade, and the legend
+     lists each city once — ten end labels on one chart is unreadable.
+
+     What it shows: secondary has outgrown prime since 2015 in four of the
+     five capitals (Melbourne +112% v +86%, Adelaide +80% v +59%, Perth +30% v
+     +21%, Brisbane +64% v +59%), so the quality premium has compressed
+     everywhere except Sydney, where the two ran together.
+
+     Face rents. Incentives have risen over the same period, so effective
+     growth is materially lower — Perth's face rent is +21% against +7%
+     effective. That belongs on its own slide rather than being smuggled in
+     here, but it is the reason this chart should not be quoted as income. */
+  'jll-ind-rent-grade': async function (cache) {
+    const prime = await _cmkJllSeries(cache, 'jll_ind_prime_net_rent_sqm');
+    const sec   = await _cmkJllSeries(cache, 'jll_ind_secondary_net_rent_sqm');
+    if (!prime || !sec) return null;
+    /* Both come back on their own period axis; align on prime's, which is the
+       complete one. Secondary has gaps in Adelaide where every precinct in a
+       quarter failed the plausibility filter — cmk-lines bridges them. */
+    const idx = {};
+    prime.cats.forEach((c, i) => { idx[c] = i; });
+    const secByName = {};
+    sec.series.forEach(s => { secByName[s.name] = s; });
+    const out = [];
+    prime.series.forEach(p => {
+      out.push(Object.assign({}, p, { name: p.name }));
+      const s = secByName[p.name];
+      if (!s) return;
+      const aligned = prime.cats.map(c => {
+        const j = sec.cats.indexOf(c);
+        return j < 0 ? null : s.data[j];
+      });
+      out.push({ name: p.name + ' secondary', color: p.color, data: aligned,
+                 dashed: true, inLegend: false });
+    });
+    if (!out.length) return null;
+    const spec = { cats: prime.cats, series: out };
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: prime.cats, series: out, legend: true,
+      scale: 1, prefix: '$', dp: 0, axisDp: 0, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 1, 25, true)) };
+  },
+
+  /* Prime large-format retail yield by state, CBRE, latest quarter only.
+     The slide it replaces carried three formats — CBD super prime, regional
+     centre and prime large format — and the September review asked for the
+     other two to come off. Worth knowing what that costs: the two removed
+     series are where the dispersion is (CBD super prime spans 175bp across
+     the states, regional centres 127bp), while prime large format spans 30bp
+     with four of five states inside 10bp. The chart is deliberately flat.
+
+     Single period, so it draws as bars (kind:'bar') with the value on each
+     column, and the states are the CATEGORIES rather than series. */
+  'cbre-retail-lfr-yield': async function (cache) {
+    cache = cache || {};
+    const STATES = [
+      ['st-nsw', 'NSW'], ['st-vic', 'VIC'], ['st-qld', 'QLD'],
+      ['st-sa', 'SA'], ['st-wa', 'WA'],
+    ];
+    let rows = null;
+    try {
+      const { data, error } = await window.sb.from('rdp_raw_series')
+        .select('region_slug, period, value')
+        .eq('source', 'cbre').eq('metric', 'cbre_retail_lfr_yield').eq('freq', 'Q')
+        .order('period').limit(500);
+      if (error) throw error;
+      rows = data || [];
+    } catch (e) { console.warn('[cmk] CBRE retail yields unavailable', e); return null; }
+    if (!rows.length) return null;
+    /* Latest quarter present, so a new CBRE drop needs no code change. */
+    const latest = rows.map(r => r.period).sort().slice(-1)[0];
+    const by = {};
+    rows.filter(r => r.period === latest).forEach(r => { by[r.region_slug] = _cmkNum(r.value); });
+    const present = STATES.filter(s => by[s[0]] != null);
+    if (!present.length) return null;
+    const vals = present.map(s => by[s[0]]);
+    const hi = Math.max.apply(null, vals) * 100;
+    return { module: 'cmk-lines', data: {
+      kind: 'bar', barMaxWidth: 84,
+      cats: present.map(s => s[1]),
+      series: [{ name: 'Prime large format', color: '#00A0B4', data: vals }],
+      scale: 100, unit: '%', dp: 2, axisDp: 0, tickEvery: 1,
+      /* Zero-based on purpose: a 30bp spread on a truncated axis would read as
+         a large difference between states. It isn't one. */
+      min: 0, max: Math.ceil(hi + 1), interval: 1,
+    } };
+  },
+
+  'jll-ind-vac-grade': async function (cache) {
+    const spec = await _cmkJllByMetric(cache, 'australia', [
+      ['jll_ind_vac_super_prime', 'Super prime', '#00A0B4'],
+      ['jll_ind_vac_prime',       'Prime',       '#171B24'],
+      ['jll_ind_vac_secondary',   'Secondary',   '#f5a623'],
+    ]);
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 100, unit: '%', dp: 2, axisDp: 0, tickEvery: 1,
+    }, _cmkJllBounds(spec, 100, 2, true)) };
   },
 };
 
@@ -19960,8 +20396,9 @@ async function downloadDeck(format, opts) {
 loadOverlays();
 buildPicker();
 /* Async cloud hydration AFTER the local-cache render so the user
-   sees something instantly. The cloud version overrides if present. */
-_hydratePresFromCloud();
+   sees something instantly. The cloud version overrides if present.
+   The promise is kept so the ?deck= deep-link below can wait for it. */
+const _presHydrated = _hydratePresFromCloud();
 /* Google Slides change watch (mig 098) — one query for every deck-scoped
    link, so the picker cards can wear a red "Updated" chip. Silent and
    best-effort: pre-migration it resolves to an empty set and nothing shows. */
@@ -19969,10 +20406,31 @@ _gswLoadPickerFlags();
 
 /* Deep-link: ?deck=<id> auto-opens that deck. Handy for sharing
    a direct link to a specific presentation. Looks across both
-   built-in DECKS and user-created custom decks. */
+   built-in DECKS and user-created custom decks.
+
+   This used to run once, synchronously, right after an UN-AWAITED
+   _hydratePresFromCloud() — so for any deck that lives only in the cloud,
+   findDeck() came up empty and the link silently dropped you on the picker.
+   It appeared to work only when the deck happened to be in the local cache
+   already, which is also why it failed hardest for the people it matters most
+   to: a shared link opened by someone who has never loaded that deck, and
+   anyone whose localStorage mirror is full (the mirror write throws
+   QuotaExceededError and the cache stays stale).
+
+   Now: try the cache first so a warm load still opens instantly, and
+   otherwise wait for hydration and try once more. The _activeDeck guard stops
+   it yanking the user out of a deck they opened by hand while waiting. */
 const initialDeck = new URLSearchParams(location.search).get('deck');
-if (initialDeck && findDeck(initialDeck)) {
-  openDeck(initialDeck);
+if (initialDeck) {
+  if (findDeck(initialDeck)) {
+    openDeck(initialDeck);
+  } else {
+    Promise.resolve(_presHydrated)
+      .catch(() => {})
+      .then(() => {
+        if (!_activeDeck && findDeck(initialDeck)) openDeck(initialDeck);
+      });
+  }
 }
 
 /* ?new=1 used to jump straight into a brand-new deck (it auto-ran
