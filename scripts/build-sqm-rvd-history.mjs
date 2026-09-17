@@ -31,9 +31,24 @@
 //                ever existed.
 //   days on mkt  forge_cl_suburbs at LABEL - 3, the same Cotality archive and
 //                the same vintage V1 and V2 both read.
-//   population   the LABEL month's snapshot.
+//   population   the LABEL month's snapshot -- except the NEWEST label, below.
 //   runway       the same snapshot. Runway is basis-independent, so all three
 //                series share it and only the demand axis can move.
+//
+// THE NEWEST LABEL HAS NO SNAPSHOT, AND IS THE DASHBOARD'S OWN NUMBER
+// -------------------------------------------------------------------
+// September 2026 has no V1 capture -- Van has not approved one -- so there is
+// no stored population, runway or listings for it. V2 already solves this by
+// reading the live marts for its newest label, and this does the same, with one
+// addition: the live month takes its vacancy, listings AND rents from the live
+// demand-inputs card, which is exactly what tools/demand-score.html scores its
+// live month from. So V3's newest month IS the number on the Demand Score
+// Dashboard rather than a second opinion about it (Van, 2026-09-17).
+//
+// That is a seam, and worth stating: every earlier month takes rent growth from
+// SQM's published monthly series, while this one takes the card's own rent_h /
+// rent_h_3yr. Same source, sampled a few days apart -- measured at under a point
+// of demand score against an independent rebuild.
 //
 // The engine is LIFTED out of tools/demand-score.html at run time, exactly as
 // the Cotality builder lifts it, so this cannot pass against a stale copy of
@@ -157,6 +172,48 @@ for (const snap of snaps) {
   }
   if (!groups.houses.length) { console.log('  ' + month + ': nothing buildable'); continue; }
   out.push({ version: 'rvdsqm-' + month, label: LABEL(month), data: groups, _m: miss, _src: 'vr ' + vrMonth + ', dom ' + domMonth });
+}
+
+/* ── the newest label, from the live card ────────────────────────────────── */
+const { data: cardRow } = await sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle();
+const CARD = cardRow && cardRow.data;
+const newest = snaps[snaps.length - 1].version;
+if (CARD && CARD.month && CARD.month > newest) {
+  const month = CARD.month, domMonth = shift(month, -DOM_LAG);
+  const dom = await domFor(domMonth);
+  const { data: rwLive } = await sb.from('rdp_runway').select('region_slug,payload');
+  const { data: popLive } = await sb.from('rdp_raw_series').select('region_slug,period,value').eq('metric', 'population').gte('period', '2020-01-01');
+  const POP = {}, AT = {};
+  for (const r of popLive || []) if (!AT[r.region_slug] || r.period > AT[r.region_slug]) { AT[r.region_slug] = r.period; POP[r.region_slug] = +r.value; }
+  const RW = {};
+  for (const r of rwLive || []) { const p = r.payload || {}; RW[r.region_slug] = { h: p.house && (p.house.forecast_wg_pct ?? p.house.runway_pct), u: p.unit && (p.unit.forecast_wg_pct ?? p.unit.runway_pct) }; }
+  const groups = {};
+  const miss = { vr: [], rent: [], dom: [], snap: [], proj: [] };
+  for (const [grp, t] of [['houses', 'h'], ['units', 'u']]) {
+    const raw = [], keep = [];
+    for (const [slug, v] of Object.entries(CARD.regions || {})) {
+      if (slug === 'australia') continue;              /* not a market; the builder's cohort is the 36 */
+      const pop = POP[slug], rw = (RW[slug] || {})[t];
+      if (pop == null || typeof rw !== 'number') { miss.snap.push(slug); continue; }
+      const obs = num(Number(v.vr));
+      if (obs == null) { miss.vr.push(slug); continue; }
+      const nowV = num(Number(t === 'u' ? v.rent_u : v.rent_h)), backV = num(Number(t === 'u' ? v.rent_u_3yr : v.rent_h_3yr));
+      if (nowV == null || backV == null || !(backV > 0)) { miss.rent.push(slug); continue; }
+      const listings = num(Number(t === 'u' ? v.listings_u : v.listings_h));
+      if (listings == null) { miss.rent.push(slug); continue; }
+      const d = (dom[slug] || {})[t];
+      if (d == null) { miss.dom.push(slug); continue; }
+      const projected = projectVR(slug, obs);
+      if (projected == null) { miss.proj.push(slug); continue; }
+      raw.push({ slug, population: pop, listings, vr: projected, dom: d, rentGrowth: (nowV - backV) / backV, _rw: rw, isNational: false });
+      keep.push(slug);
+    }
+    ENGINE.compute(raw);
+    groups[grp] = raw.map(r => ({ city: r.slug, rw: Math.round(r._rw * 10000) / 100, ds: Math.round(r.demandScore) }));
+  }
+  if (groups.houses && groups.houses.length) {
+    out.push({ version: 'rvdsqm-' + month, label: LABEL(month), data: groups, _m: miss, _src: 'LIVE card ' + month + ', dom ' + domMonth });
+  }
 }
 
 console.log('');
