@@ -143,7 +143,7 @@ const monthlySeries = (slug, metric) => { const a = idx[slug + '|' + metric]; if
 // Industry data point / latest REMPLAN). rdp_raw_series ind_* is a STALE copy of
 // the ORIGINAL report values (e.g. Perth Mining 30.86% old vs 65.8% current REMPLAN),
 // so prefer the store; fall back to ind_* only for a region the store lacks.
-const { data: indRows } = await sb.from('forge_industry').select('data');
+const { data: indRows } = await sb.from('forge_industry').select('data').eq('id', 'latest');
 const indStore = (indRows || []).map(r => r.data).find(d => d && d.regions);
 const indRegions = (indStore && indStore.regions) || {};
 const labelToSlug = lbl => String(lbl).toLowerCase().replace(/,/g, '').replace(/&/g, 'and').replace(/\s+/g, '_');
@@ -159,7 +159,7 @@ function industryForge(slug) {
 // Population pyramid — read the CURRENT forge_population_pyramid store (latest 2024
 // ERP). rdp_raw_series pyr_* is again a STALE copy (Perth 0-04: store 135443 vs
 // rdp 129598). Prefer the store; fall back to pyr_* only for a region it lacks.
-const { data: pyrRows } = await sb.from('forge_population_pyramid').select('data');
+const { data: pyrRows } = await sb.from('forge_population_pyramid').select('data').eq('id', 'latest');
 const pyrData = (pyrRows || []).map(r => r.data).find(d => d && d.regions);
 const pyrStore = (pyrData && pyrData.regions) || {};
 const pyrAges = (pyrData && pyrData.ageGroups) || [];
