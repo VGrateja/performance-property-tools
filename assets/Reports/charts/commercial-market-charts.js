@@ -383,8 +383,30 @@
       },
     };
     var PAL = [C_CYAN, C_BLACK, C_AMBER, C_LILAC, C_GREEN, C_PINK, C_BLUE, C_GREY];
+    /* kind:'bar' draws the same data as columns instead of lines. The module
+       keeps its name for the sake of the decks already pointing at it — what
+       it really is, either way, is "N named series over one category axis".
+       Bars want their value ON the column and no end label: a single-period
+       chart has no right-hand edge to run a label off, and the reader is
+       comparing heights, not following a line. grid.right shrinks to match,
+       since the room reserved for end labels is dead space without them. */
+    var isBar = (d.kind === 'bar');
+    if (isBar) o.grid = Object.assign({}, o.grid, { right: 28 });
     o.series = series.map(function (s, i) {
       var col = s.color || PAL[i % PAL.length];
+      if (isBar) {
+        return {
+          name: s.name || ('Series ' + (i + 1)),
+          type: 'bar',
+          barMaxWidth: d.barMaxWidth || 64,
+          data: s.data,
+          itemStyle: { color: col },
+          label: {
+            show: true, position: 'top', fontSize: 11, fontWeight: 600, color: '#1a2236',
+            formatter: function (p) { return fmt(p.value); },
+          },
+        };
+      }
       return {
         name: s.name || ('Series ' + (i + 1)),
         type: 'line',
