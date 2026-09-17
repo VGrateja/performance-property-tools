@@ -392,6 +392,23 @@
        since the room reserved for end labels is dead space without them. */
     var isBar = (d.kind === 'bar');
     if (isBar) o.grid = Object.assign({}, o.grid, { right: 28 });
+    /* Legend mode, for when end labels stop working. Ten series on one axis
+       (five cities x two grades) cannot carry a readable label each, so the
+       chart instead colours by city, distinguishes the grade with a dashed
+       line, and lists the cities once in a legend. Series opt out of the
+       legend with inLegend:false, which is how the second grade stays off it.
+       End labels are suppressed here — a legend and ten end labels is two
+       answers to the same question. */
+    var useLegend = !!d.legend;
+    if (useLegend) {
+      o.grid = Object.assign({}, o.grid, { right: 28, top: 44 });
+      o.legend = {
+        show: true, top: 4, itemGap: 18, itemWidth: 22, itemHeight: 12,
+        textStyle: { color: '#1a2236', fontSize: 11, fontWeight: 600 },
+        data: series.filter(function (s) { return s.inLegend !== false; })
+                    .map(function (s) { return s.name; }),
+      };
+    }
     o.series = series.map(function (s, i) {
       var col = s.color || PAL[i % PAL.length];
       if (isBar) {
@@ -414,9 +431,11 @@
         showSymbol: false,
         connectNulls: true,
         data: s.data,
-        lineStyle: { width: 2.2, color: col },
+        /* dashed marks a second series of the same colour — the other grade
+           of the same city — so colour reads as place and pattern as grade. */
+        lineStyle: { width: 2.2, color: col, type: s.dashed ? 'dashed' : 'solid' },
         itemStyle: { color: col },
-        endLabel: (d.endLabel === false) ? { show: false } : {
+        endLabel: (d.endLabel === false || useLegend) ? { show: false } : {
           show: true, fontSize: 10, fontWeight: 600, color: col,
           formatter: function (p) { return (s.name || '') + ' ' + fmt(p.value); },
         },
