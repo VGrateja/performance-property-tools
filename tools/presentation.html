@@ -15502,6 +15502,72 @@ async function _cmkJllByMetric(cache, region, defs) {
   return out;
 }
 
+/* ─── JLL industrial PRECINCTS, grouped under their own city ──────────────
+   The city rows above are the average of these. Note 7 asks how a precinct
+   compares WITH ITS OWN CITY, so the city — not the country — is the unit of
+   comparison, and the list is ordered city-by-city so twenty bars read as five
+   blocks. Colour is the city's, reused from CMK_JLL_MARKETS.
+
+   Names are JLL's own. Two are restored from the truncated spellings their
+   workbook tabs carry ("Outer Centr", "South Sydne") — the slug keeps the
+   full word, so anything matching on slug must use the long form. */
+const CMK_JLL_PRECINCTS = [
+  ['Sydney',    '#00A0B4', ['Inner West', 'Outer South', 'Outer Central', 'South Sydney', 'North', 'Outer North']],
+  ['Melbourne', '#171B24', ['City Fringe', 'South East', 'North', 'West']],
+  ['Brisbane',  '#5cc8e0', ['Northern', 'Trade Coast', 'Southern']],
+  ['Perth',     '#c2a4d6', ['East', 'South', 'North']],
+  ['Adelaide',  '#f5a623', ['Inner', 'Inner South', 'Inner West', 'North', 'North East', 'North West', 'Outer North', 'Outer South']],
+];
+const _cmkSlug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+/* Every precinct yield in one query, indexed [city][precinct][period]. Both
+   note-7 charts read from this, so opening the deck costs one round trip for
+   the pair rather than one each. Precincts come and go — four Adelaide ones
+   stop reporting after Q4 2025 — so nothing here assumes a fixed basket; each
+   quarter is averaged over whoever actually reported THAT quarter. */
+async function _cmkJllPrecincts(cache) {
+  cache = cache || {};
+  if (cache.jllprec !== undefined) return cache.jllprec;
+  let out = null;
+  try {
+    const slugs = [];
+    CMK_JLL_PRECINCTS.forEach(([city, , precs]) =>
+      precs.forEach(p => slugs.push(_cmkSlug(city) + '-' + _cmkSlug(p))));
+    /* PAGED ON PURPOSE. PostgREST caps a response at 1000 rows server-side and
+       a bigger .limit() does not lift it — it just returns 1000 and no error.
+       Twenty-four precincts x 106 quarters is 2245 rows, so an unpaged fetch
+       would quietly lose the last two-thirds and the chart would look fine
+       while being wrong. The other JLL loaders sit under the cap; this one
+       does not. */
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await window.sb.from('rdp_raw_series')
+        .select('region_slug, period, value')
+        .eq('source', 'jll').eq('metric', 'jll_ind_prime_yield_mid').eq('freq', 'Q')
+        .in('region_slug', slugs).order('region_slug').order('period')
+        .range(from, from + 999);
+      if (error) throw error;
+      const page = data || [];
+      rows.push(...page);
+      if (page.length < 1000) break;
+    }
+    if (rows.length) {
+      const periods = Array.from(new Set(rows.map(r => r.period))).sort();
+      const bySlug = {};
+      rows.forEach(r => { (bySlug[r.region_slug] = bySlug[r.region_slug] || {})[r.period] = _cmkNum(r.value); });
+      const cities = CMK_JLL_PRECINCTS.map(([city, color, precs]) => ({
+        city: city, color: color,
+        precincts: precs.map(p => ({
+          name: p, slug: _cmkSlug(city) + '-' + _cmkSlug(p), by: bySlug[_cmkSlug(city) + '-' + _cmkSlug(p)] || {},
+        })).filter(p => Object.keys(p.by).length),
+      })).filter(c => c.precincts.length);
+      if (cities.length) out = { periods: periods, cities: cities };
+    }
+  } catch (e) { console.warn('[cmk] JLL precinct yields unavailable:', e); }
+  cache.jllprec = out;
+  return out;
+}
+
 /* Nice y-axis bounds for a cmk-lines spec, in DISPLAY units. Rounds OUT to the
    nearest step and no further — an extra step of padding either side turned a
    3.6-10.6% range into a 2-12% axis, which is a fifth of the frame wasted.
@@ -15720,6 +15786,83 @@ const CMK_CHART_BUILDERS = {
       cats: spec.cats, series: spec.series,
       scale: 100, unit: '%', dp: 2, axisDp: 0, stripPrefix: true, tickEvery: 8,
     }, _cmkJllBounds(spec, 100, 1, true)) };
+  },
+
+  /* NOTE 7 — the precinct against its OWN city, latest quarter.
+     A precinct's yield next to the national spread says almost nothing: a
+     Sydney precinct on 5.9% and an Adelaide one on 5.9% are not the same
+     asset. What the question is actually asking is "am I being paid more or
+     less than the rest of my own market?", so every bar here is the precinct's
+     midpoint yield MINUS the average of the precincts reporting in its city
+     that quarter, in percentage points. Zero means "priced like its city".
+     Five colours, five blocks; the legend carries the city, because the
+     precinct names repeat across cities ("North" is in four of them). */
+  'jll-ind-yield-vs-city': async function (cache) {
+    const pr = await _cmkJllPrecincts(cache);
+    if (!pr) return null;
+    /* Latest quarter in which ANY precinct reported. Precincts that have
+       stopped reporting (four in Adelaide, after Q4 2025) drop out of both the
+       bars and the average — the comparison stays within one quarter. */
+    const q = pr.periods[pr.periods.length - 1];
+    const cats = [], series = [];
+    let n = 0;
+    pr.cities.forEach(c => {
+      const live = c.precincts.filter(p => p.by[q] != null);
+      if (!live.length) return;
+      const avg = live.reduce((s, p) => s + p.by[q], 0) / live.length;
+      const row = new Array(n).fill(null);
+      live.forEach(p => { cats.push(p.name); row.push(p.by[q] - avg); });
+      series.push({ name: c.city, color: c.color, data: row });
+      n = cats.length;
+    });
+    if (!cats.length) return null;
+    series.forEach(s => { while (s.data.length < n) s.data.push(null); });
+    const spec = { cats: cats, series: series };
+    /* A column's value is printed OUTSIDE the bar, so an extreme that lands on
+       a gridline puts its label on the frame — Adelaide Outer South at +1.00pp
+       against a max of exactly 1.00 did. _cmkJllBounds rounds out to the step
+       and stops, which is right for a line; a labelled bar wants the step. */
+    const b = _cmkJllBounds(spec, 100, 0.25, false);
+    const all = series.reduce((a, s) => a.concat(s.data.filter(v => v != null)), []).map(v => v * 100);
+    if (b.max - Math.max(...all) < 0.125) b.max += 0.25;
+    if (Math.min(...all) - b.min < 0.125) b.min -= 0.25;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: series,
+      kind: 'bar', diverging: true, overlapBars: true, legend: true, tickEvery: 1,
+      barMaxWidth: 36, scale: 100, unit: 'pp', dp: 2, axisDp: 2,
+    }, b) };
+  },
+
+  /* NOTE 7, the same question over time: how far apart are a city's OWN
+     precincts? One line per city, plotting the gap between its widest and
+     tightest precinct yield each quarter. A rising line means the choice of
+     precinct is worth more than it used to be; a flat line at zero (Perth)
+     means JLL prices every precinct in that city identically, which is a
+     finding about the data as much as the market.
+
+     Starts Q1 2008 because that is where Adelaide's basket settles — before
+     it, precincts enter and leave often enough that a step in the line is a
+     change of membership rather than a change of pricing. */
+  'jll-ind-yield-dispersion': async function (cache) {
+    const pr = await _cmkJllPrecincts(cache);
+    if (!pr) return null;
+    const periods = pr.periods.filter(p => p >= '2008-01-01');
+    if (!periods.length) return null;
+    const series = pr.cities.map(c => ({
+      name: c.city, color: c.color,
+      data: periods.map(q => {
+        const vals = c.precincts.map(p => p.by[q]).filter(v => v != null);
+        if (vals.length < 2) return null;
+        return Math.max(...vals) - Math.min(...vals);
+      }),
+    })).filter(s => s.data.some(v => v != null));
+    if (!series.length) return null;
+    const spec = { cats: periods, series: series };
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: periods.map(_cmkQLabel), series: series,
+      legend: true, scale: 100, unit: 'pp', dp: 2, axisDp: 2,
+      stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 100, 0.25, true)) };
   },
 
   /* Large-format retail midpoint yield, same span and formatting. */

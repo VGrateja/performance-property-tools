@@ -314,7 +314,8 @@
               series:[{ name:'Sydney', color:'#00A0B4', data:[0.0943,…] },…],
               scale:100, unit:'%', prefix:'', dp:2,        // label formatting
               min:, max:, interval:,                       // y-axis, in DISPLAY units
-              tickEvery:8, smooth:false, endLabel:true }
+              tickEvery:8, smooth:false, endLabel:true,
+              kind:'bar', diverging:true, overlapBars:true } // bar variants
 
      Values are stored in SOURCE units and multiplied by `scale` for display —
      yields sit in the deck as 0.0521 and render as 5.21%, matching how
@@ -341,7 +342,21 @@
     /* Axis ticks carry no decimals unless asked — "6%" reads better than
        "6.00%" next to a 5.21% end label. */
     var adp = (d.axisDp == null ? 0 : d.axisDp);
-    var fmtAxis = function (v) { return pre + (v * scale).toFixed(adp) + unit; };
+
+    /* diverging bars are read AGAINST a zero line, so the sign is half the
+       message and has to survive into every label — "0.46" below the axis and
+       "0.66" above it look like the same number. Declared up here because the
+       tooltip, the axis and the column labels all have to agree. */
+    var isBar = (d.kind === 'bar');
+    var isDiv = isBar && !!d.diverging;
+    var sign = function (v) { return (v > 0 ? '+' : ''); };
+    var fmtV = isDiv ? function (v) {
+      if (v == null || !isFinite(v)) return '';
+      return sign(v) + fmt(v);
+    } : fmt;
+    var fmtAxis = function (v) {
+      return (isDiv ? sign(v) : '') + pre + (v * scale).toFixed(adp) + unit;
+    };
 
     /* Category axis: label every Nth point, else a 106-quarter axis is a
        smear. tickEvery counts POINTS, not years. */
@@ -377,7 +392,7 @@
         var arr = Array.isArray(params) ? params : [params];
         var head = arr.length ? arr[0].axisValue : '';
         var body = arr.filter(function (p) { return p.value != null; })
-          .map(function (p) { return p.marker + p.seriesName + ': <strong>' + fmt(p.value) + '</strong>'; })
+          .map(function (p) { return p.marker + p.seriesName + ': <strong>' + fmtV(p.value) + '</strong>'; })
           .join('<br>');
         return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + body;
       },
@@ -390,7 +405,6 @@
        chart has no right-hand edge to run a label off, and the reader is
        comparing heights, not following a line. grid.right shrinks to match,
        since the room reserved for end labels is dead space without them. */
-    var isBar = (d.kind === 'bar');
     if (isBar) o.grid = Object.assign({}, o.grid, { right: 28 });
     /* Legend mode, for when end labels stop working. Ten series on one axis
        (five cities x two grades) cannot carry a readable label each, so the
@@ -412,17 +426,42 @@
     o.series = series.map(function (s, i) {
       var col = s.color || PAL[i % PAL.length];
       if (isBar) {
-        return {
+        /* Label position is per DATUM, not per series: ECharts puts 'top' at
+           the top EDGE of a bar, which for a negative column is the zero end —
+           so a whole set of below-axis labels piles up on the axis line.
+           'bottom' is the outer end down there, and only the datum knows which
+           side it is on. */
+        var bars = s.data.map(function (v) {
+          if (v == null || !isFinite(v)) return v;
+          if (!isDiv) return v;
+          return { value: v, label: { position: v < 0 ? 'bottom' : 'top' } };
+        });
+        var ser = {
           name: s.name || ('Series ' + (i + 1)),
           type: 'bar',
           barMaxWidth: d.barMaxWidth || 64,
-          data: s.data,
+          data: bars,
           itemStyle: { color: col },
           label: {
             show: true, position: 'top', fontSize: 11, fontWeight: 600, color: '#1a2236',
-            formatter: function (p) { return fmt(p.value); },
+            formatter: function (p) { return fmtV(p.value); },
           },
         };
+        /* overlapBars stacks every series into the SAME slot instead of
+           side-by-side. It is what lets one column per category be split
+           across N series — the sparse city series behind the precinct bars —
+           without ECharts reserving an empty sliver for each series that has
+           no value there. */
+        if (d.overlapBars) { ser.barGap = '-100%'; ser.z = 2 + i; }
+        /* One zero line for the chart, hung off the first series. */
+        if (isDiv && i === 0) {
+          ser.markLine = {
+            silent: true, symbol: 'none', animation: false,
+            lineStyle: { color: '#1a2236', width: 1.2, type: 'solid' },
+            label: { show: false }, data: [{ yAxis: 0 }],
+          };
+        }
+        return ser;
       }
       return {
         name: s.name || ('Series ' + (i + 1)),
