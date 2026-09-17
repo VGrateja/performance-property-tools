@@ -15443,9 +15443,20 @@ async function _cmkJllSeries(cache, metric) {
   if (cache.jll[metric] !== undefined) return cache.jll[metric];
   let out = null;
   try {
+    /* FILTERED TO THE MARKET SLUGS ON PURPOSE. This used to select every region
+       carrying the metric and discard the non-markets afterwards, which was
+       fine while the only rows were the six markets. Loading 24 precincts under
+       jll_ind_prime_yield_mid took the match from 530 rows to 2775; PostgREST
+       capped the response at its server-side 1000 (a bigger .limit() does NOT
+       lift that) and the city lines silently ended at Q3 2010 instead of
+       Q2 2026 — on the live site, since the rows land in Supabase before any
+       deploy. The precincts now live under their own metric, so this filter is
+       belt-and-braces: it keeps the next sub-regional series from doing the
+       same thing. Ask the database for the regions this chart actually draws. */
     const { data, error } = await window.sb.from('rdp_raw_series')
       .select('region_slug, period, value')
       .eq('source', 'jll').eq('metric', metric).eq('freq', 'Q')
+      .in('region_slug', CMK_JLL_MARKETS.map(m => m[0]))
       .order('period').limit(5000);
     if (error) throw error;
     const rows = data || [];
@@ -15546,7 +15557,7 @@ async function _cmkJllPrecincts(cache) {
     for (let from = 0; ; from += 1000) {
       const { data, error } = await window.sb.from('rdp_raw_series')
         .select('region_slug, period, value')
-        .eq('source', 'jll').eq('metric', 'jll_ind_prime_yield_mid').eq('freq', 'Q')
+        .eq('source', 'jll').eq('metric', 'jll_ind_prime_yield_mid_precinct').eq('freq', 'Q')
         .in('region_slug', slugs).order('region_slug').order('period')
         .range(from, from + 999);
       if (error) throw error;
