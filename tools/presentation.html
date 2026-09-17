@@ -15508,11 +15508,14 @@ async function _cmkJllByMetric(cache, region, defs) {
    comparison, and the list is ordered city-by-city so twenty bars read as five
    blocks. Colour is the city's, reused from CMK_JLL_MARKETS.
 
-   Names are JLL's own. Two are restored from the truncated spellings their
-   workbook tabs carry ("Outer Centr", "South Sydne") — the slug keeps the
-   full word, so anything matching on slug must use the long form. */
+   Names are JLL's own, taken from the "Vacancy % by Precinct" sheet rather
+   than from the per-precinct tab names. The tab names are NOT reliable: Excel
+   caps a sheet name at 31 characters and "Rents & Ylds (I3) - Outer Centr" is
+   exactly 31, so the Sydney outer precincts arrive truncated. The real names
+   carry a "West" the tabs drop — Outer Central West, Outer North West, Outer
+   South West — and "South Sydne" is likewise short of its "y". */
 const CMK_JLL_PRECINCTS = [
-  ['Sydney',    '#00A0B4', ['Inner West', 'Outer South', 'Outer Central', 'South Sydney', 'North', 'Outer North']],
+  ['Sydney',    '#00A0B4', ['Inner West', 'Outer South West', 'Outer Central West', 'South Sydney', 'North', 'Outer North West']],
   ['Melbourne', '#171B24', ['City Fringe', 'South East', 'North', 'West']],
   ['Brisbane',  '#5cc8e0', ['Northern', 'Trade Coast', 'Southern']],
   ['Perth',     '#c2a4d6', ['East', 'South', 'North']],
@@ -15565,6 +15568,57 @@ async function _cmkJllPrecincts(cache) {
     }
   } catch (e) { console.warn('[cmk] JLL precinct yields unavailable:', e); }
   cache.jllprec = out;
+  return out;
+}
+
+/* ─── JLL industrial development pipeline ─────────────────────────────────
+   Every project JLL tracks, bucketed by the year it is due to complete and by
+   how far it has actually got. The stage is the point of the chart: 1.1m sqm
+   of "Plans Approved" is not the same supply risk as 1.1m sqm under
+   construction, and the deck's vacancy slides cannot tell them apart.
+   Ordered firmest-first so the column reads bottom-up from built to hoped-for. */
+const CMK_JLL_PIPELINE_STAGES = [
+  ['completed',          'Completed',          '#00A0B4'],
+  ['under_construction', 'Under construction', '#5cc8e0'],
+  ['plans_approved',     'Plans approved',     '#f5a623'],
+  ['plans_submitted',    'Plans submitted',    '#c2a4d6'],
+  ['proposed',           'Proposed',           '#9aa3b1'],
+  ['on_hold',            'On hold',            '#e57b7b'],
+];
+
+/* The pipeline as { cats:[year…], series:[stage…] }, summed across the five
+   capitals. Annual rows (freq 'A'), so the period is the completion year.
+   A stage with nothing in it anywhere is dropped rather than carried as an
+   empty legend entry. */
+async function _cmkJllPipeline(cache) {
+  cache = cache || {};
+  if (cache.jllpipe !== undefined) return cache.jllpipe;
+  let out = null;
+  try {
+    const metrics = CMK_JLL_PIPELINE_STAGES.map(s => 'jll_ind_pipeline_' + s[0] + '_sqm');
+    const { data, error } = await window.sb.from('rdp_raw_series')
+      .select('metric, period, value')
+      .eq('source', 'jll').eq('freq', 'A').in('metric', metrics)
+      .order('period').limit(1000);
+    if (error) throw error;
+    const rows = data || [];
+    if (rows.length) {
+      const years = Array.from(new Set(rows.map(r => r.period.slice(0, 4)))).sort();
+      const tot = {};
+      rows.forEach(r => {
+        const y = r.period.slice(0, 4);
+        (tot[r.metric] = tot[r.metric] || {})[y] = (tot[r.metric][y] || 0) + (_cmkNum(r.value) || 0);
+      });
+      const series = CMK_JLL_PIPELINE_STAGES
+        .filter(s => tot['jll_ind_pipeline_' + s[0] + '_sqm'])
+        .map(s => ({
+          name: s[1], color: s[2],
+          data: years.map(y => tot['jll_ind_pipeline_' + s[0] + '_sqm'][y] || 0),
+        }));
+      if (series.length) out = { cats: years, series: series };
+    }
+  } catch (e) { console.warn('[cmk] JLL pipeline unavailable:', e); }
+  cache.jllpipe = out;
   return out;
 }
 
@@ -15786,6 +15840,48 @@ const CMK_CHART_BUILDERS = {
       cats: spec.cats, series: spec.series,
       scale: 100, unit: '%', dp: 2, axisDp: 0, stripPrefix: true, tickEvery: 8,
     }, _cmkJllBounds(spec, 100, 1, true)) };
+  },
+
+  /* Industrial land value, median $/sqm, 2000sqm lots — the longest series in
+     the JLL packs at 106 quarters, and the only one that reaches back before
+     the deck's other charts. Small lots carry a per-sqm premium over big
+     ones, so this and the 1HA chart below are not alternative cuts of the
+     same number: Adelaide is $1,050 on 2000sqm and $350 on 1HA. */
+  'jll-ind-land-2000sqm': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_land_value_med_2000sqm');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 1, prefix: '$', dp: 0, axisDp: 0, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 1, 250, true)) };
+  },
+
+  /* The same, for 1HA lots — the size a distribution facility actually sits
+     on, so this is the one a development feasibility starts from. Brisbane,
+     Perth and Adelaide start later than 2000 (Q1 2005, Q4 2004, Q2 2003);
+     cmk-lines connects through the leading nulls. */
+  'jll-ind-land-1ha': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_land_value_med_1ha');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 1, prefix: '$', dp: 0, axisDp: 0, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 1, 250, true)) };
+  },
+
+  /* Industrial supply pipeline: sqm due to complete each year, stacked by how
+     firm the project actually is. The vacancy slides say what is empty now;
+     this says what is coming and how much of it is committed. Read the colour,
+     not just the height — 2028 is mostly plans, 2026 mostly built. */
+  'jll-ind-pipeline': async function (cache) {
+    const spec = await _cmkJllPipeline(cache);
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      kind: 'bar', stack: true, legend: true, tickEvery: 1, barMaxWidth: 68,
+      scale: 1e-6, unit: 'm', dp: 2, axisDp: 1,
+    }, _cmkJllBounds({ series: [{ data: spec.cats.map((_, i) =>
+        spec.series.reduce((s, x) => s + (x.data[i] || 0), 0)) }] }, 1e-6, 0.5, true)) };
   },
 
   /* NOTE 7 — the precinct against its OWN city, latest quarter.

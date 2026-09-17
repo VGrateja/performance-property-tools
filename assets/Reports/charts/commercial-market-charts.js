@@ -315,7 +315,7 @@
               scale:100, unit:'%', prefix:'', dp:2,        // label formatting
               min:, max:, interval:,                       // y-axis, in DISPLAY units
               tickEvery:8, smooth:false, endLabel:true,
-              kind:'bar', diverging:true, overlapBars:true } // bar variants
+              kind:'bar', diverging:true, overlapBars:true, stack:true } // bar variants
 
      Values are stored in SOURCE units and multiplied by `scale` for display —
      yields sit in the deck as 0.0521 and render as 5.21%, matching how
@@ -453,6 +453,12 @@
            without ECharts reserving an empty sliver for each series that has
            no value there. */
         if (d.overlapBars) { ser.barGap = '-100%'; ser.z = 2 + i; }
+        /* stack makes the N series ONE column per category — the development
+           stages of a pipeline rather than six bars side by side. Segment
+           labels come off with it: six numbers inside one column is
+           unreadable at slide size, and the chart is hoverable, so the
+           tooltip is the better place for the breakdown. */
+        if (d.stack) { ser.stack = 'total'; ser.label = { show: false }; }
         /* One zero line for the chart, hung off the first series. */
         if (isDiv && i === 0) {
           ser.markLine = {
