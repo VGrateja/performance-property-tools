@@ -496,6 +496,70 @@ body.embed-mode .runway-inner { padding:6px 8px !important; }
 body.embed-mode { overflow: hidden; }
 body.embed-mode html { overflow: hidden; }
 
+
+/* ── COMPARE (V1 v V2) — the table under the chart. Chrome colours, not the
+   chart card's: it sits outside the card, beside the timeline. */
+#cmpPick{display:flex;gap:12px;align-items:center;padding:2px 0}
+.cmp-tick{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;user-select:none;white-space:nowrap}
+.cmp-tick input{cursor:pointer;accent-color:#00A0B4;margin:0}
+#cmpWrap{width:100%;max-width:1120px;margin-top:16px}
+#cmpHead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+#cmpHead .cmp-title{font-weight:800;font-size:13px;letter-spacing:.02em}
+#cmpHead .cmp-sub{font-size:11.5px;opacity:.62}
+#cmpTableWrap{max-height:344px;overflow:auto;border:1px solid rgba(0,160,180,.18);border-radius:10px}
+#cmpTable{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+#cmpTable thead th{position:sticky;top:0;background:#141c28;z-index:1;text-align:right;padding:9px 12px;
+  font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;opacity:.78;font-weight:800;
+  border-bottom:1px solid rgba(0,160,180,.22)}
+#cmpTable thead th.l{text-align:left}
+#cmpTable tbody td{padding:7px 12px;text-align:right;border-bottom:1px solid rgba(255,255,255,.055)}
+#cmpTable tbody td.l{text-align:left}
+#cmpTable tbody tr:hover{background:rgba(0,160,180,.07)}
+#cmpTable tbody tr.sel{background:rgba(0,160,180,.12)}
+#cmpTable .tdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:-1px}
+#cmpTable .up{color:#71B357;font-weight:800}
+#cmpTable .dn{color:#E72347;font-weight:800}
+#cmpTable .flat{opacity:.45}
+#cmpEmpty{padding:18px 12px;text-align:center;opacity:.6;font-size:12.5px}
+[data-theme="light"] #cmpTable thead th{background:#eef4f6;opacity:.9}
+[data-theme="light"] #cmpTable tbody td{border-bottom-color:rgba(31,40,63,.10)}
+
+/* ── THE PAIR CONNECTOR ── drawn between the two dots of one market: House v
+   Unit in the Combined view, V1 v V2 in Compare. Same element, same look.
+
+   Teal rather than the old rgba(0,0,0,.30): the line sits on the chart card,
+   which is a near-white gradient, and a 30%-black hairline disappeared against
+   it at presentation sizes. #00A0B4 is the brand primary, so this introduces no
+   new colour.
+
+   The march is stroke-dashoffset, not a transform: a transform would move the
+   LINE, and the line's endpoints are data. Offsetting the dash pattern slides
+   the gaps along a line that stays exactly where the two dots put it. The
+   keyframe travels 10 = the dash pattern's own period (6 + 4), so the loop is
+   seamless rather than jumping on repeat. */
+.rw-conn{
+  stroke:#00A0B4;
+  stroke-width:1.8;
+  stroke-dasharray:6 4;
+  stroke-linecap:round;
+  opacity:.72;
+  transition:opacity .15s, stroke-width .15s;
+}
+/* Only the hovered market's connector marches. `leaderHot()` -- the function
+   that already means "this region is under the cursor", and which the dots and
+   the labels both call -- puts this class on. */
+.rw-conn.conn-hot{
+  opacity:1;
+  stroke-width:2.4;
+  animation:rwConnMarch 1s linear infinite;
+}
+@keyframes rwConnMarch{ to{ stroke-dashoffset:-10; } }
+/* Somebody who has asked the system for less motion gets the emphasis without
+   the march — the line carries its meaning by EXISTING (these two dots are one
+   market); the movement is only a pointer. */
+@media (prefers-reduced-motion: reduce){
+  .rw-conn.conn-hot{ animation:none; }
+}
 </style>
 </head>
 <body>
@@ -655,7 +719,16 @@ body.embed-mode html { overflow: hidden; }
     <select id="basisSelect" title="Which vacancy and rent series the demand score is built on">
       <option value="sqm">V1 — SQM</option>
       <option value="cotality">V2 — Cotality</option>
+      <option value="sqm3">V3 — SQM rebuilt</option>
+      <option value="compare">Compare</option>
     </select>
+  </div>
+
+  <!-- Which series the Compare view puts side by side. Hidden unless the basis
+       IS Compare, because it means nothing otherwise. -->
+  <div class="ctrl-group" id="cmpPickGroup" style="display:none">
+    <label>Compare series</label>
+    <div id="cmpPick"></div>
   </div>
 
   <div class="ctrl-group">
@@ -727,6 +800,11 @@ body.embed-mode html { overflow: hidden; }
   <div class="chart-month" id="chartMonthLabel">May 2026</div>
   <svg id="chart"></svg>
   <div class="tooltip" id="tooltip"></div>
+</div>
+<!-- Compare table. Hidden unless the basis is Compare; filled by renderCompareTable(). -->
+<div id="cmpWrap" style="display:none">
+  <div id="cmpHead"></div>
+  <div id="cmpTableWrap"><table id="cmpTable"><thead></thead><tbody></tbody></table></div>
 </div>
 <div class="timeline">
   <span class="tl-label" id="tlStart"></span>
@@ -846,6 +924,37 @@ const RVD_BASIS_KEY = 'ppa-ds-basis';
    queries `.eq('id', …)`, so a new id is invisible to all of them, and there is
    no prefix for two tools to have to agree about. */
 const RVD_COTALITY_ID = 'rvd_cotality';
+/* V3 — V1's OWN sources (SQM vacancy and rent, REA listings) rebuilt month by
+   month under one engine and one supply rule, by
+   scripts/build-sqm-rvd-history.mjs. Same shape and same row store as V2, so
+   the reader below treats the two identically. */
+const RVD_SQM_ID = 'rvd_sqm';
+
+/* ── THE THREE SERIES, AND WHICH ARE BEING COMPARED ────────────────────────
+   Compare draws one dot per TICKED series per market, and they all sit at the
+   same x because runway is basis-independent -- so the connector is vertical
+   and its length is the disagreement between the series. Two ticks reads as a
+   move; three reads as a spread.
+
+   RAW key prefixes: V1 is the plain one the tool already used ('house_'), V2
+   and V3 get a suffixed prefix each, so all three can be in memory at once and
+   ticking is instant rather than a reload. */
+const RVD_SERIES = [
+  { id: 'v1', label: 'V1', name: 'V1 — SQM',         pre: ''  },
+  { id: 'v2', label: 'V2', name: 'V2 — Cotality',    pre: '2' },
+  { id: 'v3', label: 'V3', name: 'V3 — SQM rebuilt', pre: '3' },
+];
+const RVD_CMP_KEY = 'ppa-rvd-compare-set';
+function cmpSet(){
+  let v = null;
+  try { v = JSON.parse(localStorage.getItem(RVD_CMP_KEY) || 'null'); } catch(e){}
+  const want = Array.isArray(v) ? RVD_SERIES.filter(x => v.includes(x.id)) : [];
+  /* Fewer than two is not a comparison; fall back rather than draw a lone dot. */
+  return want.length >= 2 ? want : RVD_SERIES.filter(x => x.id === 'v1' || x.id === 'v2');
+}
+function setCmpSet(ids){
+  try { localStorage.setItem(RVD_CMP_KEY, JSON.stringify(ids)); } catch(e){}
+}
 /* AN EMBED IS ALWAYS SQM, whatever the browser remembers. The setting is shared
    with the Demand Score Dashboard, so a researcher who left the switch on
    Cotality would otherwise open a client deck and find the slide either showing
@@ -856,11 +965,14 @@ function rvdIsEmbed(){
 }
 function rvdBasis(){
   if (rvdIsEmbed()) return 'sqm';
-  try { return localStorage.getItem(RVD_BASIS_KEY) === 'cotality' ? 'cotality' : 'sqm'; }
+  try {
+    const v = localStorage.getItem(RVD_BASIS_KEY);
+    return (v === 'cotality' || v === 'compare' || v === 'sqm3') ? v : 'sqm';
+  }
   catch(e){ return 'sqm'; }
 }
 function setRunwayBasis(v){
-  const next = v === 'cotality' ? 'cotality' : 'sqm';
+  const next = (v === 'cotality' || v === 'compare' || v === 'sqm3') ? v : 'sqm';
   if(next === rvdBasis()) return;
   try { localStorage.setItem(RVD_BASIS_KEY, next); } catch(e){}
   /* Reload rather than re-render: the two bases are different SERIES with
@@ -874,7 +986,51 @@ function setRunwayBasis(v){
     const sel = document.getElementById('basisSelect');
     if(!sel) return;
     sel.value = rvdBasis();
+    /* Compare already spends the pair on V1-v-V2, so the Combined tab (which
+       spends it on House-v-Unit) has nowhere to go: four dots per market with
+       two meanings is not a chart anybody can read. Hide it rather than let it
+       be picked and silently mean something else. */
+    if(rvdBasis()==='compare'){
+      const ct = document.querySelector('.tab[data-type="combined"]');
+      if(ct){
+        ct.style.display='none';
+        if(ct.classList.contains('active')){
+          ct.classList.remove('active');
+          const ht = document.querySelector('.tab[data-type="house"]');
+          if(ht){ ht.classList.add('active'); activeType='house'; }
+        }
+      }
+    }
     sel.addEventListener('change', e => setRunwayBasis(e.target.value));
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', apply); else apply();
+})();
+
+(function wireComparePicker(){
+  function apply(){
+    const box = document.getElementById('cmpPick'), grp = document.getElementById('cmpPickGroup');
+    if(!box || !grp) return;
+    if(rvdBasis() !== 'compare'){ grp.style.display = 'none'; return; }
+    grp.style.display = '';
+    const on = cmpSet().map(x => x.id);
+    box.innerHTML = RVD_SERIES.map(sx =>
+      '<label class="cmp-tick"><input type="checkbox" value="' + sx.id + '"' + (on.includes(sx.id) ? ' checked' : '') + '> ' + sx.label + '</label>'
+    ).join('');
+    box.addEventListener('change', () => {
+      const picked = [...box.querySelectorAll('input:checked')].map(i => i.value);
+      /* One series is not a comparison. Refuse the change and put the box back
+         rather than silently drawing a chart that cannot mean anything. */
+      if(picked.length < 2){
+        box.querySelectorAll('input').forEach(i => { i.checked = cmpSet().some(x => x.id === i.value); });
+        return;
+      }
+      setCmpSet(picked);
+      /* The ticked set changes which months BOTH series carry, so the timeline
+         is rebuilt, not just the dots. */
+      months = _computeMonths();
+      if(currentIdx > months.length - 1) currentIdx = Math.max(0, months.length - 1);
+      buildTimeline(); render(false);
+    });
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', apply); else apply();
 })();
@@ -893,16 +1049,36 @@ window.__forgePushed = null;
        forge_cotality. The Cotality read is reshaped into the same
        [{label, data:{houses,units}}] the merge below already expects, so only
        the source changes and none of the merging does. */
-    const _cot = rvdBasis() === 'cotality';
+    const _basis = rvdBasis();
+    const _cmp = _basis === 'compare';
+    const _v3 = _basis === 'sqm3';
+    /* V2 and V3 are the same KIND of series -- one prebuilt row, every month
+       from one source under one rule -- so everything below that used to test
+       "is this Cotality" now tests "is this a prebuilt timeline", and only the
+       row id differs. */
+    const _cot = _basis === 'cotality' || _v3;
+    const _builtId = _v3 ? RVD_SQM_ID : RVD_COTALITY_ID;
+    /* Compare reads the Cotality timeline into a SECOND set of RAW keys
+       ('house2_'/'unit2_') and leaves V1 exactly where it is, so nothing about
+       the V1 path changes and the two series can be plotted against each other.
+       _computeMonths() then narrows the timeline to the months BOTH carry. */
+    /* Compare loads BOTH prebuilt series regardless of what is ticked, so that
+       ticking a box repaints instead of re-fetching. */
+    const _readOne = id => window.sb.from('forge_cotality').select('data').eq('id', id).maybeSingle()
+      .then(({ data }) => (data && data.data && Array.isArray(data.data.months) ? data.data.months : []))
+      .catch(() => []);
+    const _readCmp = _cmp
+      ? Promise.all([_readOne(RVD_COTALITY_ID), _readOne(RVD_SQM_ID)]).then(([a, b]) => ({ '2': a, '3': b }))
+      : Promise.resolve(null);
     const _read = _cot
-      ? window.sb.from('forge_cotality').select('data').eq('id', RVD_COTALITY_ID).maybeSingle()
+      ? window.sb.from('forge_cotality').select('data').eq('id', _builtId).maybeSingle()
           .then(({ data, error }) => ({
             error,
             data: (data && data.data && Array.isArray(data.data.months) ? data.data.months : [])
               .map(m => ({ label: m.label, data: { houses: m.houses, units: m.units } })),
           }))
       : window.sb.from('forge_demand_snapshots').select('label,data').like('version', 'rvd-%');
-    _read.then(({ data, error }) => {
+    _read.then(async ({ data, error }) => {
         if (_cot && (error || !data || !data.length)) {
           /* Nothing has been pushed on the Cotality basis yet. Silently showing
              the SQM timeline under a picker reading "Cotality" is the exact
@@ -910,7 +1086,9 @@ window.__forgePushed = null;
           try { localStorage.setItem(RVD_BASIS_KEY, 'sqm'); } catch(e) {}
           const sel = document.getElementById('basisSelect');
           if (sel) sel.value = 'sqm';
-          alert('The Cotality timeline has not been built yet.\n\nIt is built by scripts/build-cotality-rvd-history.mjs from Cotality’s own monthly exports, not captured from the Demand Score Dashboard — that dashboard is SQM only. Showing SQM.');
+          alert(_v3
+            ? 'The V3 timeline has not been built yet.\n\nIt is built by scripts/build-sqm-rvd-history.mjs — V1’s own SQM and REA readings, re-scored month by month under one engine and one supply rule. Showing V1.'
+            : 'The Cotality timeline has not been built yet.\n\nIt is built by scripts/build-cotality-rvd-history.mjs from Cotality’s own monthly exports, not captured from the Demand Score Dashboard — that dashboard is SQM only. Showing V1.');
           /* Reload rather than carry on: this pass has already skipped the SQM
              merge, so staying put would leave the viewer on the baked baseline
              with the newest pushed months missing and nothing saying why. */
@@ -918,6 +1096,8 @@ window.__forgePushed = null;
           return;
         }
         if (error || !data || !data.length) return;
+        /* V2 first, so the V1 loop below sees a populated typeLookup and both
+           series agree on smooth-versus-workforce for the same market. */
         /* Built BEFORE the Cotality reset below: smooth-versus-workforce is a
            property of the market, it rides on the baked months, and a lookup
            taken after the reset would be empty — every market would fall back
@@ -932,6 +1112,30 @@ window.__forgePushed = null;
         }
         const pushed = {};
         let addedAny = false;
+        if (_cmp) {
+          const cmpAll = await _readCmp;
+          const cmpMonths = (cmpAll && cmpAll['2']) || [];
+          for (const pre of ['2', '3']) {
+            for (const m of ((cmpAll && cmpAll[pre]) || [])) {
+              if (!m || !m.label) continue;
+              [['houses','house'],['units','unit']].forEach(([grp,base]) => {
+                const list = m[grp];
+                if (!Array.isArray(list)) return;
+                RAW[base+pre+'_'+m.label] = list.filter(r => r && r.city).map(r => {
+                  const city = CITY_RENAMES[r.city] || String(r.city);
+                  return { city, rw: Number(r.rw)||0, ds: Number(r.ds)||0, type: typeLookup[city]||'smooth' };
+                });
+              });
+              addedAny = true;
+            }
+          }
+          if (!cmpMonths.length) {
+            try { localStorage.setItem(RVD_BASIS_KEY, 'sqm'); } catch(e) {}
+            alert('The Cotality timeline has not been built yet, so there is nothing to compare against. Showing V1.');
+            location.reload();
+            return;
+          }
+        }
         const atEnd = currentIdx >= months.length - 1;   // follow the timeline end only if the user was on it
         for (const row of data) {
           const month = row.label, payload = row.data;
@@ -1286,9 +1490,18 @@ function _computeMonths(){
      Cotality months only, so any baseline month left in here becomes a tick on
      the timeline with no points behind it — an empty chart that reads as a
      market with no demand rather than as a month nobody has recorded. */
-  const all=new Set(rvdBasis()==='cotality' ? [] : BASELINE_MONTHS);
+  const _b = rvdBasis();
+  const all=new Set((_b==='cotality'||_b==='sqm3') ? [] : BASELINE_MONTHS);
   Object.keys(RAW).forEach(k=>{const i=k.indexOf('_');if(i>0) all.add(k.slice(i+1));});
-  return [...all].sort((a,b)=>_monthKeyToNum(a)-_monthKeyToNum(b));
+  let out=[...all];
+  /* Compare only offers months BOTH series carry. A month on one side alone
+     would draw a lone dot with no partner and no connector, which reads as
+     "this market did not move" rather than "there is nothing to compare". */
+  if (_b==='compare' && Object.keys(RAW).some(k => /^(house|unit)[23]_/.test(k))) {
+    const pres = cmpSet().map(x => x.pre);
+    out = out.filter(m => pres.every(p => RAW['house'+p+'_'+m] || RAW['unit'+p+'_'+m]));
+  }
+  return out.sort((a,b)=>_monthKeyToNum(a)-_monthKeyToNum(b));
 }
 let months=_computeMonths();
 /* Cache the latest month so the hub's "At a glance" → Latest Data
@@ -1464,8 +1677,9 @@ buildTimeline();
 const tooltip=document.getElementById('tooltip');
 function showTip(event,d){
   /* In the Combined view, say which point this is (House = solid, Unit = hollow). */
-  const kindLabel = (typeof activeType!=='undefined' && activeType==='combined')
-    ? (d._kind==='unit' ? ' · Unit' : ' · House') : '';
+  const kindLabel = d && d._basis ? ' · ' + d._basis
+    : (typeof activeType!=='undefined' && activeType==='combined')
+      ? (d._kind==='unit' ? ' · Unit' : ' · House') : '';
   tooltip.innerHTML=`<strong>${d.city}${kindLabel}</strong>Runway: ${getRunwayValue(d,d._kind).toFixed(2)}%<br>Demand Score: ${d.ds}<br>Type: ${d.type==='workforce'?'Workforce Market':'Smooth Market'}`;
   tooltip.style.opacity='1'; moveTip(event);
 }
@@ -1492,17 +1706,110 @@ function getTrailData(city,upToIdx,trailLen){
 }
 
 // ── RENDER ──
+/* ── THE COMPARE TABLE ────────────────────────────────────────────
+   ONE row per market, not two, and that is what makes a combined table read
+   cleanly: RUNWAY IS SHARED between the bases -- it is price against borrowing
+   power, the V2 builder takes it from the same snapshot V1 does, and a diff
+   over the whole estate moved it on zero points -- so one runway column serves
+   both, and the only thing needing two columns is the demand score.
+
+   The table shows EVERY market where the chart shows only the ones picked: a
+   scatter of 36 pairs is unreadable, a table of 36 rows is just a table. Sorted
+   by the SIZE of the move, so the markets the change actually touched sit at
+   the top rather than being alphabetically buried. */
+function renderCompareTable(month){
+  const wrap=document.getElementById('cmpWrap'); if(!wrap) return;
+  if(rvdBasis()!=='compare'){ wrap.style.display='none'; return; }
+  wrap.style.display='';
+  const esc=v=>String(v==null?'':v).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const t=(activeType==='unit')?'unit':'house';
+  const picked=cmpSet();
+  /* One row per market carrying every ticked series. A market is listed only
+     where EVERY ticked series has it -- a half-filled row invites a comparison
+     that was never made. */
+  const byCity={};
+  picked.forEach((sx,i)=>{ getData(t+sx.pre,month).forEach(r=>{ (byCity[r.city]||(byCity[r.city]={type:r.type,rec:r,vals:{}})).vals[sx.id]=r.ds; }); });
+  const rows=Object.entries(byCity)
+    .filter(([,o])=>picked.every(sx=>o.vals[sx.id]!=null))
+    .map(([city,o])=>{
+      const vs=picked.map(sx=>o.vals[sx.id]);
+      return { city, type:o.type, rw:getRunwayValue(o.rec,t), vals:o.vals,
+               d: picked.length===2 ? vs[1]-vs[0] : Math.max(...vs)-Math.min(...vs) };
+    });
+  rows.sort((a,b)=>Math.abs(b.d)-Math.abs(a.d)||String(a.city).localeCompare(String(b.city)));
+  const head=document.getElementById('cmpHead');
+  const wrapT=document.getElementById('cmpTableWrap');
+  if(!rows.length){
+    head.innerHTML='<span class="cmp-title">'+esc(cmpSet().map(x=>x.label).join(' v '))+'</span><span class="cmp-sub">'+esc(month)+'</span>';
+    wrapT.innerHTML='<div id="cmpEmpty">No market carries every ticked series for this month.</div>';
+    return;
+  }
+  if(!document.getElementById('cmpTable')) wrapT.innerHTML='<table id="cmpTable"><thead></thead><tbody></tbody></table>';
+  const moved=rows.filter(r=>r.d!==0).length;
+  const avg=rows.reduce((a,r)=>a+r.d,0)/rows.length;
+  const sign=v=>((+v)>0?'+':'')+v;
+  head.innerHTML='<span class="cmp-title">'+esc(picked.map(x=>x.label).join(' v '))+' · '+esc(month)+' · '+(t==='unit'?'Units':'Houses')+'</span>'
+    +'<span class="cmp-sub">'+rows.length+' markets · '+moved+(picked.length===2?' moved · average '+sign(avg.toFixed(1))+' pts':' disagree · average spread '+avg.toFixed(1)+' pts')
+    +' · runway is identical across the series, so one column serves them all</span>';
+  const T=document.getElementById('cmpTable');
+  const lastCol=picked.length===2?'Change':'Spread';
+  T.querySelector('thead').innerHTML='<tr><th class="l">Market</th><th>Runway</th>'
+    +picked.map(sx=>'<th>DS — '+sx.label+'</th>').join('')
+    +'<th>'+lastCol+'</th></tr>';
+  T.querySelector('tbody').innerHTML=rows.map(r=>{
+    /* With three series the last column is a SPREAD, which has no direction --
+       colouring it up/down would assert a move that was never claimed. */
+    const cls=picked.length!==2?'flat':(r.d>0?'up':(r.d<0?'dn':'flat'));
+    const col=r.type==='workforce'?'var(--workforce)':'var(--smooth)';
+    return '<tr'+(selectedCities.has(r.city)?' class="sel"':'')+'>'
+      +'<td class="l"><span class="tdot" style="background:'+col+'"></span>'+esc(r.city)+'</td>'
+      +'<td>'+(r.rw==null?'—':(+r.rw).toFixed(2)+'%')+'</td>'
+      +picked.map(sx=>'<td>'+r.vals[sx.id]+'</td>').join('')
+      +'<td class="'+cls+'">'+(picked.length===2?(r.d===0?'—':sign(r.d)):r.d)+'</td></tr>';
+  }).join('');
+}
+
 function render(animate=false){
   if(rateBasis!=='recorded' && _rateFactor.length!==months.length) _recomputeRateFactors();
   const month=months[currentIdx];
-  const combined=(activeType==='combined');
+  /* No month to draw -- the timeline is empty, or currentIdx has outrun it
+     after a basis change. Returning is correct AND load-bearing: this function
+     runs at the top level of its script block, so throwing here takes out
+     every statement after it, including the one that hides the loading
+     overlay. That is exactly what a boot-time empty Compare timeline did. */
+  if(month===undefined) return;
+  /* PAIR MODE. Two dots per market joined by a connector, used by two views:
+     Combined (House v Unit) and Compare (V1 v V2). Compare reuses every
+     encoder below -- solid dot, hollow ring, connector, one label per market --
+     so the two views read the same way and only the PAIR differs. */
+  const compareOn=(rvdBasis()==='compare');
+  const combined=(activeType==='combined')||compareOn;
   /* Each plotted point carries _kind ('house'|'unit') + a stable _key. In the
      single-tab views that's just the active tab. In the Combined view we show
      only the SELECTED regions, each as TWO points — a House point (solid dot)
      and a Unit point (hollow ring) — joined by a connector. It starts empty
      (showing every region's pair at once is too noisy) and prompts for a pick. */
   let data;
-  if(combined){
+  if(compareOn){
+    /* V1 solid, V2 hollow, SAME property type. Both sit at the same x, because
+       runway is basis-independent -- it is price against borrowing power and
+       has nothing to do with which vacancy series is in play, and the V2
+       builder takes it from the same snapshot V1 does. So the connector is
+       VERTICAL and its length IS the demand-score change. That is the whole
+       point of the view: you read the movement, not two scatters. */
+    data=[];
+    const picked=cmpSet();
+    [...selectedCities].forEach(city=>{
+      picked.forEach((sx,i)=>{
+        const rec=getData(activeType+sx.pre, month).find(r=>r.city===city);
+        if(!rec) return;
+        /* _si is the SERIES index and drives the mark; _kind is kept so the
+           connector and the label rules, which Combined also uses, still work
+           without a second set of branches. */
+        data.push(Object.assign({},rec,{_kind:i===1?'unit':'house',_si:i,_key:city+'|'+sx.id,_basis:sx.name}));
+      });
+    });
+  } else if(combined){
     data=[];
     [...selectedCities].forEach(city=>{
       const h=getData('house',month).find(r=>r.city===city);
@@ -1513,7 +1820,12 @@ function render(animate=false){
   } else {
     data=getData(activeType,month).map(d=>Object.assign({},d,{_kind:activeType,_key:d.city}));
   }
-  if(combinedNote) combinedNote.style('display',(combined && !data.length)?null:'none');
+  if(combinedNote){
+    combinedNote.style('display',(combined && !data.length)?null:'none');
+    if(combined && !data.length) combinedNote.text(compareOn
+      ? 'Choose one or more regions to compare ' + cmpSet().map(x=>x.label).join(' v ')
+      : 'Choose one or more regions to compare House vs Unit');
+  }
   const trailLen=parseInt(document.getElementById('trailSelect').value);
   document.getElementById('monthDisplay').textContent=month;
   // Sync the in-chart month label to the currently-viewed data month
@@ -1524,6 +1836,7 @@ function render(animate=false){
     _chartMl.textContent = (_mm[_parts[0]] || _parts[0]) + ' ' + (_parts[1] || '');
   }
   updateTimeline();
+  renderCompareTable(month);
 
   const highlight=selectedCities.size>0;
   const focusCities=highlight?[...selectedCities]:data.map(d=>d.city);
@@ -1603,25 +1916,40 @@ function render(animate=false){
      every shown point is a selected region. */
   const typeColor=d=>d.type==='workforce'?'var(--workforce)':'var(--smooth)';
   const dotCX=d=>dataX(getRunwayValue(d,d._kind));
+  /* Three marks, because Compare can show three series at once: the FIRST is
+     a solid dot, the SECOND a hollow ring, the THIRD a small solid dot. Colour
+     is not available to encode series -- it already carries smooth/workforce --
+     and all three sit at the same x, so the mark is the only thing left. */
   const dotFill=d=>(combined && d._kind==='unit')?'none':typeColor(d);
   const dotStroke=d=>combined
     ? (d._kind==='unit'?typeColor(d):'none')
     : (highlight&&selectedCities.has(d.city)?'white':'none');
   const dotStrokeW=d=>(combined && d._kind==='unit')?2.2:1.5;
-  const dotR=d=>highlight&&selectedCities.has(d.city)?7:5;
+  const dotR=d=>{ const base=highlight&&selectedCities.has(d.city)?7:5; return d._si===2?Math.max(2.6,base-2.6):base; };
   const dotOp=d=>combined?0.95:(highlight&&!selectedCities.has(d.city)?0.12:0.88);
 
   // Connector lines (Combined view) — join each region's House↔Unit point.
   if(combined){
+    /* In Compare the connector spans the WHOLE ticked set, not a pair: with
+       three series its length is the spread between the highest and lowest
+       reading for that market, which is the number the view exists to show. */
     const pairs=[...selectedCities].map(city=>{
+      if(compareOn){
+        const pts=data.filter(d=>d.city===city);
+        if(pts.length<2) return null;
+        let lo=pts[0],hi=pts[0];
+        pts.forEach(p=>{ if(p.ds<lo.ds) lo=p; if(p.ds>hi.ds) hi=p; });
+        return {city,h:lo,u:hi};
+      }
       const h=data.find(d=>d.city===city&&d._kind==='house');
       const u=data.find(d=>d.city===city&&d._kind==='unit');
       return (h&&u)?{city,h,u}:null;
     }).filter(Boolean);
     const conns=connectorLayer.selectAll('line.rw-conn').data(pairs,d=>d.city);
+    /* Stroke, width and dash pattern live in CSS (.rw-conn) so the march and
+       the colour are defined once for both pair views. */
     const connEnter=conns.enter().append('line').attr('class','rw-conn')
-      .attr('stroke','rgba(0,0,0,.30)').attr('stroke-width',1.4)
-      .attr('stroke-dasharray','4 3').attr('pointer-events','none')
+      .attr('pointer-events','none')
       .attr('x1',d=>dataX(getRunwayValue(d.h,'house'))).attr('y1',d=>dataY(d.h.ds))
       .attr('x2',d=>dataX(getRunwayValue(d.u,'unit'))).attr('y2',d=>dataY(d.u.ds));
     conns.merge(connEnter).transition(trans)
@@ -1791,6 +2119,11 @@ function leaderHot(city,on){
       return on && this.getAttribute('data-city')===city;
     });
     labelLayer.selectAll('text.city-label').classed('label-hot',d=>on&&d&&d.city===city);
+    /* The pair connector marches only while its own market is hovered. This
+       function is the one place that knows which market that is, and the dots
+       and the labels both already call it, so the connector follows both
+       without a second hover path to keep in step. */
+    connectorLayer.selectAll('line.rw-conn').classed('conn-hot',d=>on&&d&&d.city===city);
   }catch(e){}
 }
 

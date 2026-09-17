@@ -27,13 +27,34 @@
 //                    Read at the DATA month, which is the same vintage the SQM
 //                    line had at that label — its days on market were always
 //                    Cotality's too.
-//   listings         the LABEL month's stored Demand Score snapshot, which is
-//                    the REA series — the same listings the SQM line uses.
-//                    ⚠ NOT Cotality's `listings1`. An earlier cut took that and
-//                    it is a different measure on a different scale (Brisbane
-//                    2026-05: REA 2,709 against Cotality's 9,032), so it moved
-//                    a number this exercise is not supposed to touch. Only
-//                    vacancy and rent change between the two bases.
+//   listings         Cotality's own `listings1` (the "# listings (1mo)" column),
+//                    read at the DATA month from forge_cl_suburbs like days on
+//                    market beside it. Saskia's call, 2026-09-17.
+//
+//                    This REPLACES the REA series an earlier cut used, and it
+//                    reverses the warning that used to stand here. That warning
+//                    said Cotality's listings were "a different measure on a
+//                    different scale", citing Brisbane. Measured across eight
+//                    capitals and three months before the switch: SEVEN of the
+//                    eight agree within 0.78-1.18x (median ~0.95). Brisbane
+//                    alone runs 2.7x, every month.
+//
+//                    And Brisbane is REA's problem, not Cotality's. Listings per
+//                    1,000 people, 2026-09: Melbourne 3.58, Perth 3.22, Adelaide
+//                    2.79, Sydney 2.64, Hobart 2.32 — and Brisbane 1.17, less
+//                    than half of any peer for a city of 2.8 million. On
+//                    Cotality's figure Brisbane is 3.19, beside Melbourne's
+//                    3.20. REA's Brisbane is a narrower geography (the council,
+//                    not Greater Brisbane), so V2's Brisbane demand was
+//                    OVERSTATED — fewer listings per head reads as a tighter
+//                    market. Expect Brisbane to fall; that is the fix, not a
+//                    break. `scratch/listings-compare.mjs` and `per1k.mjs`
+//                    recompute both tables.
+//
+//                    ⚠ V2 now differs from V1 in TWO inputs, not one. It is no
+//                    longer a controlled test of the vacancy/rent SOURCE; it is
+//                    a Cotality-based demand score. That was the trade Saskia
+//                    asked for.
 //   population       the LABEL month's snapshot.
 //   runway           the same snapshot. Runway is basis-independent — it is
 //                    price against borrowing power and has nothing to do with
@@ -306,18 +327,16 @@ console.log('markets with projection inputs: ' + Object.keys(VRFC).length);
 const { data: rwLive } = await sb.from('rdp_runway').select('region_slug,payload');
 const { data: popLive } = await sb.from('rdp_raw_series').select('region_slug,period,value')
   .eq('metric', 'population').gte('period', '2020-01-01');
-/* The live REA listings, from the same card the dashboard reads — so the newest
-   label uses the same listings series as every other month. */
-const { data: diLive } = await sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle();
-const DI = ((diLive && diLive.data && diLive.data.regions)) || {};
+/* No listings read here any more: every label, the newest included, takes them
+   from the Cotality archive at its own data month. */
 const LIVE = { h: {}, u: {} };
 {
   const pop = {}; const at = {};
   for (const r of popLive || []) if (!at[r.region_slug] || r.period > at[r.region_slug]) { at[r.region_slug] = r.period; pop[r.region_slug] = +r.value; }
   for (const r of rwLive || []) {
-    const p = r.payload || {}, d = DI[r.region_slug] || {};
-    LIVE.h[r.region_slug] = { rw: p.house && (p.house.forecast_wg_pct ?? p.house.runway_pct), pop: pop[r.region_slug], listings: num(d.listings_h) };
-    LIVE.u[r.region_slug] = { rw: p.unit && (p.unit.forecast_wg_pct ?? p.unit.runway_pct), pop: pop[r.region_slug], listings: num(d.listings_u) };
+    const p = r.payload || {};
+    LIVE.h[r.region_slug] = { rw: p.house && (p.house.forecast_wg_pct ?? p.house.runway_pct), pop: pop[r.region_slug] };
+    LIVE.u[r.region_slug] = { rw: p.unit && (p.unit.forecast_wg_pct ?? p.unit.runway_pct), pop: pop[r.region_slug] };
   }
 }
 
@@ -345,7 +364,7 @@ for (const month of labels) {
   const build = (isU) => {
     const t = isU ? 'u' : 'h';
     const raw = [];
-    const missing = { rent3: [], dom: [], pop: [], proj: [] };
+    const missing = { rent3: [], dom: [], listings: [], pop: [], proj: [] };
     for (const slug of Object.keys(VR)) {
       /* Every Cotality input is read at the DATA month; runway and population
          at the LABEL month, because those are what a capture taken then knew. */
@@ -357,12 +376,17 @@ for (const month of labels) {
       const snap = useLive ? (LIVE[t][slug] || {}) : (SNAP[month][t][slug] || {});
       if (back == null || !(back > 0)) { missing.rent3.push(slug); continue; }
       if (cl.dom == null) { missing.dom.push(slug); continue; }
-      if (snap.pop == null || typeof snap.rw !== 'number' || snap.listings == null) { missing.pop.push(slug); continue; }
+      /* Cotality's listings, same row and same vintage as the days on market
+         above. A market without them is DROPPED rather than quietly served the
+         REA figure -- mixing the two sources inside one series is the thing
+         this change exists to stop. */
+      if (cl.listings == null) { missing.listings.push(slug); continue; }
+      if (snap.pop == null || typeof snap.rw !== 'number') { missing.pop.push(slug); continue; }
       const projected = projectVR(slug, cur.vr);
       if (projected == null) { missing.proj.push(slug); continue; }
       raw.push({
-        /* listings = the REA series this label already used; see the header */
-        slug, population: snap.pop, listings: snap.listings,
+        /* listings = Cotality's listings1 at the DATA month; see the header */
+        slug, population: snap.pop, listings: cl.listings,
         /* the PROJECTED vacancy, run on Cotality's own reading — the same KIND
            of number the SQM side feeds the engine. See section 3a. */
         vr: projected, dom: cl.dom,
@@ -393,7 +417,7 @@ for (const o of out) for (const grp of ['houses', 'units']) {
 console.log('');
 for (const o of out) {
   const m = o._miss;
-  const why = [m.rent3.length ? m.rent3.length + ' no rent-3yr' : null, m.dom.length ? m.dom.length + ' no DOM' : null, m.pop.length ? m.pop.length + ' no runway' : null, m.proj.length ? m.proj.length + ' no projection' : null].filter(Boolean).join(', ');
+  const why = [m.rent3.length ? m.rent3.length + ' no rent-3yr' : null, m.dom.length ? m.dom.length + ' no DOM' : null, m.listings.length ? m.listings.length + ' no listings' : null, m.pop.length ? m.pop.length + ' no runway' : null, m.proj.length ? m.proj.length + ' no projection' : null].filter(Boolean).join(', ');
   console.log('  ' + o.label.padEnd(10) + '(data ' + o._data + ')  houses ' + String(o.data.houses.length).padStart(3)
     + '   units ' + String(o.data.units.length).padStart(3) + (why ? '   (' + why + ')' : ''));
   delete o._miss; delete o._data;
