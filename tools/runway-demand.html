@@ -714,22 +714,11 @@ body.embed-mode html { overflow: hidden; }
        dev/admin only by the same pass that reveals Manage Pushed Months: two
        demand scores in front of an advisor, with nothing on the slide saying
        which, is worse than one they can question. -->
-  <div class="ctrl-group" id="basisGroup" style="display:none">
-    <label>VR / Rent Source</label>
-    <select id="basisSelect" title="Which vacancy and rent series the demand score is built on">
-      <option value="sqm">V1 — SQM</option>
-      <option value="cotality">V2 — Cotality</option>
-      <option value="sqm3">V3 — CL rent/VR, REA listings</option>
-      <option value="compare">Compare</option>
-    </select>
-  </div>
-
-  <!-- Which series the Compare view puts side by side. Hidden unless the basis
-       IS Compare, because it means nothing otherwise. -->
-  <div class="ctrl-group" id="cmpPickGroup" style="display:none">
-    <label>Compare series</label>
-    <div id="cmpPick"></div>
-  </div>
+  <!-- The VR/Rent source picker and the Compare controls were removed on
+       2026-09-18 (Van, after Saskia's review): this tool shows ONE series now.
+       The note that used to stand above the picker argued that two demand
+       scores in front of an advisor, with nothing saying which, is worse than
+       one they can question. That argument retires the picker too. -->
 
   <div class="ctrl-group">
     <label>Wage Growth</label>
@@ -800,11 +789,6 @@ body.embed-mode html { overflow: hidden; }
   <div class="chart-month" id="chartMonthLabel">May 2026</div>
   <svg id="chart"></svg>
   <div class="tooltip" id="tooltip"></div>
-</div>
-<!-- Compare table. Hidden unless the basis is Compare; filled by renderCompareTable(). -->
-<div id="cmpWrap" style="display:none">
-  <div id="cmpHead"></div>
-  <div id="cmpTableWrap"><table id="cmpTable"><thead></thead><tbody></tbody></table></div>
 </div>
 <div class="timeline">
   <span class="tl-label" id="tlStart"></span>
@@ -969,78 +953,19 @@ function setCmpSet(ids){
 function rvdIsEmbed(){
   try { return new URLSearchParams(location.search).get('embed') === '1'; } catch(e){ return false; }
 }
-function rvdBasis(){
-  if (rvdIsEmbed()) return 'sqm';
-  try {
-    const v = localStorage.getItem(RVD_BASIS_KEY);
-    return (v === 'cotality' || v === 'compare' || v === 'sqm3') ? v : 'sqm';
-  }
-  catch(e){ return 'sqm'; }
-}
-function setRunwayBasis(v){
-  const next = (v === 'cotality' || v === 'compare' || v === 'sqm3') ? v : 'sqm';
-  if(next === rvdBasis()) return;
-  try { localStorage.setItem(RVD_BASIS_KEY, next); } catch(e){}
-  /* Reload rather than re-render: the two bases are different SERIES with
-     different months, so the timeline, the region list and every point have to
-     be rebuilt from scratch. A partial repaint is how a chart ends up showing
-     one basis under the other's month. */
-  location.reload();
-}
-(function wireBasisSelect(){
-  function apply(){
-    const sel = document.getElementById('basisSelect');
-    if(!sel) return;
-    sel.value = rvdBasis();
-    /* Compare already spends the pair on V1-v-V2, so the Combined tab (which
-       spends it on House-v-Unit) has nowhere to go: four dots per market with
-       two meanings is not a chart anybody can read. Hide it rather than let it
-       be picked and silently mean something else. */
-    if(rvdBasis()==='compare'){
-      const ct = document.querySelector('.tab[data-type="combined"]');
-      if(ct){
-        ct.style.display='none';
-        if(ct.classList.contains('active')){
-          ct.classList.remove('active');
-          const ht = document.querySelector('.tab[data-type="house"]');
-          if(ht){ ht.classList.add('active'); activeType='house'; }
-        }
-      }
-    }
-    sel.addEventListener('change', e => setRunwayBasis(e.target.value));
-  }
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', apply); else apply();
-})();
+/* ONE SERIES. Runway v Demand is V3 and nothing else: Cotality vacancy and
+   rent with the REA listing count, every month on the approvals95 supply rule
+   (forge_cotality id rvd_v3, built by build-cotality-rvd-history.mjs
+   --listings=rea).
 
-(function wireComparePicker(){
-  function apply(){
-    const box = document.getElementById('cmpPick'), grp = document.getElementById('cmpPickGroup');
-    if(!box || !grp) return;
-    if(rvdBasis() !== 'compare'){ grp.style.display = 'none'; return; }
-    grp.style.display = '';
-    const on = cmpSet().map(x => x.id);
-    box.innerHTML = RVD_SERIES.map(sx =>
-      '<label class="cmp-tick"><input type="checkbox" value="' + sx.id + '"' + (on.includes(sx.id) ? ' checked' : '') + '> ' + sx.label + '</label>'
-    ).join('');
-    box.addEventListener('change', () => {
-      const picked = [...box.querySelectorAll('input:checked')].map(i => i.value);
-      /* One series is not a comparison. Refuse the change and put the box back
-         rather than silently drawing a chart that cannot mean anything. */
-      if(picked.length < 2){
-        box.querySelectorAll('input').forEach(i => { i.checked = cmpSet().some(x => x.id === i.value); });
-        return;
-      }
-      setCmpSet(picked);
-      /* The ticked set changes which months BOTH series carry, so the timeline
-         is rebuilt, not just the dots. */
-      months = _computeMonths();
-      if(currentIdx > months.length - 1) currentIdx = Math.max(0, months.length - 1);
-      buildTimeline(); render(false);
-    });
-  }
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', apply); else apply();
-})();
+   This stays a FUNCTION returning a constant rather than being inlined at a
+   dozen call sites: the honest way to retire a switch is to make it answer one
+   thing, not to scatter the answer through the file.
 
+   It deliberately ignores the stored `ppa-ds-basis` key, which the Demand
+   Score Dashboard still uses for its own basis. A researcher who left that key
+   on another value must not change what this tool draws. */
+function rvdBasis(){ return 'sqm3'; }
 window.__forgePushed = null;
 (function mergeForgeMonths(){
   let tries = 0;
@@ -1496,17 +1421,14 @@ function _computeMonths(){
      Cotality months only, so any baseline month left in here becomes a tick on
      the timeline with no points behind it — an empty chart that reads as a
      market with no demand rather than as a month nobody has recorded. */
-  const _b = rvdBasis();
-  const all=new Set((_b==='cotality'||_b==='sqm3') ? [] : BASELINE_MONTHS);
+  /* Every month now comes from the prebuilt V3 row, so the baked
+     BASELINE_MONTHS (the old SQM timeline) no longer seeds anything: a
+     baseline month left in here would be a tick on the timeline with no points
+     behind it — an empty chart that reads as a market with no demand rather
+     than as a month nobody recorded. */
+  const all=new Set();
   Object.keys(RAW).forEach(k=>{const i=k.indexOf('_');if(i>0) all.add(k.slice(i+1));});
-  let out=[...all];
-  /* Compare only offers months BOTH series carry. A month on one side alone
-     would draw a lone dot with no partner and no connector, which reads as
-     "this market did not move" rather than "there is nothing to compare". */
-  if (_b==='compare' && Object.keys(RAW).some(k => /^(house|unit)[23]_/.test(k))) {
-    const pres = cmpSet().map(x => x.pre);
-    out = out.filter(m => pres.every(p => RAW['house'+p+'_'+m] || RAW['unit'+p+'_'+m]));
-  }
+  const out=[...all];
   return out.sort((a,b)=>_monthKeyToNum(a)-_monthKeyToNum(b));
 }
 let months=_computeMonths();
@@ -2693,9 +2615,6 @@ function openManageMonthsModal(){
       const admin = (typeof isAdmin==='function' && isAdmin());
       const btn=document.getElementById('runwayManageBtn');
       if(btn) btn.style.display = admin ? '' : 'none';
-      /* The VR/Rent source picker rides the same gate, for the same reason. */
-      const basis=document.getElementById('basisGroup');
-      if(basis) basis.style.display = admin ? '' : 'none';
       if(!btn) return;
     }catch(e){}
   }
