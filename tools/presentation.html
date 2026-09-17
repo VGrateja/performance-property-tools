@@ -15468,6 +15468,40 @@ async function _cmkJllSeries(cache, metric) {
   return out;
 }
 
+/* The other shape: ONE region, SEVERAL metrics, each metric becoming a series.
+   _cmkJllSeries is one metric across regions (cities on a chart); this is for
+   a chart whose series are grades rather than places. `defs` is an ordered
+   [metric, label, colour] list so the grade order and colours are fixed here
+   rather than left to whatever order the rows come back in. */
+async function _cmkJllByMetric(cache, region, defs) {
+  cache = cache || {};
+  cache.jllm = cache.jllm || {};
+  const ck = region + '|' + defs.map(d => d[0]).join(',');
+  if (cache.jllm[ck] !== undefined) return cache.jllm[ck];
+  let out = null;
+  try {
+    const { data, error } = await window.sb.from('rdp_raw_series')
+      .select('metric, period, value')
+      .eq('source', 'jll').eq('region_slug', region).eq('freq', 'Q')
+      .in('metric', defs.map(d => d[0]))
+      .order('period').limit(5000);
+    if (error) throw error;
+    const rows = data || [];
+    if (rows.length) {
+      const periods = Array.from(new Set(rows.map(r => r.period))).sort();
+      const byMetric = {};
+      rows.forEach(r => { (byMetric[r.metric] = byMetric[r.metric] || {})[r.period] = _cmkNum(r.value); });
+      const series = defs.filter(d => byMetric[d[0]]).map(d => ({
+        name: d[1], color: d[2],
+        data: periods.map(p => (byMetric[d[0]][p] == null ? null : byMetric[d[0]][p])),
+      }));
+      if (series.length) out = { cats: periods.map(_cmkQLabel), series: series };
+    }
+  } catch (e) { console.warn('[cmk] JLL metrics unavailable:', region, e); }
+  cache.jllm[ck] = out;
+  return out;
+}
+
 /* Nice y-axis bounds for a cmk-lines spec, in DISPLAY units. Rounds OUT to the
    nearest step and no further — an extra step of padding either side turned a
    3.6-10.6% range into a 2-12% axis, which is a fifth of the frame wasted.
@@ -15706,6 +15740,48 @@ const CMK_CHART_BUILDERS = {
       cats: spec.cats, series: spec.series,
       scale: 1, prefix: '$', dp: 0, axisDp: 0, stripPrefix: true, tickEvery: 8,
     }, _cmkJllBounds(spec, 1, 25, true)) };
+  },
+
+  /* Total industrial vacancy per city. JLL only populates vacancy from Q2 2024
+     and staggers the starts by market (Sydney and Melbourne Q2 2024, Brisbane
+     Q4 2024, Perth Q1 2025, Adelaide Q3 2025), so the series legitimately have
+     different lengths — cmk-lines connects through the leading nulls and each
+     market stays one line from wherever it actually begins. Quarter labels are
+     kept in full: nine quarters over two years would collapse to a repeated
+     year if stripped. */
+  'jll-ind-vacancy': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_vacancy_rate');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 100, unit: '%', dp: 2, axisDp: 0, tickEvery: 1,
+    }, _cmkJllBounds(spec, 100, 1, true)) };
+  },
+
+  /* Industrial vacancy by grade, STOCK-WEIGHTED across the reporting markets:
+     total vacant sqm over total stock sqm, not an average of each city's rate
+     — Adelaide would otherwise count the same as Sydney. Computed from JLL's
+     "Total Stock By Grade" and "Total Vacancy by Grade" sheets and stored
+     against `australia`; it reconciles to JLL's own published city rates
+     (Sydney Q2 2026 prime: 277,710 / 5,015,040 = 5.54%, published 5.5375%).
+
+     Coverage grows from two markets at Q2 2024 to five by Q3 2025, so the
+     earliest points are not the same "national" as the latest. The later
+     markets have LOWER prime vacancy, so the aggregate understates the rise
+     rather than flattering it — on a constant Sydney+Melbourne basis prime
+     runs 2.24% to 4.68% against 2.24% to 4.15% here. The slide note carries
+     both so the caveat travels with the chart. */
+  'jll-ind-vac-grade': async function (cache) {
+    const spec = await _cmkJllByMetric(cache, 'australia', [
+      ['jll_ind_vac_super_prime', 'Super prime', '#00A0B4'],
+      ['jll_ind_vac_prime',       'Prime',       '#171B24'],
+      ['jll_ind_vac_secondary',   'Secondary',   '#f5a623'],
+    ]);
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 100, unit: '%', dp: 2, axisDp: 0, tickEvery: 1,
+    }, _cmkJllBounds(spec, 100, 2, true)) };
   },
 };
 
