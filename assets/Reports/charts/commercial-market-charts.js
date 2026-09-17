@@ -368,6 +368,12 @@
       data: d.cats.map(String),
       axisLabel: {
         color: '#1a2236', fontSize: 10, interval: function (i) { return i % every === 0; },
+        /* rotateCats is for NAME categories, not periods. Twenty precinct
+           names across one axis collide flat — "Outer Central West" alone is
+           wider than its slot — and ECharts does not drop or angle them on its
+           own, it just overprints. Quarters never need it; they are short and
+           thinned by tickEvery. */
+        rotate: d.rotateCats || 0,
         formatter: function (v) { return d.stripPrefix ? String(v).slice(3) : String(v); },
       },
     });
@@ -423,6 +429,10 @@
                     .map(function (s) { return s.name; }),
       };
     }
+    /* Angled labels need the room back from the plot, or they are clipped by
+       the frame instead of colliding with each other — no improvement. Applied
+       last so the bar and legend grids above do not overwrite it. */
+    if (d.rotateCats) o.grid = Object.assign({}, o.grid, { bottom: 96 });
     o.series = series.map(function (s, i) {
       var col = s.color || PAL[i % PAL.length];
       if (isBar) {
