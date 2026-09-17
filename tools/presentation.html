@@ -20068,8 +20068,9 @@ async function downloadDeck(format, opts) {
 loadOverlays();
 buildPicker();
 /* Async cloud hydration AFTER the local-cache render so the user
-   sees something instantly. The cloud version overrides if present. */
-_hydratePresFromCloud();
+   sees something instantly. The cloud version overrides if present.
+   The promise is kept so the ?deck= deep-link below can wait for it. */
+const _presHydrated = _hydratePresFromCloud();
 /* Google Slides change watch (mig 098) — one query for every deck-scoped
    link, so the picker cards can wear a red "Updated" chip. Silent and
    best-effort: pre-migration it resolves to an empty set and nothing shows. */
@@ -20077,10 +20078,31 @@ _gswLoadPickerFlags();
 
 /* Deep-link: ?deck=<id> auto-opens that deck. Handy for sharing
    a direct link to a specific presentation. Looks across both
-   built-in DECKS and user-created custom decks. */
+   built-in DECKS and user-created custom decks.
+
+   This used to run once, synchronously, right after an UN-AWAITED
+   _hydratePresFromCloud() — so for any deck that lives only in the cloud,
+   findDeck() came up empty and the link silently dropped you on the picker.
+   It appeared to work only when the deck happened to be in the local cache
+   already, which is also why it failed hardest for the people it matters most
+   to: a shared link opened by someone who has never loaded that deck, and
+   anyone whose localStorage mirror is full (the mirror write throws
+   QuotaExceededError and the cache stays stale).
+
+   Now: try the cache first so a warm load still opens instantly, and
+   otherwise wait for hydration and try once more. The _activeDeck guard stops
+   it yanking the user out of a deck they opened by hand while waiting. */
 const initialDeck = new URLSearchParams(location.search).get('deck');
-if (initialDeck && findDeck(initialDeck)) {
-  openDeck(initialDeck);
+if (initialDeck) {
+  if (findDeck(initialDeck)) {
+    openDeck(initialDeck);
+  } else {
+    Promise.resolve(_presHydrated)
+      .catch(() => {})
+      .then(() => {
+        if (!_activeDeck && findDeck(initialDeck)) openDeck(initialDeck);
+      });
+  }
 }
 
 /* ?new=1 used to jump straight into a brand-new deck (it auto-ran
