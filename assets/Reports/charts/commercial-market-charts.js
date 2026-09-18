@@ -456,6 +456,12 @@
             show: true, position: 'top', fontSize: 11, fontWeight: 600, color: '#1a2236',
             formatter: function (p) { return fmtV(p.value); },
           },
+          /* Drop a label rather than print it over its neighbour. Grouped bars
+             whose values are nearly equal — four projection years that barely
+             move — overlap into "1.43%1.43%", which is worse than no label at
+             all. ECharts keeps whichever it can fit and the chart is
+             hoverable, so nothing is actually lost. */
+          labelLayout: { hideOverlap: true },
         };
         /* overlapBars stacks every series into the SAME slot instead of
            side-by-side. It is what lets one column per category be split

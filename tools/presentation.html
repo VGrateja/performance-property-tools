@@ -16050,6 +16050,80 @@ const CMK_CHART_BUILDERS = {
      growth is materially lower — Perth's face rent is +21% against +7%
      effective. That belongs on its own slide rather than being smuggled in
      here, but it is the reason this chart should not be quoted as income. */
+  /* The same projections as pop-growth, expressed as a RATE rather than a
+     count — and it reorders the states. On raw numbers Victoria adds the most
+     people (112,100 in 2025-26 against NSW's 98,000); on rate, WA is fastest
+     at 1.64% and NSW is mid-field at 1.13%. A big state adding a big number is
+     not the same as a state growing quickly, and for a market read it is the
+     rate that tells you whether demand is outrunning the existing stock.
+
+     The denominator has to be built, not looked up: `population` is actual and
+     stops at 2025, while the projections start at 2026. So each state starts
+     from its 2025 level and the projected increases are rolled forward, which
+     is what makes the later years compound off a moving base rather than a
+     fixed one. x is the STATE here, not the year — eight states read as eight
+     groups, and the four near-identical years sit together for comparison. */
+  'pop-growth-pct': async function (cache) {
+    const rows = await _cmkPopRows(cache);
+    if (!rows || !rows.length) return null;
+    const tot = {};
+    rows.forEach(r => {
+      const y = parseInt(String(r.period).slice(0, 4), 10);
+      const v = _cmkNum(r.value);
+      if (!y || v == null) return;
+      (tot[r.region_slug] = tot[r.region_slug] || {})[y] = (tot[r.region_slug][y] || 0) + v;
+    });
+    let base = {};
+    try {
+      const { data, error } = await window.sb.from('rdp_raw_series')
+        .select('region_slug, period, value')
+        .in('region_slug', CMK_STATES.map(s => s[0]))
+        .eq('metric', 'population').eq('freq', 'A')
+        .order('period');
+      if (error) throw error;
+      (data || []).forEach(r => {
+        const y = parseInt(String(r.period).slice(0, 4), 10);
+        const v = _cmkNum(r.value);
+        if (y && v != null) (base[r.region_slug] = base[r.region_slug] || {})[y] = v;
+      });
+    } catch (e) { console.warn('[cmk] population levels unavailable', e); return null; }
+
+    let years = null;
+    CMK_STATES.forEach(s => {
+      const ys = Object.keys(tot[s[0]] || {}).map(Number).sort((a, b) => a - b);
+      years = (years == null) ? ys : years.filter(y => ys.indexOf(y) >= 0);
+    });
+    if (!years || !years.length) return null;
+    const anchor = years[0] - 1;   /* last actual year, the base to roll from */
+
+    const cats = [], pct = {};
+    CMK_STATES.forEach(s => {
+      const lvl = base[s[0]] && base[s[0]][anchor];
+      if (lvl == null) return;
+      cats.push(s[1]);
+      let running = lvl;
+      pct[s[1]] = years.map(y => {
+        const d = tot[s[0]][y];
+        if (d == null) return null;
+        const rate = d / running;
+        running += d;
+        return rate;
+      });
+    });
+    if (!cats.length) return null;
+
+    const YRC = ['#00A0B4', '#5cc8e0', '#171B24', '#f5a623'];
+    const series = years.map((y, k) => ({
+      name: (y - 1) + '-' + String(y).slice(2), color: YRC[k % YRC.length],
+      data: cats.map(c => (pct[c][k] == null ? null : pct[c][k])),
+    }));
+    const spec = { cats: cats, series: series };
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: series, kind: 'bar', legend: true, tickEvery: 1,
+      barMaxWidth: 26, scale: 100, unit: '%', dp: 2, axisDp: 1,
+    }, _cmkJllBounds(spec, 100, 0.25, true)) };
+  },
+
   /* Container trade through the capital-city ports, in TEU. Straight out of the
      commercial snapshot's freight tab, which the deck already fetches for the
      bond and healthcare slides — no new source. Newcastle reports nothing
