@@ -16124,6 +16124,66 @@ const CMK_CHART_BUILDERS = {
     }, _cmkJllBounds(spec, 100, 0.25, true)) };
   },
 
+  /* People with a GP attendance, year-on-year change, split by state.
+     The deck's other healthcare slide is national and sits on the ABS Patient
+     Experience survey; this one is AIHW Medicare administrative data, which is
+     the only source that goes to state level. AIHW publishes by Primary Health
+     Network, not by state, so the state figures are PHN rows summed to state
+     of usual residence — that slightly overstates unique patients where people
+     moved between PHNs within a year, and runs ~1% under the national total
+     because some residence is unstated.
+
+     The two sources disagree and it is worth knowing which is on the slide:
+     ABS implies about +2.7m more people seeing a GP since 2017-18 with
+     2022-23 positive, while this shows +1.21m with 2022-23 at -722k as
+     pandemic-era use unwound. Boundaries are 2021 ASGS / 2023 PHN, so the
+     series cannot be extended back past this AIHW edition.
+
+     Changes are derived here rather than stored, so the chart follows the
+     levels; the last column is the whole 2017-18 to 2024-25 move. */
+  'gp-patients-change-by-state': async function (cache) {
+    cache = cache || {};
+    let rows = cache.gpstate;
+    if (rows === undefined) {
+      try {
+        const { data, error } = await window.sb.from('rdp_raw_series')
+          .select('region_slug, period, value')
+          .eq('source', 'aihw').eq('metric', 'gp_patients').eq('freq', 'A')
+          .order('period');
+        if (error) throw error;
+        rows = data || [];
+      } catch (e) { console.warn('[cmk] AIHW GP series unavailable', e); rows = null; }
+      cache.gpstate = rows;
+    }
+    if (!rows || !rows.length) return null;
+    const by = {};
+    rows.forEach(r => {
+      const v = _cmkNum(r.value);
+      if (v != null) (by[r.region_slug] = by[r.region_slug] || {})[r.period] = v;
+    });
+    const per = Array.from(new Set(rows.map(r => r.period))).sort();
+    if (per.length < 2) return null;
+    /* period is the FY-ENDING calendar year, so 2025-01-01 → "2024-25" */
+    const fy = p => { const y = parseInt(String(p).slice(0, 4), 10); return (y - 1) + '-' + String(y).slice(2); };
+    const cats = per.slice(1).map(fy).concat(['Total']);
+    const series = CMK_STATES.filter(s => by[s[0]]).map(s => {
+      const v = per.map(p => by[s[0]][p]);
+      const d = [];
+      for (let i = 1; i < v.length; i++) {
+        d.push((v[i] == null || v[i - 1] == null) ? null : v[i] - v[i - 1]);
+      }
+      d.push((v[v.length - 1] == null || v[0] == null) ? null : v[v.length - 1] - v[0]);
+      return { name: s[1], color: s[2], data: d };
+    });
+    if (!series.length) return null;
+    const totals = cats.map((_, i) => series.reduce((a, s) => a + (s.data[i] || 0), 0));
+    const spec = { series: [{ data: totals }] };
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: series, kind: 'bar', stack: true, legend: true,
+      tickEvery: 1, barMaxWidth: 60, scale: 1e-6, unit: 'm', dp: 2, axisDp: 1,
+    }, _cmkJllBounds(spec, 1e-6, 0.5, false)) };
+  },
+
   /* Container trade through the capital-city ports, in TEU. Straight out of the
      commercial snapshot's freight tab, which the deck already fetches for the
      bond and healthcare slides — no new source. Newcastle reports nothing
