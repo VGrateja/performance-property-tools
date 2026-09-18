@@ -15443,9 +15443,20 @@ async function _cmkJllSeries(cache, metric) {
   if (cache.jll[metric] !== undefined) return cache.jll[metric];
   let out = null;
   try {
+    /* FILTERED TO THE MARKET SLUGS ON PURPOSE. This used to select every region
+       carrying the metric and discard the non-markets afterwards, which was
+       fine while the only rows were the six markets. Loading 24 precincts under
+       jll_ind_prime_yield_mid took the match from 530 rows to 2775; PostgREST
+       capped the response at its server-side 1000 (a bigger .limit() does NOT
+       lift that) and the city lines silently ended at Q3 2010 instead of
+       Q2 2026 — on the live site, since the rows land in Supabase before any
+       deploy. The precincts now live under their own metric, so this filter is
+       belt-and-braces: it keeps the next sub-regional series from doing the
+       same thing. Ask the database for the regions this chart actually draws. */
     const { data, error } = await window.sb.from('rdp_raw_series')
       .select('region_slug, period, value')
       .eq('source', 'jll').eq('metric', metric).eq('freq', 'Q')
+      .in('region_slug', CMK_JLL_MARKETS.map(m => m[0]))
       .order('period').limit(5000);
     if (error) throw error;
     const rows = data || [];
@@ -15546,7 +15557,7 @@ async function _cmkJllPrecincts(cache) {
     for (let from = 0; ; from += 1000) {
       const { data, error } = await window.sb.from('rdp_raw_series')
         .select('region_slug, period, value')
-        .eq('source', 'jll').eq('metric', 'jll_ind_prime_yield_mid').eq('freq', 'Q')
+        .eq('source', 'jll').eq('metric', 'jll_ind_prime_yield_mid_precinct').eq('freq', 'Q')
         .in('region_slug', slugs).order('region_slug').order('period')
         .range(from, from + 999);
       if (error) throw error;
@@ -16026,6 +16037,214 @@ const CMK_CHART_BUILDERS = {
      rather than flattering it — on a constant Sydney+Melbourne basis prime
      runs 2.24% to 4.68% against 2.24% to 4.15% here. The slide note carries
      both so the caveat travels with the chart. */
+  /* The same AIHW series as a ranked snapshot: who has the most people seeing
+     a GP right now, largest first, with the share of residents riding beside
+     each bar as labelNote. Sideways on purpose — this is a league table, and
+     the eye reads a ranking down a list rather than along a row. The count and
+     the share say different things and both belong on the slide: NSW and NT
+     are 7.08m and 0.15m, but 84% and 58% of their residents. */
+  'gp-patients-by-state': async function (cache) {
+    cache = cache || {};
+    let pat = null, shr = null;
+    try {
+      const q = m => window.sb.from('rdp_raw_series')
+        .select('region_slug, period, value')
+        .eq('source', 'aihw').eq('metric', m).eq('freq', 'A').order('period');
+      const a = await q('gp_patients'), b = await q('gp_share_pct');
+      if (a.error) throw a.error;
+      pat = a.data || []; shr = b.error ? [] : (b.data || []);
+    } catch (e) { console.warn('[cmk] AIHW GP snapshot unavailable', e); return null; }
+    if (!pat.length) return null;
+    const P = {}, S = {};
+    pat.forEach(r => { const v = _cmkNum(r.value); if (v != null) (P[r.region_slug] = P[r.region_slug] || {})[r.period] = v; });
+    shr.forEach(r => { const v = _cmkNum(r.value); if (v != null) (S[r.region_slug] = S[r.region_slug] || {})[r.period] = v; });
+    const per = Array.from(new Set(pat.map(r => r.period))).sort();
+    const q = per[per.length - 1];
+    const byName = {};
+    CMK_STATES.forEach(s => { byName[s[0]] = s; });
+    const list = Object.keys(P).filter(k => byName[k] && P[k][q] != null)
+      .sort((a, b) => P[b][q] - P[a][q]);
+    if (!list.length) return null;
+    const top = Math.max.apply(null, list.map(k => P[k][q])) / 1e6;
+    return { module: 'cmk-lines', data: {
+      cats: list.map(k => byName[k][1]),
+      series: [{ name: 'People with a GP attendance',
+        data: list.map(k => ({ value: P[k][q], itemStyle: { color: byName[k][2] } })) }],
+      labelNote: list.map(k => (S[k] && S[k][q] != null) ? Math.round(S[k][q]) + '% of residents' : ''),
+      kind: 'barH', scale: 1e-6, unit: 'm', dp: 2, axisDp: 0, barMaxWidth: 30,
+      min: 0, max: Math.ceil(top), interval: 1,
+    } };
+  },
+
+  /* People with a GP attendance, year-on-year change, split by state.
+     The deck's other healthcare slide is national and sits on the ABS Patient
+     Experience survey; this one is AIHW Medicare administrative data, which is
+     the only source that goes to state level. AIHW publishes by Primary Health
+     Network, not by state, so the state figures are PHN rows summed to state
+     of usual residence — that slightly overstates unique patients where people
+     moved between PHNs within a year, and runs ~1% under the national total
+     because some residence is unstated.
+
+     The two sources disagree and it is worth knowing which is on the slide:
+     ABS implies about +2.7m more people seeing a GP since 2017-18 with
+     2022-23 positive, while this shows +1.21m with 2022-23 at -722k as
+     pandemic-era use unwound. Boundaries are 2021 ASGS / 2023 PHN, so the
+     series cannot be extended back past this AIHW edition.
+
+     Changes are derived here rather than stored, so the chart follows the
+     levels; the last column is the whole 2017-18 to 2024-25 move. */
+  'gp-patients-change-by-state': async function (cache) {
+    cache = cache || {};
+    let rows = cache.gpstate;
+    if (rows === undefined) {
+      try {
+        const { data, error } = await window.sb.from('rdp_raw_series')
+          .select('region_slug, period, value')
+          .eq('source', 'aihw').eq('metric', 'gp_patients').eq('freq', 'A')
+          .order('period');
+        if (error) throw error;
+        rows = data || [];
+      } catch (e) { console.warn('[cmk] AIHW GP series unavailable', e); rows = null; }
+      cache.gpstate = rows;
+    }
+    if (!rows || !rows.length) return null;
+    const by = {};
+    rows.forEach(r => {
+      const v = _cmkNum(r.value);
+      if (v != null) (by[r.region_slug] = by[r.region_slug] || {})[r.period] = v;
+    });
+    const per = Array.from(new Set(rows.map(r => r.period))).sort();
+    if (per.length < 2) return null;
+    /* period is the FY-ENDING calendar year, so 2025-01-01 → "2024-25" */
+    const fy = p => { const y = parseInt(String(p).slice(0, 4), 10); return (y - 1) + '-' + String(y).slice(2); };
+    const cats = per.slice(1).map(fy).concat(['Total']);
+    const series = CMK_STATES.filter(s => by[s[0]]).map(s => {
+      const v = per.map(p => by[s[0]][p]);
+      const d = [];
+      for (let i = 1; i < v.length; i++) {
+        d.push((v[i] == null || v[i - 1] == null) ? null : v[i] - v[i - 1]);
+      }
+      d.push((v[v.length - 1] == null || v[0] == null) ? null : v[v.length - 1] - v[0]);
+      return { name: s[1], color: s[2], data: d };
+    });
+    if (!series.length) return null;
+    const totals = cats.map((_, i) => series.reduce((a, s) => a + (s.data[i] || 0), 0));
+    const spec = { series: [{ data: totals }] };
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: series, kind: 'bar', stack: true, legend: true,
+      tickEvery: 1, barMaxWidth: 60, scale: 1e-6, unit: 'm', dp: 2, axisDp: 1,
+    }, _cmkJllBounds(spec, 1e-6, 0.5, false)) };
+  },
+
+  /* Container trade through the capital-city ports, in TEU. Straight out of the
+     commercial snapshot's freight tab, which the deck already fetches for the
+     bond and healthcare slides — no new source. Newcastle reports nothing
+     before 2017 and Adelaide misses three years; both stay null and cmk-lines
+     bridges them, which is why the ports keep one line each. */
+  'freight-teu': async function (cache) {
+    const tabs = await _cmkTabs(cache);
+    const t = tabs && tabs['freight-movement-data'];
+    if (!t || !Array.isArray(t.teu)) return null;
+    const PORTS = [
+      ['botanysydneyNsw', 'Sydney (Botany)', '#00A0B4'],
+      ['melbourneVic',    'Melbourne',       '#171B24'],
+      ['brisbaneQld',     'Brisbane',        '#5cc8e0'],
+      ['fremantleWa',     'Fremantle',       '#c2a4d6'],
+      ['adelaideSa',      'Adelaide',        '#f5a623'],
+      ['newcastleNsw',    'Newcastle',       '#3ecf8e'],
+      ['darwinNt',        'Darwin',          '#9aa3b1'],
+    ];
+    const cats = t.teu.map(String);
+    const series = PORTS.filter(p => Array.isArray(t[p[0]])).map(p => ({
+      name: p[1], color: p[2],
+      data: cats.map((_, i) => { const v = _cmkNum(t[p[0]][i]); return v == null ? null : v; }),
+    })).filter(s => s.data.some(v => v != null));
+    if (!series.length) return null;
+    const spec = { cats: cats, series: series };
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: series, legend: true,
+      scale: 1e-6, unit: 'm', dp: 2, axisDp: 1, tickEvery: 1,
+    }, _cmkJllBounds(spec, 1e-6, 0.5, true)) };
+  },
+
+  /* What the buyer is paid for taking property risk: each city's prime
+     industrial yield MINUS the 10-year government bond of the same quarter.
+     A yield on its own says nothing about whether it is generous — 6% against
+     a 2% bond and 6% against a 6% bond are opposite propositions, and the
+     deck's yield charts cannot tell those apart.
+
+     The bond tab is monthly, so each quarter takes the bond reading from its
+     first month. The tab's own naming is crossed over — `yield` holds the
+     rates and `10YearGovernmentBondYield` holds the ISO dates — so read it by
+     position, not by the name that looks right. */
+  'jll-yield-risk-premium': async function (cache) {
+    const tabs = await _cmkTabs(cache);
+    const g = tabs && tabs['govt-bonds-data'];
+    const yields = await _cmkJllSeries(cache, 'jll_ind_prime_yield_mid');
+    if (!g || !yields || !Array.isArray(g.yield)) return null;
+    const dates = g['10YearGovernmentBondYield'] || [];
+    const bondByMonth = {};
+    dates.forEach((d, i) => {
+      const v = _cmkNum(g.yield[i]);
+      if (d && v != null) bondByMonth[String(d).slice(0, 7)] = v;
+    });
+    /* cats are 'Q1 2000' labels; map each back to its quarter-start month. */
+    const months = yields.cats.map(c => {
+      const m = String(c).match(/^Q(\d) (\d{4})$/);
+      if (!m) return null;
+      return m[2] + '-' + String((+m[1] - 1) * 3 + 1).padStart(2, '0');
+    });
+    const keep = [];
+    months.forEach((mo, i) => { if (mo && bondByMonth[mo] != null) keep.push(i); });
+    if (!keep.length) return null;
+    const cats = keep.map(i => yields.cats[i]);
+    const series = yields.series.map(s => ({
+      name: s.name, color: s.color,
+      data: keep.map(i => (s.data[i] == null ? null : s.data[i] - bondByMonth[months[i]])),
+    })).filter(s => s.data.some(v => v != null));
+    if (!series.length) return null;
+    const spec = { cats: cats, series: series };
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: series, legend: true,
+      scale: 100, unit: 'pp', dp: 2, axisDp: 1, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 100, 0.5, false)) };
+  },
+
+  /* Yields by asset grade — the same prime-v-secondary shape as the rents
+     chart below, on yields. Secondary is the grade the rent chart shows
+     commanding less; here it shows the buyer being paid more for it, which is
+     the other half of the same sentence. Both series are the unweighted
+     average of the city's precinct midpoints, so they sit on the same basis as
+     the city yield chart rather than a published headline. */
+  'jll-ind-yield-grade': async function (cache) {
+    const prime = await _cmkJllSeries(cache, 'jll_ind_prime_yield_mid');
+    const sec   = await _cmkJllSeries(cache, 'jll_ind_secondary_yield_mid');
+    if (!prime || !sec) return null;
+    const secByName = {};
+    sec.series.forEach(s => { secByName[s.name] = s; });
+    const out = [];
+    prime.series.forEach(p => {
+      out.push(Object.assign({}, p, { tag: 'prime' }));
+      const s = secByName[p.name];
+      if (!s) return;
+      const aligned = prime.cats.map(c => {
+        const j = sec.cats.indexOf(c);
+        return j < 0 ? null : s.data[j];
+      });
+      /* SAME NAME as its prime line, on purpose: ECharts toggles the legend by
+         name, so one chip hides the city's pair and a ten-line chart becomes
+         "show me the city I care about". The grade lives in `dashed` for the
+         eye and in `tag` for the tooltip. */
+      out.push({ name: p.name, tag: 'secondary', color: p.color, data: aligned, dashed: true });
+    });
+    if (!out.length) return null;
+    const spec = { cats: prime.cats, series: out };
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: prime.cats, series: out, legend: true,
+      scale: 100, unit: '%', dp: 2, axisDp: 0, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds(spec, 100, 1, true)) };
+  },
+
   /* Industrial rents by GRADE: prime and secondary, every capital, one axis.
      Colour is the city, a dashed line is the secondary grade, and the legend
      lists each city once — ten end labels on one chart is unreadable.
@@ -16039,7 +16258,15 @@ const CMK_CHART_BUILDERS = {
      growth is materially lower — Perth's face rent is +21% against +7%
      effective. That belongs on its own slide rather than being smuggled in
      here, but it is the reason this chart should not be quoted as income. */
-  'jll-ind-rent-grade': async function (cache) {
+  /* RENAMED from 'jll-ind-rent-grade', and the new name is load-bearing — do
+     not tidy it back. The old key is live on main with the old
+     inLegend:false shape, so while that is deployed the refresh loop rebuilds
+     any slide pointing at it and overwrites the spec that makes the legend
+     toggle a city's pair. A key that exists only here means nothing overwrites
+     the slide until this merges, and then this builder takes over and the
+     chart resumes refreshing on its own. Verified before renaming: this key
+     had exactly one consumer across all 13 decks. */
+  'jll-ind-rent-by-grade': async function (cache) {
     const prime = await _cmkJllSeries(cache, 'jll_ind_prime_net_rent_sqm');
     const sec   = await _cmkJllSeries(cache, 'jll_ind_secondary_net_rent_sqm');
     if (!prime || !sec) return null;
@@ -16052,15 +16279,16 @@ const CMK_CHART_BUILDERS = {
     sec.series.forEach(s => { secByName[s.name] = s; });
     const out = [];
     prime.series.forEach(p => {
-      out.push(Object.assign({}, p, { name: p.name }));
+      out.push(Object.assign({}, p, { tag: 'prime' }));
       const s = secByName[p.name];
       if (!s) return;
       const aligned = prime.cats.map(c => {
         const j = sec.cats.indexOf(c);
         return j < 0 ? null : s.data[j];
       });
-      out.push({ name: p.name + ' secondary', color: p.color, data: aligned,
-                 dashed: true, inLegend: false });
+      /* Shares its prime line's name so one legend chip toggles the pair —
+         see the yields-by-grade builder above. */
+      out.push({ name: p.name, tag: 'secondary', color: p.color, data: aligned, dashed: true });
     });
     if (!out.length) return null;
     const spec = { cats: prime.cats, series: out };
