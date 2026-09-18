@@ -484,6 +484,47 @@ const payload = {
     units: o.data.units,
   })),
 };
+/* ── the monthly Cotality series itself, for the browser ──────────────────
+   The Demand Score Dashboard needs the same vacancy and rent this builder uses,
+   and it cannot have them: they live in .xlsx exports on somebody's machine, so
+   the dashboard fell back to splicing the CURRENT rent from the monthly drop
+   against a THREE-YEAR-OLD rent from an ANNUAL series. That is the very splice
+   this builder's header records as superseded, and it is why the dashboard and
+   Runway v Demand disagreed on 29 of 72 markets in September 2026 -- worst on
+   units, where rents are noisiest.
+
+   So the builder now publishes what it already parsed. Only OUR markets, and
+   only from 2019 -- everything a 36-month window can reach -- because the export
+   carries 495 markets back to 1991 and the browser has no use for the rest. */
+{
+  const { data: regionRows } = await sb.from('rdp_regions').select('slug');
+  const wanted = new Set((regionRows || []).map(r => r.slug));
+  const hist = {};
+  let points = 0;
+  for (const [slug, months] of Object.entries(VR)) {
+    if (!wanted.has(slug)) continue;
+    for (const [m, byType] of Object.entries(months)) {
+      if (m < '2019-01') continue;
+      for (const t of ['h', 'u']) {
+        const rec = byType[t];
+        if (!rec || (rec.vr == null && rec.rent == null)) continue;
+        ((hist[slug] || (hist[slug] = {}))[m] || (hist[slug][m] = {}))[t] = { vr: rec.vr, rent: rec.rent };
+        points++;
+      }
+    }
+  }
+  const payload = { updated: new Date().toISOString(), from: '2019-01', regions: hist };
+  const kb = (JSON.stringify(payload).length / 1024).toFixed(0);
+  console.log('\nmonthly Cotality series for the browser: ' + Object.keys(hist).length + ' markets, ' + points + ' readings (' + kb + ' kB)');
+  if (WRITE) {
+    const { error: hErr } = await sb.from('forge_cotality').upsert(
+      { id: 'cot_rentvacancy_history', data: payload, file_name: 'Cotality monthly VR + rent, our markets', uploaded_by: 'build-cotality-rvd-history.mjs' },
+      { onConflict: 'id' });
+    if (hErr) { console.error('FAILED to write forge_cotality/cot_rentvacancy_history: ' + hErr.message); process.exit(1); }
+    console.log('stored forge_cotality id=cot_rentvacancy_history');
+  }
+}
+
 const { error: writeErr } = await sb.from('forge_cotality').upsert(
   { id: ROW_ID, data: payload, file_name: 'runway-demand ' + (LISTINGS === 'rea' ? 'V3' : 'V2') + ' timeline', uploaded_by: 'build-cotality-rvd-history.mjs' },
   { onConflict: 'id' });

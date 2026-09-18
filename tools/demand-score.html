@@ -712,6 +712,15 @@ let state = {
   compareMonth: "live", // which month the compare view shows: "live" (uncaptured) or a version id "YYYY-MM"
   houseData: null,
   unitData: null,
+  /* The freshly computed rows, kept APART from what the table shows. The table
+     now shows the newest capture (Van, 2026-09-18) while capturing, pushing and
+     the compare view's "Live" column still have to work off numbers built this
+     minute. One array serving both is how a capture ends up freezing the
+     previous capture instead of the market. */
+  liveHouse: null,
+  liveUnit: null,
+  shown: null,          // { version, label, at } of the capture on screen — null while showing live
+  showLive: false,      // admin-only, deliberately NOT persisted (see the chip)
   // Wage-growth + PP variable-rate values per property type. Mirrors
   // the V2 (Live Sheet) legend structure on the Runway v Demand side
   // — Houses and Units can carry different values. Sourced from the
@@ -1913,6 +1922,31 @@ function render() {
                   }
                 }, icon("calendar", 11),
                    h("span", { id:"ds-live-date-text" }, formatLiveDateChip())),
+                /* WHICH MONTH IS ON SCREEN. Not decoration — it is the
+                   difference between a published number and one computed a
+                   second ago. Admins can drop to live to check a month before
+                   capturing it; the choice is NOT stored, so every fresh open is
+                   back on the capture. The last switch on this screen was
+                   remembered in localStorage and browsers around the company
+                   ended up on a setting nobody had chosen. Once was enough. */
+                h("span", {
+                  id:"ds-shown-month-chip",
+                  title: state.shown
+                    ? ("Showing the " + state.shown.label + " capture"
+                       + (state.shown.at ? ", frozen " + new Date(state.shown.at).toLocaleDateString() : "")
+                       + " — the published numbers, the same ones Runway v Demand plots."
+                       + ((typeof isAdmin === "function" && isAdmin()) ? " Click for the live, uncaptured numbers." : ""))
+                    : "Live, uncaptured numbers, computed from today's marts. Nothing has frozen these, so they can still move. Click to go back to the latest capture.",
+                  style:{
+                    display:"inline-flex", alignItems:"center", gap:"6px",
+                    color: state.shown ? "var(--ds-fg-muted)" : "#FFC870",
+                    padding:"4px 10px",
+                    cursor: (typeof isAdmin === "function" && isAdmin()) ? "pointer" : "default",
+                    borderLeft:"1px solid var(--ds-hero-tile-border, rgba(255,255,255,0.08))"
+                  },
+                  onClick: (typeof isAdmin === "function" && isAdmin()) ? (() => setShowLive(!state.showLive)) : null
+                }, icon(state.shown ? "lock" : "activity", 11),
+                   state.shown ? (state.shown.label + " capture") : "Live — uncaptured"),
                 state.lastUpdated ? h("span", {
                   style:{
                     display:"inline-flex", alignItems:"center", gap:"6px",
@@ -1931,29 +1965,8 @@ function render() {
                    on the screen, both property types and the whole compare view,
                    is derived from these inputs, and a partial repaint is how a
                    table ends up showing one basis under another's heading. */
-                ((typeof isAdmin === "function" && isAdmin())
-                  ? h("button", {
-                      className:"ds-icon-btn",
-                      title: dsBasis() === "cotality"
-                        ? "Scored on COTALITY vacancy and rent (V2). Click for SQM."
-                        : "Scored on SQM vacancy and rent (today's published basis). Click for Cotality (V2).",
-                      style:{
-                        display:"inline-flex", alignItems:"center", gap:"6px",
-                        fontSize:"11px",
-                        color: dsBasis() === "cotality" ? "#0b1120" : ac,
-                        background: dsBasis() === "cotality" ? "#00C4F5" : "var(--ds-hero-tile-bg-faint, rgba(255,255,255,0.03))",
-                        border: `1px solid ${dsBasis() === "cotality" ? "#00C4F5" : ac + "33"}`,
-                        padding:"6px 14px", borderRadius:"8px", cursor:"pointer",
-                        fontWeight:"700", letterSpacing:"0.06em", textTransform:"uppercase"
-                      },
-                      onClick: () => {
-                        setDsBasis(dsBasis() === "cotality" ? "sqm" : "cotality");
-                        location.reload();
-                      }
-                    },
-                      h("i", { "data-lucide":"database", style:{ width:"12px", height:"12px" } }),
-                      "VR/Rent: " + DS_BASIS_LABEL[dsBasis()])
-                  : null),
+                /* The VR/Rent basis switch was removed with the SQM basis
+                   itself — there is nothing to switch to. */
                 h("button", {
                   className:"ds-icon-btn",
                   style:{
@@ -2425,8 +2438,10 @@ async function loadSnapshots() {
        month list would let the compare view put a Cotality month against an SQM
        month and label the difference a market move. The month history a basis
        shows is its own. */
-    const wantCot = dsBasis() === "cotality";
-    state.snapshots = (data || []).filter(r => /^cot-/.test(String(r.version)) === wantCot);
+    /* Only the Cotality captures. The SQM ones stay in the table as history but
+       are no longer a month this tool will show, so they can never be put
+       against a Cotality month and have the difference read as a market move. */
+    state.snapshots = (data || []).filter(r => /^cot-/.test(String(r.version)));
     if (state.view === "compare") render();
   } catch (e) { /* table may not exist yet */ }
 }
@@ -2444,6 +2459,79 @@ const _snapMap = arr => { const o = {}; (arr || []).forEach(m => { const s = _fS
      falls back to SQM — and a later reader explaining its move needs to know
      which series the numbers beside it came from. */
   basis: m.basis }; }); return o; };
+
+/* ════════════════════════════════════════════════════════════════════════════
+   WHAT THE MAIN TABLE SHOWS  (Van, 2026-09-18)
+   The dashboard used to recompute the current month every time it opened, so it
+   drifted from Runway v Demand the moment any input moved — a different vintage
+   of days-on-market was enough to print 31 on one screen and 36 on the other for
+   the same market and month. It now renders the newest CAPTURE: the frozen,
+   published numbers, the same ones the chart plots.
+
+   The capture is laid OVER the live rows rather than replacing them, because a
+   capture freezes the score and the inputs behind it but not the descriptive
+   columns beside them (price growth, market type). Those keep their live value
+   and are the only thing on the row that is not as-at the captured month —
+   neither feeds the score.
+   ════════════════════════════════════════════════════════════════════════════ */
+function _overlayCapture(rows, map) {
+  const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
+  let missing = 0;
+  const out = (rows || []).map(m => {
+    const c = map[_fSlug(m.name)];
+    if (!c) { missing++; return Object.assign({}, m, { fromCapture: false }); }
+    const r = Object.assign({}, m, { fromCapture: true });
+    if (num(c.ds) != null) r.demandScore = c.ds;
+    if (num(c.rw) != null) r.runway = c.rw;
+    if (num(c.pop) != null) r.population = c.pop;
+    if (num(c.listings) != null) r.listings = c.listings;
+    if (num(c.median) != null) r.medianPrice = c.median;
+    if (num(c.avr) != null) r.adjustedVR = Math.round(c.avr * 100) / 100;          // live rounds to 2dp; a capture may carry full precision
+    if (num(c.rg) != null) r.rentalGrowth36m = Math.round(c.rg * 100) / 100;
+    if (num(c.dom) != null) r.dom = c.dom;
+    if (num(c.vrr) != null) r.vrRaw = c.vrr;
+    if (num(c.rent) != null) { r.rentNow = c.rent; r.weeklyRent = Math.round(c.rent); }
+    if (num(c.rent3) != null) r.rent3 = c.rent3;
+    if (num(c.inc) != null) r.income = c.inc;
+    if (num(c.ai) != null) r.aiCeiling = c.ai;
+    if (num(c.rate) != null) r.fcRate = c.rate;
+    if (c.basis) r.basis = c.basis;
+    if (c.vrRule) { r.vrRule = c.vrRule; r.vrRuleAt = c.vrAt || null; }
+    /* Listings/1K and Supply Score are pure per-row functions of population,
+       listings and the adjusted VR — the three fields just overwritten — so
+       they are recomputed here. Carrying the live ones would put a derived
+       number beside the inputs it contradicts. */
+    const F = r.population > 0 ? (r.listings / r.population * 1000) : 0;
+    r.listingsPer1k = Math.round(F * 100) / 100;
+    r.supplyScore = Math.round((Number(r.adjustedVR) || 0) * F * 100) / 100;
+    return r;
+  });
+  if (missing) console.warn('[demand-score] ' + missing + ' market(s) absent from the capture — those rows are live.');
+  out.sort((a, b) => b.demandScore - a.demandScore);
+  out.forEach((m, i) => m.dsRank = i + 1);
+  return out;
+}
+
+/* Which rows the table renders: the newest capture, or live when an admin has
+   asked for it (or when nothing has ever been captured). _dsReRate puts a stored
+   month's runway on the current PP Variable Rate exactly as the compare view
+   does — a no-op for the newest capture, which has no recorded rate yet, and the
+   reason the two screens agree on older months too. */
+function resolveShownData() {
+  const lh = state.liveHouse || [], lu = state.liveUnit || [];
+  const snap = state.showLive ? null : (state.snapshots || [])[0];
+  if (!snap || !snap.data) return { houses: lh, units: lu, shown: null };
+  return {
+    houses: _overlayCapture(lh, _dsReRate(snap.data.houses || {}, snap.version)),
+    units: _overlayCapture(lu, _dsReRate(snap.data.units || {}, snap.version)),
+    shown: { version: snap.version, label: snap.label || snap.version, at: snap.captured_at || null },
+  };
+}
+function applyShownData() {
+  const r = resolveShownData();
+  state.houseData = r.houses; state.unitData = r.units; state.shown = r.shown;
+}
+function setShowLive(v) { state.showLive = !!v; applyShownData(); render(); }
 // Markets whose SQM basis is known to be a poor proxy — the explanation's
 // recommendation text when that input misbehaves. Keep this to CONFIRMED cases.
 const DS_KNOWN_CASES = {
@@ -2588,7 +2676,12 @@ let DS_RATE_TARGET = 0.0491;   // Current 216M Ave / PP Variable Rate — the di
 function _dsAF(r){ r=+r; if(!(r>0)) return null; const m=r/12; return (1-Math.pow(1+m,-360))/m; }
 function _dsReRate(map, version){   // rw is a DECIMAL here (from _snapMap: m.runway); cap 1.3 = 130%
   if(!map) return map;
-  const rOld = DS_REC_RATE[String(version||'').slice(0,7)], afT = _dsAF(DS_RATE_TARGET);
+  /* Strip the basis prefix before the month lookup: a Cotality capture is
+     versioned 'cot-YYYY-MM', so slice(0,7) used to read 'cot-202' and silently
+     miss DS_REC_RATE — leaving Cotality months un-re-rated while SQM months
+     were re-rated, i.e. the same month's runway differing by basis. */
+  const _vm = String(version||'').replace(/^cot-/, '').slice(0,7);
+  const rOld = DS_REC_RATE[_vm], afT = _dsAF(DS_RATE_TARGET);
   if(!rOld || afT==null) return map;
   const afO = _dsAF(rOld); if(!afO) return map;
   const f = afT/afO;
@@ -2607,7 +2700,7 @@ function compareView(tab) {
 
   // slug → {name, state} from the live markets (always loaded) so stored snapshots render with names
   const nameBySlug = {};
-  (state.houseData || []).concat(state.unitData || []).forEach(m => { const s = _fSlug(m.name); if (s && !nameBySlug[s]) nameBySlug[s] = { name: m.name, st: m.state }; });
+  (state.liveHouse || []).concat(state.liveUnit || []).forEach(m => { const s = _fSlug(m.name); if (s && !nameBySlug[s]) nameBySlug[s] = { name: m.name, st: m.state }; });
 
   // month options: a "Live" (uncaptured current) entry on top, then every captured month
   const LIVE = "live";
@@ -2619,7 +2712,7 @@ function compareView(tab) {
   // resolve current + previous data maps for the selected month
   let curMap, prevMap, curLabel, prevLabel, prevAt = null, curAt = null;
   if (sel === LIVE) {
-    curMap = _snapMap(tab === "Houses" ? state.houseData : state.unitData);   // live = already at the current PP Variable Rate
+    curMap = _snapMap(tab === "Houses" ? state.liveHouse : state.liveUnit);   // live = already at the current PP Variable Rate
     curLabel = "Live (" + _monthLabel(now) + ")";
     curAt = now.toISOString();
     const pv = snaps[0];
@@ -2637,7 +2730,7 @@ function compareView(tab) {
   }
   // live markets by slug — the DOM fallback for months that never stored it
   const liveBySlug = {};
-  (tab === "Houses" ? state.houseData : state.unitData || []).forEach(m => { const s = _fSlug(m.name); if (s) liveBySlug[s] = m; });
+  (tab === "Houses" ? state.liveHouse : state.liveUnit || []).forEach(m => { const s = _fSlug(m.name); if (s) liveBySlug[s] = m; });
   const aiAt = (state.meta && state.meta.aiCeilingAt) || null;
 
   const picker = h("select", { style: { padding: "7px 12px", borderRadius: "7px", border: "1px solid var(--ds-surface-4)", background: "var(--ds-surface-2)", color: "var(--ds-fg-1)", fontSize: "12px", fontWeight: "700", cursor: "pointer" }, onChange: e => { state.compareMonth = e.target.value; render(); } },
@@ -2735,7 +2828,9 @@ async function captureMonth() {
   const ver = (dsBasis() === "cotality" ? "cot-" : "") + (_labelToVer(label) || _monthVer(now));
   // Re-pull live data so we snapshot the very latest RW Workbook + VR Projection marts.
   try { await loadData(); } catch (e) { /* fall back to the data already in state */ }
-  const data = { houses: _snapMap(state.houseData), units: _snapMap(state.unitData), basis: dsBasis() };
+  /* LIVE, never what the table is showing — the table is showing the previous
+     capture, and freezing that would record last month a second time. */
+  const data = { houses: _snapMap(state.liveHouse), units: _snapMap(state.liveUnit), basis: dsBasis() };
   let email = null; try { const p = await sbCurrentProfile(); email = p && p.email; } catch (e) {}
   const { error } = await window.sb.from("forge_demand_snapshots").upsert({ version: ver, label, data, captured_at: new Date().toISOString(), captured_by: email }, { onConflict: "version" });
   if (error) { alert("Save failed (writers only): " + error.message); return; }
@@ -2816,8 +2911,11 @@ function buildPushPayload() {
   // shape mirrors the V2 (Live Sheet) format on the consumer side.
   const leg = state.legend || { house:{}, unit:{} };
   return {
-    houses: (state.houseData || []).filter(m => !isPushExcluded(m)).map(toRow),
-    units:  (state.unitData  || []).filter(m => !isPushExcluded(m)).map(toRow),
+    /* The push publishes THIS month's fresh numbers, so it reads live even while
+       the table shows the last capture. The modal names the month it is about to
+       write, so nothing on screen is ambiguous. */
+    houses: (state.liveHouse || []).filter(m => !isPushExcluded(m)).map(toRow),
+    units:  (state.liveUnit  || []).filter(m => !isPushExcluded(m)).map(toRow),
     legend: {
       house: { year: leg.house ? leg.house.year : null, rate: leg.house ? leg.house.rate : null },
       unit:  { year: leg.unit  ? leg.unit.year  : null, rate: leg.unit  ? leg.unit.rate  : null }
@@ -2827,7 +2925,7 @@ function buildPushPayload() {
 }
 
 function openPushModal() {
-  if (!state.houseData || !state.unitData) {
+  if (!state.liveHouse || !state.liveUnit) {
     alert("Data isn't loaded yet. Wait for sync to complete and try again.");
     return;
   }
@@ -2854,8 +2952,8 @@ function openPushModal() {
       "New month — will be appended to the Runway v Demand timeline.");
   }
 
-  const hc = (state.houseData || []).filter(m => !isPushExcluded(m)).length;
-  const uc = (state.unitData  || []).filter(m => !isPushExcluded(m)).length;
+  const hc = (state.liveHouse || []).filter(m => !isPushExcluded(m)).length;
+  const uc = (state.liveUnit  || []).filter(m => !isPushExcluded(m)).length;
 
   const modal = h("div", {
     id:"push-modal-root",
@@ -3066,22 +3164,23 @@ function hideDashboardSyncOverlay(){
    ============================================================================ */
 
 /* ── WHICH VACANCY AND RENT THE SCORE IS BUILT ON ─────────────────────────────
-   'sqm' is what the dashboard has always used and stays the default: nothing
-   about today's published numbers changes until somebody asks for it.
-   'cotality' is the V2 Saskia asked for on 2026-09-15.
+   Cotality vacancy and Cotality rent, with the REA listing count — the same
+   composition Runway v Demand's timeline is built on, so the two screens
+   cannot report a different number for the same market and month. There is
+   no switch; the note on dsBasis below says why it was taken away. */
+/* COTALITY ONLY, from 2026-09-18 (Van): "Demand Score dashboard should not read
+   SQM data from now on."
 
-   It lives in localStorage rather than in the URL because a capture writes the
-   basis into the snapshot and the compare view reads it back; a basis that
-   vanished on reload would let somebody compare a Cotality month against an SQM
-   one without either screen saying so. */
-const DS_BASIS_KEY = 'ppa-ds-basis';
-function dsBasis(){
-  try { return localStorage.getItem(DS_BASIS_KEY) === 'cotality' ? 'cotality' : 'sqm'; }
-  catch (e) { return 'sqm'; }
-}
-function setDsBasis(b){
-  try { localStorage.setItem(DS_BASIS_KEY, b === 'cotality' ? 'cotality' : 'sqm'); } catch (e) {}
-}
+   No stored preference and no setter. The basis used to be remembered in
+   localStorage under 'ppa-ds-basis' -- a key the retired Runway v Demand
+   dropdown ALSO wrote -- so browsers around the company held a value nobody
+   had chosen here, and the dashboard served the SQM captures while the chart
+   served the Cotality ones. Newcastle read 6 in one and 30 in the other for the
+   same August. A function that cannot be talked out of its answer is the fix.
+
+   The twenty SQM captures (2025-01..2026-08) are left in the table as the
+   historical record; nothing in this tool reads them any more. */
+function dsBasis(){ return 'cotality'; }
 const DS_BASIS_LABEL = { sqm: 'SQM', cotality: 'Cotality' };
 
 /* Cotality's OBSERVED vacancy (percent) -> the PROJECTED vacancy (percent),
@@ -3126,7 +3225,7 @@ function _mpStats(arr){
 async function loadForgeAll(){
   for (let i = 0; i < 50 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
   if (!window.sb) throw new Error('No database connection.');
-  const [reg, di, vr, rw, mp, pop, cot, rc, cotRV, rentHist] = await Promise.all([
+  const [reg, di, vr, rw, mp, pop, cot, rc, cotRV, cotHist, rentHist] = await Promise.all([
     window.sb.from('rdp_regions').select('slug,name,state,cluster'),
     window.sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle(),
     window.sb.from('rdp_vr_forecast').select('region_slug,payload'),
@@ -3141,6 +3240,13 @@ async function loadForgeAll(){
        month it is showing and an absent read would make a stored Cotality
        capture unexplainable. */
     window.sb.from('forge_cotality').select('data,uploaded_at').eq('id', 'rentvacancy').maybeSingle(),
+    /* The SAME monthly Cotality vacancy and rent that Runway v Demand is built
+       from, published for the browser by build-cotality-rvd-history.mjs. It is
+       what lets this dashboard take BOTH ends of the 36-month rent window from
+       one series, instead of splicing the current month against an annual
+       figure — the splice is why the two tools disagreed on 29 of 72 markets
+       in September 2026. */
+    window.sb.from('forge_cotality').select('data').eq('id', 'cot_rentvacancy_history').maybeSingle(),
     /* The 3-YEARS-AGO rent on the Cotality basis. `rdp_raw_series` tags these
        rows `sqm`, which is a legacy SHEET-HEADER label: the values are the
        monthly Cotality drop, written by sync-cotality-medians-to-rdp.mjs. See
@@ -3207,7 +3313,13 @@ async function loadForgeAll(){
 
      Floored at 0.1%: the gap can exceed the forecast itself (Darwin's two
      readings are 1.40 and 0.27), and a negative vacancy is not a number. */
-  M.cot = { vr: {}, rentH: {}, rentU: {}, rentH3: {}, rentU3: {}, asOf: null, monthEnd: null, err: cotErr ? (cotErr.message || String(cotErr)) : null };
+  /* vr is the HOUSE vacancy, vrU the UNIT one. They are genuinely different
+     series — Bunbury's units sat at 2.99% in Jun-2026 against 0.96% for its
+     houses — and until 2026-09-18 this file had only the house map and scored
+     both tabs off it. Every unit vacancy on the Units tab was a house reading,
+     which is why the Units tab disagreed with Runway v Demand on 32 of 36
+     markets while Houses matched on all 36. */
+  M.cot = { vr: {}, vrU: {}, rentH: {}, rentU: {}, rentH3: {}, rentU3: {}, asOf: null, monthEnd: null, src: 'drop', err: cotErr ? (cotErr.message || String(cotErr)) : null };
   if (!cotErr) {
     const rv = (cotRV.data && cotRV.data.data) || {};
     M.cot.monthEnd = rv.monthEnd || null;
@@ -3220,10 +3332,44 @@ async function loadForgeAll(){
       if (typeof row.rentHouse === 'number' && isFinite(row.rentHouse)) M.cot.rentH[slug] = row.rentHouse;
       if (typeof row.rentUnit === 'number' && isFinite(row.rentUnit)) M.cot.rentU[slug] = row.rentUnit;
     }
-    /* Three years back, off the annual series. Take each region's newest year,
-       then the row three years before it — rather than a fixed calendar year,
-       because a region whose series stops early would otherwise silently
-       compare across a different span than its neighbours. */
+    /* ── BOTH ENDS FROM THE MONTHLY SERIES, where we have it ───────────────
+       The drop above gives this month's reading. The monthly series gives the
+       same month AND the month exactly 36 earlier, so the growth is one series
+       measured twice rather than two series subtracted. Anchored on the drop's
+       own monthEnd, so the dashboard and Runway v Demand read the same vintage.
+
+       The annual fallback below still runs for anything the series does not
+       carry — a market added since the last build, say — which is why it is a
+       fallback and not a deletion. */
+    const _hist = (cotHist && cotHist.data && cotHist.data.data && cotHist.data.data.regions) || null;
+    if (_hist && M.cot.monthEnd) {
+      /* monthEnd arrives as M/D/YY from the export ("6/30/26"). */
+      const mm = String(M.cot.monthEnd).match(/^(\d{1,2})\/\d{1,2}\/(\d{2,4})$/);
+      let anchor = null;
+      if (mm) { const yr = mm[2].length === 2 ? '20' + mm[2] : mm[2]; anchor = yr + '-' + String(+mm[1]).padStart(2, '0'); }
+      else if (/^\d{4}-\d{2}/.test(String(M.cot.monthEnd))) anchor = String(M.cot.monthEnd).slice(0, 7);
+      if (anchor) {
+        const back = (() => { const [y, m2] = anchor.split('-').map(Number); const d = new Date(Date.UTC(y, m2 - 1 - 36, 1)); return d.toISOString().slice(0, 7); })();
+        let got = 0;
+        for (const [slug, months] of Object.entries(_hist)) {
+          const now = months[anchor], then = months[back];
+          if (!now || !then) continue;
+          if (now.h && typeof now.h.vr === 'number') M.cot.vr[slug] = now.h.vr;
+          if (now.u && typeof now.u.vr === 'number') M.cot.vrU[slug] = now.u.vr;
+          if (now.h && typeof now.h.rent === 'number') M.cot.rentH[slug] = now.h.rent;
+          if (now.u && typeof now.u.rent === 'number') M.cot.rentU[slug] = now.u.rent;
+          if (then.h && typeof then.h.rent === 'number') M.cot.rentH3[slug] = then.h.rent;
+          if (then.u && typeof then.u.rent === 'number') M.cot.rentU3[slug] = then.u.rent;
+          got++;
+        }
+        if (got) M.cot.src = 'monthly ' + back + '\u2192' + anchor;
+      }
+    }
+
+    /* Three years back, off the annual series — the FALLBACK. Take each
+       region's newest year, then the row three years before it, rather than a
+       fixed calendar year, because a region whose series stops early would
+       otherwise silently compare across a different span than its neighbours. */
     const byRegion = {};
     for (const r of (rentHist.data || [])) {
       const y = +String(r.period).slice(0, 4); if (!isFinite(y)) continue;
@@ -3237,7 +3383,9 @@ async function loadForgeAll(){
       const newest = years[years.length - 1], want = newest - 3;
       const v = byRegion[key][want];
       if (typeof v !== 'number' || !isFinite(v) || v <= 0) continue;
-      (metric === 'rent_u' ? M.cot.rentU3 : M.cot.rentH3)[slug] = v;
+      const target = metric === 'rent_u' ? M.cot.rentU3 : M.cot.rentH3;
+      if (target[slug] != null) continue;      /* the monthly series already answered */
+      target[slug] = v;
     }
   }
   M.cot.markets = Object.keys(M.cot.vr).length;
@@ -3273,13 +3421,23 @@ function buildForgeMarkets(propertyType, DI, M){
     let vrPct = M.adjVR[slug] != null ? M.adjVR[slug] : 0;
     let basisUsed = onCot ? 'sqm-fallback' : 'sqm';
     if (onCot) {
-      const cVr = COT.vr[slug], cNow = isU ? COT.rentU[slug] : COT.rentH[slug], c3 = isU ? COT.rentU3[slug] : COT.rentH3[slug];
-      const sqmNow = typeof d.vr === 'number' ? d.vr : null;
+      /* The monthly series carries a vacancy per property type; the monthly
+         DROP carries only vacHouse. So units use the unit reading wherever the
+         series reaches, and fall back to the house one where it does not —
+         which is the old behaviour, now confined to the markets that actually
+         lack the data instead of applied to all of them. */
+      const cVr = (isU && COT.vrU[slug] != null) ? COT.vrU[slug] : COT.vr[slug];
+      const cNow = isU ? COT.rentU[slug] : COT.rentH[slug], c3 = isU ? COT.rentU3[slug] : COT.rentH3[slug];
       /* All three must be present or the row is not on the Cotality basis at
          all: a Cotality rent over an SQM rent-three-years-ago is a growth rate
          from two different series, which is worse than either. */
       const proj = _cotProjectedVR(M.vrIn && M.vrIn[slug], cVr);
-      if (typeof cVr === 'number' && typeof cNow === 'number' && typeof c3 === 'number' && sqmNow != null && proj != null) {
+      /* No SQM reading is required here any more. It never entered the
+         arithmetic — it was only ever a presence check left over from the cut
+         that re-based the forecast — but while it stood, a market missing from
+         SQM would have been pushed onto the SQM fallback despite having every
+         Cotality input it needed. Van, 2026-09-18: no SQM from now on. */
+      if (typeof cVr === 'number' && typeof cNow === 'number' && typeof c3 === 'number' && proj != null) {
         /* OBSERVED Cotality vacancy, used as-is.
            An earlier cut re-based the SQM FORECAST by the gap between the two
            current readings. That kept the supply model but made this screen
@@ -3380,10 +3538,15 @@ async function loadData() {
   }
   try {
     // Demand scores are computed from Forge (PP_DEMAND_ENGINE, inputs from the DB).
-    const fm = await loadForgeAll();
-    const houseData = fm.houses, unitData = fm.units;
+    /* Captures load WITH the marts, not beside them: the first render has to
+       already know which month it is showing, or the table paints live numbers
+       and then swaps them out under the reader. */
+    const [fm] = await Promise.all([loadForgeAll(), loadSnapshots()]);
     const legend = fm.legend || { house: { year: null, rate: null }, unit: { year: null, rate: null } };
-    setState({ houseData, unitData, legend, meta: fm.meta || {}, lastUpdated: new Date(), loading: false });
+    state.liveHouse = fm.houses; state.liveUnit = fm.units;
+    const shown = resolveShownData();
+    setState({ houseData: shown.houses, unitData: shown.units, shown: shown.shown,
+               legend, meta: fm.meta || {}, lastUpdated: new Date(), loading: false });
     // Refresh clock-sourced types and re-render once they land.
     syncTypesFromClock();
   } catch (err) {
@@ -3432,11 +3595,13 @@ async function syncTypesFromClock() {
     Object.assign(CLOCK_TYPE.units,  unitMap);
     // Reclassify already-loaded markets.
     let changed = false;
-    if (state.houseData) state.houseData.forEach(m => {
+    /* Both copies: the displayed rows are clones of the live ones, so
+       reclassifying only one leaves the other on yesterday's market type. */
+    [].concat(state.houseData || [], state.liveHouse || []).forEach(m => {
       const t = classifyMarket(m.name, "houses");
       if (t !== m.marketType) { m.marketType = t; changed = true; }
     });
-    if (state.unitData) state.unitData.forEach(m => {
+    [].concat(state.unitData || [], state.liveUnit || []).forEach(m => {
       const t = classifyMarket(m.name, "units");
       if (t !== m.marketType) { m.marketType = t; changed = true; }
     });
@@ -3494,7 +3659,8 @@ function backToVault(){
 }
 
 loadData().finally(scheduleOverlayHide);
-loadSnapshots();   // fetch every captured monthly snapshot for the compare view + month picker
+/* loadSnapshots() is awaited inside loadData() — the table needs the newest
+   capture before its first paint, so it cannot race alongside it. */
 
 /* Defensive 30 s fallback — hides the overlay even if loadData
    never resolves (network entirely dead etc.). */
