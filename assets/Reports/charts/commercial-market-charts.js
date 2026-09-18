@@ -423,8 +423,16 @@
       formatter: function (params) {
         var arr = Array.isArray(params) ? params : [params];
         var head = arr.length ? arr[0].axisValue : '';
+        /* `tag` is what the legend cannot say. Once two series share a name so
+           one chip toggles both, the tooltip would read "Sydney" twice with no
+           way to tell the grades apart — the tag ("prime" / "secondary") puts
+           that back, and only in the tooltip, where there is room for it. */
         var body = arr.filter(function (p) { return p.value != null; })
-          .map(function (p) { return p.marker + p.seriesName + ': <strong>' + fmtV(p.value) + '</strong>'; })
+          .map(function (p) {
+            var s = series[p.seriesIndex];
+            var nm = p.seriesName + ((s && s.tag) ? ' ' + s.tag : '');
+            return p.marker + nm + ': <strong>' + fmtV(p.value) + '</strong>';
+          })
           .join('<br>');
         return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + body;
       },
@@ -451,8 +459,15 @@
       o.legend = {
         show: true, top: 4, itemGap: 18, itemWidth: 22, itemHeight: 12,
         textStyle: { color: '#1a2236', fontSize: 11, fontWeight: 600 },
+        /* DEDUPED, because a shared name is how two series get ONE legend
+           chip. ECharts toggles by name, so naming a city's prime and
+           secondary lines both "Sydney" makes one click hide the pair — which
+           is the only way a ten-line grade chart becomes readable: tick the
+           city you want, leave the rest off. Without the dedupe the legend
+           prints "Sydney" twice, one chip per series. */
         data: series.filter(function (s) { return s.inLegend !== false; })
-                    .map(function (s) { return s.name; }),
+                    .map(function (s) { return s.name; })
+                    .filter(function (n, i, a) { return a.indexOf(n) === i; }),
       };
     }
     /* Angled labels need the room back from the plot, or they are clipped by
