@@ -347,7 +347,8 @@
        message and has to survive into every label — "0.46" below the axis and
        "0.66" above it look like the same number. Declared up here because the
        tooltip, the axis and the column labels all have to agree. */
-    var isBar = (d.kind === 'bar');
+    var isBarH = (d.kind === 'barH');
+    var isBar = (d.kind === 'bar') || isBarH;
     var isDiv = isBar && !!d.diverging;
     var sign = function (v) { return (v > 0 ? '+' : ''); };
     var fmtV = isDiv ? function (v) {
@@ -390,6 +391,31 @@
       interval: (d.interval != null ? d.interval / scale : null),
       axisLabel: { color: '#1a2236', fontSize: 11, formatter: fmtAxis },
     })];
+    /* kind:'barH' is the same chart on its side — a RANKED comparison, where
+       the eye runs down a list rather than along a timeline. The axes swap
+       wholesale: categories move to y, values to x. `inverse` puts the first
+       category at the TOP, because a ranking handed to this module is already
+       in the order it should be read, and ECharts otherwise starts from the
+       bottom. The category axis stays wrapped in the array for the same
+       slideFill reason as above — a horizontal bar needs its right margin for
+       the value labels that sit past the end of each bar. */
+    if (isBarH) {
+      var valueAxis = o.yAxis[0], catAxis = o.xAxis;
+      o.xAxis = Object.assign({}, valueAxis, {
+        type: 'value', data: undefined,
+        splitLine: { lineStyle: { color: 'rgba(26,34,54,0.08)' } },
+        axisLine: { show: false }, axisTick: { show: false },
+      });
+      o.yAxis = [Object.assign({}, catAxis, {
+        type: 'category', inverse: true,
+        min: undefined, max: undefined, interval: undefined,
+        splitLine: { show: false },
+        axisLine: { lineStyle: { color: 'rgba(26,34,54,0.25)' } },
+        axisTick: { show: false },
+        axisLabel: { color: '#1a2236', fontSize: 12, fontWeight: 600, rotate: 0,
+                     formatter: function (v) { return String(v); } },
+      })];
+    }
     o.tooltip = {
       trigger: 'axis',
       backgroundColor: 'rgba(15,25,34,0.95)', borderColor: '#2a3a48',
@@ -433,6 +459,13 @@
        the frame instead of colliding with each other — no improvement. Applied
        last so the bar and legend grids above do not overwrite it. */
     if (d.rotateCats) o.grid = Object.assign({}, o.grid, { bottom: 96 });
+    /* barH LAST, for the same reason: the bar and legend rules above both
+       rewrite grid.right, and a sideways chart needs that margin for the value
+       labels running off the end of each bar — the widest of which carries a
+       labelNote too. */
+    if (isBarH) {
+      o.grid = { left: 78, right: 250, top: (d.legend ? 44 : 24), bottom: 40, containLabel: false };
+    }
     o.series = series.map(function (s, i) {
       var col = s.color || PAL[i % PAL.length];
       if (isBar) {
@@ -453,8 +486,20 @@
           data: bars,
           itemStyle: { color: col },
           label: {
-            show: true, position: 'top', fontSize: 11, fontWeight: 600, color: '#1a2236',
-            formatter: function (p) { return fmtV(p.value); },
+            show: true, position: isBarH ? 'right' : 'top',
+            fontSize: 11, fontWeight: 600, color: '#1a2236',
+            /* labelNote rides alongside the value, one entry per category —
+               "7.08m   84% of residents". A ranked bar usually carries a
+               second number that is context rather than magnitude, and it
+               belongs on the bar it describes, not in a second series that
+               would draw its own bar. */
+            formatter: function (p) {
+              var txt = fmtV(p.value);
+              if (isBarH && Array.isArray(d.labelNote) && d.labelNote[p.dataIndex]) {
+                txt += '   ' + d.labelNote[p.dataIndex];
+              }
+              return txt;
+            },
           },
           /* Drop a label rather than print it over its neighbour. Grouped bars
              whose values are nearly equal — four projection years that barely

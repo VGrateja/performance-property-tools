@@ -16124,6 +16124,45 @@ const CMK_CHART_BUILDERS = {
     }, _cmkJllBounds(spec, 100, 0.25, true)) };
   },
 
+  /* The same AIHW series as a ranked snapshot: who has the most people seeing
+     a GP right now, largest first, with the share of residents riding beside
+     each bar as labelNote. Sideways on purpose — this is a league table, and
+     the eye reads a ranking down a list rather than along a row. The count and
+     the share say different things and both belong on the slide: NSW and NT
+     are 7.08m and 0.15m, but 84% and 58% of their residents. */
+  'gp-patients-by-state': async function (cache) {
+    cache = cache || {};
+    let pat = null, shr = null;
+    try {
+      const q = m => window.sb.from('rdp_raw_series')
+        .select('region_slug, period, value')
+        .eq('source', 'aihw').eq('metric', m).eq('freq', 'A').order('period');
+      const a = await q('gp_patients'), b = await q('gp_share_pct');
+      if (a.error) throw a.error;
+      pat = a.data || []; shr = b.error ? [] : (b.data || []);
+    } catch (e) { console.warn('[cmk] AIHW GP snapshot unavailable', e); return null; }
+    if (!pat.length) return null;
+    const P = {}, S = {};
+    pat.forEach(r => { const v = _cmkNum(r.value); if (v != null) (P[r.region_slug] = P[r.region_slug] || {})[r.period] = v; });
+    shr.forEach(r => { const v = _cmkNum(r.value); if (v != null) (S[r.region_slug] = S[r.region_slug] || {})[r.period] = v; });
+    const per = Array.from(new Set(pat.map(r => r.period))).sort();
+    const q = per[per.length - 1];
+    const byName = {};
+    CMK_STATES.forEach(s => { byName[s[0]] = s; });
+    const list = Object.keys(P).filter(k => byName[k] && P[k][q] != null)
+      .sort((a, b) => P[b][q] - P[a][q]);
+    if (!list.length) return null;
+    const top = Math.max.apply(null, list.map(k => P[k][q])) / 1e6;
+    return { module: 'cmk-lines', data: {
+      cats: list.map(k => byName[k][1]),
+      series: [{ name: 'People with a GP attendance',
+        data: list.map(k => ({ value: P[k][q], itemStyle: { color: byName[k][2] } })) }],
+      labelNote: list.map(k => (S[k] && S[k][q] != null) ? Math.round(S[k][q]) + '% of residents' : ''),
+      kind: 'barH', scale: 1e-6, unit: 'm', dp: 2, axisDp: 0, barMaxWidth: 30,
+      min: 0, max: Math.ceil(top), interval: 1,
+    } };
+  },
+
   /* People with a GP attendance, year-on-year change, split by state.
      The deck's other healthcare slide is national and sits on the ABS Patient
      Experience survey; this one is AIHW Medicare administrative data, which is
