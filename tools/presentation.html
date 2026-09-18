@@ -16141,30 +16141,80 @@ const CMK_CHART_BUILDERS = {
      bond and healthcare slides — no new source. Newcastle reports nothing
      before 2017 and Adelaide misses three years; both stay null and cmk-lines
      bridges them, which is why the ports keep one line each. */
+  /* Container trade, actual to FY2024-25 and projected to FY2054-55.
+     REBUILT OFF BITRE, not the commercial snapshot's freight tab. The snapshot
+     carried three errors the BITRE yearbook settles: Brisbane FY2016 at ~1.74m
+     against a source figure of 1,147,173, Melbourne FY2025 at ~3.12m against a
+     record 3,385,743, and Adelaide stopping at 2022 when the series runs to
+     2024-25. It also labelled financial years with single years.
+
+     The projection is a COMPILATION, not one forecast — Infrastructure
+     Australia's 2026 Priority List, Table 8, which attributes each port to its
+     own forecaster (Melbourne to the Port of Melbourne 2055 PDS, Sydney to NSW
+     Ports, and so on). Melbourne follows the PDS five-yearly points; the other
+     four run straight from their FY2024-25 actual to their 2055 endpoint, so
+     the years between are interpolation rather than published figures. Dashed
+     on the chart and labelled on the slide for exactly that reason.
+
+     Actual and projected share a series name so one legend chip toggles a
+     port's whole line, and carry a `tag` so the tooltip still says which half
+     is which. */
   'freight-teu': async function (cache) {
-    const tabs = await _cmkTabs(cache);
-    const t = tabs && tabs['freight-movement-data'];
-    if (!t || !Array.isArray(t.teu)) return null;
+    cache = cache || {};
+    let rows = cache.teu;
+    if (rows === undefined) {
+      try {
+        const { data, error } = await window.sb.from('rdp_raw_series')
+          .select('region_slug, metric, period, value')
+          .eq('source', 'bitre').eq('freq', 'A')
+          .in('metric', ['port_teu', 'port_teu_projected'])
+          .order('period');
+        if (error) throw error;
+        rows = data || [];
+      } catch (e) { console.warn('[cmk] BITRE container series unavailable', e); rows = null; }
+      cache.teu = rows;
+    }
+    if (!rows || !rows.length) return null;
+
     const PORTS = [
-      ['botanysydneyNsw', 'Sydney (Botany)', '#00A0B4'],
-      ['melbourneVic',    'Melbourne',       '#171B24'],
-      ['brisbaneQld',     'Brisbane',        '#5cc8e0'],
-      ['fremantleWa',     'Fremantle',       '#c2a4d6'],
-      ['adelaideSa',      'Adelaide',        '#f5a623'],
-      ['newcastleNsw',    'Newcastle',       '#3ecf8e'],
-      ['darwinNt',        'Darwin',          '#9aa3b1'],
+      ['port-melbourne',     'Melbourne',       '#171B24'],
+      ['port-botany-sydney', 'Sydney (Botany)', '#00A0B4'],
+      ['port-brisbane',      'Brisbane',        '#5cc8e0'],
+      ['port-fremantle',     'Fremantle',       '#c2a4d6'],
+      ['port-adelaide',      'Adelaide',        '#f5a623'],
     ];
-    const cats = t.teu.map(String);
-    const series = PORTS.filter(p => Array.isArray(t[p[0]])).map(p => ({
-      name: p[1], color: p[2],
-      data: cats.map((_, i) => { const v = _cmkNum(t[p[0]][i]); return v == null ? null : v; }),
-    })).filter(s => s.data.some(v => v != null));
+    const act = {}, proj = {};
+    rows.forEach(r => {
+      const v = _cmkNum(r.value);
+      if (v == null) return;
+      const bag = (r.metric === 'port_teu') ? act : proj;
+      (bag[r.region_slug] = bag[r.region_slug] || {})[String(r.period).slice(0, 4)] = v;
+    });
+    const years = Array.from(new Set(rows.map(r => String(r.period).slice(0, 4)))).sort();
+    if (!years.length) return null;
+
+    const series = [];
+    PORTS.forEach(p => {
+      const a = act[p[0]], j = proj[p[0]];
+      if (!a && !j) return;
+      /* The projected line repeats the last actual so the two meet instead of
+         leaving a gap at the join. */
+      const lastActual = years.filter(y => a && a[y] != null).pop();
+      series.push({ name: p[1], tag: 'actual', color: p[2],
+        data: years.map(y => (a && a[y] != null) ? a[y] : null) });
+      if (j) {
+        series.push({ name: p[1], tag: 'projected', color: p[2], dashed: true,
+          data: years.map(y => (j[y] != null) ? j[y] : (y === lastActual ? a[y] : null)) });
+      }
+    });
     if (!series.length) return null;
-    const spec = { cats: cats, series: series };
+    const spec = { cats: years, series: series };
     return { module: 'cmk-lines', data: Object.assign({
-      cats: cats, series: series, legend: true,
-      scale: 1e-6, unit: 'm', dp: 2, axisDp: 1, tickEvery: 1,
-    }, _cmkJllBounds(spec, 1e-6, 0.5, true)) };
+      /* FY labels: the row year is the year ENDING 30 June, so 2025 is 2024-25 */
+      cats: years.map(y => (y - 1) + '-' + String(y).slice(2)),
+      series: series, legend: true,
+      scale: 1e-6, unit: 'm', dp: 2, axisDp: 0, tickEvery: 5,
+    }, _cmkJllBounds(spec, 1e-6, 1, true)) };
   },
 
   /* What the buyer is paid for taking property risk: each city's prime
