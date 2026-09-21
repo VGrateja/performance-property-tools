@@ -159,8 +159,6 @@
 
   <div class="controls" id="vrControls" style="display:none">
     <label class="ctl">Region<select id="vrRegion"></select></label>
-    <label class="ctl">VR source<div class="vrseg" id="vrSrc"><button type="button" data-source="sqm" class="on">SQM</button><button type="button" data-source="cotality">Cotality</button></div></label>
-    <label class="ctl">Data version<div class="vrseg" id="vrVer"><button type="button" data-ver="v1" class="on">V1 (2yr)</button><button type="button" data-ver="v2">V2 (3yr)</button></div></label>
     <label class="ctl">Infrastructure WF<div class="vrseg" id="vrWf"><button type="button" data-wf="on" class="on">Included</button><button type="button" data-wf="off">Excluded</button></div></label>
   </div>
 
@@ -170,16 +168,14 @@
        card inside the render, so it can speak to the selected version/source. -->
   <div class="srcnote" id="vrSrcNote" style="display:none">
     <b>Data sources</b>
-    <span class="ok">✅ From Forge:</span> Population · Current VR — <b>SQM</b> (Demand Score Dashboard Data card, default) or <b>CoreLogic/Cotality</b> (Cotality card's Vacancy Rate export), switchable above · Incoming supply (OE Commencements by year → else Forge Building Approvals × 0.9).<br/>
-    <span class="wb">⚠️ Still from the workbook</span> — ask how each is gathered before wiring to Forge: household size · NB / IM / OM migration (natural increase · net interstate · net overseas) · 2-year forecast · owner-occupier %.<br/>
+    <span class="ok">✅ From Forge:</span> Population (ABS, capitals on GCCSA) · Current VR — <b>CoreLogic/Cotality</b> (the Cotality card's Vacancy Rate export; National has none and falls back to the stored SQM-anchored figure) · Incoming supply — <b>95% of the latest annual building approvals</b>, one-year lag, held for year 2 · NB / IM / OM from the ABS components of population change · household size from the official projection for each market's own geography.<br/>
     <span class="wb">✍️ Manual input</span> — the <b>infrastructure workforce</b> modifier only (8 markets, no automated feed anywhere). Held in <code>public.vr_workforce</code> — behind auth, because this repo is public — and reviewed quarterly; everything else on this page is pulled.<br/>
-    <span class="wb">⏳ V2 (3yr) is disabled</span> — it needs per-year demand components (year-2 NI / IM / OM) that the pipeline doesn't carry yet. ABS publishes these by GCCSA and LGA, so they can be added to Forge once the derivation is confirmed.
   </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3" integrity="sha384-l8ah+VgaWtk1mvOe9VC+OirC6qHFF4yH7l7mKRidV9MSti3E9F463bMp6ZVN4kuC" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="../shared/supabase-client.js?v=b4bd183c"></script>
-<script src="../shared/tool-registry.js?v=a3311d30"></script>
+<script src="../shared/tool-registry.js?v=86c1bb8e"></script>
 <script src="../shared/auth.js?v=7dce203e"></script>
 <script src="../shared/auth-gate.js?v=003cdc01"></script>
 <script src="../shared/pp-telemetry.js?v=a1e39d4f"></script>
@@ -263,15 +259,24 @@ const wfReviewed = () => (globalThis.VrWorkforce && globalThis.VrWorkforce.revie
    backtest on nine years of components. Both are named parameters that get
    revisited each cycle, never inlined. */
 const VERSIONS = {
-  v1: { label: 'V1 (2yr)', yr2: 'repeat', ready: true,
+  v1: { label: 'V1 (2yr)', yr2: 'repeat',
         note: 'Natural increase and internal migration are single <b>2-year averages</b> used for both forecast years, and only the year-1 infrastructure workforce is applied — so those components repeat and the year-2 movement comes from supply. Overseas migration is the exception: it is year-specific — each year\'s national forecast apportioned on this market\'s latest financial-year share of national overseas migration (FY2024-25, both years).' },
-  v2: { label: 'V2 (3yr)', yr2: 'own', ready: false,
-        note: 'Natural increase is the <b>3-year average</b> in year 1 and grows with projected population in year 2; internal migration uses the current year for year 1 and a 50/50 blend of current and the 3-year average for year 2; overseas migration apportions each year\'s national forecast on the region\'s latest financial-year share (FY2024-25) — so each year has its own demand and supply.' },
+  /* V2 (3yr) — natural increase as a 3-year rate applied to a grown year-2
+     population, internal migration as current-year then a 50/50 blend — is
+     still computed into payload.demand.v2 but no longer offered on this
+     screen (Van, 2026-09-21). Its method text lives in shared/vr-demand-calc.js. */
 };
 
 let REGIONS = {}, VR = {}, COT = {};   // COT: slug → Cotality (CoreLogic) house VR, as a fraction
-let SRC = 'sqm';                         // active VR source (SQM default)
-let VER = 'v1';                          // demand method
+/* ONE BASIS, ONE METHOD (Van, 2026-09-21). The SQM/Cotality switch and the
+   V1/V2 switch were removed together: Runway v Demand and the Demand Score
+   Dashboard are Cotality-only, so this tool showing an SQM trajectory beside
+   them was a second answer for the same market. V2 stays in the stored row
+   (build-vr-demand.mjs still writes payload.demand.v2) — it is simply not
+   offered here. To bring either back, restore the control and make these
+   `let` again; nothing downstream was removed. */
+const SRC = 'cotality';                  // the only VR basis shown
+const VER = 'v1';                        // the only demand method shown
 /* Included by DEFAULT because that is what the workbook itself does — its IM
    column is G = E + WF. The pipeline stores E, so excluding the workforce
    under-states the eight project markets relative to the source. Preference
@@ -388,9 +393,6 @@ const regionsList = () => Object.keys(VR).map(slug => ({ slug, name: nameOf(slug
 });
 
 function initUI(){
-  // V2 unlocks as soon as the Forge-derived demand block is present. Before
-  // that it stays disabled rather than quietly serving V1 under a V2 label.
-  VERSIONS.v2.ready = Object.values(VR).some(p => p && p.demand && p.demand.v2);
   $('#vrControls').style.display = 'flex';
   { const sn = $('#vrSrcNote'); if (sn) sn.style.display = 'block'; }
   const list = regionsList();
@@ -398,26 +400,8 @@ function initUI(){
   cur.slug = (list.find(r => r.slug === 'adelaide') || list[0]).slug;
   $('#vrRegion').value = cur.slug;
   $('#vrRegion').onchange = () => { cur.slug = $('#vrRegion').value; syncWF(); paint(); };
-  const seg = $('#vrSrc');
-  if (seg) seg.querySelectorAll('button').forEach(b => b.onclick = () => {
-    SRC = b.dataset.source;
-    seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-    paint();
-  });
-  // Data version. V2 needs per-year demand components the pipeline doesn't
-  // carry yet, so its button is disabled until they land rather than quietly
-  // showing V1's numbers under a V2 label.
-  const segV = $('#vrVer');
-  if (segV) segV.querySelectorAll('button').forEach(b => {
-    const v = b.dataset.ver;
-    if (!VERSIONS[v].ready){ b.disabled = true; b.title = 'V2 needs per-year demand components (NI/IM/OM for year 2) — not in the pipeline yet.'; }
-    b.onclick = () => {
-      if (!VERSIONS[v].ready) return;
-      VER = v;
-      segV.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-      paint();
-    };
-  });
+  /* The VR-source and Data-version switches were removed 2026-09-21 — see
+     SRC / VER above. Region and the workforce toggle are the only controls. */
   // Infrastructure workforce. Disabled entirely on markets with no entry in the
   // manual table — a missing modifier must not read as a deliberate zero.
   const segW = $('#vrWf');
@@ -646,9 +630,10 @@ function paint(){
       <div class="card">
         <h2>Method &amp; assumptions</h2>
         <div class="mnote"><b>${esc(VERSIONS[VER].label)} demand.</b> ${VERSIONS[VER].note}</div>
-        <div class="mnote"><b>${SRC === 'cotality' && !cotMissing ? 'Cotality / CoreLogic' : 'SQM Research'} vacancy rate.</b> ${SRC === 'cotality' && !cotMissing
-          ? 'CoreLogic house-basis vacancy.' : 'SQM measures all dwellings against a Census-renters denominator, so it is not like-for-like with a house-basis series.'}
-          Total properties are derived as households ÷ (1 − current VR), so changing the VR source also changes the implied dwelling stock — the whole chain shifts, not just the starting point.</div>
+        <div class="mnote${cotMissing ? ' warn' : ''}"><b>${cotMissing ? 'Stored vacancy rate (SQM-anchored)' : 'Cotality / CoreLogic vacancy rate'}.</b> ${cotMissing
+          ? 'Cotality publishes no vacancy rate for this market, so the chain starts from the stored mart figure, which is anchored on SQM. Every other market on this page is on Cotality — compare with that in mind.'
+          : 'CoreLogic house-basis vacancy — the same basis as Runway v Demand and the Demand Score Dashboard, so the three screens agree.'}
+          Total properties are derived as households ÷ (1 − current VR), so the vacancy basis also sets the implied dwelling stock — the whole chain hangs off it, not just the starting point.</div>
         <div class="mnote warn"><b>Household formation.</b> Incoming people are assumed to form households at the region's average size (${hhs} people per dwelling). Recent arrivals, particularly overseas migrants and construction workers, typically share at higher densities — so household formation may be lower than shown and demand is closer to a ceiling than a midpoint.</div>
         ${ch.hhsSourced ? `<div class="mnote"><b>Household size.</b> ${hhs} people per household — <b>${esc(ch.hhsLabel)}</b>, the official projection for this market's own geography (capitals on Greater Capital City, regional markets on their LGA), not a rounded assumption. Published average household size counts people in <i>occupied private dwellings</i>; this model divides <i>total</i> population by it, so the households above run slightly ahead of the source's own household count by the share of people living in non-private dwellings.</div>` : ''}
         <div class="mnote"><b>Infrastructure workforce.</b> A manually-maintained input covering the ${wfMarkets().length} markets with major-project data — ${wfMarkets().map(s => esc(nameOf(s))).join(', ')} — reviewed ${esc(wfReviewed())}. No local-hire, FIFO or camp-accommodation discount is applied; the conversion from jobs to residents is an interim assumption pending calibration against QGSO non-resident population data. Every other market disables the toggle rather than applying a silent zero.</div>
