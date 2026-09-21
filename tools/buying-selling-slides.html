@@ -1099,7 +1099,7 @@ let _slideScale = 1;      // current .bss-slide transform scale (drag deltas ÷ 
 let EDIT=false, OVL={}, BGS={}, CUSTOM=[], _sel=null, _msel=new Set(), _saveT=null, _hist=[], _hi=-1, _edEl=null, _clip=null;   // slide editor state (_sel = primary/last-clicked, _msel = full multi-selection set; _edEl = text overlay being edited; _clip = Ctrl+C overlay clipboard)
 
 const fmtInt = v => (v<0?'-':'') + '$'.replace('$','') + Math.abs(Math.round(v)).toLocaleString();
-const money  = v => (v<0?'-$':'$') + Math.abs(Math.round(v)).toLocaleString();
+const money  = v => (v==null||!isFinite(+v)) ? '—' : (v<0?'-$':'$') + Math.abs(Math.round(v)).toLocaleString();   /* null = no reading, never "$0" */
 const pct    = (v,dp=2) => (v>=0?'+':'') + v.toFixed(dp) + '%';
 
 /* ── Forge load ── */
@@ -1264,7 +1264,7 @@ async function renderPopForecastChart(host, slug){
   const f=forecastPop(slug, state.summary?5:3);   /* Summary: every projection year the Centre for Population publishes (4 for a state-based region, 5 for a capital) */
   if(!f){ host.innerHTML='<div class="bss-chartload">No population projection for this region.</div>'; return; }
   if(state.summary){ _renderPopForecastSummary(host, slug, f); return; }
-  const cm=v=>Math.round(v).toLocaleString();
+  const cm=v=>v==null?'—':Math.round(v).toLocaleString();
   const fyLabel=y=>(y-1)+'-'+String(y).slice(-2);   /* pop year-key Y → FY label (2025 → "2024-25") */
   const S=popSeries(slug)||{};                       /* GCCSA for capitals, SUA for regionals */
   const yrs=Object.keys(S).map(Number).sort((a,b)=>a-b);
@@ -1288,7 +1288,7 @@ async function renderPopForecastChart(host, slug){
   host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
     if(!box.isConnected||!window.echarts) return;
-    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    try{ const ch=_bssInitChart(box, option); }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
@@ -1308,7 +1308,7 @@ function _renderPopForecastSummary(host, slug, f){
   const histLabel=(yrs.length>1)?fy(yrs[1])+' to '+fy(yrs[yrs.length-1]):'';
   const cats=[], vals=[]; let prev=f.base;
   f.rows.forEach(r=>{ cats.push(r.label); vals.push(Math.round(r.pop-prev)); prev=r.pop; });
-  const cm=v=>(v<0?'−':'+')+Math.abs(Math.round(v)).toLocaleString();
+  const cm=v=>v==null?'—':(v<0?'−':'+')+Math.abs(Math.round(v)).toLocaleString();
   const all=vals.concat(avg==null?[]:[avg]);
   const maxV=Math.max.apply(null, all.map(v=>Math.abs(v)));
   const anyNeg=all.some(v=>v<0);
@@ -1511,7 +1511,7 @@ async function renderRatioChart(host, slug){
   host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
     if(!box.isConnected||!window.echarts) return;
-    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    try{ const ch=_bssInitChart(box, option); }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
@@ -1545,7 +1545,7 @@ async function renderStockDomChart(host, slug){
   if(!window.echarts){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
   const D=await getSomDom(slug);
   if(!D){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
-  const cm=v=>Number(v).toLocaleString();
+  const cm=v=>v==null?'—':Number(v).toLocaleString();
   const sMax=Math.max.apply(null,D.house.concat(D.unit));
   const sStep=[500,1000,2000,2500,5000].find(s=>sMax/s<=9)||5000;
   const sTop=Math.ceil((sMax*1.08)/sStep)*sStep;   /* headroom so bar labels clear the frame */
@@ -1575,7 +1575,7 @@ async function renderStockDomChart(host, slug){
   host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
     if(!box.isConnected||!window.echarts) return;
-    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    try{ const ch=_bssInitChart(box, option); }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
@@ -1583,7 +1583,7 @@ async function renderStockDomChart(host, slug){
    (per-year integer rank, 1 = most expensive). No chart module exists. */
 const RANK={};
 async function getRanking(slug){ if(RANK[slug]!==undefined) return RANK[slug]; try{ const {data}=await window.sb.from('rdp_raw_series').select('period,value').eq('metric','ranking_h').eq('region_slug',slug).order('period'); RANK[slug]=(data||[]).map(r=>({y:+String(r.period).slice(0,4),v:Math.round(r.value)})).filter(r=>r.v>0); }catch(e){ RANK[slug]=null; } return RANK[slug]; }
-const _ord=n=>{ const s=['th','st','nd','rd'],v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); };
+const _ord=n=>{ if(n==null||!isFinite(+n)) return '—'; const s=['th','st','nd','rd'],v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); };
 /* Page 22: Ranking as Most Expensive — 2026-07-27 sample look: single teal
    smooth line (2005→) with integer point labels, legend "<Region> Ranking as
    Most Expensive (MHP)", axis lines + ticks everywhere, y ladder 0-15/1 for
@@ -1638,7 +1638,7 @@ async function mountRanking(slideEl, slug){
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
     if(!box.isConnected||!window.echarts) return;
     try{
-      const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch);
+      const ch=_bssInitChart(box, option);
       /* place the card in a line-free pocket: candidate spots (3 x-anchors × 8
          vertical bands, upper-middle preferred like the sample) scored against
          the polyline points + their labels + segment midpoints */
@@ -2080,7 +2080,7 @@ async function renderDemandRunway(host, kind){
   host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
     if(!box.isConnected||!window.echarts) return;
-    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    try{ const ch=_bssInitChart(box, option); }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
@@ -2191,12 +2191,72 @@ async function renderGlance(host, slug){
 /* shared ECharts draw — the same double-rAF + _liveCharts pattern every mount
    uses (host must already be sized; two rAFs let the transform-scaled host lay
    out before init). */
+/* ═══════════════════════════════════════════════════════════════════════════
+   EVERY CHART IS INITIALISED HERE — and every axis tooltip is made complete.
+
+   ECharts' axis tooltip lists only the series that HAVE a data item at the
+   hovered category. A series whose value is null there is simply absent from
+   the list, while connectNulls still draws its line straight through the
+   gap. So on Melbourne's Yield v Variable Rate the House and Unit yields
+   vanished from the tooltip at 1999–2001 (Cotality holds no rent for those
+   years) although both lines visibly cross them — Van, 2026-09-21.
+
+   _bssAxisTipWrap() rebuilds the tooltip's parameter list from the OPTION, so
+   every line/bar series is present at every category, a missing reading
+   carrying value null. Charts with their own formatter get that fuller list
+   (their formatters print "—" for null); charts without one get a renderer
+   that reproduces ECharts' default layout, honouring their valueFormatter.
+
+   Rows are only ADDED, never removed, and only for series that carry at least
+   one real value and are not silent — so an average line still shows, while a
+   legend-only proxy or the single-year highlight bar never gains "—" rows at
+   the years it deliberately leaves empty.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const _BSS_PALETTE=['#5470c6','#91cc75','#fac858','#ee6666','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc'];   /* ECharts 5 default */
+const _bssTipMarker=color=>'<span style="display:inline-block;margin-right:4px;border-radius:10px;width:10px;height:10px;background-color:'+color+';"></span>';
+const _bssRawVal=v=>{ if(v==null) return null; if(Array.isArray(v)) return v.length>1?_bssRawVal(v[1]):null; if(typeof v==='object') return _bssRawVal(v.value); return (typeof v==='number'&&!isFinite(v))?null:v; };
+function _bssAxisTipWrap(option){
+  const tip=option&&option.tooltip; if(!tip||tip.trigger!=='axis'||tip._bssWrapped) return;
+  const xa=Array.isArray(option.xAxis)?option.xAxis[0]:option.xAxis; if(!xa||(xa.type&&xa.type!=='category')) return;
+  const series=Array.isArray(option.series)?option.series:[];
+  const colors=Array.isArray(option.color)&&option.color.length?option.color:_BSS_PALETTE;
+  const colorOf=(sr,j)=>{ const c=(sr.itemStyle&&sr.itemStyle.color)||(sr.lineStyle&&sr.lineStyle.color)||colors[j%colors.length]; return typeof c==='string'?c:'#999'; };
+  const eligible=series.map(sr=>!!sr&&(sr.type==='line'||sr.type==='bar')&&!sr.silent&&!(sr.tooltip&&sr.tooltip.show===false)&&Array.isArray(sr.data)&&sr.data.some(v=>_bssRawVal(v)!=null));
+  const custom=typeof tip.formatter==='function'?tip.formatter:null;
+  const vf=typeof tip.valueFormatter==='function'?tip.valueFormatter:null;
+  const augment=params=>{
+    const arr=Array.isArray(params)?params:[params]; if(!arr.length||arr[0].dataIndex==null) return arr;
+    const p0=arr[0], di=p0.dataIndex, byIdx={}; arr.forEach(p=>{ if(p.seriesIndex!=null) byIdx[p.seriesIndex]=p; });
+    const out=[];
+    series.forEach((sr,j)=>{
+      if(byIdx[j]){ out.push(byIdx[j]); return; }
+      if(!eligible[j]) return;
+      const raw=sr.data[di], color=colorOf(sr,j);
+      out.push({ componentType:'series', seriesType:sr.type, seriesIndex:j, seriesName:sr.name, dataIndex:di, data:raw, value:_bssRawVal(raw), color, marker:_bssTipMarker(color),
+                 axisValue:p0.axisValue, axisValueLabel:p0.axisValueLabel, axisDim:p0.axisDim, axisIndex:p0.axisIndex, axisType:p0.axisType, axisId:p0.axisId, name:p0.name, $vars:p0.$vars });
+    });
+    /* a real param whose series is not in option.series (e.g. from setOption merges) keeps its place at the end */
+    arr.forEach(p=>{ if(out.indexOf(p)<0) out.push(p); });
+    return out;
+  };
+  tip.formatter=params=>{
+    const list=augment(params);
+    if(custom) return custom(list);
+    const p0=list[0]||{}; const head=p0.axisValueLabel!=null?p0.axisValueLabel:p0.axisValue;
+    const rows=list.map(p=>{ const v=_bssRawVal(p.value); const txt=v==null?'—':(vf?vf(v,p.dataIndex):String(v));
+      return '<div style="margin:10px 0 0;line-height:1;">'+p.marker+'<span style="font-size:14px;color:#666;font-weight:400;margin-left:2px">'+esc(p.seriesName==null?'':String(p.seriesName))+'</span><span style="float:right;margin-left:20px;font-size:14px;color:#666;font-weight:900">'+txt+'</span><div style="clear:both"></div></div>'; }).join('');
+    return '<div style="font-size:14px;color:#666;font-weight:400;line-height:1;">'+esc(head==null?'':String(head))+'</div>'+rows;
+  };
+  tip._bssWrapped=true;
+}
+function _bssInitChart(box, option){ try{ _bssAxisTipWrap(option); }catch(e){} const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); return ch; }
+
 function _drawEChart(host, option){
   host.innerHTML='';
   const box=document.createElement('div'); box.style.cssText='width:100%;height:100%'; host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
     if(!box.isConnected||!window.echarts) return;
-    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    try{ const ch=_bssInitChart(box, option); }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
@@ -2502,8 +2562,7 @@ async function renderHpeCombo(host, slug){
   ];
   _drawEChart(host, { backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true,
-      formatter:params=>'<b>'+lab(params[0].axisValue.replace(' ','-'))+'</b><br>'+params.filter(p=>p.value!=null)
-        .map(p=>p.marker+p.seriesName+': <b>'+(p.seriesName.indexOf('MHP')>=0?money(p.value):Number(p.value).toFixed(1))+'</b>').join('<br>') },
+      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.value==null?'—':(p.seriesName.indexOf('MHP')>=0?money(p.value):Number(p.value).toFixed(1)))+'</b>').join('<br>') },
     legend:{ top:2, left:'center', itemWidth:14, itemHeight:3, itemGap:18, textStyle:{fontSize:9.5,color:'#222'},
       data:S.map(s=>({name:s.name,icon:'path://M0,0h24v3h-24z'})) },
     grid:{left:56,right:82,top:38,bottom:64},
@@ -2565,8 +2624,7 @@ async function renderBizCombo(host, slug){
   ];
   _drawEChart(host, { backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true,
-      formatter:params=>'<b>'+lab(params[0].axisValue.replace(' ','-'))+'</b><br>'+params.filter(p=>p.value!=null)
-        .map(p=>p.marker+p.seriesName+': <b>'+(p.value>0?'+':'')+p.value+'</b>').join('<br>') },
+      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.value==null?'—':((p.value>0?'+':'')+p.value))+'</b>').join('<br>') },
     legend:{ top:2, left:'center', itemWidth:14, itemHeight:3, itemGap:20, textStyle:{fontSize:9.5,color:'#222'},
       data:S.map(s=>({name:s.name,icon:'path://M0,0h24v3h-24z'})) },
     grid:{left:52,right:26,top:38,bottom:66},
@@ -2611,7 +2669,7 @@ async function renderManualSeries(host, metric, slug){
   const pad=Math.max(1,(hi-lo)*0.15);
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true,
-      formatter:params=>{ const p=params[0]; return '<b>'+longP(p.axisValue)+'</b><br>'+p.marker+esc(label)+': <b>'+Number(p.value).toFixed(1)+'</b>'; } },
+      formatter:params=>{ const p=params[0]; return '<b>'+longP(p.axisValue)+'</b><br>'+p.marker+esc(label)+': <b>'+(p.value==null?'—':Number(p.value).toFixed(1))+'</b>'; } },
     legend:{ top:4, left:'center', itemWidth:14, itemHeight:3, textStyle:{fontSize:10,color:'#222'},
       data:[{name:label,icon:'path://M0,0h24v3h-24z'}] },
     grid:{left:58,right:26,top:42,bottom:56},
@@ -2688,8 +2746,7 @@ async function renderConsumerConf(host, slug){
   const cLo=Math.floor(Math.min.apply(null,cv)/5)*5, cHi=Math.ceil(Math.max.apply(null,cv)/5)*5;
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
-      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.filter(p=>p.value!=null)
-        .map(p=>p.marker+p.seriesName+': <b>'+(p.seriesName.indexOf('CCI')>=0?Number(p.value).toFixed(2):money(p.value))+'</b>').join('<br>') },
+      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.value==null?'—':(p.seriesName.indexOf('CCI')>=0?Number(p.value).toFixed(2):money(p.value)))+'</b>').join('<br>') },
     legend:{ top:2, left:'center', itemWidth:9, itemHeight:9, itemGap:14, textStyle:{fontSize:9,color:'#222'},
       data:[{name:'Median House Price',icon:'rect'},{name:'Median Unit Price',icon:'rect'},
         {name:'National CCI',icon:'path://M0,0h24v3h-24z'},
@@ -2792,8 +2849,7 @@ async function renderUnderutil(host, slug){
   const bar='path://M0,0h10v10h-10z', line='path://M0,0h24v3h-24z';
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', axisPointer:{type:'shadow'}, confine:true,
-      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.filter(p=>p.value!=null)
-        .map(p=>p.marker+p.seriesName+': <b>'+Number(p.value).toFixed(p.seriesName.indexOf('YoY')>=0?1:2)+'%</b>').join('<br>') },
+      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+(p.value==null?'—':Number(p.value).toFixed(p.seriesName.indexOf('YoY')>=0?1:2)+'%')+'</b>').join('<br>') },
     legend:{ top:2, left:'center', itemWidth:10, itemHeight:8, itemGap:14, textStyle:{fontSize:9,color:'#222'},
       data:[{name:'House % YoY Change',icon:'rect'},{name:'Unit % YoY Change',icon:'rect'},
         {name:L_REG,icon:line},{name:L_SU,icon:line},{name:L_SE,icon:line}] },
@@ -2903,7 +2959,7 @@ async function renderBusFinance(host, slug){
   const yTop=Math.ceil(maxV*1.02/step)*step;                     /* $3,000 on VIC, like the sample */
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true,
-      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.filter(p=>p.value!=null).map(p=>p.marker+p.seriesName+': <b>'+money(p.value)+'</b>').join('<br>') },
+      formatter:params=>'<b>'+params[0].axisValue+'</b><br>'+params.map(p=>p.marker+p.seriesName+': <b>'+money(p.value)+'</b>').join('<br>') },
     legend:{ top:2, left:'center', itemWidth:14, itemHeight:3, itemGap:16, textStyle:{fontSize:9.5,color:'#222'},
       data:keptDefs.map(s=>({name:s.label,icon:'path://M0,0h24v3h-24z'})) },
     grid:{left:72,right:26,top:38,bottom:64},                    /* just enough for the rotated quarter labels — see the bottom-pad note on the slide def */
@@ -3033,7 +3089,7 @@ async function renderJobAds(host, slug){
   const yTop=Math.ceil(maxV*1.02/step)*step;                      /* 70,000 on Melbourne, like the sample */
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true,
-      formatter:params=>{ const p=params[0]; return '<b>'+longM(p.axisValue)+'</b><br>'+p.marker+p.seriesName+': <b>'+Number(p.value).toLocaleString()+'</b>'; } },
+      formatter:params=>{ const p=params[0]; return '<b>'+longM(p.axisValue)+'</b><br>'+p.marker+p.seriesName+': <b>'+(p.value==null?'—':Number(p.value).toLocaleString())+'</b>'; } },
     legend:{ top:2, left:'center', itemWidth:14, itemHeight:3, textStyle:{fontSize:10.5,color:'#222'},
       data:[{name:label,icon:'path://M0,0h24v3h-24z'}] },
     grid:{left:64,right:26,top:38,bottom:52},                     /* just enough for the rotated month labels — see the bottom-pad note on the slide def */
@@ -3126,7 +3182,7 @@ async function renderDwellings(host, slug){
   const PAL={approvals:'#00A0B4', commencements:'#171B24', completions:'#c6c6c6'};
   const LABEL={approvals:'Approvals', commencements:'Commencements', completions:'Completions'};
   const ORDER=['approvals','commencements','completions'].filter(k=>D.S[k]);
-  const nInt=v=>Math.round(v).toLocaleString();
+  const nInt=v=>v==null?'—':Math.round(v).toLocaleString();
   const series=ORDER.map(k=>{
     const col=PAL[k], nm=D.kind==='abs'?'Dwelling Approvals':LABEL[k];
     return { name:nm, type:'line', data:years.map(y=>D.S[k][y]!=null?Math.round(D.S[k][y]):null),
@@ -3147,7 +3203,7 @@ async function renderDwellings(host, slug){
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true,
       formatter:params=>'<b>'+params[0].axisValue+'</b><br>'
-        +params.filter(p=>p.value!=null).map(p=>p.marker+p.seriesName+': <b>'+nInt(p.value)+'</b>').join('<br>') },
+        +params.map(p=>p.marker+p.seriesName+': <b>'+nInt(p.value)+'</b>').join('<br>') },
     legend:{ top:2, left:'center', itemWidth:14, itemHeight:3, itemGap:22, textStyle:{fontSize:11,color:'#222'},
       data:(D.kind==='abs'?['Dwelling Approvals']:['Approvals','Commencements','Completions'])
         .map(n=>({name:n,icon:'path://M0,0h24v3h-24z'})) },
@@ -3468,7 +3524,7 @@ async function _mountMedianEntry(host,slug,kind){
     series:series };
   host.innerHTML=''; const box=document.createElement('div'); box.style.cssText='width:100%;height:100%'; host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
-    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    try{ const ch=_bssInitChart(box, option); }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
@@ -3634,7 +3690,7 @@ async function _mountAfford(host,slug){
     series:series };
   host.innerHTML=''; const box=document.createElement('div'); box.style.cssText='width:100%;height:100%'; host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
-    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    try{ const ch=_bssInitChart(box, option); }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
@@ -3680,7 +3736,7 @@ async function _mountP2I(host,slug){
   host.innerHTML=''; const box=document.createElement('div'); box.style.cssText='width:100%;height:100%'; host.appendChild(box);
   requestAnimationFrame(function(){ requestAnimationFrame(function(){
     if(!box.isConnected||!window.echarts) return;
-    try{ const ch=echarts.init(box); ch.setOption(option); _liveCharts.push(ch); }
+    try{ const ch=_bssInitChart(box, option); }
     catch(e){ host.innerHTML='<div class="bss-chartload">Chart failed to draw.</div>'; }
   }); });
 }
