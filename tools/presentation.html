@@ -8123,6 +8123,11 @@ function presFitNotice(text) {
 function enterPresentationMode() {
   if (document.body.classList.contains('pres-edit-mode')) { presPresentBlockedNotice(); return; }
   _presFit = null;   /* every Present entry starts on auto fit (cover ≈16:9, letterbox otherwise) */
+  /* …and so does the windowed canvas we come back to. A +/- zoom captured at a
+     different viewport size used to survive Present, so Esc dropped the
+     presenter back onto the same thumbnail-sized slide they pressed Present to
+     escape from. */
+  _userZoom = null;
   document.body.classList.add('pres-fullscreen');
   /* Free every thumbnail-rail chart instance for the duration of the screen-
      share. The rail is hidden in Present mode, so its 20-30+ live ECharts
@@ -8133,6 +8138,12 @@ function enterPresentationMode() {
     document.documentElement.requestFullscreen().catch(() => {/* ignore */});
   }
   fitSlide();
+  /* The stage's `inset` animates to fullscreen over 350ms, so the fitSlide
+     above necessarily measured the WINDOWED stage; _wireStageTransitionEnd
+     re-fits once it settles. This is the fallback for a transitionend that
+     never arrives (interrupted transition), mirroring the one already in
+     exitPresentationMode. */
+  setTimeout(() => { if (document.body.classList.contains('pres-fullscreen')) fitSlide(); }, 500);
   /* Rebuild overlays so charts re-init UN-built (they build on advance). */
   renderOverlays();
 }
@@ -8289,20 +8300,28 @@ function fitSlide() {
      since the body class hides them anyway. */
   if (!isFull) _positionRulers(stage);
 }
-window.addEventListener('resize', fitSlide);
+/* A window resize — which is also what a browser zoom step (Ctrl +/-, pinch)
+   fires — invalidates any +/- canvas zoom: _userZoom was measured against the
+   OLD stage, and fitSlide ignores the stage geometry entirely while it is set,
+   so the slide stayed frozen at the old scale forever. One stray "-" taken
+   while the browser was zoomed in therefore left a thumbnail-sized slide
+   sitting in a full-size stage, with nothing on screen to say why or that "0"
+   resets it. Back to auto-fit; the user can re-zoom against the new size. */
+window.addEventListener('resize', () => { _userZoom = null; fitSlide(); });
 
 /* The .pres-stage `inset` is transitioned over 350ms when the
-   pres-fullscreen class flips. Once it settles we drop the transient
-   ruler-hiding class and, when we just EXITED Present (windowed),
-   recompute the fit: the synchronous fitSlide in exitPresentationMode
-   ran while the stage was still mid-transition (full-screen-sized), so
-   it left the slide oversized at scale 1 until a manual window resize.
-   Re-fitting against the now-settled windowed stage restores the
-   correct size automatically.
-   We still SKIP fitSlide when ENTERING (fullscreen): a second cover-fit
-   recompute on the settled stage produced "zoomed too much" Present
-   rendering on some aspect ratios, and the slot scale is already correct
-   from the enter + fullscreenchange fitSlide calls.
+   pres-fullscreen class flips, so EVERY fitSlide that runs during the flip —
+   the synchronous one in enter/exitPresentationMode and the fullscreenchange
+   one — measures the stage at its OLD geometry. Re-fit once it settles, in
+   BOTH directions, and drop the transient ruler-hiding class.
+   Entering used to be skipped here, on the belief that "the slot scale is
+   already correct from the enter + fullscreenchange fitSlide calls". It is
+   not: both of those run mid-transition, so Present was always scaled to the
+   WINDOWED stage — 0.83 of the right size on a 1276x820 window, and a
+   290x163px slide when Present was entered with the browser zoomed in, which
+   is the tiny-slide-in-Present bug. The "zoomed too much" regression that skip
+   was guarding against is handled properly now by the contain/cover auto-choice
+   and the L key (2026-08-11), not by under-measuring the stage.
    Debounced per frame because `transition:inset` fires once per side. */
 (function _wireStageTransitionEnd() {
   const stageEl = document.getElementById('pres-stage');
@@ -8317,8 +8336,7 @@ window.addEventListener('resize', fitSlide);
     requestAnimationFrame(() => {
       pending = false;
       document.body.classList.remove('pres-stage-transitioning');
-      const isFull = document.body.classList.contains('pres-fullscreen');
-      if (!isFull) fitSlide();   /* re-fit windowed stage after Present exit; fitSlide repositions rulers */
+      fitSlide();   /* re-fit against the SETTLED stage — entering Present and leaving it; fitSlide repositions the rulers too */
     });
   });
 })();
