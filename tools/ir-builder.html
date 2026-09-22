@@ -99,6 +99,7 @@ h1{font-size:28px;font-weight:800;letter-spacing:-0.02em;margin:4px 0 2px}
 .ib-form textarea{min-height:70px;resize:vertical;line-height:1.5}
 .ib-form :focus,.ib-inp:focus{border-color:var(--ib-teal)}
 .ib-note{font-size:11px;font-weight:600;color:var(--ib-mut);line-height:1.5}
+.ib-form input[type=checkbox]{width:16px;height:16px;padding:0;margin:0;flex:0 0 auto}
 .ib-savebar{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
 
 /* suburb intel */
@@ -1226,6 +1227,11 @@ function renderCashflow(el) {
     professionalClean: D.professionalClean, titleTransfer: D.titleTransfer };
   for (const [k, v] of Object.entries(defaults)) if (CFW[k] == null && v != null) CFW[k] = v;
   if (CFW.acquisitionFee == null && CFW.budget && D.acquisitionFeePct) CFW.acquisitionFee = Math.round(CFW.budget * D.acquisitionFeePct);
+  /* pool: the tick starts from the inspection's "Pool or outdoor spa" answer and is then the
+     cashflow's own call (Saskia: "pool maintenance if there's a pool") */
+  const inspPool = String(((CUR.inspection || {}).pool) || '').trim();
+  if (CFW.hasPool == null) CFW.hasPool = !!(inspPool && !/^none$/i.test(inspPool));
+  if (CFW.hasPool && CFW.poolMaintenance == null && D.poolMaintenance != null) CFW.poolMaintenance = D.poolMaintenance;
   const PCT = ['lvr', 'rate', 'pmFeePct', 'repairsPctOfRent'];
   const F = (k, lab, extra) => '<label>' + lab +
     '<input data-ck="' + k + '" value="' + esc(CFW[k] != null ? (PCT.includes(k) ? (CFW[k] * 100).toFixed(2) + '%' : CFW[k]) : '') + '"' + (CANW ? '' : ' disabled') + '>' + (extra || '') + '</label>';
@@ -1243,6 +1249,10 @@ function renderCashflow(el) {
     F('strata', 'Strata /yr') + F('councilWater', 'Council & water /yr') +
     F('landTax', 'Land tax /yr', CAN ? '<button class="ib-btn sm" id="cfLT" type="button" style="margin-top:4px">suggest</button>' : '') +
     F('insurance', 'Insurance /yr', CAN ? '<button class="ib-btn sm" id="cfINS" type="button" style="margin-top:4px">suggest</button>' : '') +
+    '<label style="display:flex;align-items:center;gap:8px;align-self:end;min-height:38px;cursor:pointer"><input type="checkbox" id="cfPool" style="width:16px;height:16px;margin:0"' +
+      (CFW.hasPool ? ' checked' : '') + (CANW ? '' : ' disabled') + '> Pool or spa' +
+      (inspPool ? ' <span class="ib-note">(inspection: ' + esc(inspPool) + ')</span>' : '') + '</label>' +
+    '<span id="cfPoolWrap" style="display:' + (CFW.hasPool ? 'contents' : 'none') + '">' + F('poolMaintenance', 'Pool maintenance /yr') + '</span>' +
     '</div>' +
     '<div class="ib-note" style="margin:10px 0 5px">Extra fee lines (e.g. Advice / Portfolio management)</div>' +
     '<div class="ib-tblwrap"><table class="ib-etbl" id="cfFees"><thead><tr><th>Label</th><th>% of income</th><th>$ / yr</th><th></th></tr></thead><tbody></tbody></table></div>' +
@@ -1258,6 +1268,7 @@ function renderCashflow(el) {
     eRow([eIn('fl', f.label, 'Advice Management Fee'), eIn('fp', f.pct != null ? (f.pct * 100).toFixed(2) + '%' : '', '%'), eIn('fa', f.amount, '$'), eRm()])).join('');
   const numv = v => { const d = String(v || '').replace(/[^0-9.]/g, ''); return d ? +d : null; };
   function harvest() {
+    const pool = el.querySelector('#cfPool'); if (pool) CFW.hasPool = pool.checked;
     el.querySelectorAll('[data-ck]').forEach(inp => {
       const k = inp.dataset.ck; const raw = inp.value.trim();
       if (raw === '') { CFW[k] = null; return; }
@@ -1289,6 +1300,7 @@ function renderCashflow(el) {
   }
   feesBody(); wireFees(); cards();
   el.querySelectorAll('[data-ck]').forEach(i => i.oninput = cards);
+  $('#cfPool').onchange = () => { $('#cfPoolWrap').style.display = $('#cfPool').checked ? 'contents' : 'none'; cards(); };
   if (CANW) {
     $('#cfFeeAdd').onclick = () => { harvest(); CFW.feeLines.push({}); feesBody(); wireFees(); };
     $('#cfLT').onclick = () => { harvest(); const s = suggestLandTax(CFW.budget || 0, CUR.state); if (s == null) { toast('No bracket for ' + (CUR.state || 'state?')); return; }
@@ -1528,6 +1540,7 @@ function pathGet(o, p) { return p.reduce((a, k) => (a == null ? a : a[k]), o); }
 function pathSet(o, p, v) { let a = o; for (let i = 0; i < p.length - 1; i++) a = a[p[i]]; a[p[p.length - 1]] = v; }
 function fmtVal(v) {
   if (v == null || v === '') return '—';
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
   if (typeof v === 'number') return Math.abs(v) < 1 && v !== 0 ? (v * 100).toFixed(2) + '%' : (Number.isInteger(v) ? v.toLocaleString() : String(v));
   return String(v);
 }
@@ -1567,13 +1580,14 @@ function calcCashflow(cf, mode, normRate) {
   const repairs = income * (n('repairsPctOfRent') || 0);
   /* flexible fee lines (e.g. QLD's Advice / Portfolio Management 2.2%): pct of income and/or flat $ */
   const fees = (cf.feeLines || []).reduce((a, f) => a + income * (+f.pct || 0) + (+f.amount || 0), 0);
-  const other = n('strata') + n('councilWater') + n('landTax') + n('insurance');
+  const pool = cf.hasPool === false ? 0 : n('poolMaintenance');   /* only while the cashflow's pool tick is on */
+  const other = n('strata') + n('councilWater') + n('landTax') + n('insurance') + pool;
   const runningLessFin = letting + pm + repairs + fees + other;
   const acq = n('stampDuty') + n('engagementFee') + n('acquisitionFee') + n('titleTransfer') + n('conveyancing') + n('buildingPest') + n('depreciationSchedule') + n('professionalClean');
   const totalCost = budget + n('maintenanceAllowance') + n('minRentalStdCost') + n('cosmeticWorks') + acq;
   const annual = income - (runningLessFin + interest + principal);
   return { loan, requiredCapital: totalCost - loan, grossYield: income / budget, netYield: (income - runningLessFin) / budget,
-    expenseRatio: runningLessFin / (income || 1), annual, weekly: annual / 52, interest, principal, income, totalCost, rate };
+    expenseRatio: runningLessFin / (income || 1), annual, weekly: annual / 52, interest, principal, income, totalCost, rate, pool };
 }
 
 function renderReview(el) {
