@@ -238,6 +238,19 @@ h1{font-size:28px;font-weight:800;letter-spacing:-0.02em;margin:4px 0 2px}
 .pg .cash3{display:flex;gap:14px}
 .pg .cash3>div{flex:1;border:1px solid #ddd;border-radius:8px;padding:10px 12px}
 .pg .cash3 .t{font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#37BCC8;margin-bottom:6px}
+/* cashflow breakdown (label · basis · amount) and the comparable-sales tables */
+.pg table.cfb td{padding:2.5px 6px;font-size:10.5px;border-bottom:1px solid #eee;vertical-align:middle}
+.pg .cfb td.m{color:#777;text-align:right;white-space:nowrap}
+.pg .cfb td.v{text-align:right;font-variant-numeric:tabular-nums;width:112px;white-space:nowrap}
+.pg .cfb tr.tot td{font-weight:800;border-top:1.5px solid #171B24;border-bottom:0;background:#F2F8F9}
+.pg .cfb tr.neg td.v{color:#E72347}
+.pg .sec.tight{margin:8px 0 3px;padding:4px 10px}
+.pg table.cmp{font-size:9.5px}.pg table.cmp th{font-size:8.5px;padding:4px 6px}.pg table.cmp td{padding:3.5px 6px;white-space:nowrap}
+.pg table.cmp td.wrap{white-space:normal}
+.pg .pa{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0 6px}
+.pg .pa>div{border:1px solid #ddd;border-radius:8px;padding:8px 10px}
+.pg .pa .k{font-size:8.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#37BCC8}
+.pg .pa .v{font-size:14px;font-weight:800;color:#171B24;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pg img.logo{height:34px}
 @media print{
   body>*{display:none !important}
@@ -1429,25 +1442,97 @@ function buildReportPages() {
     '<div class="sec">Location attributes</div><table>' + (layout.location || []).map(gRow).join('') + '</table>' +
     '<div class="gband">Suburb Rating: &nbsp; <b>' + esc(g.suburbRating || '—') + '</b></div>' });
 
-  /* 4 · cashflows */
+  /* 4 · pricing & comparable sales — the negotiation page Saskia asked for */
+  const P = c.pricing || {}, ad = P.adopted || {};
+  const ab = v => ({ 'Inferior': 'Inf', 'Slightly Inferior': 'Sl. inf', 'Comparable': 'Comp', 'Slightly Superior': 'Sl. sup', 'Superior': 'Sup' })[v] || (v ? esc(v) : '—');
+  const acc = r => [r.beds, r.baths, r.cars].map(v => v == null || v === '' ? '—' : v).join(' / ');
+  const paCell = (k, v) => v == null || v === '' ? '' : '<div><div class="k">' + k + '</div><div class="v">' + esc(String(v)) + '</div></div>';
+  const paCells = [
+    paCell('Adopted comparable value', ad.comparable != null ? money(ad.comparable) : null),
+    paCell('Adopted top price', ad.topPrice != null ? money(ad.topPrice) : null),
+    paCell('Negotiation range', ad.negotiationRange),
+    paCell('Direct comparison', ad.directComparisonRange),
+    paCell('Floor to ceiling', ad.floorToCeiling),
+    paCell('Market strength', ad.marketStrength),
+    paCell('Adopted rent', ad.rent != null ? '$' + ad.rent + '/wk' : null),
+    paCell('Market rent range', ad.marketRentRange),
+    paCell('Gross yield at top price', ad.rent && ad.topPrice ? pct(ad.rent * 52 / ad.topPrice) : null),
+  ].filter(Boolean).join('');
+  const comps = (P.compSales || []).filter(r => r.address).slice(0, 10);
+  const rents = (P.compRents || []).filter(r => r.address).slice(0, 6);
+  const street = (P.streetSales || []).filter(r => r.address).slice(0, 6);
+  const hist = (P.history || []).filter(r => r.date || r.price).slice(0, 6);
+  pages.push({ t: 'Pricing & Comparable Sales', h:
+    '<div class="band"><span>' + esc(addr) + '</span><span class="r">Pricing &amp; comparable sales</span></div>' +
+    (paCells ? '<div class="sec tight">Price analysis</div><div class="pa">' + paCells + '</div>' : '') +
+    (comps.length
+      ? '<div class="sec tight">Comparable sales analysis</div><table class="cmp"><tr><th>Address</th><th style="text-align:center">Bd / Ba / Car</th><th style="text-align:right">Land</th><th>Sold</th><th style="text-align:right">Price</th>' +
+        '<th style="text-align:center">Land · Accom · Location · Quality · Condition</th><th style="text-align:right">Overall</th></tr>' +
+        comps.map(r => '<tr><td class="wrap">' + esc(r.address) + '</td><td style="text-align:center">' + esc(acc(r)) + '</td><td style="text-align:right">' + (r.land ? esc(String(r.land)) + ' m²' : '—') + '</td>' +
+          '<td>' + esc(r.date || '—') + '</td><td style="text-align:right"><b>' + (r.price != null ? money(r.price) : '—') + '</b></td>' +
+          '<td style="text-align:center;color:#666">' + [r.land_r, r.accom_r, r.loc_r, r.qual_r, r.cond_r].map(ab).join(' · ') + '</td>' +
+          '<td style="text-align:right"><b>' + esc(r.overall_r || r.comparability || '—') + '</b></td></tr>').join('') + '</table>'
+      : '<div class="sec tight">Comparable sales analysis</div><p>No comparable sales recorded.</p>') +
+    (rents.length
+      ? '<div class="sec tight">Comparable rents</div><table class="cmp"><tr><th>Address</th><th>Comparability</th><th style="text-align:right">Rent /wk</th></tr>' +
+        rents.map(r => '<tr><td class="wrap">' + esc(r.address) + '</td><td>' + esc(r.comparability || '—') + '</td><td style="text-align:right"><b>' + (r.rent != null ? '$' + r.rent : '—') + '</b></td></tr>').join('') + '</table>'
+      : '') +
+    (street.length
+      ? '<div class="sec tight">Recent street sales</div><table class="cmp"><tr><th>Address</th><th style="text-align:center">Bd / Ba / Car</th><th style="text-align:right">Land</th><th>Sold</th><th style="text-align:right">Price</th></tr>' +
+        street.map(r => '<tr><td class="wrap">' + esc(r.address) + '</td><td style="text-align:center">' + esc(acc(r)) + '</td><td style="text-align:right">' + (r.land ? esc(String(r.land)) + ' m²' : '—') + '</td><td>' + esc(r.date || '—') + '</td><td style="text-align:right"><b>' + (r.price != null ? money(r.price) : '—') + '</b></td></tr>').join('') + '</table>'
+      : '') +
+    (hist.length
+      ? '<div class="sec tight">Sale history — this property</div><table class="cmp"><tr><th>Date</th><th style="text-align:right">Price</th></tr>' +
+        hist.map(r => '<tr><td>' + esc(r.date || '—') + '</td><td style="text-align:right"><b>' + (r.price != null ? money(r.price) : '—') + '</b></td></tr>').join('') + '</table>'
+      : '') });
+
+  /* 5 · cashflow — the full breakdown, always interest only at the normalised rate (Saskia) */
   const cf = c.cashflow || {};
-  const pi = calcCashflow(cf, 'pi'), io = calcCashflow(cf, 'io'), nm = calcCashflow(cf, 'norm');
-  const cashCol = (title, x) => '<div><div class="t">' + title + '</div>' +
-    [['Loan amount', money(x.loan)], ['Required capital', money(x.requiredCapital)], ['Gross yield', pct(x.grossYield)],
-     ['Net yield', pct(x.netYield)], ['Expense ratio', pct(x.expenseRatio)], ['Annual cash flow', money(x.annual)],
-     ['Weekly cash flow', money(x.weekly)]].map(r => '<div class="kvrow"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>').join('') + '</div>';
-  const costRows = [['Top budget', cf.budget], ['Maintenance allowance', cf.maintenanceAllowance], ['Min rental standards', cf.minRentalStdCost],
-    ['Cosmetic works', cf.cosmeticWorks], ['Stamp duty', cf.stampDuty], ['Acquisition fee', cf.acquisitionFee],
-    ['Mortgage & title transfer', cf.titleTransfer], ['Conveyancing/legal', cf.conveyancing], ['Building & pest', cf.buildingPest],
-    ['Depreciation schedule', cf.depreciationSchedule], ['Professional clean', cf.professionalClean]];
+  const nrate = RATES.normalised || 0.0494;
+  const x = calcCashflow(Object.assign({}, cf, { rate: nrate }), 'io', nrate);
+  const nv = k => +cf[k] || 0;
+  const pctTxt = v => v ? ((v * 100).toFixed(2).replace(/\.?0+$/, '') + '%') : '';
+  const row = (lab, mid, val, cls) => '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td>' + lab + '</td><td class="m">' + (mid || '') + '</td><td class="v">' + val + '</td></tr>';
+  const sec = t => '<tr><td colspan="3" style="padding:0;border:0"><div class="sec tight">' + t + '</div></td></tr>';
+  let cfRows = '';
+  if (x) {
+    const pool = cf.hasPool === false ? null : (cf.hasPool === true || (insp.pool && !/^none$/i.test(String(insp.pool))) ? (insp.pool && !/^none$/i.test(String(insp.pool)) ? String(insp.pool) : 'pool or spa') : null);
+    cfRows += sec('Cost of property') +
+      row('Top budget', '', money(x.cf ? x.cf.budget : nv('budget'))) + row('Maintenance allowance', '', money(nv('maintenanceAllowance'))) +
+      row('Cosmetic works allowance', '', money(nv('cosmeticWorks'))) + (nv('minRentalStdCost') ? row('Minimum rental standards', '', money(nv('minRentalStdCost'))) : '') +
+      row('Subtotal', '', money(nv('budget') + nv('maintenanceAllowance') + nv('cosmeticWorks') + nv('minRentalStdCost')), 'tot');
+    const acq = nv('stampDuty') + nv('engagementFee') + nv('acquisitionFee') + nv('titleTransfer') + nv('conveyancing') + nv('buildingPest') + nv('depreciationSchedule') + nv('professionalClean');
+    cfRows += sec('Acquisition costs') +
+      row('Stamp duty', '', money(nv('stampDuty'))) + row('Engagement fee', '', money(nv('engagementFee'))) + row('Acquisition fee', '', money(nv('acquisitionFee'))) +
+      row('Mortgage &amp; title transfer fee', '', money(nv('titleTransfer'))) + row('Conveyancing / legal', '', money(nv('conveyancing'))) +
+      row('Building &amp; pest inspection reports', '', money(nv('buildingPest'))) + row('Depreciation schedule', '', money(nv('depreciationSchedule'))) +
+      row('Professional clean', '', money(nv('professionalClean'))) + row('Subtotal', '', money(acq), 'tot') + row('Total property + acquisition cost', '', money(x.totalCost), 'tot');
+    const income = x.income, letting = (nv('lettingFeeWeeks') || 0) * nv('rent'), pm = income * (nv('pmFeePct') || 0), repairs = income * (nv('repairsPctOfRent') || 0);
+    const poolCost = pool ? (x.pool || 0) : 0;
+    cfRows += sec('Running costs') +
+      row('Finance &mdash; interest', pct(nv('lvr') || 0.9, 0) + ' LVR &nbsp;·&nbsp; ' + pct(nrate, 2) + ' normalised', money(x.interest)) +
+      row('Finance &mdash; principal', 'interest only &nbsp;·&nbsp; 30-year loan', money(0)) +
+      row('Letting fee &amp; marketing', nv('lettingFeeWeeks') ? nv('lettingFeeWeeks') + ' weeks rent' : '', money(letting)) +
+      row('Property management fee', pctTxt(nv('pmFeePct')), money(pm)) +
+      (cf.feeLines || []).map(fl => row(esc(fl.label || 'Fee'), pctTxt(+fl.pct || 0), money(income * (+fl.pct || 0) + (+fl.amount || 0)))).join('') +
+      row('Repairs &amp; maintenance', nv('repairsPctOfRent') ? pctTxt(nv('repairsPctOfRent')) + ' of rent' : '', money(repairs)) +
+      (pool ? row('Pool maintenance', esc(pool), poolCost ? money(poolCost) : 'not costed') : '') +
+      row('Strata fees', '', money(nv('strata'))) + row('Council &amp; water rates', '', money(nv('councilWater'))) +
+      row('Land tax', '', money(nv('landTax'))) + row('Insurance estimate', '', money(nv('insurance'))) +
+      row('Running costs incl. finance', '', money(x.runningLessFin + x.interest), 'tot') + row('Running costs less finance', '', money(x.runningLessFin), 'tot');
+    cfRows += sec('Income') +
+      row('Rent', 'per week', money(nv('rent'))) + row('Income', (nv('weeksLet') || 52) + ' weeks let', money(income)) +
+      row('Net income', 'after running costs', money(income - x.runningLessFin), 'tot');
+    cfRows += sec('Investment summary') +
+      row('Loan amount', pct(nv('lvr') || 0.9, 0) + ' LVR', money(x.loan)) + row('Required capital', '', money(Math.max(0, x.requiredCapital))) +
+      row('Gross yield', '', pct(x.grossYield)) + row('Net yield', '', pct(x.netYield)) + row('Expense ratio', '', pct(x.expenseRatio)) +
+      row('Annual cash flow', 'interest only at the normalised rate', money(x.annual), 'tot' + (x.annual < 0 ? ' neg' : '')) +
+      row('Weekly cash flow', '', money(x.weekly), 'tot' + (x.weekly < 0 ? ' neg' : ''));
+  }
   pages.push({ t: 'Cashflow', h:
-    '<div class="band"><span>' + esc(addr) + '</span><span class="r">Cashflow</span></div>' +
-    (pi ? '<div class="sec">Cost of property & acquisition</div>' +
-      costRows.filter(r => r[1] != null).map(r => '<div class="kvrow"><span>' + r[0] + '</span><b>' + money(r[1]) + '</b></div>').join('') +
-      '<div class="kvrow" style="font-weight:800"><span>Total property + acquisition</span><b>' + money(pi.totalCost) + '</b></div>' +
-      '<div class="sec">Scenarios — income ' + money(pi.income) + '/yr at $' + (cf.rent || 0) + '/wk × ' + (cf.weeksLet || 52) + ' weeks</div>' +
-      '<div class="cash3">' + cashCol('P&I @ ' + pct(pi.rate, 2), pi) + cashCol('Interest only', io) + cashCol('Normalised @ ' + pct(nm.rate, 2), nm) + '</div>' +
-      '<p style="margin-top:14px;color:#666">' + esc(B.normalised_note || '') + '</p>'
+    '<div class="band"><span>' + esc(addr) + '</span><span class="r">Cashflow &mdash; interest only at the normalised rate</span></div>' +
+    (x ? (B.normalised_note ? '<p style="color:#666;margin:0 0 4px">' + esc(B.normalised_note) + '</p>' : '') +
+      '<table class="cfb">' + cfRows + '</table>'
       : '<p>No cashflow inputs yet.</p>') });
 
   /* 5 · asset management plan */
@@ -1587,7 +1672,7 @@ function calcCashflow(cf, mode, normRate) {
   const totalCost = budget + n('maintenanceAllowance') + n('minRentalStdCost') + n('cosmeticWorks') + acq;
   const annual = income - (runningLessFin + interest + principal);
   return { loan, requiredCapital: totalCost - loan, grossYield: income / budget, netYield: (income - runningLessFin) / budget,
-    expenseRatio: runningLessFin / (income || 1), annual, weekly: annual / 52, interest, principal, income, totalCost, rate, pool };
+    expenseRatio: runningLessFin / (income || 1), annual, weekly: annual / 52, interest, principal, income, totalCost, rate, pool, runningLessFin };
 }
 
 function renderReview(el) {
