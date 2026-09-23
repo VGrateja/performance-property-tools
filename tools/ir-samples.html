@@ -913,7 +913,8 @@ function slideCashflow(s, A) {
   const pctTxt = v => v ? ((v * 100).toFixed(2).replace(/\.?0+$/, '') + '%') : '';
   const isTot = r => /\btot\b/.test(r[2] || '');
 
-  /* Three columns (Saskia, 2026-09-23 meeting): 1 · the cost of the property —
+  /* Three columns (Saskia, 2026-09-23 meeting; Van: summary first): the summary as four
+     standout numbers; the cost of the property —
      the purchase price beside the total property + acquisition cost, then the
      lines that make it up; 2 · the annual cash flow as a breakdown — running
      costs including finance, then income, then income minus running costs;
@@ -957,50 +958,63 @@ function slideCashflow(s, A) {
     ['Income minus running costs ' + MID + ' ' + (neg ? 'out of pocket' : 'surplus'), money(x.annual), 'tot' + (neg ? ' neg' : '')],
   ];
 
-  /* geometry — one row height for columns 1 and 2 so the two breakdowns read as one table */
-  const TOP = 150, BOTTOM = 562, HDR = 22, GAP = 6, TILE_H = 56, TILE_GAP = 8;
+  /* geometry — the three columns share one grid (Saskia: "play with the
+     alignment, everything looks kinda wonky"): every column is a teal title,
+     then a 56px band of two mini tiles, then grey sub-headings over rows of one
+     shared height, and every column ends on the same line (y562) — the space a
+     shorter list leaves goes into its section gap, not under it. */
+  const TOP = 150, BOTTOM = 562, HDR = 22, GAP = 6, TILE_H = 56, TILE_GAP = 8, SUB = 20;
   const X = [72, 456, 840], W = 356;
   const totsOf = rows => rows.filter(isTot).length;
-  const fit = (fixed, rows) => Math.floor((BOTTOM - TOP - fixed - totsOf(rows) * 4) / Math.max(1, rows.length));
-  let rowH = Math.min(20, fit(HDR + TILE_H + TILE_GAP + HDR + GAP, costRows.concat(acqRows)), fit(HDR + HDR + GAP + HDR, runRows.concat(incRows)));
+  /* fixed pixels in a breakdown column: title · tiles · two sub-headings · one gap */
+  const FIXED = HDR + TILE_H + TILE_GAP + SUB + GAP + SUB;
+  const fit = rows => Math.floor((BOTTOM - TOP - FIXED - totsOf(rows) * 4) / Math.max(1, rows.length));
+  let rowH = Math.min(20, fit(costRows.concat(acqRows)), fit(runRows.concat(incRows)));
   rowH = Math.max(14, rowH);
   const fs = rowH >= 19 ? 12.5 : (rowH >= 17 ? 11.5 : 10.5);
   const rowsHtml = (x0, y0, w, rows) => '<div class="b" style="left:' + x0 + 'px;top:' + y0 + 'px;width:' + w + 'px;font-size:' + fs + 'px">' +
     rows.map(r => '<div class="irs-li' + (r[2] ? ' ' + r[2] : '') + '" style="height:' + (isTot(r) ? rowH + 2 : rowH) + 'px;font-size:inherit"><i>' + esc(r[0]) + '</i><b>' + esc(r[1]) + '</b></div>').join('') + '</div>';
   const listH = rows => rows.reduce((a, r) => a + (isTot(r) ? rowH + 4 : rowH), 0);
-  const title = (x0, y0, txt, o) => T(x0, y0, W, txt, Object.assign({ fs: 12.5, bold: true, color: '#00A0B4', ls: 1.8 }, o || {}));
-
-  /* column 1 — the cost of the property */
-  let y = TOP;
-  h += title(X[0], y, 'Cost of property'); y += HDR;
-  /* uneven split: the second label is the longer one */
+  const title = (x0, y0, txt) => T(x0, y0, W, txt, { fs: 12.5, bold: true, color: '#00A0B4', ls: 1.8 });
+  const sub = (x0, y0, txt) => T(x0, y0, W, txt, { fs: 11, bold: true, color: '#63666A', ls: 1.4 });
   const w1 = 146, w2 = W - w1 - TILE_GAP;
-  h += tile(X[0], y, w1, TILE_H, 'Purchase price', money(x.price), null, { fs: 20, vTop: 24, kfs: 9.5 });
-  h += tile(X[0] + w1 + TILE_GAP, y, w2, TILE_H, 'Total acquisition cost', money(x.totalCost), null, { fs: 20, vTop: 24, kfs: 9.5 });
-  y += TILE_H + TILE_GAP;
-  h += rowsHtml(X[0], y - 2, W, costRows); y += listH(costRows) + GAP;
-  h += title(X[0], y, 'Acquisition costs'); y += HDR;
-  h += rowsHtml(X[0], y - 2, W, acqRows);
+  const pair = (x0, y0, a, b) => tile(x0, y0, w1, TILE_H, a[0], a[1], null, { fs: 20, vTop: 24, kfs: 9.5 }) +
+    tile(x0 + w1 + TILE_GAP, y0, w2, TILE_H, b[0], b[1], null, { fs: 20, vTop: 24, kfs: 9.5 });
+  /* a breakdown column: title, tiles, then two sections whose gap absorbs the leftover */
+  const column = (x0, ttl, tiles, s1, s2) => {
+    let y = TOP;
+    let out = title(x0, y, ttl); y += HDR;
+    out += pair(x0, y, tiles[0], tiles[1]); y += TILE_H + TILE_GAP;
+    const used = FIXED + listH(s1.rows) + listH(s2.rows);
+    const gap = Math.max(GAP, BOTTOM - TOP - used + GAP);   /* what is left over widens the gap between the sections */
+    out += sub(x0, y, s1.t); y += SUB;
+    out += rowsHtml(x0, y - 2, W, s1.rows); y += listH(s1.rows) + gap;
+    out += sub(x0, y, s2.t); y += SUB;
+    out += rowsHtml(x0, y - 2, W, s2.rows);
+    return out;
+  };
 
-  /* column 2 — the annual cash flow as a breakdown */
-  y = TOP;
-  h += title(X[1], y, 'Annual cash flow'); y += HDR;
-  h += title(X[1], y, 'Running costs (annual)', { color: '#63666A', fs: 11.5 }); y += HDR;
-  h += rowsHtml(X[1], y - 2, W, runRows); y += listH(runRows) + GAP;
-  h += title(X[1], y, 'Income (annual)', { color: '#63666A', fs: 11.5 }); y += HDR;
-  h += rowsHtml(X[1], y - 2, W, incRows);
-
-  /* column 3 — the summary, four standout numbers (4 × 88 + 3 × 10 under a 22px title = y554) */
+  /* column 1 — the summary, four standout numbers, filling the same band (4 × 90 + 3 × 10 under the title = y562) */
   const big = [
     ['Annual cash flow', money(x.annual), (neg ? 'out of pocket' : 'surplus') + ' ' + MID + ' ' + (A.loan === 'io' ? 'interest only' : 'principal & interest') + ', ' + rateLabel(A, x), neg],
     ['Weekly cash flow', money(x.weekly), neg ? 'out of pocket each week' : 'surplus each week', neg],
     ['Gross yield', pct(x.grossYield), 'annual rent ÷ purchase price', false],
     ['Net yield', pct(x.netYield), 'net rent (ex finance) ÷ purchase price', false],
   ];
-  const BIG_H = 88, BIG_GAP = 10;
-  y = TOP;
-  h += title(X[2], y, 'Summary'); y += HDR;
-  big.forEach(t => { h += tile(X[2], y, W, BIG_H, t[0], t[1], t[2], { fs: 30, vTop: 30, sTop: BIG_H - 24, neg: t[3] }); y += BIG_H + BIG_GAP; });
+  const BIG_GAP = 10, BIG_H = Math.floor((BOTTOM - TOP - HDR - 3 * BIG_GAP) / 4);
+  let y = TOP;
+  h += title(X[0], y, 'Summary'); y += HDR;
+  big.forEach(t => { h += tile(X[0], y, W, BIG_H, t[0], t[1], t[2], { fs: 30, vTop: 30, sTop: BIG_H - 24, neg: t[3] }); y += BIG_H + BIG_GAP; });
+
+  /* column 2 — the cost of the property */
+  h += column(X[1], 'Cost of property',
+    [['Purchase price', money(x.price)], ['Total acquisition cost', money(x.totalCost)]],
+    { t: 'Allowances', rows: costRows }, { t: 'Acquisition costs', rows: acqRows });
+
+  /* column 3 — the annual cash flow as a breakdown */
+  h += column(X[2], 'Annual cash flow',
+    [['Income (annual)', money(x.income)], ['Running costs', money(x.runningLessFin + x.interest + x.principal)]],
+    { t: 'Running costs (annual)', rows: runRows }, { t: 'Income (annual)', rows: incRows });
 
   h += FOOTER_WIDE('before tax and depreciation');
   return h;
