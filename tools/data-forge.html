@@ -3371,7 +3371,15 @@ async function appendMonthlyFromCotality(result){
     const all = [].concat(result.cap ? result.cap.rows : [], result.lga ? result.lga.rows : []);
     const by = {};
     for (const r of all){ const name = String(r[1] || ''); const type = String(r[2] || ''); const price = Number(String(r[4]).replace(/[^0-9.\-]/g, '')); if (!name || !price || isNaN(price)) continue;
-      let sl = indSlug(name).replace(/^greater-/, '');     // "Greater Sydney" → sydney
+      /* Resolve the export's name through the region table FIRST — Cotality
+         writes "Port Macquarie-Hastings", "Tamworth Regional", "Greater
+         Geelong" — and only then fall back to a slugified name. Port Macquarie
+         went untracked from the 2026-05 data month because the plain slug
+         ("port-macquarie-hastings") matched nothing and the row was skipped
+         in silence (found 2026-09-23 via the Median Prices table). */
+      const key = normalizeName(name).replace(/^greater /, '');
+      const hit = DSI_REGIONS.find(r => normalizeName(r.label).replace(/^greater /, '') === key);
+      let sl = hit ? hit.slug : indSlug(name).replace(/^greater-/, '');     // "Greater Sydney" → sydney
       (by[sl] || (by[sl] = {})); if (/^h/i.test(type)) by[sl].h = price; else if (/^u/i.test(type)) by[sl].u = price; }
     if (!Object.keys(by).length) return;
     const { data } = await window.sb.from('forge_monthly_price').select('data').eq('id', 'latest').maybeSingle();
@@ -3396,7 +3404,15 @@ async function appendMonthlyFromCotality(result){
           shifted++;
         } else { if (v.h != null) reg.h[idx] = v.h; if (v.u != null) reg.u[idx] = v.u; }
       }
-      else { reg.months.push(mo); reg.h.push(v.h ?? null); reg.u.push(v.u ?? null); }
+      else {
+        /* A month the region does not have yet goes in DATE ORDER, not on the
+           end: re-dropping an older export to fill a hole (Sydney and Mandurah
+           lost 2026-03) must not land that month after the latest one, where
+           every "last value" reader would take it for the newest. */
+        const at = reg.months.findIndex(m => m > mo);
+        if (at < 0) { reg.months.push(mo); reg.h.push(v.h ?? null); reg.u.push(v.u ?? null); }
+        else { reg.months.splice(at, 0, mo); reg.h.splice(at, 0, v.h ?? null); reg.u.splice(at, 0, v.u ?? null); }
+      }
       touched++;
     }
     if (shifted) console.warn('[monthly-price] month selector (' + mo + ') lagged the drop — appended ' + shifted + ' region(s) to ' + nextMo(mo) + ' instead of overwriting ' + mo + '. If this was a correction to ' + mo + ', set the month selector to ' + mo + ' and re-drop.');
