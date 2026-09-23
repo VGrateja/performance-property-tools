@@ -79,6 +79,26 @@ table.mp td.dn{background:var(--mp-dn)}
 table.mp td.none{color:var(--mp-mut)}
 table.mp td.sepL, table.mp th.sepL{border-left:1px solid var(--mp-border2)}
 table.mp tbody tr.latest td{font-weight:700}
+/* growth over a period */
+.mp-growth{margin:16px 0 0}
+table.mp.mp-g thead tr.mkt th.sepL{text-align:center}
+.mp-growth-bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin-bottom:8px}
+.mp-growth-bar .lbl{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--mp-teal)}
+.mp-sel{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--mp-mut)}
+/* every <select> gets an opaque background and an explicit text colour — the
+   dropdown-contrast rule; a transparent select inherits the OS list colours */
+.mp-sel select{appearance:auto;border:1px solid var(--mp-border2);border-radius:9px;background:var(--mp-solid);color:var(--mp-ink);font:700 12.5px 'Montserrat',sans-serif;padding:6px 8px;min-width:118px}
+.mp-sel select option{background:var(--mp-solid);color:var(--mp-ink)}
+.mp-growth-meta{font-size:12px;color:var(--mp-ink2)}
+.mp-growth-meta b{color:var(--mp-ink)}
+.mp-growth-copy{margin-left:auto}
+.mp-growth-wrap{max-height:none}
+table.mp.mp-g thead tr.mkt th{top:0}
+table.mp.mp-g thead tr.sub th{top:30px}
+table.mp.mp-g td.pos{color:var(--mp-up-ink);font-weight:700}
+table.mp.mp-g td.neg{color:var(--mp-dn-ink);font-weight:700}
+table.mp.mp-g td.market{text-align:left;font-weight:700;color:var(--mp-ink)}
+table.mp.mp-g th.market{text-align:left}
 .mp-empty{padding:40px;text-align:center;color:var(--mp-mut);font-size:13.5px}
 .mp-note{color:var(--mp-mut);font-size:12px;margin-top:12px;line-height:1.5;max-width:960px}
 .mp-key{display:inline-flex;align-items:center;gap:6px;margin-right:14px}
@@ -91,7 +111,7 @@ table.mp tbody tr.latest td{font-weight:700}
 <body>
 <div class="mp-main" id="mpMain">
   <div class="mp-head">
-    <div class="mp-eyebrow">Analytics · CoreLogic 3-month median</div>
+    <div class="mp-eyebrow">The Vault · CoreLogic 3-month median</div>
     <h1>Median Prices</h1>
     <p>The monthly median house and unit price for every market, month by month — the raw numbers behind the reports. Each figure is CoreLogic’s rolling 3-month median for that month, as the Cotality Market Trends drop records it.</p>
   </div>
@@ -125,6 +145,27 @@ table.mp tbody tr.latest td{font-weight:700}
   </div>
   <div class="mp-meta" id="mpMeta">Loading…</div>
   <div class="mp-wrap" id="mpWrap"><div class="mp-empty">Loading the monthly medians…</div></div>
+  <!-- Saskia 2026-09-23: "a tool that automatically calculates the total growth
+       and CAGR if you select a period" — the period is two months from the same
+       store; the table follows the View and Type chosen above. Below the months,
+       which stay the primary view. -->
+  <div class="mp-growth" id="mpGrowth" hidden>
+    <div class="mp-growth-bar">
+      <span class="lbl">Growth over a period</span>
+      <label class="mp-sel"><span>From</span><select id="mpFrom"></select></label>
+      <label class="mp-sel"><span>To</span><select id="mpTo"></select></label>
+      <div class="mp-seg mp-presets" id="mpPresets">
+        <button type="button" data-y="1">1 yr</button>
+        <button type="button" data-y="3">3 yr</button>
+        <button type="button" data-y="5">5 yr</button>
+        <button type="button" data-y="10" class="on">10 yr</button>
+        <button type="button" data-y="20">20 yr</button>
+      </div>
+      <span class="mp-growth-meta" id="mpGrowthMeta"></span>
+      <button type="button" class="mp-btn mp-growth-copy" id="mpGrowthCopy" title="Copy the growth table as tab-separated text">Copy growth</button>
+    </div>
+    <div class="mp-wrap mp-growth-wrap" id="mpGrowthWrap"></div>
+  </div>
   <div class="mp-note">
     <span class="mp-key"><span class="sw" style="background:var(--mp-up)"></span>up on the month before</span>
     <span class="mp-key"><span class="sw" style="background:var(--mp-dn)"></span>down on the month before</span>
@@ -144,7 +185,7 @@ table.mp tbody tr.latest td{font-weight:700}
 <script src="../shared/fit-screen.js?v=1ea58579"></script>
 <script>
 'use strict';
-PP_OS.initChrome({ name: 'Median Prices', section: 'analytics' });
+PP_OS.initChrome({ name: 'Median Prices', section: 'vault' });
 
 const $ = s => document.querySelector(s);
 const esc = s => window.PP_escapeHtml(s);
@@ -154,7 +195,7 @@ const CLUSTER_ORDER = ['capital', 'nsw', 'qld', 'vicwatas', 'other'];
 const CLUSTER_LABEL = { capital:'Capital cities', nsw:'NSW regionals', qld:'QLD regionals', vicwatas:'VIC / WA / TAS / SA regionals', other:'Other markets' };
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-const state = { view: 'capitals', type: 'h', range: 12, months: [], markets: [], updated: null };
+const state = { view: 'capitals', type: 'h', range: 12, months: [], markets: [], updated: null, from: null, to: null };
 
 /* ── data ──────────────────────────────────────────────────────────────── */
 function fallbackLabel(slug){ return slug.split('-').map(w => w ? w[0].toUpperCase() + w.slice(1) : w).join(' '); }
@@ -190,6 +231,8 @@ async function boot(){
   state.markets = markets;
   state.months = [...monthSet].sort().reverse();                    /* newest first */
   state.updated = row.updated_at || null;
+  fillPeriodSelects();
+  applyPreset(10);          /* Saskia's default: the decade to the latest month */
   wire();
   render();
 }
@@ -249,6 +292,7 @@ function render(){
   });
   wrap.innerHTML = style + '<table class="mp"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
   wrap.scrollTop = 0;
+  renderGrowth();
 
   const latest = state.months[0], first = state.months[state.months.length - 1];
   $('#mpMeta').innerHTML = '<span><b>' + mks.length + '</b> market' + (mks.length === 1 ? '' : 's') + '</span>'
@@ -288,11 +332,87 @@ function downloadXlsx(){
   ws['!cols'] = header.map((h, i) => ({ wch: i === 0 ? 12 : Math.max(12, Math.min(28, String(h).length + 2)) }));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Median prices');
+  /* the growth table for the chosen period, on a second sheet */
+  if (state.from && state.to && monthsBetween(state.from, state.to) > 0) {
+    const g = growthTable();
+    const gs = XLSX.utils.aoa_to_sheet([g.header].concat(g.rows));
+    const gr = XLSX.utils.decode_range(gs['!ref']);
+    for (let c = 0; c <= gr.e.c; c++) {
+      const h = gs[XLSX.utils.encode_cell({ r: 0, c })]; if (h) h.s = { font: { bold: true } };
+      const isPct = /%$/.test(String(g.header[c]));
+      for (let r = 1; r <= gr.e.r; r++) { const cell = gs[XLSX.utils.encode_cell({ r, c })]; if (cell && typeof cell.v === 'number') { cell.t = 'n'; cell.z = isPct ? '0.00' : '$#,##0'; } }
+    }
+    gs['!cols'] = g.header.map((h, i) => ({ wch: i === 0 ? 20 : Math.max(12, Math.min(26, String(h).length + 2)) }));
+    XLSX.utils.book_append_sheet(wb, gs, 'Growth ' + state.from + ' to ' + state.to);
+  }
   const name = 'median-prices-' + state.view + '-' + typeWord() + '-' + (state.range ? state.range + 'm' : 'all') + '.xlsx';
   XLSX.writeFile(wb, name);
 }
 let toastT = null;
 function toast(msg){ const t = $('#mpToast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2200); }
+
+/* ── growth over a period ─────────────────────────────────────────────────
+   total = end / start − 1 · CAGR = (end / start) ^ (12 / months) − 1, on the
+   3-month medians of the two chosen months. A market missing either month
+   shows a dash rather than a number computed from a neighbour. */
+function monthsBetween(a, b){ const [ay, am] = a.split('-').map(Number), [by, bm] = b.split('-').map(Number); return (by - ay) * 12 + (bm - am); }
+function shiftMonth(key, years){ const [y, m] = key.split('-').map(Number); const yy = y - years; return String(yy).padStart(4, '0') + '-' + String(m).padStart(2, '0'); }
+function fillPeriodSelects(){
+  const opts = state.months.map(k => '<option value="' + k + '">' + esc(monthLabel(k)) + '</option>').join('');   /* newest first */
+  $('#mpFrom').innerHTML = opts; $('#mpTo').innerHTML = opts;
+}
+function applyPreset(years){
+  const latest = state.months[0];
+  let from = shiftMonth(latest, years);
+  if (!state.months.includes(from)) from = state.months[state.months.length - 1];   /* older than the history → the first month we have */
+  state.to = latest; state.from = from;
+  $('#mpTo').value = state.to; $('#mpFrom').value = state.from;
+  $('#mpPresets').querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.y === years && state.from === shiftMonth(latest, years)));
+}
+function growthFor(mk, t){
+  const a = valueAt(mk, state.from, t), b = valueAt(mk, state.to, t);
+  const n = monthsBetween(state.from, state.to);
+  if (a == null || b == null || a <= 0 || n <= 0) return { start: a, end: b, total: null, cagr: null };
+  return { start: a, end: b, total: (b / a - 1) * 100, cagr: (Math.pow(b / a, 12 / n) - 1) * 100 };
+}
+function growthRows(){
+  const mks = visibleMarkets(), types = typesShown();
+  return mks.map(m => ({ name: m.name, cluster: m.cluster, by: Object.fromEntries(types.map(t => [t, growthFor(m, t)])) }));
+}
+function renderGrowth(){
+  const box = $('#mpGrowth'), wrap = $('#mpGrowthWrap');
+  if (!state.from || !state.to || !state.months.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const n = monthsBetween(state.from, state.to);
+  if (n <= 0) { wrap.innerHTML = '<div class="mp-empty">Pick a From month before the To month.</div>'; $('#mpGrowthMeta').textContent = ''; return; }
+  const types = typesShown(), rows = growthRows();
+  const yrs = n / 12;
+  $('#mpGrowthMeta').innerHTML = '<b>' + esc(monthLabel(state.from)) + '</b> → <b>' + esc(monthLabel(state.to)) + '</b> · ' + (Number.isInteger(yrs) ? yrs + ' year' + (yrs === 1 ? '' : 's') : n + ' months (' + yrs.toFixed(1) + ' yrs)');
+  const tName = t => t === 'h' ? 'House' : 'Unit';
+  let head = '<tr class="mkt"><th class="market">Market</th>' + types.map(t => '<th colspan="4" class="sepL">' + tName(t) + '</th>').join('') + '</tr>';
+  head += '<tr class="sub"><th class="market"></th>' + types.map(() => '<th class="sepL">' + esc(monthLabel(state.from)) + '</th><th>' + esc(monthLabel(state.to)) + '</th><th>Total growth</th><th>CAGR</th>').join('') + '</tr>';
+  const pctCell = v => v == null ? '<td class="num none">—</td>' : '<td class="num ' + (v > 0 ? 'pos' : v < 0 ? 'neg' : '') + '">' + fmtPct(v) + '</td>';
+  let body = '';
+  rows.forEach(r => {
+    body += '<tr><td class="market">' + esc(r.name) + '</td>';
+    types.forEach((t, ti) => { const g = r.by[t]; body += '<td class="num' + (ti === 0 ? ' sepL' : '') + (g.start == null ? ' none' : '') + '">' + fmt$(g.start) + '</td><td class="num' + (g.end == null ? ' none' : '') + '">' + fmt$(g.end) + '</td>' + pctCell(g.total) + pctCell(g.cagr); });
+    body += '</tr>';
+  });
+  wrap.innerHTML = '<table class="mp mp-g"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
+}
+function growthTable(){
+  const types = typesShown(), rows = growthRows();
+  const header = ['Market'];
+  types.forEach(t => { const tn = t === 'h' ? 'House' : 'Unit'; header.push(tn + ' ' + monthLabel(state.from), tn + ' ' + monthLabel(state.to), tn + ' total growth %', tn + ' CAGR %'); });
+  const body = rows.map(r => { const out = [r.name]; types.forEach(t => { const g = r.by[t]; out.push(g.start, g.end, g.total == null ? null : +g.total.toFixed(2), g.cagr == null ? null : +g.cagr.toFixed(2)); }); return out; });
+  return { header, rows: body };
+}
+async function copyGrowth(){
+  const { header, rows } = growthTable();
+  const tsv = [header.join('\t')].concat(rows.map(r => r.map(v => v == null ? '' : v).join('\t'))).join('\n');
+  try { await navigator.clipboard.writeText(tsv); toast('Copied growth for ' + rows.length + ' markets'); }
+  catch (e) { toast('Copy blocked by the browser — use Download instead'); }
+}
 
 /* ── controls ──────────────────────────────────────────────────────────── */
 function seg(id, attr, onPick){
@@ -310,6 +430,11 @@ function wire(){
   seg('#mpRange', 'r', r => { state.range = +r; });
   $('#mpCopy').addEventListener('click', copyTable);
   $('#mpXlsx').addEventListener('click', downloadXlsx);
+  /* the period: two selects, or a preset counted back from the latest month */
+  $('#mpFrom').addEventListener('change', e => { state.from = e.target.value; $('#mpPresets').querySelectorAll('button').forEach(b => b.classList.remove('on')); renderGrowth(); });
+  $('#mpTo').addEventListener('change', e => { state.to = e.target.value; $('#mpPresets').querySelectorAll('button').forEach(b => b.classList.remove('on')); renderGrowth(); });
+  $('#mpPresets').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; applyPreset(+b.dataset.y); renderGrowth(); });
+  $('#mpGrowthCopy').addEventListener('click', copyGrowth);
   /* redraw on a theme change — the tints are theme tokens, the table is not */
   window.addEventListener('pp-theme-change', () => { if (state.markets.length) render(); });
 }
