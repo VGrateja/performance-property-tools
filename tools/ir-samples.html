@@ -683,7 +683,7 @@ function kvRows(x, y, w, rows, rowH) {
 function tile(x, y, w, h, k, v, sub, o) {
   o = o || {};
   return '<div class="irs-tile' + (o.neg ? ' neg' : '') + '" style="left:' + x + 'px;top:' + y + 'px;width:' + w + 'px;height:' + h + 'px">' +
-    '<div class="k">' + esc(k) + '</div>' +
+    '<div class="k"' + (o.kfs ? ' style="font-size:' + o.kfs + 'px"' : '') + '>' + esc(k) + '</div>' +
     '<div class="v" style="top:' + (o.vTop || 34) + 'px;font-size:' + (o.fs || 24) + 'px">' + esc(v) + '</div>' +
     (sub ? '<div class="s" style="top:' + (o.sTop || (h - 24)) + 'px">' + esc(sub) + '</div>' : '') +
     '</div>';
@@ -805,7 +805,13 @@ function calcCashflow(cf, mode, normRate) {
   const n = k => +cf[k] || 0;
   const budget = n('budget'); if (!budget) return null;
   const rate = mode === 'norm' ? (normRate || RATES.normalised || 0.0494) : (n('rate') || RATES.current || 0.065);
-  const loan = budget * (n('lvr') || 0.9);
+  /* The LVR applies to the TOTAL property + acquisition cost (Saskia 2026-09-23:
+     "if the 100% LVR is calculating off of 710, that's the right way") — the
+     purchase price plus allowances plus every acquisition line below — so 100%
+     means nothing is required to complete. */
+  const acq = n('stampDuty') + n('engagementFee') + n('acquisitionFee') + n('titleTransfer') + n('conveyancing') + n('buildingPest') + n('depreciationSchedule') + n('professionalClean');
+  const totalCost = budget + n('maintenanceAllowance') + n('minRentalStdCost') + n('cosmeticWorks') + acq;
+  const loan = totalCost * (n('lvr') || 0.9);
   const interest = loan * rate;
   const mPmt = loan * (rate / 12) / (1 - Math.pow(1 + rate / 12, -((n('loanTermYears') || 30) * 12)));
   const principal = mode === 'io' ? 0 : (mPmt * 12 - interest);
@@ -818,8 +824,6 @@ function calcCashflow(cf, mode, normRate) {
   const pool = cf.hasPool === false ? 0 : n('poolMaintenance');   /* only while the cashflow's pool tick is on */
   const other = n('strata') + n('councilWater') + n('landTax') + n('insurance') + pool;
   const runningLessFin = letting + pm + repairs + fees + other;
-  const acq = n('stampDuty') + n('engagementFee') + n('acquisitionFee') + n('titleTransfer') + n('conveyancing') + n('buildingPest') + n('depreciationSchedule') + n('professionalClean');
-  const totalCost = budget + n('maintenanceAllowance') + n('minRentalStdCost') + n('cosmeticWorks') + acq;
   const annual = income - (runningLessFin + interest + principal);
   return { loan, requiredCapital: totalCost - loan, grossYield: income / budget, netYield: (income - runningLessFin) / budget,
     expenseRatio: runningLessFin / (income || 1), annual, weekly: annual / 52, interest, principal, income, totalCost, rate,
@@ -865,11 +869,13 @@ function ctlHtml(A, file) {
     opts.map(o => '<button type="button" data-set="' + key + '" data-val="' + o[0] + '"' + (o[2] ? ' class="on"' : '') + '>' + o[1] + '</button>').join('') + '</div>';
   const custom = A.rateMode === 'custom';
   const shown = rateFor(A, cf);
+  /* Saskia 2026-09-23: the LVR is on the total property + acquisition cost, and
+     says so; the report's own rate is no longer a preset (normalised, current,
+     or the stepper). */
   return '<div class="irs-ctls">' +
-    seg('LVR', 'lvr', lvrs.map(v => [v, Math.round(v * 100) + '%', Math.abs(A.lvr - v) < 0.001])) +
+    seg('LVR (incl. acquisition costs)', 'lvr', lvrs.map(v => [v, Math.round(v * 100) + '%', Math.abs(A.lvr - v) < 0.001])) +
     '<div style="display:flex;gap:5px">' +
-      seg('Interest rate', 'rateMode', [['norm', 'Normalised ' + pct(RATES.normalised, 2), A.rateMode === 'norm'], ['current', 'Current ' + pct(RATES.current, 2), A.rateMode === 'current'],
-        ['file', 'Report ' + pct(+cf.rate || RATES.current, 2), A.rateMode === 'file']]) +
+      seg('Interest rate', 'rateMode', [['norm', 'Normalised ' + pct(RATES.normalised, 2), A.rateMode === 'norm'], ['current', 'Current ' + pct(RATES.current, 2), A.rateMode === 'current']]) +
       '<div class="irs-seg irs-step"><button type="button" data-step="-1" title="0.25% lower">&minus;</button>' +
         '<span class="lb' + (custom ? ' on' : '') + '">' + pct(shown, 2) + '</span>' +
         '<button type="button" data-step="1" title="0.25% higher">+</button></div>' +
@@ -903,29 +909,23 @@ function slideCashflow(s, A) {
   }
   const n = k => +cf0[k] || 0;
   const neg = x.annual < 0;
-
-  /* headline strip — the three numbers Saskia wants on top */
-  const head = [
-    ['Purchase price', money(x.price), 'the report\'s figure ' + MID + ' not scaled'],
-    ['Annual cash flow', money(x.annual), (neg ? 'out of pocket' : 'surplus') + ' ' + MID + ' ' + (A.loan === 'io' ? 'interest only' : 'principal & interest') + ', ' + rateLabel(A, x)],
-    ['Weekly cash flow', money(x.weekly), neg ? 'out of pocket each week' : 'surplus each week'],
-  ];
-  head.forEach((t, i) => { h += tile(72 + i * 384, 142, 368, 70, t[0], t[1], t[2], { fs: 26, vTop: 24, sTop: 51, neg: i > 0 && neg }); });   /* 70px tall: the five sections below need the room */
-
-  /* five sections in three columns — the breakdown of the IR report's own cashflow
-     page (Van's notes): cost of property · acquisition costs · running costs · income ·
-     investment summary. One row height across the columns so it reads as one table;
-     every column must end above the footer hairline at y572 (band y218–y562). */
   const rentWk = n('rent'), weeks = n('weeksLet') || 52;
   const pctTxt = v => v ? ((v * 100).toFixed(2).replace(/\.?0+$/, '') + '%') : '';
   const isTot = r => /\btot\b/.test(r[2] || '');
+
+  /* Three columns (Saskia, 2026-09-23 meeting): 1 · the cost of the property —
+     the purchase price beside the total property + acquisition cost, then the
+     lines that make it up; 2 · the annual cash flow as a breakdown — running
+     costs including finance, then income, then income minus running costs;
+     3 · the summary as four standout numbers. No headline strip, no investment
+     summary, no report figure. Every column ends above the footer hairline
+     at y572; the toggle rail ends at y138, so the band is y150–y562. */
   const costRows = [
-    ['Purchase price', money(x.price)],
     ['Maintenance allowance', money(n('maintenanceAllowance'))],
     ['Cosmetic works allowance', money(n('cosmeticWorks'))],
   ];
   if (n('minRentalStdCost')) costRows.push(['Minimum rental standards', money(n('minRentalStdCost'))]);
-  costRows.push(['Subtotal', money(x.price + n('maintenanceAllowance') + n('cosmeticWorks') + n('minRentalStdCost')), 'tot']);
+  costRows.push(['Property + allowances', money(x.price + n('maintenanceAllowance') + n('cosmeticWorks') + n('minRentalStdCost')), 'tot']);
   const acqRows = [
     ['Stamp duty', money(n('stampDuty'))],
     ['Engagement fee', money(n('engagementFee'))],
@@ -935,7 +935,7 @@ function slideCashflow(s, A) {
     ['Building & pest inspection', money(n('buildingPest'))],
     ['Depreciation schedule', money(n('depreciationSchedule'))],
     ['Professional clean', money(n('professionalClean'))],
-    ['Subtotal', money(x.acq), 'tot'],
+    ['Acquisition costs', money(x.acq), 'tot'],
     ['Total property + acquisition cost', money(x.totalCost), 'tot'],
   ];
   const runRows = [
@@ -950,41 +950,57 @@ function slideCashflow(s, A) {
   const pool = poolOf(f);
   if (pool) runRows.push(['Pool maintenance ' + MID + ' ' + pool.toLowerCase(), x.pool ? money(x.pool) : 'not costed']);
   runRows.push(['Strata fees', money(n('strata'))], ['Council & water rates', money(n('councilWater'))], ['Land tax', money(n('landTax'))], ['Insurance estimate', money(n('insurance'))]);
-  runRows.push(['Running costs incl. finance', money(x.runningLessFin + x.interest + x.principal), 'tot'], ['Running costs less finance', money(x.runningLessFin), 'tot']);
+  runRows.push(['Running costs incl. finance', money(x.runningLessFin + x.interest + x.principal), 'tot']);
   const incRows = [
     ['Rent per week', money(rentWk)],
     ['Income ' + MID + ' ' + weeks + ' weeks let', money(x.income)],
-    ['Net income ' + MID + ' after running costs', money(x.income - x.runningLessFin), 'tot'],
+    ['Income minus running costs ' + MID + ' ' + (neg ? 'out of pocket' : 'surplus'), money(x.annual), 'tot' + (neg ? ' neg' : '')],
   ];
-  const sumRows = [
-    ['Loan amount ' + MID + ' ' + pct(A.lvr, 0) + ' LVR', money(x.loan)],
-    /* total cost less the loan, never below zero — a loan above the total cost means nothing is required */
-    ['Required capital', money(Math.max(0, x.requiredCapital))],
-    ['Gross yield', pct(x.grossYield)],
-    ['Net yield', pct(x.netYield)],
-    ['Expense ratio', pct(x.expenseRatio)],
-    ['Annual cash flow', money(x.annual), 'tot' + (neg ? ' neg' : '')],
-    ['Weekly cash flow', money(x.weekly), 'tot' + (neg ? ' neg' : '')],
-  ];
-  const cols = [
-    [{ t: 'Cost of property', rows: costRows }, { t: 'Acquisition costs', rows: acqRows }],
-    [{ t: 'Running costs (annual)', rows: runRows }],
-    [{ t: 'Income (annual)', rows: incRows }, { t: 'Investment summary', rows: sumRows }],
-  ];
-  /* shared row height: the tallest column decides (band y232–y562, 22px section titles,
-     6px between sections, totals carry 2px margin + 2px extra height) */
-  const BAND = 344, HDR = 22, GAP = 6;   /* y218 → y562 */
-  let rowH = 20;
-  cols.forEach(secs => { const rows = secs.flatMap(sc => sc.rows); const tots = rows.filter(isTot).length;
-    rowH = Math.min(rowH, Math.floor((BAND - secs.length * HDR - tots * 4 - (secs.length - 1) * GAP) / Math.max(1, rows.length))); });
+
+  /* geometry — one row height for columns 1 and 2 so the two breakdowns read as one table */
+  const TOP = 150, BOTTOM = 562, HDR = 22, GAP = 6, TILE_H = 56, TILE_GAP = 8;
+  const X = [72, 456, 840], W = 356;
+  const totsOf = rows => rows.filter(isTot).length;
+  const fit = (fixed, rows) => Math.floor((BOTTOM - TOP - fixed - totsOf(rows) * 4) / Math.max(1, rows.length));
+  let rowH = Math.min(20, fit(HDR + TILE_H + TILE_GAP + HDR + GAP, costRows.concat(acqRows)), fit(HDR + HDR + GAP + HDR, runRows.concat(incRows)));
   rowH = Math.max(14, rowH);
   const fs = rowH >= 19 ? 12.5 : (rowH >= 17 ? 11.5 : 10.5);
   const rowsHtml = (x0, y0, w, rows) => '<div class="b" style="left:' + x0 + 'px;top:' + y0 + 'px;width:' + w + 'px;font-size:' + fs + 'px">' +
     rows.map(r => '<div class="irs-li' + (r[2] ? ' ' + r[2] : '') + '" style="height:' + (isTot(r) ? rowH + 2 : rowH) + 'px;font-size:inherit"><i>' + esc(r[0]) + '</i><b>' + esc(r[1]) + '</b></div>').join('') + '</div>';
-  const secH = sc => HDR + sc.rows.reduce((a, r) => a + (isTot(r) ? rowH + 4 : rowH), 0);
-  const X = [72, 456, 840], W = 356;
-  cols.forEach((secs, ci) => { let y = 218;
-    secs.forEach(sc => { h += T(X[ci], y, W, sc.t, { fs: 12.5, bold: true, color: '#00A0B4', ls: 1.8 }); h += rowsHtml(X[ci], y + HDR - 2, W, sc.rows); y += secH(sc) + GAP; }); });
+  const listH = rows => rows.reduce((a, r) => a + (isTot(r) ? rowH + 4 : rowH), 0);
+  const title = (x0, y0, txt, o) => T(x0, y0, W, txt, Object.assign({ fs: 12.5, bold: true, color: '#00A0B4', ls: 1.8 }, o || {}));
+
+  /* column 1 — the cost of the property */
+  let y = TOP;
+  h += title(X[0], y, 'Cost of property'); y += HDR;
+  /* uneven split: the second label is the longer one */
+  const w1 = 146, w2 = W - w1 - TILE_GAP;
+  h += tile(X[0], y, w1, TILE_H, 'Purchase price', money(x.price), null, { fs: 20, vTop: 24, kfs: 9.5 });
+  h += tile(X[0] + w1 + TILE_GAP, y, w2, TILE_H, 'Total acquisition cost', money(x.totalCost), null, { fs: 20, vTop: 24, kfs: 9.5 });
+  y += TILE_H + TILE_GAP;
+  h += rowsHtml(X[0], y - 2, W, costRows); y += listH(costRows) + GAP;
+  h += title(X[0], y, 'Acquisition costs'); y += HDR;
+  h += rowsHtml(X[0], y - 2, W, acqRows);
+
+  /* column 2 — the annual cash flow as a breakdown */
+  y = TOP;
+  h += title(X[1], y, 'Annual cash flow'); y += HDR;
+  h += title(X[1], y, 'Running costs (annual)', { color: '#63666A', fs: 11.5 }); y += HDR;
+  h += rowsHtml(X[1], y - 2, W, runRows); y += listH(runRows) + GAP;
+  h += title(X[1], y, 'Income (annual)', { color: '#63666A', fs: 11.5 }); y += HDR;
+  h += rowsHtml(X[1], y - 2, W, incRows);
+
+  /* column 3 — the summary, four standout numbers (4 × 88 + 3 × 10 under a 22px title = y554) */
+  const big = [
+    ['Annual cash flow', money(x.annual), (neg ? 'out of pocket' : 'surplus') + ' ' + MID + ' ' + (A.loan === 'io' ? 'interest only' : 'principal & interest') + ', ' + rateLabel(A, x), neg],
+    ['Weekly cash flow', money(x.weekly), neg ? 'out of pocket each week' : 'surplus each week', neg],
+    ['Gross yield', pct(x.grossYield), 'annual rent ÷ purchase price', false],
+    ['Net yield', pct(x.netYield), 'net rent (ex finance) ÷ purchase price', false],
+  ];
+  const BIG_H = 88, BIG_GAP = 10;
+  y = TOP;
+  h += title(X[2], y, 'Summary'); y += HDR;
+  big.forEach(t => { h += tile(X[2], y, W, BIG_H, t[0], t[1], t[2], { fs: 30, vTop: 30, sTop: BIG_H - 24, neg: t[3] }); y += BIG_H + BIG_GAP; });
 
   h += FOOTER_WIDE('before tax and depreciation');
   return h;
@@ -1001,18 +1017,23 @@ function slideScenarios(s, A) {
   if (!x0) { h += T(72, 200, 800, 'No purchase price on file ' + MID + ' scenarios need one.', { fs: 17, color: '#63666A' }); h += FOOTER_WIDE(); return h; }
   const fileLvr = (+cf0.lvr > 0 && +cf0.lvr <= 1) ? +cf0.lvr : null;
   const lvrs = [0.6, 0.7, 0.8, 0.9, 1.0]; if (fileLvr && !lvrs.some(v => Math.abs(v - fileLvr) < 0.001)) lvrs.push(fileLvr); lvrs.sort((a, b) => a - b);
-  const rates = [['norm', 'Normalised ' + pct(RATES.normalised, 2)], ['current', 'Current ' + pct(RATES.current, 2)], ['file', 'Report ' + pct(+cf0.rate || RATES.current, 2)]];
-  if (A.rateMode === 'custom' && +A.rate > 0) rates.push(['custom', 'Selected ' + pct(A.rate, 2)]);
-  h += T(72, 160, 1136, (A.loan === 'io' ? 'Interest only' : 'Principal & interest over 30 years') + ' ' + MID + ' purchase price ' + money(x0.price) +
+  /* Saskia 2026-09-23: no Report-rate column. Van: whatever number the stepper
+     shows is the SELECTED rate and always has its own column here — even when
+     it equals the normalised or current rate — and that column carries the
+     highlight, because it is the state page 2 is showing. */
+  const shown = rateFor(A, cf0);
+  const rates = [['norm', 'Normalised ' + pct(RATES.normalised, 2)], ['current', 'Current ' + pct(RATES.current, 2)], ['custom', 'Selected ' + pct(shown, 2)]];
+  h += T(72, 160, 1136, (A.loan === 'io' ? 'Interest only' : 'Principal & interest over 30 years') + ' ' + MID + ' LVR on the total property + acquisition cost of ' + money(x0.totalCost) +
     ' ' + MID + ' weekly cash flow, with the annual figure and the capital required to complete beneath it', { fs: 14, color: '#4A4F57', nowrap: true });
   let t = '<table class="irs-sc" style="left:72px;top:190px;width:1136px"><tr><th>LVR</th>' + rates.map(r => '<th>' + r[1] + '</th>').join('') + '</tr>';
   lvrs.forEach(l => {
     t += '<tr><td>' + Math.round(l * 100) + '% LVR' + (fileLvr && Math.abs(l - fileLvr) < 0.001 ? '<span>the report\'s</span>' : '') + '</td>';
     rates.forEach(r => {
-      const x = runModel(f, { lvr: l, rateMode: r[0], rate: A.rate, loan: A.loan, term: 30 });
-      const on = Math.abs(l - A.lvr) < 0.001 && r[0] === A.rateMode;
+      const x = runModel(f, { lvr: l, rateMode: r[0], rate: r[0] === 'custom' ? shown : A.rate, loan: A.loan, term: 30 });
+      const on = Math.abs(l - A.lvr) < 0.001 && r[0] === 'custom';
+      /* the combination page 2 is showing is highlighted AND says so */
       t += '<td' + (on ? ' class="on"' : '') + '><b' + (x.weekly < 0 ? ' class="neg"' : '') + '>' + esc(money(x.weekly)) + ' /wk</b>' +
-        '<span>' + esc(money(x.annual)) + ' a year ' + MID + ' capital ' + esc(money(Math.max(0, x.requiredCapital))) + '</span></td>';
+        '<span>' + (on ? 'selected ' + MID + ' ' : '') + esc(money(x.annual)) + ' a year ' + MID + ' capital ' + esc(money(Math.max(0, x.requiredCapital))) + '</span></td>';
     });
     t += '</tr>';
   });
