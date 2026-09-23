@@ -12,6 +12,16 @@
    dataZoom on every x axis with wheel and pan switched off, so the chart's own
    tooltips, legends and layout are untouched.
 
+   The y axis follows the zoom (Saskia, 2026-09-23: "when we zoom in we need
+   the scale of the y axis to increase as we do so, so we can see the actual
+   scale"). While a chart is zoomed its value axes stop honouring the page's
+   min / max / interval and fit the visible data, the way SQM's do — ECharts
+   would otherwise keep zero on the axis (scale:false is its default) and a
+   $100k–$900k line zoomed into one decade stays squashed against the top.
+   An axis that carries bars keeps its zero baseline and frees only the top
+   and the tick interval, because a bar drawn from a raised floor lies about
+   its size. Reset puts the authored bounds back exactly.
+
    Off entirely for the PDF renderers (exportMode=1 / embed=1) and on touch-only
    devices. Ignored while the page is in an editing or exporting state, so the
    report editor's and the slide editors' own drags win:
@@ -84,6 +94,49 @@
     } catch (e) { return null; }
   }
 
+  /* ── the y axis while zoomed ────────────────────────────────────────────── */
+  /* Recorded from every real setOption: what the page authored for each y
+     axis, and whether bars hang off it. Applied by refresh(): zoomed → fit the
+     visible data (bars keep their floor); not zoomed → the authored bounds. */
+  var Y_KEYS = ['min', 'max', 'interval', 'scale'];
+  function recordY(ch, opt, notMerge) {
+    /* An option that already carries our dataZoom came back out of
+       getOption(): it holds our override, not the page's bounds. Skip it. */
+    if (arr(opt.dataZoom).some(function (d) { return d && d.id === ID; })) return;
+    var prev = (!notMerge && ch.__ppY) || [];
+    var ser = arr(opt.series), bars = null;
+    if (ser.length) { bars = {}; ser.forEach(function (s) { if (s && s.type === 'bar') bars[s.yAxisIndex || 0] = true; }); }
+    /* Mirror ECharts' merge: a key the new option omits keeps its earlier value
+       (the pages pin bounds in a follow-up partial setOption as often as in the
+       first one); only notMerge starts from nothing. */
+    var ys = arr(opt.yAxis), n = Math.max(ys.length, prev.length), out = [];
+    for (var i = 0; i < n; i++) {
+      var y = ys[i], was = prev[i], auth = {};
+      Y_KEYS.forEach(function (k) {
+        if (y && Object.prototype.hasOwnProperty.call(y, k)) auth[k] = y[k];
+        else auth[k] = was ? was.auth[k] : null;
+      });
+      var t = (y && y.type) || (was ? (was.value ? 'value' : 'other') : 'value');
+      out.push({ auth: auth, value: t === 'value', bar: bars ? !!bars[i] : !!(was && was.bar) });
+    }
+    ch.__ppY = out;
+    ch.__ppYFreed = false;   /* the authored bounds are in force again */
+  }
+  function applyY(ch, zoomed) {
+    var ys = ch.__ppY;
+    if (!ys || !ys.length || !!ch.__ppYFreed === !!zoomed) return;
+    var over = ys.map(function (y) {
+      if (!y.value) return {};
+      if (!zoomed) return { min: y.auth.min, max: y.auth.max, interval: y.auth.interval, scale: y.auth.scale };
+      if (y.bar) return { min: y.auth.min, max: null, interval: null, scale: y.auth.scale };
+      return { min: null, max: null, interval: null, scale: true };
+    });
+    ch.__ppYFreed = !!zoomed;
+    ch.__ppYApplying = true;   /* so the wrapper does not record our own override as the page's */
+    try { ch.setOption({ yAxis: over }); } catch (e) { /* disposed mid-zoom */ }
+    ch.__ppYApplying = false;
+  }
+
   /* ── styles, injected once ──────────────────────────────────────────────── */
   function css() {
     if (document.getElementById('pp-chart-zoom-css')) return;
@@ -114,7 +167,11 @@
     btn.title = 'Show the full date range'; host.appendChild(btn);
 
     function reset() { try { ch.dispatchAction({ type: 'dataZoom', dataZoomId: ID, start: 0, end: 100 }); } catch (e) { /* disposed */ } }
-    function refresh() { var z = zoomState(ch); var on = !!(z && z.zoomed); btn.hidden = !on; host.classList.toggle('pp-zoomed', on); }
+    function refresh() {
+      var z = zoomState(ch); var on = !!(z && z.zoomed);
+      btn.hidden = !on; host.classList.toggle('pp-zoomed', on);
+      applyY(ch, on);
+    }
     ch.__ppZoomRefresh = refresh;
     btn.addEventListener('click', function (e) { e.stopPropagation(); e.preventDefault(); reset(); });
     btn.addEventListener('mousedown', function (e) { e.stopPropagation(); });
@@ -187,11 +244,17 @@
       var ch = orig.apply(this, arguments);
       try {
         var so = ch.setOption;
-        ch.setOption = function (opt) {
-          var on = false;
-          try { if (!ch.__ppNoZoom && eligible(opt, el)) { augment(opt); on = true; } } catch (e) { on = false; }
+        ch.setOption = function (opt, a1) {
+          var on = false, notMerge = a1 === true || !!(a1 && typeof a1 === 'object' && a1.notMerge === true);
+          var partialY = false;
+          try {
+            if (!ch.__ppNoZoom && eligible(opt, el)) { recordY(ch, opt, notMerge); augment(opt); on = true; }
+            /* a follow-up partial update that pins the y axis (no series with it) */
+            else if (!ch.__ppYApplying && ch.__ppY && opt && opt.yAxis) { recordY(ch, opt, false); partialY = true; }
+          } catch (e) { on = false; }
           var r = so.apply(this, arguments);
           if (on) { try { arm(ch, el); if (ch.__ppZoomRefresh) ch.__ppZoomRefresh(); } catch (e) { /* keep the chart */ } }
+          else if (partialY) { try { if (ch.__ppZoomRefresh) ch.__ppZoomRefresh(); } catch (e) { /* keep the chart */ } }
           return r;
         };
       } catch (e) { /* leave the instance untouched */ }
