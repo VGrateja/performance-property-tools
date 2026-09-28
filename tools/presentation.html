@@ -4629,6 +4629,23 @@
       <input type="number" id="pres-tblpad-h" min="0" max="60" step="0.5" value="10" aria-label="Cell padding left and right in px" style="width:50%;padding:6px 8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:5px;color:inherit;font-size:12px">
     </div>
   </div>
+  <!-- Cell rules (cell.borders) — a rule on one side of the selected cells only
+       (a hairline under a row, a heavier rule over a total). Its own colour +
+       width: the inputs above set the border of the WHOLE table. -->
+  <div class="pres-cell-popover-row" id="pres-tblrule-row">
+    <label>Cell rules · selected cells</label>
+    <div style="display:flex;gap:6px;margin-bottom:6px">
+      <input type="text" id="pres-tblrule-hex" maxlength="7" value="#171b24" placeholder="#hex" spellcheck="false" autocomplete="off" aria-label="Rule colour" style="width:60%;padding:6px 8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:5px;color:inherit;font-size:12px">
+      <input type="number" id="pres-tblrule-width" min="0.5" max="20" step="0.5" value="1" aria-label="Rule width in px" style="width:40%;padding:6px 8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:5px;color:inherit;font-size:12px">
+    </div>
+    <div style="display:flex;gap:4px">
+      <button type="button" data-cell-rule="t" title="Rule on the top edge" style="flex:1;padding:5px 0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:5px;color:inherit;font-size:11px;cursor:pointer">Top</button>
+      <button type="button" data-cell-rule="b" title="Rule on the bottom edge" style="flex:1;padding:5px 0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:5px;color:inherit;font-size:11px;cursor:pointer">Bottom</button>
+      <button type="button" data-cell-rule="l" title="Rule on the left edge" style="flex:1;padding:5px 0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:5px;color:inherit;font-size:11px;cursor:pointer">Left</button>
+      <button type="button" data-cell-rule="r" title="Rule on the right edge" style="flex:1;padding:5px 0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:5px;color:inherit;font-size:11px;cursor:pointer">Right</button>
+      <button type="button" data-cell-rule="none" title="Remove the selected cells' own rules" style="flex:1;padding:5px 0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:5px;color:inherit;font-size:11px;cursor:pointer">None</button>
+    </div>
+  </div>
 </div>
 
 <!-- Shape settings panel — ports the right-rail .sh-panel from
@@ -5272,6 +5289,7 @@ function _buildThumbOverlay(o) {
         if (col.w) td.style.width = col.w + 'px';
         const cell = (o.cells && o.cells[ri] && o.cells[ri][ci]) || {};
         { const pad = _tableCellPad(o, cell); if (pad) td.style.padding = pad; }
+        _applyCellBorders(td, cell);
         if (cell.bgColor)   td.style.background = cell.bgColor;
         if (cell.textColor) td.style.color = cell.textColor;
         td.innerHTML = presResolveTokens(cell.html || '');
@@ -7075,9 +7093,10 @@ function buildThumbOverlayEl(o) {
     (o.cells || []).forEach((row, r) => {
       const tr = document.createElement('tr');
       tr.style.height = (o.rows[r] && o.rows[r].h) + 'px';
-      (row || []).forEach(cell => {
+      (row || []).forEach((cell, c) => {
         if (cell._hidden) return; /* covered by a merge anchor; skip */
         const td = document.createElement('td');
+        td.dataset.row = r; td.dataset.col = c;
         if ((cell.colspan || 1) > 1) td.colSpan = cell.colspan;
         if ((cell.rowspan || 1) > 1) td.rowSpan = cell.rowspan;
         if (cell.bgColor)   td.style.background = cell.bgColor;
@@ -7089,12 +7108,14 @@ function buildThumbOverlayEl(o) {
         if (cell.vAlign)     td.style.verticalAlign = cell.vAlign;
         { const pad = _tableCellPad(o, cell); if (pad) td.style.padding = pad; }
         if (borderStyleThumb) td.style.border   = borderStyleThumb;
+        _applyCellBorders(td, cell);
         td.innerHTML = presResolveTokens(cell.html || '');
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
+    _sealCellSeams(table, o);
     el.appendChild(table);
   } else if (o.type === 'chart') {
     /* Native billboard chart (band charts, At-a-Glance, etc.) — render it
@@ -10350,6 +10371,60 @@ function _tableCellPad(o, cell) {
   if (!p || !p.every(v => Number.isFinite(+v))) return null;
   return p.map(v => Math.max(0, +v) + 'px').join(' ');
 }
+/* Per-cell side borders ("cell rules") — cell.borders = { t, r, b, l }, each
+   [widthPx, '#hex']; width 0 = no rule on that side. The table-wide border
+   (o.borderColor / o.borderWidth) draws every edge alike, but a Google Slides
+   table stores a line per cell side, and most finance tables draw only
+   hairlines between rows, or a heavier rule over a totals row. Applied AFTER
+   the table-wide border, so a side named here wins and the other sides keep
+   the table's border; with border-collapse the wider of two touching rules
+   shows, as in Slides. Shared by every table renderer (editor / present /
+   export, the rail thumbnail and the picker card). */
+const _CELL_SIDES = [['t', 'Top'], ['r', 'Right'], ['b', 'Bottom'], ['l', 'Left']];
+function _applyCellBorders(td, cell) {
+  const b = cell && cell.borders;
+  if (!b || typeof b !== 'object') return;
+  _CELL_SIDES.forEach(([k, side]) => {
+    const v = b[k];
+    if (!Array.isArray(v) || v.length < 2) return;
+    const w = +v[0];
+    if (!Number.isFinite(w)) return;
+    td.style['border' + side] = (w > 0 && /^#[0-9a-f]{3,8}$/i.test(String(v[1])))
+      ? (Math.min(20, w) + 'px solid ' + v[1]) : 'none';
+  });
+}
+/* Seam-free cell fills. Two touching filled cells meet on a fractional device
+   pixel whenever the slide is scaled (the editor stage, a present-mode screen,
+   a thumbnail, the export canvas): each cell's antialiased edge covers part of
+   that pixel and the page shows through, so a continuous band (a totals row, a
+   dark header) came out striped with hairlines. Each filled cell paints a 1px
+   box-shadow of its own colour toward a right / lower neighbour filled with
+   the SAME colour, so that shared edge pixel ends up solid; where the shadow
+   shows at all it is the neighbour's own colour, so it can never be seen.
+   Cells of different colours are left alone (their edge is a blend, not a
+   hairline), nothing is drawn past the table's outer edge or into an unfilled
+   cell, and rules paint over it. Needs td.dataset.row / .col (every table
+   renderer sets them). */
+function _sealCellSeams(table, o) {
+  if (!table || !o || !Array.isArray(o.cells)) return;
+  const at = {};
+  table.querySelectorAll('td').forEach(td => { td.style.boxShadow = ''; at[td.dataset.row + ',' + td.dataset.col] = td; });
+  const solid = c => !!(c && !c._hidden && typeof c.bgColor === 'string' && /^#[0-9a-f]{3,8}$/i.test(c.bgColor));
+  o.cells.forEach((row, r) => (row || []).forEach((cell, c) => {
+    if (!solid(cell)) return;
+    const td = at[r + ',' + c];
+    if (!td) return;
+    const same = n => solid(n) && String(n.bgColor).toLowerCase() === String(cell.bgColor).toLowerCase();
+    const cs = cell.colspan || 1;
+    const downRow = o.cells[r + (cell.rowspan || 1)];
+    const R = same(row[c + cs]), D = same(downRow && downRow[c]);
+    const parts = [];
+    if (R) parts.push('1px 0 0 0 ' + cell.bgColor);
+    if (D) parts.push('0 1px 0 0 ' + cell.bgColor);
+    if (R && D && same(downRow && downRow[c + cs])) parts.push('1px 1px 0 0 ' + cell.bgColor);
+    if (parts.length) td.style.boxShadow = parts.join(',');
+  }));
+}
 
 function buildTableEl(o) {
   const host = document.createElement('div');
@@ -10408,6 +10483,7 @@ function buildTableEl(o) {
       if (cell.vAlign)     td.style.verticalAlign = cell.vAlign;
       { const pad = _tableCellPad(o, cell); if (pad) td.style.padding = pad; }
       if (borderStyleOverride) td.style.border = borderStyleOverride;
+      _applyCellBorders(td, cell);
       if (selIsMulti && selRect && r >= selRect.minR && r <= selRect.maxR &&
           c >= selRect.minC && c <= selRect.maxC) td.classList.add('cell-in-range');
       td.innerHTML = presResolveTokens(cell.html || '');
@@ -10522,6 +10598,7 @@ function buildTableEl(o) {
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
+  _sealCellSeams(table, o);
   host.appendChild(table);
 
   /* Column resize handles — one per column's RIGHT edge. Handles
@@ -10726,6 +10803,7 @@ function _applyCellColor(prop, hex) {
     if (changed) {
       _cellPopoverDirty = true;
       saveOverlays();
+      if (el && prop === 'bgColor') _sealCellSeams(el.querySelector('table.pres-table'), o);
     }
     return;
   }
@@ -10744,6 +10822,7 @@ function _applyCellColor(prop, hex) {
       if (prop === 'bgColor')   td.style.background = hex || '';
       if (prop === 'textColor') td.style.color      = hex || '';
     }
+    if (prop === 'bgColor') _sealCellSeams(el.querySelector('table.pres-table'), o);
   }
 }
 cellTextSwatch.addEventListener('input', () => {
@@ -10835,7 +10914,7 @@ function openTableCellMenu(o, r, c, x, y) {
     { label: 'Paste',           disabled: !_overlayClipboard, action: () => pasteOverlay() },
     { separator: true },
     { label: 'Cell colours…',     action: () => setTimeout(() => openCellColorPopover(o, r, c, x, y), 0) },
-    { label: 'Table border…',     action: () => setTimeout(() => openTableBorderPopover(o, x, y), 0) },
+    { label: 'Table border…',     action: () => setTimeout(() => openTableBorderPopover(o, x, y, r, c), 0) },
     { separator: true },
     { label: 'Bulleted list (•)',  action: () => _cellApplyListMarker(o, r, c, 'bullet')   },
     { label: 'Dashed list (–)',    action: () => _cellApplyListMarker(o, r, c, 'dashed')   },
@@ -11093,9 +11172,13 @@ const tblBorderWidth   = document.getElementById('pres-tblborder-width');
 let _tblBorderCtx = null;
 let _tblBorderDirty = false;
 
-function openTableBorderPopover(o, x, y) {
+function openTableBorderPopover(o, x, y, row, col) {
   if (tblBorderPopover.classList.contains('open')) closeTableBorderPopover();
-  _tblBorderCtx = { overlayId: o.id };
+  _tblBorderCtx = { overlayId: o.id, row: Number.isInteger(row) ? row : null, col: Number.isInteger(col) ? col : null };
+  { const rules = document.getElementById('pres-tblrule-row'); if (rules) rules.style.display = _tblBorderCtx.row == null ? 'none' : '';
+    const cell = _tblBorderCtx.row != null && o.cells[_tblBorderCtx.row] && o.cells[_tblBorderCtx.row][_tblBorderCtx.col];
+    const has = cell && cell.borders && ['b', 't', 'l', 'r'].map(k => cell.borders[k]).find(v => Array.isArray(v) && +v[0] > 0);
+    if (has) { const hx = document.getElementById('pres-tblrule-hex'), wx = document.getElementById('pres-tblrule-width'); if (hx) hx.value = String(has[1]); if (wx) wx.value = String(+has[0]); } }
   _tblBorderDirty = false;
   const bc = (o.borderColor && /^#[0-9a-f]{6}$/i.test(o.borderColor)) ? o.borderColor : '#5a6478';
   const bw = (typeof o.borderWidth === 'number') ? o.borderWidth : 1;
@@ -11139,9 +11222,72 @@ function _applyTableBorder(prop, value) {
   const el = slot.querySelector('.pres-overlay[data-id="' + o.id + '"]');
   if (el) {
     const border = (o.borderWidth || 0) + 'px solid ' + (o.borderColor || '#5a6478');
-    el.querySelectorAll('td').forEach(td => { td.style.border = border; });
+    el.querySelectorAll('td').forEach(td => {
+      td.style.border = border;
+      _applyCellBorders(td, (o.cells[+td.dataset.row] || [])[+td.dataset.col]);   // cell rules stay on top
+    });
   }
 }
+/* Cell rules — the popover's colour + width drawn on one side of every cell in
+   the target range (the shift-click range when the menu was opened inside it,
+   else the right-clicked cell). Clicking a side that already carries exactly
+   that rule on every target removes it; "None" clears the targets' rules. */
+function _tblRuleTargets(o) {
+  const ctx = _tblBorderCtx;
+  if (!ctx || ctx.row == null) return [];
+  const sel = _tableCellSelection;
+  let R = { minR: ctx.row, maxR: ctx.row, minC: ctx.col, maxC: ctx.col };
+  if (sel && sel.overlayId === o.id) {
+    const rr = _selectionRect(sel);
+    if (rr && ctx.row >= rr.minR && ctx.row <= rr.maxR && ctx.col >= rr.minC && ctx.col <= rr.maxC) R = rr;
+  }
+  const out = [];
+  for (let r = R.minR; r <= R.maxR; r++) for (let c = R.minC; c <= R.maxC; c++) {
+    const cell = o.cells[r] && o.cells[r][c];
+    if (cell && !cell._hidden) out.push(cell);
+  }
+  return out;
+}
+function _applyCellRule(side) {
+  if (!_tblBorderCtx) return;
+  const o = currentOverlays().find(ov => ov.id === _tblBorderCtx.overlayId);
+  if (!o || o.type !== 'table') return;
+  const cells = _tblRuleTargets(o);
+  if (!cells.length) return;
+  if (side === 'none') {
+    cells.forEach(cell => { delete cell.borders; });
+  } else {
+    const hexIn = document.getElementById('pres-tblrule-hex'), wIn = document.getElementById('pres-tblrule-width');
+    let col = ((hexIn && hexIn.value) || '').trim();
+    if (col && !col.startsWith('#')) col = '#' + col;
+    if (!/^#[0-9a-f]{6}$/i.test(col)) col = '#171b24';
+    col = col.toLowerCase();
+    let w = parseFloat(wIn && wIn.value);
+    if (!Number.isFinite(w) || w <= 0) w = 1;
+    w = Math.min(20, w);
+    const has = cells.every(cell => cell.borders && Array.isArray(cell.borders[side])
+      && +cell.borders[side][0] === w && String(cell.borders[side][1]).toLowerCase() === col);
+    cells.forEach(cell => {
+      const b = Object.assign({}, cell.borders || {});
+      if (has) delete b[side]; else b[side] = [w, col];
+      if (Object.keys(b).length) cell.borders = b; else delete cell.borders;
+    });
+  }
+  _tblBorderDirty = true;
+  saveOverlays();
+  const el = slot.querySelector('.pres-overlay[data-id="' + o.id + '"]');
+  if (el) {
+    const border = (o.borderColor || typeof o.borderWidth === 'number')
+      ? ((typeof o.borderWidth === 'number' ? o.borderWidth : 1) + 'px solid ' + (o.borderColor || '#5a6478')) : '';
+    el.querySelectorAll('td').forEach(td => {
+      td.style.border = border;
+      _applyCellBorders(td, (o.cells[+td.dataset.row] || [])[+td.dataset.col]);
+    });
+  }
+}
+document.querySelectorAll('#pres-tblborder-popover [data-cell-rule]').forEach(btn => {
+  btn.addEventListener('click', () => _applyCellRule(btn.dataset.cellRule));
+});
 tblBorderSwatch.addEventListener('input', () => {
   tblBorderHex.value = tblBorderSwatch.value.toUpperCase();
   _applyTableBorder('borderColor', tblBorderSwatch.value);
