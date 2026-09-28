@@ -71,6 +71,7 @@
     'arena-chess':      { sec: 'arena',     file: 'arena-chess.html',            label: 'Chess' },
     'arena-scrabble':   { sec: 'arena',     file: 'arena-scrabble.html',         label: 'Scrabble' },
     'arena-skribbl':    { sec: 'arena',     file: 'arena-skribbl.html',          label: 'Skribbl' },
+    'arena-sudoku':     { sec: 'arena',     file: 'arena-sudoku.html',           label: 'Sudoku' },
     /* docs */
     'documents':        { sec: 'docs',      file: 'whitepapers-strategies.html', label: 'Documents' },
     'online-reports':   { sec: 'docs',      file: 'online-reports.html',         label: 'Residential Research Reports' },
@@ -101,7 +102,7 @@
   var DEFAULT_BASELINE = ['clock', 'runway-demand',
     'documents', 'online-reports', 'research-reports',
     'present-new', 'present-company', 'present-mine', 'present-library',
-    'arena', 'arena-typing', 'arena-chess', 'arena-scrabble', 'arena-skribbl'];
+    'arena', 'arena-typing', 'arena-chess', 'arena-scrabble', 'arena-skribbl', 'arena-sudoku'];
   /* Was ['scorecards'] — emptied 2026-08-24 with the People & Culture section.
      The 'leads' tier is already retired (mig 089), so this list now has no
      members at all; kept as the hook the resolver still reads. */

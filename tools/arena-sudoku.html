@@ -1,0 +1,1713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sudoku — Performance Property Arena</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../shared/common.css?v=2e33aceb"/>
+<!-- OS chrome: mode/period/shade + legacy data-theme bridge (replaces theme.js) -->
+<script src="../shared/os-chrome.js?v=ea374003"></script>
+<link rel="stylesheet" href="../shared/os-theme.css?v=bcea6d52"/>
+<!-- Auto-fit: scale the page down to fit smaller screens (scale-down only). -->
+<script src="../shared/fit-screen.js?v=1ea58579"></script>
+<style>
+  /* ═══════════════════════════════════════════════════════════════════
+     Arena Sudoku — a shared-puzzle stage race (migration 122).
+     Dark is the default; light = [data-theme="light"]. Arena pink chrome
+     (#D373D3 / rgba(255,122,195,…)) like the other Arena pages; board
+     colours are brand tones. Every element toggled with [hidden] is
+     guarded below — a class with a display rule defeats the attribute.
+     ═══════════════════════════════════════════════════════════════════ */
+  [hidden]{ display:none !important; }
+  body{ margin:0; min-height:100vh; background:transparent !important; font-family:'Montserrat',Montserrat,sans-serif; }
+  body{ animation: pp-page-fade-in .42s cubic-bezier(.22,1,.36,1) both; }
+  /* Opacity ONLY — a retained body transform would re-anchor position:fixed. */
+  @keyframes pp-page-fade-in{ from{opacity:0} to{opacity:1} }
+
+  :root{
+    --sd-ink:#e9eef7; --sd-mut:rgba(233,238,247,.62); --sd-faint:rgba(233,238,247,.40);
+    --sd-panel:rgba(15,23,42,.58); --sd-panel-solid:#141a28; --sd-line:rgba(255,122,195,.26); --sd-line-soft:rgba(255,255,255,.08);
+    --sd-accent:#D373D3; --sd-accent-soft:rgba(211,115,211,.16); --sd-teal:#00A0B4;
+    --sd-board:rgba(18,22,31,.86); --sd-cell-line:rgba(255,255,255,.09); --sd-box-line:rgba(255,255,255,.34);
+    --sd-given:#F4F6F8; --sd-entry:#D373D3; --sd-hinted:#00A0B4; --sd-bad:#E72347; --sd-ok:#71B357;
+    --sd-peer:rgba(255,255,255,.05); --sd-same:rgba(211,115,211,.20); --sd-sel:rgba(211,115,211,.34);
+    --sd-diag:rgba(0,160,180,.12); --sd-focus:rgba(255,169,31,.22);
+    --sd-gold:#FFA91F; --sd-silver:#D9D9D6; --sd-bronze:color-mix(in srgb, #FFA91F 55%, #63666A);
+  }
+  [data-theme="light"]{
+    --sd-ink:#0a1520; --sd-mut:rgba(10,21,32,.64); --sd-faint:rgba(10,21,32,.42);
+    --sd-panel:rgba(255,255,255,.80); --sd-panel-solid:#ffffff; --sd-line:rgba(255,122,195,.38); --sd-line-soft:rgba(23,27,36,.09);
+    --sd-accent:#C445C4; --sd-accent-soft:rgba(196,69,196,.12);
+    --sd-board:rgba(255,255,255,.96); --sd-cell-line:rgba(23,27,36,.13); --sd-box-line:rgba(23,27,36,.62);
+    --sd-given:#171B24; --sd-entry:#C445C4; --sd-hinted:#00839A;
+    --sd-peer:rgba(23,27,36,.05); --sd-same:rgba(196,69,196,.14); --sd-sel:rgba(196,69,196,.24);
+    --sd-diag:rgba(0,160,180,.10); --sd-focus:rgba(255,169,31,.30);
+    --sd-silver:#63666A;
+  }
+
+  #sdView{ display:flex; flex-direction:column; min-height:calc(100vh - var(--appbar-h, 52px)); color:var(--sd-ink); }
+  .sd-main{ flex:1; width:100%; max-width:1240px; margin:0 auto; padding:26px 20px 22px; box-sizing:border-box; }
+  .sd-btn{ appearance:none; font-family:inherit; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:7px;
+    padding:10px 16px; border-radius:10px; font-size:12.5px; font-weight:800; letter-spacing:.3px;
+    border:1px solid var(--sd-line); background:var(--sd-accent-soft); color:var(--sd-accent); transition:background .15s, border-color .15s, transform .15s; }
+  .sd-btn:hover{ border-color:var(--sd-accent); }
+  .sd-btn.primary{ background:var(--sd-accent); color:#fff; border-color:transparent; }
+  .sd-btn.primary:hover{ filter:brightness(1.07); }
+  .sd-btn.ghost{ background:transparent; color:var(--sd-ink); border-color:var(--sd-line-soft); }
+  .sd-btn:disabled{ opacity:.5; cursor:not-allowed; }
+  .sd-btn svg{ width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .sd-panel{ background:var(--sd-panel); border:1px solid var(--sd-line); border-radius:14px; backdrop-filter:blur(14px) saturate(140%); -webkit-backdrop-filter:blur(14px) saturate(140%); }
+  [data-theme="light"] .sd-panel{ box-shadow:0 6px 20px rgba(31,40,63,.07); }
+  .sd-chip{ display:inline-flex; align-items:center; gap:5px; padding:4px 9px; border-radius:99px; font-size:10.5px; font-weight:800; letter-spacing:.4px;
+    background:var(--sd-accent-soft); color:var(--sd-accent); border:1px solid var(--sd-line); white-space:nowrap; }
+  .sd-chip.tech{ cursor:help; background:transparent; color:var(--sd-mut); border-color:var(--sd-line-soft); font-weight:700; }
+  .sd-chip.boss{ background:rgba(0,160,180,.14); color:var(--sd-teal); border-color:rgba(0,160,180,.40); }
+  .sd-chip svg{ width:12px; height:12px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .sd-mut{ color:var(--sd-mut); }
+  .emg{ width:1em; height:1em; display:inline-block; vertical-align:-.12em; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+
+  /* ── hero ── */
+  .sd-hero{ text-align:center; margin-bottom:18px; }
+  .sd-eyebrow{ font-weight:800; font-size:11px; letter-spacing:3px; text-transform:uppercase; color:#D373D3; opacity:.9; margin-bottom:8px; }
+  .sd-title{ font-weight:900; font-size:clamp(28px,4vw,44px); letter-spacing:1.5px; text-transform:uppercase; margin:0 0 8px; }
+  .sd-title em{ color:#D373D3; font-style:normal; }
+  .sd-sub{ font-size:.93rem; color:var(--sd-mut); max-width:700px; margin:0 auto 14px; line-height:1.6; }
+  .sd-me{ display:flex; flex-wrap:wrap; justify-content:center; gap:8px; min-height:26px; }
+  .sd-me .sd-chip{ font-size:11px; padding:5px 11px; }
+  .sd-medal{ width:14px; height:14px; border-radius:50%; display:inline-grid; place-items:center; font-size:8.5px; font-weight:900; color:#171B24; flex:0 0 auto; }
+  .sd-medal.m1{ background:var(--sd-gold); } .sd-medal.m2{ background:var(--sd-silver); } .sd-medal.m3{ background:var(--sd-bronze); }
+  [data-theme="light"] .sd-medal.m2{ color:#fff; }
+
+  /* ── tabs ── */
+  .sd-tabs{ display:flex; justify-content:center; gap:6px; margin:4px 0 18px; flex-wrap:wrap; }
+  .sd-tabs .seg{ display:inline-flex; padding:4px; gap:2px; border-radius:99px; background:var(--sd-panel); border:1px solid var(--sd-line); }
+  .sd-tab{ appearance:none; border:0; background:transparent; font-family:inherit; cursor:pointer; padding:8px 16px; border-radius:99px;
+    font-weight:800; font-size:11.5px; letter-spacing:1.2px; text-transform:uppercase; color:var(--sd-mut); }
+  .sd-tab.on{ background:var(--sd-accent-soft); color:var(--sd-accent); }
+  .sd-link{ appearance:none; border:0; background:transparent; font-family:inherit; cursor:pointer; color:var(--sd-accent); font-weight:800; font-size:11.5px; letter-spacing:.6px; padding:8px 10px; }
+
+  /* ── stage map + panel ── */
+  .sd-stages{ display:grid; grid-template-columns:minmax(0,1fr) 380px; gap:18px; align-items:start; }
+  .sd-map{ padding:16px 16px 6px; max-height:calc(100vh - 250px); min-height:420px; overflow-y:auto; }
+  .sd-tier{ margin-bottom:16px; }
+  .sd-tier-head{ display:flex; align-items:baseline; gap:10px; margin:2px 2px 9px; }
+  .sd-tier-head .dot{ width:10px; height:10px; border-radius:3px; flex:0 0 auto; transform:translateY(1px); }
+  .sd-tier-head b{ font-size:13px; font-weight:900; letter-spacing:1px; text-transform:uppercase; }
+  .sd-tier-head span{ font-size:11.5px; color:var(--sd-mut); }
+  .sd-tiles{ display:grid; grid-template-columns:repeat(auto-fill, minmax(58px, 1fr)); gap:7px; }
+  .sd-tile{ appearance:none; font-family:inherit; cursor:pointer; position:relative; aspect-ratio:1/1; border-radius:11px; padding:0;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+    background:rgba(255,255,255,.035); border:1px solid var(--sd-line-soft); color:var(--sd-ink); transition:transform .12s, border-color .12s, background .12s; }
+  [data-theme="light"] .sd-tile{ background:rgba(255,255,255,.7); }
+  .sd-tile:hover{ transform:translateY(-1px); border-color:var(--sd-accent); }
+  .sd-tile .n{ font-size:15px; font-weight:900; font-variant-numeric:tabular-nums; line-height:1; }
+  .sd-tile .t{ font-size:9.5px; font-weight:700; color:var(--sd-mut); font-variant-numeric:tabular-nums; line-height:1; min-height:10px; }
+  .sd-tile .stripe{ position:absolute; left:8px; right:8px; bottom:5px; height:3px; border-radius:2px; opacity:.85; }
+  .sd-tile.locked{ opacity:.42; cursor:pointer; }
+  .sd-tile.locked .n{ font-weight:700; }
+  .sd-tile.cleared{ background:rgba(113,179,87,.10); border-color:rgba(113,179,87,.38); }
+  .sd-tile.current{ border-color:var(--sd-accent); box-shadow:0 0 0 2px var(--sd-accent-soft); animation:sdPulse 2.4s ease-in-out infinite; }
+  .sd-tile.active::before{ content:''; position:absolute; top:6px; left:6px; width:7px; height:7px; border-radius:50%; background:var(--sd-accent); }
+  .sd-tile.sel{ outline:2px solid var(--sd-accent); outline-offset:1px; }
+  .sd-tile .crown{ position:absolute; top:3px; right:4px; width:13px; height:13px; color:var(--sd-mut); }
+  .sd-tile .crown.mine{ color:var(--sd-gold); }
+  .sd-tile .medal{ position:absolute; top:4px; left:4px; }
+  .sd-tile.boss{ border-style:dashed; border-color:rgba(0,160,180,.55); }
+  .sd-tile.boss .x{ position:absolute; bottom:8px; font-size:8.5px; font-weight:900; letter-spacing:1px; color:var(--sd-teal); }
+  .sd-tile.tut{ grid-column:span 2; aspect-ratio:auto; min-height:58px; }
+  @keyframes sdPulse{ 0%,100%{ box-shadow:0 0 0 2px var(--sd-accent-soft); } 50%{ box-shadow:0 0 0 5px var(--sd-accent-soft); } }
+  @media (prefers-reduced-motion:reduce){ .sd-tile.current{ animation:none; } }
+
+  .sd-side{ position:sticky; top:calc(var(--appbar-h,52px) + 14px); display:flex; flex-direction:column; gap:14px; }
+  .sd-sp{ padding:18px; }
+  .sd-sp h2{ margin:0; font-size:22px; font-weight:900; letter-spacing:-.01em; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .sd-sp .meta{ font-size:12px; color:var(--sd-mut); margin:6px 0 10px; line-height:1.5; }
+  .sd-sp .chips{ display:flex; flex-wrap:wrap; gap:5px; margin-bottom:12px; }
+  .sd-crownline{ display:flex; align-items:center; gap:8px; font-size:12px; padding:9px 11px; border-radius:10px; background:rgba(255,169,31,.10); border:1px solid rgba(255,169,31,.30); margin-bottom:12px; }
+  .sd-crownline svg{ width:16px; height:16px; color:var(--sd-gold); flex:0 0 auto; }
+  .sd-top{ width:100%; border-collapse:collapse; font-size:12.5px; margin-bottom:10px; }
+  .sd-top th{ font-size:9.5px; letter-spacing:1.3px; text-transform:uppercase; color:var(--sd-mut); font-weight:800; text-align:left; padding:0 6px 6px; }
+  .sd-top td{ padding:7px 6px; border-top:1px solid var(--sd-line-soft); font-variant-numeric:tabular-nums; }
+  .sd-top td.nm{ font-weight:700; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sd-top td.tm{ font-weight:800; color:var(--sd-accent); text-align:right; }
+  .sd-top td.dt{ color:var(--sd-mut); font-size:11px; text-align:right; white-space:nowrap; }
+  .sd-top tr.me td{ background:var(--sd-accent-soft); }
+  .sd-top tr.gap td{ border-top:1px dashed var(--sd-line-soft); padding:2px; }
+  .sd-empty{ padding:14px 6px; text-align:center; font-size:12px; color:var(--sd-mut); }
+  .sd-actions{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .sd-actions .sd-btn{ flex:1 1 auto; }
+  .sd-note{ font-size:11.5px; color:var(--sd-mut); line-height:1.5; margin-top:10px; }
+
+  /* ── ranking + stats ── */
+  .sd-rank{ padding:16px 18px; }
+  .sd-rank h3, .sd-stats h3{ margin:0 0 4px; font-size:14px; font-weight:900; letter-spacing:1.4px; text-transform:uppercase; }
+  .sd-rank .rules{ font-size:12px; color:var(--sd-mut); margin:0 0 12px; }
+  .sd-table{ width:100%; border-collapse:collapse; font-size:13px; }
+  .sd-table th{ text-align:left; font-size:10px; letter-spacing:1.3px; text-transform:uppercase; color:var(--sd-mut); padding:8px 10px; font-weight:800; border-bottom:1px solid var(--sd-line-soft); }
+  .sd-table td{ padding:10px; border-bottom:1px solid var(--sd-line-soft); font-variant-numeric:tabular-nums; }
+  .sd-table td.rk{ width:44px; color:var(--sd-mut); font-weight:800; }
+  .sd-table td.st{ font-weight:900; color:var(--sd-accent); }
+  .sd-table tr.me td{ background:var(--sd-accent-soft); }
+  .sd-table tr.pin td{ border-top:2px solid var(--sd-line); }
+  .sd-stats{ padding:18px; }
+  .sd-tilesgrid{ display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:10px; margin-top:12px; }
+  .sd-stat{ padding:13px 14px; border-radius:12px; background:rgba(255,255,255,.035); border:1px solid var(--sd-line-soft); }
+  [data-theme="light"] .sd-stat{ background:rgba(255,255,255,.7); }
+  .sd-stat .k{ font-size:9.5px; font-weight:800; letter-spacing:1.4px; text-transform:uppercase; color:var(--sd-mut); }
+  .sd-stat .v{ font-size:22px; font-weight:900; margin-top:5px; font-variant-numeric:tabular-nums; display:flex; align-items:center; gap:8px; }
+  .sd-stat .d{ font-size:11px; color:var(--sd-mut); margin-top:2px; }
+
+  /* ── game ── */
+  .sd-gamebar{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .sd-gamebar h2{ margin:0; font-size:20px; font-weight:900; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .sd-gamebar .chips{ display:flex; gap:5px; flex-wrap:wrap; }
+  .sd-gamebar .sp{ flex:1; }
+  .sd-play{ display:grid; grid-template-columns:auto minmax(260px, 340px); gap:22px; justify-content:center; align-items:start; }
+  .sd-boardcol{ display:flex; flex-direction:column; gap:10px; width:var(--bs); }
+  .sd-play{ --bs:min(560px, calc(100vh - 260px)); }
+  .sd-timer{ display:flex; align-items:flex-end; justify-content:space-between; gap:12px; }
+  .sd-clock{ font-size:34px; font-weight:900; font-variant-numeric:tabular-nums; line-height:1; letter-spacing:.5px; }
+  .sd-clocknote{ font-size:10.5px; font-weight:700; color:var(--sd-mut); margin-top:4px; letter-spacing:.2px; }
+  .sd-pen{ font-size:11.5px; color:var(--sd-mut); text-align:right; line-height:1.45; }
+  .sd-pen b{ color:var(--sd-ink); }
+  .sd-pen .bad{ color:var(--sd-bad); font-weight:800; }
+  .sd-ghost{ position:relative; height:32px; margin-top:4px; }
+  .sd-ghost .track{ position:absolute; left:0; right:0; top:22px; height:4px; border-radius:3px; background:var(--sd-line-soft); }
+  .sd-ghost .fill{ position:absolute; left:0; top:22px; height:4px; border-radius:3px; background:var(--sd-accent); width:0; transition:width .25s linear; }
+  .sd-ghost .gm{ position:absolute; top:16px; width:2px; height:16px; margin-left:-1px; background:var(--sd-ink); opacity:.75; border-radius:1px; }
+  .sd-ghost .gm.passed{ opacity:.28; }
+  .sd-ghost .gm.par{ background:var(--sd-gold); opacity:.9; }
+  .sd-ghost .gl{ position:absolute; top:0; transform:translateX(-50%); font-size:9.5px; font-weight:800; color:var(--sd-mut); white-space:nowrap; max-width:84px; overflow:hidden; text-overflow:ellipsis; }
+  .sd-ghost .gl.edge-l{ transform:none; } .sd-ghost .gl.edge-r{ transform:translateX(-100%); }
+  .sd-ghost .gl.par{ color:var(--sd-gold); }
+  .sd-ghostnext{ font-size:11px; color:var(--sd-mut); min-height:14px; }
+  .sd-ghostnext b{ color:var(--sd-ink); }
+
+  .sd-boardwrap{ position:relative; width:var(--bs); height:var(--bs); }
+  .sd-board{ position:absolute; inset:0; display:grid; grid-template-columns:repeat(9,1fr); grid-template-rows:repeat(9,1fr);
+    background:var(--sd-board); border:2px solid var(--sd-box-line); border-radius:10px; overflow:hidden; container-type:inline-size; user-select:none; -webkit-user-select:none; touch-action:manipulation; }
+  .sd-cell{ appearance:none; border:0; margin:0; padding:0; font-family:inherit; cursor:pointer; position:relative; background:transparent; color:var(--sd-entry);
+    border-right:1px solid var(--sd-cell-line); border-bottom:1px solid var(--sd-cell-line); display:grid; place-items:center; outline:none; }
+  .sd-cell.bR{ border-right:2px solid var(--sd-box-line); }
+  .sd-cell.bB{ border-bottom:2px solid var(--sd-box-line); }
+  .sd-cell.eR{ border-right:0; } .sd-cell.eB{ border-bottom:0; }
+  .sd-cell.dg{ background:var(--sd-diag); }
+  .sd-cell.peer{ background:var(--sd-peer); }
+  .sd-cell.dg.peer{ background:linear-gradient(var(--sd-peer), var(--sd-peer)), var(--sd-diag); }
+  .sd-cell.same{ background:var(--sd-same); }
+  .sd-cell.sel{ background:var(--sd-sel); box-shadow:inset 0 0 0 2px var(--sd-accent); z-index:1; }
+  .sd-cell.focus{ background:var(--sd-focus); }
+  .sd-cell.target{ box-shadow:inset 0 0 0 3px #FFA91F; z-index:2; animation:sdTarget 1.3s ease-in-out infinite; }
+  @keyframes sdTarget{ 50%{ box-shadow:inset 0 0 0 3px rgba(255,169,31,.35); } }
+  .sd-cell .v{ font-size:calc(100cqw / 9 * .56); font-weight:600; line-height:1; font-variant-numeric:tabular-nums; }
+  .sd-cell.given .v{ color:var(--sd-given); font-weight:800; }
+  .sd-cell.hinted .v{ color:var(--sd-hinted); font-weight:800; }
+  .sd-cell.hinted::after{ content:''; position:absolute; top:3px; right:3px; width:5px; height:5px; border-radius:50%; background:var(--sd-hinted); }
+  .sd-cell.bad .v, .sd-cell.clash .v{ color:var(--sd-bad); }
+  .sd-cell.bad{ background:rgba(231,35,71,.16); }
+  .sd-cell.clash::before{ content:''; position:absolute; left:18%; right:18%; bottom:9%; height:2px; border-radius:1px; background:var(--sd-bad); opacity:.8; }
+  .sd-cell.given.clash .v{ color:var(--sd-given); }
+  .sd-cell .nt{ position:absolute; inset:6%; display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(3,1fr); pointer-events:none; }
+  .sd-cell .nt i{ font-style:normal; font-size:calc(100cqw / 9 * .235); font-weight:700; color:var(--sd-mut); display:grid; place-items:center; line-height:1; }
+  .sd-cell .nt i.hl{ color:var(--sd-accent); font-weight:900; }
+  .sd-cell.pop .v{ animation:sdPop .22s ease-out; }
+  @keyframes sdPop{ from{ transform:scale(.6); opacity:.2; } to{ transform:scale(1); opacity:1; } }
+  .sd-cell.shake{ animation:sdShake .3s; }
+  @keyframes sdShake{ 25%{ transform:translateX(-3px); } 75%{ transform:translateX(3px); } }
+
+  .sd-ctl{ display:flex; flex-direction:column; gap:12px; }
+  .sd-tools{ display:grid; grid-template-columns:repeat(4, 1fr); gap:7px; }
+  .sd-tool[data-act="restart"]{ grid-column:span 2; }   /* 7 tools: 4 + (3, Restart wide) */
+  .sd-tool{ appearance:none; font-family:inherit; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:4px; padding:9px 4px 8px; border-radius:11px;
+    background:var(--sd-panel); border:1px solid var(--sd-line-soft); color:var(--sd-ink); font-size:10.5px; font-weight:800; letter-spacing:.3px; position:relative; }
+  .sd-tool svg{ width:19px; height:19px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+  .sd-tool:hover{ border-color:var(--sd-accent); }
+  .sd-tool.on{ background:var(--sd-accent-soft); color:var(--sd-accent); border-color:var(--sd-accent); }
+  .sd-tool:disabled{ opacity:.4; cursor:not-allowed; }
+  .sd-tool .badge{ position:absolute; top:4px; right:6px; font-size:9.5px; font-weight:900; color:var(--sd-accent); }
+  .sd-tool kbd{ font-family:inherit; font-size:9px; opacity:.55; }
+  .sd-pad{ display:grid; grid-template-columns:repeat(3, 1fr); gap:7px; }
+  .sd-key{ appearance:none; font-family:inherit; cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; padding:10px 0 8px; border-radius:12px;
+    background:var(--sd-panel); border:1px solid var(--sd-line); color:var(--sd-ink); }
+  .sd-key b{ font-size:26px; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; }
+  .sd-key small{ font-size:9.5px; font-weight:700; color:var(--sd-mut); }
+  .sd-key:hover{ border-color:var(--sd-accent); background:var(--sd-accent-soft); }
+  .sd-key.done{ opacity:.35; }
+  .sd-key.notes b{ color:var(--sd-accent); font-size:20px; }
+  .sd-savestate{ font-size:10.5px; color:var(--sd-mut); text-align:center; min-height:14px; }
+  .sd-minilb{ padding:12px 14px; }
+  .sd-minilb h4{ margin:0 0 6px; font-size:10.5px; font-weight:900; letter-spacing:1.3px; text-transform:uppercase; color:var(--sd-mut); }
+  .sd-hintline{ font-size:11.5px; color:var(--sd-mut); line-height:1.5; }
+
+  /* ── overlays ── */
+  .sd-ov{ position:fixed; inset:0; z-index:90; display:grid; place-items:center; padding:18px; background:rgba(5,8,14,.62); backdrop-filter:blur(3px); }
+  .sd-modal{ width:min(520px, 94vw); max-height:88vh; overflow:auto; padding:22px; border-radius:18px; background:var(--sd-panel-solid); border:1px solid var(--sd-line); color:var(--sd-ink); box-shadow:0 30px 80px -20px rgba(0,0,0,.6); box-sizing:border-box; }
+  .sd-modal h3{ margin:0 0 8px; font-size:20px; font-weight:900; }
+  .sd-modal p{ font-size:13px; line-height:1.6; color:var(--sd-mut); margin:0 0 12px; }
+  .sd-modal .row{ display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap; }
+  .sd-done-time{ font-size:48px; font-weight:900; font-variant-numeric:tabular-nums; line-height:1.05; margin:4px 0 2px; }
+  .sd-done-break{ font-size:12px; color:var(--sd-mut); margin-bottom:14px; }
+  .sd-awards{ display:flex; flex-direction:column; gap:7px; margin-bottom:6px; }
+  .sd-award{ display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:11px; background:rgba(255,255,255,.04); border:1px solid var(--sd-line-soft); font-size:13px; }
+  [data-theme="light"] .sd-award{ background:rgba(23,27,36,.03); }
+  .sd-award svg{ width:18px; height:18px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .sd-award.gold{ border-color:rgba(255,169,31,.45); background:rgba(255,169,31,.10); }
+  .sd-settings .opt{ display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-bottom:1px solid var(--sd-line-soft); cursor:pointer; }
+  .sd-settings .opt:last-child{ border-bottom:0; }
+  .sd-settings .opt input{ margin-top:3px; width:17px; height:17px; accent-color:#D373D3; flex:0 0 auto; }
+  .sd-settings .opt b{ display:block; font-size:13px; }
+  .sd-settings .opt small{ display:block; font-size:11.5px; color:var(--sd-mut); line-height:1.45; margin-top:2px; }
+  .sd-rules li{ font-size:13px; line-height:1.6; color:var(--sd-mut); margin-bottom:6px; }
+  .sd-rules li b{ color:var(--sd-ink); }
+  .sd-confetti{ position:fixed; inset:0; pointer-events:none; z-index:95; }
+  .sd-toast{ position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(10px); z-index:99; max-width:min(92vw, 520px);
+    padding:11px 18px; border-radius:12px; font-size:13px; font-weight:700; background:var(--sd-panel-solid); color:var(--sd-ink); border:1px solid var(--sd-line);
+    box-shadow:0 14px 40px rgba(0,0,0,.35); opacity:0; pointer-events:none; transition:opacity .18s, transform .18s; text-align:center; }
+  .sd-toast.on{ opacity:1; transform:translateX(-50%) translateY(0); }
+
+  /* ── tutorial coach ── */
+  .sd-coach{ padding:16px 16px 14px; border-color:rgba(255,169,31,.5); }
+  .sd-coach .step{ font-size:10px; font-weight:900; letter-spacing:1.4px; text-transform:uppercase; color:#FFA91F; margin-bottom:6px; }
+  .sd-coach h4{ margin:0 0 6px; font-size:16px; font-weight:900; }
+  .sd-coach p{ margin:0 0 10px; font-size:13px; line-height:1.55; color:var(--sd-mut); }
+  .sd-coach p b{ color:var(--sd-ink); }
+  .sd-coach .row{ display:flex; gap:8px; justify-content:space-between; align-items:center; }
+  .sd-coach .dots{ display:flex; gap:4px; }
+  .sd-coach .dots i{ width:6px; height:6px; border-radius:50%; background:var(--sd-line-soft); }
+  .sd-coach .dots i.on{ background:#FFA91F; }
+  .sd-coach .say{ font-size:12px; font-weight:700; color:#FFA91F; min-height:16px; margin-bottom:8px; }
+
+  /* the logo closes the page, bottom-right, AFTER the content — never under it */
+  .sd-logo{ width:100%; max-width:1240px; margin:0 auto; padding:6px 20px 16px; box-sizing:border-box; display:flex; justify-content:flex-end; }
+  .sd-logo img{ height:36px; width:auto; display:block; opacity:.92; }
+  .sd-logo .lt{ display:none; }
+  [data-theme="light"] .sd-logo .dk{ display:none; }
+  [data-theme="light"] .sd-logo .lt{ display:block; }
+
+  /* ── responsive ── */
+  @media (max-width:1060px){
+    .sd-stages{ grid-template-columns:minmax(0,1fr) 330px; }
+    .sd-play{ --bs:min(520px, calc(100vh - 250px)); }
+  }
+  @media (max-width:900px){
+    .sd-stages{ grid-template-columns:1fr; }
+    .sd-side{ position:static; }
+    .sd-map{ max-height:none; min-height:0; overflow:visible; }
+    .sd-play{ grid-template-columns:1fr; --bs:min(560px, calc(100vw - 32px)); justify-items:center; }
+    .sd-ctl{ width:var(--bs); }
+    .sd-tilesgrid{ grid-template-columns:repeat(2, minmax(0,1fr)); }
+  }
+  @media (max-width:640px){
+    .sd-main{ padding:14px 16px 12px; }
+    .sd-hero{ margin-bottom:10px; }
+    .sd-sub{ font-size:.85rem; margin-bottom:10px; }
+    .sd-play{ gap:12px; }
+    .sd-tools{ grid-template-columns:repeat(7, 1fr); gap:4px; }
+    .sd-tool[data-act="restart"]{ grid-column:auto; }
+    .sd-tool{ padding:7px 0 6px; font-size:0; gap:0; }
+    .sd-tool svg{ width:18px; height:18px; }
+    .sd-tool kbd{ display:none; }
+    .sd-pad{ grid-template-columns:repeat(9, 1fr); gap:4px; }
+    .sd-key{ padding:8px 0 6px; border-radius:9px; }
+    .sd-key b{ font-size:21px; }
+    .sd-key small{ font-size:8.5px; }
+    .sd-clock{ font-size:28px; }
+    .sd-gamebar{ gap:8px; margin-bottom:10px; }
+    .sd-gamebar h2{ font-size:17px; }
+    .sd-table th:nth-child(4), .sd-table td:nth-child(4){ display:none; }
+    .sd-table td, .sd-table th{ padding:8px 6px; }
+    .sd-tiles{ grid-template-columns:repeat(auto-fill, minmax(50px, 1fr)); gap:6px; }
+    .sd-tile .n{ font-size:14px; }
+    .sd-logo{ padding:4px 16px 12px; }
+    .sd-done-time{ font-size:40px; }
+    /* phones: the tutorial coach reads AFTER the pad (the pad stays in reach
+       under the board), and toasts drop from the top so they never cover it */
+    .sd-coach{ order:3; } .sd-savestate{ order:4; } .sd-minilb{ order:5; }
+    .sd-toast{ top:calc(var(--appbar-h, 52px) + 10px); bottom:auto; transform:translateX(-50%) translateY(-10px); }
+    .sd-toast.on{ transform:translateX(-50%) translateY(0); }
+  }
+</style>
+</head>
+<body>
+<!-- OS chrome — the UNIFORM tool header (same on every tool). -->
+<div class="wall scrim" aria-hidden="true"></div>
+<script>
+  PP_OS.initChrome({ name: 'Sudoku', section: 'arena', backHref: '../',
+    actions: [{ id: 'abArena', label: 'Arena', title: 'Back to Arena',
+      svg: '<svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="10" rx="5"/><path d="M8 12v2M7 13h2M16.5 12.2v.1M14.8 13.8v.1"/></svg>',
+      onClick: function () { location.href = 'arena.html'; } }] });
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3" integrity="sha384-l8ah+VgaWtk1mvOe9VC+OirC6qHFF4yH7l7mKRidV9MSti3E9F463bMp6ZVN4kuC" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="../shared/supabase-client.js?v=b4bd183c"></script>
+<script src="../shared/tool-registry.js?v=ddfb3e0a"></script>
+<script src="../shared/error-reporter.js?v=b0f8f8c9"></script>
+<script src="../shared/auth.js?v=7dce203e"></script>
+<script src="../shared/auth-gate.js?v=003cdc01"></script>
+<script src="../shared/pp-telemetry.js?v=a1e39d4f"></script>
+
+<div id="sdView">
+  <!-- ══════════ HOME: stage map · ranking · stats ══════════ -->
+  <main class="sd-main" id="sdHome">
+    <header class="sd-hero">
+      <div class="sd-eyebrow">Performance Arena</div>
+      <h1 class="sd-title">Sudo<em>ku</em></h1>
+      <p class="sd-sub">Three hundred stages on one shared ladder. Everyone plays the same grid, the fastest clear tops each stage, and whoever climbs highest first leads the Arena.</p>
+      <div class="sd-me" id="sdMe"><span class="sd-chip">Loading…</span></div>
+    </header>
+    <nav class="sd-tabs" aria-label="Sudoku sections">
+      <div class="seg" role="tablist">
+        <button class="sd-tab on" type="button" data-tab="stages" role="tab">Stages</button>
+        <button class="sd-tab" type="button" data-tab="ranking" role="tab">Ranking</button>
+        <button class="sd-tab" type="button" data-tab="stats" role="tab">Stats</button>
+      </div>
+      <button class="sd-link" type="button" id="sdRulesBtn">How it works</button>
+    </nav>
+
+    <section id="tabStages">
+      <div class="sd-stages">
+        <div class="sd-panel sd-map" id="sdMap" aria-label="Stage map"><div class="sd-empty">Loading stages…</div></div>
+        <aside class="sd-side">
+          <div class="sd-panel sd-sp" id="sdStagePanel"><div class="sd-empty">Pick a stage</div></div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="tabRanking" hidden>
+      <div class="sd-panel sd-rank">
+        <h3>Overall ranking</h3>
+        <p class="rules">Highest stage cleared wins. On the same stage, whoever got there first ranks higher (server time, penalties included).</p>
+        <div id="sdRankHost"><div class="sd-empty">Loading…</div></div>
+      </div>
+    </section>
+
+    <section id="tabStats" hidden>
+      <div class="sd-panel sd-stats">
+        <h3>Your stats</h3>
+        <div id="sdStatsHost"><div class="sd-empty">Loading…</div></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ══════════ GAME ══════════ -->
+  <main class="sd-main" id="sdGame" hidden>
+    <div class="sd-gamebar">
+      <button class="sd-btn ghost" type="button" id="sdBack"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>Stages</button>
+      <h2 id="sdGameTitle">Stage</h2>
+      <div class="chips" id="sdGameChips"></div>
+      <div class="sp"></div>
+      <button class="sd-btn ghost" type="button" id="sdSettingsBtn" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>Settings</span></button>
+    </div>
+    <div class="sd-play">
+      <div class="sd-boardcol">
+        <div class="sd-timer">
+          <div>
+            <div class="sd-clock" id="sdClock">0:00</div>
+            <div class="sd-clocknote" id="sdClockNote">Running since Play — it never stops</div>
+          </div>
+          <div class="sd-pen" id="sdPen"></div>
+        </div>
+        <div class="sd-ghost" id="sdGhost" aria-hidden="true"><div class="track"></div><div class="fill"></div></div>
+        <div class="sd-ghostnext" id="sdGhostNext"></div>
+        <div class="sd-boardwrap">
+          <div class="sd-board" id="sdBoard" role="grid" aria-label="Sudoku board"></div>
+        </div>
+      </div>
+      <div class="sd-ctl">
+        <div class="sd-panel sd-coach" id="sdCoach" hidden></div>
+        <div class="sd-tools" id="sdTools">
+          <button class="sd-tool" type="button" data-act="undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 010 10h-3"/></svg>Undo</button>
+          <button class="sd-tool" type="button" data-act="redo" title="Redo (Ctrl+Y)"><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 000 10h3"/></svg>Redo</button>
+          <button class="sd-tool" type="button" data-act="erase" title="Erase (Backspace)"><svg viewBox="0 0 24 24"><path d="M20 20H9L4 15a2 2 0 010-2.8l8.6-8.6a2 2 0 012.8 0l4.2 4.2a2 2 0 010 2.8L12 18"/><path d="M8 11l6 6"/></svg>Erase</button>
+          <button class="sd-tool" type="button" data-act="notes" title="Notes (N, or hold Shift)"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>Notes</button>
+          <button class="sd-tool" type="button" data-act="auto" title="Auto-candidates: fill every cell's notes"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17.5h7M17.5 14v7"/></svg>Auto</button>
+          <button class="sd-tool" type="button" data-act="hint" title="Hint (H) — reveals one cell, +1:00"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 00-3.6 10.8c.6.5 1 1.2 1.1 2V16h5v-.2c.1-.8.5-1.5 1.1-2A6 6 0 0012 3z"/></svg>Hint<span class="badge" id="sdHintBadge">3</span></button>
+          <button class="sd-tool" type="button" data-act="restart" title="Restart: a shuffled grid with a fresh clock"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 109-9 9.7 9.7 0 00-6.7 2.8L3 8"/><path d="M3 3v5h5"/></svg>Restart</button>
+        </div>
+        <div class="sd-pad" id="sdPad"></div>
+        <div class="sd-savestate" id="sdSave"></div>
+        <div class="sd-panel sd-minilb" id="sdMiniLb">
+          <h4>Top 5 on this stage</h4>
+          <div id="sdMiniLbHost"><div class="sd-empty">—</div></div>
+          <div class="sd-hintline" id="sdHintLine"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="sd-logo" aria-hidden="true">
+    <img class="dk" src="../assets/Reports/logo-color.png" alt="Performance Property"/>
+    <img class="lt" src="../assets/Reports/logo-color-black.png" alt="Performance Property"/>
+  </footer>
+</div>
+
+<!-- completion -->
+<div class="sd-ov" id="sdDone" hidden>
+  <div class="sd-modal" role="dialog" aria-modal="true" aria-labelledby="sdDoneTitle">
+    <div class="sd-eyebrow" id="sdDoneEyebrow" style="text-align:left">Stage cleared</div>
+    <h3 id="sdDoneTitle">Stage 1</h3>
+    <div class="sd-done-time" id="sdDoneTime">0:00.0</div>
+    <div class="sd-done-break" id="sdDoneBreak"></div>
+    <div class="sd-awards" id="sdDoneAwards"></div>
+    <div class="row">
+      <button class="sd-btn ghost" type="button" id="sdDoneMap">Stage map</button>
+      <button class="sd-btn primary" type="button" id="sdDoneNext">Next stage</button>
+    </div>
+  </div>
+</div>
+<!-- settings -->
+<div class="sd-ov" id="sdSettings" hidden>
+  <div class="sd-modal sd-settings" role="dialog" aria-modal="true" aria-label="Settings">
+    <h3>Settings</h3>
+    <div id="sdSettingsHost"></div>
+    <div class="row"><button class="sd-btn primary" type="button" id="sdSettingsClose">Done</button></div>
+  </div>
+</div>
+<!-- confirm -->
+<div class="sd-ov" id="sdConfirm" hidden>
+  <div class="sd-modal" role="dialog" aria-modal="true" aria-labelledby="sdConfirmTitle">
+    <h3 id="sdConfirmTitle">Are you sure?</h3>
+    <p id="sdConfirmBody"></p>
+    <div class="row">
+      <button class="sd-btn ghost" type="button" id="sdConfirmNo">Cancel</button>
+      <button class="sd-btn primary" type="button" id="sdConfirmYes">OK</button>
+    </div>
+  </div>
+</div>
+<!-- rules -->
+<div class="sd-ov" id="sdRules" hidden>
+  <div class="sd-modal sd-rules" role="dialog" aria-modal="true" aria-labelledby="sdRulesTitle">
+    <h3 id="sdRulesTitle">How it works</h3>
+    <ul>
+      <li><b>One rule.</b> Every row, column and 3×3 box holds 1–9 exactly once. Boss stages (every 25th) are X-Sudoku: both long diagonals must hold 1–9 too.</li>
+      <li><b>One ladder.</b> Stage 0 is the tutorial. After that each stage opens when you clear the one before it, and everyone plays exactly the same grid.</li>
+      <li><b>The clock is the server's.</b> The clock starts when you press Play and never stops — leaving, refreshing or opening another stage keeps it running. Restart deals a shuffled grid with a fresh clock.</li>
+      <li><b>Penalties.</b> With auto-check on, each wrong digit adds 0:30. A hint reveals a cell for 1:00, three per attempt. Penalties count in your time and are served before the next stage opens.</li>
+      <li><b>Per stage.</b> Every stage keeps a top 5 by time: gold, silver and bronze for the three fastest. The first player to clear a stage wears its crown for good. Beat the stage's par for a star.</li>
+      <li><b>Replays and restarts.</b> Replay a cleared stage to improve your time. A restart or a replay shuffles the grid (rows, columns and digits swapped), so it plays exactly the same but can't be typed in from memory.</li>
+      <li><b>Overall.</b> The highest stage cleared leads. On the same stage, whoever got there first ranks higher.</li>
+    </ul>
+    <div class="row"><button class="sd-btn primary" type="button" id="sdRulesClose">Got it</button></div>
+  </div>
+</div>
+<canvas class="sd-confetti" id="sdConfetti" hidden></canvas>
+<div class="sd-toast" id="sdToast" role="status" aria-live="polite"></div>
+
+<script>
+/* ─── Tier gate — dev / admin / company ─── same allowlist as arena.html and
+   the other Arena pages (keep in sync — a mismatch causes the "hub admits,
+   tool kicks" loop). The RPCs re-check the tier server-side. */
+(function arenaGate() {
+  const ALLOWED = ['dev', 'admin', 'leads', 'company'];
+  function check() {
+    let level = '';
+    try { if (typeof getAccessLevel === 'function') level = getAccessLevel(); } catch (_) {}
+    if (!level) return false;
+    if (ALLOWED.indexOf(level) === -1) location.replace('../');
+    return true;
+  }
+  if (!check()) {
+    let tries = 0;
+    const t = setInterval(() => { tries++; if (check() || tries > 20) clearInterval(t); }, 100);
+  }
+})();
+</script>
+
+<script>
+/* ═════════════════════════════════════════════════════════════════════════
+   Arena Sudoku — client.
+
+   The server (migration 122) owns the race: the clock, the solution and every
+   judgement. This page renders the board, keeps the player's entries/notes/
+   history, autosaves them (1 s after the last change) so a refresh or another
+   device resumes the same attempt, and asks the server to check, hint and
+   submit. There is NO pause (Van, 2026-09-29): the clock starts when you
+   press Play and never stops — leaving, refreshing or opening another stage
+   keeps it running; only a Restart (shuffled grid, fresh clock) resets it.
+   It never sees a solution — except the stage-0 tutorial, whose tiny
+   practice grid lives here because it is never ranked.
+   ═════════════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  const $ = s => document.querySelector(s);
+  const esc = s => window.PP_escapeHtml(s);
+  const MISTAKE_MS = 30000, HINT_MS = 60000, MAX_HINTS = 3;
+
+  /* ── tiers + techniques ─────────────────────────────────────────────── */
+  const TIERS = {
+    1: { name: 'Basic',   color: '#71B357', blurb: 'Singles only' },
+    2: { name: 'Medium',  color: '#54A6DE', blurb: 'Pairs and triples' },
+    3: { name: 'Hard',    color: '#FFA91F', blurb: 'Pointing pairs, box/line, X-Wing' },
+    4: { name: 'Expert',  color: '#C445C4', blurb: 'XY-Wing and Swordfish' },
+    5: { name: 'Master',  color: '#E72347', blurb: 'Colouring and chains' },
+    6: { name: 'Extreme', color: '#00C4F5', blurb: 'Trial and error' }
+  };
+  const TECH_INFO = {
+    'Naked single': 'A cell where only one digit is still possible.',
+    'Hidden single': 'A digit that fits in only one cell of a row, column or box.',
+    'Naked pair': 'Two cells in a unit holding the same two candidates; those digits leave the rest of the unit.',
+    'Hidden pair': 'Two digits that fit only in the same two cells of a unit; those cells lose every other candidate.',
+    'Naked triple': 'Three cells in a unit whose candidates are three digits in all; those digits leave the rest of the unit.',
+    'Hidden triple': 'Three digits confined to the same three cells of a unit.',
+    'Pointing pair': 'Inside a box, a digit sits on one line only, so it leaves that line outside the box.',
+    'Box/line reduction': 'On a row or column, a digit sits in one box only, so it leaves the rest of that box.',
+    'X-Wing': 'A digit that fits in exactly the same two columns of two rows (or vice versa) leaves those columns elsewhere.',
+    'XY-Wing': 'A pivot cell {x,y} and two wings {x,z} and {y,z}: any cell seeing both wings cannot be z.',
+    'Swordfish': 'An X-Wing over three rows and three columns.',
+    'Simple colouring': 'Colour a digit’s conjugate pairs in two colours; a colour that sees itself is false, a cell seeing both colours loses the digit.',
+    'X-Chain': 'An alternating chain of strong and weak links on one digit; cells that see both ends lose it.',
+    'XY-Chain': 'A chain of two-candidate cells; cells that see both ends lose the shared end digit.',
+    'Trial & error': 'At some point only a guess settles it: assume a candidate and follow it until it breaks.'
+  };
+
+  /* ── per-viewer settings (a convenience — never shared, never trusted) ── */
+  const SETTINGS_KEY = 'pp-sudoku-settings-v1';
+  const DEFAULTS = { autoCheck: false, hlArea: true, hlSame: true, conflicts: true, autoNotes: true, ghosts: true, sound: false };
+  const SETTING_ROWS = [
+    ['autoCheck', 'Auto-check mistakes', 'The server judges each digit you place against the solution. A wrong digit shows in red and adds 0:30.'],
+    ['hlArea', 'Highlight row, column and box', 'Shade the selected cell’s row, column and box.'],
+    ['hlSame', 'Highlight matching digits', 'Glow every cell and note with the selected digit.'],
+    ['conflicts', 'Show conflicts', 'Mark a digit that repeats in a row, column, box (or diagonal on bosses). Free — it only uses what is on the board.'],
+    ['autoNotes', 'Clear notes automatically', 'Placing a digit removes it from the notes in its row, column and box.'],
+    ['ghosts', 'Ghost splits', 'Show the stage’s top-5 times as markers on the timer while you play.'],
+    ['sound', 'Sound effects', 'A soft click for a clear and a buzz for a mistake.']
+  ];
+  function loadSettings() {
+    try { const raw = localStorage.getItem(SETTINGS_KEY); if (raw) return Object.assign({}, DEFAULTS, JSON.parse(raw)); } catch (_) {}
+    return Object.assign({}, DEFAULTS);
+  }
+  let settings = loadSettings();
+  function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) {} }
+
+  /* ── state ──────────────────────────────────────────────────────────── */
+  let meta = [], metaBy = new Map();
+  let ov = null, stats = null;
+  let selStage = null, tab = 'stages';
+  const boardCache = new Map();          // stage → { at, data }
+  let G = null;                          // the game in progress
+  let sel = -1, notesMode = false, autoCands = false, shiftDown = false;
+  let undoStack = [], redoStack = [];
+  let ghosts = [];
+  let saveT = null, saveBusy = false, saveAgain = false, dirty = false;
+  let submitting = false, accessToken = null, tickT = null, penaltyT = null;
+
+  /* ── geometry (client-side: conflicts, candidates, hint explanations) ── */
+  const UNITS = { classic: [], x: [] };
+  (function buildUnits() {
+    const u = [];
+    for (let r = 0; r < 9; r++) { const a = []; for (let c = 0; c < 9; c++) a.push(r * 9 + c); u.push(a); }
+    for (let c = 0; c < 9; c++) { const a = []; for (let r = 0; r < 9; r++) a.push(r * 9 + c); u.push(a); }
+    for (let b = 0; b < 9; b++) { const a = [], br = Math.floor(b / 3) * 3, bc = (b % 3) * 3; for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) a.push((br + i) * 9 + bc + j); u.push(a); }
+    UNITS.classic = u;
+    const d1 = [], d2 = []; for (let i = 0; i < 9; i++) { d1.push(i * 9 + i); d2.push(i * 9 + 8 - i); }
+    UNITS.x = u.concat([d1, d2]);
+  })();
+  const PEERS = { classic: [], x: [] };
+  for (const v of ['classic', 'x']) {
+    for (let c = 0; c < 81; c++) {
+      const s = new Set();
+      UNITS[v].forEach(u => { if (u.includes(c)) u.forEach(p => { if (p !== c) s.add(p); }); });
+      PEERS[v][c] = [...s];
+    }
+  }
+  const bit = d => 1 << (d - 1);
+  const onDiag = c => { const r = Math.floor(c / 9), k = c % 9; return r === k || r + k === 8; };
+  const rc = c => 'r' + (Math.floor(c / 9) + 1) + 'c' + (c % 9 + 1);
+
+  /* ── time formatting ────────────────────────────────────────────────── */
+  function fmtClock(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return h ? h + ':' + String(m).padStart(2, '0') + ':' + String(x).padStart(2, '0') : m + ':' + String(x).padStart(2, '0');
+  }
+  function fmtTime(ms) {
+    if (ms == null) return '—';
+    const t = Math.max(0, Math.round(ms / 100)), tenths = t % 10, s = Math.floor(t / 10);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(x).padStart(2, '0') + '.' + tenths;
+  }
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso); if (isNaN(d)) return '—';
+    return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+  }
+  function fmtDateTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso); if (isNaN(d)) return '—';
+    return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }) + ' ' + d.toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+
+  /* ── icons ──────────────────────────────────────────────────────────── */
+  const ICON = {
+    crown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z"/></svg>',
+    lock: '<svg class="emg" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>',
+    check: '<svg class="emg" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg>',
+    star: '<svg viewBox="0 0 24 24"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg>',
+    trophy: '<svg viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0V4z"/><path d="M17 5h3v3a3 3 0 01-3 3M7 5H4v3a3 3 0 003 3"/></svg>',
+    clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    up: '<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+    boss: '<svg viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></svg>'
+  };
+  const medal = n => (n >= 1 && n <= 3) ? '<span class="sd-medal m' + n + '" title="' + ['Gold', 'Silver', 'Bronze'][n - 1] + '">' + n + '</span>' : '';
+
+  /* ── toast + sound ──────────────────────────────────────────────────── */
+  let toastT = null;
+  function toast(msg, ms) {
+    const el = $('#sdToast'); el.textContent = msg; el.classList.add('on');
+    clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('on'), ms || 3200);
+  }
+  let audioCtx = null;
+  function beep(kind) {
+    if (!settings.sound) return;
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = kind === 'bad' ? 'square' : 'sine';
+      o.frequency.value = kind === 'bad' ? 150 : kind === 'win' ? 660 : 520;
+      g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(kind === 'bad' ? 0.05 : 0.08, audioCtx.currentTime + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + (kind === 'win' ? 0.5 : 0.14));
+      o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + 0.55);
+    } catch (_) {}
+  }
+
+  /* ── RPC helper — supabase-js builders are LAZY: always await ─────────── */
+  async function rpc(fn, args) {
+    if (!window.sb) throw new Error('Database unavailable');
+    const { data, error } = await window.sb.rpc(fn, args || {});
+    if (error) { const e = new Error(error.message || 'Request failed'); e.hint = error.hint; e.code = error.code; throw e; }
+    return data;
+  }
+  function refreshToken() {
+    try { window.sb.auth.getSession().then(r => { accessToken = (r && r.data && r.data.session && r.data.session.access_token) || accessToken; }).catch(() => {}); } catch (_) {}
+  }
+  /* keepalive POST for pagehide (supabase-js can't beacon) — same pattern as pp-telemetry */
+  function beacon(fn, body) {
+    try {
+      if (!accessToken || !window.sb || !window.sb.supabaseUrl) return;
+      fetch(window.sb.supabaseUrl + '/rest/v1/rpc/' + fn, {
+        method: 'POST', keepalive: true,
+        headers: { 'Content-Type': 'application/json', 'apikey': window.sb.supabaseKey, 'Authorization': 'Bearer ' + accessToken },
+        body: JSON.stringify(body)
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
+  /* ══════════════════════════ HOME ══════════════════════════════════════ */
+  function setTab(t) {
+    tab = t;
+    document.querySelectorAll('.sd-tab').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+    $('#tabStages').hidden = t !== 'stages';
+    $('#tabRanking').hidden = t !== 'ranking';
+    $('#tabStats').hidden = t !== 'stats';
+    if (t === 'ranking') loadRanking();
+    if (t === 'stats') loadStats();
+    try { history.replaceState(null, '', location.pathname + (t === 'stages' ? '' : '?tab=' + t)); } catch (_) {}
+  }
+
+  function highest() { return ov ? ov.me.highest_stage : 0; }
+  function tutorialDone() { return !!(ov && ov.me.tutorial_done); }
+  function activeFor(n) { return ov && (ov.active || []).find(a => a.stage === n); }
+  function mineFor(n) { return ov && (ov.mine || []).find(m => m.stage === n); }
+  function crownFor(n) { return ov && (ov.crowns || []).find(c => c.stage === n); }
+  function penaltyLeftMs() {
+    if (!ov || !ov.me.next_unlock_at) return 0;
+    return Math.max(0, new Date(ov.me.next_unlock_at).getTime() - (Date.now() - (ov._skew || 0)));
+  }
+  function stageState(n) {
+    if (n === 0) return tutorialDone() ? 'cleared' : 'current';
+    if (!tutorialDone()) return 'locked';
+    if (n <= highest()) return 'cleared';
+    if (n === highest() + 1) return 'current';
+    return 'locked';
+  }
+
+  function renderMe() {
+    const host = $('#sdMe');
+    if (!ov) { host.innerHTML = ''; return; }
+    const h = highest(), total = ov.stage_count || meta.length;
+    const bits = [];
+    if (!tutorialDone()) bits.push('<span class="sd-chip">Start with the tutorial</span>');
+    else if (h >= total && total) bits.push('<span class="sd-chip">' + ICON.check + ' All ' + total + ' stages cleared</span>');
+    else bits.push('<span class="sd-chip">Next: stage ' + (h + 1) + '</span>');
+    bits.push('<span class="sd-chip">' + h + ' cleared</span>');
+    if (stats) {
+      const m = (stats.gold || 0) + (stats.silver || 0) + (stats.bronze || 0);
+      if (m) bits.push('<span class="sd-chip">' + (stats.gold ? medal(1) + ' ' + stats.gold + ' ' : '') + (stats.silver ? medal(2) + ' ' + stats.silver + ' ' : '') + (stats.bronze ? medal(3) + ' ' + stats.bronze : '') + '</span>');
+      if (stats.crowns) bits.push('<span class="sd-chip">' + ICON.crown.replace('<svg ', '<svg width="12" height="12" ') + ' ' + stats.crowns + ' crown' + (stats.crowns === 1 ? '' : 's') + '</span>');
+      if (stats.rank) bits.push('<span class="sd-chip">Ranked #' + stats.rank + '</span>');
+    }
+    if (ov.me.streak_days > 1) bits.push('<span class="sd-chip">' + ov.me.streak_days + '-day streak</span>');
+    host.innerHTML = bits.join('');
+  }
+
+  function renderMap() {
+    const host = $('#sdMap');
+    if (!meta.length) { host.innerHTML = '<div class="sd-empty">No stages yet — the stage set hasn’t been seeded.</div>'; return; }
+    const groups = [];
+    for (const s of meta) {
+      let g = groups[groups.length - 1];
+      if (!g || g.tier !== s.tier_rank) { g = { tier: s.tier_rank, stages: [] }; groups.push(g); }
+      g.stages.push(s);
+    }
+    let html = '<div class="sd-tier"><div class="sd-tier-head"><span class="dot" style="background:#FFA91F"></span><b>Start here</b><span>Stage 0 · not ranked</span></div><div class="sd-tiles">' + tileHtml(0) + '</div></div>';
+    for (const g of groups) {
+      const t = TIERS[g.tier] || { name: 'Stage', color: '#63666A', blurb: '' };
+      const a = g.stages[0].stage, b = g.stages[g.stages.length - 1].stage;
+      html += '<div class="sd-tier"><div class="sd-tier-head"><span class="dot" style="background:' + t.color + '"></span><b>' + esc(t.name) + '</b><span>' + a + '–' + b + ' · ' + esc(t.blurb) + '</span></div><div class="sd-tiles">' +
+        g.stages.map(s => tileHtml(s.stage)).join('') + '</div></div>';
+    }
+    host.innerHTML = html;
+  }
+  function tileHtml(n) {
+    if (n === 0) {
+      const done = tutorialDone();
+      return '<button class="sd-tile tut ' + (done ? 'cleared' : 'current') + (selStage === 0 ? ' sel' : '') + '" type="button" data-stage="0">' +
+        '<span class="n">Tutorial</span><span class="t">' + (done ? 'Done ' + '✓' : 'Stage 0') + '</span></button>';
+    }
+    const s = metaBy.get(n), st = stageState(n), mine = mineFor(n), cr = crownFor(n), act = activeFor(n);
+    const t = TIERS[s.tier_rank] || { color: '#63666A' };
+    const cls = ['sd-tile', st, s.variant === 'x' ? 'boss' : '', act ? 'active' : '', selStage === n ? 'sel' : ''].join(' ');
+    const sub = mine ? fmtClock(mine.best_ms) : (st === 'locked' ? '' : (act ? 'playing' : ''));
+    return '<button class="' + cls + '" type="button" data-stage="' + n + '" title="Stage ' + n + ' · ' + esc(s.tier) + (s.variant === 'x' ? ' · Boss (X-Sudoku)' : '') + '">' +
+      (mine && mine.rank <= 3 ? '<span class="medal">' + medal(mine.rank) + '</span>' : '') +
+      (cr ? '<span class="crown' + (cr.mine ? ' mine' : '') + '">' + ICON.crown + '</span>' : '') +
+      '<span class="n">' + (st === 'locked' ? n : n) + '</span><span class="t">' + (st === 'locked' ? ICON.lock : esc(sub)) + '</span>' +
+      (s.variant === 'x' ? '<span class="x">BOSS</span>' : '') +
+      '<span class="stripe" style="background:' + t.color + '"></span></button>';
+  }
+
+  async function selectStage(n, scroll) {
+    selStage = n;
+    document.querySelectorAll('.sd-tile.sel').forEach(el => el.classList.remove('sel'));
+    const tile = document.querySelector('.sd-tile[data-stage="' + n + '"]');
+    if (tile) { tile.classList.add('sel'); if (scroll) tile.scrollIntoView({ block: 'center', behavior: 'auto' }); }
+    renderStagePanel(n, null);
+    if (n > 0) {
+      const b = await stageBoard(n, false);
+      if (selStage === n) renderStagePanel(n, b);
+    }
+  }
+  async function stageBoard(n, fresh) {
+    const c = boardCache.get(n);
+    if (!fresh && c && Date.now() - c.at < 20000) return c.data;
+    try { const d = await rpc('sudoku_stage_board', { p_stage: n }); boardCache.set(n, { at: Date.now(), data: d }); return d; }
+    catch (e) { return { error: e.message }; }
+  }
+
+  function renderStagePanel(n, board) {
+    const host = $('#sdStagePanel');
+    clearInterval(penaltyT);
+    if (n === 0) {
+      const done = tutorialDone();
+      host.innerHTML = '<h2>Stage 0 <span class="sd-chip">Tutorial</span></h2>' +
+        '<div class="meta">A guided grid: rows, columns and boxes, singles, notes, the pad, the clock, mistakes and hints, and how the ranking works. It isn’t ranked and takes about three minutes.</div>' +
+        '<div class="sd-actions"><button class="sd-btn primary" type="button" id="sdPlay">' + (done ? 'Replay the tutorial' : 'Start the tutorial') + '</button></div>' +
+        '<div class="sd-note">' + (done ? 'Done — stage 1 is open.' : 'Finish it once to open stage 1.') + '</div>';
+      $('#sdPlay').onclick = () => startTutorial();
+      return;
+    }
+    const s = metaBy.get(n); if (!s) { host.innerHTML = '<div class="sd-empty">Unknown stage</div>'; return; }
+    const st = stageState(n), act = activeFor(n), mine = mineFor(n);
+    const t = TIERS[s.tier_rank] || { name: s.tier, color: '#63666A' };
+    let h = '<h2>Stage ' + n + ' <span class="sd-chip" style="color:' + t.color + ';border-color:' + t.color + '55;background:transparent">' + esc(s.tier) + '</span>' +
+      (s.variant === 'x' ? '<span class="sd-chip boss">' + ICON.boss.replace('<svg ', '<svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" ') + ' Boss · X-Sudoku</span>' : '') + '</h2>';
+    h += '<div class="meta">' + s.clue_count + ' clues · par ' + fmtClock(s.par_ms) + (s.variant === 'x' ? ' · both diagonals hold 1–9 too' : '') + '</div>';
+    h += '<div class="chips">' + (s.techniques || []).map(x => '<span class="sd-chip tech" title="' + esc(TECH_INFO[x] || '') + '">' + esc(x) + '</span>').join('') + '</div>';
+    const crown = board && board.crown;
+    if (crown) h += '<div class="sd-crownline">' + ICON.crown + '<span><b>' + esc(crown.mine ? 'Your crown' : crown.name) + '</b> — first to clear, ' + fmtDate(crown.cleared_at) + ' in ' + fmtTime(crown.final_ms) + '</span></div>';
+    else if (board && !board.error) h += '<div class="sd-crownline">' + ICON.crown + '<span>No one has cleared this stage yet — the first clear takes the crown.</span></div>';
+    h += '<table class="sd-top"><thead><tr><th>#</th><th>Player</th><th style="text-align:right">Time</th><th style="text-align:right">Date</th></tr></thead><tbody>';
+    if (!board) h += '<tr><td colspan="4" class="sd-empty">Loading the top 5…</td></tr>';
+    else if (board.error) h += '<tr><td colspan="4" class="sd-empty">Could not load the board</td></tr>';
+    else if (!board.top.length) h += '<tr><td colspan="4" class="sd-empty">No clears yet</td></tr>';
+    else {
+      board.top.forEach(r => {
+        h += '<tr class="' + (r.me ? 'me' : '') + '"><td>' + (medal(r.rank) || r.rank) + '</td><td class="nm">' + esc(r.me ? r.name + ' (you)' : r.name) + '</td><td class="tm">' + fmtTime(r.final_ms) + '</td><td class="dt">' + fmtDate(r.finished_at) + '</td></tr>';
+      });
+      if (board.me && board.me.rank > 5) {
+        h += '<tr class="gap"><td colspan="4"></td></tr><tr class="me"><td>' + board.me.rank + '</td><td class="nm">You</td><td class="tm">' + fmtTime(board.me.final_ms) + '</td><td class="dt">' + fmtDate(board.me.finished_at) + '</td></tr>';
+      }
+    }
+    h += '</tbody></table>';
+    if (board && !board.error && board.players) h += '<div class="sd-note" style="margin:-4px 0 10px">' + board.players + ' player' + (board.players === 1 ? ' has' : 's have') + ' cleared this stage.</div>';
+    let btn = '', note = '';
+    if (!tutorialDone()) { btn = '<button class="sd-btn primary" type="button" disabled>Finish the tutorial first</button>'; note = 'Stage 0 opens the ladder.'; }
+    else if (act) {
+      btn = '<button class="sd-btn primary" type="button" id="sdPlay">Continue — clock running</button>';
+      const since = act.started_at ? Math.max(0, Date.now() - (ov && ov._skew || 0) - new Date(act.started_at).getTime()) : 0;
+      note = (act.kind === 'first' ? 'You opened this stage' : 'This shuffled attempt started') + (since ? ' ' + fmtClock(since) + ' ago' : '') + ' — the clock has been running ever since.';
+    }
+    else if (st === 'cleared') {
+      btn = '<button class="sd-btn primary" type="button" id="sdPlay">Replay for a better time</button>';
+      note = 'Your best: ' + (mine ? fmtTime(mine.best_ms) + (mine.rank ? ' · #' + mine.rank + ' of ' + mine.players : '') : '—') + '. Replays are shuffled and never change your ladder position.';
+    }
+    else if (st === 'current') {
+      const left = penaltyLeftMs();
+      if (left > 0) { btn = '<button class="sd-btn primary" type="button" id="sdPlay" disabled>Opens in ' + fmtClock(left) + '</button>'; note = 'Serving penalty time from your last clear.'; }
+      else { btn = '<button class="sd-btn primary" type="button" id="sdPlay">Play stage ' + n + '</button>'; note = 'The clock starts when you press Play and never stops — leaving, refreshing or opening another stage keeps it running.'; }
+    }
+    else { btn = '<button class="sd-btn primary" type="button" disabled>' + ICON.lock + ' Locked</button>'; note = 'Clear stage ' + (highest() + 1) + ' to move up.'; }
+    h += '<div class="sd-actions">' + btn + '</div><div class="sd-note">' + note + '</div>';
+    host.innerHTML = h;
+    const play = $('#sdPlay');
+    if (play) play.onclick = () => openStage(n);
+    if (st === 'current' && !act && penaltyLeftMs() > 0) {
+      penaltyT = setInterval(() => {
+        const left = penaltyLeftMs(), b2 = $('#sdPlay');
+        if (!b2) { clearInterval(penaltyT); return; }
+        if (left <= 0) { clearInterval(penaltyT); renderStagePanel(n, board); }
+        else b2.textContent = 'Opens in ' + fmtClock(left);
+      }, 500);
+    }
+  }
+
+  async function loadOverview() {
+    const t0 = Date.now();
+    ov = await rpc('sudoku_overview');
+    ov._skew = ov.server_now ? (Date.now() - new Date(ov.server_now).getTime() - (Date.now() - t0) / 2) : 0;
+    return ov;
+  }
+  async function loadStatsQuiet() { try { stats = await rpc('sudoku_stats'); } catch (_) {} renderMe(); }
+
+  async function loadRanking() {
+    const host = $('#sdRankHost');
+    try {
+      const d = await rpc('sudoku_ranking', { p_limit: 50 });
+      if (!d.top.length) { host.innerHTML = '<div class="sd-empty">No one has cleared a stage yet — be the first on the board.</div>'; return; }
+      let h = '<table class="sd-table"><thead><tr><th>#</th><th>Player</th><th>Stage</th><th>Reached</th><th>Total time</th></tr></thead><tbody>';
+      d.top.forEach(r => {
+        h += '<tr class="' + (r.me ? 'me' : '') + '"><td class="rk">' + r.rank + '</td><td>' + esc(r.me ? r.name + ' (you)' : r.name) + '</td><td class="st">' + r.highest_stage + '</td><td>' + fmtDateTime(r.reached_at) + '</td><td>' + fmtTime(r.total_ms) + '</td></tr>';
+      });
+      if (d.me && !d.top.some(r => r.me)) {
+        h += '<tr class="me pin"><td class="rk">' + d.me.rank + '</td><td>You</td><td class="st">' + d.me.highest_stage + '</td><td>' + fmtDateTime(d.me.reached_at) + '</td><td>' + fmtTime(d.me.total_ms) + '</td></tr>';
+      }
+      h += '</tbody></table>';
+      if (!d.me) h += '<div class="sd-note">Clear stage 1 to appear on the ranking.</div>';
+      host.innerHTML = h;
+    } catch (e) { host.innerHTML = '<div class="sd-empty">Could not load the ranking</div>'; }
+  }
+  async function loadStats() {
+    const host = $('#sdStatsHost');
+    try {
+      stats = await rpc('sudoku_stats'); renderMe();
+      const s = stats;
+      const tile = (k, v, d) => '<div class="sd-stat"><div class="k">' + k + '</div><div class="v">' + v + '</div>' + (d ? '<div class="d">' + d + '</div>' : '') + '</div>';
+      host.innerHTML = '<div class="sd-tilesgrid">' +
+        tile('Highest stage', s.highest_stage || 0, s.reached_at ? 'reached ' + fmtDateTime(s.reached_at) : (s.tutorial_done ? 'stage 1 is open' : 'tutorial first')) +
+        tile('Stages cleared', s.stages_cleared || 0, (s.clears || 0) + ' clear' + (s.clears === 1 ? '' : 's') + ', ' + (s.replays || 0) + ' of them replay' + (s.replays === 1 ? '' : 's')) +
+        tile('Medals', (s.gold || 0) + (s.silver || 0) + (s.bronze || 0),
+          medal(1) + ' ' + (s.gold || 0) + ' gold · ' + medal(2) + ' ' + (s.silver || 0) + ' silver · ' + medal(3) + ' ' + (s.bronze || 0) + ' bronze') +
+        tile('Crowns', s.crowns || 0, 'first clears') +
+        tile('Par stars', s.par_stars || 0, 'best time at or under par') +
+        tile('Average time', s.avg_ms ? fmtTime(s.avg_ms) : '—', 'best time per stage') +
+        tile('Total time', s.total_ms ? fmtTime(s.total_ms) : '—', 'sum of your bests') +
+        tile('Overall rank', s.rank ? '#' + s.rank : '—', '') +
+        tile('Mistakes', s.total_mistakes || 0, '+0:30 each') +
+        tile('Hints', s.total_hints || 0, '+1:00 each') +
+        tile('Restarts', s.total_restarts || 0, '') +
+        tile('Streak', (s.streak_days || 0) + ' day' + (s.streak_days === 1 ? '' : 's'), 'best ' + (s.best_streak || 0)) +
+        '</div>';
+    } catch (e) { host.innerHTML = '<div class="sd-empty">Could not load your stats</div>'; }
+  }
+
+  async function refreshHome(keepSel) {
+    try { await loadOverview(); } catch (e) { toast(e.message); return; }
+    renderMap(); renderMe(); loadStatsQuiet();
+    const n = keepSel != null ? keepSel : (tutorialDone() ? Math.min(highest() + 1, meta.length || 1) : 0);
+    boardCache.delete(n);
+    selectStage(n, true);
+  }
+
+  /* ══════════════════════════ GAME ══════════════════════════════════════ */
+  function variant() { return G && G.variant === 'x' ? 'x' : 'classic'; }
+  function locked(i) { return G.given[i] || G.hinted.has(i); }
+
+  function buildBoard() {
+    const b = $('#sdBoard'); b.innerHTML = '';
+    for (let i = 0; i < 81; i++) {
+      const r = Math.floor(i / 9), c = i % 9;
+      const el = document.createElement('button');
+      el.type = 'button'; el.className = 'sd-cell' + (c === 2 || c === 5 ? ' bR' : '') + (r === 2 || r === 5 ? ' bB' : '') + (c === 8 ? ' eR' : '') + (r === 8 ? ' eB' : '');
+      el.dataset.i = String(i);
+      el.setAttribute('aria-label', 'Row ' + (r + 1) + ', column ' + (c + 1));
+      el.innerHTML = '<span class="v"></span><span class="nt">' + [1, 2, 3, 4, 5, 6, 7, 8, 9].map(d => '<i data-d="' + d + '"></i>').join('') + '</span>';
+      b.appendChild(el);
+    }
+    b.addEventListener('pointerdown', ev => {
+      const cell = ev.target.closest('.sd-cell'); if (!cell || !G) return;
+      ev.preventDefault();
+      select(Number(cell.dataset.i));
+    });
+  }
+  function buildPad() {
+    const p = $('#sdPad'); p.innerHTML = '';
+    for (let d = 1; d <= 9; d++) {
+      const k = document.createElement('button');
+      k.type = 'button'; k.className = 'sd-key'; k.dataset.d = String(d);
+      k.innerHTML = '<b>' + d + '</b><small></small>';
+      k.addEventListener('click', () => input(d, false));
+      p.appendChild(k);
+    }
+  }
+
+  function conflicts() {
+    const out = new Set(), v = variant();
+    for (const u of UNITS[v]) {
+      const seen = {};
+      for (const c of u) { const d = G.grid[c]; if (!d) continue; (seen[d] = seen[d] || []).push(c); }
+      for (const k in seen) if (seen[k].length > 1) seen[k].forEach(c => out.add(c));
+    }
+    return out;
+  }
+  function candidatesOf(i) {
+    if (G.grid[i]) return 0;
+    let m = 0x1ff;
+    for (const p of PEERS[variant()][i]) if (G.grid[p]) m &= ~bit(G.grid[p]);
+    return m;
+  }
+
+  function paint() {
+    if (!G) return;
+    const cells = $('#sdBoard').children, v = variant();
+    const clash = settings.conflicts ? conflicts() : new Set();
+    const sd = sel >= 0 ? G.grid[sel] : 0;
+    const peers = (sel >= 0 && settings.hlArea) ? new Set(PEERS[v][sel]) : new Set();
+    const tut = T.active ? T.step() : null;
+    for (let i = 0; i < 81; i++) {
+      const el = cells[i], d = G.grid[i];
+      const cl = el.classList;
+      cl.toggle('given', !!G.given[i]);
+      cl.toggle('hinted', G.hinted.has(i));
+      cl.toggle('bad', G.wrong.has(i) && !!d);
+      cl.toggle('clash', clash.has(i));
+      cl.toggle('sel', i === sel);
+      cl.toggle('peer', peers.has(i) && i !== sel);
+      cl.toggle('same', settings.hlSame && !!sd && d === sd && i !== sel);
+      cl.toggle('dg', v === 'x' && onDiag(i));
+      cl.toggle('focus', !!(tut && tut.focus && tut.focus.includes(i)));
+      cl.toggle('target', !!(tut && tut.target === i));
+      el.firstChild.textContent = d ? String(d) : '';
+      const nt = el.lastChild, m = d ? 0 : G.notes[i];
+      for (let k = 0; k < 9; k++) {
+        const on = !!(m & (1 << k)), ch = nt.children[k];
+        ch.textContent = on ? String(k + 1) : '';
+        ch.classList.toggle('hl', on && settings.hlSame && sd === k + 1);
+      }
+    }
+    // pad counts
+    const count = new Array(10).fill(0);
+    for (let i = 0; i < 81; i++) if (G.grid[i]) count[G.grid[i]]++;
+    document.querySelectorAll('#sdPad .sd-key').forEach(k => {
+      const d = Number(k.dataset.d), left = Math.max(0, 9 - count[d]);
+      k.querySelector('small').textContent = left ? left + ' left' : 'done';
+      k.classList.toggle('done', left === 0);
+      k.classList.toggle('notes', notesMode);
+    });
+    const q = s => document.querySelector('.sd-tool[data-act="' + s + '"]');
+    q('notes').classList.toggle('on', notesMode);
+    q('auto').classList.toggle('on', autoCands);
+    q('undo').disabled = !undoStack.length;
+    q('redo').disabled = !redoStack.length;
+    q('hint').disabled = G.status !== 'active' || (!G.tutorial && G.hintsLeft <= 0);
+    $('#sdHintBadge').textContent = G.tutorial ? '∞' : String(G.hintsLeft);
+    q('restart').disabled = G.tutorial;
+    paintClock();
+  }
+
+  /* ── clock + ghost splits ───────────────────────────────────────────────
+     The clock never stops once the grid is shown: elapsed = the server's
+     started_at → now, re-synced from every RPC response (and on returning to
+     the tab), ticking locally in between. Hidden tabs keep counting.        */
+  function elapsedNow() {
+    if (!G) return 0;
+    return G.status !== 'active' ? G.elapsedBase : G.elapsedBase + (performance.now() - G.baseAt);
+  }
+  function syncElapsed(ms) { if (G && typeof ms === 'number') { G.elapsedBase = ms; G.baseAt = performance.now(); } }
+  function raceMs() { return elapsedNow() + (G ? G.penaltyMs : 0); }
+  function paintClock() {
+    if (!G) return;
+    const clock = $('#sdClock');
+    clock.textContent = fmtClock(raceMs());
+    const note = $('#sdClockNote');
+    note.textContent = G.tutorial ? 'Practice clock — nothing is timed here'
+      : G.status === 'active' ? 'Running since Play — it never stops' : 'Stopped at the clear';
+    const pen = $('#sdPen');
+    const bits = [];
+    if (G.tutorial) bits.push('Tutorial · no penalties');
+    else {
+      bits.push(G.penaltyMs ? '<span class="bad">+' + fmtClock(G.penaltyMs) + ' penalties</span>' : 'No penalties');
+      bits.push('<b>' + G.mistakes + '</b> mistake' + (G.mistakes === 1 ? '' : 's') + ' · <b>' + G.hints + '</b>/' + MAX_HINTS + ' hints');
+      if (G.parMs) bits.push('par ' + fmtClock(G.parMs));
+    }
+    pen.innerHTML = bits.join('<br>');
+    paintGhosts();
+  }
+  function paintGhosts() {
+    const host = $('#sdGhost'), next = $('#sdGhostNext');
+    host.hidden = !settings.ghosts || !G || G.tutorial;
+    next.hidden = host.hidden;
+    if (host.hidden) return;
+    const now = raceMs();
+    const times = ghosts.map(g => g.final_ms);
+    const top = Math.max(G.parMs || 0, ...times, 60000);
+    const scale = Math.max(top * 1.12, now * 1.05);
+    host.querySelector('.fill').style.width = Math.min(100, 100 * now / scale) + '%';
+    host.querySelectorAll('.gm, .gl').forEach(m => m.remove());
+    /* markers for par + the top 5; labels only where they don't collide
+       (every marker keeps a hover title with the name and time) */
+    const marks = [];
+    if (G.parMs) marks.push({ ms: G.parMs, label: 'par', cls: 'par' });
+    ghosts.slice(0, 5).forEach(g => marks.push({ ms: g.final_ms, label: g.me ? 'you' : g.name, cls: '' }));
+    marks.sort((x, y) => x.ms - y.ms);
+    const width = host.clientWidth || 400, minGap = 78;
+    let lastPx = -1e9;
+    for (const mk of marks) {
+      const pct = Math.min(100, 100 * mk.ms / scale), px = width * pct / 100;
+      const m = document.createElement('div');
+      m.className = 'gm ' + mk.cls + (now >= mk.ms ? ' passed' : '');
+      m.style.left = pct + '%'; m.title = mk.label + ' ' + fmtTime(mk.ms);
+      host.appendChild(m);
+      if (px - lastPx >= minGap) {
+        const l = document.createElement('div');
+        l.className = 'gl ' + mk.cls + (px < 40 ? ' edge-l' : px > width - 40 ? ' edge-r' : '');
+        l.style.left = pct + '%';
+        l.textContent = mk.label.length > 11 ? mk.label.slice(0, 10) + '…' : mk.label;
+        host.appendChild(l);
+        lastPx = px;
+      }
+    }
+    const ahead = ghosts.filter(g => g.final_ms > now && !g.me).sort((a, b) => a.final_ms - b.final_ms)[0];
+    if (!ghosts.length) next.innerHTML = G.parMs ? 'No clears yet — par is <b>' + fmtClock(G.parMs) + '</b>. The first clear takes the crown.' : '';
+    else if (ahead) next.innerHTML = 'Next ghost: <b>' + esc(ahead.name) + ' ' + fmtTime(ahead.final_ms) + '</b> — ' + fmtClock(ahead.final_ms - now) + ' to beat it';
+    else next.innerHTML = 'You’re past every top-5 time — keep going.';
+  }
+  function startTicker() {
+    clearInterval(tickT);
+    tickT = setInterval(() => { if (G && !document.hidden) paintClock(); }, 250);
+  }
+
+  /* ── entering a game ───────────────────────────────────────────────── */
+  function parse81(s) { const a = new Int8Array(81); for (let i = 0; i < 81; i++) a[i] = s.charCodeAt(i) - 48; return a; }
+  function gridStr() { let s = ''; for (let i = 0; i < 81; i++) s += String(G.grid[i]); return s; }
+
+  function enterGame(state, opts) {
+    opts = opts || {};
+    if (!opts.tutorial && T.active) T.stop();
+    if (!opts.tutorial) $('#sdCoach').hidden = true;
+    const s = metaBy.get(state.stage);
+    G = {
+      tutorial: !!opts.tutorial,
+      attemptId: state.attempt_id, stage: state.stage, kind: state.kind, variant: state.variant || (s && s.variant) || 'classic',
+      shuffled: !!state.shuffled, status: state.status || 'active',
+      puzzle: parse81(state.puzzle), grid: parse81(state.grid), notes: new Uint16Array(81), given: new Uint8Array(81),
+      hinted: new Set(state.hinted_cells || []), wrong: new Set(state.wrong_cells || []),
+      mistakes: state.mistakes || 0, hints: state.hints || 0, hintsLeft: state.hints_left == null ? MAX_HINTS : state.hints_left,
+      penaltyMs: state.penalty_ms || 0, parMs: state.par_ms || (s && s.par_ms) || 0,
+      restarts: state.restarts || 0, elapsedBase: state.elapsed_ms || 0, baseAt: performance.now(),
+      solution: opts.solution || null
+    };
+    for (let i = 0; i < 81; i++) G.given[i] = G.puzzle[i] ? 1 : 0;
+    (state.notes || []).forEach((m, i) => { if (i < 81) G.notes[i] = (Number(m) || 0) & 0x1ff; });
+    sel = -1; notesMode = false; autoCands = false; undoStack = []; redoStack = []; dirty = false;
+    ghosts = [];
+    $('#sdHome').hidden = true; $('#sdGame').hidden = false;
+    renderGameHeader();
+    paint();
+    startTicker();
+    $('#sdSave').textContent = G.tutorial ? '' : (G.shuffled ? 'Shuffled grid · saved on the server' : 'Saved on the server');
+    if (!G.tutorial) loadGhosts();
+    else { $('#sdMiniLbHost').innerHTML = '<div class="sd-empty">The tutorial isn’t ranked.</div>'; $('#sdHintLine').textContent = ''; }
+    window.scrollTo(0, 0);
+    if (window.PP_refit) window.PP_refit();
+  }
+  function renderGameHeader() {
+    const s = metaBy.get(G.stage);
+    $('#sdGameTitle').innerHTML = G.tutorial ? 'Stage 0 · Tutorial' : 'Stage ' + G.stage + (s ? ' <span class="sd-chip" style="color:' + (TIERS[s.tier_rank] || {}).color + ';background:transparent">' + esc(s.tier) + '</span>' : '');
+    let chips = '';
+    if (!G.tutorial && s) {
+      if (s.variant === 'x') chips += '<span class="sd-chip boss">Boss · X-Sudoku</span>';
+      chips += (s.techniques || []).filter(t => t !== 'Naked single' && t !== 'Hidden single').map(t => '<span class="sd-chip tech" title="' + esc(TECH_INFO[t] || '') + '">' + esc(t) + '</span>').join('');
+      if (!(s.techniques || []).some(t => t !== 'Naked single' && t !== 'Hidden single')) chips += '<span class="sd-chip tech" title="' + esc(TECH_INFO['Hidden single']) + '">Singles</span>';
+      if (G.shuffled) chips += '<span class="sd-chip tech" title="Restarts and replays swap rows, columns and digits: same logic, same difficulty, but memory won’t help.">Shuffled</span>';
+      const cr = crownFor(G.stage);
+      if (cr) chips += '<span class="sd-chip" title="First clear">' + ICON.crown.replace('<svg ', '<svg width="12" height="12" ') + ' ' + esc(cr.mine ? 'Your crown' : cr.name) + '</span>';
+    }
+    $('#sdGameChips').innerHTML = chips;
+  }
+  async function loadGhosts() {
+    const b = await stageBoard(G.stage, true);
+    if (!G || G.tutorial) return;
+    ghosts = (b && b.top) || [];
+    const host = $('#sdMiniLbHost');
+    if (!ghosts.length) host.innerHTML = '<div class="sd-empty">No clears yet — the first takes the crown.</div>';
+    else host.innerHTML = '<table class="sd-top"><tbody>' + ghosts.map(r => '<tr class="' + (r.me ? 'me' : '') + '"><td>' + (medal(r.rank) || r.rank) + '</td><td class="nm">' + esc(r.me ? 'you' : r.name) + '</td><td class="tm">' + fmtTime(r.final_ms) + '</td></tr>').join('') + '</tbody></table>';
+    $('#sdHintLine').innerHTML = 'Keys: <b>1–9</b> place · <b>Shift</b>+digit note · <b>N</b> notes · <b>Backspace</b> erase · <b>Ctrl+Z / Y</b> undo, redo · <b>H</b> hint · <b>Esc</b> deselect';
+    paintGhosts();
+  }
+
+  async function openStage(n) {
+    try {
+      const r = await rpc('sudoku_start', { p_stage: n });
+      if (!r.ok) {
+        if (r.reason === 'penalty' && r.unlock_at && ov) { ov.me.next_unlock_at = r.unlock_at; renderStagePanel(n, boardCache.get(n) && boardCache.get(n).data); }
+        toast(r.message || 'This stage isn’t open yet');
+        return;
+      }
+      enterGame(r.state);
+      if (r.resumed) toast('Back to your grid — the clock kept running (' + fmtClock(r.state.elapsed_ms) + ' so far)');
+      if (ov) {
+        const a = (ov.active || []).filter(x => x.stage !== n);
+        a.push({ stage: n, attempt_id: r.state.attempt_id, kind: r.state.kind, started_at: new Date(Date.now() - r.state.elapsed_ms).toISOString() });
+        ov.active = a;
+      }
+    } catch (e) { toast(e.message); }
+  }
+  async function leaveGame() {
+    // progress is saved; the clock keeps running (it never stops after Play)
+    if (G && !G.tutorial && G.status === 'active') await flushSave();
+    if (T.active) T.stop();
+    clearInterval(tickT);
+    const n = G ? G.stage : null;
+    G = null;
+    $('#sdGame').hidden = true; $('#sdHome').hidden = false;
+    setTab('stages');
+    await refreshHome(n);
+    if (window.PP_refit) window.PP_refit();
+  }
+
+  /* ── input ─────────────────────────────────────────────────────────── */
+  function select(i) {
+    if (!G) return;
+    sel = i;
+    paint();
+    T.emit('select', { cell: i });
+  }
+  function move(dr, dc) {
+    if (!G) return;
+    if (sel < 0) { select(40); return; }
+    const r = (Math.floor(sel / 9) + dr + 9) % 9, c = (sel % 9 + dc + 9) % 9;
+    select(r * 9 + c);
+  }
+  function input(d, forceNote) {
+    if (!G || G.status !== 'active') return;
+    if (sel < 0) { toast('Pick a cell first'); return; }
+    if (locked(sel)) { shake(sel); return; }
+    if (forceNote || notesMode) toggleNote(sel, d);
+    else place(sel, d);
+  }
+  function shake(i) {
+    const el = $('#sdBoard').children[i]; if (!el) return;
+    el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake');
+  }
+  function snapshot(cells) { return cells.map(i => ({ i, v: G.grid[i], n: G.notes[i] })); }
+  function commit(before, label) {
+    const after = before.map(b => ({ i: b.i, v: G.grid[b.i], n: G.notes[b.i] }));
+    if (after.every((a, k) => a.v === before[k].v && a.n === before[k].n)) return false;
+    undoStack.push({ before, after, label }); if (undoStack.length > 500) undoStack.shift();
+    redoStack = [];
+    return true;
+  }
+  function place(i, d) {
+    if (G.grid[i] === d) return;
+    const touched = [i];
+    if (settings.autoNotes) for (const p of PEERS[variant()][i]) if (!G.grid[p] && (G.notes[p] & bit(d))) touched.push(p);
+    const before = snapshot(touched);
+    G.grid[i] = d; G.notes[i] = 0;
+    if (settings.autoNotes) for (const p of touched) if (p !== i) G.notes[p] &= ~bit(d);
+    G.wrong.delete(i);
+    commit(before, 'place');
+    const el = $('#sdBoard').children[i]; el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
+    changed();
+    T.emit('place', { cell: i, digit: d });
+    if (settings.autoCheck || G.tutorial) autoCheck(i, d);
+    maybeSubmit();
+  }
+  function toggleNote(i, d) {
+    if (G.grid[i]) { toast('Clear the digit before adding notes'); return; }
+    const before = snapshot([i]);
+    G.notes[i] ^= bit(d);
+    commit(before, 'note');
+    changed();
+    T.emit('note', { cell: i, digit: d, mask: G.notes[i] });
+  }
+  function erase() {
+    if (!G || G.status !== 'active' || sel < 0) return;
+    if (locked(sel)) { shake(sel); return; }
+    if (!G.grid[sel] && !G.notes[sel]) return;
+    const before = snapshot([sel]);
+    if (G.grid[sel]) { G.grid[sel] = 0; if (autoCands) G.notes[sel] = candidatesOf(sel); }
+    else G.notes[sel] = 0;
+    G.wrong.delete(sel);
+    commit(before, 'erase');
+    changed();
+  }
+  function applyStates(states) {
+    for (const s of states) {
+      if (locked(s.i)) continue;              // a hint may have locked the cell since
+      G.grid[s.i] = s.v; G.notes[s.i] = s.n;
+      if (!s.v) G.wrong.delete(s.i);
+    }
+  }
+  function undo() {
+    if (!G || G.status !== 'active' || !undoStack.length) return;
+    const h = undoStack.pop(); applyStates(h.before); redoStack.push(h); changed();
+  }
+  function redo() {
+    if (!G || G.status !== 'active' || !redoStack.length) return;
+    const h = redoStack.pop(); applyStates(h.after); undoStack.push(h); changed(); maybeSubmit();
+  }
+  function toggleAuto() {
+    if (!G || G.status !== 'active') return;
+    autoCands = !autoCands;
+    if (autoCands) {
+      const cells = []; for (let i = 0; i < 81; i++) if (!G.grid[i]) cells.push(i);
+      const before = snapshot(cells);
+      for (const i of cells) G.notes[i] = candidatesOf(i);
+      commit(before, 'auto');
+      changed();
+      toast('Auto-candidates on: every empty cell shows what can still go there');
+    } else { paint(); toast('Auto-candidates off: your notes stay as they are'); }
+  }
+  function changed() {
+    paint();
+    if (!G.tutorial) scheduleSave();
+  }
+
+  /* ── autosave (1 s after the last change) ──────────────────────────── */
+  function scheduleSave() {
+    dirty = true;
+    clearTimeout(saveT);
+    saveT = setTimeout(doSave, 1000);
+    $('#sdSave').textContent = 'Saving…';
+  }
+  async function doSave() {
+    if (!G || G.tutorial || G.status !== 'active' || !dirty) return;
+    if (saveBusy) { saveAgain = true; return; }
+    saveBusy = true; dirty = false;
+    const id = G.attemptId;
+    try {
+      const r = await rpc('sudoku_save', { p_attempt: id, p_grid: gridStr(), p_notes: Array.from(G.notes) });
+      if (G && G.attemptId === id) {
+        if (r.ok) { syncElapsed(r.elapsed_ms); $('#sdSave').textContent = 'Saved'; }
+      }
+    } catch (e) {
+      dirty = true;
+      $('#sdSave').textContent = 'Not saved — retrying';
+      setTimeout(doSave, 3000);
+    } finally {
+      saveBusy = false;
+      if (saveAgain) { saveAgain = false; doSave(); }
+    }
+  }
+  async function flushSave() {
+    clearTimeout(saveT);
+    if (dirty && G && !G.tutorial && G.status === 'active') await doSave();
+  }
+
+  /* ── clock re-sync (there is no pause) ─────────────────────────────────
+     When the tab becomes visible again the display snaps to the server's
+     clock: a sleeping laptop or a throttled background tab can't leave it
+     behind. It goes through sudoku_save (which also stores the current board)
+     rather than sudoku_start, because a re-open of a stage cleared in another
+     tab would deal a new replay. An attempt that ended elsewhere returns 'over'. */
+  let resyncBusy = false;
+  async function resyncClock() {
+    if (!G || G.tutorial || G.status !== 'active' || resyncBusy) return;
+    resyncBusy = true;
+    const id = G.attemptId;
+    try {
+      clearTimeout(saveT); dirty = false;
+      const r = await rpc('sudoku_save', { p_attempt: id, p_grid: gridStr(), p_notes: Array.from(G.notes) });
+      if (!G || G.attemptId !== id) return;
+      if (r.ok) { syncElapsed(r.elapsed_ms); G.penaltyMs = r.penalty_ms; paint(); $('#sdSave').textContent = 'Saved'; }
+      else if (r.reason === 'over') { toast('This attempt was finished or restarted in another tab'); leaveGame(); }
+    } catch (_) { dirty = true; scheduleSave(); }
+    finally { resyncBusy = false; }
+  }
+
+  /* ── auto-check (server-judged) ────────────────────────────────────── */
+  async function autoCheck(i, d) {
+    if (G.tutorial) {
+      if (!G.solution) return;
+      if (G.solution[i] !== d) { G.wrong.add(i); paint(); beep('bad'); T.emit('wrong', { cell: i, digit: d }); }
+      return;
+    }
+    const id = G.attemptId;
+    try {
+      const r = await rpc('sudoku_check', { p_attempt: id, p_cell: i, p_digit: d });
+      if (!G || G.attemptId !== id || !r.ok) return;
+      if (!r.correct && G.grid[i] === d) { G.wrong.add(i); beep('bad'); if (r.charged) toast('Wrong digit — +0:30'); }
+      G.mistakes = r.mistakes; G.penaltyMs = r.penalty_ms; syncElapsed(r.elapsed_ms);
+      paint();
+    } catch (e) { toast(e.message); }
+  }
+
+  /* ── hint ──────────────────────────────────────────────────────────── */
+  function explainCell(i, d) {
+    // naked single: only d fits the cell; hidden single: only place for d in a unit
+    const m = candidatesOf(i);
+    if (m === bit(d)) return 'the only digit that fits this cell (naked single)';
+    for (const u of UNITS[variant()]) {
+      if (!u.includes(i)) continue;
+      const spots = u.filter(c => !G.grid[c] && (candidatesOf(c) & bit(d)));
+      if (spots.length === 1 && spots[0] === i) {
+        const k = UNITS[variant()].indexOf(u);
+        const where = k < 9 ? 'row ' + (k + 1) : k < 18 ? 'column ' + (k - 8) : k < 27 ? 'box ' + (k - 17) : 'the diagonal';
+        return 'the only place left for a ' + d + ' in ' + where + ' (hidden single)';
+      }
+    }
+    return 'found with a harder technique on this stage';
+  }
+  function hintTarget() {
+    if (sel >= 0 && !locked(sel) && (!G.grid[sel] || G.wrong.has(sel))) return sel;
+    if (sel >= 0 && !locked(sel) && G.grid[sel] && !settings.autoCheck) return sel;   // server says if it's already right
+    let best = -1, bc = 10;
+    for (let i = 0; i < 81; i++) {
+      if (G.grid[i] || locked(i)) continue;
+      const n = popcount(candidatesOf(i));
+      if (n < bc) { bc = n; best = i; }
+    }
+    return best;
+  }
+  function popcount(m) { let n = 0; while (m) { n += m & 1; m >>= 1; } return n; }
+  async function hint() {
+    if (!G || G.status !== 'active') return;
+    const i = hintTarget();
+    if (i < 0) { toast('Nothing left to hint'); return; }
+    if (G.tutorial) {
+      const d = G.solution[i];
+      revealHint(i, d, explainCell(i, d));
+      T.emit('hint', { cell: i });
+      return;
+    }
+    if (G.hintsLeft <= 0) { toast('No hints left on this attempt (3 per attempt)'); return; }
+    await flushSave();
+    const id = G.attemptId;
+    try {
+      const r = await rpc('sudoku_hint', { p_attempt: id, p_cell: i });
+      if (!G || G.attemptId !== id) return;
+      if (!r.ok) { toast(r.message || 'No hint'); return; }
+      const why = explainCell(i, r.digit);
+      G.hints = r.hints; G.hintsLeft = r.hints_left; G.penaltyMs = r.penalty_ms; syncElapsed(r.elapsed_ms);
+      revealHint(i, r.digit, why);
+      toast('Hint: ' + r.digit + ' at ' + rc(i) + ' — ' + why + ' (+1:00)', 5200);
+    } catch (e) { toast(e.message); }
+  }
+  function revealHint(i, d, why) {
+    const touched = [i];
+    for (const p of PEERS[variant()][i]) if (!G.grid[p] && (G.notes[p] & bit(d))) touched.push(p);
+    G.grid[i] = d; G.notes[i] = 0; G.hinted.add(i); G.wrong.delete(i);
+    for (const p of touched) if (p !== i) G.notes[p] &= ~bit(d);
+    sel = i;
+    const el = $('#sdBoard').children[i]; el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
+    paint();
+    if (G.tutorial) T.say('Hint: ' + d + ' — ' + why + '. In a real stage that costs 1:00.');
+    maybeSubmit();
+  }
+
+  /* ── restart ───────────────────────────────────────────────────────── */
+  function confirmBox(title, body, yes) {
+    return new Promise(res => {
+      $('#sdConfirmTitle').textContent = title; $('#sdConfirmBody').textContent = body; $('#sdConfirmYes').textContent = yes || 'OK';
+      const ovl = $('#sdConfirm'); ovl.hidden = false;
+      const done = v => { ovl.hidden = true; $('#sdConfirmYes').onclick = null; $('#sdConfirmNo').onclick = null; res(v); };
+      $('#sdConfirmYes').onclick = () => done(true); $('#sdConfirmNo').onclick = () => done(false);
+    });
+  }
+  async function restart() {
+    if (!G || G.tutorial || G.status !== 'active') return;
+    const ok = await confirmBox('Restart stage ' + G.stage + '?',
+      'Your board clears and the clock starts again from 0:00. The grid is shuffled — rows, columns and digits are swapped — so it plays exactly the same but can’t be typed in from memory. Restarts so far: ' + G.restarts + '.', 'Restart');
+    if (!ok) return;
+    try {
+      const r = await rpc('sudoku_restart', { p_attempt: G.attemptId });
+      enterGame(r.state);
+      toast('Fresh start — shuffled grid, clock at 0:00');
+    } catch (e) { toast(e.message); }
+  }
+
+  /* ── submit + completion ───────────────────────────────────────────── */
+  function maybeSubmit() {
+    if (!G || G.status !== 'active') return;
+    for (let i = 0; i < 81; i++) if (!G.grid[i]) return;
+    if (conflicts().size) { toast('The board is full but something repeats — look for the red marks'); return; }
+    submit();
+  }
+  async function submit() {
+    if (submitting) return;
+    if (G.tutorial) { finishTutorial(); return; }
+    submitting = true;
+    clearTimeout(saveT);
+    const id = G.attemptId;
+    try {
+      const r = await rpc('sudoku_submit', { p_attempt: id, p_grid: gridStr() });
+      if (!G || G.attemptId !== id) return;
+      if (!r.ok) {
+        if (r.reason === 'wrong') { G.mistakes = r.mistakes; G.penaltyMs = r.penalty_ms; paint(); toast(r.wrong + ' cell' + (r.wrong === 1 ? ' is' : 's are') + ' wrong — +0:30'); beep('bad'); }
+        else toast(r.message || 'Not accepted');
+        return;
+      }
+      G.status = 'cleared'; G.elapsedBase = r.elapsed_ms; G.penaltyMs = r.penalty_ms;
+      paint();
+      boardCache.delete(G.stage);
+      showDone(r);
+      beep('win');
+      confetti();
+    } catch (e) { toast(e.message); }
+    finally { submitting = false; }
+  }
+  function showDone(r) {
+    const s = metaBy.get(r.stage);
+    $('#sdDoneEyebrow').textContent = s && s.variant === 'x' ? 'Boss defeated' : (r.kind === 'replay' ? 'Replay cleared' : 'Stage cleared');
+    $('#sdDoneTitle').textContent = 'Stage ' + r.stage + (s ? ' · ' + s.tier : '');
+    $('#sdDoneTime').textContent = fmtTime(r.final_ms);
+    $('#sdDoneBreak').textContent = fmtTime(r.elapsed_ms) + ' solving' + (r.penalty_ms ? ' + ' + fmtClock(r.penalty_ms) + ' penalties (' + r.mistakes + ' mistake' + (r.mistakes === 1 ? '' : 's') + ', ' + r.hints + ' hint' + (r.hints === 1 ? '' : 's') + ')' : ' · no penalties');
+    const aw = [];
+    const svg = k => ICON[k].replace('<svg ', '<svg ');
+    if (r.rank) aw.push('<div class="sd-award' + (r.medal === 1 ? ' gold' : '') + '">' + (r.medal ? medal(r.medal) : svg('trophy')) + '<span>' + (r.medal ? ['Gold', 'Silver', 'Bronze'][r.medal - 1] + ' — ' : '') + '#' + r.rank + ' of ' + r.players + ' on this stage</span></div>');
+    if (r.crown) aw.push('<div class="sd-award gold">' + ICON.crown.replace('<svg ', '<svg style="color:#FFA91F" ') + '<span>First clear — the crown on stage ' + r.stage + ' is yours for good</span></div>');
+    if (r.par_beaten) aw.push('<div class="sd-award">' + svg('star') + '<span>Beat par (' + fmtClock(r.par_ms) + ')</span></div>');
+    if (r.prev_best_ms != null) aw.push('<div class="sd-award">' + svg('up') + '<span>' + (r.pb ? 'New personal best — was ' + fmtTime(r.prev_best_ms) : 'Your best stays ' + fmtTime(r.prev_best_ms)) + '</span></div>');
+    if (r.progressed && r.next_stage) aw.push('<div class="sd-award">' + svg('clock') + '<span>Stage ' + r.next_stage + ' is open' + (r.penalty_ms ? ' after ' + fmtClock(r.penalty_ms) + ' of penalty time' : '') + '</span></div>');
+    $('#sdDoneAwards').innerHTML = aw.join('');
+    const next = $('#sdDoneNext');
+    const nextN = r.progressed ? r.next_stage : null;
+    next.hidden = !nextN;
+    let t = null;
+    const tick = () => {
+      const left = Math.max(0, new Date(r.next_unlock_at).getTime() - (Date.now() - (ov && ov._skew || 0)));
+      if (left > 0) { next.disabled = true; next.textContent = 'Opens in ' + fmtClock(left); }
+      else { next.disabled = false; next.textContent = 'Next stage ›'; clearInterval(t); }
+    };
+    if (nextN) { tick(); t = setInterval(tick, 500); }
+    next.onclick = async () => { clearInterval(t); $('#sdDone').hidden = true; await refreshHomeQuiet(); openStage(nextN); };
+    $('#sdDoneMap').onclick = () => { clearInterval(t); $('#sdDone').hidden = true; leaveGame(); };
+    $('#sdDone').hidden = false;
+  }
+  async function refreshHomeQuiet() { try { await loadOverview(); } catch (_) {} }
+
+  /* ── confetti (tasteful, brand colours, skipped under reduced motion) ── */
+  function confetti() {
+    try { if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return; } catch (_) {}
+    const cv = $('#sdConfetti'); cv.hidden = false;
+    const W = cv.width = innerWidth, H = cv.height = innerHeight, ctx = cv.getContext('2d');
+    const cols = ['#00A0B4', '#D373D3', '#FFA91F', '#71B357', '#54A6DE'];
+    const ps = Array.from({ length: 140 }, () => ({ x: W / 2 + (Math.random() - .5) * W * .25, y: H * .35, vx: (Math.random() - .5) * 11, vy: -Math.random() * 11 - 4,
+      r: 4 + Math.random() * 5, c: cols[Math.floor(Math.random() * cols.length)], a: Math.random() * 6, va: (Math.random() - .5) * .3 }));
+    const t0 = performance.now();
+    (function frame(t) {
+      const k = (t - t0) / 1800;
+      ctx.clearRect(0, 0, W, H);
+      for (const p of ps) {
+        p.vy += .32; p.x += p.vx; p.y += p.vy; p.a += p.va; p.vx *= .99;
+        ctx.save(); ctx.globalAlpha = Math.max(0, 1 - k); ctx.translate(p.x, p.y); ctx.rotate(p.a); ctx.fillStyle = p.c; ctx.fillRect(-p.r / 2, -p.r / 4, p.r, p.r / 2); ctx.restore();
+      }
+      if (k < 1) requestAnimationFrame(frame); else { ctx.clearRect(0, 0, W, H); cv.hidden = true; }
+    })(t0);
+  }
+
+  /* ══════════════════════ TUTORIAL (stage 0) ═══════════════════════════
+     A fixed practice grid (never ranked — its answer can live here). The
+     coach walks through the rules with the real board, pad and tools; each
+     step waits for the action it teaches. Finishing it calls
+     sudoku_complete_tutorial, which opens stage 1.                        */
+  const TUT = {
+    puzzle: '030678912602005340108342567859761403400853791713900850901537204280410635345286109',
+    solution: '534678912672195348198342567859761423426853791713924856961537284287419635345286179',
+    A: 61, B: 10, C: 37, D: 38
+  };
+  const T = {
+    active: false, i: 0, flags: {},
+    steps: [],
+    step() { return this.active ? this.steps[this.i] : null; },
+    start() { this.active = true; this.i = 0; this.flags = {}; this.render(); },
+    stop() { this.active = false; this.i = 0; $('#sdCoach').hidden = true; },
+    go(k) {
+      if (!this.active) return;                         // a late step-advance must not revive a closed coach
+      this.i = Math.max(0, Math.min(this.steps.length - 1, k)); this.flags = {}; this.render(); paint();
+    },
+    say(msg) { const el = document.querySelector('#sdCoach .say'); if (el) el.textContent = msg; },
+    emit(type, data) {
+      if (!this.active) return;
+      const s = this.step(); if (!s || !s.wait) return;
+      const r = s.wait.call(this, type, data || {});
+      if (r === true) { const next = this.i + 1; if (next < this.steps.length) setTimeout(() => { if (this.active && this.i === next - 1) this.go(next); }, 450); }
+      else if (typeof r === 'string') this.say(r);
+    },
+    render() {
+      if (!this.active) return;
+      const s = this.step(), host = $('#sdCoach');
+      host.hidden = false;
+      host.innerHTML = '<div class="step">Tutorial · step ' + (this.i + 1) + ' of ' + this.steps.length + '</div><h4>' + s.title + '</h4><p>' + s.body + '</p><div class="say"></div>' +
+        '<div class="row"><div class="dots">' + this.steps.map((_, k) => '<i class="' + (k <= this.i ? 'on' : '') + '"></i>').join('') + '</div>' +
+        '<div style="display:flex;gap:6px">' + (this.i > 0 ? '<button class="sd-btn ghost" type="button" id="tutBack">Back</button>' : '') +
+        (s.wait ? '' : '<button class="sd-btn primary" type="button" id="tutNext">' + (s.last ? 'Finish' : 'Next') + '</button>') + '</div></div>';
+      const nb = $('#tutNext'); if (nb) nb.onclick = () => this.go(this.i + 1);
+      const bb = $('#tutBack'); if (bb) bb.onclick = () => this.go(this.i - 1);
+      if (s.enter) s.enter.call(this);
+    }
+  };
+  const rowCells = r => Array.from({ length: 9 }, (_, c) => r * 9 + c);
+  const colCells = c => Array.from({ length: 9 }, (_, r) => r * 9 + c);
+  const boxCells = b => UNITS.classic[18 + b];
+  T.steps = [
+    { title: 'One rule', body: 'Every <b>row</b>, every <b>column</b> and every <b>3×3 box</b> must hold the digits 1 to 9 exactly once. The highlighted row, column and box each need their missing digits.',
+      get focus() { return rowCells(4).concat(colCells(7), boxCells(8)); } },
+    { title: 'Select a cell', body: 'Tap the <b>glowing cell</b> (or use the arrow keys). Its row, column and box light up, and matching digits glow.',
+      target: TUT.A, wait(type, d) { return type === 'select' && d.cell === TUT.A ? true : undefined; } },
+    { title: 'A naked single', body: 'Its row, column and box already use every digit except <b>8</b>, so this cell must be 8. Type <b>8</b> or tap it on the pad.',
+      target: TUT.A, wait(type, d) { if (type === 'place' && d.cell === TUT.A) return d.digit === 8 ? true : 'Not quite — which digit is missing from its row, column and box?'; } },
+    { title: 'A hidden single', body: 'Look at the <b>top-left box</b>: a 7 is missing, and the other empty cells are blocked by the 7s already in their rows. Only one cell can take it — place the <b>7</b>.',
+      get focus() { return boxCells(0); }, target: TUT.B,
+      wait(type, d) { if (type === 'place') return d.cell === TUT.B && d.digit === 7 ? true : 'The 7 has only one home in that box — the glowing cell.'; } },
+    { title: 'Notes', body: 'Not sure yet? Turn on <b>Notes</b> (the pencil, or press <b>N</b> — or hold <b>Shift</b> while typing) and pencil in candidates. Add the notes <b>2</b> and <b>6</b> to the glowing cell.',
+      target: TUT.C, wait(type, d) { if (type === 'note' && d.cell === TUT.C && (d.mask & 0x22) === 0x22) return true; if (type === 'place' && d.cell === TUT.C) return 'Use Notes for this one — turn on the pencil (N) first.'; } },
+    { title: 'Notes clear themselves', body: 'Now put a <b>6</b> in the cell just to the right. Watch the 6 vanish from your note — placing a digit removes it from the notes in its row, column and box.',
+      target: TUT.D, wait(type, d) { if (type === 'place') return d.cell === TUT.D && d.digit === 6 ? true : 'The cell just to the right of your note takes the 6.'; },
+      enter() { if (notesMode) { notesMode = false; paint(); } } },
+    { title: 'The pad keeps count', body: 'Each key shows how many of that digit are still to place. When all nine are down, the key dims. Your note cell now has one candidate left — fill in the <b>2</b>.',
+      target: TUT.C, wait(type, d) { if (type === 'place' && d.cell === TUT.C) return d.digit === 2 ? true : 'Only the 2 is left in that note.'; } },
+    { title: 'The clock never stops', body: 'The clock starts when you press <b>Play</b> and <b>never stops</b> — leaving, refreshing or opening another stage keeps it running. There is no pause. <b>Restart</b> deals a shuffled grid with a fresh clock. (This practice clock isn’t timed.)' },
+    { title: 'Mistakes and hints', body: 'Turn on <b>Auto-check</b> in Settings and a wrong digit shows up in red straight away — each one adds <b>0:30</b>. A <b>hint</b> reveals a cell for <b>1:00</b> (three per attempt). Penalties are served before the next stage opens. Try a hint now (<b>H</b>) — it’s free here.',
+      wait(type) { return type === 'hint' ? true : undefined; } },
+    { title: 'How the ranking works', body: 'Every stage keeps a <b>top 5</b> by time — gold, silver and bronze for the fastest three — and the <b>first</b> player to clear a stage wears its <b>crown</b> for good. Overall, the <b>highest stage</b> leads, and ties go to whoever got there first. Every 25th stage is a <b>boss</b>: X-Sudoku, where both diagonals hold 1–9 as well.' },
+    { title: 'Finish the grid', body: 'Fill in the last cells to finish the tutorial and open stage 1. Everything you learned works the same on every stage.', last: true,
+      wait(type) { return type === 'complete' ? true : undefined; } }
+  ];
+  function startTutorial() {
+    enterGame({ stage: 0, attempt_id: 0, kind: 'first', variant: 'classic', puzzle: TUT.puzzle, grid: TUT.puzzle, notes: [], status: 'active', elapsed_ms: 0, penalty_ms: 0, hints_left: 99, par_ms: 0 },
+      { tutorial: true, solution: parse81(TUT.solution) });
+    T.start();
+    paint();
+  }
+  async function finishTutorial() {
+    for (let i = 0; i < 81; i++) if (G.grid[i] !== G.solution[i]) { toast('Something is off — the red digits are wrong'); for (let k = 0; k < 81; k++) if (G.grid[k] && G.grid[k] !== G.solution[k]) G.wrong.add(k); paint(); return; }
+    G.status = 'cleared'; paint();
+    T.emit('complete');
+    try { await rpc('sudoku_complete_tutorial'); } catch (e) { toast(e.message); return; }
+    confetti(); beep('win');
+    $('#sdDoneEyebrow').textContent = 'Tutorial complete';
+    $('#sdDoneTitle').textContent = 'Stage 0 · you’re ready';
+    $('#sdDoneTime').textContent = fmtClock(elapsedNow());
+    $('#sdDoneBreak').textContent = 'Not ranked — practice only.';
+    $('#sdDoneAwards').innerHTML = '<div class="sd-award gold">' + ICON.check + '<span>Stage 1 is open. From here on the clock is the server’s and every stage has a top 5.</span></div>';
+    const next = $('#sdDoneNext'); next.hidden = false; next.disabled = false; next.textContent = 'Play stage 1 ›';
+    next.onclick = async () => { $('#sdDone').hidden = true; T.stop(); await refreshHomeQuiet(); openStage(1); };
+    $('#sdDoneMap').onclick = () => { $('#sdDone').hidden = true; leaveGame(); };
+    $('#sdDone').hidden = false;
+  }
+
+  /* ── settings + rules modals ───────────────────────────────────────── */
+  function openSettings() {
+    $('#sdSettingsHost').innerHTML = SETTING_ROWS.map(([k, t, d]) =>
+      '<label class="opt"><input type="checkbox" data-k="' + k + '"' + (settings[k] ? ' checked' : '') + '><span><b>' + esc(t) + '</b><small>' + esc(d) + '</small></span></label>').join('');
+    $('#sdSettingsHost').querySelectorAll('input').forEach(inp => inp.addEventListener('change', () => { settings[inp.dataset.k] = inp.checked; saveSettings(); paint(); }));
+    $('#sdSettings').hidden = false;
+  }
+
+  /* ── keyboard ──────────────────────────────────────────────────────── */
+  function anyOverlay() { return !$('#sdDone').hidden || !$('#sdSettings').hidden || !$('#sdConfirm').hidden || !$('#sdRules').hidden; }
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Shift') shiftDown = true;
+    if (ev.key === 'Escape') {
+      if (!$('#sdSettings').hidden) { $('#sdSettings').hidden = true; return; }
+      if (!$('#sdRules').hidden) { $('#sdRules').hidden = true; return; }
+      if (!$('#sdConfirm').hidden) { $('#sdConfirmNo').click(); return; }
+      if (G && sel >= 0) { sel = -1; paint(); }
+      return;
+    }
+    if (!G || $('#sdGame').hidden || anyOverlay()) return;
+    const tag = (ev.target && ev.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    const k = ev.key, code = ev.code || '';
+    const ctrl = ev.ctrlKey || ev.metaKey;
+    if (ctrl && (k === 'z' || k === 'Z')) { ev.preventDefault(); if (ev.shiftKey) redo(); else undo(); return; }
+    if (ctrl && (k === 'y' || k === 'Y')) { ev.preventDefault(); redo(); return; }
+    if (ctrl || ev.altKey) return;
+    const dm = /^(Digit|Numpad)([0-9])$/.exec(code);
+    const digit = dm ? Number(dm[2]) : (/^[0-9]$/.test(k) ? Number(k) : -1);
+    if (digit >= 1) { ev.preventDefault(); input(digit, ev.shiftKey); return; }
+    if (digit === 0 || k === 'Backspace' || k === 'Delete') { ev.preventDefault(); erase(); return; }
+    if (k === 'ArrowUp') { ev.preventDefault(); move(-1, 0); return; }
+    if (k === 'ArrowDown') { ev.preventDefault(); move(1, 0); return; }
+    if (k === 'ArrowLeft') { ev.preventDefault(); move(0, -1); return; }
+    if (k === 'ArrowRight') { ev.preventDefault(); move(0, 1); return; }
+    if (k === 'n' || k === 'N') { ev.preventDefault(); notesMode = !notesMode; paint(); return; }
+    if (k === 'h' || k === 'H') { ev.preventDefault(); hint(); return; }
+  });
+  document.addEventListener('keyup', ev => { if (ev.key === 'Shift') shiftDown = false; });
+
+  /* ── leaving never stops the clock — it only makes sure nothing is lost:
+     a keepalive save when the tab hides or the page goes away, and a clock
+     re-sync with the server when the tab comes back. ── */
+  function saveBeacon() {
+    if (G && !G.tutorial && G.status === 'active' && dirty) {
+      beacon('sudoku_save', { p_attempt: G.attemptId, p_grid: gridStr(), p_notes: Array.from(G.notes) });
+      clearTimeout(saveT); dirty = false;
+    }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') saveBeacon();
+    else resyncClock();
+  });
+  window.addEventListener('pagehide', saveBeacon);
+
+  /* ── wiring ────────────────────────────────────────────────────────── */
+  document.querySelectorAll('.sd-tab').forEach(b => b.addEventListener('click', () => setTab(b.dataset.tab)));
+  $('#sdMap').addEventListener('click', ev => { const t = ev.target.closest('.sd-tile'); if (t) selectStage(Number(t.dataset.stage), false); });
+  $('#sdTools').addEventListener('click', ev => {
+    const b = ev.target.closest('.sd-tool'); if (!b || b.disabled) return;
+    const a = b.dataset.act;
+    if (a === 'undo') undo(); else if (a === 'redo') redo(); else if (a === 'erase') erase();
+    else if (a === 'notes') { notesMode = !notesMode; paint(); }
+    else if (a === 'auto') toggleAuto(); else if (a === 'hint') hint();
+    else if (a === 'restart') restart();
+  });
+  $('#sdBack').addEventListener('click', () => leaveGame());
+  $('#sdSettingsBtn').addEventListener('click', openSettings);
+  $('#sdSettingsClose').addEventListener('click', () => { $('#sdSettings').hidden = true; });
+  $('#sdRulesBtn').addEventListener('click', () => { $('#sdRules').hidden = false; });
+  $('#sdRulesClose').addEventListener('click', () => { $('#sdRules').hidden = true; });
+  ['#sdSettings', '#sdRules'].forEach(id => $(id).addEventListener('click', ev => { if (ev.target === $(id)) $(id).hidden = true; }));
+  buildBoard(); buildPad();
+
+  /* test hook — lets the QA script read state without touching the server */
+  window.__sudoku = {
+    state: () => G && { stage: G.stage, attempt: G.attemptId, grid: gridStr(), status: G.status, mistakes: G.mistakes, hints: G.hints, penaltyMs: G.penaltyMs, elapsed: Math.round(elapsedNow()), shuffled: G.shuffled, tutorial: G.tutorial, tutorialStep: T.active ? T.i : null },
+    select, input, erase, undo, redo, hint, openStage, startTutorial, setTab, selectStage, flushSave, openSettings, resyncClock,
+    settings: () => Object.assign({}, settings), setSetting: (k, v) => { settings[k] = v; saveSettings(); paint(); }
+  };
+
+  /* ── boot ──────────────────────────────────────────────────────────── */
+  (async function boot() {
+    for (let i = 0; i < 80 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
+    if (!window.sb) { $('#sdMap').innerHTML = '<div class="sd-empty">Database unavailable</div>'; return; }
+    let session = null;
+    for (let i = 0; i < 60; i++) {
+      try { const { data } = await window.sb.auth.getSession(); session = data && data.session; } catch (_) {}
+      if (session) break;
+      await new Promise(r => setTimeout(r, 150));
+    }
+    if (!session) return;                                   // auth-gate.js handles the redirect
+    accessToken = session.access_token;
+    setInterval(refreshToken, 60000);
+    try {
+      const { data, error } = await window.sb.from('arena_sudoku_stages')
+        .select('stage, variant, tier, tier_rank, techniques, hardest, hardest_rank, clue_count, par_ms').order('stage');
+      if (error) throw error;
+      meta = data || []; metaBy = new Map(meta.map(s => [s.stage, s]));
+    } catch (e) { $('#sdMap').innerHTML = '<div class="sd-empty">Could not load the stages</div>'; return; }
+    try { await loadOverview(); } catch (e) { $('#sdMap').innerHTML = '<div class="sd-empty">' + esc(e.message) + '</div>'; return; }
+    renderMap(); renderMe(); loadStatsQuiet();
+    const qs = new URLSearchParams(location.search);
+    const want = qs.get('stage');
+    const start = want != null && metaBy.has(Number(want)) ? Number(want) : (tutorialDone() ? Math.min(highest() + 1, meta.length || 1) : 0);
+    selectStage(start, true);
+    const t = qs.get('tab'); if (t === 'ranking' || t === 'stats') setTab(t);
+    if (window.PP_refit) window.PP_refit();
+  })();
+})();
+</script>
+</body>
+</html>
