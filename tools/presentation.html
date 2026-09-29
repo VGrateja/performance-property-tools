@@ -4379,9 +4379,10 @@
 </div>
 
 <!-- IR Library picker — mirrors the Online Reports Library modal. Lists the IR
-     Builder's property files grouped by market; each Add appends ONE
-     ready-made case-study slide (the Option A template Van picked,
-     2026-08-21) to the end of the deck. Reads ir_files directly
+     Builder's property files grouped by market; each Add appends TWO
+     ready-made slides to the end of the deck: the case study (the Option A
+     template Van picked, 2026-08-21) and, since 2026-09-29 (Saskia), its
+     cashflow — IR Samples page 2 rebuilt as real overlays. Reads ir_files directly
      (staff-wide read via mig 109); the cover photo is COPIED into
      presentation-images at insert time because ir-evidence signed URLs
      expire after an hour. -->
@@ -4405,7 +4406,7 @@
     <div class="pres-fmt-scroll" id="pres-ir-list"></div>
   </div>
   <div class="pres-copy-foot">
-    <span class="pres-fmt-count">One slide per property — photo, purchase price, rent, yield and suburb median.</span>
+    <span class="pres-fmt-count">Two slides per property — the case study (photo, purchase price, rent, yield, suburb median), then its cashflow.</span>
     <button class="pres-copy-cancel" id="pres-ir-all" type="button">Add all</button>
     <button class="pres-copy-cancel" id="pres-ir-close" type="button">Done</button>
   </div>
@@ -17423,8 +17424,9 @@ async function _cmkBuildDeck() {
 let _irRows = null, _irRowsAt = 0;
 
 /* The LIST query stays light — the picker only needs identity + the sections
-   the one slide reads (setup / grading / pricing / compliance). The heavy dd /
-   cashflow / inspection jsonb is never fetched here any more. */
+   the two slides read (setup / grading / pricing / cashflow / compliance, plus
+   the inspection's pool answer). The heavy dd / inspection jsonb is never
+   fetched here. */
 async function _irFetchRows() {
   if (_irRows && (Date.now() - _irRowsAt) < 120000) return _irRows;
   /* PUBLISHED files only (Van 2026-08-23): an IR reaches client-facing decks
@@ -17432,8 +17434,11 @@ async function _irFetchRows() {
      the ready-for-client-viewing gate. Working drafts must never appear here
      (his unfinished "test" file did). The publish stamp lives at
      compliance.published (set by doPublish in ir-builder.html). */
+  /* ir_pool: the inspection's "Pool or outdoor spa" answer — the one inspection
+     field the cashflow slide reads (its pool line), fetched alone rather than
+     pulling the whole inspection jsonb for every row. */
   const { data, error } = await window.sb.from('ir_files')
-    .select('id, address, suburb, state, postcode, market_label, status, setup, grading, pricing, cashflow, compliance')
+    .select('id, address, suburb, state, postcode, market_label, status, setup, grading, pricing, cashflow, compliance, ir_pool:inspection->>pool')
     .not('compliance->published', 'is', null)
     .order('market_label', { ascending: true });
   if (error) throw error;
@@ -17558,10 +17563,17 @@ function _irCaseStudyOverlays(row, photoStorage) {
   } else {
     R(0, 0, 460, 720, '#1f283f', { sharp: true });
   }
-  R(0, 600, 460, 120, DARK, { sharp: true });
-  T(28, 622, 404, _fmtEsc(row.address || ''), { fs: 24, color: '#ffffff', bold: true, h: 32 });
-  T(28, 658, 404, _fmtEsc([row.suburb, row.state, row.postcode].filter(Boolean).join(' ') +
+  /* The distance band goes directly under the address block (Saskia
+     2026-09-29) — the block grows UPWARD by one 22px line (band top 600 → 578)
+     so its last line ends where the locality line always did; no grade on
+     file → the original layout. Same geometry as IR Samples page 1. */
+  const cbd = _irCbdBand(row);
+  const by = cbd ? 578 : 600;
+  R(0, by, 460, 720 - by, DARK, { sharp: true });
+  T(28, by + 22, 404, _fmtEsc(row.address || ''), { fs: 24, color: '#ffffff', bold: true, h: 32 });
+  T(28, by + 58, 404, _fmtEsc([row.suburb, row.state, row.postcode].filter(Boolean).join(' ') +
     (row.market_label ? ' · ' + row.market_label : '')), { fs: 14, color: LIGHT, h: 20 });
+  if (cbd) T(28, by + 80, 404, _fmtEsc(cbd), { fs: 14, color: LIGHT, h: 20 });
 
   T(512, 64, 500, '<span style="letter-spacing:2.7px">INVESTMENT CASE STUDY</span>', { fs: 15, color: TEAL, bold: true, h: 22 });
   /* Headline must stay ONE line — the tool's text metrics run wider than the
@@ -17636,10 +17648,314 @@ function _irCaseStudyOverlays(row, photoStorage) {
   return ov;
 }
 
-/* One slide per property (Van 2026-08-26): the photo page with what we paid,
-   the rent, the yield on that price and the suburb median. The DD / grading /
-   cash-flow / condition follow-on slides were removed the same day — git has
-   them (faa74e3) if they are ever wanted back. */
+/* ─── IR Library · distance band + the cashflow slide (Saskia 2026-09-29) ───
+   From the 2026-09-29 research meeting:
+   1. The case-study slide prints the grading page's "Distance From CBD" grade
+      as a distance band under the address, so nobody has to paste in a map.
+   2. Adding a property inserts TWO slides: the case study, then its cashflow.
+      The cashflow slide is IR Samples page 2 (tools/ir-samples.html) rebuilt
+      from real overlays in the deck's style. It keeps all five sections in
+      the same three columns: the summary, the cost of the property
+      (allowances + acquisition costs) and the annual cash flow (running
+      costs + income). The cashflow disclaimer sits at the bottom, above
+      the logo.
+   The figures use the basis IR Samples prints in its PDF: interest only at
+   the normalised rate, the file's own LVR on the total property + acquisition
+   cost, a 30-year loan. They are fixed at insert time, and the basis line on
+   the slide says which rate was used.
+   LOCKSTEP: the bands, the disclaimer text and the cashflow model are copies
+   of ir-samples.html — see docs/pp-os-migration/ir-chain.md. Only a NEW
+   insert changes; slides already in a deck are never touched. */
+const IR_CBD_BANDS = {
+  'excellent':     'Within 2.5 KM of the CBD',          /* rubric: "Within 2.5km of the CBD" */
+  'above average': 'Between 2.5 - 5 KM from the CBD',   /* rubric: "Within 5km of the CBD" */
+  'average':       'Between 5 - 25 KM from the CBD',    /* rubric: "More than 5km from the CBD" */
+  'below average': 'Between 25 - 50 KM from the CBD',   /* rubric: "More than 25km from the CBD" */
+  'poor':          'More than 50 KM from the CBD',      /* rubric: "More than 50km to the CBD" */
+};
+/* The band for a file's grade, derived at render time (nothing is stored);
+   '' when the file has no grade, so the slide prints nothing. */
+function _irCbdBand(row) {
+  const items = (((row || {}).grading || {}).items) || {};
+  const key = Object.keys(items).find(k => /^\s*distance\s+from\s+cbd\s*$/i.test(k));
+  return (key && IR_CBD_BANDS[String(items[key] || '').trim().toLowerCase()]) || '';
+}
+/* Verbatim, two paragraphs as sent. */
+const IR_CF_DISCLAIMER = [
+  'The above cashflow is an indicative example considering many variables and assumptions.',
+  'It does not include any tax impacts that may be applicable, including benefits such as depreciation and negative gearing. Where negative gearing is not available, the annual loss may still be carried forward and applied to the final capital gains outcome. Tax outcomes are individual and must be discussed with an accountant or financial planner, and are therefore not factored into the cashflow.',
+];
+
+/* The normalised rate (the IC's rolling long-run rate) and today's rate, from
+   the same rdp_runway_config row IR Samples reads; its own defaults otherwise.
+   Cached for ten minutes so "Add all" reads it once. */
+let _irRatesCache = null, _irRatesAt = 0;
+async function _irFetchRates() {
+  if (_irRatesCache && (Date.now() - _irRatesAt) < 600000) return _irRatesCache;
+  const r = { current: 0.065, normalised: 0.0494 };
+  try {
+    const { data } = await window.sb.from('rdp_runway_config').select('value').eq('key', 'rates').maybeSingle();
+    const v = data && data.value;
+    if (v && v.current && v.current.rate) r.current = v.current.rate;
+    if (v && v.forecast && v.forecast.rate) r.normalised = v.forecast.rate;
+  } catch (_) {}
+  _irRatesCache = r; _irRatesAt = Date.now();
+  return r;
+}
+
+/* calcCashflow() from ir-samples.html, VERBATIM apart from taking the rates as
+   an argument — the LVR applies to the TOTAL property + acquisition cost
+   (Saskia 2026-09-23), so the slide can never disagree with IR Samples. */
+function _irCfCalc(cf, mode, normRate, rates) {
+  const n = k => +cf[k] || 0;
+  const budget = n('budget'); if (!budget) return null;
+  const rate = mode === 'norm' ? (normRate || rates.normalised || 0.0494) : (n('rate') || rates.current || 0.065);
+  const acq = n('stampDuty') + n('engagementFee') + n('acquisitionFee') + n('titleTransfer') + n('conveyancing') + n('buildingPest') + n('depreciationSchedule') + n('professionalClean');
+  const totalCost = budget + n('maintenanceAllowance') + n('minRentalStdCost') + n('cosmeticWorks') + acq;
+  const loan = totalCost * (n('lvr') || 0.9);
+  const interest = loan * rate;
+  const mPmt = loan * (rate / 12) / (1 - Math.pow(1 + rate / 12, -((n('loanTermYears') || 30) * 12)));
+  const principal = mode === 'io' ? 0 : (mPmt * 12 - interest);
+  const rent = n('rent'), income = rent * (n('weeksLet') || 52);
+  const letting = (n('lettingFeeWeeks') || 0) * rent;
+  const pm = income * (n('pmFeePct') || 0);
+  const repairs = income * (n('repairsPctOfRent') || 0);
+  const fees = (cf.feeLines || []).reduce((a, f) => a + income * (+f.pct || 0) + (+f.amount || 0), 0);
+  const pool = cf.hasPool === false ? 0 : n('poolMaintenance');
+  const other = n('strata') + n('councilWater') + n('landTax') + n('insurance') + pool;
+  const runningLessFin = letting + pm + repairs + fees + other;
+  const annual = income - (runningLessFin + interest + principal);
+  return { loan, requiredCapital: totalCost - loan, grossYield: income / budget, netYield: (income - runningLessFin) / budget,
+    expenseRatio: runningLessFin / (income || 1), annual, weekly: annual / 52, interest, principal, income, totalCost, rate,
+    letting, pm, repairs, fees, other, runningLessFin, acq, mPmt, pool };
+}
+
+/* Text width in slide px (Montserrat), for picking type sizes that fit
+   rather than letting a long fee label or a commercial price overflow.
+   Measured in the DOM, not a canvas: the figures render with tabular-nums,
+   which are wider than the proportional digits a canvas measures (a
+   "$4,950,000" tile value came out 2px over its tile that way). */
+let _irMeasureEl = null;
+function _irTextW(text, fs, weight, ls, tab) {
+  const s = String(text == null ? '' : text);
+  try {
+    if (!_irMeasureEl) {
+      _irMeasureEl = document.createElement('span');
+      _irMeasureEl.setAttribute('aria-hidden', 'true');
+      _irMeasureEl.style.cssText = "position:absolute;left:-10000px;top:0;visibility:hidden;white-space:nowrap;font-family:'Montserrat',sans-serif";
+      document.body.appendChild(_irMeasureEl);
+    }
+    const m = _irMeasureEl.style;
+    m.fontSize = fs + 'px'; m.fontWeight = String(weight || 400);
+    m.letterSpacing = (ls || 0) + 'px'; m.fontVariantNumeric = tab ? 'tabular-nums' : 'normal';
+    _irMeasureEl.textContent = s;
+    return _irMeasureEl.getBoundingClientRect().width;
+  } catch (_) { return s.length * fs * 0.64 + (ls || 0) * s.length; }
+}
+/* the largest size (half-pixel steps, down to minFs) at which every text fits maxW */
+function _irFitFs(texts, maxW, fs, weight, minFs, lsPerPx, tab) {
+  let f = fs;
+  while (f > minFs && texts.some(t => _irTextW(t, f, weight, lsPerPx ? f * lsPerPx : 0, tab) > maxW)) f -= 0.5;
+  return f;
+}
+
+/* The cashflow slide. Returns overlays, or null when the file has no purchase
+   figure (IR Samples can't build a cashflow for it either). Geometry: every
+   column shares one left edge per column (ink x 73 / 459 / 845, 362 wide) and
+   one band (y118–548); the disclaimer runs y568–≈620 under a hairline at 559,
+   and the logo sits in the same corner as on the case-study slide (1030,666). */
+function _irCashflowSlideOverlays(row, rates) {
+  rates = rates || {};
+  const cf0 = row.cashflow || {};
+  /* purchase price = what we paid, else the file's own modelled figure (IR Samples' purchasePrice) */
+  const paid = ((row.compliance || {}).published || {}).price_paid;
+  const price = (paid != null && paid !== '' && isFinite(+paid) && +paid) ? +paid : (+cf0.budget || 0);
+  if (!price) return null;
+  /* the PDF basis (IR Samples' printAssumptions): the file's LVR, interest only, normalised rate, 30 years */
+  const lvr = (+cf0.lvr > 0 && +cf0.lvr <= 1.5) ? +cf0.lvr : 0.9;
+  const rate = rates.normalised || 0.0494;
+  const x = _irCfCalc(Object.assign({}, cf0, { budget: price, lvr: lvr, rate: rate, loanTermYears: 30 }), 'io', rate, rates);
+  if (!x) return null;
+
+  const MID = ' · ', EM = '—';
+  const M = v => (v == null || !isFinite(v)) ? EM : (v < 0 ? '-$' : '$') + Math.abs(Math.round(v)).toLocaleString('en-AU');
+  const P = (v, dp) => (v == null || !isFinite(v)) ? EM : (v * 100).toFixed(dp == null ? 2 : dp) + '%';
+  const pctTxt = v => v ? ((v * 100).toFixed(2).replace(/\.?0+$/, '') + '%') : '';
+  const n = k => +cf0[k] || 0;
+  const neg = x.annual < 0;
+  const rentWk = n('rent'), weeks = n('weeksLet') || 52;
+  /* pool line — IR Samples' poolOf(): the cashflow's pool tick decides; older
+     files fall back to the inspection's "Pool or outdoor spa" answer */
+  const inspPool = String(row.ir_pool || '').trim();
+  const insp = (!inspPool || /^none$/i.test(inspPool)) ? null : inspPool;
+  const pool = cf0.hasPool === false ? null : (cf0.hasPool === true ? (insp || 'pool or spa') : insp);
+
+  /* the five sections' rows — IR Samples page 2, row for row */
+  const costRows = [['Maintenance allowance', M(n('maintenanceAllowance'))], ['Cosmetic works allowance', M(n('cosmeticWorks'))]];
+  if (n('minRentalStdCost')) costRows.push(['Minimum rental standards', M(n('minRentalStdCost'))]);
+  costRows.push(['Property + allowances', M(price + n('maintenanceAllowance') + n('cosmeticWorks') + n('minRentalStdCost')), 'tot']);
+  const acqRows = [
+    ['Stamp duty', M(n('stampDuty'))], ['Engagement fee', M(n('engagementFee'))], ['Acquisition fee', M(n('acquisitionFee'))],
+    ['Mortgage & title transfer fee', M(n('titleTransfer'))], ['Conveyancing / legal', M(n('conveyancing'))],
+    ['Building & pest inspection', M(n('buildingPest'))], ['Depreciation schedule', M(n('depreciationSchedule'))],
+    ['Professional clean', M(n('professionalClean'))],
+    ['Acquisition costs', M(x.acq), 'tot'], ['Total property + acquisition cost', M(x.totalCost), 'tot'],
+  ];
+  const runRows = [
+    ['Finance' + MID + 'interest' + MID + P(lvr, 0) + ' LVR at ' + P(x.rate, 2), M(x.interest)],
+    ['Finance' + MID + 'principal' + MID + 'interest only', M(x.principal)],
+    ['Letting fee & marketing' + (n('lettingFeeWeeks') ? MID + n('lettingFeeWeeks') + ' weeks rent' : ''), M(x.letting)],
+    ['Property management fee' + (n('pmFeePct') ? MID + pctTxt(n('pmFeePct')) : ''), M(x.pm)],
+  ];
+  (cf0.feeLines || []).forEach(fl => runRows.push([(fl.label || fl.name || 'Fee') + (+fl.pct ? MID + pctTxt(+fl.pct) : ''),
+    M(x.income * (+fl.pct || 0) + (+fl.amount || 0))]));
+  runRows.push(['Repairs & maintenance' + (n('repairsPctOfRent') ? MID + pctTxt(n('repairsPctOfRent')) + ' of rent' : ''), M(x.repairs)]);
+  if (pool) runRows.push(['Pool maintenance' + MID + String(pool).toLowerCase(), x.pool ? M(x.pool) : 'not costed']);
+  runRows.push(['Strata fees', M(n('strata'))], ['Council & water rates', M(n('councilWater'))],
+    ['Land tax', M(n('landTax'))], ['Insurance estimate', M(n('insurance'))]);
+  runRows.push(['Running costs incl. finance', M(x.runningLessFin + x.interest + x.principal), 'tot']);
+  const incRows = [
+    ['Rent per week', M(rentWk)],
+    ['Income' + MID + weeks + ' weeks let', M(x.income)],
+    ['Income minus running costs' + MID + (neg ? 'out of pocket' : 'surplus'), M(x.annual), 'tot' + (neg ? ' neg' : '')],
+  ];
+  const big = [
+    ['Annual cash flow', M(x.annual), (neg ? 'out of pocket' : 'surplus') + MID + 'interest only, normalised rate ' + P(x.rate, 2), neg],
+    ['Weekly cash flow', M(x.weekly), neg ? 'out of pocket each week' : 'surplus each week', neg],
+    ['Gross yield', P(x.grossYield), 'annual rent ÷ purchase price', false],
+    ['Net yield', P(x.netYield), 'net rent (ex finance) ÷ purchase price', false],
+  ];
+
+  const pen = _irPen(), ov = pen.ov;
+  /* a text box whose INK starts at (x0, y0): the renderer pads text 10px / 6px
+     inside its box, and the box is sized to hold its lines exactly */
+  const TI = (x0, y0, w, html, o) => {
+    o = o || {};
+    const fs = o.fs || 16, lh = o.lh || 1.4;
+    pen.T(x0 - 10, y0 - 6, w + 20, html, Object.assign({}, o, { lh: lh, h: Math.ceil(fs * lh * (o.lines || 1)) + 12 }));
+  };
+  const NW = s => '<span style="white-space:nowrap">' + s + '</span>';
+
+  /* header — the IR pack's follow-on header (property line, title, accent
+     rule) with the basis the figures use on the right */
+  const line = [row.address, [row.suburb, row.state, row.postcode].filter(Boolean).join(' '), row.market_label]
+    .filter(Boolean).join(MID).toUpperCase();
+  const efs = _irFitFs([line], 1134, 12, 700, 9, 0.2);
+  TI(73, 30, 1134, NW(_fmtLsSpan(line, +(efs * 0.2).toFixed(2))), { fs: efs, bold: true, color: IR_TEAL });
+  TI(73, 50, 400, 'Cashflow', { fs: 30, bold: true, lh: 1.1 });
+  pen.LINE(73, 92, 48, 4, IR_TEAL);
+  const basis = 'Interest only' + MID + 'normalised rate ' + P(x.rate, 2) + MID + P(lvr, 0) + ' LVR incl. acquisition costs' + MID + '30-year loan';
+  TI(567, 62, 640, NW(_fmtEsc(basis)), { fs: _irFitFs([basis], 640, 12.5, 400, 10), color: IR_GRAY, align: 'right' });
+
+  /* the column grid — IR Samples page 2's, on the deck's 73px margins */
+  const TOP = 118, BOTTOM = 548, HDR = 22, GAP = 6, TILE_H = 56, TILE_GAP = 8, SUB = 20;
+  const X = [73, 459, 845], W = 362;
+  const isTot = r => /\btot\b/.test(r[2] || '');
+  const totsOf = rows => rows.filter(isTot).length;
+  const FIXED = HDR + TILE_H + TILE_GAP + SUB + GAP + SUB;   /* title · tiles · two sub-headings · one gap */
+  const fit = rows => Math.floor((BOTTOM - TOP - FIXED - totsOf(rows) * 4) / Math.max(1, rows.length));
+  const rowH = Math.max(14, Math.min(20, fit(costRows.concat(acqRows)), fit(runRows.concat(incRows))));
+  /* one type size for every list: the row height's, stepped down until the
+     widest label + value of every list fits its 362px column */
+  const valW = (rows, f) => Math.ceil(Math.max(56, ...rows.map(r => _irTextW(r[1], f, isTot(r) ? 800 : 600, 0, true)))) + 6;
+  const lists = [costRows, acqRows, runRows, incRows];
+  const fitsAt = f => lists.every(rows => { const vw = valW(rows, f);
+    return rows.every(r => _irTextW(r[0], f, isTot(r) ? 700 : 400) <= W - vw - 6); });
+  let fs = rowH >= 19 ? 12.5 : (rowH >= 17 ? 11.5 : 10.5);
+  while (fs > 9.5 && !fitsAt(fs)) fs -= 0.5;
+  /* a label still too long at the floor (a very long custom fee name) is cut with an ellipsis */
+  const clip = (s, f, wt, maxW) => { let t = String(s); if (_irTextW(t, f, wt) <= maxW) return t;
+    while (t.length > 4 && _irTextW(t + '…', f, wt) > maxW) t = t.slice(0, -1); return t.trimEnd() + '…'; };
+  const listH = rows => rows.reduce((a, r) => a + (isTot(r) ? rowH + 4 : rowH), 0);
+  const title = (x0, y0, t) => TI(x0, y0, W, NW(_fmtLsSpan(t, 1.8)), { fs: 12.5, bold: true, color: IR_TEAL });
+  const subT = (x0, y0, t) => TI(x0, y0, W, NW(_fmtLsSpan(t, 1.4)), { fs: 11, bold: true, color: IR_GRAY });
+  /* a tinted tile: label over value (over an optional note) */
+  const tile = (x0, y0, w, h, k, v, o) => {
+    o = o || {};
+    ov.push({ id: _fmtId('s'), type: 'shape', kind: 'rect', radius: 10, x: x0, y: y0, w: w, h: h,
+      fill: IR_TINT, stroke: IR_TINT_BORDER, strokeWidth: 1 });
+    const kfs = _irFitFs([k.toUpperCase()], w - 30, o.kfs || 11, 700, 8, 0.09);
+    TI(x0 + 16, y0 + 12, w - 30, NW(_fmtLsSpan(k.toUpperCase(), +(kfs * 0.09).toFixed(2))), { fs: kfs, bold: true, color: '#4A4F57' });
+    /* single figures, so no tabular-nums here — html2canvas (the PDF export)
+       spaces a tabular "%" off its digits ("4.79 %"); the tables keep them */
+    TI(x0 + 16, y0 + (o.vTop || 30), w - 30, NW(_fmtEsc(v)),
+      { fs: _irFitFs([v], w - 30, o.fs || 24, 700, 12), bold: true, color: o.neg ? '#E72347' : IR_DARK, lh: 1.15 });
+    if (o.sub) TI(x0 + 16, y0 + h - 24, w - 30, NW(_fmtEsc(o.sub)), { fs: _irFitFs([o.sub], w - 30, 12, 500, 9.5), fw: 500, color: IR_GRAY });
+  };
+  /* one list as a real two-column table: hairlines between rows, a dark rule
+     over each total, labels left and figures right — editable cell by cell */
+  const NONE = [0, '#ffffff'];
+  const table = (x0, y0, rows) => {
+    const vw = valW(rows, fs);
+    const cells = rows.map(r => {
+      const tot = isTot(r), bad = /\bneg\b/.test(r[2] || '');
+      const base = { fontFamily: IR_MONT, fontSize: fs, lineHeight: 1.2, vAlign: 'middle',
+        borders: tot ? { t: [1.5, IR_DARK], r: NONE, b: NONE, l: NONE } : { t: NONE, r: NONE, b: [1, '#F1F3F5'], l: NONE } };
+      return [
+        Object.assign({}, base, { align: 'left', textColor: tot ? IR_DARK : '#3F4650',
+          html: '<span style="white-space:nowrap' + (tot ? ';font-weight:700' : '') + '">' +
+            _fmtEsc(clip(r[0], fs, tot ? 700 : 400, W - vw - 6)) + '</span>' }),
+        Object.assign({}, base, { align: 'right', textColor: bad ? '#E72347' : IR_DARK,
+          html: '<span style="white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:' + (tot ? 800 : 600) + '">' +
+            _fmtEsc(r[1]) + '</span>' }),
+      ];
+    });
+    const rh = rows.map(r => ({ h: isTot(r) ? rowH + 4 : rowH }));
+    /* a table overlay renders 6px inside its box (the renderer's padding) */
+    ov.push({ id: _fmtId('tbl-'), type: 'table', x: x0 - 6, y: y0 - 6, w: W, h: rh.reduce((a, b) => a + b.h, 0),
+      cols: [{ w: W - vw }, { w: vw }], rows: rh, cells: cells,
+      cellPadding: [0, 0, 0, 0], borderWidth: 0, borderColor: '#ffffff' });
+  };
+  const w1 = 146, w2 = W - w1 - TILE_GAP;
+  const pair = (x0, y0, a, b) => {
+    tile(x0, y0, w1, TILE_H, a[0], a[1], { fs: 20, vTop: 24, kfs: 9.5 });
+    tile(x0 + w1 + TILE_GAP, y0, w2, TILE_H, b[0], b[1], { fs: 20, vTop: 24, kfs: 9.5 });
+  };
+  /* a breakdown column: title, tiles, then two sections whose gap takes up the
+     leftover height, so every column ends on the same line */
+  const column = (x0, ttl, tiles, s1, s2) => {
+    let y = TOP;
+    title(x0, y, ttl); y += HDR;
+    pair(x0, y, tiles[0], tiles[1]); y += TILE_H + TILE_GAP;
+    const used = FIXED + listH(s1.rows) + listH(s2.rows);
+    const gap = Math.max(GAP, BOTTOM - TOP - used + GAP);
+    subT(x0, y, s1.t); y += SUB;
+    table(x0, y - 2, s1.rows); y += listH(s1.rows) + gap;
+    subT(x0, y, s2.t); y += SUB;
+    table(x0, y - 2, s2.rows);
+  };
+
+  /* column 1 — the summary as four standout numbers, filling the band */
+  const BIG_GAP = 10, BIG_H = Math.floor((BOTTOM - TOP - HDR - 3 * BIG_GAP) / 4);
+  let y = TOP;
+  title(X[0], y, 'Summary'); y += HDR;
+  big.forEach(t => { tile(X[0], y, W, BIG_H, t[0], t[1], { fs: 30, vTop: 30, sub: t[2], neg: t[3] }); y += BIG_H + BIG_GAP; });
+  /* column 2 — the cost of the property */
+  column(X[1], 'Cost of property',
+    [['Purchase price', M(price)], ['Total acquisition cost', M(x.totalCost)]],
+    { t: 'Allowances', rows: costRows }, { t: 'Acquisition costs', rows: acqRows });
+  /* column 3 — the annual cash flow as a breakdown */
+  column(X[2], 'Annual cash flow',
+    [['Income (annual)', M(x.income)], ['Running costs', M(x.runningLessFin + x.interest + x.principal)]],
+    { t: 'Running costs (annual)', rows: runRows }, { t: 'Income (annual)', rows: incRows });
+
+  /* the disclaimer, verbatim — one editable box per paragraph — then the logo */
+  ov.push({ id: _fmtId('s'), type: 'shape', kind: 'line', x: 73, y: 558, w: 1134, h: 2,
+    fill: IR_RULE, stroke: IR_RULE, strokeWidth: 1 });
+  TI(73, 568, 1134, _fmtEsc(IR_CF_DISCLAIMER[0]), { fs: 11, color: IR_GRAY, lh: 1.45 });
+  TI(73, 587, 1134, _fmtEsc(IR_CF_DISCLAIMER[1]), { fs: 11, color: IR_GRAY, lh: 1.45, lines: 2 });
+  ov.push({ id: _fmtId('i'), type: 'image', x: 1030, y: 666, w: 200, h: 31,
+    src: '../assets/logos/pp-logo-standard.png', objectFit: 'contain', objectPos: '100% 50%' });
+  return ov;
+}
+
+/* Two slides per property since 2026-09-29 (Saskia): the case study — the
+   photo page with what we paid, the rent, the yield on that price and the
+   suburb median (Van 2026-08-26) — then its cashflow. The older DD / grading /
+   condition follow-on slides stay retired (git has them: faa74e3). Every await
+   runs BEFORE the first append, so a property's two slides always land
+   together, even when "Add all" fires several inserts at once; one history
+   entry covers both, so a single undo takes the pair back out. */
 async function _irInsert(row, btn) {
   if (!_activeDeck) { showPresToast('Open a deck first.'); return; }
   const optState = _fmtOptState();
@@ -17648,8 +17964,14 @@ async function _irInsert(row, btn) {
   if (_fmtApplyExtras(optState)) { _fmtSyncOpts(); }
   if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
   try {
-    const photo = await _irCopyPhoto(row);
+    const [photo, rates] = await Promise.all([_irCopyPhoto(row), _irFetchRates()]);
+    /* the cashflow slide sizes its type by measuring text — make sure Montserrat is in */
+    try { if (document.fonts && document.fonts.load) await Promise.all(['400', '600', '700', '800'].map(w => document.fonts.load(w + " 12px 'Montserrat'"))); } catch (_) {}
+    let cfOv = null;
+    try { cfOv = _irCashflowSlideOverlays(row, rates); }
+    catch (e) { console.warn('[presentation] IR cashflow slide skipped:', e); cfOv = null; }
     const first = _fmtAppendSlide(_irCaseStudyOverlays(row, photo), '#ffffff');
+    if (cfOv) _fmtAppendSlide(cfOv, '#ffffff');
     saveOverlays();
     if (typeof saveSlideBgs === 'function') saveSlideBgs();
     if (typeof saveActiveDeckIfCustom === 'function') saveActiveDeckIfCustom();
@@ -17660,8 +17982,9 @@ async function _irInsert(row, btn) {
     const cfBudget = +(((row.cashflow || {}).budget)) || null;
     const notes = [];
     if (!photo) notes.push('no photo on file');
-    if (!paid && !cfBudget) notes.push('no purchase figure on file — re-publish the IR with the price paid');
-    showPresToast(row.address + ' — added as slide ' + (first + 1) +
+    if (!paid && !cfBudget) notes.push('no purchase figure on file, so no cashflow slide — re-publish the IR with the price paid');
+    else if (!cfOv) notes.push('the cashflow slide could not be built');
+    showPresToast(row.address + ' — added as ' + (cfOv ? 'slides ' + (first + 1) + '–' + (first + 2) : 'slide ' + (first + 1)) +
       (notes.length ? ' · ' + notes.join(' · ') : '') + '.',
       { duration: 6000, warn: !!notes.length });
     if (btn) btn.textContent = 'Added ✓';

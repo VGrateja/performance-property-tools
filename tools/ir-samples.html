@@ -29,6 +29,9 @@
    • Page 1 is an HTML/CSS port of _irCaseStudyOverlays in presentation.html
      (the approved one-slide IR design) on the same 1280×720 canvas.
    • Page 2 (cashflow) ports calcCashflow() from ir-builder.html verbatim.
+   • 2026-09-29 (Saskia): page 1 prints the "Distance From CBD" grade as a
+     distance band under the address, and page 2 closes on the cashflow
+     disclaimer — both on screen and in the PDF (see CBD_BANDS / CF_DISCLAIMER).
    • The three SLIDES are a deliberately LIGHT client surface in BOTH themes —
      only the tool chrome around them follows the theme.
    • Content on every slide ENDS ABOVE the bottom-right logo strip (y≈650).
@@ -189,6 +192,10 @@ body.irs-present .irs-stage{align-items:center;height:100vh;background:#0b0e14}
 .irs-sc td span{display:block;font-size:12px;color:#63666A;margin-top:2px;white-space:nowrap}
 .irs-sc td.on{background:#F2F8F9}
 .irs-sc td.on b{color:#00A0B4}
+/* page 2 small print — the cashflow disclaimer (Saskia 2026-09-29), in the running footer's muted ink */
+.irs-slide .b.irs-disc{font-size:11px;line-height:1.45;color:#63666A}
+.irs-disc p{margin:0}
+.irs-disc p+p{margin-top:3px}
 /* print / PDF view — every page as one landscape A4 sheet */
 #irsPrint{display:none}
 @media print{
@@ -361,6 +368,35 @@ function groupOf(file) {
 function groupSort(a, b) {
   return (a === 'Commercial') - (b === 'Commercial') || (a === 'Other') - (b === 'Other') || a.localeCompare(b);
 }
+
+/* ── Distance from CBD + the cashflow disclaimer (Saskia, 2026-09-29) ─────
+   The IR grading page already grades "Distance From CBD" against the rubric
+   in ir_grading_rubric (mig 104), so page 1 prints that grade as a distance
+   band under the address instead of the team pasting in a map. A grade's own
+   rubric note is one bound and its neighbour's the other ("average is more
+   than 5 km but below average is more than 25 km, so it must be between
+   5-25"); the two ends stay open. Derived at render time from
+   grading.items — nothing is written back. It is a constant because staff
+   cannot read the rubric table (ir_can_write). No grade → no line.
+   LOCKSTEP: the same table and disclaimer text live in ir-builder.html and
+   presentation.html — see docs/pp-os-migration/ir-chain.md. */
+const CBD_BANDS = {
+  'excellent':     'Within 2.5 KM of the CBD',          /* rubric: "Within 2.5km of the CBD" */
+  'above average': 'Between 2.5 - 5 KM from the CBD',   /* rubric: "Within 5km of the CBD" */
+  'average':       'Between 5 - 25 KM from the CBD',    /* rubric: "More than 5km from the CBD" */
+  'below average': 'Between 25 - 50 KM from the CBD',   /* rubric: "More than 25km from the CBD" */
+  'poor':          'More than 50 KM from the CBD',      /* rubric: "More than 50km to the CBD" */
+};
+function cbdBand(file) {
+  const items = (((file || {}).grading || {}).items) || {};
+  const key = Object.keys(items).find(k => /^\s*distance\s+from\s+cbd\s*$/i.test(k));
+  return (key && CBD_BANDS[String(items[key] || '').trim().toLowerCase()]) || '';
+}
+/* Verbatim, two paragraphs as sent — printed under the cashflow on page 2. */
+const CF_DISCLAIMER = [
+  'The above cashflow is an indicative example considering many variables and assumptions.',
+  'It does not include any tax impacts that may be applicable, including benefits such as depreciation and negative gearing. Where negative gearing is not available, the annual loss may still be carried forward and applied to the final capital gains outcome. Tax outcomes are individual and must be discussed with an accountant or financial planner, and are therefore not factored into the cashflow.',
+];
 
 /* Purchase price (Van 2026-08-28): the settled figure captured at "Publish as
    example IR", else the file's OWN modelled purchase figure (cashflow.budget). */
@@ -664,6 +700,17 @@ function FOOTER_WIDE(extra) {
     T(72, 592, 940, 'Prepared from the Performance Property Investment Report ' + MID + ' ' + esc(month) +
       (extra ? ' ' + MID + ' ' + extra : ''), { fs: 12.5, color: '#63666A', nowrap: true }) + LOGO();
 }
+/* Page 2's footer zone carries the cashflow disclaimer (Saskia 2026-09-29) in
+   place of the running "Prepared from …" line, whose "before tax and
+   depreciation" tail the disclaimer now says in full: the same hairline at 572
+   as every page, then the two paragraphs in the page's small print on the
+   footer's own 940px measure, so they stay clear of the logo column (logo box
+   x1024–1244 × y661–696). Measured: 1 + 3 lines at 11px end at y≈647. */
+function FOOTER_DISCLAIMER() {
+  return HAIR(72, 572, 1136) +
+    '<div class="b irs-disc" style="left:72px;top:580px;width:940px">' +
+      CF_DISCLAIMER.map(p => '<p>' + esc(p) + '</p>').join('') + '</div>' + LOGO();
+}
 /* Every follow-on slide wears the same header (property line + section title
    + teal accent rule) so a slide still identifies itself mid-deck. */
 function HEADER(file, title, lineW) {
@@ -698,10 +745,17 @@ function slideOverview(s) {
   const f = s.file, setup = f.setup || {}, g = f.grading || {};
   let h = '';
   h += s.photoUrl ? '<img class="photo" src="' + esc(s.photoUrl) + '" alt="">' : '<div class="nophoto"></div>';
-  h += '<div class="band"></div>';
-  h += T(28, 622, 404, esc(f.address || EM), { fs: 24, bold: true, color: '#ffffff', nowrap: true });
-  h += T(28, 658, 404, esc([f.suburb, f.state, f.postcode].filter(Boolean).join(' ') +
+  /* The distance band sits directly under the address block (Saskia 2026-09-29).
+     The block grows UPWARD by one 22px line when it is there (band top 600 →
+     578), so its last line still ends where the locality line always did
+     (y≈678) — nothing moves lower. No grade on file → the original layout. */
+  const cbd = cbdBand(f);
+  const by = cbd ? 578 : 600;
+  h += '<div class="band" style="top:' + by + 'px;height:' + (720 - by) + 'px"></div>';
+  h += T(28, by + 22, 404, esc(f.address || EM), { fs: 24, bold: true, color: '#ffffff', nowrap: true });
+  h += T(28, by + 58, 404, esc([f.suburb, f.state, f.postcode].filter(Boolean).join(' ') +
     (f.market_label ? ' ' + MID + ' ' + f.market_label : '')), { fs: 14, color: '#D9D9D6', nowrap: true });
+  if (cbd) h += T(28, by + 80, 404, esc(cbd), { fs: 14, color: '#D9D9D6', nowrap: true });
 
   h += T(512, 64, 500, 'INVESTMENT CASE STUDY', { fs: 15, bold: true, color: '#00A0B4', ls: 2.7 });
   /* Headline stays ONE line — size steps by length so a long market name
@@ -1016,7 +1070,7 @@ function slideCashflow(s, A) {
     [['Income (annual)', money(x.income)], ['Running costs', money(x.runningLessFin + x.interest + x.principal)]],
     { t: 'Running costs (annual)', rows: runRows }, { t: 'Income (annual)', rows: incRows });
 
-  h += FOOTER_WIDE('before tax and depreciation');
+  h += FOOTER_DISCLAIMER();
   return h;
 }
 

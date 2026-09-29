@@ -220,6 +220,14 @@ h1{font-size:28px;font-weight:800;letter-spacing:-0.02em;margin:4px 0 2px}
 .pg h2.pt{font-size:22px;font-weight:800;color:#171B24;margin:0 0 12px}
 .pg .tealband{background:#37BCC8;color:#fff;text-align:center;font-size:20px;font-weight:800;padding:12px;margin:14px -12px}
 .pg .gband{background:#DFF0CF;color:#2F5F50;font-size:16px;font-weight:700;padding:8px 14px;margin:6px 0}
+/* cover: the distance band under the address (Saskia 2026-09-29) */
+.pg .cbd{text-align:center;font-size:12px;font-weight:600;color:#555;margin:-6px 0 6px}
+/* cashflow page: the disclaimer under the table, in the page's small print */
+.pg .cfdisc{margin-top:10px}
+.pg .cfdisc p{font-size:9.5px;line-height:1.5;color:#666;margin:0 0 4px}
+/* many fee lines: tighter rows so the table + disclaimer still end inside A4 */
+.pg table.cfb.dense td{padding:1.5px 6px}
+.pg table.cfb.denser td{padding:1px 6px;font-size:10px}
 .pg table{border-collapse:collapse;width:100%;font-size:11px}
 .pg th{text-align:left;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:#666;padding:5px 8px;border-bottom:1.5px solid #ccc}
 .pg td{padding:5px 8px;border-bottom:1px solid #eee;vertical-align:top}
@@ -383,6 +391,33 @@ const COMP_MANUAL = [
     ['sa_contract_review', 'Contract Review'], ['sa_authority', 'Client Authority Signed'],
     ['sa_contract', 'Fully Signed Contract on file'], ['sa_rent_appraisal', 'Rent Appraisal'],
     ['sa_deposit', 'Deposit Trust Account Receipt']]],
+];
+
+/* ── Distance from CBD + the cashflow disclaimer (Saskia, 2026-09-29) ─────
+   The client report prints the grading page's "Distance From CBD" grade as a
+   distance band under the cover's address (no map screenshot needed), and the
+   cashflow page closes on the disclaimer below — the same two things the IR
+   Samples deck shows, so a Vault example IR (this report, published as a PDF)
+   reads the same as the sample. A grade's own rubric note is one bound and
+   its neighbour's the other; the two ends stay open. Derived at render time
+   from grading.items (nothing stored); no grade → no line.
+   LOCKSTEP: same table + text as ir-samples.html and presentation.html —
+   see docs/pp-os-migration/ir-chain.md. */
+const CBD_BANDS = {
+  'excellent':     'Within 2.5 KM of the CBD',          /* rubric: "Within 2.5km of the CBD" */
+  'above average': 'Between 2.5 - 5 KM from the CBD',   /* rubric: "Within 5km of the CBD" */
+  'average':       'Between 5 - 25 KM from the CBD',    /* rubric: "More than 5km from the CBD" */
+  'below average': 'Between 25 - 50 KM from the CBD',   /* rubric: "More than 25km from the CBD" */
+  'poor':          'More than 50 KM from the CBD',      /* rubric: "More than 50km to the CBD" */
+};
+function cbdBand(file) {
+  const items = (((file || {}).grading || {}).items) || {};
+  const key = Object.keys(items).find(k => /^\s*distance\s+from\s+cbd\s*$/i.test(k));
+  return (key && CBD_BANDS[String(items[key] || '').trim().toLowerCase()]) || '';
+}
+const CF_DISCLAIMER = [
+  'The above cashflow is an indicative example considering many variables and assumptions.',
+  'It does not include any tax impacts that may be applicable, including benefits such as depreciation and negative gearing. Where negative gearing is not available, the annual loss may still be carried forward and applied to the final capital gains outcome. Tax outcomes are individual and must be discussed with an accountant or financial planner, and are therefore not factored into the cashflow.',
 ];
 
 let FILES = [], CUR = null, CFG = {}, RULES = [], RUBRIC = [], CAN = false, CANW = false, MY_EMAIL = '', view = 'review';
@@ -1409,6 +1444,7 @@ function buildReportPages() {
       '<div style="display:flex;gap:18px;align-items:center;margin:16px 0"><div style="flex:0 0 200px;font-size:16px;color:#555">' + x[0] + '</div>' +
       '<div class="gband" style="flex:1">' + esc(x[1]) + '</div></div>').join('') + '</div>' +
     '<div class="tealband" style="margin-top:60px">' + esc(addr) + '</div>' +
+    (cbdBand(c) ? '<div class="cbd">' + esc(cbdBand(c)) + '</div>' : '') +
     '<div style="text-align:center;font-size:12px;font-weight:700;color:#555">' +
     [s.beds != null ? s.beds + ' Bedroom' : null, s.baths != null ? s.baths + ' Bathroom' : null,
      s.cars != null ? s.cars + ' Car' : null, s.landSize ? 'Land ' + s.landSize + ' m²' : null].filter(Boolean).join('&nbsp; | &nbsp;') + '</div>' +
@@ -1529,10 +1565,18 @@ function buildReportPages() {
       row('Annual cash flow', 'interest only at the normalised rate', money(x.annual), 'tot' + (x.annual < 0 ? ' neg' : '')) +
       row('Weekly cash flow', '', money(x.weekly), 'tot' + (x.weekly < 0 ? ' neg' : ''));
   }
+  /* The disclaimer below needs ~71px under the table. A standard file (41 rows)
+     leaves ~104px of A4 free; each extra fee line costs ~19px, so from 43 rows
+     the rows tighten a step instead of the page running past A4 (the publish
+     PDF squeezes each page into one A4 image). Measured on all 94 files. */
+  const cfN = (cfRows.match(/<tr/g) || []).length;
+  const cfDens = cfN >= 48 ? ' denser' : (cfN >= 43 ? ' dense' : '');
   pages.push({ t: 'Cashflow', h:
     '<div class="band"><span>' + esc(addr) + '</span><span class="r">Cashflow &mdash; interest only at the normalised rate</span></div>' +
     (x ? (B.normalised_note ? '<p style="color:#666;margin:0 0 4px">' + esc(B.normalised_note) + '</p>' : '') +
-      '<table class="cfb">' + cfRows + '</table>'
+      '<table class="cfb' + cfDens + '">' + cfRows + '</table>' +
+      /* the cashflow disclaimer (Saskia 2026-09-29), verbatim, under the table */
+      '<div class="cfdisc">' + CF_DISCLAIMER.map(p => '<p>' + esc(p) + '</p>').join('') + '</div>'
       : '<p>No cashflow inputs yet.</p>') });
 
   /* 5 · asset management plan */
