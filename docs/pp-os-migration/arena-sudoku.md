@@ -636,13 +636,16 @@ Per-stage seeds are in the private `stage_secrets` table. Never commit the maste
   - Rows show rank (a medal disc for 1–3), name (with "(you)" on your own row), time `m:ss.t`, and date (`d Mon`).
   - If your rank is above 5, a dashed separator is followed by your row.
   - Below the table: "N players have cleared this stage."
-- **Crowns.** The first clear of a stage ever is written once and never moves. It appears:
-  - on the map tile (a crown icon, gold if it is yours)
+- **Crowns.** The first clear of a stage ever is written once and never moves. Since 2026-09-30 every crown is drawn as **one filled
+  solid-gold shape** (§8). It appears:
+  - on the map tile, top-right: on a stage you haven't cleared, whoever holds it (the "cleared by others" state); on your own cleared
+    tile only when the crown is yours (§7.1)
   - in the stage panel: "**name** — first to clear, d Mon in m:ss.t", or "Your crown"; with no crown yet, "No one has cleared this
     stage yet — the first clear takes the crown."
-  - as a game-header chip
+  - as a gold game-header chip
+  - as a gold badge with the count after each crown holder's name in the Ranking tab (§7.1)
   - on the completion screen: "First clear — the crown on stage N is yours for good"
-  - in the Arena highlights
+  - in the Arena highlights (the 👑 emoji there, unchanged)
 - **Medals.** Gold, silver and bronze go to stage ranks 1, 2 and 3 on best times. They are live, so a medal can be lost to a faster
   player. They show on map tiles (a disc on your cleared tiles), in the top 5, in the header chips, on the completion screen
   ("Gold — #1 of N on this stage") and in Stats ("held right now").
@@ -677,7 +680,7 @@ Per-stage seeds are in the private `stage_secrets` table. Never commit the maste
   | Streak | "N days", with "best N" |
 
 - **Header chips** on the home view: "Start with the tutorial", "All N stages cleared" or "Next: stage N"; "N cleared"; medal counts
-  (only if you hold any); "N crowns"; "Ranked #N"; "N-day streak" (only above 1).
+  (only if you hold any); "N crowns" (a gold chip with the solid crown); "Ranked #N"; "N-day streak" (only above 1).
 - **Streak timezone.** A day is an AEST day (`Australia/Brisbane`, no DST) with at least one clear. The current streak shows 0 once the
   last clear is older than yesterday.
 - **Display names.** The local part of `profiles.email` (for example `renz`), captured at first play, as on the Typing leaderboard.
@@ -692,19 +695,38 @@ The home view has a hero (eyebrow "Performance Arena", title "Sudo**ku**" with t
 a segmented tab control (**Stages · Ranking · Stats**) and a **"How it works"** link.
 
 **Stages tab.** A two-column layout: a scrollable map panel and a sticky stage panel (380 px wide). The map scrolls itself on desktop.
+- **Map key** (Van 2026-09-30). The first row inside the map panel: four 14 px swatches drawn like the tiles, reading "Cleared by you ·
+  Cleared by others · Open · Locked" (10.5 px, muted; the "others" swatch holds a tiny solid crown, the "locked" one a lock). One row
+  on desktop; a 2 × 2 grid under 640 px.
 - **Map groups.**
-  - "Start here · Stage 0 · not ranked" holds a wide **Tutorial** tile showing "Stage 0" or "Done ✓".
+  - "Start here · Stage 0 · not ranked" holds a wide **Tutorial** tile showing "Stage 0" (the open-now look) or "Done ✓" (the
+    cleared-by-you look).
   - Then one group per tier. Each header has a colour dot, the tier name, "a–b · blurb" (Singles only / Pairs and triples / Pointing
-    pairs, box/line, X-Wing / XY-Wing and Swordfish / Colouring and chains / Trial and error), and a grid of tiles (`minmax(58px,1fr)`).
-- **Tile states** (they can combine):
-  - `locked`: dimmed, with a lock icon.
-  - `current`: the next stage; accent ring with a 2.4 s pulse (disabled under reduced motion).
-  - `cleared`: green tint, showing your best time as `m:ss`.
-  - `active`: an attempt is in progress with its clock running; a dot top-left and "playing".
-  - `sel`: the selected tile; outlined.
-  - `boss`: dashed teal border and a "BOSS" label.
-  - Every tile has a tier-coloured stripe at the bottom. A crown icon sits top-right if the stage has a crown (gold if yours), and a
-    medal disc top-left if your rank there is 3 or better. The tooltip reads "Stage N · Tier [· Boss (X-Sudoku)]".
+    pairs, box/line, X-Wing / XY-Wing and Swordfish / Colouring and chains / Trial and error), and a grid of tiles (`minmax(58px,1fr)`,
+    7 px gap; 50 px and 6 px under 640 px). Headers wrap on narrow screens.
+  - **The frontier cue.** The *frontier* is the highest stage anyone (you included) has cleared, from the overview: the max of your
+    `highest_stage`, every `crowns[].stage` and every `players` key with a count. The band that holds it gets a pill at the right
+    end of its header: a solid crown and "Cleared up to N" (gold text on a 13% gold tint, a gold hairline; tooltip "The highest stage
+    anyone has cleared"). No pill while nobody has cleared anything.
+- **Tile states.** Four states that read at a glance in both themes (Van 2026-09-30: "so on my POV I know right away until what stage
+  has been cleared already"; "the crown needs to be fully colored … highlight the stages box that the player has cleared already"):
+
+  | State | When | Look |
+  |---|---|---|
+  | (1) Cleared by you (`cleared`) | n ≤ your `highest_stage` | A filled Teal highlight: a vertical Teal gradient (36%→18% dark, 25%→12% light), a Teal border (90% / 80%) with a faint inner ring. Your best time `m:ss` in bold Teal (lighter on dark, deeper on light). Your medal disc top-left when your rank there is 1–3. The **solid gold crown top-right only when the first clear is yours** |
+  | (2) Cleared by others (`others`) | n > your `highest_stage` and someone has cleared it (`players[n] > 0` or a crown) | Quieter: a faint gold tint (Yellow 9% dark / 13% light), a gold hairline (Yellow 52% / Yellow-700 55%) and the holder's **solid gold crown** top-right. While the stage is still locked for you the tile stays at full strength and only the number, lock, stripe and BOSS label dim (45%), so the run of cleared stages stands apart from the plain locked ones |
+  | (3) Open now (`current`) | n = your `highest_stage` + 1 | The Arena pink border with the 2.4 s pulse (off under reduced motion). When others have cleared it too it also carries their crown and the gold tint; the pink border wins |
+  | (4) Locked (`locked`) | beyond the open stage, and nobody has cleared it | Dimmed to 42% with a lock icon, as before |
+
+  - They combine with: `active` (an attempt with its clock running: a pink dot top-left and "playing"), `sel` (the selected tile: a
+    pink outline), `boss` (a dashed border in the state's colour, Teal 55% when plainly locked, plus a "BOSS" label) and `front` (the
+    frontier tile: a short gold rule, 3 px wide and 64% of the tile's height, drawn in the grid gap right after it, so the edge of the
+    cleared run reads even mid-row; none after stage 300).
+  - Every tile keeps its tier-coloured stripe at the bottom, and tiles keep their size and grid.
+  - A crown someone else holds is never drawn on your own cleared tile (the stage panel still names the holder); on any stage you
+    haven't cleared it always shows.
+  - The tooltip reads "Stage N · Tier [· Boss (X-Sudoku)]", then " · cleared by you in m:ss.t [· your crown]" or " · cleared by N
+    player(s)", then " · the highest stage anyone has cleared" on the frontier tile.
   - Clicking any tile, locked ones included, selects it and loads its panel. The board is cached for 20 s.
 - **Stage panel, tutorial:** a description, then "Start the tutorial" or "Replay the tutorial", with the note "Finish it once to open
   stage 1." or "Done — stage 1 is open."
@@ -712,7 +734,7 @@ a segmented tab control (**Stages · Ranking · Stats**) and a **"How it works"*
   - "Stage N" with a tier chip (tier colour) and, on bosses, "Boss · X-Sudoku".
   - "C clues · par m:ss", plus " · both diagonals hold 1–9 too" on bosses.
   - Technique chips; each tooltip is a one-line explanation (§7.12).
-  - The crown line, the top-5 table and the players line.
+  - The crown line (a solid gold crown on a gold tint), the top-5 table and the players line.
   - One action button, with a note under it:
 
     | State | Button | Note |
@@ -726,11 +748,14 @@ a segmented tab control (**Stages · Ranking · Stats**) and a **"How it works"*
 
   - Countdowns correct for client/server clock skew, estimated from `server_now` minus half the round trip.
 
-**Ranking tab.** The table from §6, loaded from `sudoku_ranking(50)`.
+**Ranking tab.** The table from §6, loaded from `sudoku_ranking(50)`. Since 2026-09-30 a crown holder carries a gold badge after the
+name: a solid crown and the count (tooltip "N crowns — first to clear"). Your own count comes from the overview's `mine` flags;
+everyone else's is matched by the name the crown was recorded under, because ranking rows carry names, not ids. A player renamed
+between two first clears can therefore be undercounted; a port should return `crowns` per row from the server instead.
 
 **Stats tab.** The 12 tiles from §6, loaded from `sudoku_stats()`.
 
-**"How it works" modal.** Seven bullets:
+**"How it works" modal.** Eight bullets:
 - **One rule** (rows, columns, boxes; bosses add the diagonals).
 - **One ladder** (stage 0 tutorial; each stage opens when the previous is cleared; the same grid for everyone).
 - **The clock is the server's**: "The clock starts when you press Play and never stops — leaving, refreshing or opening another stage
@@ -738,6 +763,9 @@ a segmented tab control (**Stages · Ranking · Stats**) and a **"How it works"*
 - **Penalties** (auto-check +0:30 per wrong digit, hints +1:00, three per attempt; counted in your time and served before the next stage
   opens).
 - **Per stage** (top 5; gold, silver and bronze; crowns for good; the par star).
+- **Reading the map** (2026-09-30): "Teal tiles are the stages you've cleared, with your best time and medal. A gold crown marks a
+  stage someone has cleared (on your own tile, only if the crown is yours), and a short gold rule sits after the highest stage anyone
+  has cleared. Pink is the stage open for you now."
 - **Replays and restarts** (improve your time; shuffled, so they can't be typed from memory).
 - **Overall** (the highest stage leads; ties go to whoever got there first).
 
@@ -752,7 +780,7 @@ It closes with "Got it", a backdrop click or Esc.
   - Technique chips, excluding naked and hidden singles. If a stage has only singles, it shows one "Singles" chip.
   - "Shuffled" on shuffled attempts, with the tooltip "Restarts and replays swap rows, columns and digits: same logic, same difficulty,
     but memory won't help."
-  - A crown chip with the holder's name, or "Your crown".
+  - A gold crown chip (`.sd-chip.gold`: gold text on a gold tint, the solid crown) with the holder's name, or "Your crown".
 - A "Settings" button.
 
 **Timer row.**
@@ -882,7 +910,7 @@ is ignored.
 - A large final time `m:ss.t`, with the breakdown "m:ss.t solving + m:ss penalties (M mistakes, H hints)" or "… · no penalties".
 - **Awards list**, each shown when it applies:
   - rank or medal ("Gold — #1 of N on this stage", or "#r of N on this stage")
-  - crown ("First clear — the crown on stage N is yours for good")
+  - crown ("First clear — the crown on stage N is yours for good"), on the gold card with the solid crown
   - "Beat par (m:ss)"
   - personal best ("New personal best — was X", or "Your best stays X"; only when an earlier best exists)
   - progression ("Stage N+1 is open", plus " after m:ss of penalty time" when there were penalties)
@@ -1003,11 +1031,15 @@ The E2E harness depends on it. It can be dropped in the port if pp-os QA drives 
 
 - **Font.** Montserrat from Google Fonts, weights 300–900 plus italic 400. Numbers use `font-variant-numeric: tabular-nums`.
 - **Brand colours used.**
-  - Teal `#00A0B4`: hinted digits on dark, the boss chip, diagonal shading as `rgba(0,160,180,.10–.12)`, confetti.
+  - Teal `#00A0B4`: hinted digits on dark, the boss chip, diagonal shading as `rgba(0,160,180,.10–.12)`, confetti, and (2026-09-30)
+    the cleared-by-you tile: fill, border and time text.
   - Purple `#C445C4`: light-theme accent and entries, and the Expert tier.
   - Arena pink `#D373D3`: the dark-theme accent and entries, the Arena chrome; borders use `rgba(255,122,195,…)` as on every Arena page.
-  - Yellow `#FFA91F`: gold medals, the par marker, the Hard tier, the tutorial coach (amber), and focus/target tints.
-  - Green `#71B357`: the Basic tier and the cleared-tile tint.
+  - Yellow `#FFA91F`: gold medals, the par marker, the Hard tier, the tutorial coach (amber), focus/target tints, and (2026-09-30)
+    the solid crown everywhere, the cleared-by-others tint and hairline, the frontier rule and the "Cleared up to N" pill. Yellow ramp
+    steps: 300 `#FFC870` (gold text on dark), 700 `#E08A00` (the light-theme hairline, as `rgba(224,138,0,.55)`), 800 `#B87100`
+    (the crown's edge on light), 900 `#8F5800` (gold text on light).
+  - Green `#71B357`: the Basic tier. (It was also the cleared-tile tint until 2026-09-30; cleared-by-you is Teal now.)
   - Celestial Blue `#54A6DE`: the Medium tier.
   - Red `#E72347`: mistakes and clashes, penalties, the Master tier.
   - Bright Blue `#00C4F5`: the Extreme tier.
@@ -1016,7 +1048,8 @@ The E2E harness depends on it. It can be dropped in the port if pp-os QA drives 
 - **Bronze** has no brand swatch, so it is `color-mix(in srgb, #FFA91F 55%, #63666A)`: Yellow mixed with Dark Gray. Swap it for the
   official Yellow ramp step once the brand tokens are available.
 - **Off-palette.** The light-theme hinted digit `#00839A` is a darker teal chosen for contrast on white. It should be replaced by the
-  official Teal ramp step.
+  official Teal ramp step. The cleared-by-you time text uses `color-mix(in srgb, #00A0B4 55%, #fff)` (dark) and
+  `color-mix(in srgb, #00A0B4 72%, #000)` (light) for the same reason: the brand tokens carry no Teal ramp yet.
 - **CSS variables, dark (`:root`):**
   - Text and lines: `--sd-ink #e9eef7`, `--sd-mut rgba(233,238,247,.62)`, `--sd-faint rgba(233,238,247,.40)`,
     `--sd-line rgba(255,122,195,.26)`, `--sd-line-soft rgba(255,255,255,.08)`.
@@ -1027,6 +1060,10 @@ The E2E harness depends on it. It can be dropped in the port if pp-os QA drives 
   - Highlights: `--sd-peer rgba(255,255,255,.05)`, `--sd-same rgba(211,115,211,.20)`, `--sd-sel rgba(211,115,211,.34)`,
     `--sd-diag rgba(0,160,180,.12)`, `--sd-focus rgba(255,169,31,.22)`.
   - Medals: `--sd-gold #FFA91F`, `--sd-silver #D9D9D6`, `--sd-bronze` (the mix above).
+  - Map states (2026-09-30): `--sd-mine-bg linear-gradient(180deg, rgba(0,160,180,.36), rgba(0,160,180,.18))`,
+    `--sd-mine-line rgba(0,160,180,.9)`, `--sd-mine-ink color-mix(in srgb, #00A0B4 55%, #fff)`, `--sd-oth-bg rgba(255,169,31,.09)`,
+    `--sd-oth-line rgba(255,169,31,.52)`, `--sd-key-line rgba(233,238,247,.18)` (key swatch borders).
+  - Crown: `--sd-crown #FFA91F`, `--sd-crown-edge #FFA91F`, `--sd-crown-ink #FFC870` (gold text: the pill, chips, badges).
 - **CSS variables, light (`[data-theme="light"]`):**
   - Text and lines: `--sd-ink #0a1520`, `--sd-mut rgba(10,21,32,.64)`, `--sd-faint rgba(10,21,32,.42)`,
     `--sd-line rgba(255,122,195,.38)`, `--sd-line-soft rgba(23,27,36,.09)`.
@@ -1037,6 +1074,10 @@ The E2E harness depends on it. It can be dropped in the port if pp-os QA drives 
   - Highlights: `--sd-peer rgba(23,27,36,.05)`, `--sd-same rgba(196,69,196,.14)`, `--sd-sel rgba(196,69,196,.24)`,
     `--sd-diag rgba(0,160,180,.10)`, `--sd-focus rgba(255,169,31,.30)`.
   - Medals: `--sd-silver #63666A`.
+  - Map states: `--sd-mine-bg linear-gradient(180deg, rgba(0,160,180,.25), rgba(0,160,180,.12))`, `--sd-mine-line rgba(0,160,180,.8)`,
+    `--sd-mine-ink color-mix(in srgb, #00A0B4 72%, #000)`, `--sd-oth-bg rgba(255,169,31,.13)`, `--sd-oth-line rgba(224,138,0,.55)`,
+    `--sd-key-line rgba(10,21,32,.18)`.
+  - Crown: `--sd-crown #FFA91F`, `--sd-crown-edge #B87100`, `--sd-crown-ink #8F5800`.
 - **Tier colours:** Basic `#71B357`, Medium `#54A6DE`, Hard `#FFA91F`, Expert `#C445C4`, Master `#E72347`, Extreme `#00C4F5`.
 - **Logo.**
   - Dark theme: `assets/Reports/logo-color.png` (white wordmark). Light theme: `assets/Reports/logo-color-black.png`.
@@ -1045,8 +1086,14 @@ The E2E harness depends on it. It can be dropped in the port if pp-os QA drives 
     content column. That puts it bottom-right and always **after** the content, never under it. Verified in both themes at 1440 and
     390 px.
 - **Icons.** One outlined SVG set with `stroke: currentColor` (brand rule: one colour per set). Covers: undo, redo, erase, pencil,
-  auto grid, bulb, restart, gear, back, crown, lock, check, star, trophy, clock, arrow-up, boss ×. (The pause icon went with the Pause
+  auto grid, bulb, restart, gear, back, lock, check, star, trophy, clock, arrow-up, boss ×. (The pause icon went with the Pause
   button.)
+- **The crown** is the one filled icon (Van 2026-09-30: "fully colored"), still a single colour: `svg.ico-crown` (viewBox 24) is a
+  body path `M3.6 9l4.3 3.5L12 5.8l4.1 6.7 4.3-3.5-1.6 8.2H5.2z`, a base band (rect 4.9, 19.1, 14.2 × 2.4, rx 1.2) and three ball
+  tips (circles at 3.6/8.7 r1.75, 12/5.3 r1.85, 20.4/8.7 r1.75). CSS fills it with `--sd-crown` and strokes it with `--sd-crown-edge`
+  (1.3, round joins, `paint-order: stroke fill`), with selectors specific enough to beat the outline rules of chips, awards and
+  buttons. It is used on tiles (14 px), the map key (9 px), the frontier pill and chips (12 px), the crown line (16 px), the ranking
+  badge (12 px) and the completion card (18 px).
 - **Confetti.** A full-screen canvas with 140 particles for 1.8 s in Teal, Pink, Yellow, Green and Celestial. It is skipped under
   `prefers-reduced-motion`.
 - **Motion.** The page fades in (opacity only, never a transform on `body`). There are pulses on the current tile and the tutorial
@@ -1066,8 +1113,12 @@ printed.
 |---|---|---|
 | `scripts/generate-sudoku-stages.test.mjs` | `node --test scripts/generate-sudoku-stages.test.mjs` | 9 tests: the counting solver (unique, multiple and contradictory grids); geometry (27 / 29 units, X intersections); a deterministic PRNG and valid random grids (X diagonals included); known puzzles grade right (the Wikipedia example → naked single, AI Escargot → trial depth 2); the grader audit over 80 random puzzles, classic and X (no technique ever removes the true digit; at least 8 techniques exercised); `buildCandidate` is deterministic and honours its spec; symmetry transforms keep grids valid, puzzles unique and grades identical, classic and X; an end-to-end small set (30 stages incl. boss 25) builds, verifies and reproduces; **the seeded set** (when `scratch/sudoku-stages.json` or `SUDOKU_STAGES_FILE` exists): ≥ 300 stages, uniqueness on every stage, monotonic bands, clue ramps, valid X bosses, real chip labels. 9/9 pass |
 | generator `--verify` / `--reproduce` | §5.8 | The stored set is sound, and every stage regenerates from its stored seed |
-| `scratch/_sudoku-e2e.mjs` | `node scratch/_sudoku-e2e.mjs` (about 6 min). `--keep` skips cleanup; `--cleanup-only` just cleans | The full E2E. **117/117** in the final run (2026-09-29, 369 s; details below). Writes screenshots and `e2e-results.json` to `Desktop\arena-sudoku-qa\` |
-| `scratch/_sudoku-boss-shot.mjs` | `node scratch/_sudoku-boss-shot.mjs` | Temporarily sets the test account's `highest_stage = 24` through the service role, then deletes all its Sudoku rows in `finally`. Proves boss stage 25 opens on the canonical X grid with both diagonals shaded (17 cells), the boss chip shows, a digit repeated **only on a diagonal** is flagged as a conflict, and there is no overflow in either theme at 1440 or 390. **16/16** |
+| `scratch/_sudoku-e2e.mjs` | `node scratch/_sudoku-e2e.mjs` (about 7 min). `--keep` skips cleanup; `--cleanup-only` just cleans | The full E2E. **128/128 in 387 s** in the final run (2026-09-30; details below). Writes screenshots and `e2e-results.json` to `Desktop\arena-sudoku-qa\`. Since the game went live it runs against a ladder with **staff on it**: checks are relative to the live data, real names never reach a log or a screenshot (below), and cleanup proves every staff row that existed before the run is still there |
+| `scratch/_sudoku-map-shot.mjs` | `node scratch/_sudoku-map-shot.mjs` (about 1.5 min) | The four map states (2026-09-30) against the live ladder: the test account clears stages 1–2 through the real RPCs while staff have cleared 1–4, then every state is asserted in the DOM at dark/light × 1440/390 (classes, computed colours and opacity, medal and time, crowns only where they belong, the frontier pill on the right band, the gold rule sitting in the gap after the frontier tile only, the key's four labels and its 1-row / 2 × 2 layout, every crown filled `rgb(255,169,31)`). "Crown mine" and the completion crown can't happen live without taking a staff member's crown, so one extra pass rewrites the overview / stage-board / submit responses in the browser only (CDP Fetch) and its files carry `-patched`. Cleanup deletes the test account's rows and proves the staff rows are untouched. **57/57** |
+| `scratch/_sudoku-map-preview.mjs` | `node scratch/_sudoku-map-preview.mjs <outDir> [clearer\|van]` | A design preview with no seeding: the overview response is rewritten into a synthetic scenario (Van's view: nothing cleared, staff up to 4; or the clearer's: 1–2 cleared, the crown mine on 1). Deletes the player row the visit creates |
+| `scratch/_sudoku-namemask.mjs` | imported by the three browser scripts | Swaps every real staff name for "Staff A/B/…" at the **data layer**: every `/rest/v1/` response a test page receives is rewritten (CDP Fetch, response stage), so no re-render can bring a name back. (Masking the DOM after render raced the ghost line, which re-renders every tick; that is how one early 2026-09-30 shot showed a staff handle — deleted and re-shot.) Each shot is also refused if any real name is on the page |
+| `scratch/_sudoku-live-state.mjs` | `node scratch/_sudoku-live-state.mjs` | Counts only, never a name: real players, clears per stage, the real frontier, crowns held, active attempts, and how many test rows exist |
+| `scratch/_sudoku-boss-shot.mjs` | `node scratch/_sudoku-boss-shot.mjs` | Temporarily sets the test account's `highest_stage = 24` through the service role, then deletes all its Sudoku rows in `finally`. Proves boss stage 25 opens on the canonical X grid with both diagonals shaded (17 cells), the boss chip shows, a digit repeated **only on a diagonal** is flagged as a conflict, and there is no overflow in either theme at 1440 or 390. **16/16** (2026-09-30, `-v3` shots, names masked) |
 | `scratch/_sudoku-xform-sql-test.sql` | `supabase db query --linked -f scratch/_sudoku-xform-sql-test.sql` | For all 300 stages: the SQL shuffle gives 0 invalid rows, columns, boxes or diagonals, preserved clue counts, and givens consistent with the transformed solution |
 | `scratch/_syntax-gate.cjs` | `node scratch/_syntax-gate.cjs tools/arena-sudoku.html tools/arena.html index.html` | `vm.Script` compiles each inline `<script>` block, plus a strict UTF-8 and U+FFFD check. 0 errors |
 | `scripts/check-static.mjs` | `node scripts/check-static.mjs` (the repo CI) | `node --check` on every `shared/` and `scripts/` JS file, and no broken local refs |
@@ -1096,6 +1147,9 @@ printed.
   - the penalty box holds; a cleared attempt can't be resubmitted
   - a replay is shuffled (`applyXform` of the canonical puzzle), clears with the relabelled solution, doesn't progress, and sets a PB
   - the rate limit throttles a 90-call burst
+- **Live-data rules (2026-09-30).** Staff hold the crowns on stages 1–4, so a bot's first clear of stage 1 must leave the crown with
+  its first clearer; stage player counts include the staff clearers; ranking checks look at the test rows' relative order; and the
+  Arena card's leader is whoever leads the live ranking.
 - **Phase B, leaderboard setup.** Bot B clears stage 1 and opens stage 2.
   - **Opening another stage never stops a clock.** Bot B opens a stage-1 replay two seconds in and re-opens stage 2 1.5 s later. The
     stage-2 clock gained ≥ 3.4 s, and both clocks are running at once.
@@ -1117,20 +1171,30 @@ printed.
   - the stage top 5 (the faster bot outranks you; the crown shows the first clearer)
   - the ranking order; the stage-2 countdown, then the unlock, on the same canonical grid the bots got
   - tampering from the page (skip, bad shape, rewritten givens, direct secret reads)
-  - no solution in any of 329 responses (2026-09-29 run); no page errors
+  - no solution in any browser response; no page errors
+  - **the four map states** after the first clear, against the live ladder: my stage teal with no crown while a staff member holds
+    it; stage 2 open now and already cleared by others (pink + their crown); stages ahead that others cleared in the gold state; the
+    first stage nobody has cleared plain locked; the pill "Cleared up to N" (N from the database) and exactly one gold rule; the key's
+    four labels; every crown filled solid gold; the gold crown chip in the game bar; the ranking's crown badges
   - layouts in dark and light at 1440 and 390 (replays through the UI; logo placement)
 - **Wiring phase.** The Arena landing page shows 5 cards on one row, the Sudoku card stat, the top-of-the-leaderboards row and the crown
   highlights, and the card opens the game. The hub shows Sudoku in the Arena window (a real dock click), and the hub search finds
   Sudoku.
 - **Cleanup** always runs, in `finally`. It deletes every crown, clear, attempt and player row of the three accounts and deletes the
-  throwaway auth users, then prints the remaining row counts. The 2026-09-29 run left 0 crowns, 0 clears and 0 attempts; the one
-  remaining players row is not a test account's (a staff member opened the page) and is left alone.
+  throwaway auth users, then checks that no test row is left and that **every staff row that existed before the run still exists**
+  (by primary key, per table). Staff rows are never written: every write is a test account's own RPC call or a delete filtered by a
+  test account's id. While a run is going, the test accounts show on the stage 1–2 boards for a few minutes.
 
 **Screenshots** go to `Desktop\arena-sudoku-qa\`: 01 and 11 map; 02, 02b and 13 tutorial; 03 tutorial notes; 04 settings; 05 and
 14 mid-game with notes and highlights; 07 and 16 completion; 08 and 12 top 5; 09 and 17 ranking; 10 stats; 18 logo at the page bottom;
-19 Arena landing; 20 hub window; 21 boss.
+19 Arena landing; 20 hub window; 21 boss; 22 map states; 23 map with the crown mine; 24 stage panel crown; 25 ranking crowns;
+26 game-bar crown chip; 27 completion crown.
 - **v1 files** (no suffix) are the first build and include 06 and 15 "paused". **v2 files** (`-v2` suffix, 2026-09-29) are the no-pause
   build, with no paused screen.
+- **v3 files** (`-v3` suffix, 2026-09-30) are the four-state map build with solid crowns, taken on the live ladder with every staff
+  name shown as "Staff A/B/…". 22 is the map for a player who has cleared 2 stages while staff have cleared 4 (dark and light, 1440
+  and 390). 23, 26 and 27 carry `-patched` (browser-only response rewrites, no database write). 19 and 20 were not re-shot in v3:
+  those pages carry other games' staff names and did not change, so the v2 files stand.
 - 02b-tutorial-clock-step-v2 shows the new "clock never stops" tutorial step.
 
 ---
@@ -1154,7 +1218,11 @@ printed.
 - **Two devices** on one attempt are last-write-wins for grid and notes; the clock stays correct because it is server-side.
 - **The tutorial's solution is in the page.** That is intended, since the tutorial is never ranked.
 - The `leads` tier is still allowed. It is retired with zero members, but it is kept to match every other Arena gate.
-- **Colours still to swap:** the light-theme hinted teal `#00839A` and the bronze mix, both pending the official ramp steps.
+- **Colours still to swap:** the light-theme hinted teal `#00839A`, the cleared-by-you teal text mixes and the bronze mix, all pending
+  the official ramp steps.
+- **Ranking crown badges match by name** (2026-09-30). Ranking rows carry names, not ids, so another player's crown count is matched on
+  the name recorded with each crown; a rename between first clears undercounts. A port should return `crowns` per ranking row.
+- **The frontier is client-side** (the overview's crowns and per-stage player counts). A port could return it from the server.
 - `CLAUDE.md`'s tool list has not been updated to mention `arena-sudoku.html` (it carried the owner's uncommitted work at build time).
 - Generating the full set takes about 3.6 minutes. Rare exact grades (Swordfish ≈ 0.2% of candidates) drive most of that time.
 
@@ -1174,3 +1242,4 @@ printed.
 
 - 2026-09-28 — initial build
 - 2026-09-29 — The clock never stops after Play: Pause, the auto-pauses and the one-clock-at-a-time rule removed (Van: closes the solve-it-outside loophole)
+- 2026-09-30 — The stage map's four states (Van): cleared by you (a filled teal tile, your time and medal, the crown only when it's yours), cleared by others (a gold hairline and their solid crown, kept bright while locked), open now (pink), locked (dimmed); the frontier ("Cleared up to N" on its band, a gold rule after that tile); a map key; a "Reading the map" rule; every crown now one filled solid-gold shape (tiles, key, chips, stage panel, completion) plus crown badges in the ranking
