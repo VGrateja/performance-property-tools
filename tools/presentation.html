@@ -16236,6 +16236,98 @@ const CMK_CHART_BUILDERS = {
     }, _cmkJllBounds(spec, 1, 4, false)) };
   },
 
+  /* GFC event study, part one: how far each measure fell from its own pre-crisis
+     peak. Peak is searched across 2006-2008 and the trough after it to end-2012,
+     per city and per measure, rather than fixed to one quarter — the peaks are
+     spread over Q2 2007 to Q1 2008 and pinning them all to one date understates
+     the fall.
+     The pattern it exposes is the useful part: income barely moved (prime rent
+     -0.4% to -11.4%) while the assets did (values -10% to -31%, land -40% in
+     Sydney), and secondary values fell harder than prime in four of five
+     cities. What got hurt was the pricing, not the tenancy. */
+  'jll-ind-gfc-drawdown': async function (cache) {
+    const qn = c => { const m = /^Q(\d) (\d{4})$/.exec(c || ''); return m ? (+m[2]) * 4 + (+m[1]) : null; };
+    const PEAK_LO = qn('Q1 2006'), PEAK_HI = qn('Q4 2008'), TROUGH_HI = qn('Q4 2012');
+    const fall = (cats, data) => {
+      let pk = -1, tr = -1;
+      cats.forEach((c, i) => { const q = qn(c);
+        if (q >= PEAK_LO && q <= PEAK_HI && data[i] != null && (pk < 0 || data[i] > data[pk])) pk = i; });
+      if (pk < 0) return null;
+      cats.forEach((c, i) => { const q = qn(c);
+        if (i >= pk && q <= TROUGH_HI && data[i] != null && (tr < 0 || data[i] < data[tr])) tr = i; });
+      if (tr < 0 || !data[pk]) return null;
+      return +((data[tr] / data[pk] - 1) * 100).toFixed(1);
+    };
+    const land  = await _cmkJllSeries(cache, 'jll_ind_land_value_med_2000sqm');
+    const val   = await _cmkJllSeries(cache, 'jll_ind_capital_value');
+    const rent  = await _cmkJllSeries(cache, 'jll_ind_prime_net_rent_sqm');
+    const sRent = await _cmkJllSeries(cache, 'jll_ind_secondary_net_rent_sqm');
+    const sYld  = await _cmkJllSeries(cache, 'jll_ind_secondary_yield_mid');
+    if (!val || !land || !rent) return null;
+    const pick = (spec, name) => {
+      const s = spec && spec.series.find(x => x.name === name);
+      return s ? { cats: spec.cats, data: s.data } : null;
+    };
+    /* Secondary capital value is rent / yield — the same derivation the prime
+       series uses — joined on the quarter LABEL, because the two metrics do not
+       necessarily carry the same period set (Adelaide's secondary yield starts
+       later than its rent). */
+    const secVal = name => {
+      const r = pick(sRent, name), y = pick(sYld, name);
+      if (!r || !y) return null;
+      const ym = {}; y.cats.forEach((c, i) => { ym[c] = y.data[i]; });
+      return { cats: r.cats, data: r.data.map((v, i) => {
+        const yy = ym[r.cats[i]]; return (v != null && yy) ? v / yy : null; }) };
+    };
+    const cities = val.series.map(s => s.name);
+    const defs = [
+      ['Land', '#f5a623', n => pick(land, n)],
+      ['Prime value', '#00A0B4', n => pick(val, n)],
+      ['Secondary value', '#c2a4d6', n => secVal(n)],
+      ['Prime rent', '#171B24', n => pick(rent, n)],
+    ];
+    const series = defs.map(d => ({ name: d[0], color: d[1],
+      data: cities.map(n => { const s = d[2](n); return s ? fall(s.cats, s.data) : null; }) }));
+    if (!series.some(s => s.data.some(v => v != null))) return null;
+    /* Vertical grouped bars, not barH: five cities x four measures is twenty
+       bars, and horizontally the value labels collide with the neighbouring
+       series. Upright, the bars hang off a zero line at the top and the shape
+       reads at a glance. */
+    return { module: 'cmk-lines', data: {
+      cats: cities, series: series,
+      kind: 'bar', diverging: true, legend: true,
+      scale: 1, unit: '%', dp: 1, axisDp: 0,
+      min: -40, max: 5, interval: 5,
+    } };
+  },
+
+  /* GFC event study, part two: the recovery, which is the half people forget.
+     Capital values rebased so Q4 2007 = 100 and run to the end of 2018, eleven
+     years. Sydney takes until Q1 2015 to regain its peak, Melbourne Q1 2015,
+     Brisbane Q3 2015 — seven years of grinding sideways — and Perth is STILL
+     15% below its 2007 peak at the end of 2018.
+     Q4 2007 is the common base rather than each city's own peak, so the lines
+     stay comparable; the individual peak dates are on the drawdown slide. */
+  'jll-ind-gfc-recovery': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_capital_value');
+    if (!spec) return null;
+    const i0 = spec.cats.indexOf('Q1 2007'),
+          ib = spec.cats.indexOf('Q4 2007'),
+          i1 = spec.cats.indexOf('Q4 2018');
+    if (i0 < 0 || ib < 0 || i1 < 0) return null;
+    const series = spec.series.map(s => {
+      const base = s.data[ib];
+      if (!base) return null;
+      return { name: s.name, color: s.color,
+        data: s.data.slice(i0, i1 + 1).map(v => v == null ? null : +(v / base * 100).toFixed(1)) };
+    }).filter(Boolean);
+    if (!series.length) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats.slice(i0, i1 + 1), series: series,
+      scale: 1, unit: '', dp: 0, axisDp: 0, tickEvery: 4,
+    }, _cmkJllBounds({ series: series }, 1, 20, false)) };
+  },
+
   /* Industrial supply pipeline: sqm due to complete each year, stacked by how
      firm the project actually is. The vacancy slides say what is empty now;
      this says what is coming and how much of it is committed. Read the colour,
