@@ -138,6 +138,11 @@ are untouched. The geometry matches IR Samples:
 
 ### 3.1 Behaviour
 
+- **Curated only (2026-09-30).** The picker lists exactly the IR Samples curation — `reports_state.region = 'ir-samples-picks'`,
+  `payload.picks[].fileId` (at most two per market, written by IR Samples' Curate dialog) — intersected with the published gate
+  (`compliance.published` not null). A published file that is not curated is not offered. No picks → empty picker with the
+  message "No curated samples yet — curate up to two per market in IR Samples (the Vault) and they appear here."
+
 - `+ Add` on an IR Library row appends **two** slides, the case study then its cashflow, both on a `#ffffff` slide
   background.
 - Every await (photo copy, rates, fonts) runs **before** the first append. So a property's two slides always land together,
@@ -259,3 +264,4 @@ hold its lines exactly. Table overlays render 6px inside their box, so each box 
 
 - 2026-09-29 — Distance-from-CBD band under the address (IR Samples p1, IR Builder cover, Presentation case study); verbatim cashflow disclaimer (IR Samples p2 footer zone, IR Builder cashflow page with row-density fit, Presentation cashflow slide); the Presentation IR Library now inserts the case study + a cashflow slide (IR Samples page 2 as real overlays, 4 table overlays, 47 elements).
 - 2026-09-30 — IR Samples: the Scenarios page (page 4, the model across LVR × rate) removed — the tool is three pages (Overview · Cashflow · Pricing & comparable sales), the PDF stack too; `slideScenarios` and the `.irs-sc` grid CSS deleted. Presentation IR Library: the cashflow slide is computed at 100% LVR on the total property + acquisition cost (was the file's own LVR, else 90%), so its basis line reads "100% LVR incl. acquisition costs". IR Samples' own page 2 and PDF are unchanged (file LVR, toggles). Both on Van's word.
+- 2026-09-30 — Presentation IR Library: the picker now offers ONLY the IR Samples curation (`reports_state` region `ir-samples-picks`, ≤2 per market) ∩ published; empty-state text points to IR Samples. (Van)
