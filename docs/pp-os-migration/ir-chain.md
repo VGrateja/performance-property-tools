@@ -151,7 +151,7 @@ are untouched. The geometry matches IR Samples:
 - **Figures** follow the IR Samples PDF basis:
   - interest only, at the normalised rate (`rdp_runway_config` key `rates` → `forecast.rate`, cached for 10 minutes, fallback
     0.0494);
-  - the file's own LVR (`0 < lvr ≤ 1.5`, else 0.9), applied to the **total property + acquisition cost**;
+  - **100% LVR** (Van 2026-09-30; until then the file's own LVR, `0 < lvr ≤ 1.5`, else 0.9), applied to the **total property + acquisition cost**;
   - a 30-year loan;
   - price = what was paid, else the file's modelled budget.
 
@@ -224,10 +224,10 @@ hold its lines exactly. Table overlays render 6px inside their box, so each box 
 ### 3.4 Left out on the slide (by design)
 
 - **The toggles.** IR Samples page 2's LVR / interest-rate / loan-type toggles are left out. A slide is a static client
-  surface, so it is fixed at the PDF basis and the basis line says which.
+  surface, so it is fixed (IR Samples' PDF basis, except the LVR, which is 100% since 2026-09-30) and the basis line says which.
 - **The running footer line.** "Prepared from the Performance Property Investment Report · <month>" is left out; the
   disclaimer takes the footer zone, as on IR Samples page 2.
-- **IR Samples pages 3–4.** Pricing & comparable sales, and scenarios, were not requested as slides.
+- **IR Samples page 3.** Pricing & comparable sales was not requested as a slide. (IR Samples' fourth page, Scenarios, was removed on 2026-09-30 — the tool is three pages now.)
 
 ### 3.5 Verified (hub, 2026-09-29)
 
@@ -248,7 +248,7 @@ hold its lines exactly. Table overlays render 6px inside their box, so each box 
 - **Rubric changes.** If the rubric notes ever change, re-derive the table from `ir_grading_rubric` and update every copy.
 - **Keep the numeric distance off client output.** `distCbd` is capital-city based for regional markets.
 - **Keep the verbatim disclaimer** and the two-paragraph split.
-- **Keep the model.** The presentation's cashflow slide must use the IR Samples model: the LVR on the total property +
+- **Keep the model.** The presentation's cashflow slide must use the IR Samples model: the LVR (100% on the slide) on the total property +
   acquisition cost. The IR Builder client report still computes its own cashflow with the LVR on the budget. That is a
   known, pre-existing difference, open for Van, and not introduced here.
 - **Photo copy for advisors.** Company-tier advisors cannot upload to `presentation-images` (the INSERT policy is
@@ -258,3 +258,4 @@ hold its lines exactly. Table overlays render 6px inside their box, so each box 
 ## Changelog
 
 - 2026-09-29 — Distance-from-CBD band under the address (IR Samples p1, IR Builder cover, Presentation case study); verbatim cashflow disclaimer (IR Samples p2 footer zone, IR Builder cashflow page with row-density fit, Presentation cashflow slide); the Presentation IR Library now inserts the case study + a cashflow slide (IR Samples page 2 as real overlays, 4 table overlays, 47 elements).
+- 2026-09-30 — IR Samples: the Scenarios page (page 4, the model across LVR × rate) removed — the tool is three pages (Overview · Cashflow · Pricing & comparable sales), the PDF stack too; `slideScenarios` and the `.irs-sc` grid CSS deleted. Presentation IR Library: the cashflow slide is computed at 100% LVR on the total property + acquisition cost (was the file's own LVR, else 90%), so its basis line reads "100% LVR incl. acquisition costs". IR Samples' own page 2 and PDF are unchanged (file LVR, toggles). Both on Van's word.
