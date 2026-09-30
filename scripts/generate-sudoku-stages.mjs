@@ -46,6 +46,17 @@
  *                                                     regenerate every stage from
  *                                                     its stored seed and compare
  *
+ * DAILY CHALLENGE + WEEKLY SPRINT (migration 124) — same master seed:
+ *   node scripts/generate-sudoku-stages.mjs --out scratch/sudoku-specials.json
+ *        --daily <from YYYY-MM-DD> <count> --sprint <from> <weeks>
+ *                                                     one daily per day (Mon–Wed
+ *                                                     Medium, Thu–Sun Hard, par
+ *                                                     6–10 min) + five sprint
+ *                                                     puzzles per ISO week
+ *   --verify / --reproduce / --apply take that file too (a record with a
+ *   `kind` field is a daily / sprint record); --apply seeds
+ *   arena_sudoku_specials + arena_sudoku_special_secrets.
+ *
  * Tests: node --test scripts/generate-sudoku-stages.test.mjs
  * ========================================================================== */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
@@ -1088,6 +1099,220 @@ export function randomXform(variant, rng) {
   return { r, c, d, t: rng() < 0.5 ? 1 : 0 };
 }
 
+/* ═══════════════ daily challenge + weekly sprint (migration 124) ════════════
+ * Puzzles OUTSIDE the ladder, from the same private master seed:
+ *   daily   one per Melbourne calendar day, the same for everyone.
+ *           Mon–Wed Medium (pairs / triples), Thu–Sun Hard (intersections,
+ *           X-Wing); par 6–10 min.
+ *   sprint  five per ISO week (keyed by its Monday), one per band Basic →
+ *           Master, each inside its own par window so the weeks weigh alike.
+ * Per-puzzle seed = sha256('arena-sudoku|<kind>|v1|<master>|<key>|<slot>|<k>')
+ * with key = the day ('2026-09-30') or the ISO week ('2026-W40'). Every record
+ * stores its seed + settings, so --reproduce rebuilds it byte for byte.
+ * Classic grids only; uniqueness is proven by the counting solver and the
+ * grade re-checked by --verify, exactly like the ladder.
+ * ══════════════════════════════════════════════════════════════════════════ */
+export const DAILY_BANDS = {
+  medium: { tier: 'Medium', tier_rank: 2, lo: 3, hi: 6, target: 27, tol: 2, fan: 20, par: [360, 600] },
+  hard:   { tier: 'Hard',   tier_rank: 3, lo: 7, hi: 9, target: 27, tol: 2, fan: 20, par: [360, 600] }
+};
+export const SPRINT_SLOTS = [
+  { slot: 1, tier: 'Basic',  tier_rank: 1, lo: 1,  hi: 2,  target: 38, tol: 1,          par: [150, 300] },
+  { slot: 2, tier: 'Medium', tier_rank: 2, lo: 3,  hi: 6,  target: 30, tol: 2, fan: 20, par: [270, 480] },
+  { slot: 3, tier: 'Hard',   tier_rank: 3, lo: 7,  hi: 9,  target: 29, tol: 2, fan: 20, par: [360, 600] },
+  { slot: 4, tier: 'Expert', tier_rank: 4, lo: 10, hi: 11, target: 28, tol: 2, fan: 20, par: [480, 840] },
+  { slot: 5, tier: 'Master', tier_rank: 5, lo: 12, hi: 14, target: 27, tol: 2, fan: 20, par: [600, 1200] }
+];
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+function dayUTC(day) {
+  if (typeof day !== 'string' || !DAY_RE.test(day)) throw new Error('a day is YYYY-MM-DD, got ' + day);
+  const d = new Date(day + 'T00:00:00Z');
+  if (isNaN(d) || d.toISOString().slice(0, 10) !== day) throw new Error('not a calendar day: ' + day);
+  return d;
+}
+/** calendar arithmetic on 'YYYY-MM-DD' strings (no time zones involved) */
+export function addDays(day, n) { const d = dayUTC(day); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+/** ISO weekday: 1 = Monday … 7 = Sunday */
+export function isoWeekday(day) { return ((dayUTC(day).getUTCDay() + 6) % 7) + 1; }
+/** the Monday of a day's ISO week and its label ('2026-W40'); the ISO year is its Thursday's year */
+export function isoWeekOf(day) {
+  const monday = addDays(day, 1 - isoWeekday(day));
+  const year = Number(addDays(monday, 3).slice(0, 4));
+  const jan4 = year + '-01-04';
+  const week1 = addDays(jan4, 1 - isoWeekday(jan4));
+  const week = Math.round((dayUTC(monday) - dayUTC(week1)) / (7 * 86400000)) + 1;
+  return { monday, year, week, label: year + '-W' + String(week).padStart(2, '0') };
+}
+/** the daily's band: Mon–Wed Medium, Thu–Sun Hard */
+export const dailyBandOf = day => (isoWeekday(day) <= 3 ? 'medium' : 'hard');
+/** the per-candidate seed of a daily / sprint puzzle, derived from the private master seed */
+export function specialSeed(master, kind, key, slot, k) {
+  return sha('arena-sudoku|' + kind + '|v' + GEN_VERSION + '|' + master + '|' + key + '|' + slot + '|' + k).slice(0, 24);
+}
+function findSpecial(master, kind, key, slot, band, maxTries) {
+  const spec = { variant: 'classic', target: band.target, lo: band.lo, hi: band.hi, tol: band.tol, fan: band.fan };
+  for (let k = 0; k < maxTries; k++) {
+    const seed = specialSeed(master, kind, key, slot, k);
+    const c = buildCandidate(seed, spec);
+    if (!c) continue;
+    if (c.grade.parSec < band.par[0] || c.grade.parSec > band.par[1]) continue;   // outside the par window
+    return { seed, spec, ...c, tries: k + 1 };
+  }
+  throw new Error('no ' + kind + ' candidate for ' + key + ' slot ' + slot + ' in ' + maxTries + ' tries');
+}
+function toSpecialRecord(kind, day, slot, band, f) {
+  const g = f.grade;
+  return {
+    kind, day, slot, variant: 'classic', tier: band.tier, tier_rank: band.tier_rank,
+    techniques: g.techniques.map(k => TECH_BY_KEY[k].label), technique_keys: g.techniques,
+    hardest: g.hardest, hardest_rank: g.rank, trial_depth: g.trialDepth,
+    clue_count: clueCount(f.puzzle), par_ms: g.parSec * 1000, difficulty: g.difficulty,
+    puzzle: gridToString(f.puzzle), solution: gridToString(f.solution), seed: f.seed,
+    gen: { v: GEN_VERSION, kind, variant: 'classic', target: f.spec.target, lo: f.spec.lo, hi: f.spec.hi,
+      tol: f.spec.tol == null ? 1 : f.spec.tol, fan: f.spec.fan || 10, par: band.par.slice() }
+  };
+}
+/** daily puzzles for `count` consecutive days starting at `from` ('YYYY-MM-DD') */
+export function generateDaily(opts) {
+  const { master, from, count } = opts;
+  if (!master) throw new Error('master seed required');
+  const log = opts.log || (() => {}), maxTries = opts.maxTries || 25000, out = [];
+  for (let i = 0; i < count; i++) {
+    const day = addDays(from, i), band = DAILY_BANDS[dailyBandOf(day)];
+    const f = findSpecial(master, 'daily', day, 1, band, maxTries);
+    out.push(toSpecialRecord('daily', day, 1, band, f));
+    log('  daily ' + day + ': ' + band.tier + ' · ' + f.grade.hardest + ' · ' + clueCount(f.puzzle) + ' clues · par ' + f.grade.parSec + ' s · ' + f.tries + ' tries');
+  }
+  return out;
+}
+/** sprint weeks: five puzzles (Basic → Master) for `weeks` ISO weeks from the week holding `from` */
+export function generateSprints(opts) {
+  const { master, from, weeks } = opts;
+  if (!master) throw new Error('master seed required');
+  const log = opts.log || (() => {}), maxTries = opts.maxTries || 25000, out = [];
+  const first = isoWeekOf(from).monday;
+  for (let w = 0; w < weeks; w++) {
+    const monday = addDays(first, 7 * w), label = isoWeekOf(monday).label;
+    for (const band of SPRINT_SLOTS) {
+      const f = findSpecial(master, 'sprint', label, band.slot, band, maxTries);
+      out.push(toSpecialRecord('sprint', monday, band.slot, band, f));
+      log('  sprint ' + label + ' #' + band.slot + ': ' + band.tier + ' · ' + f.grade.hardest + ' · ' + clueCount(f.puzzle) + ' clues · par ' + f.grade.parSec + ' s · ' + f.tries + ' tries');
+    }
+  }
+  return out;
+}
+/** regenerate one daily / sprint puzzle from its stored seed + settings */
+export const reproduceSpecial = rec => reproduceStage(rec);
+/**
+ * Every check a daily / sprint set must pass (empty list = clean): exactly one
+ * solution · a valid solution · givens agree · clue count · the grade and the
+ * par reproduce · the hardest technique inside its band · par inside its
+ * window · dailies on consecutive days in the weekday rhythm · sprints on
+ * Mondays with all five slots in order · every key once · no repeated grid.
+ */
+export function verifySpecials(recs) {
+  const problems = [], keys = new Set(), grids = new Set();
+  const dailies = recs.filter(r => r.kind === 'daily').sort((a, b) => a.day.localeCompare(b.day));
+  for (let i = 1; i < dailies.length; i++) if (dailies[i].day !== addDays(dailies[i - 1].day, 1)) problems.push('daily: gap or repeat after ' + dailies[i - 1].day);
+  const weeks = new Map();
+  for (const r of recs) {
+    const id = r.kind + ' ' + r.day + '#' + r.slot;
+    if (r.kind !== 'daily' && r.kind !== 'sprint') { problems.push(id + ': unknown kind'); continue; }
+    if (keys.has(id)) problems.push(id + ': duplicate key'); keys.add(id);
+    if (grids.has(r.puzzle)) problems.push(id + ': repeats another puzzle'); grids.add(r.puzzle);
+    let band;
+    if (r.kind === 'daily') {
+      band = DAILY_BANDS[dailyBandOf(r.day)];
+      if (r.slot !== 1) problems.push(id + ': a daily is slot 1');
+    } else {
+      band = SPRINT_SLOTS[r.slot - 1];
+      if (!band) { problems.push(id + ': sprint slot out of range'); continue; }
+      if (isoWeekday(r.day) !== 1) problems.push(id + ': a sprint week is keyed by its Monday');
+      if (!weeks.has(r.day)) weeks.set(r.day, []); weeks.get(r.day).push(r.slot);
+    }
+    if (r.variant !== 'classic') problems.push(id + ': daily / sprint puzzles are classic');
+    if (r.tier !== band.tier || r.tier_rank !== band.tier_rank) problems.push(id + ': tier ' + r.tier + ' should be ' + band.tier);
+    if (!/^[0-9a-f]{24}$/.test(r.seed || '')) problems.push(id + ': seed missing');
+    if (!r.gen || r.gen.kind !== r.kind) problems.push(id + ': gen settings missing');
+    const p = parseGrid(r.puzzle), s = parseGrid(r.solution);
+    if (countSolutions(p, 'classic', 2) !== 1) problems.push(id + ': not exactly one solution');
+    if (!isValidSolution(s, 'classic')) problems.push(id + ': invalid solution');
+    for (let k = 0; k < 81; k++) if (p[k] && p[k] !== s[k]) { problems.push(id + ': givens disagree with solution'); break; }
+    if (clueCount(p) !== r.clue_count) problems.push(id + ': clue_count wrong');
+    const g = grade(p, 'classic', { solution: s });
+    if (!g.ok) { problems.push(id + ': grade failed ' + g.reason); continue; }
+    if (g.hardest !== r.hardest || g.rank !== r.hardest_rank) problems.push(id + ': grade drift ' + r.hardest + ' → ' + g.hardest);
+    if (g.parSec * 1000 !== r.par_ms) problems.push(id + ': par drift');
+    if (r.hardest_rank < band.lo || r.hardest_rank > band.hi) problems.push(id + ': rank ' + r.hardest_rank + ' outside ' + band.tier + ' (' + band.lo + '–' + band.hi + ')');
+    if (r.par_ms < band.par[0] * 1000 || r.par_ms > band.par[1] * 1000) problems.push(id + ': par ' + r.par_ms / 1000 + ' s outside ' + band.par.join('–') + ' s');
+  }
+  for (const [monday, slots] of weeks) if (slots.slice().sort((a, b) => a - b).join(',') !== '1,2,3,4,5') problems.push('sprint ' + monday + ': slots ' + slots.join(',') + ' (want 1–5)');
+  return problems;
+}
+export function distributionSpecials(recs) {
+  const fmt = s => Math.floor(s / 60) + ':' + String(Math.round(s % 60)).padStart(2, '0');
+  const line = (label, rs) => {
+    if (!rs.length) return null;
+    const tech = {}; rs.forEach(r => { tech[r.hardest] = (tech[r.hardest] || 0) + 1; });
+    const clues = rs.map(r => r.clue_count), pars = rs.map(r => r.par_ms / 1000);
+    return label.padEnd(18) + ' n=' + String(rs.length).padStart(3) + '  clues ' + Math.max(...clues) + '→' + Math.min(...clues) +
+      '  par ' + fmt(Math.min(...pars)) + '–' + fmt(Math.max(...pars)) + '  hardest: ' +
+      Object.entries(tech).sort((x, y) => TECH_BY_KEY[x[0]].rank - TECH_BY_KEY[y[0]].rank).map(([k, v]) => k + '×' + v).join(' ');
+  };
+  const d = recs.filter(r => r.kind === 'daily').sort((a, b) => a.day.localeCompare(b.day));
+  const s = recs.filter(r => r.kind === 'sprint').sort((a, b) => a.day.localeCompare(b.day) || a.slot - b.slot);
+  const out = [];
+  if (d.length) out.push('daily ' + d[0].day + ' → ' + d[d.length - 1].day + ' (' + d.length + ' days)');
+  out.push(line('  daily Medium', d.filter(r => r.tier === 'Medium')), line('  daily Hard', d.filter(r => r.tier === 'Hard')));
+  if (s.length) out.push('sprint ' + isoWeekOf(s[0].day).label + ' → ' + isoWeekOf(s[s.length - 1].day).label + ' (' + (s.length / 5) + ' weeks)');
+  for (const b of SPRINT_SLOTS) out.push(line('  sprint #' + b.slot + ' ' + b.tier, s.filter(r => r.slot === b.slot)));
+  return out.filter(Boolean).join('\n');
+}
+/** seed the daily / sprint catalogue + secrets (service role from .env, in-process) */
+async function applySpecialsToDb(recs, force) {
+  loadEnv();
+  const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing from .env');
+  const { createClient } = await import('@supabase/supabase-js');
+  const admin = createClient(url, key, { auth: { persistSession: false } });
+  const pageAll = async (table, cols) => {
+    const out = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await admin.from(table).select(cols).range(from, from + 999);
+      if (error) throw new Error('reading ' + table + ': ' + error.message);
+      out.push(...data); if (data.length < 1000) break;
+    }
+    return out;
+  };
+  const existing = await pageAll('arena_sudoku_specials', 'id, kind, day, slot');
+  const secrets = new Map((await pageAll('arena_sudoku_special_secrets', 'special_id, puzzle, solution')).map(r => [r.special_id, r]));
+  const played = new Set((await pageAll('arena_sudoku_attempts', 'special_id')).map(r => r.special_id).filter(Boolean));
+  const byKey = new Map(existing.map(r => [r.kind + '|' + r.day + '|' + r.slot, r]));
+  const todo = [];
+  let same = 0, skipped = 0;
+  for (const r of recs) {
+    const cur = byKey.get(r.kind + '|' + r.day + '|' + r.slot), sec = cur && secrets.get(cur.id);
+    if (sec && sec.puzzle === r.puzzle && sec.solution === r.solution) { same++; continue; }
+    if (cur && played.has(cur.id) && !force) { skipped++; continue; }
+    todo.push(r);
+  }
+  for (let i = 0; i < todo.length; i += 100) {
+    const chunk = todo.slice(i, i + 100);
+    const { data, error } = await admin.from('arena_sudoku_specials').upsert(chunk.map(r => ({
+      kind: r.kind, day: r.day, slot: r.slot, variant: r.variant, tier: r.tier, tier_rank: r.tier_rank, techniques: r.techniques,
+      hardest: r.hardest, hardest_rank: r.hardest_rank, clue_count: r.clue_count, par_ms: r.par_ms, difficulty: r.difficulty
+    })), { onConflict: 'kind,day,slot' }).select('id, kind, day, slot');
+    if (error) throw new Error('upsert specials: ' + error.message);
+    const ids = new Map(data.map(d => [d.kind + '|' + d.day + '|' + d.slot, d.id]));
+    const sec = chunk.map(r => ({ special_id: ids.get(r.kind + '|' + r.day + '|' + r.slot), puzzle: r.puzzle, solution: r.solution, seed: r.seed, gen: r.gen }));
+    if (sec.some(x => !x.special_id)) throw new Error('upsert specials: an id did not come back');
+    const { error: e2 } = await admin.from('arena_sudoku_special_secrets').upsert(sec, { onConflict: 'special_id' });
+    if (e2) throw new Error('upsert special secrets: ' + e2.message);
+  }
+  return { written: todo.length, unchanged: same, skippedPlayed: skipped };
+}
+const isSpecialSet = recs => Array.isArray(recs) && recs.length > 0 && !!recs[0].kind;
+
 /* ═══════════════════════════════ CLI ═══════════════════════════════════════ */
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -1207,6 +1432,13 @@ async function main() {
   if (opt('--verify')) {
     const recs = JSON.parse(readFileSync(resolve(opt('--verify')), 'utf8'));
     const t0 = Date.now();
+    if (isSpecialSet(recs)) {
+      const sp = verifySpecials(recs);
+      console.log(distributionSpecials(recs));
+      console.log(sp.length ? 'PROBLEMS:\n  ' + sp.join('\n  ') : 'verified ' + recs.length + ' daily / sprint puzzles: all unique, grades and pars reproduce, bands and par windows hold (' + (Date.now() - t0) + ' ms)');
+      process.exitCode = sp.length ? 1 : 0;
+      return;
+    }
     const problems = verifyRecords(recs);
     console.log(distribution(recs));
     console.log(problems.length ? 'PROBLEMS:\n  ' + problems.join('\n  ') : 'verified ' + recs.length + ' stages: all unique, grades reproduce, bands monotonic (' + (Date.now() - t0) + ' ms)');
@@ -1218,14 +1450,22 @@ async function main() {
     let bad = 0;
     for (const r of recs) {
       const x = reproduceStage(r);
-      if (!x || x.puzzle !== r.puzzle || x.solution !== r.solution) { bad++; console.log('stage ' + r.stage + ' does NOT reproduce'); }
+      if (!x || x.puzzle !== r.puzzle || x.solution !== r.solution) { bad++; console.log((r.kind ? r.kind + ' ' + r.day + ' #' + r.slot : 'stage ' + r.stage) + ' does NOT reproduce'); }
     }
-    console.log(bad ? bad + ' stage(s) failed to reproduce' : 'all ' + recs.length + ' stages reproduce from their stored seeds');
+    const what = isSpecialSet(recs) ? 'daily / sprint puzzles' : 'stages';
+    console.log(bad ? bad + ' ' + what + ' failed to reproduce' : 'all ' + recs.length + ' ' + what + ' reproduce from their stored seeds');
     process.exitCode = bad ? 1 : 0;
     return;
   }
   if (opt('--apply')) {
     const recs = JSON.parse(readFileSync(resolve(opt('--apply')), 'utf8'));
+    if (isSpecialSet(recs)) {
+      const sp = verifySpecials(recs);
+      if (sp.length) { console.log('refusing to apply — verification failed:\n  ' + sp.join('\n  ')); process.exitCode = 1; return; }
+      const res = await applySpecialsToDb(recs, args.includes('--force'));
+      console.log('applied: ' + res.written + ' daily / sprint puzzles written (' + res.unchanged + ' already identical), ' + res.skippedPlayed + ' skipped because players have attempts');
+      return;
+    }
     const problems = verifyRecords(recs);
     if (problems.length) { console.log('refusing to apply — verification failed:\n  ' + problems.join('\n  ')); process.exitCode = 1; return; }
     const res = await applyToDb(recs, args.includes('--force'));
@@ -1234,7 +1474,27 @@ async function main() {
   }
   const outFile = opt('--out');
   if (!outFile) {
-    console.log('usage: --out <file> [--count 300] [--seed <master>] | --verify <file> | --reproduce <file> | --apply <file> [--force]');
+    console.log('usage: --out <file> [--count 300] [--seed <master>] | --out <file> [--daily <from> <count>] [--sprint <from> <weeks>] | --verify <file> | --reproduce <file> | --apply <file> [--force]');
+    return;
+  }
+  const di = args.indexOf('--daily'), si = args.indexOf('--sprint');
+  if (di >= 0 || si >= 0) {
+    // daily / sprint puzzles come from the LADDER's master seed — never mint a new one here
+    const master = masterSeed(opt('--seed'));
+    if (!master) { console.log('no master seed found (SUDOKU_MASTER_SEED or scratch/sudoku-master-seed.txt) — generate the ladder first'); process.exitCode = 1; return; }
+    const log = args.includes('--quiet') ? null : (s => console.log(s));
+    const t0 = Date.now();
+    const recs = [
+      ...(di >= 0 ? generateDaily({ master, from: args[di + 1], count: Number(args[di + 2]), log }) : []),
+      ...(si >= 0 ? generateSprints({ master, from: args[si + 1], weeks: Number(args[si + 2]), log }) : [])
+    ];
+    const sp = verifySpecials(recs);
+    const dest = resolve(outFile);
+    if (!existsSync(dirname(dest))) mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, JSON.stringify(recs, null, 1));
+    console.log('\n' + distributionSpecials(recs));
+    console.log('\n' + recs.length + ' daily / sprint puzzles → ' + outFile + ' in ' + Math.round((Date.now() - t0) / 1000) + ' s; verification: ' + (sp.length ? sp.length + ' problem(s)\n  ' + sp.join('\n  ') : 'clean'));
+    if (sp.length) process.exitCode = 1;
     return;
   }
   let master = masterSeed(opt('--seed'));

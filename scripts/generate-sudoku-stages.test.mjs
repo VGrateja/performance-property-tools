@@ -19,7 +19,9 @@ import { fileURLToPath } from 'node:url';
 import {
   rngFromSeed, randomSolution, countSolutions, solve, parseGrid, gridToString, clueCount,
   isValidSolution, isConsistent, grade, buildCandidate, candidateSeed, applyXform, randomXform,
-  generateStages, verifyRecords, reproduceStage, BANDS, isBoss, geometry, TECHNIQUES
+  generateStages, verifyRecords, reproduceStage, BANDS, isBoss, geometry, TECHNIQUES,
+  addDays, isoWeekday, isoWeekOf, dailyBandOf, specialSeed, generateDaily, generateSprints,
+  verifySpecials, reproduceSpecial, DAILY_BANDS, SPRINT_SLOTS
 } from './generate-sudoku-stages.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -177,4 +179,78 @@ test('the seeded stage set (when present locally)', { skip: !existsSync(STAGES_F
   // chips name real techniques
   const labels = new Set(TECHNIQUES.map(t => t.label));
   for (const r of recs) for (const t of r.techniques) assert.ok(labels.has(t));
+});
+
+/* ── daily challenge + weekly sprint (migration 124) ── */
+test('calendar helpers: ISO weekdays, ISO weeks across year ends, leap days, the daily rhythm', () => {
+  assert.equal(isoWeekday('2026-09-28'), 1);                       // Monday
+  assert.equal(isoWeekday('2026-10-04'), 7);                       // Sunday
+  assert.deepEqual(isoWeekOf('2026-09-30'), { monday: '2026-09-28', year: 2026, week: 40, label: '2026-W40' });
+  assert.equal(isoWeekOf('2027-01-03').label, '2026-W53');          // 2026 has 53 ISO weeks
+  assert.equal(isoWeekOf('2027-01-04').label, '2027-W01');
+  assert.equal(isoWeekOf('2026-01-01').label, '2026-W01');
+  assert.equal(isoWeekOf('2021-01-03').label, '2020-W53');
+  assert.equal(addDays('2028-02-28', 1), '2028-02-29');
+  assert.equal(addDays('2026-02-28', 1), '2026-03-01');
+  assert.equal(addDays('2026-09-29', 400), '2027-11-03');
+  assert.throws(() => addDays('2026-02-30', 1));
+  assert.deepEqual(['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04'].map(dailyBandOf),
+    ['medium', 'medium', 'medium', 'hard', 'hard', 'hard', 'hard']);
+  assert.notEqual(specialSeed('m', 'daily', '2026-09-30', 1, 0), specialSeed('m', 'sprint', '2026-09-30', 1, 0));
+});
+
+test('daily puzzles: one per day, deterministic, unique, in band and par window, reproducible', () => {
+  const a = generateDaily({ master: 'unit-test-master', from: '2026-09-28', count: 7 });
+  const b = generateDaily({ master: 'unit-test-master', from: '2026-09-28', count: 7 });
+  assert.equal(a.length, 7);
+  assert.deepEqual(a.map(r => r.puzzle), b.map(r => r.puzzle));
+  assert.deepEqual(verifySpecials(a), []);
+  assert.deepEqual(a.map(r => r.day), ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04']);
+  for (const r of a) {
+    const band = DAILY_BANDS[dailyBandOf(r.day)];
+    assert.equal(r.kind, 'daily'); assert.equal(r.slot, 1); assert.equal(r.tier, band.tier);
+    assert.ok(r.hardest_rank >= band.lo && r.hardest_rank <= band.hi);
+    assert.ok(r.par_ms >= 360000 && r.par_ms <= 600000, 'par 6–10 min');
+    assert.equal(countSolutions(parseGrid(r.puzzle), 'classic', 2), 1);
+    const x = reproduceSpecial(r); assert.equal(x.puzzle, r.puzzle); assert.equal(x.solution, r.solution);
+  }
+  const other = generateDaily({ master: 'another-master', from: '2026-09-28', count: 1 });
+  assert.notEqual(other[0].puzzle, a[0].puzzle, 'a different master seed gives different puzzles');
+});
+
+test('sprint weeks: five slots Basic → Master keyed by the Monday, verified and reproducible', () => {
+  const recs = generateSprints({ master: 'unit-test-master', from: '2026-10-01', weeks: 2 });   // from mid-week → that week's Monday
+  assert.equal(recs.length, 10);
+  assert.deepEqual([...new Set(recs.map(r => r.day))], ['2026-09-28', '2026-10-05']);
+  assert.deepEqual(recs.slice(0, 5).map(r => r.tier), SPRINT_SLOTS.map(s => s.tier));
+  assert.deepEqual(verifySpecials(recs), []);
+  for (const r of recs) {
+    const band = SPRINT_SLOTS[r.slot - 1];
+    assert.ok(r.hardest_rank >= band.lo && r.hardest_rank <= band.hi, r.slot + ' in band');
+    assert.ok(r.par_ms >= band.par[0] * 1000 && r.par_ms <= band.par[1] * 1000, r.slot + ' par window');
+    assert.equal(reproduceSpecial(r).puzzle, r.puzzle);
+  }
+});
+
+test('verifySpecials catches gaps, wrong bands, duplicates, broken weeks and broken grids', () => {
+  const d = generateDaily({ master: 'unit-test-master', from: '2026-09-28', count: 3 });
+  const s = generateSprints({ master: 'unit-test-master', from: '2026-09-28', weeks: 1 });
+  const has = (recs, re) => verifySpecials(recs).some(p => re.test(p));
+  assert.ok(has([d[0], d[2]], /gap/), 'a missing day');
+  assert.ok(has([d[0], { ...d[1], tier: 'Hard', tier_rank: 3 }, d[2]], /tier/), 'a Tuesday graded as Hard');
+  assert.ok(has([d[0], d[0]], /duplicate|repeat/), 'the same day twice');
+  assert.ok(has(s.slice(0, 4), /slots/), 'a week without its Master slot');
+  assert.ok(has([{ ...s[0], day: '2026-09-29' }, ...s.slice(1)], /Monday/), 'a sprint not keyed by its Monday');
+  const open = '0'.repeat(81);
+  assert.ok(has([{ ...d[0], puzzle: open, clue_count: 0 }], /exactly one solution/), 'an empty grid');
+  assert.ok(has([{ ...d[0], par_ms: 900000 }], /par/), 'par outside the window');
+});
+
+const SPECIALS_FILE = process.env.SUDOKU_SPECIALS_FILE || join(ROOT, 'scratch', 'sudoku-specials.json');
+test('the seeded daily / sprint set (when present locally)', { skip: !existsSync(SPECIALS_FILE) && 'no local specials file' }, () => {
+  const recs = JSON.parse(readFileSync(SPECIALS_FILE, 'utf8'));
+  const d = recs.filter(r => r.kind === 'daily'), s = recs.filter(r => r.kind === 'sprint');
+  assert.ok(d.length >= 400, 'at least 400 days of dailies');
+  assert.ok(s.length >= 50 * 5 && s.length % 5 === 0, 'whole sprint weeks');
+  assert.deepEqual(verifySpecials(recs), []);
 });

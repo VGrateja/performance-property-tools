@@ -6,16 +6,20 @@ Everyone plays the same grid per stage. There is a per-stage top 5, an overall r
 whoever got there first), and first-clear crowns, medals, ghost splits and X-Sudoku boss stages. The server is authoritative for the
 clock, the solution and every judgement.
 
+**Since 2026-09-30 (migration 124) it also has the twists** — a daily challenge, a colour highlighter, streak badges, hint tokens and a
+weekly sprint — all described in **§10**. Where they change an earlier section, that section says so and points there.
+
 Source of truth in the hub repo:
 
 | What | Path |
 |---|---|
 | Game page (all client code, one file) | `tools/arena-sudoku.html` |
 | Migration (tables, views, RPCs, grants, group wiring) | `supabase/migrations/122_arena_sudoku.sql` |
-| Generator + technique-grading solver + CLI | `scripts/generate-sudoku-stages.mjs` |
+| Migration: the twists (daily, sprint, streaks, tokens, colours — §10) | `supabase/migrations/124_arena_sudoku_twists.sql` |
+| Generator + technique-grading solver + CLI (ladder, `--daily`, `--sprint`) | `scripts/generate-sudoku-stages.mjs` |
 | Unit tests (`node --test`) | `scripts/generate-sudoku-stages.test.mjs` |
-| Wiring | `shared/tool-registry.js`, `tools/arena.html`, `index.html` |
-| Private, gitignored (never commit) | `scratch/sudoku-stages.json` (all solutions), `scratch/sudoku-master-seed.txt` (master seed), `scratch/_sudoku-*.mjs` (QA) |
+| Wiring | `shared/tool-registry.js`, `tools/arena.html`, `index.html` (the twists added no entry point outside the page) |
+| Private, gitignored (never commit) | `scratch/sudoku-stages.json` (all solutions), `scratch/sudoku-specials.json` (every daily + sprint solution), `scratch/sudoku-master-seed.txt` (master seed), `scratch/_sudoku-*.mjs` (QA) |
 
 ---
 
@@ -137,9 +141,12 @@ The row is created on first RPC use by `_sudoku_player`.
 | total_mistakes | int | `0` | not null. Summed on each clear |
 | total_hints | int | `0` | not null. Summed on each clear |
 | total_restarts | int | `0` | not null |
-| streak_days | int | `0` | not null |
-| best_streak | int | `0` | not null |
-| last_clear_day | date | null | AEST day of the last clear (`Australia/Brisbane`) |
+| streak_days | int | `0` | not null. **Legacy since 124**: still written, no longer read (§10.4) |
+| best_streak | int | `0` | not null. Legacy since 124 |
+| last_clear_day | date | null | AEST day of the last clear (`Australia/Brisbane`). Legacy since 124 |
+| hint_tokens | int | `0` | not null, `check (hint_tokens between 0 and 5)`. Mig 124 (§10.5) |
+| tokens_earned | int | `0` | not null. Mig 124 |
+| tokens_spent | int | `0` | not null. Mig 124 |
 | rl_tokens | real | `60` | not null. Rate-limit token bucket |
 | rl_at | timestamptz | `now()` | not null. Last bucket update |
 | created_at | timestamptz | `now()` | not null |
@@ -184,6 +191,9 @@ Indexes:
 - `arena_sudoku_attempts_user_stage_idx` on `(user_id, stage, id desc)`.
 - `arena_sudoku_attempts_stage_idx` on `(stage)`, the FK index.
 
+**Mig 124** made this table serve the daily and the sprint too: `mode` (`'ladder'` default), `special_id`, `colors`, `token_hints`, and
+`stage` became nullable (null for a daily / sprint attempt), with two new checks and a unique index — see §10.1.
+
 ### 2.5 `arena_sudoku_clears`: every successful clear (public leaderboard facts)
 | Column | Type | Default | Constraint / meaning |
 |---|---|---|---|
@@ -201,6 +211,7 @@ Indexes:
 | hints | int | `0` | not null |
 | finished_at | timestamptz | `now()` | not null |
 | unlocked_at | timestamptz | null | First clears only: `finished_at + penalty`, when the next stage opened |
+| token_hints | int | `0` | not null. Mig 124: how many of the clear's hints a token paid for (§10.5) |
 
 Indexes: `(stage, final_ms, finished_at)` and `(user_id, stage)`.
 
@@ -232,7 +243,7 @@ All three views use `with (security_invoker = on)` and read only the public `cle
   reached_at, total_ms, stages_cleared`.
 
 ### 2.8 RLS policies
-RLS is enabled on all six tables.
+RLS is enabled on all six tables (and on the three tables migration 124 added — §10.1, §10.2).
 
 | Table | Policy | Rule |
 |---|---|---|
@@ -324,6 +335,13 @@ Every RPC calls this first.
 | `sudoku_stage_board(p_stage int)` | 0 | Stage exists, else **`Unknown stage`** (`22023`) | — | `{stage, top:[≤5 {rank, name, final_ms, finished_at, mistakes, hints, kind, me}], me:{rank, final_ms, finished_at, mistakes, hints} or null, crown:{name, final_ms, cleared_at, mine} or null, players}` |
 | `sudoku_ranking(p_limit int default 50)` | 0 | Limit clamped to 1..200 | — | `{top:[{rank, name, highest_stage, reached_at, total_ms, stages_cleared, me}], me:{…} or null, players}` |
 | `sudoku_stats()` | 0 | staff check | — | `{name, tutorial_done, highest_stage, reached_at, stages_cleared, clears, replays, gold, silver, bronze, crowns, par_stars, avg_ms, total_ms, total_mistakes, total_hints, total_restarts, streak_days, best_streak, first_clear_at, last_clear_at, rank}` |
+
+**Migration 124 changes to this table** (details in §10): `sudoku_save` gained `p_colors jsonb default null` (the highlighter) and
+`sudoku_hint` gained `p_token boolean default false` (hint tokens) — the old signatures were dropped, and every older call still resolves.
+`sudoku_save / check / hint / submit` also serve daily and sprint attempts and answer `{ok:false, reason:'closed'}` once such a puzzle has
+closed; `sudoku_restart` refuses them. `sudoku_overview`, `sudoku_ranking` and `sudoku_stats` return extra keys (streaks, tokens, daily,
+sprint), and `streak_days` there now comes from the streak view (Melbourne days, any clear). Five RPCs are new: `sudoku_daily_start`,
+`sudoku_daily_overview`, `sudoku_daily_board`, `sudoku_sprint_start`, `sudoku_sprint_overview`.
 
 ### 3.4 The attempt state object (`_sudoku_payload`)
 `{attempt_id, stage, attempt_no, kind, variant, shuffled (= xform is not null), puzzle, grid, notes, status, elapsed_ms (server wall
@@ -680,9 +698,11 @@ Per-stage seeds are in the private `stage_secrets` table. Never commit the maste
   | Streak | "N days", with "best N" |
 
 - **Header chips** on the home view: "Start with the tutorial", "All N stages cleared" or "Next: stage N"; "N cleared"; medal counts
-  (only if you hold any); "N crowns" (a gold chip with the solid crown); "Ranked #N"; "N-day streak" (only above 1).
+  (only if you hold any); "N crowns" (a gold chip with the solid crown); "Ranked #N"; "N-day streak" (only above 1). Since mig 124 the
+  streak chip shows from 1 day, and the card adds "N-day badge", "Sprint winner [×N]" and "N hint tokens" (§10.4–§10.6).
 - **Streak timezone.** A day is an AEST day (`Australia/Brisbane`, no DST) with at least one clear. The current streak shows 0 once the
-  last clear is older than yesterday.
+  last clear is older than yesterday. **Since mig 124:** Melbourne days (DST-aware) and clears of any kind — ladder, daily or sprint —
+  computed by the `arena_sudoku_streaks` view (§10.4).
 - **Display names.** The local part of `profiles.email` (for example `renz`), captured at first play, as on the Typing leaderboard.
   It stays unique by construction.
 
@@ -809,7 +829,9 @@ It closes with "Got it", a backdrop click or Esc.
 There is **no pause cover and no paused board state**. The board is always visible while an attempt is open.
 
 **Tools (7)**, with their disabled states. On desktop they sit in a 4-column grid, with Restart spanning two columns in the second
-row; on phones all 7 sit in one row.
+row; on phones all 7 sit in one row. (Mig 124: while hint tokens are banked the Hint tool reads "Hint · N tokens" and takes Restart's
+second column — on phones a gold mini badge; on a daily / sprint puzzle Restart is relabelled **Clear**; a "Digits | Colours" switch sits
+between the tools and the pad — §10.3, §10.5.)
 
 | Tool | Behaviour |
 |---|---|
@@ -844,6 +866,7 @@ Keys are ignored while a modal is open or the focus is in an input.
 | Ctrl/⌘+Z | Undo |
 | Ctrl/⌘+Y or Ctrl/⌘+Shift+Z | Redo |
 | H | Hint |
+| C | Toggle the pad between Digits and Colours (mig 124). In Colours, 1–6 paint the selected cell and 0 / Backspace / Delete clear its colour |
 | Esc | Close Settings, the rules or the confirm dialog, otherwise deselect |
 
 There is **no P (pause) shortcut** any more; P does nothing. Pointer input selects on `pointerdown` (with `preventDefault`), so it is
@@ -1021,7 +1044,8 @@ It exposes:
 - `openStage(n)`, `startTutorial()`, `setTab(t)`, `selectStage(n, scroll)`
 - `flushSave()`, `resyncClock()`, `openSettings()`, `settings()`, `setSetting(k, v)`
 
-`pause()` and `resume()` were removed with the pause feature.
+`pause()` and `resume()` were removed with the pause feature. Mig 124 added `openDaily`, `openSprint`, `selectDay`, `setPadMode`,
+`colour`, `loadEvents`, `daily()`, `sprint()` and more `state()` fields (§10.7).
 
 The E2E harness depends on it. It can be dropped in the port if pp-os QA drives the UI another way.
 
@@ -1113,8 +1137,11 @@ printed.
 |---|---|---|
 | `scripts/generate-sudoku-stages.test.mjs` | `node --test scripts/generate-sudoku-stages.test.mjs` | 9 tests: the counting solver (unique, multiple and contradictory grids); geometry (27 / 29 units, X intersections); a deterministic PRNG and valid random grids (X diagonals included); known puzzles grade right (the Wikipedia example → naked single, AI Escargot → trial depth 2); the grader audit over 80 random puzzles, classic and X (no technique ever removes the true digit; at least 8 techniques exercised); `buildCandidate` is deterministic and honours its spec; symmetry transforms keep grids valid, puzzles unique and grades identical, classic and X; an end-to-end small set (30 stages incl. boss 25) builds, verifies and reproduces; **the seeded set** (when `scratch/sudoku-stages.json` or `SUDOKU_STAGES_FILE` exists): ≥ 300 stages, uniqueness on every stage, monotonic bands, clue ramps, valid X bosses, real chip labels. 9/9 pass |
 | generator `--verify` / `--reproduce` | §5.8 | The stored set is sound, and every stage regenerates from its stored seed |
-| `scratch/_sudoku-e2e.mjs` | `node scratch/_sudoku-e2e.mjs` (about 7 min). `--keep` skips cleanup; `--cleanup-only` just cleans | The full E2E. **128/128 in 387 s** in the final run (2026-09-30; details below). Writes screenshots and `e2e-results.json` to `Desktop\arena-sudoku-qa\`. Since the game went live it runs against a ladder with **staff on it**: checks are relative to the live data, real names never reach a log or a screenshot (below), and cleanup proves every staff row that existed before the run is still there |
+| `scratch/_sudoku-e2e.mjs` | `node scratch/_sudoku-e2e.mjs` (about 10.5 min). `--keep` skips cleanup; `--cleanup-only` just cleans | The full E2E. **242/242 in 628 s** in the final run (2026-09-30 evening, after migration 124): the original **128** checks first and unchanged (128/128 in 387 s before the twists), then Phase D (55, the twists through the RPCs) and Phase E (58, the twists in the browser), and a catalogue-integrity check at cleanup (§10.9). Writes screenshots and `e2e-results.json` to `Desktop\arena-sudoku-qa\` (twist shots in `twists\`). Since the game went live it runs against a ladder with **staff on it**: checks are relative to the live data, real names never reach a log or a screenshot (below), and cleanup proves every staff row that existed before the run is still there |
 | `scratch/_sudoku-map-shot.mjs` | `node scratch/_sudoku-map-shot.mjs` (about 1.5 min) | The four map states (2026-09-30) against the live ladder: the test account clears stages 1–2 through the real RPCs while staff have cleared 1–4, then every state is asserted in the DOM at dark/light × 1440/390 (classes, computed colours and opacity, medal and time, crowns only where they belong, the frontier pill on the right band, the gold rule sitting in the gap after the frontier tile only, the key's four labels and its 1-row / 2 × 2 layout, every crown filled `rgb(255,169,31)`). "Crown mine" and the completion crown can't happen live without taking a staff member's crown, so one extra pass rewrites the overview / stage-board / submit responses in the browser only (CDP Fetch) and its files carry `-patched`. Cleanup deletes the test account's rows and proves the staff rows are untouched. **57/57** |
+| `scratch/_sudoku-twists-sql-smoke.mjs` | `node scratch/_sudoku-twists-sql-smoke.mjs mig\|nomig <out.sql> [real]`, then `supabase db query --linked -f <out.sql>` | Mig 124 (2026-09-30): a `begin … rollback` functional test run as the hub test account (`request.jwt.claims`), so nothing persists. `mig` inlines the migration (a dry run before applying); `real` uses the seeded catalogue instead of synthetic rows. Covers daily start / resume / tomorrow / yesterday / no puzzle / restart refused, colours saved + validated, tokens on daily ignored, the daily clear, overview + calendar + boards, closed-day refusals, a ladder token earned and spent, stats and ranking keys, the sprint start / clear / overview |
+| `scratch/_sudoku-twists-smoke.mjs` | `node scratch/_sudoku-twists-smoke.mjs <outDir> [dark\|light] [width]` | Mig 124: a read-mostly signed-in boot (home, Daily tab, yesterday read-only, Sprint tab, Stats), counts page errors; deletes the player row the visit creates |
+| `scratch/_sudoku-twists-play.mjs` | `node scratch/_sudoku-twists-play.mjs <outDir> [dark\|light] [width]` | Mig 124: a UI play-through for iteration — today's daily with colours, reload, Clear, finish, then the ladder Hint button with two banked tokens; writes and then deletes only the test account's rows |
 | `scratch/_sudoku-map-preview.mjs` | `node scratch/_sudoku-map-preview.mjs <outDir> [clearer\|van]` | A design preview with no seeding: the overview response is rewritten into a synthetic scenario (Van's view: nothing cleared, staff up to 4; or the clearer's: 1–2 cleared, the crown mine on 1). Deletes the player row the visit creates |
 | `scratch/_sudoku-namemask.mjs` | imported by the three browser scripts | Swaps every real staff name for "Staff A/B/…" at the **data layer**: every `/rest/v1/` response a test page receives is rewritten (CDP Fetch, response stage), so no re-render can bring a name back. (Masking the DOM after render raced the ghost line, which re-renders every tick; that is how one early 2026-09-30 shot showed a staff handle — deleted and re-shot.) Each shot is also refused if any real name is on the page |
 | `scratch/_sudoku-live-state.mjs` | `node scratch/_sudoku-live-state.mjs` | Counts only, never a name: real players, clears per stage, the real frontier, crowns held, active attempts, and how many test rows exist |
@@ -1180,6 +1207,9 @@ printed.
 - **Wiring phase.** The Arena landing page shows 5 cards on one row, the Sudoku card stat, the top-of-the-leaderboards row and the crown
   highlights, and the card opens the game. The hub shows Sudoku in the Arena window (a real dock click), and the hub search finds
   Sudoku.
+- **Phase D, the twists through the RPCs** (mig 124, after every original phase so their checks see the ladder exactly as before) and
+  **Phase E, the twists in the browser** (dark / light × 1440 / 390; a third bot, `sudoku-qa-c@…`, signs in in its own browser context)
+  — the full list is in §10.9. The two phases share one block scope so no name can clash with the original phases.
 - **Cleanup** always runs, in `finally`. It deletes every crown, clear, attempt and player row of the three accounts and deletes the
   throwaway auth users, then checks that no test row is left and that **every staff row that existed before the run still exists**
   (by primary key, per table). Staff rows are never written: every write is a test account's own RPC call or a delete filtered by a
@@ -1199,7 +1229,351 @@ printed.
 
 ---
 
-## 10. Known gaps and proposed twists
+## 10. The twists (migration 124, 2026-09-30)
+
+Van approved the twists on 2026-09-30 (brief `hub-arena-sudoku-twists.md`, plan `PLAN-sudoku-twists.md`, both on his Desktop): a daily
+challenge, a colour highlighter, streak badges, hint tokens, a weekly sprint and, optionally, Killer-cage bosses. The first five are built,
+applied and verified; the Killer cages are a plan only (§10.8). Every rule Van had settled still holds: **the clock never stops after Play**;
+**penalties, not strikes** (+0:30 a wrong digit, +1:00 a hint, three hints per attempt, every puzzle completable); **the crown is the first
+clear and gold is the best time**; stage order; one grid per stage; the per-stage top 5; the server clock and server-side penalties; every
+write through an RPC; the ranking by highest stage, then who got there first. The ladder behaves exactly as before (the original E2E checks
+run first and unchanged, §10.9).
+
+Source of truth: `supabase/migrations/124_arena_sudoku_twists.sql` (applied live 2026-09-30 with `supabase db query --linked -f`, then
+re-run once to prove it converges), `scripts/generate-sudoku-stages.mjs` (`--daily`, `--sprint`), its tests, `tools/arena-sudoku.html`,
+and the private, gitignored `scratch/sudoku-specials.json` (all daily and sprint solutions — never commit it).
+
+### 10.1 What changed underneath (shared by all five)
+**One attempts table, generalised by mode.** Instead of a second set of tables and ~500 duplicated lines of RPCs, `arena_sudoku_attempts`
+learned which kind of puzzle an attempt belongs to:
+
+| Column | Type | Default | Meaning |
+|---|---|---|---|
+| mode | text | `'ladder'` | `check (mode in ('ladder','daily','sprint'))` (`arena_sudoku_attempts_mode_check`) |
+| special_id | int | null | FK → `arena_sudoku_specials(id)` on delete cascade. Set for daily / sprint attempts |
+| stage | int | — | **Now nullable**: null for daily / sprint attempts |
+| colors | jsonb | `'[]'` | The highlighter: 81 ints 0..6 (§10.3) |
+| token_hints | int | `0` | How many of the attempt's hints a token paid for (§10.5) |
+
+- `arena_sudoku_attempts_target_check`: ladder ⇔ `stage` set and `special_id` null; daily / sprint ⇔ `stage` null and `special_id` set.
+- `arena_sudoku_attempts_token_hints_check`: `0 ≤ token_hints ≤ hints`.
+- Unique index `arena_sudoku_attempts_one_special (user_id, special_id) where special_id is not null`: one attempt per player per daily or
+  sprint puzzle, ever. Index `arena_sudoku_attempts_special_idx (special_id)`.
+- Existing rows took the default `mode = 'ladder'`; nothing else about them changed.
+
+Every game RPC takes an attempt id, so `sudoku_save`, `sudoku_check`, `sudoku_hint`, `sudoku_restart` and `sudoku_submit` now serve any
+mode; only *opening* a puzzle needed new RPCs (`sudoku_daily_start`, `sudoku_sprint_start`). Helpers:
+- `_sudoku_solution(attempt)` — the stage's secret through the attempt's xform, or the special's secret (always canonical).
+- `_sudoku_live(attempt) → boolean` — ladder always; a daily only on its Melbourne day; a sprint puzzle Monday..Sunday of its week.
+- `_sudoku_attempt_penalty(attempt) → bigint` — `mistakes × 30 000 + max(0, hints − token_hints) × 60 000`. It replaced
+  `_sudoku_penalty(m, h)` everywhere an attempt is at hand (that function still exists, unchanged).
+- `_sudoku_special_new_attempt(user, special)` — attempt 1, kind `'first'`, xform null, puzzle = grid = the special's givens.
+- `_sudoku_finish_special(player, attempt, grid, elapsed, pen) → jsonb` — the daily / sprint settlement (§10.2, §10.6).
+- `_sudoku_streak_info(user) → jsonb` — §10.4.
+All seven are `set search_path = public, pg_temp` with EXECUTE revoked from `public, anon, authenticated`.
+
+**The payload (`_sudoku_payload`)** keeps every 122 key and adds `mode`, `colors`, `token_hints`, `hint_tokens` (the player's bank) and
+`special` (null on the ladder, else `{id, kind, day, slot, tier, tier_rank, techniques, clue_count, closes_at}`). For a special `stage` is
+null and `variant` / `par_ms` come from the catalogue; `penalty_ms` uses `_sudoku_attempt_penalty`. Still never the solution or the xform.
+
+**Closed puzzles.** After their status check, `sudoku_save`, `sudoku_check`, `sudoku_hint` and `sudoku_submit` return
+`{ok:false, reason:'closed', message:'This puzzle has closed - its board is read-only now.'}` when `_sudoku_live` is false.
+
+**Signature changes.** Dropped and re-created in the same transaction, with defaults so every older call (named arguments, the old page's
+keepalive beacon included) still resolves:
+- `sudoku_save(p_attempt bigint, p_grid text, p_notes jsonb, p_colors jsonb default null)`
+- `sudoku_hint(p_attempt bigint, p_cell int, p_token boolean default false)`
+
+Re-running 122 after 124 would put back 122's bodies and signatures; re-running 124 afterwards converges again.
+
+**Other 122 objects touched** (`create or replace`, keys only added): `sudoku_restart` (refuses daily / sprint attempts, `P0001`
+"Only ladder stages restart - a daily or sprint clock never resets"), `sudoku_overview` (`me` + `best_streak`, `streak_badges`,
+`hint_tokens`, `sprint_wins`; `streak_days` now from the streak view; `active` filtered to `mode = 'ladder'`), `sudoku_ranking` (each row +
+`streak`), `sudoku_stats` (+ `streak_badges`, `next_badge`, `hint_tokens`, `tokens_earned`, `tokens_spent`, `daily_played`,
+`daily_cleared`, `daily_gold / silver / bronze`, `daily_best_ms`, `sprint_weeks`, `sprint_best_rank`, `sprint_wins`), `sudoku_submit`.
+`players` gained `hint_tokens int 0 check 0..5`, `tokens_earned int 0`, `tokens_spent int 0`; `clears` gained `token_hints int 0`.
+
+**Legacy columns.** `players.streak_days / best_streak / last_clear_day` are still written by the ladder submit exactly as in 122 (Brisbane
+days, ladder clears only), but nothing reads them any more; the streak view is the truth (§10.4). A port can drop them.
+
+**Melbourne time.** Every day and week boundary is `(now() at time zone 'Australia/Melbourne')::date`, DST included: the sprint week that
+holds Sunday 2026-10-04 (DST starts that morning) closes at Monday 00:00 AEDT = Sunday 13:00 UTC. Countdown targets come from the server
+as timestamps, e.g. `next_at = ((today + 1)::timestamp at time zone 'Australia/Melbourne')`.
+
+**Security.** RLS on the three new tables; the secrets table has a deny-all policy and every privilege revoked from `anon, authenticated`
+(a direct read is 42501); the catalogue and the clears are readable by staff only; no table has an insert / update / delete policy. The
+five new views are `security_invoker = on` over public tables. `supabase db advisors --linked --type security` after 124: only
+`authenticated_security_definer_function_executable` (WARN), 16 for Sudoku (122's 11 + the 5 new RPCs), and no other finding in the project.
+
+### 10.2 Daily challenge
+**Rules.**
+- One puzzle per Melbourne calendar day, the same canonical grid for everyone (no shuffle key), outside the ladder: no tutorial gate, no
+  stage order, no penalty box, no crown.
+- Monday–Wednesday are **Medium** (pairs and triples, hardest ranks 3–6), Thursday–Sunday **Hard** (intersections and X-Wing, ranks 7–9).
+  Par is always between 6:00 and 10:00.
+- Playable only on its day: before it, `not_yet`; after it, `closed` — including an attempt still open at midnight, whose board goes
+  read-only from then on.
+- One attempt and one clear per player per day. There is **no restart** — a fresh clock would let a player study the grid and then reset.
+  The page's **Clear** wipes entries, notes and colours while the clock keeps running.
+- The clock never stops once the puzzle is opened (server `started_at` → finish). Same penalties, the same 250 ms/cell floor, the same
+  count-only wrong submit. Hint tokens do not apply (§10.5).
+- The day's board: top 10 by `final_ms`, then `finished_at` (`rank()`); gold, silver and bronze are the day's ranks 1–3, live like stage
+  medals.
+- A day's givens, and the player's own final grid, are shown only once the day has closed. Solutions never leave the server.
+- The catalogue is readable up to Melbourne tomorrow only (RLS): the tomorrow teaser shows its band and par, nothing further ahead.
+
+**Data model.**
+- `arena_sudoku_specials` — the public catalogue, shared with the sprint: `id int identity PK`, `kind ('daily'|'sprint')`, `day date`,
+  `slot int 1..5` (daily: 1), `variant`, `tier`, `tier_rank`, `techniques text[]`, `hardest`, `hardest_rank`, `clue_count`, `par_ms`,
+  `difficulty`, `created_at`; `unique (kind, day, slot)`; checks: a daily is slot 1, a sprint row's day is a Monday. RLS: authenticated
+  `select` where `day <= Melbourne today + 1`; anon revoked; writes revoked.
+- `arena_sudoku_special_secrets` — `special_id` PK/FK (cascade), `puzzle ^[0-9]{81}$`, `solution ^[1-9]{81}$`, `seed`, `gen jsonb`.
+  Deny-all RLS and all privileges revoked from `anon, authenticated`.
+- `arena_sudoku_special_clears` — `id identity`, `attempt_id` unique FK (cascade), `special_id` FK (cascade), `kind`, `day` (the special's
+  day), `slot`, `user_id` FK (cascade), `name`, `final_ms`, `elapsed_ms`, `penalty_ms`, `mistakes`, `hints`, `finished_at`;
+  `unique (special_id, user_id)`; indexes `(special_id, final_ms, finished_at)` and `(user_id, kind, day)`. Kept apart from
+  `arena_sudoku_clears` so the ladder views stay untouched. RLS: staff read all.
+- View `arena_sudoku_special_ranks`: every special clear + `pz_rank = rank() over (partition by special_id order by final_ms, finished_at)`
+  + `pz_players`.
+
+**RPCs.**
+
+| Signature (returns jsonb) | Cost | Behaviour | Returns |
+|---|---|---|---|
+| `sudoku_daily_start(p_day date default null)` | 1 | null = Melbourne today. No catalogue row → `no_puzzle`. A future day → `not_yet` (+ `opens_at`). An attempt already cleared → `cleared` (+ `final_ms`). A past day → `closed`. An active attempt → resumed, its clock running all along. Otherwise a new attempt | `{ok, resumed, state}` or `{ok:false, reason, message, …}` |
+| `sudoku_daily_overview()` | 0 | — | `{today, next_at, puzzle:{id, day, tier, tier_rank, par_ms, clue_count, techniques, variant} \| null, my:{status 'none'\|'active'\|'cleared', attempt_id, started_at, elapsed_ms (active only), final_ms, rank, medal}, players, leader:{name, final_ms, me} \| null, tomorrow:{day, tier, tier_rank, par_ms} \| null, calendar:[30 × {day, has_puzzle, tier, tier_rank, par_ms, status null\|'active'\|'played'\|'cleared', final_ms, rank, medal, players}] oldest first, streak:{…§10.4}, server_now}` |
+| `sudoku_daily_board(p_day date default null)` | 0 | No puzzle → `{day, has_puzzle:false}`. A future day → `{day, has_puzzle:true, future:true, opens_at}` (nothing else) | `{day, has_puzzle, is_today, closed, id, tier, tier_rank, par_ms, clue_count, techniques, top:[≤10 {rank, name, final_ms, finished_at, mistakes, hints, streak, me}], me:{rank, final_ms, finished_at, mistakes, hints} \| null, players, my_status 'none'\|'active'\|'played'\|'cleared', givens (closed days only), my_grid (closed days I played), server_now}` |
+
+A correct daily submit (`sudoku_submit` runs the shared validation, then `_sudoku_finish_special`): the attempt becomes `cleared` with the
+server times; one `special_clears` row; the player's `updated_at`; the ladder counters (`clears`, `total_*`) are not touched. It returns
+`{ok:true, mode:'daily', kind:'first', special:{id, kind, day, slot, tier, tier_rank}, final_ms, elapsed_ms, penalty_ms, mistakes, hints,
+rank, players, medal, par_ms, par_beaten, streak_days, best_streak, new_badge, next_at, sprint:null, server_now}`.
+
+**Generator and seeding (where the seed lives).**
+- The same private master seed as the ladder: `SUDOKU_MASTER_SEED` (env or `.env`) or `scratch/sudoku-master-seed.txt`. The generator
+  refuses to mint a new master for daily / sprint puzzles.
+- Per-candidate seed `sha256('arena-sudoku|daily|v1|' + master + '|' + day + '|1|' + k).hex.slice(0, 24)`. Bands:
+  `DAILY_BANDS.medium = {ranks 3–6, target 27 clues, tol 2, fan 20}`, `hard = {ranks 7–9, 27, 2, 20}`; a candidate whose par falls outside
+  360–600 s is skipped. Classic grids only; exactly one solution by the counting solver; the stored `seed` + `gen {v, kind, variant, target,
+  lo, hi, tol, fan, par}` rebuild it byte for byte.
+- Commands (repo root):
+  - `node scripts/generate-sudoku-stages.mjs --out scratch/sudoku-specials.json --daily 2026-09-29 401 --sprint 2026-09-28 58 [--quiet]`
+    — 691 puzzles in 24 s, verified as it writes.
+  - `--verify scratch/sudoku-specials.json` · `--reproduce …` · `--apply …` — the three existing modes recognise a daily / sprint file by
+    its records' `kind`. `--apply` uses the service role from `.env` in-process, upserts the catalogue on `(kind, day, slot)` then the
+    secrets, leaves identical rows alone and skips a row whose puzzle would change once anyone has an attempt on it (unless `--force`).
+- `verifySpecials` checks: kind and slot rules; each key once; no repeated grid; consecutive days in the weekday rhythm; sprint weeks keyed
+  by Monday with slots 1–5; classic; exactly one solution; a valid solution; givens agree; clue count; the grade and the par reproduce; the
+  hardest rank inside the band; the par inside the window.
+- **Seeded 2026-09-30:** 401 days, 2026-09-29 → 2027-11-03. Medium 173 (naked pair 78, hidden pair 77, naked triple 13, hidden triple 5),
+  Hard 228 (pointing 174, box/line 38, X-Wing 16); clues 29 → 25; par 6:00–8:15 (Medium), 6:15–10:00 (Hard). 2026-09-29, the day before
+  launch, is seeded on purpose so a read-only "yesterday" exists from the first day. **Top up before 2027-11-03** with a later
+  `--daily <from> <count>` run (existing days are left as they are).
+
+**Client surfaces.**
+- **Home:** an events strip between the hero and the tabs. The "Today's puzzle" card: a date tile, the band chip, par, a medal disc when
+  top 3, a status line (the day's clearers and fastest, or "Your clock is running — m:ss so far" live, or "Cleared in m:ss.t · #r of n
+  today") and a live countdown "Next puzzle in h:mm:ss". Button: "Play today's puzzle" / "Continue — clock running" / "Today's board".
+  A click anywhere else on the card opens the Daily tab.
+- **Daily tab** (`?tab=daily`, `&day=YYYY-MM-DD` preselects a day): the rules line; the today box (weekday, band, clues, par, status,
+  tomorrow's band and the countdown, Play / Continue); the **Last 30 days** calendar — a Monday-first 7-column grid, max 520 px wide, cells:
+  no puzzle (dimmed, disabled), not played (plain), played (pink border), active (pink dot), cleared (teal fill + time), today (pink ring),
+  selected (outline), a medal disc for ranks 1–3, the band's stripe. The side panel shows the selected day: title and band, "clues · par ·
+  today / closed", technique chips; on a closed day a lock note and a read-only mini board (its givens, or my own grid if I played); the top
+  10 (medal discs, streak chips, my row pinned below when outside it); the players line; Play / Continue on today.
+- **Game:** title "Daily · Wed 30 Sept" + band chip; chips "Closes at midnight" and the techniques (or "Singles"); the Restart tool reads
+  **Clear** ("Clear your entries — the clock keeps running"; confirm "Clear the board?"); the mini board is "Today's top 5" and feeds the
+  ghosts; the save line "Daily puzzle · saved on the server".
+- **Completion:** "Daily puzzle cleared" / "Daily · <day> · <band>"; the time and breakdown; awards: the medal or "#r of n today", "Beat
+  par", the streak (or "New badge — a N-day streak, yours for good"), "The next daily opens in h:mm:ss"; buttons "Stage map" and
+  "Today's board ›".
+- **Closed mid-game:** when the server answers `closed` (or the page's clock passes `closes_at` and a resync confirms it) the board
+  freezes, a toast explains, and the page returns to the Daily tab.
+
+### 10.3 Colour highlighter
+- A client-side solving aid (Cracking the Cryptic style): six colours and None (no colour). 1 Yellow `#FFA91F`, 2 Green `#71B357`, 3 Teal `#00A0B4`,
+  4 Celestial Blue `#54A6DE`, 5 Red `#E72347`, 6 the neutral gray (Light Gray `#D9D9D6` on dark, Dark Gray `#63666A` on light). Purple is
+  left out on purpose: it would read as the selection tint. Fills are translucent tokens `--sd-c1…6` (dark .52 / .52 / .56 / .52 / .50 /
+  .32, light .40 / .36 / .32 / .34 / .26 / .28). The brand's ramp steps aren't in this repo; a port should use their light steps.
+- **Toggled from the pad:** a "Digits | Colours" switch above the pad (key **C**). In Colours the pad becomes seven keys (six swatches +
+  None; 4 columns on desktop, one row on phones); keys 1–6 paint, 0 / Backspace / Delete clear, the same colour again clears. Any cell
+  can be coloured, givens and hinted cells included. The pad returns to Digits at the start of every game.
+- **Rendering:** an inset box-shadow (`.cfx` + `.cf1`…`.cf6`) sits above the row/column/same-digit tints and below the digit, the notes
+  and the red marks; a selected coloured cell keeps its true colour with a 3 px accent ring.
+- **Undo / redo** include colours (every snapshot carries `c`). Clear on a daily / sprint wipes them; a ladder Restart deals a new attempt
+  with none.
+- **Saved like notes:** `sudoku_save(…, p_colors)` — 81 ints 0..6, else `22023` "Colours are 81 numbers" / "… from 0 to 6"; null keeps the
+  stored colours; the keepalive beacon sends them too. Stored in `attempts.colors`, returned in the payload. No judgement ever reads them
+  (the E2E clears a daily with colours still on the board).
+- The tutorial allows colours locally (not saved).
+
+### 10.4 Streak badges
+- A streak is consecutive **Melbourne** days with at least one clear of any kind — a ladder stage, a replay, a daily or a sprint puzzle —
+  dated by `finished_at`. (122 counted ladder clears on Brisbane days; the two agree until DST starts on 2026-10-04.)
+- The **current** streak is the run that ends today or yesterday (a streak is lost only once a whole day passes without a clear). The
+  **best** is the longest run ever.
+- **Badges** at 3, 7, 14, 30 and 100 days are earned by the best streak and kept for good. `next_badge` is the next threshold above the
+  current streak.
+- Views (security_invoker): `arena_sudoku_clear_days` (a `union all` of clears and special clears → `user_id, day, source`) and
+  `arena_sudoku_streaks` (gaps and islands: `day − row_number() over (partition by user_id order by day)` groups consecutive days →
+  `streak_days`, `best_streak`, `last_clear_day`). `_sudoku_streak_info(user)` →
+  `{streak_days, best_streak, last_clear_day, badges:[…], next_badge}`, zeros for someone who never cleared.
+- Outputs: `sudoku_overview().me` (`streak_days`, `best_streak`, `streak_badges`); `sudoku_stats()` (`streak_days`, `best_streak`,
+  `streak_badges`, `next_badge`); the `streak` of every ranking row and every daily / sprint board row; both submit paths return
+  `streak_days`, `best_streak` and `new_badge` (the highest threshold this clear crossed, from the best streak before and after it).
+- Client: player-card chips "N-day streak" (gold, flame) and "N-day badge" (the best one earned, the title lists them all); a flame chip
+  with the current streak on ranking rows and on the daily / sprint boards; the Stats tile "Streak" (days · best · next badge at N) and a
+  strip of five medallions (earned: a solid gold ring; not yet: dashed); completion awards "New badge — a N-day streak, yours for good" or
+  "N-day streak — clear anything tomorrow to keep it going".
+
+### 10.5 Hint tokens
+- **Earned:** +1 for every ladder stage **first-cleared** with zero hints, capped at 5 banked. Replays and retries after a clear earn
+  nothing (otherwise stage 1 could be farmed); daily and sprint clears earn nothing. `token_earned = first_clear and hints = 0 and bank < 5`.
+- **Spent:** `sudoku_hint(…, p_token => true)` on a **ladder** attempt with a token makes that hint free: `token_hints + 1`, the bank − 1,
+  `tokens_spent + 1`. It still counts toward the three-per-attempt ceiling. With no token, or on a daily / sprint, the hint costs the usual
+  +1:00 and reports `token_used:false`. `_sudoku_player(1)` locks the player row for the whole call, and the check constraint
+  `arena_sudoku_players_hint_tokens_check (0..5)` refuses a negative or a sixth token even to a direct write.
+- The ranked time and the penalty box use `_sudoku_attempt_penalty` (paid hints only); `arena_sudoku_clears.token_hints` records the free ones.
+- Outputs: payload `hint_tokens`, `token_hints`; hint `{…, token_used, hint_tokens, token_hints}`; ladder submit `{…, token_earned,
+  hint_tokens, token_hints}`; `sudoku_overview().me.hint_tokens`; `sudoku_stats()` `hint_tokens`, `tokens_earned`, `tokens_spent`.
+- Client: the page sends `p_token: true` whenever the attempt is a ladder one and the bank is above 0 — tokens are spent automatically.
+  The Hint tool reads **"Hint · N tokens"** and takes Restart's second grid column while tokens are banked; on phones (icons only) a gold
+  mini badge with N sits top-left of the bulb. Toast "Hint: D at rRcC — why (a token paid for it — no penalty · N left)"; timer line
+  "H/3 hints (T free)"; breakdown "(…, T free with a token)"; completion award "Hint token earned for a clear with no hints — N banked…";
+  player-card chip "N hint tokens"; Stats tile "Hint tokens N/5 · earned · spent".
+
+### 10.6 Weekly sprint
+**Rules.**
+- A sprint week runs Monday 00:00 to Sunday 23:59, Melbourne. Its key is the Monday (`day`), its label the ISO week
+  (`to_char(day, 'IYYY-"W"IW')`, e.g. 2026-W40).
+- Five puzzles, one per band: 1 Basic, 2 Medium, 3 Hard, 4 Expert, 5 Master (Extreme is left out). Classic, canonical, the same for everyone.
+- Any order. Each puzzle's clock starts when that puzzle is opened and never stops; resume any time during the week. One attempt per puzzle
+  and no restart (Clear, as on the daily). The same penalties; tokens don't apply.
+- One total per player: the sum of the five `final_ms`, penalties included. Only players with all five are ranked (`row_number` by the
+  total, then the time of their fifth clear, then user id); the others are "still racing".
+- The **Sprint winner** is rank 1 of an **ended** week. It is derived from the clears (nothing is stored), so it is kept for good.
+- Puzzles are open only during their week (the next week is `not_yet`, a past week `closed`).
+
+**Data model.** Catalogue rows in `arena_sudoku_specials` (kind `'sprint'`, day = the Monday, slots 1–5), secrets in
+`arena_sudoku_special_secrets`, clears in `arena_sudoku_special_clears`. Views: `arena_sudoku_sprint_totals` (`week, user_id, name, done,
+total_ms, completed_at, week_rank` — null unless `done = 5` — and `week_finishers`) and `arena_sudoku_sprint_winners` (`week_rank = 1` and
+`week + 7 <= Melbourne today`).
+
+**RPCs.**
+
+| Signature (returns jsonb) | Cost | Behaviour | Returns |
+|---|---|---|---|
+| `sudoku_sprint_start(p_slot int, p_week date default null)` | 1 | A slot outside 1..5 raises `22023` "A sprint puzzle is slot 1-5". `p_week` is any day of the week (normalised to its Monday); null = this week. No row → `no_puzzle`; a future week → `not_yet` (+ `opens_at`); cleared → `cleared`; a past week → `closed`; active → resumed; otherwise a new attempt | as `sudoku_daily_start` |
+| `sudoku_sprint_overview(p_week date default null)` | 0 | A future week → `{week, future:true, starts_at}` | `{week, iso_week, starts_at, ends_at, is_current, closed, slots:[5 × {slot, id, tier, tier_rank, par_ms, clue_count, techniques, my:{status, attempt_id, started_at, final_ms, elapsed_ms (active), rank} \| null, players, top:[≤5 {rank, name, final_ms, me}]}], top:[≤10 {rank, name, total_ms, done, completed_at, streak, me}], me:{rank, total_ms, done, completed_at} \| null, finishers, racers, winners:[the last 8 ended weeks {week, iso_week, name, total_ms, finishers, me}], my_wins, server_now}` |
+
+A sprint clear (via `_sudoku_finish_special`) also returns `sprint:{done, total_ms, rank, finishers, slots:5, ends_at}`.
+`sudoku_overview().me.sprint_wins`; `sudoku_stats()` `sprint_weeks` (weeks with all five), `sprint_best_rank`, `sprint_wins`.
+
+**Generator.** `SPRINT_SLOTS`: Basic `{ranks 1–2, 38 clues, tol 1, par 150–300 s}`, Medium `{3–6, 30, 2, fan 20, 270–480}`, Hard `{7–9,
+29, 2, 20, 360–600}`, Expert `{10–11, 28, 2, 20, 480–840}`, Master `{12–14, 27, 2, 20, 600–1200}`. Seed
+`sha256('arena-sudoku|sprint|v1|' + master + '|' + isoWeek + '|' + slot + '|' + k)`; `--sprint <from> <weeks>` starts at the Monday of
+`from`'s week. **Seeded:** 58 weeks, 2026-W40 (Mon 2026-09-28) → 2027-W44 (Mon 2027-11-01): Basic (naked single 51, hidden single 7; par
+3:30), Medium (5:15–7:15), Hard (6:15–9:15), Expert (XY-Wing 57, Swordfish 1; 8:30–13:30), Master (colouring 22, X-Chain 12, XY-Chain 24;
+11:00–19:45). A week's pars add up to roughly 35–50 minutes. Top up with the daily (same run).
+
+**Client surfaces.**
+- **Home:** the "Weekly sprint · Week N" card: five pips (teal cleared, pink running), "k of 5 done", the total and rank once complete, the
+  leader, "Ends in Nd hh:mm"; button "Play the sprint" / "Continue the sprint" / "Sprint board" (all open the tab).
+- **Sprint tab** (`?tab=sprint`): the rules; a line with the week's dates, the end countdown and my progress; five cards (tier stripe,
+  "Puzzle n", tier, clues · par, "Not started" / "Clock running — m:ss" live / "Cleared in m:ss.t · #r", the fastest, Play / Continue;
+  5 columns on desktop, 3 at ≤ 1060 px, 2 on phones); "Sprint winners" for the last eight ended weeks ("The first winner is crowned when
+  this week ends…" until then); the side board "This week's board": top 10 by total with medal discs and streak chips, my row pinned as
+  "You · k/5", "N finished · M still racing".
+- **Game:** title "Sprint · puzzle n" + tier chip; chips "Week N · n of 5" and the techniques; Clear; the mini board "Fastest on this sprint
+  puzzle"; completion "Sprint puzzle cleared" with the rank on that puzzle, par, "k of 5 done · m:ss so far" or "Sprint complete — total
+  m:ss.t · #r of n this week", the streak; buttons "Stage map" and "Sprint board ›".
+- Player-card chip "Sprint winner [×N]" (gold trophy); the Stats tile "Sprints" (weeks with all five · wins · best rank).
+
+### 10.7 Other client changes
+- Tabs: **Stages · Daily · Sprint · Ranking · Stats**; `?tab=daily|sprint` deep links.
+- A 1 s ticker drives every countdown (`data-cd-at`) and running clock (`data-run-from`), reloads the overviews when a day or week turns
+  over, and asks the server (via a save) when an open daily / sprint passes its `closes_at`.
+- Leaving a daily / sprint game ("Today's board ›", "Sprint board ›", "‹ Stages") saves, loads the fresh overviews first and then
+  switches to that tab once, so the board never flashes stale data. "Stage map" goes back to the Stages tab as on the ladder.
+- "How it works" gained five bullets after the original eight: Daily puzzle, Weekly sprint, Streaks, Hint tokens, Colours.
+- Keyboard: **C** toggles Digits / Colours; in Colours 1–6 paint and 0 / Backspace / Delete clear.
+- `window.__sudoku` (still read-only toward the server — every action is the UI's own path): `state()` adds `mode`,
+  `special {id, kind, day, slot}`, `colors` (an 81-character string), `colourMode`, `hintTokens`, `tokenHints`; new `openDaily(day)`,
+  `openSprint(slot, week)`, `selectDay(day)`, `setPadMode(on)`, `colour(k)`, `loadEvents()`, `daily()`, `sprint()`.
+- Unchanged on purpose: the 7 tools (Restart is relabelled Clear on a daily / sprint), the 7 settings, the tutorial's 11 steps, the map.
+- Weight: the page is 176 KB (120 KB before); no new library.
+- New CSS tokens: `--sd-c1…6`, `--sd-sw6`; classes `.sd-events/.sd-ev`, `.sd-cal/.sd-cd`, `.sd-mini`, `.sd-spz`, `.sd-badges/.sd-badge`,
+  `.sd-rkstreak`, `.sd-padmode`, `.sd-cpad/.sd-ckey`, `.sd-tool .tk/.tkb`.
+
+### 10.8 Killer-cage bosses — planned, not built
+The brief made this optional and last ("only if 1–5 are done, verified and documented"; "if you cannot finish cleanly, leave the code out
+and describe the plan"). It was not started, so there is no Killer code anywhere. The plan, for Van or the pp-os port (about 2–3 days):
+1. **Scope.** The bosses at stages 100, 200 and 300 become Killer X-Sudoku: X-Sudoku rules plus cages — each cage shows a sum, and a digit
+   can't repeat inside a cage. Everything else about a boss (canonical first attempt, crown, medals) is unchanged.
+2. **Data.** `arena_sudoku_stages.variant` gains `'killer-x'`; the cages are part of the puzzle, so they are secret until Play:
+   `arena_sudoku_stage_secrets.cages jsonb` (`[{sum, cells:[…]}]`), returned by `_sudoku_payload` for the attempt.
+3. **Shuffles.** A digit relabelling changes cage sums, so a Killer retry / replay may only use the geometric symmetries that keep both
+   diagonals (the 24-element row group × the column choice × transpose, with `d` = identity: 96 variants — still enough to defeat typing
+   from memory). `_sudoku_xform_random` and `randomXform` get a `'killer-x'` branch; `_sudoku_apply` maps cage cells with the same
+   row/column maps.
+4. **Generator.** Build a solution, partition it into connected cages of 2–5 cells with no repeated digit, then dig givens symmetric as now;
+   the counting solver gets cage constraints (per-cage used-digit masks + precomputed digit-combination masks per (sum, size)); the grader
+   gets Killer techniques (cage combinations, the rule of 45 innies/outies) as new ranks inside the band, or boss grading would be wrong;
+   `verifyRecords` checks cage sums against the solution and uniqueness with cages. Regenerate only those three stages (`--apply` skips a
+   stage anyone has an attempt on — today staff are at stage 4, so decide before anyone reaches 100).
+5. **Server validation.** Unchanged: the full-grid comparison with the (unique) solution already judges a Killer grid; the 250 ms floor
+   holds.
+6. **Client.** Cage outlines (dashed inner borders) with the sum in each cage's top-left cell; conflicts for a repeat in a cage or a cage
+   whose filled digits exceed its sum; notes auto-clear inside the cage; a "BOSS · Killer" tile label; a rules bullet; no tutorial change.
+
+### 10.9 QA (2026-09-30)
+- **Unit tests** `node --test scripts/generate-sudoku-stages.test.mjs`: **14/14** (the original 9 + calendar helpers, daily determinism /
+  bands / par window / reproduce, sprint weeks, `verifySpecials` negative cases, the seeded specials file).
+- **Generator**: `--verify` and `--reproduce` clean for the 300 stages and the 691 daily / sprint puzzles.
+- **Migration**: dry-run inside `begin … rollback` first, then a rolled-back functional smoke (`scratch/_sudoku-twists-sql-smoke.mjs`),
+  applied, re-applied (converges), smoke re-run against the seeded catalogue.
+- **The E2E** `node scratch/_sudoku-e2e.mjs`: **242/242 in 628 s** (final run, 2026-09-30 evening, Melbourne 22:33–22:43). The
+  original **128** checks (Phases A, B, C, wiring, the layout passes and the two cleanup checks) run first and unchanged, so the ladder is
+  proven exactly as before; Phase D adds **55** RPC checks, Phase E **58** browser checks, and cleanup one catalogue-integrity check.
+  - **Phase D (RPC):** the catalogue (yesterday / today / tomorrow + five sprint slots; readable up to tomorrow only; no puzzle or
+    solution column; secrets 42501; anon refused; no direct clear writes; the new helpers not callable) · the daily (canonical grid, no
+    solution in the payload, resume with the clock running, tomorrow `not_yet`, yesterday `closed`, no puzzle, off the ladder map, restart
+    refused) · colours (saved, 0–6 and length validated, a save without colours keeps them, back on resume) · tokens (2 and 1 banked from
+    Phase B's first clears; ignored on the daily; free, free, paid, then the 3-hint ceiling; the clear's penalty = the paid minute, the
+    penalty box likewise; no token for a clear with hints; the cap at 5; the check constraint refuses −1 and 6; the ledger) · the day's
+    clears and board (server time + penalties, one clear per day, ordering, medals, faster-first, no givens while open) · a closed day
+    (save / check / hint / submit all `closed`; the read-only board shows givens, never the solution) · the calendar and the tomorrow
+    teaser · the sprint (any order, canonical grids, parallel clocks, slot 6 / next week / unseeded week / restart refused, the week so
+    far on every clear, one total = the five times, only finishers ranked, ordered, no winner before the week ends) · the Sprint winner on
+    an ended week (a rolled-back SQL test: the fastest finisher wins, four of five is never ranked, the badge on the winner's stats /
+    overview / winners list, not on the runner-up's, nothing left behind) · **streak arithmetic** on a scripted sequence of backdated clears
+    for bot C: none → 0/0; D-3, D-2 → 0/2; + D-1 → 3/3 [3]; + D-8…D-5 → 3/4 [3]; + D-4 → 8/8 [3, 7]; a second D-4 → unchanged;
+    + D-13…D-9 → 13/13 [3, 7]; (Phase E: today's daily in the browser → 14/14 [3, 7, 14] with "New badge — a 14-day streak");
+    + D-60…D-31 → 14/30 [3, 7, 14, 30]; + D-160…D-61 → 14/130 [3, 7, 14, 30, 100]. The backdated rows are deleted straight after.
+  - **Phase E (browser):** dark 1440 as the test account — the event cards (band, par, a ticking countdown), the five tabs with the map
+    intact, the calendar ending today with no tomorrow cell, yesterday read-only (its givens on the mini board, no Play), the daily played
+    through the UI (canonical grid, game bar, colours by key and by pad incl. a given, saved on the server, undo / redo, reload restores
+    digits + colours, Clear keeps the clock, a +1:00 hint, the completion screen, the clear stored with colours still on the board, the
+    board / calendar / card after), the Hint button "Hint · 2 tokens" and a free token hint (server ledger 2 → 1), the Sprint tab (five
+    bands, bot B ranked, bot A racing), sprint puzzle 1 through the UI, the player card, Stats tiles and badges, the ranking streak chip,
+    the rules; light 1440 as bot C in its own browser context — the same surfaces, its daily crossing 14 days in the browser, all five
+    badges earned; dark 390 and light 390 as the test account — every tab, sprint puzzles 2–5 through the UI (the fifth completes the week
+    and ranks it), the phone token badge; no overflow and the logo rule on the new screens; no solution (stage, daily or sprint) in any of
+    the browser's REST responses; no page errors.
+  - **Cleanup** deletes every row of the four accounts and the three throwaway users; checks that no test row is left, that every staff
+    row that existed before still does, and that the catalogue is exactly 401 daily + 290 sprint puzzles with 691 secrets.
+- **Screenshots** `Desktop\arena-sudoku-qa\twists\` — `t01` home + event cards · `t02` Daily tab + calendar · `t03` yesterday read-only ·
+  `t04` a game with colours · `t05` the Clear confirm · `t06` the daily completion (light: with the 14-day badge) · `t07` after the clear ·
+  `t08` "Hint · 2 tokens" (phones: the badge) · `t09` a token hint used · `t10` Sprint tab · `t11` sprint completion (`-complete-light-390`:
+  the whole week) · `t12` Sprint tab after a clear · `t13` Stats + badges (`-all-light-1440`: all five) · `t14` ranking with streak chips ·
+  `t15` rules — each in the layouts listed above (39 files). The original set was re-shot on this build with the `-v4` suffix
+  (`-v3` kept).
+- **Advisors** `supabase db advisors --linked --type security`: only `authenticated_security_definer_function_executable` WARN — 16 for
+  Sudoku (11 + 5 new) — and nothing else in the project.
+
+---
+
+## 11. Known gaps and proposed twists
 
 **Known gaps and caveats.**
 - **External solvers can't be prevented.** A player can type any grid into an outside solver. The design removes in-game shortcuts
@@ -1226,20 +1600,35 @@ printed.
 - `CLAUDE.md`'s tool list has not been updated to mention `arena-sudoku.html` (it carried the owner's uncommitted work at build time).
 - Generating the full set takes about 3.6 minutes. Rare exact grades (Swordfish ≈ 0.2% of candidates) drive most of that time.
 
-**Proposed twists (not built), with effort estimates.**
-| Twist | Effort |
+**Gaps that came with the twists (mig 124).**
+- **The catalogue runs out.** Dailies are seeded to 2027-11-03 and sprints to 2027-W44. Top up before then with one generator run
+  (`--daily <from> <count> --sprint <from> <weeks>`, then `--apply`); nothing alerts when it gets close.
+- **Daily / sprint attempts past their window stay `active`** forever (like abandoned ladder attempts). Harmless: they are refused as
+  `closed` and never rank.
+- **No realtime** on the day's or the week's board either; the overviews reload when a game ends, a tab opens or a day turns over.
+- **Tokens are spent automatically** by the page when banked (no "save it for later" choice). The server takes `p_token`, so a port can
+  offer the choice without a migration.
+- **The Arena landing page has no daily / sprint entry** (the brief kept everything inside the Sudoku page). The arena's old "Daily —
+  coming soon" idea could now link to `arena-sudoku.html?tab=daily`.
+- **Legacy streak columns** on `arena_sudoku_players` are still written and never read (§10.1).
+- **Highlighter colours** are base accents at an alpha, pending the brand's ramp steps.
+- **Page weight** grew from 120 KB to 176 KB.
+
+**Proposed twists, with their status.**
+| Twist | Status |
 |---|---|
-| Killer-cage boss every 50th stage (cage sums; the generator, solver and board need cage units and rendering) | about 2–3 days |
-| Weekly sprint board: 10 fixed shuffled stages, one leaderboard per week | about 1 day |
-| Hint tokens earned by beating par (spend beyond the 3-per-attempt cap) | about 0.5–1 day |
-| Streak badges at 7 and 30 days (the data already exists) | about 0.5 day |
-| Daily challenge, filling the Arena "Daily — coming soon" slot | about 1 day |
-| Colour highlighter tool, client only (Cracking the Cryptic style) | about 1 day |
+| Daily challenge | **Built 2026-09-30** (§10.2) |
+| Colour highlighter (Cracking the Cryptic style) | **Built 2026-09-30** (§10.3) |
+| Streak badges | **Built 2026-09-30** — 3 / 7 / 14 / 30 / 100 days, any clear (§10.4) |
+| Hint tokens | **Built 2026-09-30** — earned by a zero-hint first clear, not by beating par; free within the 3-hint cap, not beyond it (§10.5) |
+| Weekly sprint | **Built 2026-09-30** — five fresh puzzles Basic → Master, not 10 shuffled stages (§10.6) |
+| Killer-cage bosses (stages 100, 200, 300) | **Planned, not built** (§10.8) — about 2–3 days |
 
 ---
 
-## 11. Changelog
+## 12. Changelog
 
 - 2026-09-28 — initial build
 - 2026-09-29 — The clock never stops after Play: Pause, the auto-pauses and the one-clock-at-a-time rule removed (Van: closes the solve-it-outside loophole)
 - 2026-09-30 — The stage map's four states (Van): cleared by you (a filled teal tile, your time and medal, the crown only when it's yours), cleared by others (a gold hairline and their solid crown, kept bright while locked), open now (pink), locked (dimmed); the frontier ("Cleared up to N" on its band, a gold rule after that tile); a map key; a "Reading the map" rule; every crown now one filled solid-gold shape (tiles, key, chips, stage panel, completion) plus crown badges in the ranking
+- 2026-09-30 — twists: daily challenge, colour highlighter, streak badges, hint tokens, weekly sprint (migration 124; the Killer-cage bosses are planned, not built — §10.8)
