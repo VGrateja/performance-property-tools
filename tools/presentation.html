@@ -77,7 +77,7 @@
 <script src="../assets/Reports/charts/commercial-charts.js" defer></script>
 <!-- Deck-only extras for the one-click Commercial Market deck (loads AFTER
      commercial-charts.js — it builds on its baseOption/applyDefaults). -->
-<script src="../assets/Reports/charts/commercial-market-charts.js" defer></script>
+<script src="../assets/Reports/charts/commercial-market-charts.js?v=1f1a7eb1" defer></script>
 <script>
   /* Slide charts are CSS-scaled (rendered once at a fixed base size), so
      ECharts never needs to resize on window changes — and the report
@@ -15774,6 +15774,42 @@ async function _cmkJllSeries(cache, metric) {
   return out;
 }
 
+/* Same shape as _cmkJllSeries but for ABS-sourced rows. Kept separate rather
+   than loosening the source filter above, so a chart's provenance is legible
+   from the call site — an ABS index and a JLL valuation should never be
+   confused for one another when someone asks where a number came from. */
+async function _cmkAbsSeries(cache, metric) {
+  cache = cache || {};
+  cache.abs = cache.abs || {};
+  if (cache.abs[metric] !== undefined) return cache.abs[metric];
+  let out = null;
+  try {
+    const { data, error } = await window.sb.from('rdp_raw_series')
+      .select('region_slug, period, value')
+      .eq('source', 'abs').eq('metric', metric).eq('freq', 'Q')
+      .in('region_slug', CMK_JLL_MARKETS.map(m => m[0]))
+      .order('period').limit(5000);
+    if (error) throw error;
+    const rows = data || [];
+    if (rows.length) {
+      const periods = Array.from(new Set(rows.map(r => r.period))).sort();
+      const byRegion = {};
+      rows.forEach(r => {
+        (byRegion[r.region_slug] = byRegion[r.region_slug] || {})[r.period] = _cmkNum(r.value);
+      });
+      const series = CMK_JLL_MARKETS
+        .filter(m => byRegion[m[0]])
+        .map(m => ({
+          name: m[1], color: m[2],
+          data: periods.map(p => (byRegion[m[0]][p] == null ? null : byRegion[m[0]][p])),
+        }));
+      if (series.length) out = { cats: periods.map(_cmkQLabel), series: series };
+    }
+  } catch (e) { console.warn('[cmk] ABS series unavailable:', metric, e); }
+  cache.abs[metric] = out;
+  return out;
+}
+
 /* The other shape: ONE region, SEVERAL metrics, each metric becoming a series.
    _cmkJllSeries is one metric across regions (cities on a chart); this is for
    a chart whose series are grades rather than places. `defs` is an ordered
@@ -16175,6 +16211,286 @@ const CMK_CHART_BUILDERS = {
     }, _cmkJllBounds(spec, 1, 250, true)) };
   },
 
+  /* Capital value — what a square metre of building costs, as opposed to the
+     land under it. DERIVED, not taken from the pack: JLL ships a "Prime
+     Capital Value Indicator sqm" column but only populates it properly in 10
+     of the 24 precincts (the rest carry a rent-sized number, and four Adelaide
+     sheets just say 9), so reading it straight would be wrong for over half
+     the market and silently so. We compute prime net rent / mid prime yield
+     instead, which reproduces JLL's own figure in every quarter of every
+     precinct where they do publish one — 106/106 across 26 years.
+     City lines are a FIXED precinct panel (Sydney 5, Melbourne 4, Brisbane 3,
+     Perth 3, Adelaide 3): Adelaide and Perth report only every other quarter
+     between 2002 and 2006, so a plain average sawtooths ±20% on composition
+     alone. Forward-filling each precinct inside its own run kills that. */
+  'jll-ind-capital-value': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_capital_value');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 1, prefix: '$', dp: 0, axisDp: 0, stripPrefix: true, tickEvery: 8,
+      /* $500 steps, not the $250 the land charts use — this series runs to
+         ~$5,500, and 250s would draw 21 gridlines. */
+    }, _cmkJllBounds(spec, 1, 500, true)) };
+  },
+
+  /* Land against rents, as a ratio — land $/sqm divided by prime net rent
+     $/sqm p.a. Plotted this way rather than as two indexed lines because
+     Adelaide's land starts at $37/sqm in 2000, so an index puts it at 28x and
+     flattens every other city off the axis. The ratio has no base year, so all
+     five fit on one scale.
+     It is the clearest evidence in the data for the economic-rent argument:
+     Sydney runs 8.2 in 2020, spikes to 12.7 by Q2 2022 as land races ahead,
+     then falls back to 6.9 as rents catch up and land gives back 19% from its
+     peak. Land leads, rents follow, the gap closes.
+     NOTE the two legs have different denominators — land is $/sqm of LAND on a
+     2,000sqm lot, rent is $/sqm of BUILDING — so this is an index of relative
+     movement, not a literal years-of-rent figure. */
+  'jll-ind-land-per-rent': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_land_per_rent');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 1, unit: '×', dp: 1, axisDp: 0, tickEvery: 8,
+    }, _cmkJllBounds(spec, 1, 2, true)) };
+  },
+
+  /* How far secondary rent sits from prime, measured against each city's OWN
+     long-run average rather than against prime directly — the same treatment
+     the residential tools give houses v units. Zero is normal for that city;
+     above zero means older stock is dearer relative to prime than it usually
+     is, so the discount for buying secondary has narrowed.
+     Long-run averages differ a lot (Sydney secondary runs 92.7% of prime,
+     Melbourne 72.3%), which is exactly why the raw ratio cannot be compared
+     across cities and the deviation can. */
+  'jll-ind-sec-prime-gap': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_sec_prime_rent_gap');
+    if (!spec) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats, series: spec.series,
+      scale: 1, unit: 'pp', dp: 1, axisDp: 0, tickEvery: 8,
+    }, _cmkJllBounds(spec, 1, 4, false)) };
+  },
+
+  /* GFC event study, part one: how far each measure fell from its own pre-crisis
+     peak. Peak is searched across 2006-2008 and the trough after it to end-2012,
+     per city and per measure, rather than fixed to one quarter — the peaks are
+     spread over Q2 2007 to Q1 2008 and pinning them all to one date understates
+     the fall.
+     The pattern it exposes is the useful part: income barely moved (prime rent
+     -0.4% to -11.4%) while the assets did (values -10% to -31%, land -40% in
+     Sydney), and secondary values fell harder than prime in four of five
+     cities. What got hurt was the pricing, not the tenancy. */
+  'jll-ind-gfc-drawdown': async function (cache) {
+    const qn = c => { const m = /^Q(\d) (\d{4})$/.exec(c || ''); return m ? (+m[2]) * 4 + (+m[1]) : null; };
+    const PEAK_LO = qn('Q1 2006'), PEAK_HI = qn('Q4 2008'), TROUGH_HI = qn('Q4 2012');
+    const fall = (cats, data) => {
+      let pk = -1, tr = -1;
+      cats.forEach((c, i) => { const q = qn(c);
+        if (q >= PEAK_LO && q <= PEAK_HI && data[i] != null && (pk < 0 || data[i] > data[pk])) pk = i; });
+      if (pk < 0) return null;
+      cats.forEach((c, i) => { const q = qn(c);
+        if (i >= pk && q <= TROUGH_HI && data[i] != null && (tr < 0 || data[i] < data[tr])) tr = i; });
+      if (tr < 0 || !data[pk]) return null;
+      return +((data[tr] / data[pk] - 1) * 100).toFixed(1);
+    };
+    const land  = await _cmkJllSeries(cache, 'jll_ind_land_value_med_2000sqm');
+    const val   = await _cmkJllSeries(cache, 'jll_ind_capital_value');
+    const rent  = await _cmkJllSeries(cache, 'jll_ind_prime_net_rent_sqm');
+    const sRent = await _cmkJllSeries(cache, 'jll_ind_secondary_net_rent_sqm');
+    const sYld  = await _cmkJllSeries(cache, 'jll_ind_secondary_yield_mid');
+    if (!val || !land || !rent) return null;
+    const pick = (spec, name) => {
+      const s = spec && spec.series.find(x => x.name === name);
+      return s ? { cats: spec.cats, data: s.data } : null;
+    };
+    /* Secondary capital value is rent / yield — the same derivation the prime
+       series uses — joined on the quarter LABEL, because the two metrics do not
+       necessarily carry the same period set (Adelaide's secondary yield starts
+       later than its rent). */
+    const secVal = name => {
+      const r = pick(sRent, name), y = pick(sYld, name);
+      if (!r || !y) return null;
+      const ym = {}; y.cats.forEach((c, i) => { ym[c] = y.data[i]; });
+      return { cats: r.cats, data: r.data.map((v, i) => {
+        const yy = ym[r.cats[i]]; return (v != null && yy) ? v / yy : null; }) };
+    };
+    const cities = val.series.map(s => s.name);
+    const defs = [
+      ['Land', '#f5a623', n => pick(land, n)],
+      ['Prime value', '#00A0B4', n => pick(val, n)],
+      ['Secondary value', '#c2a4d6', n => secVal(n)],
+      ['Prime rent', '#171B24', n => pick(rent, n)],
+    ];
+    const series = defs.map(d => ({ name: d[0], color: d[1],
+      data: cities.map(n => { const s = d[2](n); return s ? fall(s.cats, s.data) : null; }) }));
+    if (!series.some(s => s.data.some(v => v != null))) return null;
+    /* Vertical grouped bars, not barH: five cities x four measures is twenty
+       bars, and horizontally the value labels collide with the neighbouring
+       series. Upright, the bars hang off a zero line at the top and the shape
+       reads at a glance. */
+    return { module: 'cmk-lines', data: {
+      cats: cities, series: series,
+      kind: 'bar', diverging: true, legend: true,
+      scale: 1, unit: '%', dp: 1, axisDp: 0,
+      min: -40, max: 5, interval: 5,
+    } };
+  },
+
+  /* GFC event study, part two: the recovery, which is the half people forget.
+     Capital values rebased so Q4 2007 = 100 and run to the end of 2018, eleven
+     years. Sydney takes until Q1 2015 to regain its peak, Melbourne Q1 2015,
+     Brisbane Q3 2015 — seven years of grinding sideways — and Perth is STILL
+     15% below its 2007 peak at the end of 2018.
+     Q4 2007 is the common base rather than each city's own peak, so the lines
+     stay comparable; the individual peak dates are on the drawdown slide. */
+  'jll-ind-gfc-recovery': async function (cache) {
+    const spec = await _cmkJllSeries(cache, 'jll_ind_capital_value');
+    if (!spec) return null;
+    const i0 = spec.cats.indexOf('Q1 2007'),
+          ib = spec.cats.indexOf('Q4 2007'),
+          i1 = spec.cats.indexOf('Q4 2018');
+    if (i0 < 0 || ib < 0 || i1 < 0) return null;
+    const series = spec.series.map(s => {
+      const base = s.data[ib];
+      if (!base) return null;
+      return { name: s.name, color: s.color,
+        data: s.data.slice(i0, i1 + 1).map(v => v == null ? null : +(v / base * 100).toFixed(1)) };
+    }).filter(Boolean);
+    if (!series.length) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: spec.cats.slice(i0, i1 + 1), series: series,
+      scale: 1, unit: '', dp: 0, axisDp: 0, tickEvery: 4,
+    }, _cmkJllBounds({ series: series }, 1, 20, false)) };
+  },
+
+  /* Discount to replacement cost: how far established stock trades below what
+     it would cost to buy the land and rebuild the shed today. Zero is parity.
+     Replacement is reconstructed as a LEVEL each quarter —
+        land $/m2 x site cover + build $/m2
+     rather than by weighting two growth rates, so the weighting between the
+     land and build legs falls out of the actual dollars instead of being
+     assumed. The build leg is the Q2 2026 all-in rate carried back on the ABS
+     non-residential construction index for that state.
+     THE TWO CONSTANTS BELOW MOVE THE WHOLE CHART. On a big-box profile Sydney
+     reads about +1%; on a small-bay profile (cover 0.833, build $2,500) it
+     reads about +35%. The shape over time is robust, the level is not, which
+     is why the slide carries a note saying so.
+     Worth knowing what this does NOT say: over the full 26 years values have
+     grown FASTER than replacement cost in Sydney, Melbourne and Adelaide. The
+     finding is about where the level sits now and which way it has moved since
+     2022, not about a gap that has widened since 2000. */
+  'jll-ind-replacement-gap': async function (cache) {
+    const COVER = 2.00;       /* m2 of land per m2 of building (50% site cover) */
+    /* All-in build cost $/m2 at Q2 2026, PER CITY — the midpoint of the rate
+       our own commercial investment reports apply in that state:
+         VIC $2,400-2,600 (two reports, both identical — which is what shows
+         the rate is set per state and not per property), SA $2,400-2,500,
+         WA $2,300-2,500.
+       BRISBANE has no industrial IR to read: the only QLD report is a District
+       Centre building in small tenancies at $5,500-6,000, a different asset
+       entirely. It carries the Rawlinsons-derived rate instead (8.2.1.4 high
+       bay tilt-up, escalated on QLD's ABS index, loaded x1.425), so one of the
+       four is on a different basis from the other three. Shaene's call.
+       SYDNEY IS ABSENT ON PURPOSE — no NSW investment report in the set, and
+       inventing one would be worse than leaving the city out. The guard below
+       drops any city with no rate rather than lending it another's. */
+    const BUILD_2026 = { Melbourne: 2500, Brisbane: 2176, Perth: 2400,
+                         Adelaide: 2450 };
+    const land = await _cmkJllSeries(cache, 'jll_ind_land_value_med_2000sqm');
+    const cap  = await _cmkJllSeries(cache, 'jll_ind_capital_value');
+    const bld  = await _cmkAbsSeries(cache, 'abs_nonres_build_index');
+    if (!land || !cap || !bld) return null;
+    /* the three sources do not carry identical period sets, so join on the
+       quarter LABEL rather than on position */
+    const byName = spec => {
+      const m = {};
+      spec.series.forEach(s => {
+        const o = {}; spec.cats.forEach((c, i) => { o[c] = s.data[i]; });
+        m[s.name] = o;
+      });
+      return m;
+    };
+    const L = byName(land), C = byName(cap), B = byName(bld);
+    const cats = cap.cats;
+    const last = cats[cats.length - 1];
+    const series = cap.series.map(s => {
+      const l = L[s.name], c = C[s.name], b = B[s.name];
+      const rate = BUILD_2026[s.name];
+      /* a city with no published rate is dropped rather than given someone
+         else's — a wrong build cost is invisible on the chart */
+      if (!l || !c || !b || !b[last] || !rate) return null;
+      const data = cats.map(q => {
+        const lv = l[q], cv = c[q], bi = b[q];
+        if (lv == null || cv == null || bi == null) return null;
+        const repl = lv * COVER + rate * bi / b[last];
+        /* DISCOUNT, so a discount is POSITIVE — (replacement − value) / replacement.
+           It used to be plotted the other way round, which put Melbourne at
+           −26% on a slide titled "discount to replacement cost". The sign now
+           matches both the title and the convention the investment reports
+           use, so the chart and its table read the same way. */
+        return repl > 0 ? +(((repl - cv) / repl) * 100).toFixed(1) : null;
+      });
+      return data.some(v => v != null) ? { name: s.name, color: s.color, data: data } : null;
+    }).filter(Boolean);
+    if (!series.length) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: series, zeroLine: true,
+      scale: 1, unit: '%', dp: 0, axisDp: 0, tickEvery: 8,
+    }, _cmkJllBounds({ series: series }, 1, 10, false)) };
+  },
+
+  /* The same comparison as the discount slide, but in dollars rather than as a
+     percentage: what a square metre of building is worth (solid) against what
+     it would cost to put it there (dashed). Two lines per city sharing one
+     name, so a single legend chip toggles the pair — the grade charts already
+     work this way and it is the only way ten lines stay readable.
+     Worth having BOTH this and the discount slide: this one shows the levels
+     and where they cross, which is what makes the argument concrete, while the
+     percentage version makes the size of the gap precise and comparable across
+     cities. Same two constants, so the two slides cannot disagree. */
+  'jll-ind-value-vs-replacement': async function (cache) {
+    const COVER = 2.00;
+    /* MUST match jll-ind-replacement-gap — see the derivation in its comment.
+       Our investment reports' own state rates, with Brisbane on Rawlinsons and
+       Sydney deliberately absent. */
+    const BUILD_2026 = { Melbourne: 2500, Brisbane: 2176, Perth: 2400,
+                         Adelaide: 2450 };
+    const land = await _cmkJllSeries(cache, 'jll_ind_land_value_med_2000sqm');
+    const cap  = await _cmkJllSeries(cache, 'jll_ind_capital_value');
+    const bld  = await _cmkAbsSeries(cache, 'abs_nonres_build_index');
+    if (!land || !cap || !bld) return null;
+    const byName = spec => {
+      const m = {};
+      spec.series.forEach(s => {
+        const o = {}; spec.cats.forEach((c, i) => { o[c] = s.data[i]; });
+        m[s.name] = o;
+      });
+      return m;
+    };
+    const L = byName(land), C = byName(cap), B = byName(bld);
+    const cats = cap.cats;
+    const last = cats[cats.length - 1];
+    const out = [];
+    cap.series.forEach(s => {
+      const l = L[s.name], c = C[s.name], b = B[s.name];
+      const rate = BUILD_2026[s.name];
+      if (!l || !c || !b || !b[last] || !rate) return;
+      const value = cats.map(q => (c[q] == null ? null : Math.round(c[q])));
+      const repl  = cats.map(q => ((l[q] == null || b[q] == null) ? null
+        : Math.round(l[q] * COVER + rate * b[q] / b[last])));
+      if (!value.some(v => v != null)) return;
+      out.push({ name: s.name, tag: 'value', color: s.color, data: value });
+      /* shares the name above so the pair toggles together */
+      out.push({ name: s.name, tag: 'to replace', color: s.color, data: repl, dashed: true });
+    });
+    if (!out.length) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: out, legend: true,
+      scale: 1, prefix: '$', dp: 0, axisDp: 0, stripPrefix: true, tickEvery: 8,
+    }, _cmkJllBounds({ series: out }, 1, 1000, true)) };
+  },
+
   /* Industrial supply pipeline: sqm due to complete each year, stacked by how
      firm the project actually is. The vacancy slides say what is empty now;
      this says what is coming and how much of it is committed. Read the colour,
@@ -16198,8 +16514,16 @@ const CMK_CHART_BUILDERS = {
      midpoint yield MINUS the average of the precincts reporting in its city
      that quarter, in percentage points. Zero means "priced like its city".
      Five colours, five blocks; the legend carries the city, because the
-     precinct names repeat across cities ("North" is in four of them). */
-  'jll-ind-yield-vs-city': async function (cache) {
+     precinct names repeat across cities ("North" is in four of them).
+
+     A city whose every precinct deviates by 0.00pp at the printed precision is
+     skipped entirely — bars AND axis labels. This is Perth: JLL gives its three
+     precincts the same yield, so all three bars have no height and the block
+     reads as three empty slots with names under them. Shaene called the same
+     thing on the dispersion slide. The test is on the data rather than a Perth
+     exclusion, so Perth returns if JLL ever differentiates. */
+  'jll-ind-precinct-vs-city': async function (cache) {
+    const FLAT = 0.00005;   /* 0.005pp — rounds to 0.00 at the printed dp */
     const pr = await _cmkJllPrecincts(cache);
     if (!pr) return null;
     /* Latest quarter in which ANY precinct reported. Precincts that have
@@ -16212,8 +16536,10 @@ const CMK_CHART_BUILDERS = {
       const live = c.precincts.filter(p => p.by[q] != null);
       if (!live.length) return;
       const avg = live.reduce((s, p) => s + p.by[q], 0) / live.length;
+      const devs = live.map(p => p.by[q] - avg);
+      if (!devs.some(v => Math.abs(v) >= FLAT)) return;   /* nothing to show */
       const row = new Array(n).fill(null);
-      live.forEach(p => { cats.push(p.name); row.push(p.by[q] - avg); });
+      live.forEach((p, i) => { cats.push(p.name); row.push(devs[i]); });
       series.push({ name: c.city, color: c.color, data: row });
       n = cats.length;
     });
@@ -16238,14 +16564,31 @@ const CMK_CHART_BUILDERS = {
   /* NOTE 7, the same question over time: how far apart are a city's OWN
      precincts? One line per city, plotting the gap between its widest and
      tightest precinct yield each quarter. A rising line means the choice of
-     precinct is worth more than it used to be; a flat line at zero (Perth)
-     means JLL prices every precinct in that city identically, which is a
-     finding about the data as much as the market.
+     precinct is worth more than it used to be.
 
      Starts Q1 2008 because that is where Adelaide's basket settles — before
      it, precincts enter and leave often enough that a step in the line is a
-     change of membership rather than a change of pricing. */
-  'jll-ind-yield-dispersion': async function (cache) {
+     change of membership rather than a change of pricing.
+
+     A city whose spread NEVER reaches one axis step (0.25pp) is dropped. This
+     is Perth, and Shaene called it in the 22 Sep 2026 review. Note it is not
+     literally zero — Perth tops out at 0.125pp, because JLL moves its three
+     precincts almost but not quite in lockstep — it is simply too small to
+     read against an axis that runs past 2pp, so it draws as a flat line on the
+     floor and invites the wrong question. The next lowest city, Brisbane at
+     0.50pp, is four times clear of the cut.
+     Written as a test on the data rather than a Perth exclusion, so Perth
+     returns on its own if JLL starts differentiating, and any other city that
+     compresses this far drops out. The slide note carries the reason.
+
+     RENAMED from jll-ind-yield-dispersion on purpose. The old key is live, so
+     the deployed builder owns that slide's spec and regenerates it — WITH
+     Perth — every time the deck is opened. Editing the stored spec alone was
+     silently reverted on the next open. Renaming hands the slide to this
+     builder at deploy and leaves the stored spec intact until then, so the
+     fix holds both before and after the merge with no hand-over step. */
+  'jll-ind-precinct-spread': async function (cache) {
+    const MIN_READABLE = 0.0025;   /* 0.25pp — one gridline */
     const pr = await _cmkJllPrecincts(cache);
     if (!pr) return null;
     const periods = pr.periods.filter(p => p >= '2008-01-01');
@@ -16257,7 +16600,7 @@ const CMK_CHART_BUILDERS = {
         if (vals.length < 2) return null;
         return Math.max(...vals) - Math.min(...vals);
       }),
-    })).filter(s => s.data.some(v => v != null));
+    })).filter(s => s.data.some(v => v != null && v >= MIN_READABLE));
     if (!series.length) return null;
     const spec = { cats: periods, series: series };
     return { module: 'cmk-lines', data: Object.assign({
