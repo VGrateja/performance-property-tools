@@ -77,7 +77,7 @@
 <script src="../assets/Reports/charts/commercial-charts.js" defer></script>
 <!-- Deck-only extras for the one-click Commercial Market deck (loads AFTER
      commercial-charts.js — it builds on its baseOption/applyDefaults). -->
-<script src="../assets/Reports/charts/commercial-market-charts.js" defer></script>
+<script src="../assets/Reports/charts/commercial-market-charts.js?v=1f1a7eb1" defer></script>
 <script>
   /* Slide charts are CSS-scaled (rendered once at a fixed base size), so
      ECharts never needs to resize on window changes — and the report
@@ -15774,6 +15774,42 @@ async function _cmkJllSeries(cache, metric) {
   return out;
 }
 
+/* Same shape as _cmkJllSeries but for ABS-sourced rows. Kept separate rather
+   than loosening the source filter above, so a chart's provenance is legible
+   from the call site — an ABS index and a JLL valuation should never be
+   confused for one another when someone asks where a number came from. */
+async function _cmkAbsSeries(cache, metric) {
+  cache = cache || {};
+  cache.abs = cache.abs || {};
+  if (cache.abs[metric] !== undefined) return cache.abs[metric];
+  let out = null;
+  try {
+    const { data, error } = await window.sb.from('rdp_raw_series')
+      .select('region_slug, period, value')
+      .eq('source', 'abs').eq('metric', metric).eq('freq', 'Q')
+      .in('region_slug', CMK_JLL_MARKETS.map(m => m[0]))
+      .order('period').limit(5000);
+    if (error) throw error;
+    const rows = data || [];
+    if (rows.length) {
+      const periods = Array.from(new Set(rows.map(r => r.period))).sort();
+      const byRegion = {};
+      rows.forEach(r => {
+        (byRegion[r.region_slug] = byRegion[r.region_slug] || {})[r.period] = _cmkNum(r.value);
+      });
+      const series = CMK_JLL_MARKETS
+        .filter(m => byRegion[m[0]])
+        .map(m => ({
+          name: m[1], color: m[2],
+          data: periods.map(p => (byRegion[m[0]][p] == null ? null : byRegion[m[0]][p])),
+        }));
+      if (series.length) out = { cats: periods.map(_cmkQLabel), series: series };
+    }
+  } catch (e) { console.warn('[cmk] ABS series unavailable:', metric, e); }
+  cache.abs[metric] = out;
+  return out;
+}
+
 /* The other shape: ONE region, SEVERAL metrics, each metric becoming a series.
    _cmkJllSeries is one metric across regions (cities on a chart); this is for
    a chart whose series are grades rather than places. `defs` is an ordered
@@ -16326,6 +16362,60 @@ const CMK_CHART_BUILDERS = {
       cats: spec.cats.slice(i0, i1 + 1), series: series,
       scale: 1, unit: '', dp: 0, axisDp: 0, tickEvery: 4,
     }, _cmkJllBounds({ series: series }, 1, 20, false)) };
+  },
+
+  /* Discount to replacement cost: how far established stock trades below what
+     it would cost to buy the land and rebuild the shed today. Zero is parity.
+     Replacement is reconstructed as a LEVEL each quarter —
+        land $/m2 x site cover + build $/m2
+     rather than by weighting two growth rates, so the weighting between the
+     land and build legs falls out of the actual dollars instead of being
+     assumed. The build leg is the Q2 2026 all-in rate carried back on the ABS
+     non-residential construction index for that state.
+     THE TWO CONSTANTS BELOW MOVE THE WHOLE CHART. On a big-box profile Sydney
+     reads about +1%; on a small-bay profile (cover 0.833, build $2,500) it
+     reads about +35%. The shape over time is robust, the level is not, which
+     is why the slide carries a note saying so.
+     Worth knowing what this does NOT say: over the full 26 years values have
+     grown FASTER than replacement cost in Sydney, Melbourne and Adelaide. The
+     finding is about where the level sits now and which way it has moved since
+     2022, not about a gap that has widened since 2000. */
+  'jll-ind-replacement-gap': async function (cache) {
+    const COVER = 2.00;       /* m2 of land per m2 of building (50% site cover) */
+    const BUILD_2026 = 1670;  /* all-in $/m2 at Q2 2026: Cushman shell x loadings */
+    const land = await _cmkJllSeries(cache, 'jll_ind_land_value_med_2000sqm');
+    const cap  = await _cmkJllSeries(cache, 'jll_ind_capital_value');
+    const bld  = await _cmkAbsSeries(cache, 'abs_nonres_build_index');
+    if (!land || !cap || !bld) return null;
+    /* the three sources do not carry identical period sets, so join on the
+       quarter LABEL rather than on position */
+    const byName = spec => {
+      const m = {};
+      spec.series.forEach(s => {
+        const o = {}; spec.cats.forEach((c, i) => { o[c] = s.data[i]; });
+        m[s.name] = o;
+      });
+      return m;
+    };
+    const L = byName(land), C = byName(cap), B = byName(bld);
+    const cats = cap.cats;
+    const last = cats[cats.length - 1];
+    const series = cap.series.map(s => {
+      const l = L[s.name], c = C[s.name], b = B[s.name];
+      if (!l || !c || !b || !b[last]) return null;
+      const data = cats.map(q => {
+        const lv = l[q], cv = c[q], bi = b[q];
+        if (lv == null || cv == null || bi == null) return null;
+        const repl = lv * COVER + BUILD_2026 * bi / b[last];
+        return repl > 0 ? +(((cv / repl) - 1) * 100).toFixed(1) : null;
+      });
+      return data.some(v => v != null) ? { name: s.name, color: s.color, data: data } : null;
+    }).filter(Boolean);
+    if (!series.length) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: series, zeroLine: true,
+      scale: 1, unit: '%', dp: 0, axisDp: 0, tickEvery: 8,
+    }, _cmkJllBounds({ series: series }, 1, 10, false)) };
   },
 
   /* Industrial supply pipeline: sqm due to complete each year, stacked by how

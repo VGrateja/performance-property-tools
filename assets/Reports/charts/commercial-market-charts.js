@@ -556,6 +556,14 @@
            of the same city — so colour reads as place and pattern as grade. */
         lineStyle: { width: 2.2, color: col, type: s.dashed ? 'dashed' : 'solid' },
         itemStyle: { color: col },
+        /* zeroLine is opt-in, and only on the FIRST series, for the charts
+           where crossing zero is the whole point. Bars get this already via
+           `diverging`; lines had no equivalent. */
+        markLine: (d.zeroLine && i === 0) ? {
+          silent: true, symbol: 'none', animation: false,
+          lineStyle: { color: '#1a2236', width: 1.2, type: 'solid' },
+          label: { show: false }, data: [{ yAxis: 0 }],
+        } : undefined,
         endLabel: (d.endLabel === false || useLegend) ? { show: false } : {
           show: true, fontSize: 10, fontWeight: 600, color: col,
           formatter: function (p) { return (s.name || '') + ' ' + fmt(p.value); },
