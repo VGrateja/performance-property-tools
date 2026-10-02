@@ -9,6 +9,11 @@ clock, the solution and every judgement.
 **Since 2026-09-30 (migration 124) it also has the twists** — a daily challenge, a colour highlighter, streak badges, hint tokens and a
 weekly sprint — all described in **§10**. Where they change an earlier section, that section says so and points there.
 
+**Since 2026-10-02 (migration 125) the clock stops only while the board is hidden** — the blind pause: a Pause button and key, an
+automatic pause on leaving (tab hidden, page closed, the game's own exit) and on connection or power loss (a heartbeat), no penalty, times
+still rank. The full rule set is **§4.3**; it replaces the 2026-09-29 rule "the clock never stops", and every section below describes the
+125 build (history notes say what changed). There is no "no pause" instruction left for the port: build the pause as §4.3 says.
+
 Source of truth in the hub repo:
 
 | What | Path |
@@ -16,6 +21,7 @@ Source of truth in the hub repo:
 | Game page (all client code, one file) | `tools/arena-sudoku.html` |
 | Migration (tables, views, RPCs, grants, group wiring) | `supabase/migrations/122_arena_sudoku.sql` |
 | Migration: the twists (daily, sprint, streaks, tokens, colours — §10) | `supabase/migrations/124_arena_sudoku_twists.sql` |
+| Migration: the blind pause (pause / resume / heartbeat, the reconcile rule — §4.3) | `supabase/migrations/125_arena_sudoku_pause.sql` |
 | Generator + technique-grading solver + CLI (ladder, `--daily`, `--sprint`) | `scripts/generate-sudoku-stages.mjs` |
 | Unit tests (`node --test`) | `scripts/generate-sudoku-stages.test.mjs` |
 | Wiring | `shared/tool-registry.js`, `tools/arena.html`, `index.html` (the twists added no entry point outside the page) |
@@ -167,7 +173,7 @@ Reachable through RPCs only.
 | grid | text | — | not null, `^[0-9]{81}$`. Current entries, givens included |
 | notes | jsonb | `'[]'` | not null. An array of 81 ints (bit d−1 = candidate d, 0..511). `[]` until the first save |
 | status | text | `'active'` | not null, `check in ('active','cleared','restarted','abandoned')` (`abandoned` is defined but unused) |
-| started_at | timestamptz | `now()` | not null. The server clock start (the moment Play is pressed). The clock never stops after this |
+| started_at | timestamptz | `now()` | not null. The server clock start (the moment Play is pressed). From here the clock runs whenever the board is showing (§4.3) |
 | mistakes | int | `0` | not null |
 | hints | int | `0` | not null |
 | wrong_pairs | int[] | `'{}'` | not null. `cell*10 + digit` for each wrong pair already charged |
@@ -176,14 +182,23 @@ Reachable through RPCs only.
 | last_save_at | timestamptz | null | |
 | finished_at | timestamptz | null | Set on a successful submit |
 | ended_at | timestamptz | null | Set on restart |
-| elapsed_ms | bigint | null | Set on clear: finished − started (pure wall clock) |
+| elapsed_ms | bigint | null | Set on clear: finished − started − paused_ms (the running time; pauses excluded, §4.3) |
 | penalty_ms | bigint | null | Set on clear |
 | final_ms | bigint | null | Set on clear: elapsed + penalty (the ranked time) |
 | created_at | timestamptz | `now()` | not null |
+| paused_at | timestamptz | null | Mig 125. When the current pause began; **null = the clock is running**. Set by `sudoku_pause` (`now()`) or by the reconcile rule (`:= last_seen_at`) |
+| paused_ms | bigint | `0` | Mig 125. not null. Time banked by **closed** pauses, each floored to the ms (an open pause is not in it yet) |
+| pauses | int | `0` | Mig 125. not null. Completed pauses (counted when the pause closes: Resume, or Restart of a paused attempt) |
+| last_seen_at | timestamptz | null | Mig 125. The last heartbeat (or board activity / resume) while the clock ran. **null = never heartbeated** (a page from before 125): the reconcile rule does not apply to such an attempt |
 
-There are **no pause columns**. The first build had `paused_at`, `paused_ms` and `pauses`. Since 2026-09-29 migration 122 no longer
-creates them and drops them with `alter table … drop column if exists`, so re-running the file converges any project that still has
-them. Do not add a pause to the port (§4.3).
+Check `arena_sudoku_attempts_pause_check`: `paused_ms >= 0 and pauses >= 0` (mig 125, guarded `do` block).
+
+**Pause history.** The first build (2026-09-28) had `paused_at`, `paused_ms` and `pauses`, a client-side pause and a "pause the other
+attempts" rule; on 2026-09-29 Van removed them (the clock never stopped) and migration 122 drops those three columns with `alter table …
+drop column if exists`. **Migration 125 adds them back under the same names** (plus `last_seen_at`) for the blind pause of §4.3 — so the
+run order is 122 → 124 → 125, and **re-running 122 after 125 drops the pause columns again** (and `sudoku_resume(bigint)`) and restores 122's
+function bodies; re-run 124 and then 125 to converge (the attempts' pause history would be gone; the clear rows keep their own copy). A port
+should simply create the four columns.
 
 Indexes:
 - `arena_sudoku_attempts_one_active`: **unique** on `(user_id, stage) where status = 'active'`, so there is one active attempt per
@@ -212,6 +227,8 @@ Indexes:
 | finished_at | timestamptz | `now()` | not null |
 | unlocked_at | timestamptz | null | First clears only: `finished_at + penalty`, when the next stage opened |
 | token_hints | int | `0` | not null. Mig 124: how many of the clear's hints a token paid for (§10.5) |
+| pauses | int | `0` | not null. Mig 125: the attempt's completed pauses, copied at the clear (the ⏸ marker, §4.3) |
+| paused_ms | bigint | `0` | not null. Mig 125: the attempt's banked pause time, copied at the clear. Times are **not** adjusted by it — `elapsed_ms` already excludes it |
 
 Indexes: `(stage, final_ms, finished_at)` and `(user_id, stage)`.
 
@@ -230,10 +247,12 @@ Index: `(user_id)`. Rows are inserted by `sudoku_submit` with `on conflict (stag
 All three views use `with (security_invoker = on)` and read only the public `clears` table, under the caller's own RLS.
 
 - **`arena_sudoku_best`**: `select distinct on (stage, user_id) stage, user_id, name, final_ms, elapsed_ms, penalty_ms, mistakes,
-  hints, finished_at, kind from arena_sudoku_clears order by stage, user_id, final_ms, finished_at`. Each player's best clear per stage.
-- **`arena_sudoku_stage_ranks`**: `arena_sudoku_best.*` plus
+  hints, finished_at, kind, pauses, paused_ms from arena_sudoku_clears order by stage, user_id, final_ms, finished_at`. Each player's best
+  clear per stage. (`pauses, paused_ms` appended by mig 125.)
+- **`arena_sudoku_stage_ranks`**: the best columns, then
   `stage_rank = rank() over (partition by stage order by final_ms, finished_at)` and
-  `stage_players = count(*) over (partition by stage)`. A medal is `stage_rank` 1..3.
+  `stage_players = count(*) over (partition by stage)`, then (mig 125) `pauses, paused_ms`. A medal is `stage_rank` 1..3. Mig 125 lists
+  every column explicitly: `create or replace view` may only append columns, so a `b.*` would have put the new ones before `stage_rank`.
 - **`arena_sudoku_ranking`**: built from two CTEs.
   - `prog` = `distinct on (user_id)` over clears where `first_clear`, ordered by `user_id, stage desc, finished_at`. It gives
     `highest_stage = stage` and `reached_at = coalesce(unlocked_at, finished_at)`.
@@ -284,12 +303,21 @@ These are load-bearing. Do not relax them in the port.
 ## 3. RPCs
 
 Every function uses `set search_path = public, pg_temp`. EXECUTE is revoked from `PUBLIC` and `anon` on all of them. The 11
-user-facing RPCs are `SECURITY DEFINER` and granted to `authenticated` and `service_role`. The 11 internal helpers are revoked from
-`public, anon, authenticated`, so only the owner can run them.
+user-facing RPCs of 122 are `SECURITY DEFINER` and granted to `authenticated` and `service_role`. The 11 internal helpers are revoked from
+`public, anon, authenticated`, so only the owner can run them. (Mig 124 added 5 RPCs and 7 helpers, mig 125 3 RPCs and 7 helpers, with the
+same posture: 19 user-facing Sudoku RPCs in all.)
 
-**Removed 2026-09-29:** `sudoku_pause(bigint)`, `sudoku_resume(bigint)` and the helper `_sudoku_pause_others(uuid, bigint)`. The
-migration now carries `drop function if exists` for all three. Calling a removed RPC returns PostgREST **`PGRST202`** ("Could not find
-the function", HTTP 404). Nothing in the port may bring them back (§4.3).
+**The pause RPCs (mig 125).** `sudoku_pause`, `sudoku_resume` and `sudoku_heartbeat` — the blind pause of §4.3 — are documented in §3.3 and
+§3.7. History: the first build (2026-09-28) had a `sudoku_pause(bigint)` / `sudoku_resume(bigint)` pair and a helper
+`_sudoku_pause_others(uuid, bigint)` that paused every other attempt when one was opened; Van removed all three on 2026-09-29 and 122 still
+carries `drop function if exists` for them. 125 brings back a **different** design: `sudoku_pause` takes the board along
+(`(bigint, text, jsonb, jsonb)`; 125 drops the old one-argument signature first so the call is never ambiguous), there is a heartbeat, and
+**nothing ever pauses another attempt** — `_sudoku_pause_others` stays gone. Calling a function that does not exist still returns PostgREST
+`PGRST202` (HTTP 404).
+
+**Every call on an attempt first reconciles** (mig 125): `_sudoku_attempt_for_update` — used by restart, save, check, hint, submit, pause,
+resume and heartbeat — and the three *start* RPCs (which lock their own row) run `_sudoku_reconcile` right after locking the attempt, before
+anything reads it. The rule is in §4.3.
 
 Clients call the RPCs with `supabase.rpc(name, args)`, which maps to `POST /rest/v1/rpc/<name>` with the user's JWT. Expected game-flow
 refusals return JSON `{ok:false, reason, …}`. Bad input and tampering raise exceptions.
@@ -304,7 +332,9 @@ Every RPC calls this first.
 5. Otherwise it locks the row (`for update`). The **token bucket** is `tokens = least(60, rl_tokens + 6 × seconds since rl_at)`: 60
    burst, refilled at 6 per second. If `tokens < p_cost` it raises **`Slow down - too many moves in a short time`** (`P0001`, hint
    `rate_limited`). Otherwise it stores `rl_tokens = tokens − cost`, `rl_at = clock_timestamp()`.
-   - Costs: `sudoku_save` 0.5. Overview, board, ranking and stats cost 0. Every other game RPC costs 1.
+   - Costs: `sudoku_save` 0.5. Overview, board, ranking and stats cost 0. Every other game RPC costs 1 — except (mig 125)
+     `sudoku_heartbeat` and `sudoku_pause`, which cost **0** (no player-row lock, never refused: a refused pause would cost the player
+     time), and `sudoku_resume`, which costs 1.
    - The E2E showed a burst of 90 concurrent checks had 27 refused.
 
 ### 3.2 Internal helpers
@@ -314,12 +344,19 @@ Every RPC calls this first.
 | `_sudoku_xform_random(p_variant text) → jsonb` | invoker, volatile | Returns `{r:[9], c:[9], d:[0,…9 digits], t:0/1}` (§4.8) |
 | `_sudoku_apply(p_grid text, p_x jsonb) → text` | invoker, immutable | Null `p_x` returns the grid unchanged. Otherwise `target(R,C) = d[S′(r[R], c[C])]`, where S′ is the transpose of S when `t=1` and d[0]=0 keeps blanks blank |
 | `_sudoku_solution(p_attempt attempts) → text` | definer, stable (sql) | `_sudoku_apply(stage_secrets.solution, attempt.xform)`: the solution as this attempt sees it |
-| `_sudoku_elapsed(p_attempt) → bigint` | invoker, stable | `greatest(0, floor(ms of (coalesce(finished_at, ended_at, now()) − started_at)))`. Pure wall clock, with nothing subtracted |
+| `_sudoku_elapsed(p_attempt) → bigint` | invoker, stable | **Mig 125:** `greatest(0, floor(ms of (coalesce(finished_at, ended_at, _sudoku_pause_start(p), now()) − started_at)) − paused_ms)` — the running time: frozen at the pause start while paused, every closed pause subtracted. (122: pure wall clock, nothing subtracted.) Every caller — payload, save, check, hint, submit, the overviews — is pause-aware through it |
 | `_sudoku_penalty(m int, h int) → bigint` | immutable | `m × 30000 + h × 60000` |
 | `_sudoku_payload(p_attempt) → jsonb` | definer, stable | The client state object (§3.4) |
 | `_sudoku_new_attempt(p_user uuid, p_stage int) → attempts` | definer | See `sudoku_start` below. It never touches any other attempt |
-| `_sudoku_attempt_for_update(p_user uuid, p_attempt bigint) → attempts` | definer | Locks the caller's attempt. Anyone else's, or a missing one, raises **`Attempt not found`** (`P0002`) |
+| `_sudoku_attempt_for_update(p_user uuid, p_attempt bigint) → attempts` | definer | Locks the caller's attempt. Anyone else's, or a missing one, raises **`Attempt not found`** (`P0002`). **Mig 125:** then returns `_sudoku_reconcile(row)` — the reconcile happens here, before any caller reads the row |
 | `_sudoku_check_grid(p_attempt, p_grid text)` | invoker, stable | The grid must match `^[0-9]{81}$`, else **`A grid is 81 digits (0 = empty)`** (`22023`). Givens must be unchanged, else **`The given digits cannot change`** (`22023`). Hinted cells must equal the stored grid, else **`Hinted cells cannot change`** (`22023`) |
+| `_sudoku_heartbeat_ms() → int` | immutable (sql) | Mig 125: `15000` — how often the page heartbeats while the board shows (returned in the payload, so the number is the server's) |
+| `_sudoku_stale_after() → interval` | immutable (sql) | Mig 125: `45 seconds` — a heartbeating board silent for longer counts as paused from its last heartbeat (three missed beats) |
+| `_sudoku_pause_start(p_attempt) → timestamptz` | invoker, stable (sql) | Mig 125: when the current pause began, or null while the clock runs: null if `status <> 'active'`; else `paused_at` if set; else `last_seen_at` if it is set and older than `_sudoku_stale_after()`; else null. The read-only half of the reconcile rule (overviews use it without writing) |
+| `_sudoku_reconcile(p_attempt) → attempts` | definer | Mig 125: the reconcile rule, persisted. If the attempt is active, not paused, `last_seen_at` is set and `now() − last_seen_at > 45 s`: `paused_at := last_seen_at`. Returns the (updated) row. The caller holds the row lock |
+| `_sudoku_touch(p_attempt bigint)` | definer (sql) | Mig 125: `last_seen_at = now()` on a running, active attempt **whose `last_seen_at` is already set** — board activity (save, check, hint, a wrong submit) counts as a heartbeat, but never switches the rule on for an old page's attempt |
+| `_sudoku_paused_refusal() → jsonb` | immutable (sql) | Mig 125: `{ok:false, reason:'paused', message:'The game is paused - press Resume to show the board and run the clock again.'}` |
+| `_sudoku_check_marks(p_notes jsonb, p_colors jsonb)` | immutable | Mig 125: `sudoku_save`'s notes / colours validation (same messages and `22023`), each argument optional — for the board a pause may carry |
 
 ### 3.3 User-facing RPCs
 | Signature (returns jsonb) | Cost | Validates | Writes | Returns |
@@ -336,6 +373,16 @@ Every RPC calls this first.
 | `sudoku_ranking(p_limit int default 50)` | 0 | Limit clamped to 1..200 | — | `{top:[{rank, name, highest_stage, reached_at, total_ms, stages_cleared, me}], me:{…} or null, players}` |
 | `sudoku_stats()` | 0 | staff check | — | `{name, tutorial_done, highest_stage, reached_at, stages_cleared, clears, replays, gold, silver, bronze, crowns, par_stars, avg_ms, total_ms, total_mistakes, total_hints, total_restarts, streak_days, best_streak, first_clear_at, last_clear_at, rank}` |
 
+**Migration 125 changes to this table** (the blind pause, §4.3 / §3.7): `sudoku_save`, `sudoku_check`, `sudoku_hint` and `sudoku_submit`
+answer **`{ok:false, reason:'paused', message}`** while the attempt is paused — after their `over` and `closed` refusals, before anything
+else (no charge, no write) — and their successful calls refresh `last_seen_at` (`_sudoku_touch`). `sudoku_start` (and the daily / sprint
+starts) reconcile a re-opened attempt first and may return it **paused** (`state.paused = true`: the page shows the cover). Elapsed times
+everywhere exclude pauses. `sudoku_restart` closes an open pause (banks it, counts it) before ending the attempt; the new attempt starts
+running with every pause counter at 0 and `last_seen_at` null. `sudoku_overview().active[]` gained `elapsed_ms`, `paused` and `pauses`;
+`sudoku_stage_board` rows and `me` gained `pauses`, `paused_ms`; `sudoku_ranking` rows and `me` gained `pauses`, `paused_ms` (sums over the
+player's best clears, the ones that make up `total_ms`). Three RPCs are new: `sudoku_pause`, `sudoku_resume`, `sudoku_heartbeat` (§3.7).
+No existing signature changed.
+
 **Migration 124 changes to this table** (details in §10): `sudoku_save` gained `p_colors jsonb default null` (the highlighter) and
 `sudoku_hint` gained `p_token boolean default false` (hint tokens) — the old signatures were dropped, and every older call still resolves.
 `sudoku_save / check / hint / submit` also serve daily and sprint attempts and answer `{ok:false, reason:'closed'}` once such a puzzle has
@@ -344,14 +391,26 @@ sprint), and `streak_days` there now comes from the streak view (Melbourne days,
 `sudoku_daily_overview`, `sudoku_daily_board`, `sudoku_sprint_start`, `sudoku_sprint_overview`.
 
 ### 3.4 The attempt state object (`_sudoku_payload`)
-`{attempt_id, stage, attempt_no, kind, variant, shuffled (= xform is not null), puzzle, grid, notes, status, elapsed_ms (server wall
-clock since started_at), penalty_ms, mistakes, hints, hints_left (= max(0, 3 − hints)), hinted_cells, wrong_cells, restarts, par_ms,
-server_now}`. There is no `paused` field.
+`{attempt_id, stage, attempt_no, kind, variant, shuffled (= xform is not null), puzzle, grid, notes, status, elapsed_ms, penalty_ms,
+mistakes, hints, hints_left (= max(0, 3 − hints)), hinted_cells, wrong_cells, restarts, par_ms, server_now}` — plus mig 124's `mode`,
+`colors`, `token_hints`, `hint_tokens`, `special` (§10.1) and **mig 125's pause fields**:
+- `elapsed_ms` — the server's running time: `_sudoku_elapsed` (started_at → now, frozen while paused, every closed pause subtracted).
+- `paused` — boolean: the clock is stopped right now (`_sudoku_pause_start` is not null). The page covers the board.
+- `paused_at` — when the current pause began (null while running). For an outage this is the last heartbeat.
+- `pauses` — completed pauses so far on this attempt (an open pause is counted when it closes).
+- `paused_ms` — the time banked by those completed pauses.
+- `heartbeat_ms` — `15000`: how often to heartbeat while the board shows. `stale_after_ms` — `45000`: the silence that counts as paused.
+
+The board (puzzle, grid, notes, colours) is still returned while paused — the page hides it. [Considered: withholding it until Resume;
+rejected — a cheater can resume, read and pause again in a second, so it buys nothing, and a page from before 125 would crash on a null grid.]
 - `wrong_cells` lists the cells whose current grid digit is a charged wrong pair, so a resumed board shows the reds already paid for.
 - `restarts` is the count of this user's `restarted` attempts on the stage.
 - The object never includes the solution or the xform.
 
 ### 3.5 What a correct `sudoku_submit` does, in order
+(Mig 125: before any of this, after the `over` / `closed` checks, a **paused** attempt is refused with `reason:'paused'`; the elapsed below
+is the running time, pauses excluded; the 250 ms/cell floor is measured against it; the clear row gets the attempt's `pauses` and
+`paused_ms`, and the answer carries both.)
 1. Sets `elapsed = _sudoku_elapsed`, `pen = mistakes×30000 + hints×60000`, `final = elapsed + pen`.
 2. Updates the attempt: `status='cleared'`, `grid`, `finished_at=now()`, `elapsed_ms`, `penalty_ms`, `final_ms`.
 3. Sets `prev = min(final_ms)` of the player's earlier clears of the stage, `first_clear = (prev is null)`, and
@@ -375,8 +434,31 @@ server_now}`. There is no `paused` field.
 | `42501` | Not a staff tier. PostgREST also returns 42501 for anon RPC calls and for direct reads of the secret tables |
 | `P0001` | Rate limited (hint `rate_limited`), attempt already over, or stage not ready |
 | `P0002` | Attempt not found or not yours |
-| `22023` | Invalid input: unknown stage, grid or notes shape, changed givens or hinted cells, cell or digit out of range, checking or hinting a given |
-| `PGRST202` (HTTP 404) | PostgREST "Could not find the function": calling the removed `sudoku_pause` or `sudoku_resume` |
+| `22023` | Invalid input: unknown stage, grid or notes shape, changed givens or hinted cells, cell or digit out of range, checking or hinting a given (also a board sent with `sudoku_pause` that fails those checks — the pause then does not happen) |
+| `PGRST202` (HTTP 404) | PostgREST "Could not find the function" — any RPC that does not exist |
+
+Game-flow refusals are JSON, not exceptions: `{ok:false, reason, message?}`. Reasons: `tutorial`, `locked`, `penalty` (start); `over` (the
+attempt has ended — save / check / hint / pause / resume / heartbeat); `closed` (a daily / sprint past its window, §10.1); `hinted`,
+`no_hints`, `correct` (hint); `incomplete`, `wrong`, `too_fast` (submit); `no_puzzle`, `not_yet`, `cleared` (daily / sprint starts); and
+**`paused`** (mig 125) — *"The game is paused - press Resume to show the board and run the clock again."* — from `sudoku_save`,
+`sudoku_check`, `sudoku_hint` and `sudoku_submit` while the attempt is paused (by the page or by the reconcile rule). Nothing is written
+or charged on a `paused` refusal; the page covers the board and re-tries after Resume (a refused submit is re-sent automatically).
+`over` / `closed` take precedence over `paused`.
+
+### 3.7 The pause RPCs (mig 125)
+All three are `SECURITY DEFINER`, `search_path` pinned, EXECUTE for `authenticated` + `service_role` only (anon → 42501), and work on the
+caller's own attempt only (anyone else's → `P0002`). All three reconcile first (through `_sudoku_attempt_for_update`), then refuse an ended
+attempt with `{ok:false, reason:'over'}` and a daily / sprint past its window with `{ok:false, reason:'closed', message}`. They serve
+ladder, daily and sprint attempts alike (one attempts table).
+
+| Signature (returns jsonb) | Cost | Behaviour | Returns |
+|---|---|---|---|
+| `sudoku_pause(p_attempt bigint, p_grid text default null, p_notes jsonb default null, p_colors jsonb default null)` | 0 | **If the clock is running:** when a board is sent it is validated exactly like `sudoku_save` (`_sudoku_check_grid` + `_sudoku_check_marks`; notes / colours may be null = keep) and saved (`grid`, `notes`, `colors`, `saves + 1`, `last_save_at`), then `paused_at = now()`. A board that fails validation raises `22023` and **nothing** happens (the pause does not land). **If already paused** (another tab, an earlier beacon, a reconciled outage): nothing changes and **the board is not saved** — no move lands while the clock is stopped. Idempotent; never rate-limited | `{ok:true, paused:true, paused_now (did this call start the pause), saved, paused_at, elapsed_ms (frozen), penalty_ms, pauses, paused_ms, server_now}` |
+| `sudoku_resume(p_attempt bigint)` | 1 | **If paused:** `gap = floor(ms(now() − paused_at))` (floor, never round — a pause never hands back time), `paused_ms += gap`, `pauses + 1`, `paused_at = null`, `last_seen_at = now()`. **If running:** only `last_seen_at = now()` (a heartbeat). Resume of an outage pause banks the whole gap since the last heartbeat | `{ok:true, resumed (a pause was closed), paused_for_ms (gap, 0 if none), state:<the full payload §3.4>}` |
+| `sudoku_heartbeat(p_attempt bigint)` | 0 | **If running:** `last_seen_at = now()` — the first heartbeat of an attempt switches the outage rule on for it. **If paused** (by this page, another tab or device, or the reconcile): nothing changes and the answer says so, so the page covers the board | `{ok:true, paused, paused_at, elapsed_ms, penalty_ms, pauses, paused_ms, heartbeat_ms, server_now}` — the page adopts `elapsed_ms` |
+
+The page's unload beacon is a single keepalive `fetch` of `sudoku_pause` carrying the board: two separate requests (a save, then a pause)
+could arrive pause-first, the save would be refused as `paused`, and the last move would be lost.
 
 ---
 
@@ -389,34 +471,113 @@ it is stored only as that timestamp.
 ### 4.2 Stage order
 Stage n can start only if `n ≤ highest_stage + 1`. Cleared stages can be replayed at any time.
 
-### 4.3 The clock: it never stops once you've seen the grid
-This is Van's decision of 2026-09-29, and it is load-bearing. With a pause, a player could see the grid, stop the clock, solve it
-outside the game, then resume and type it in. So from Play to submit the time is **wall clock, whatever happens**. The only exits are
-finishing, or **Restart**, which deals a shuffled grid with a fresh clock.
-- **Start.** `started_at` is the server `now()` at attempt creation, which happens the moment Play is pressed (`sudoku_start`). The
-  puzzle arrives in the same response.
-- **Elapsed.** `floor(ms(coalesce(finished_at, ended_at, now()) − started_at))`, minimum 0, with **nothing subtracted**. It is computed
-  server-side at every call and returned as `elapsed_ms`. It is **never taken from the client**.
-- **There is no pause.** No RPC, no column, no button, no key, no setting, no auto-pause. The clock keeps running when:
-  - the player leaves the game view (the "Stages" button flushes the save and returns to the map)
-  - the tab is hidden or the page is closed or refreshed
-  - the player opens another stage
-  - the laptop sleeps
-- **Several clocks can run at once.** Opening, re-opening or starting a stage never touches any other attempt. Each active attempt's
-  clock runs from its own `started_at`.
-- **Nothing is lost when leaving.** When the tab hides (`visibilitychange`) and on `pagehide` (close or refresh), the client sends a
-  keepalive POST of `sudoku_save` if the board has unsaved changes. The request is `fetch(url, {keepalive:true})` to
-  `/rest/v1/rpc/sudoku_save` with the headers `apikey` and `Authorization: Bearer <cached access token>`. The token is refreshed every
-  60 s; this is the same pattern as `pp-telemetry`. There is no pause beacon.
-- **Client display.** The clock shows the race time, `elapsed + penalties`.
-  - It is re-synced from every RPC response's `elapsed_ms` and ticks locally every 250 ms. Hidden tabs keep counting, because
-    `performance.now()` keeps advancing.
-  - When the tab becomes visible again, the client **re-syncs with the server** through `sudoku_save` (current board). That corrects
-    for a sleeping laptop or a throttled background tab. If that returns `over` (the attempt was cleared or restarted in another tab),
-    the client says so and returns to the map. `sudoku_start` is deliberately not used for this, because re-opening a stage cleared
-    elsewhere would deal a new replay.
-  - Re-opening a stage whose attempt is still active returns it with its full elapsed time, and the toast says "Back to your grid —
-    the clock kept running (m:ss so far)".
+### 4.3 The clock: it stops only while the board is hidden
+This is Van's decision of **2026-10-02** (migration 125), and it is load-bearing. It **replaces** the 2026-09-29 rule ("the clock never
+stops once you've seen the grid"). A player asked for a pause; a pause can be a cheat (stop the clock, keep thinking), so the pause is
+**blind** — **the clock stops only while the board is hidden** — and it is **automatic on leaving**: in Van's words, "exiting the tab or
+exiting the game will pause it automatically, like if there's electric/internet interruption so it auto-pauses." **No penalty for pausing,
+no untimed flag: times count for medals, crowns, par stars and every leaderboard exactly as before.** Van accepts the residual loophole —
+photograph the board, then pause: "since this is a company setup, if they cheat there's a problem with the culture."
+
+**The numbers are all the server's.**
+- **Start.** `started_at` is the server `now()` at attempt creation, the moment Play is pressed (`sudoku_start` / `sudoku_daily_start` /
+  `sudoku_sprint_start`). The puzzle arrives in the same response.
+- **Elapsed** (every place the server computes time — check, hint, save, submit, the payload, the overviews, the clear rows):
+  `(finished_at | ended_at | the pause start | now()) − started_at − paused_ms`, floored to the ms, minimum 0 (`_sudoku_elapsed`). While
+  paused it is frozen at the pause start. It is **never taken from the client**.
+- **Penalties unchanged:** +0:30 per charged wrong digit, +1:00 per paid hint, three hints per attempt; `final_ms = elapsed + penalties`.
+  The 250 ms/cell floor (§4.10), the penalty box (§4.5) and every tamper rule (§4.11) are unchanged — the floor is now measured against
+  the running time, so "pause, solve on paper, resume, type it in" still needs 250 ms of running clock per cell.
+
+**1. Pause** — the Pause button beside the clock, or the key **P** (§7.3).
+- The page hides the board **first, locally** (no network needed): the whole play area — timer row, ghost track, grid, notes, colours,
+  candidates, the tools (Hint included), the digit and colour pads, the mini top 5 — is `visibility: hidden` (not drawn at all), input is
+  refused, and the cover card sits over it (§7.2). The displayed clock freezes at once.
+- Then `sudoku_pause(attempt, grid, notes, colors)`: the server saves the board it carries (if its clock was still running) and sets
+  `paused_at = now()`. Idempotent: an already-paused attempt is left alone and **its board is not saved**.
+- The cover shows the stage (or "Daily · <day>" / "Sprint · puzzle n" with the band chip), the elapsed time frozen (the race clock,
+  elapsed + penalties, with "includes +m:ss of penalties" when there are any), **"Paused — the clock is stopped while the board is
+  hidden"**, why it paused (left the page / left the game / connection lost / paused on another tab or device — blank for a manual pause),
+  one **Resume** button, and "Press Resume (or P) to show the board and run the clock again. Pausing is free, and your time still ranks."
+- **Nothing auto-resumes.** Returning to the tab, re-opening the stage, reloading the page or reconnecting all show the cover; only Resume
+  (button or P) shows the board.
+
+**2. Resume** — `sudoku_resume(attempt)`: `paused_ms += floor(now() − paused_at)`, `pauses + 1`, `paused_at = null`,
+`last_seen_at = now()`; the page reveals the board, adopts the server's elapsed, restarts the heartbeat and saves any move made before
+the pause that had not reached the server. If the server's board differs from a clean local one (another device moved meanwhile), the
+page takes the server's.
+
+**3. Auto-pause on leaving.** Each of these covers the board and pauses the server clock:
+- `visibilitychange` → hidden (switching tabs or apps, minimising, locking a phone), `pagehide` (close, refresh, navigating away — the
+  hub's back link and the app bar's Arena button included) and `beforeunload`: **one keepalive request** —
+  `fetch('/rest/v1/rpc/sudoku_pause', {method:'POST', keepalive:true})` with the headers `apikey` and `Authorization: Bearer <cached access
+  token>` (refreshed every 60 s; the pp-telemetry pattern; supabase-js alone may not complete on unload) — carrying the board, so the last
+  move is saved and the clock stops in the same request. When the tab comes back, a beacon whose answer was never seen is confirmed with a
+  normal `sudoku_pause` call.
+- The game's own exit, **‹ Stages** (and "Today's board ›" / "Sprint board ›" from a game in progress): an awaited `sudoku_pause` with
+  the board, then the map; a toast says "Paused at m:ss — the clock is stopped until you resume".
+- Opening another puzzle happens from the map, so the one before is already paused. **No attempt is ever paused as a side effect of
+  another** (the first build's `_sudoku_pause_others` stays gone): each ladder stage, daily and sprint puzzle has its own clock and pause.
+- The next visit to that attempt shows the cover; the stage panel reads "Continue — paused at m:ss" (§7.1).
+
+**4. Auto-pause on interruption** (power, internet, a crashed tab, a sleeping laptop — when no pause call can arrive):
+- **The heartbeat.** While the board shows and the clock runs, the page calls `sudoku_heartbeat(attempt)` every `heartbeat_ms` (15 s,
+  from the payload) — and once straight away when a running board opens. It stamps `last_seen_at` and answers with the server's elapsed,
+  which the page adopts (so a throttled timer can never drift). Board activity (a save, check, hint or wrong submit) also refreshes
+  `last_seen_at`. Cost 0 in the rate limiter, no player-row lock.
+- **The reconcile rule.** Every server call on an attempt first reconciles (§3): if the attempt is active, not paused, `last_seen_at` is set
+  and `now() − last_seen_at > 45 s` (`stale_after_ms`, three missed beats), the attempt becomes paused **from `last_seen_at`**
+  (`paused_at := last_seen_at`). The pause is closed like any other when the player presses Resume — the whole gap since the last heartbeat
+  is banked into `paused_ms` and counted as one pause — so **an outage stops the clock at the last heartbeat, not when the player comes
+  back**, and the next visit shows the cover. Reads that don't write (`sudoku_overview`, `sudoku_daily_overview`,
+  `sudoku_sprint_overview`) compute the same thing on the fly through `_sudoku_pause_start`. [Reading of the brief: "adds the gap to
+  paused_ms, counts one pause" happens at Resume rather than at reconcile time — the same numbers, and it keeps "nothing auto-resumes".]
+- **A gap of 45 s or less counts as play** — a blip that misses a beat or two pauses nothing, server-side.
+- **Connection loss on the page.** The browser's `offline` event, or a heartbeat that fails on the network (no PostgREST code), covers the
+  board at once ("Connection lost — the board stays hidden. Resume once you are back online.", Resume disabled as "Reconnecting…"). On the
+  `online` event, or a retry every 5 s, the page sends `sudoku_pause` with the board; once it lands, Resume is offered ("The connection
+  dropped, so the game paused itself."). The server's clock for that stretch follows the reconcile rule above.
+- **The gate (backward compatibility).** `last_seen_at` stays **null until an attempt's first heartbeat or resume**, and the reconcile
+  rule only applies once it is set. A page that never heartbeats — the 2026-09-30 page, still open or cached when 125 went live — keeps
+  the never-stopping clock on its attempts and is never refused as `paused`. Skipping heartbeats can only cost a player time (the reconcile
+  is a favour), so the gate opens no cheat. A port that ships the page and the database together can drop the gate and start every
+  attempt with `last_seen_at = started_at`.
+
+**5. Refusals while paused.** `sudoku_check`, `sudoku_hint`, `sudoku_save` and `sudoku_submit` answer `{ok:false, reason:'paused'}`
+(§3.6) — no write, no charge. The page never sends them while covered; if one was in flight, or another tab or device paused the
+attempt, the refusal covers the board (the move stays local and is saved after Resume; a refused submit is re-sent after Resume).
+
+**6. Scope.** Ladder, daily and weekly-sprint attempts alike (one attempts table, `mode` column). A paused daily still belongs to its
+Melbourne day: when the day ends while it is paused, the existing close rule applies — pause / resume / heartbeat / save / check / hint /
+submit all answer `closed` (§10.1) and the page returns to the Daily tab. A sprint has a clock per puzzle, so a pause per puzzle.
+
+**7. Transparency.** The attempt rows carry `pauses` / `paused_ms`, and each clear row copies them (`arena_sudoku_clears`,
+`arena_sudoku_special_clears`). The finish card shows **"Paused 2× · 3:10"** when the attempt was paused (tooltip: the clock was stopped
+that long while the board was hidden — it is not part of your time). Board rows whose clear was paused carry a small pause mark (⏸, drawn as
+a two-bar glyph in the muted text colour) before the time, with the tooltip **"paused 2 times (3:10)"** ("paused once (0:42)" for one):
+the stage top 5 (the stage panel and the in-game board use the same rows), the daily top 10, the sprint week board (summed over the five
+clears), and the overall ranking (summed over the player's best clears — the ones that make up the total time). **Times are not adjusted.**
+[Decision for Van: keep the marker, or drop it and show nothing.]
+
+**8. Restart** still deals a shuffled grid with a fresh clock (ladder only; §4.8). A paused attempt's open pause is closed (banked and
+counted) on the attempt that ends; the new attempt starts running at 0:00 with `pauses = 0`, `paused_ms = 0`, `last_seen_at = null` until
+its first heartbeat. Replays work as before.
+
+**9. What the first build got wrong (2026-09-28) and must not come back:** client-side time (every number is the server's), a pause that
+leaves the board visible (the board is not even drawn while paused), and pausing "other" attempts as a side effect (nothing in §4.3 needs
+it; several attempts run at once only if several boards are open at once, e.g. two windows side by side).
+
+**Client display.** The clock shows the race time, `elapsed + penalties`, re-synced from every RPC response (each heartbeat included) and
+ticking locally every 250 ms while running; frozen while paused. The note under it reads "Running — press P to pause", "Paused — the board
+is hidden", "Stopped at the clear", or "The puzzle has closed". Re-opening a running attempt (open on another tab or device, or one from an
+old page) says "Back to your grid — the clock is running (m:ss so far)"; a paused one opens on the cover with no toast. Tabs of the page in
+the same browser share a `BroadcastChannel('pp-sudoku-pause')`: a tab that pauses an attempt tells the others, and one showing that attempt
+covers at once (otherwise its next heartbeat would, within 15 s).
+
+**Residual loopholes (accepted — deliberate cheating only).** Photographing the board, then pausing (Van's accepted case). Reading the
+board from the page's memory or its network responses while the cover shows (the payload still carries the board — §3.4). Blocking only the
+heartbeat requests with developer tools while keeping the board visible, then letting the reconcile backdate a pause to the last heartbeat —
+the same class as the photograph (a normal player who loses the connection sees the cover at once). An outage of 45 s or less is counted.
 
 ### 4.4 Penalties
 - Each **mistake** adds 30 s. Each **hint** adds 60 s.
@@ -470,7 +631,8 @@ using auto-check, or spend hints, and top the overall ranking, which runs on rea
 
 ### 4.10 The 250 ms/cell guard
 A clear is refused (`reason:'too_fast'`) when `elapsed_ms < 250 × (empty cells in the attempt's puzzle − hinted cells)`. Nobody types
-that fast; a script does.
+that fast; a script does. Since mig 125 `elapsed_ms` is the running time (pauses excluded), so the floor also bounds "pause, solve on
+paper, resume, type it in": the typing still needs 250 ms of running clock per cell.
 
 ### 4.11 Tamper handling
 The following are all refused server-side:
@@ -644,14 +806,17 @@ Per-stage seeds are in the private `stage_secrets` table. Never commit the maste
 - **Overall ranking.** Sorted by `highest_stage` **desc** (the highest stage cleared, in order), then `reached_at` **asc** (the server
   time the next stage opened, clear time + penalties), then `user_id`.
   - Columns: #, Player, Stage, Reached (date + time), Total time. Total time is the sum of the player's best `final_ms` over every
-    cleared stage.
+    cleared stage. Mig 125: when any of those best clears was paused, the total carries the pause marker (§4.3, rule 7) with the summed
+    count and time; the order is untouched.
   - The player's own row is highlighted. If it falls outside the top 50 it is pinned below the table.
   - Players who have only done the tutorial don't appear. The page shows "Clear stage 1 to appear on the ranking."
   - Rule text on the page: "Highest stage cleared wins. On the same stage, whoever got there first ranks higher (server time,
     penalties included)."
 - **Per-stage top 5.** Each player counts once, by their best clear (min `final_ms`; ties go to the earlier `finished_at`), ranked
   with `rank()`.
-  - Rows show rank (a medal disc for 1–3), name (with "(you)" on your own row), time `m:ss.t`, and date (`d Mon`).
+  - Rows show rank (a medal disc for 1–3), name (with "(you)" on your own row), time `m:ss.t`, and date (`d Mon`). Mig 125: a clear
+    that was paused shows the small pause marker before its time — tooltip "paused 2 times (3:10)" — on the stage panel's top 5 and your
+    pinned row (the daily top 10 and the sprint week board too, §10). Medals, crowns and ranks use the time as it is.
   - If your rank is above 5, a dashed separator is followed by your row.
   - Below the table: "N players have cleared this stage."
 - **Crowns.** The first clear of a stage ever is written once and never moves. Since 2026-09-30 every crown is drawn as **one filled
@@ -738,7 +903,8 @@ a segmented tab control (**Stages · Ranking · Stats**) and a **"How it works"*
   | (3) Open now (`current`) | n = your `highest_stage` + 1 | The Arena pink border with the 2.4 s pulse (off under reduced motion). When others have cleared it too it also carries their crown and the gold tint; the pink border wins |
   | (4) Locked (`locked`) | beyond the open stage, and nobody has cleared it | Dimmed to 42% with a lock icon, as before |
 
-  - They combine with: `active` (an attempt with its clock running: a pink dot top-left and "playing"), `sel` (the selected tile: a
+  - They combine with: `active` (an attempt in progress: a pink dot top-left and "playing", or "paused" when its clock is stopped —
+    mig 125, from `overview.active[].paused`), `sel` (the selected tile: a
     pink outline), `boss` (a dashed border in the state's colour, Teal 55% when plainly locked, plus a "BOSS" label) and `front` (the
     frontier tile: a short gold rule, 3 px wide and 64% of the tile's height, drawn in the grid gap right after it, so the edge of the
     cleared run reads even mid-row; none after stage 300).
@@ -760,10 +926,11 @@ a segmented tab control (**Stages · Ranking · Stats**) and a **"How it works"*
     | State | Button | Note |
     |---|---|---|
     | Tutorial not done | "Finish the tutorial first" (disabled) | "Stage 0 opens the ladder." |
-    | Attempt in progress | "Continue — clock running" | "You opened this stage m:ss ago — the clock has been running ever since." For shuffled attempts: "This shuffled attempt started m:ss ago — …". Uses `active[].started_at` from the overview |
+    | Attempt in progress, paused (mig 125 — the usual case after leaving) | "Continue — paused at m:ss" | "Your attempt is paused at m:ss — the clock is stopped and the board stays hidden until you press Resume." ("Your shuffled attempt …" on retries / replays). Uses `active[].elapsed_ms` and `active[].paused` from the overview |
+    | Attempt in progress, running (open on another tab or device, or from a page before 125) | "Continue — clock running" | "Your attempt is still running (m:ss so far) — it may be open on another tab or device." |
     | Cleared | "Replay for a better time" | "Your best: m:ss.t · #r of n. Replays are shuffled and never change your ladder position." |
     | Current, penalty box running | "Opens in m:ss" (disabled; counts down every 500 ms and re-renders at 0) | "Serving penalty time from your last clear." |
-    | Current | "Play stage N" | "The clock starts when you press Play and never stops — leaving, refreshing or opening another stage keeps it running." |
+    | Current | "Play stage N" | "The clock starts when you press Play and stops only while the board is hidden — Pause, or leaving the page, pauses it." |
     | Locked | lock icon + "Locked" (disabled) | "Clear stage X to move up." |
 
   - Countdowns correct for client/server clock skew, estimated from `server_now` minus half the round trip.
@@ -778,8 +945,10 @@ between two first clears can therefore be undercounted; a port should return `cr
 **"How it works" modal.** Eight bullets:
 - **One rule** (rows, columns, boxes; bosses add the diagonals).
 - **One ladder** (stage 0 tutorial; each stage opens when the previous is cleared; the same grid for everyone).
-- **The clock is the server's**: "The clock starts when you press Play and never stops — leaving, refreshing or opening another stage
-  keeps it running. Restart deals a shuffled grid with a fresh clock."
+- **The clock is the server's** (mig 125): "It starts when you press Play and stops only while the board is hidden. Pause (or P) covers
+  the board and stops the clock; leaving pauses it for you — closing the tab, switching away, going back to the map, or losing the
+  connection. Resume shows the board and the clock runs on. Pausing is free and your time still ranks; rows with a pause carry a small
+  pause mark. Restart deals a shuffled grid with a fresh clock."
 - **Penalties** (auto-check +0:30 per wrong digit, hints +1:00, three per attempt; counted in your time and served before the next stage
   opens).
 - **Per stage** (top 5; gold, silver and bronze; crowns for good; the par star).
@@ -793,7 +962,8 @@ It closes with "Got it", a backdrop click or Esc.
 
 ### 7.2 Game view
 **Game bar.**
-- A "‹ Stages" button. It flushes the save and returns to the map; **the clock keeps running**.
+- A "‹ Stages" button. It **pauses** the attempt (an awaited `sudoku_pause` carrying the board — nothing is lost) and returns to the map
+  (mig 125; toast "Paused at m:ss — the clock is stopped until you resume").
 - Title "Stage N" with a tier chip, or "Stage 0 · Tutorial".
 - Chips:
   - "Boss · X-Sudoku" on bosses.
@@ -804,8 +974,11 @@ It closes with "Got it", a backdrop click or Esc.
 - A "Settings" button.
 
 **Timer row.**
-- A large race clock, `m:ss` or `h:mm:ss`, with a small line under it: "Running since Play — it never stops", "Stopped at the clear",
-  or on the tutorial "Practice clock — nothing is timed here".
+- A large race clock, `m:ss` or `h:mm:ss`, and beside it (mig 125) the **Pause** button — a pill with a two-bar pause glyph, "Pause" and
+  a `P` key hint (`#sdPauseBtn`, title "Pause (P): the board is hidden and the clock stops until you resume"; the key hint is dropped on
+  phones). It shows only on a live, timed board (not the tutorial, not after the clear). The 7 tools are unchanged. Under the clock a
+  small line: "Running — press P to pause", "Paused — the board is hidden", "Stopped at the clear", "The puzzle has closed", or on the
+  tutorial "Practice clock — nothing is timed here".
 - On the right: "+m:ss penalties" in red, or "No penalties"; "N mistakes · H/3 hints"; "par m:ss". The tutorial shows
   "Tutorial · no penalties".
 - The ghost track and the next-ghost line (§6) sit underneath.
@@ -826,7 +999,17 @@ It closes with "Got it", a backdrop click or Esc.
   - Tutorial only: **focus** (amber tint) and **target** (a pulsing amber ring).
 - A pop animation plays on placement. A shake plays when you try to edit a locked cell.
 
-There is **no pause cover and no paused board state**. The board is always visible while an attempt is open.
+**The cover (mig 125).** While the attempt is paused, `#sdGame` carries `.is-paused`, which makes the whole play area (`.sd-play`: the
+timer row, the ghost track, the board with every cell, note and colour, the tools, the Digits / Colours switch and both pads, the save
+line and the mini top 5) `visibility: hidden` — laid out but **not drawn** — and the cover `#sdCover` sits over it (`.sd-playwrap` is the
+positioned parent). The game bar above stays (title, chips, ‹ Stages, Settings: none of it shows the puzzle). The cover is a centred card
+(`min(460px, 100%)` wide, 64 px from the top on desktop — `min(8vh, 64px)` — 18 px on phones; opaque `--sd-panel-solid`, the Arena line,
+radius 18): a 54 px pink pause disc, the eyebrow "PAUSED", the title (the game bar's title with its chip), the frozen race clock (46 px,
+38 px on phones) with "includes +m:ss of penalties" under it when there are penalties, **"Paused — the clock is stopped while the board is
+hidden"**, the reason line (§4.3; red while the connection is lost), the primary **Resume** button (a play triangle + "Resume";
+"Resuming…" while the call runs; disabled "Reconnecting…" while offline) and the foot "Press Resume (or P) to show the board and run the
+clock again. Pausing is free, and your time still ranks." Input is refused while it shows: the board's pointer handler, every key except
+P, and every tool / pad action check the paused flag. The tutorial has no pause (its clock is practice only).
 
 **Tools (7)**, with their disabled states. On desktop they sit in a 4-column grid, with Restart spanning two columns in the second
 row; on phones all 7 sit in one row. (Mig 124: while hint tokens are banked the Hint tool reads "Hint · N tokens" and takes Restart's
@@ -868,14 +1051,16 @@ Keys are ignored while a modal is open or the focus is in an input.
 | H | Hint |
 | C | Toggle the pad between Digits and Colours (mig 124). In Colours, 1–6 paint the selected cell and 0 / Backspace / Delete clear its colour |
 | Esc | Close Settings, the rules or the confirm dialog, otherwise deselect |
+| P | Mig 125: **pause** (covers the board, stops the clock); on the cover, P **resumes** (an explicit key — nothing resumes by itself). Not with Ctrl / ⌘ / Alt (Ctrl+P prints), not in the tutorial |
 
-There is **no P (pause) shortcut** any more; P does nothing. Pointer input selects on `pointerdown` (with `preventDefault`), so it is
-fast on touch.
+While the board is covered every key except P is ignored. **Esc is deliberately not a pause key**: it already deselects, and a player
+would hide the board by accident [alternative: Esc pauses too]. Pointer input selects on `pointerdown` (with `preventDefault`), so it is
+fast on touch. The in-game key-help line reads "… · H hint · P pause · Esc deselect".
 
 ### 7.4 Settings
 There are 7 settings. They are stored per viewer in `localStorage['pp-sudoku-settings-v1']`, wrapped in try/catch, and are never
-trusted by the server. The first build's `autoPause` ("Pause when I leave the tab") setting was removed 2026-09-29; an old stored value
-is ignored.
+trusted by the server. The first build's `autoPause` ("Pause when I leave the tab") setting was removed 2026-09-29 and is **not** back:
+since mig 125 pausing on leaving is a rule, always on (§4.3), not a preference. An old stored value is ignored.
 
 | Key | Label | Default | Effect |
 |---|---|---|---|
@@ -919,18 +1104,26 @@ is ignored.
 
 ### 7.7 Autosave and resume
 - **Autosave** fires 1 s after the last change: `sudoku_save(attempt, grid, notes)`. Saves are serialized, and a change made during a
-  save queues another one.
-- **Keepalive save.** When the tab hides and on `pagehide`, the page sends a keepalive `sudoku_save` if there are unsaved changes, so a
-  move made just before a refresh or close is never lost. This is the only thing that happens on leaving; **the clock is not stopped**.
-- **Return to the tab.** The page re-syncs the clock through `sudoku_save` (§4.3).
-- **Resume.** `sudoku_start` returns the active attempt on any device, with grid, notes, hinted cells, wrong cells, mistakes, hints and
-  the full elapsed time; the clock kept running. The toast says "Back to your grid — the clock kept running (m:ss so far)". The map
-  marks active attempts, several of which can be running. Two devices writing at once is last-write-wins.
+  save queues another one. Mig 125: no save is sent while the board is covered (the pause carried the board; a move not yet saved is sent after Resume), and a
+  save answered `paused` covers the board.
+- **The keepalive pause (mig 125).** When the tab hides, on `pagehide` and on `beforeunload`, the page sends ONE keepalive
+  `sudoku_pause` carrying the board (§4.3), so a move made just before a refresh or close is never lost **and** the clock stops in the same
+  request. (Before 125 this was a keepalive `sudoku_save` and the clock kept running.)
+- **Return to the tab.** The cover stays; a pause beacon whose answer was never seen is confirmed with a normal `sudoku_pause` call. The
+  clock is re-synced by every heartbeat while the board runs (§4.3); there is no "re-sync through a save" any more.
+- **Resume after leaving.** `sudoku_start` returns the active attempt on any device, with grid, notes, hinted cells, wrong cells, mistakes,
+  hints and the elapsed time — normally **paused**, so the page opens on the cover; Resume shows the board. A running one (another tab or
+  device, or an old page) toasts "Back to your grid — the clock is running (m:ss so far)". The map marks active attempts ("paused" /
+  "playing"). Two devices writing at once is last-write-wins; on Resume a clean page takes the server's board if it differs ("Your board
+  changed on another device — this is the latest").
 
 ### 7.8 Completion screen (modal)
 - Confetti plays (§8).
 - Eyebrow: "Stage cleared", "Boss defeated" on X stages, or "Replay cleared". Title: "Stage N · Tier".
 - A large final time `m:ss.t`, with the breakdown "m:ss.t solving + m:ss penalties (M mistakes, H hints)" or "… · no penalties".
+- Mig 125: when the attempt was paused, a muted line under the breakdown (`#sdDonePause`): the pause glyph and **"Paused N× · m:ss"**
+  (N and the time from the submit answer's `pauses` / `paused_ms`; tooltip "The clock was stopped for m:ss while the board was hidden — it
+  is not part of your time"). Hidden for an unpaused clear and for the tutorial. The same line shows on the daily / sprint completion.
 - **Awards list**, each shown when it applies:
   - rank or medal ("Gold — #1 of N on this stage", or "#r of N on this stage")
   - crown ("First clear — the crown on stage N is yours for good"), on the gold card with the solid crown
@@ -963,7 +1156,7 @@ action.
 | 5 | Notes | Notes 2 and 6 in C. Placing a digit in C gets "Use Notes for this one — turn on the pencil (N) first." |
 | 6 | Notes clear themselves | 6 in D; notes mode is switched off on entry. The 6 disappears from C's note |
 | 7 | The pad keeps count | 2 in C |
-| 8 | The clock never stops | Next (information only): "The clock starts when you press **Play** and **never stops** — leaving, refreshing or opening another stage keeps it running. There is no pause. **Restart** deals a shuffled grid with a fresh clock. (This practice clock isn't timed.)" |
+| 8 | The clock stops only while the board is hidden (mig 125; it was "The clock never stops") | Next (information only): "The clock starts when you press **Play**. Press **Pause** (or **P**) and the board is covered while the clock stops; **Resume** brings both back. Leaving pauses it for you — closing the tab, switching away, going back to the map or losing the connection. Pausing is free and your time still ranks. **Restart** deals a shuffled grid with a fresh clock. (This practice clock isn't timed.)" The tutorial itself has no Pause button |
 | 9 | Mistakes and hints | Using a hint. It is free in the tutorial and explains itself ("…In a real stage that costs 1:00.") |
 | 10 | How the ranking works | Next. Covers the top 5, medals, crowns, the overall rule and bosses |
 | 11 | Finish the grid | The completed grid (local check; wrong digits are shown red) |
@@ -1038,14 +1231,18 @@ rules defeat the attribute.
 The hook is **read-only** with respect to the server; everything still goes through the RPCs and is validated there.
 
 It exposes:
-- `state()`, returning `{stage, attempt, grid, status, mistakes, hints, penaltyMs, elapsed, shuffled, tutorial, tutorialStep}` (no `paused`)
+- `state()`, returning `{stage, attempt, grid, status, mistakes, hints, penaltyMs, elapsed, shuffled, tutorial, tutorialStep}` — mig 125
+  adds `paused`, `pauseAck` (the server has confirmed the pause), `pauseWhy` (`manual` · `left` · `away` · `server` · `elsewhere` ·
+  `offline` · `back`), `pauses`, `pausedMs`, `offline`, `heartbeating`
 - `select(i)`, `input(d, asNote)`, `erase()`, `undo()`, `redo()`
 - `hint()`
 - `openStage(n)`, `startTutorial()`, `setTab(t)`, `selectStage(n, scroll)`
-- `flushSave()`, `resyncClock()`, `openSettings()`, `settings()`, `setSetting(k, v)`
+- `flushSave()`, `resyncClock()` (since 125: a forced heartbeat), `openSettings()`, `settings()`, `setSetting(k, v)`
+- mig 125: `pause()`, `resume()`, `beat()` — the page's own Pause / Resume / heartbeat paths (the first build had a `pause()` /
+  `resume()` pair too; it was removed on 2026-09-29 and is back with the blind pause)
 
-`pause()` and `resume()` were removed with the pause feature. Mig 124 added `openDaily`, `openSprint`, `selectDay`, `setPadMode`,
-`colour`, `loadEvents`, `daily()`, `sprint()` and more `state()` fields (§10.7).
+Mig 124 added `openDaily`, `openSprint`, `selectDay`, `setPadMode`, `colour`, `loadEvents`, `daily()`, `sprint()` and more `state()` fields
+(§10.7).
 
 The E2E harness depends on it. It can be dropped in the port if pp-os QA drives the UI another way.
 
@@ -1110,8 +1307,14 @@ The E2E harness depends on it. It can be dropped in the port if pp-os QA drives 
     content column. That puts it bottom-right and always **after** the content, never under it. Verified in both themes at 1440 and
     390 px.
 - **Icons.** One outlined SVG set with `stroke: currentColor` (brand rule: one colour per set). Covers: undo, redo, erase, pencil,
-  auto grid, bulb, restart, gear, back, lock, check, star, trophy, clock, arrow-up, boss ×. (The pause icon went with the Pause
-  button.)
+  auto grid, bulb, restart, gear, back, lock, check, star, trophy, clock, arrow-up, boss ×. Mig 125 brings back a pause glyph — two
+  rounded bars (`rect 5.5,4 4.5×16 r1.4` and `rect 14,4 4.5×16 r1.4`, viewBox 24) — and a play triangle for Resume, both **filled** in
+  `currentColor` (one colour each, like the crown): on the Pause button, the cover disc, the finish-card line and the board marker.
+- **Mig 125 classes:** `.sd-clockrow` (clock + Pause button), `.sd-pausebtn`, `.sd-playwrap` (the cover's positioned parent),
+  `#sdGame.is-paused .sd-play { visibility:hidden }`, `.sd-cover` / `.sd-cover .card` (`.glyph`, `.eb`, `.clk`, `.clksub`, `.msg`,
+  `.why` / `.why.warn`, `.foot`), `.sd-pzmark` (the board-row marker, 10 px, `--sd-mut`), `.sd-done-pause`. No new colour token: the cover
+  uses `--sd-panel-solid`, `--sd-line`, `--sd-accent(-soft)`, `--sd-mut`, `--sd-faint` and `--sd-bad` (the connection-lost line). Page
+  weight after 125: 197 KB (176 KB before), no new library.
 - **The crown** is the one filled icon (Van 2026-09-30: "fully colored"), still a single colour: `svg.ico-crown` (viewBox 24) is a
   body path `M3.6 9l4.3 3.5L12 5.8l4.1 6.7 4.3-3.5-1.6 8.2H5.2z`, a base band (rect 4.9, 19.1, 14.2 × 2.4, rx 1.2) and three ball
   tips (circles at 3.6/8.7 r1.75, 12/5.3 r1.85, 20.4/8.7 r1.75). CSS fills it with `--sd-crown` and strokes it with `--sd-crown-edge`
@@ -1137,7 +1340,7 @@ printed.
 |---|---|---|
 | `scripts/generate-sudoku-stages.test.mjs` | `node --test scripts/generate-sudoku-stages.test.mjs` | 9 tests: the counting solver (unique, multiple and contradictory grids); geometry (27 / 29 units, X intersections); a deterministic PRNG and valid random grids (X diagonals included); known puzzles grade right (the Wikipedia example → naked single, AI Escargot → trial depth 2); the grader audit over 80 random puzzles, classic and X (no technique ever removes the true digit; at least 8 techniques exercised); `buildCandidate` is deterministic and honours its spec; symmetry transforms keep grids valid, puzzles unique and grades identical, classic and X; an end-to-end small set (30 stages incl. boss 25) builds, verifies and reproduces; **the seeded set** (when `scratch/sudoku-stages.json` or `SUDOKU_STAGES_FILE` exists): ≥ 300 stages, uniqueness on every stage, monotonic bands, clue ramps, valid X bosses, real chip labels. 9/9 pass |
 | generator `--verify` / `--reproduce` | §5.8 | The stored set is sound, and every stage regenerates from its stored seed |
-| `scratch/_sudoku-e2e.mjs` | `node scratch/_sudoku-e2e.mjs` (about 10.5 min). `--keep` skips cleanup; `--cleanup-only` just cleans | The full E2E. **242/242 in 628 s** in the final run (2026-09-30 evening, after migration 124): the original **128** checks first and unchanged (128/128 in 387 s before the twists), then Phase D (55, the twists through the RPCs) and Phase E (58, the twists in the browser), and a catalogue-integrity check at cleanup (§10.9). Writes screenshots and `e2e-results.json` to `Desktop\arena-sudoku-qa\` (twist shots in `twists\`). Since the game went live it runs against a ladder with **staff on it**: checks are relative to the live data, real names never reach a log or a screenshot (below), and cleanup proves every staff row that existed before the run is still there |
+| `scratch/_sudoku-e2e.mjs` | `node scratch/_sudoku-e2e.mjs` (about 12.5 min). `--keep` skips cleanup; `--cleanup-only` just cleans | The full E2E. **286/286 in 748 s** in the final run of 2026-10-02 (after migration 125): the original 128 (twelve rewritten where they asserted the replaced "clock never stops" rule, or used a date-dependent cell — listed under the phases below; Phase C gained 4), Phase D 55, Phase E 59 (one new: the reload pauses the daily), **Phase F 39** (the blind pause, below), the catalogue check; pause shots in `pause\`. Before that, **242/242 in 628 s** in the final run of 2026-09-30 evening (after migration 124): the original **128** checks first and unchanged (128/128 in 387 s before the twists), then Phase D (55, the twists through the RPCs) and Phase E (58, the twists in the browser), and a catalogue-integrity check at cleanup (§10.9). Writes screenshots and `e2e-results.json` to `Desktop\arena-sudoku-qa\` (twist shots in `twists\`). Since the game went live it runs against a ladder with **staff on it**: checks are relative to the live data, real names never reach a log or a screenshot (below), and cleanup proves every staff row that existed before the run is still there |
 | `scratch/_sudoku-map-shot.mjs` | `node scratch/_sudoku-map-shot.mjs` (about 1.5 min) | The four map states (2026-09-30) against the live ladder: the test account clears stages 1–2 through the real RPCs while staff have cleared 1–4, then every state is asserted in the DOM at dark/light × 1440/390 (classes, computed colours and opacity, medal and time, crowns only where they belong, the frontier pill on the right band, the gold rule sitting in the gap after the frontier tile only, the key's four labels and its 1-row / 2 × 2 layout, every crown filled `rgb(255,169,31)`). "Crown mine" and the completion crown can't happen live without taking a staff member's crown, so one extra pass rewrites the overview / stage-board / submit responses in the browser only (CDP Fetch) and its files carry `-patched`. Cleanup deletes the test account's rows and proves the staff rows are untouched. **57/57** |
 | `scratch/_sudoku-twists-sql-smoke.mjs` | `node scratch/_sudoku-twists-sql-smoke.mjs mig\|nomig <out.sql> [real]`, then `supabase db query --linked -f <out.sql>` | Mig 124 (2026-09-30): a `begin … rollback` functional test run as the hub test account (`request.jwt.claims`), so nothing persists. `mig` inlines the migration (a dry run before applying); `real` uses the seeded catalogue instead of synthetic rows. Covers daily start / resume / tomorrow / yesterday / no puzzle / restart refused, colours saved + validated, tokens on daily ignored, the daily clear, overview + calendar + boards, closed-day refusals, a ladder token earned and spent, stats and ranking keys, the sprint start / clear / overview |
 | `scratch/_sudoku-twists-smoke.mjs` | `node scratch/_sudoku-twists-smoke.mjs <outDir> [dark\|light] [width]` | Mig 124: a read-mostly signed-in boot (home, Daily tab, yesterday read-only, Sprint tab, Stats), counts page errors; deletes the player row the visit creates |
@@ -1148,8 +1351,12 @@ printed.
 | `scratch/_sudoku-boss-shot.mjs` | `node scratch/_sudoku-boss-shot.mjs` | Temporarily sets the test account's `highest_stage = 24` through the service role, then deletes all its Sudoku rows in `finally`. Proves boss stage 25 opens on the canonical X grid with both diagonals shaded (17 cells), the boss chip shows, a digit repeated **only on a diagonal** is flagged as a conflict, and there is no overflow in either theme at 1440 or 390. **16/16** (2026-09-30, `-v3` shots, names masked) |
 | `scratch/_sudoku-xform-sql-test.sql` | `supabase db query --linked -f scratch/_sudoku-xform-sql-test.sql` | For all 300 stages: the SQL shuffle gives 0 invalid rows, columns, boxes or diagonals, preserved clue counts, and givens consistent with the transformed solution |
 | `scratch/_syntax-gate.cjs` | `node scratch/_syntax-gate.cjs tools/arena-sudoku.html tools/arena.html index.html` | `vm.Script` compiles each inline `<script>` block, plus a strict UTF-8 and U+FFFD check. 0 errors |
+| `scratch/_sudoku-node-check.cjs` | `node scratch/_sudoku-node-check.cjs tools/arena-sudoku.html` | Mig 125: extracts every inline `<script>` to a temp file and runs `node --check` on it (run after every edit). 3 scripts, 0 failed |
+| `scratch/_sudoku-pause-sql-smoke.mjs` | `node scratch/_sudoku-pause-sql-smoke.mjs mig\|nomig` (runs `supabase db query --linked` itself) | Mig 125: a `begin … rollback` functional test as the hub test account (`request.jwt.claims`), nothing persists. `mig` inlines 125 (the dry run before applying), `nomig` tests the live database. `now()` is frozen in a transaction, so time passing is simulated by moving the attempt's timestamps back. 29 checks: fresh attempt keys; the never-heartbeated gate; the first heartbeat; pause with the board; the four `paused` refusals; a second pause doesn't save; frozen elapsed on re-open; `overview.active`; resume banks exactly 30 000 ms; 40 s silence counted; a 60 s outage reconciled from `last_seen_at`, frozen at the last heartbeat, resume banks 60 000; the clear (elapsed = wall − pauses, the clear row, the best view, the board, the ranking); `over` after a clear; restart banks an open pause and starts clean; a pause board that rewrites a given / has notes out of range raises 22023 and does not pause; a paused daily (re-open, overview, resume, clear, board); a sprint puzzle paused alone, its clear and the week total; a closed day. **29/29** both before and after applying |
+| `scratch/_sudoku-pause-probe.mjs` | `node scratch/_sudoku-pause-probe.mjs <outDir> [dark\|light] [width]` | Mig 125 development probe: the test account on stage 1 in a real browser — the Pause button and the first heartbeat, P covers everything and the moves ride along, frozen clock, input refused, Resume banks the pause, a hidden tab's keepalive pause, the cover staying on return, the offline cover and reconnect, ‹ Stages, re-opening on the cover, a navigation's keepalive pause with the last move; deletes the test account's rows. **14/14** (dark 1440, light 390) |
+| `scratch/_sudoku-fn-parity.mjs` | `node scratch/_sudoku-fn-parity.mjs <live.json> 122.sql 124.sql 125.sql` (live.json = `pg_proc` names + `md5(prosrc)` from `supabase db query`) | Mig 125: every live `sudoku*` / `_sudoku*` function body equals the latest migration that defines it. 32/32 before 125, **42/42** after |
 | `scripts/check-static.mjs` | `node scripts/check-static.mjs` (the repo CI) | `node --check` on every `shared/` and `scripts/` JS file, and no broken local refs |
-| advisors | `supabase db advisors --linked --type security` | Only `authenticated_security_definer_function_executable` (WARN), 11 of them for the Sudoku RPCs, which is expected. It was 13 before the two pause RPCs were dropped on 2026-09-29. No anon, search_path, RLS or definer-view findings |
+| advisors | `supabase db advisors --linked --type security` | Only `authenticated_security_definer_function_executable` (WARN): 11 for the Sudoku RPCs after 122, 16 after 124, **19 after 125** (the three pause RPCs), which is expected (84 project-wide, all the same lint). No anon, search_path, RLS or definer-view findings; the seven new 125 helpers are not exposed |
 | `scratch/_sudoku-bots-gone.mjs` | `node scratch/_sudoku-bots-gone.mjs` | No throwaway `sudoku-qa-*` auth users remain |
 | probes | `_sudoku-probe.mjs`, `_sudoku-hist.mjs`, `_sudoku-rare.mjs`, `_sudoku-tutorial-design.mjs`, `_sudoku-smoke.mjs` | Development probes: yields per band, grade histograms, rare-technique yields, the search that found the tutorial grid, a boot smoke test |
 
@@ -1164,9 +1371,10 @@ printed.
   - a canonical first attempt, with no solution or xform in the payload, resuming the same attempt
   - save refusals (bad grid, changed givens, bad notes, someone else's attempt)
   - check: wrong charged once, right free, given and out-of-range refused
-  - **the removed RPCs** `sudoku_pause` and `sudoku_resume` return `PGRST202` (function not found)
-  - **the clock runs with nobody calling**: re-opening the attempt after 3.2 s of silence shows ≥ 3.1 s more elapsed, and the
-    payload has no `paused` field
+  - (mig 125, rewritten) **the pause RPCs exist** — `sudoku_pause`, `sudoku_resume`, `sudoku_heartbeat` on a missing / someone else's
+    attempt refuse with `P0002`, and anon is refused (until 125 this check asserted `PGRST202`, function not found)
+  - **the clock runs with nobody calling** on a never-heartbeated attempt (what a pre-125 page makes): re-opening it after 3.2 s of
+    silence shows ≥ 3.1 s more elapsed, and `paused` is false
   - the hint is correct (+60 s) and can't repeat
   - incomplete refused; a wrong full grid returns only a count (+1 mistake)
   - an instant clear refused (the floor)
@@ -1179,23 +1387,31 @@ printed.
   Arena card's leader is whoever leads the live ranking.
 - **Phase B, leaderboard setup.** Bot B clears stage 1 and opens stage 2.
   - **Opening another stage never stops a clock.** Bot B opens a stage-1 replay two seconds in and re-opens stage 2 1.5 s later. The
-    stage-2 clock gained ≥ 3.4 s, and both clocks are running at once.
+    stage-2 clock gained ≥ 3.4 s, and both clocks are running at once. (Still true after 125: nothing pauses another attempt, and the
+    bots never heartbeat.)
   - A restart proves the shuffle and the restart count, and bot B clears stage 2.
   - Bot A waits out its 90 s penalty box and clears stage 2 later. The ranking puts B above A on the same stage (earlier `reached_at`).
 - **Phase C, the browser**, as the hub test account. Sign-in: a service-role `generateLink` magic link, then `verifyOtp` in the page;
   no token is ever printed. The phase covers:
   - the map draws 301 tiles; no overflow
-  - the tutorial through the UI, with the note auto-clear and the clock step saying the clock never stops; completion stored
-  - Settings has 7 options with no auto-pause, and there are 7 tools with no Pause button and no paused board
+  - the tutorial through the UI, with the note auto-clear and the clock step (mig 125: "stops only while the board is hidden", Pause / P,
+    leaving pauses it, Restart's fresh clock); completion stored
+  - Settings has 7 options with no auto-pause toggle (auto-pause is a rule, not a setting); the 7 tools are unchanged; the Pause button
+    sits by the clock and the cover is hidden while playing (mig 125)
   - stage 1 on the canonical grid; auto-check turned on through Settings; the wrong digit shown red; a hint
-  - pressing **P does nothing**: the clock keeps running and the board stays visible
-  - **navigating away for 3 s** (to the Arena page and back): the panel offers "Continue — clock running", the same attempt and grid
-    come back, and the clock gained ≥ 3 s
-  - **a refresh straight after a move**, too fast for the 1 s autosave: the keepalive save on pagehide kept the digit, and the clock
-    kept running
-  - finishing through the UI; the server elapsed is pure wall clock (finish − start) and includes the time away; penalties applied; the
-    modal shows the server time; Next waits out the penalty box
-  - the stage top 5 (the faster bot outranks you; the crown shows the first clearer)
+  - (mig 125, rewritten from "P does nothing") **P pauses**: the cover hides the whole board (no cell, note or pad drawn) and the clock
+    freezes; **P again resumes** from where it stopped
+  - **navigating away for 3 s** (to the Arena page and back): the panel offers "Continue — paused at m:ss", re-opening shows the cover
+    first, and after Resume the same attempt and grid come back with the time away **not** counted (mig 125; it was "counted")
+  - **a refresh straight after a move**, too fast for the 1 s autosave: the keepalive pause on pagehide carried the digit; the page
+    re-opens on the cover and the reload time is not counted; the notes come back exactly as they were on screen (mig 125: the pause
+    carries the whole board, so a hint's own peer-note clean-up is saved too — before, that clean-up was never saved and the refresh
+    brought an old note back, which the check expected)
+  - finishing through the UI (the last cell only after the floor has run — the floor counts running time); the server elapsed is
+    finish − start − paused_ms to the ms; three pauses (P, away, refresh) on the attempt and on the clear row; the finish card says
+    "Paused 3× · m:ss"; penalties applied; the modal shows the server time; Next waits out the penalty box
+  - the stage top 5 (the faster bot outranks you; the crown shows the first clearer; mig 125: my paused clear carries the marker
+    "paused 3 times (m:ss)")
   - the ranking order; the stage-2 countdown, then the unlock, on the same canonical grid the bots got
   - tampering from the page (skip, bad shape, rewritten givens, direct secret reads)
   - no solution in any browser response; no page errors
@@ -1209,11 +1425,43 @@ printed.
   Sudoku.
 - **Phase D, the twists through the RPCs** (mig 124, after every original phase so their checks see the ladder exactly as before) and
   **Phase E, the twists in the browser** (dark / light × 1440 / 390; a third bot, `sudoku-qa-c@…`, signs in in its own browser context)
-  — the full list is in §10.9. The two phases share one block scope so no name can clash with the original phases.
-- **Cleanup** always runs, in `finally`. It deletes every crown, clear, attempt and player row of the three accounts and deletes the
-  throwaway auth users, then checks that no test row is left and that **every staff row that existed before the run still exists**
+  — the full list is in §10.9. The two phases share one block scope so no name can clash with the original phases. Since mig 125 an
+  attempt left earlier re-opens on the cover, so the browser flows press Resume first (`resumeIfPaused`), the floor helpers count running
+  time only, and the main tab is brought to the front before it plays (a background tab is "hidden" — headless too — and pauses itself).
+  The 2026-09-30 colour check used a fixed cell 4 as "a given"; on 2026-10-02 cell 4 is the daily's third empty cell, so the check now
+  uses the first given.
+- **Phase F, the blind pause** (mig 125; after every earlier phase, in the same block scope) — listed under "Phase F" below.
+- **Cleanup** always runs, in `finally`. It deletes every crown, clear, attempt and player row of the five accounts (the pause facts
+  live on those rows) and deletes the four throwaway auth users (`sudoku-qa-a…d`), then checks that no test row is left and that **every staff row that existed before the run still exists**
   (by primary key, per table). Staff rows are never written: every write is a test account's own RPC call or a delete filtered by a
   test account's id. While a run is going, the test accounts show on the stage 1–2 boards for a few minutes.
+
+**Phase F, the blind pause** (mig 125, 2026-10-02; after Phases A–E so their checks see the game as before).
+- **F1, through the RPCs** — bot A's open stage-1 replay from Phase A (never heartbeated): the payload's pause keys (`heartbeat_ms`
+  15 000, `stale_after_ms` 45 000) and `last_seen_at` null; the first heartbeat stamps it; a pause that carries the board saves it and
+  stops the clock; **3.2 s later the server elapsed is identical to the millisecond**; save / check / hint / submit refused `paused` (with
+  the message); a second pause neither changes anything nor saves its board, and the refused check / hint charged nothing; resume banks
+  ≥ 3.2 s (floored), counts one pause and the clock goes on from where it stopped (± 0.4 s); 1.2 s later it shows +1.2 s; **an outage** —
+  the bot's own `started_at` / `last_seen_at` moved back 60 s through the service role — the next save is refused `paused`, `paused_at`
+  equals `last_seen_at`, the elapsed is frozen at the value of the last heartbeat (± 5 ms), and resume banks the whole ≥ 60 s gap as one
+  more pause; 40 s of silence (under 45 s) is counted as play; the clear's elapsed = finish − start − paused_ms (± 2 ms) and the clear row
+  carries pauses 2 and the banked time. **The gate:** bot B's stage-1 replay from Phase B (never heartbeated, silent for minutes) is never
+  auto-paused or refused. **Restart** of a paused attempt banks the open pause on the old one and starts the new one at 0:00 with zeroed
+  counters and `last_seen_at` null. **Sprint:** bot A's fifth puzzle pauses alone (the four cleared untouched), its clear carries the
+  pause, and the week board sums it. **Daily:** a fourth bot, `sudoku-qa-d@…` (the others had cleared today's), pauses today's daily — it
+  re-opens paused, the overview says so — and its clear, clear row and the day's board row carry the pause. **Marker data:** bot D's
+  stage-1 first clear with a pause shows `pauses` / `paused_ms` on the stage board's `me` row and the ranking's `me` row, and every row has
+  the keys.
+- **F2, in the browser** (the test account) — dark 1440: the map tile reads "paused" and the panel "Continue — paused at m:ss"; the
+  cover shows the stage, the frozen time, the message and one Resume, with **nothing of the puzzle drawn** (0 visible cells, notes,
+  pad keys, tools, ghost markers, mini-board rows — computed `visibility`); no overflow, the logo rule; Resume; **a real tab switch**
+  (opening another tab makes this one hidden, headless too) pauses it by itself, covered here and paused on the server; the other tab
+  opens the same attempt on the cover; back on the first tab the cover stays and the pause is confirmed; a `BroadcastChannel` message
+  from another tab covers the board at once; a synthetic `visibilitychange` → hidden covers it and the keepalive pause lands; stage 2
+  finished with its pauses → the finish card "Paused N× · m:ss" equals the clear row; the stage top 5 marks my row "paused N times
+  (m:ss)"; the ranking row carries the marker. Light 1440: stage 3 paused with the Pause button, cleared, the finish card and the marker.
+  Phones (dark / light 390): stage 4 on the cover; light 390 also loses the connection (`setOfflineMode`) — covered at once, Resume
+  disabled "Reconnecting…" — and comes back: the pause reaches the server and Resume is offered. No solution in any response.
 
 **Screenshots** go to `Desktop\arena-sudoku-qa\`: 01 and 11 map; 02, 02b and 13 tutorial; 03 tutorial notes; 04 settings; 05 and
 14 mid-game with notes and highlights; 07 and 16 completion; 08 and 12 top 5; 09 and 17 ranking; 10 stats; 18 logo at the page bottom;
@@ -1225,7 +1473,12 @@ printed.
   name shown as "Staff A/B/…". 22 is the map for a player who has cleared 2 stages while staff have cleared 4 (dark and light, 1440
   and 390). 23, 26 and 27 carry `-patched` (browser-only response rewrites, no database write). 19 and 20 were not re-shot in v3:
   those pages carry other games' staff names and did not change, so the v2 files stand.
-- 02b-tutorial-clock-step-v2 shows the new "clock never stops" tutorial step.
+- 02b-tutorial-clock-step-v2 shows the "clock never stops" tutorial step of the 2026-09-29 build; the `-v4` file of the 2026-10-02 run
+  (re-taken by every E2E run) shows the blind-pause step.
+- **`pause\`** (mig 125, 2026-10-02): `p01-cover-dark-1440` / `p01-cover-light-1440` (the cover), `p02-finish-pauses-dark-1440` /
+  `-light-1440` (the finish card with "Paused N× · m:ss"), `p03-board-marker-dark-1440` / `-light-1440` (the stage top 5 with the
+  marker on my row), `p03b-ranking-marker-dark-1440`, `p04-cover-mobile-dark-390` / `-light-390` (the phone cover),
+  `p05-offline-light-390` (the connection-lost cover). Staff names are masked as in every other shot.
 
 ---
 
@@ -1233,7 +1486,8 @@ printed.
 
 Van approved the twists on 2026-09-30 (brief `hub-arena-sudoku-twists.md`, plan `PLAN-sudoku-twists.md`, both on his Desktop): a daily
 challenge, a colour highlighter, streak badges, hint tokens, a weekly sprint and, optionally, Killer-cage bosses. The first five are built,
-applied and verified; the Killer cages are a plan only (§10.8). Every rule Van had settled still holds: **the clock never stops after Play**;
+applied and verified; the Killer cages are a plan only (§10.8). Every rule Van had settled at the time still held: **the clock never stops after Play** (replaced on 2026-10-02 by the blind pause, §4.3 —
+it applies to the daily and the sprint too);
 **penalties, not strikes** (+0:30 a wrong digit, +1:00 a hint, three hints per attempt, every puzzle completable); **the crown is the first
 clear and gold is the best time**; stage order; one grid per stage; the per-stage top 5; the server clock and server-side penalties; every
 write through an RPC; the ranking by highest stage, then who got there first. The ladder behaves exactly as before (the original E2E checks
@@ -1315,7 +1569,8 @@ five new views are `security_invoker = on` over public tables. `supabase db advi
   read-only from then on.
 - One attempt and one clear per player per day. There is **no restart** — a fresh clock would let a player study the grid and then reset.
   The page's **Clear** wipes entries, notes and colours while the clock keeps running.
-- The clock never stops once the puzzle is opened (server `started_at` → finish). Same penalties, the same 250 ms/cell floor, the same
+- The clock starts when the puzzle is opened (server `started_at`) and, since mig 125, stops only while its board is hidden (§4.3; a paused
+  daily still belongs to its day and closes at midnight like any open one). Same penalties, the same 250 ms/cell floor, the same
   count-only wrong submit. Hint tokens do not apply (§10.5).
 - The day's board: top 10 by `final_ms`, then `finished_at` (`rank()`); gold, silver and bronze are the day's ranks 1–3, live like stage
   medals.
@@ -1373,7 +1628,8 @@ rank, players, medal, par_ms, par_beaten, streak_days, best_streak, new_badge, n
 **Client surfaces.**
 - **Home:** an events strip between the hero and the tabs. The "Today's puzzle" card: a date tile, the band chip, par, a medal disc when
   top 3, a status line (the day's clearers and fastest, or "Your clock is running — m:ss so far" live, or "Cleared in m:ss.t · #r of n
-  today") and a live countdown "Next puzzle in h:mm:ss". Button: "Play today's puzzle" / "Continue — clock running" / "Today's board".
+  today") and a live countdown "Next puzzle in h:mm:ss". Button: "Play today's puzzle" / "Continue — clock running" (mig 125: "Continue — paused" with the status
+  line "Paused at m:ss — the clock is stopped.", the time taken from `my.elapsed_ms` / `my.paused`, not from `started_at`) / "Today's board".
   A click anywhere else on the card opens the Daily tab.
 - **Daily tab** (`?tab=daily`, `&day=YYYY-MM-DD` preselects a day): the rules line; the today box (weekday, band, clues, par, status,
   tomorrow's band and the countdown, Play / Continue); the **Last 30 days** calendar — a Monday-first 7-column grid, max 520 px wide, cells:
@@ -1447,7 +1703,8 @@ rank, players, medal, par_ms, par_beaten, streak_days, best_streak, new_badge, n
 - A sprint week runs Monday 00:00 to Sunday 23:59, Melbourne. Its key is the Monday (`day`), its label the ISO week
   (`to_char(day, 'IYYY-"W"IW')`, e.g. 2026-W40).
 - Five puzzles, one per band: 1 Basic, 2 Medium, 3 Hard, 4 Expert, 5 Master (Extreme is left out). Classic, canonical, the same for everyone.
-- Any order. Each puzzle's clock starts when that puzzle is opened and never stops; resume any time during the week. One attempt per puzzle
+- Any order. Each puzzle's clock starts when that puzzle is opened and (mig 125) stops only while its board is hidden — a pause per
+  puzzle; resume any time during the week. One attempt per puzzle
   and no restart (Clear, as on the daily). The same penalties; tokens don't apply.
 - One total per player: the sum of the five `final_ms`, penalties included. Only players with all five are ranked (`row_number` by the
   total, then the time of their fifth clear, then user id); the others are "still racing".
@@ -1480,7 +1737,8 @@ A sprint clear (via `_sudoku_finish_special`) also returns `sprint:{done, total_
 - **Home:** the "Weekly sprint · Week N" card: five pips (teal cleared, pink running), "k of 5 done", the total and rank once complete, the
   leader, "Ends in Nd hh:mm"; button "Play the sprint" / "Continue the sprint" / "Sprint board" (all open the tab).
 - **Sprint tab** (`?tab=sprint`): the rules; a line with the week's dates, the end countdown and my progress; five cards (tier stripe,
-  "Puzzle n", tier, clues · par, "Not started" / "Clock running — m:ss" live / "Cleared in m:ss.t · #r", the fastest, Play / Continue;
+  "Puzzle n", tier, clues · par, "Not started" / "Clock running — m:ss" live (mig 125: "Paused at m:ss" while paused, the time from `my.elapsed_ms`) /
+  "Cleared in m:ss.t · #r", the fastest, Play / Continue;
   5 columns on desktop, 3 at ≤ 1060 px, 2 on phones); "Sprint winners" for the last eight ended weeks ("The first winner is crowned when
   this week ends…" until then); the side board "This week's board": top 10 by total with medal discs and streak chips, my row pinned as
   "You · k/5", "N finished · M still racing".
@@ -1582,11 +1840,20 @@ and describe the plan"). It was not started, so there is no Killer code anywhere
   live.
 - **No Sudoku "Live now" entry** on the Arena page, because attempts are private by design. The hub Arena card has no stat line (it
   follows the Skribbl pattern).
-- **Attempts never expire.** An abandoned active attempt stays active, with its clock running, indefinitely. `status 'abandoned'`
-  exists but nothing sets it, and there is no sweeper. That is harmless, because only finished attempts rank.
-- **No pause, by design** (Van, 2026-09-29). A stage left open overnight carries the night in its time. The remedy is Restart (a shuffled
-  grid with a fresh clock) or a replay after the first clear. A tired player can't bank time, and the solve-it-outside loophole stays
-  closed.
+- **Attempts never expire.** An abandoned active attempt stays active indefinitely — since mig 125 normally **paused** (the page pauses on
+  leaving, or the reconcile does 45 s after the last heartbeat); one from a pre-125 page keeps running until the new page opens it.
+  `status 'abandoned'` exists but nothing sets it, and there is no sweeper. That is harmless, because only finished attempts rank.
+- **The blind pause's residual loopholes** (accepted by Van, 2026-10-02 — §4.3): photographing the board, then pausing; reading the board
+  from the page's memory or its responses while covered; blocking only the heartbeat requests so the reconcile backdates a pause. All are
+  deliberate cheating; an honest player never gains. An outage of 45 s or less is counted as play. (Until 2026-10-02 there was no pause at
+  all, so a stage left open overnight carried the night in its time.)
+- **A paused attempt stays paused** indefinitely, like an abandoned one (no sweeper). Harmless: only finished attempts rank.
+- **The cover hides the board, not the data**: the payload still carries the grid while paused (§3.4); withholding it was considered and
+  rejected (resume → read → pause takes a second, and an old page would crash on a null grid).
+- **Two windows side by side** on one attempt can both show the board (neither is hidden), both heartbeat, and the clock runs. Tabs in
+  one window cannot: the hidden one pauses, and the tab channel covers the other.
+- **A pre-125 page** (still open or cached when 125 went live) never heartbeats, so its attempts keep the never-stopping clock until the
+  new page opens them (§4.3, the gate). Once the new page is everywhere this is moot.
 - **No admin tools** to void a clear, reset a player or move a crown. Only SQL through the service role.
 - **Hint explanations** detect only naked and hidden singles; anything else says "found with a harder technique".
 - **Two devices** on one attempt are last-write-wins for grid and notes; the clock stays correct because it is server-side.
@@ -1632,3 +1899,4 @@ and describe the plan"). It was not started, so there is no Killer code anywhere
 - 2026-09-29 — The clock never stops after Play: Pause, the auto-pauses and the one-clock-at-a-time rule removed (Van: closes the solve-it-outside loophole)
 - 2026-09-30 — The stage map's four states (Van): cleared by you (a filled teal tile, your time and medal, the crown only when it's yours), cleared by others (a gold hairline and their solid crown, kept bright while locked), open now (pink), locked (dimmed); the frontier ("Cleared up to N" on its band, a gold rule after that tile); a map key; a "Reading the map" rule; every crown now one filled solid-gold shape (tiles, key, chips, stage panel, completion) plus crown badges in the ranking
 - 2026-09-30 — twists: daily challenge, colour highlighter, streak badges, hint tokens, weekly sprint (migration 124; the Killer-cage bosses are planned, not built — §10.8)
+- 2026-10-02 — blind pause: the clock stops only while the board is hidden; auto-pause on leaving the tab, closing the game and connection loss (heartbeat); no penalty, times still rank (Van)
