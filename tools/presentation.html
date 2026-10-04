@@ -3829,9 +3829,51 @@
   [data-theme="light"] .pres-gsw-btn.is-quiet{ border-color:rgba(31,40,63,0.18) }
 
   body.pres-deck-open .pres-picker{ display:none }
+
+  /* Deep-link boot (?deck=<id>). The picker used to render first and stay up
+     for the whole cloud round-trip, so a shared link flashed "Choose a
+     presentation" before landing on the deck. .pres-deck-pending is set by an
+     inline script at the top of <body> — before the picker markup below is
+     even parsed — so on a deep link the picker never paints at all. Boot
+     clears the class when the deck opens, and also when the deck cannot be
+     found, which falls back to the picker exactly as before. */
+  body.pres-deck-pending .pres-picker{ display:none !important }
+  .pres-deck-splash{ display:none }
+  body.pres-deck-pending:not(.pres-deck-open) .pres-deck-splash{
+    position:absolute; inset:0;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+    gap:14px;
+    pointer-events:none;
+  }
+  .pres-deck-splash-spinner{
+    width:26px; height:26px; border-radius:50%;
+    border:2px solid rgba(255,255,255,0.16);
+    border-top-color:var(--accent);
+    animation:pres-deck-splash-spin 0.7s linear infinite;
+  }
+  [data-theme="light"] .pres-deck-splash-spinner{
+    border-color:rgba(31,40,63,0.14);
+    border-top-color:var(--accent);
+  }
+  @keyframes pres-deck-splash-spin{ to{ transform:rotate(360deg) } }
+  .pres-deck-splash-text{ font:600 13px/1 'Roboto', sans-serif; opacity:0.55 }
+  @media (prefers-reduced-motion: reduce){
+    .pres-deck-splash-spinner{ animation:none }
+  }
 </style>
 </head>
 <body>
+<script>
+  /* Deep-link boot guard — MUST stay at the very top of <body>, above the
+     picker markup, so the browser never gets a chance to paint the picker on
+     a ?deck= load. Pure class toggle; the real open still happens in Boot. */
+  try {
+    if (new URLSearchParams(location.search).get('deck')) {
+      document.body.classList.add('pres-deck-pending');
+    }
+  } catch (_) {}
+</script>
 
 <!-- OS chrome — the UNIFORM tool header (same on every tool). -->
 <div class="wall scrim" aria-hidden="true"></div>
@@ -3976,6 +4018,14 @@
   <button type="button" data-fmt="pdf-fresh" role="menuitem" hidden>PDF — fresh render<span class="pdm-sub">Ignore the pre-rendered copy (~1s per page)</span></button>
   <button type="button" data-fmt="pptx" role="menuitem">PowerPoint (.pptx)<span class="pdm-sub">One image slide per page</span></button>
   <button type="button" data-fmt="jpg" role="menuitem">JPG images (.zip)<span class="pdm-sub">One picture per page</span></button>
+</div>
+
+<!-- Deep-link splash. Shown only while body.pres-deck-pending is set, i.e.
+     between a ?deck= load and the deck actually opening. Stands in for the
+     picker so a shared link goes straight from the wallpaper to the slide. -->
+<div class="pres-deck-splash" id="pres-deck-splash" role="status" aria-live="polite">
+  <div class="pres-deck-splash-spinner" aria-hidden="true"></div>
+  <div class="pres-deck-splash-text">Opening presentation…</div>
 </div>
 
 <!-- Picker — "Choose a Presentation" cards. Visible by default;
@@ -16388,13 +16438,17 @@ const CMK_CHART_BUILDERS = {
        Brisbane 98-110, Melbourne 92-105, Perth 93-105, Adelaide 90-102 —
        bmtqs.com.au/construction-cost-table, verified against the live page).
        The figures here are the midpoint of each city's resulting range,
-       ROUNDED TO THE NEAREST $50; the slide table carries the full spread.
+       ROUNDED TO THE NEAREST $25; the slide table carries the full spread.
        Rounded because the underlying range is $1,000-$2,300 — a 2.3x span —
-       so quoting $1,755 would imply precision that is not there. $50 keeps
-       every city distinct and every discount within 0.4% of exact; rounding
-       to $100 would have stretched the dearest-to-cheapest spread from 8% to
-       12%, which is the wrong way to err given BMT's variations already
-       compress real differences between cities rather than exaggerate them. */
+       so quoting $1,755 would imply precision that is not there. The exact
+       midpoints are Sydney 1650, Melbourne 1667.5, Brisbane 1755, Perth
+       1672.5, Adelaide 1623, and $25 holds every one within 0.5% of exact.
+       Rounding to $50 would have collapsed Sydney, Melbourne and Perth onto
+       a single $1,650; $100 would have stretched the dearest-to-cheapest
+       spread from 8% to 12%, the wrong way to err given BMT's variations
+       already compress real differences between cities rather than
+       exaggerate them.
+       The range is quoted ALL-IN and is
        NOT loaded further. The earlier derivations added x1.425 on top of a
        quantity surveyor's building rate for external works, fees and
        contingency; this range comes from the business as the rate to use, so
@@ -21375,16 +21429,30 @@ _gswLoadPickerFlags();
    otherwise wait for hydration and try once more. The _activeDeck guard stops
    it yanking the user out of a deck they opened by hand while waiting. */
 const initialDeck = new URLSearchParams(location.search).get('deck');
+/* Drops the boot guard set at the top of <body>, revealing the picker. Called
+   once the deep-link resolves one way or the other — deck open, deck missing,
+   or hydration taking too long to keep a blank-ish splash honest. */
+function _clearDeckPending() {
+  document.body.classList.remove('pres-deck-pending');
+}
 if (initialDeck) {
   if (findDeck(initialDeck)) {
     openDeck(initialDeck);
+    _clearDeckPending();
   } else {
+    /* Belt-and-braces: if the cloud fetch stalls, stop holding the picker
+       hostage behind a spinner that may never resolve. */
+    const _pendingBail = setTimeout(_clearDeckPending, 10000);
     Promise.resolve(_presHydrated)
       .catch(() => {})
       .then(() => {
         if (!_activeDeck && findDeck(initialDeck)) openDeck(initialDeck);
-      });
+      })
+      .catch(() => {})
+      .then(() => { clearTimeout(_pendingBail); _clearDeckPending(); });
   }
+} else {
+  _clearDeckPending();
 }
 
 /* ?new=1 used to jump straight into a brand-new deck (it auto-ran
