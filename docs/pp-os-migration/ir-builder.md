@@ -395,6 +395,104 @@ pages left the client report because Johny's order has no DD page (the DD notes 
 - The checklist slugs are storage keys; other states' checklists should be new slug sets keyed by state.
 - Measured pagination replaced the old per-page row-count density rule; a React port can keep "measure then place" or pre-size.
 
+## 11. Shell redesign (2026-10-05)
+
+Van asked for a cleaner design that is easier to follow, with aligned content and slightly larger text, in both the file picker and the file view. He also wanted to preview the report. Only the shell changed.
+
+**Unchanged:**
+- The report pages: `buildReportPages`, every `.pg` rule and the pagination.
+- `calcCashflow`.
+- Every save, harvest, publish and delete flow, and the audit.
+- The data model, the RLS queries, the permission gates (`CAN` / `CANW`, tool roles, the group bounce), telemetry and the URL parameters.
+
+The report HTML of all 94 files was hashed before and after the change, covering 188 reports (the client report and the internal pack for each file).
+- **Byte-identical:** 187 of 188. The one difference was the map snapshot's pixel data. That image is redrawn from OpenStreetMap tiles on every build, and the original page shows the same variance between two of its own runs.
+- **With the snapshot masked:** 188 of 188 identical.
+- **Page counts:** unchanged (1,002 client pages and 287 internal pages), with 0 pages over A4.
+
+QA scripts: `scratch/ir-shell/`.
+
+**Type scale.** These are tokens on `:root`, used only by the shell. The body is left alone because the report pages inherit from it.
+
+| token | px | use |
+|---|---|---|
+| `--ib-fs-body` | 15 | body, values, inputs |
+| `--ib-fs-label` | 12 | uppercase labels, table heads |
+| `--ib-fs-note` | 13 | notes, meta, help line, small buttons |
+| `--ib-fs-chip` | 11 | chips, provenance tags |
+| `--ib-fs-title` | 17 | card titles |
+| `--ib-fs-step` | 14 | stepper, buttons |
+| `--ib-fs-addr` | 24 | the address in the file header |
+| `--ib-fs-card` | 16 | the picker card address |
+
+Line-height is 1.45 for text and 1.25 for headings, and numbers use tabular numerals. Small "teal" or "green" text has ink tokens: `--ib-accent-ink`, `--ib-good-ink`, `--ib-warn-ink`, `--ib-chip-ink` and `--ib-blue-ink`. In the light theme these switch to Dark Teal, Eucalyptus, `#9A5F00` and Cobalt Blue so the text passes 4.5:1. Every `<select>` is opaque and has an explicit ink colour. The content column is at most 1,240 px wide, and the bottom padding of 84 px is kept clear.
+
+**Picker.**
+- **Header:** a compact header (≤ 120 px). The eyebrow and title share one line, the description sits beneath, and "+ New property file" is right-aligned on the title row. The visibility rule for the button is unchanged.
+- **Toolbar:**
+  - Search covers address, suburb, consultant and market, with a live 120 ms debounce.
+  - Market `<select>`: all markets, then each group with its count.
+  - Status `<select>`: "Active + final" is the default and equals the old view with archived files hidden. The other options are Active, Final, Archived and All. This select replaces the old "Show archived" button.
+  - Sort `<select>`: "Market A–Z" is the default and equals the old order (groups A–Z, newest first inside each). "Recently updated" orders the groups by their newest file. "Address A–Z" sorts inside each group.
+  - A count ("94 files · 58 shown").
+  - A List / Cards toggle, remembered in `localStorage` under `ib_pick_view_v1`.
+
+  Filters stay in memory, so ← Files returns to the same view.
+- **Grouped by market:** groups use `groupOf()`, and commercial files pool under "Commercial", as before. Each group heading spans the full width (market · states · count) and sticks under the appbar. The cards sit in a `repeat(auto-fill,minmax(300px,1fr))` grid, so the columns are fixed and the cards are left-aligned.
+  - The old container `.ib-files` collided with the evidence-chip rule of the same name, which forced a flex flow. The picker now uses `.ib-pick` / `.ib-pgrid`.
+- **Cards:**
+  - The address is 16 px and clamps at two lines.
+  - Below it: suburb · state · status chip (final green, active teal, archived grey), plus the existing "checked n/7" chip.
+  - Then consultant · updated date.
+  - The whole card is a stretched `<button>` that opens the file. Preview and Open appear on hover or focus, and they always show on touch screens.
+- **List view:**
+  - One row per file: address · suburb · market · status · consultant · updated · Preview · Open.
+  - The same groups and sort apply.
+  - All groups share one column template so every column lines up.
+  - Rows collapse to two lines below 860 px.
+- **Keyboard:** the arrow keys move between files. Up and down follow the column position in the grid. Enter opens a file, `p` previews it, and `/` focuses the search.
+
+**Inside a file.**
+- **Header row 1:** ← Files (quiet) · the address (24 px) with suburb · state · market beside it · the status `<select>` and its "read-only while …" hint, grouped together · **Preview report** (new) · Publish / Re-publish · Delete. Delete is the only button with danger styling.
+  - The ids and gates are unchanged: `#ibBack`, `#ibStatus`, `#ibPublish`, `#ibDelete`.
+  - The page header (eyebrow, title, New button) is hidden inside a file (`body.ib-infile`).
+- **Header row 2 is the stepper:**
+  - Review comes first with its "(n/7)" count and a list glyph. A divider follows, then numbered steps 1–9.
+  - A step shows ✓ when `stepDone()` is true. The current step has a filled teal circle and a bold label, plus `aria-current="step"`.
+  - The stepper scrolls sideways when it is too narrow and keeps the current step in view.
+  - Under it, one help sentence per step (`STEP_HELP`; Review's is the old checking-window sentence), plus the legend "✓ = step has data".
+- **Card anatomy:** the title (17 px) sits on the left and actions or notes on the right. Cards are size containers (`container-type:inline-size`).
+- **Review label/value grid:**
+  - `.ib-kv` is a fixed grid: `repeat(var(--kvp), minmax(140px,180px) minmax(0,1fr))`. That gives 3 pairs per row when the card is at least 1,100 px wide, 2 pairs from 700 px, and 1 below.
+  - `.pair` is `display:contents`, so every label in a card has the same width. Labels are 12 px uppercase and right-aligned.
+  - Values are 15 px on one line with an ellipsis and the full text in `title`.
+  - URLs show without the scheme and get **open ↗** and **copy** links. These sit outside the inline-edit span, so clicking them never starts an edit.
+  - The executive summary is a set of full-width blocks (`.ib-xs` / `.ib-xb`) with real lists.
+  - Sub-sections share one style (`.ib-subh`): roles and photos, map location, executive summary, strata DD, checklist, defects log, Suburb Scoring / Cotality, Attributes, Suburb data / Adopted / Sale history / Comparable sales and rents, Computed.
+  - The `.ib-rv` dashed underline now shows only on hover of the value, row or table row.
+  - The provenance chips keep their meaning (auto / edited) and use one style.
+  - Grading shows Strategy and Suburb rating above the attributes.
+  - Helpers: `kvPair(label, innerHtml, fullText, tail)`, `subh()`, `isUrl()`.
+- **Editors:** same card anatomy. Form labels are 12 px, inputs 15 px, with gaps of 12 × 16. The checklist, rooms, tables and map keep their layouts at the new scale.
+
+**Report viewer (new).** One full-screen overlay, `#ibViewer` (`role=dialog`, `aria-modal`).
+- **Entry points:**
+  - **Preview** on a picker card or list row. `previewFile(id)` loads the row, the rulebook and the rubric the way `openFile` does, but stays on the picker: there is no editor and no URL change. Closing the viewer restores `CUR`. A preview opened this way always starts on the Client report.
+  - **Preview report** in the file header.
+  - Any page thumbnail on the Report tab, which opens the viewer at that page.
+- **Rendering:** it goes through the existing `prepReport()` → `buildReportPages(REPORT_MODE)` → `pageHtml()`, and it also fills `#ibPrint`. There is no second renderer, so the viewer shows exactly what prints.
+- **Page display:** each page is drawn at its real 794 × 1122 px inside a host scaled to fit the height. The page stays white in both themes, and the host resets the type to 16 px with a normal line-height, the same as print.
+- **Controls:**
+  - Top bar: Client report / Internal pack switch, a "3 / 12" counter, zoom (Fit · 75 · 100 · 125 %), Print / Save PDF, and Close.
+  - Previous and next arrows sit at the sides.
+  - A page strip of small thumbnails runs along the bottom.
+- **Keyboard:** ← → and PageUp / PageDown move between pages, Home and End jump to the ends, + and − zoom, 0 returns to Fit, and Esc closes. Tab stays inside the dialog, and focus returns to where it was on close.
+- **Print / Save PDF:** this is `printReport(build)`, the Report tab's own print handler moved into a function. The steps are unchanged: rebuild, stamp `compliance.reportAt`, cache the market panel in client mode, wait for images, `window.print()`. The tab and the viewer share it, and it is still gated on `CAN`.
+- **Partial access:** for an account that cannot read `ir_config`, the viewer shows the pages it can build plus a one-line note that the boilerplate is missing. If building fails, it shows the error message instead of a blank page.
+- **Report tab:** the thumbnails are the page index, 3 per row. A ResizeObserver scales them to the column width, and each one opens the viewer.
+
+**For the port.** Keep the picker defaults equal to the old behaviour. Keep the label column shared within a card, the viewer rendering through the report builder, and print as a single shared path.
+
 ## Changelog
 
 - 2026-09-30 — redesign to the 30 Sep team structure (Johny's brief): the client report became eleven sections (cover with hero
@@ -407,3 +505,4 @@ pages left the client report because Johny's order has no DD page (the DD notes 
   client-view card (Cashflow), the report switch; fixes: the cover's IMPORTANT INFORMATION body, grading saves no longer drop
   unlisted items, pricing saves keep unlisted row keys, lower-case ratings no longer blank on save. Tiles: OpenStreetMap
   (CARTO now needs a key).
+- 2026-10-05 — shell redesign: picker with search/filter/sort and list view, two-row header with stepper, aligned label/value grid and larger type, full-screen report preview (Van)
