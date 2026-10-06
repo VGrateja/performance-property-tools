@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sold Check &mdash; Performance Property</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
+<!-- OS chrome -->
+<script src="../shared/os-chrome.js?v=ea374003"></script>
+<link rel="stylesheet" href="../shared/os-theme.css?v=bcea6d52"/>
+<!-- SheetJS: reads the purchase workbooks in the browser (the file never leaves
+     the page) and writes the XLSX export — the build Data Forge uses. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   SOLD CHECK — the register of properties bought for clients, and a queue of
+   sold checks a person verifies.
+   Saskia, 2026-09-29: "a tool where Ben, Rachel or Shaene can upload all our
+   properties we have bought for clients, and the tool will check them all and
+   return any that have been sold recently … 1 month, 3 month, 6 month, 1 year,
+   or return the most recent date of sale at all for all properties."
+   Van, 2026-10-06: record the data, let the team add properties by hand, and a
+   schedule runs the new properties to see if they have sold.
+
+   Data (migration 126): sold_check_properties (the register, one row per
+   normalised address) + sold_check_results (what a checker found, and what a
+   person decided). Read = any signed-in user; write = dev/admin or a
+   'sold-check' editor grant (sold_check_can_write()). The checker
+   (scripts/sold-check/record.mjs) only adds results: a property becomes sold
+   only when a person confirms it here (sold_check_confirm()).
+   Runbook: docs/SOLD_CHECK.md · pp-os note: docs/pp-os-migration/sold-check.md
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root{
+  --sc-ink:#F4F6F8; --sc-ink2:rgba(220,228,240,0.74); --sc-mut:rgba(220,228,240,0.52);
+  --sc-teal:#00A0B4; --sc-teal-soft:rgba(0,160,180,0.16);
+  --sc-border:rgba(255,255,255,0.12); --sc-border2:rgba(255,255,255,0.2);
+  --sc-surface:rgba(255,255,255,0.045); --sc-surface2:rgba(255,255,255,0.07);
+  --sc-solid:#141A28; --sc-head:#1a2130; --sc-panel:#121826; --sc-scrim:rgba(5,8,14,0.6);
+  /* status chips — brand accents: held Celestial Blue, sold Green, listed Yellow,
+     rejected Red, unknown / not sold Dark Gray */
+  --sc-held:#54A6DE; --sc-held-bg:rgba(84,166,222,0.16);
+  --sc-sold:#8fd072; --sc-sold-bg:rgba(113,179,87,0.18);
+  --sc-list:#FFA91F; --sc-list-bg:rgba(255,169,31,0.16);
+  --sc-unk:rgba(220,228,240,0.7); --sc-unk-bg:rgba(255,255,255,0.08);
+  --sc-bad:#ff6b86; --sc-bad-bg:rgba(231,35,71,0.15);
+  --sc-pos:#8fd072; --sc-neg:#ff6b86;
+}
+[data-theme="light"]{
+  --sc-ink:#171B24; --sc-ink2:#3a4150; --sc-mut:#63666A;
+  --sc-border:#e4e8ee; --sc-border2:#cfd6df;
+  --sc-surface:#ffffff; --sc-surface2:#f4f6f9; --sc-solid:#ffffff; --sc-head:#f4f6f9; --sc-panel:#ffffff; --sc-scrim:rgba(23,27,36,0.35);
+  --sc-held:#1f6fa6; --sc-held-bg:rgba(84,166,222,0.16);
+  --sc-sold:#3f8a2a; --sc-sold-bg:rgba(113,179,87,0.18);
+  --sc-list:#a86500; --sc-list-bg:rgba(255,169,31,0.18);
+  --sc-unk:#63666A; --sc-unk-bg:rgba(99,102,106,0.12);
+  --sc-bad:#c4173a; --sc-bad-bg:rgba(231,35,71,0.12);
+  --sc-pos:#3f8a2a; --sc-neg:#c4173a;
+}
+*{box-sizing:border-box}
+html,body{overflow-x:hidden}
+.sc-main{max-width:1440px;margin:0 auto;padding:8px 22px 110px;color:var(--sc-ink);font-family:'Montserrat',sans-serif}
+.sc-head h1{margin:2px 0 2px;font-size:26px;font-weight:800;letter-spacing:-0.01em}
+.sc-eyebrow{font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--sc-teal)}
+.sc-head p{color:var(--sc-ink2);max-width:880px;margin:4px 0 12px;font-size:13.5px;line-height:1.5}
+.sc-qa[hidden]{display:none}
+.sc-qa{display:inline-block;margin-left:8px;font-size:10.5px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:999px;background:var(--sc-list-bg);color:var(--sc-list);vertical-align:middle}
+.sc-stats{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
+.sc-stat{border:1px solid var(--sc-border);background:var(--sc-surface);border-radius:12px;padding:8px 14px;min-width:96px}
+.sc-stat b{display:block;font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+.sc-stat span{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--sc-mut)}
+.sc-tabs{display:flex;gap:4px;border-bottom:1px solid var(--sc-border2);margin-bottom:12px;overflow-x:auto}
+.sc-tab{appearance:none;border:0;background:transparent;color:var(--sc-ink2);font:700 13px 'Montserrat',sans-serif;padding:9px 14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;display:inline-flex;align-items:center;gap:7px}
+.sc-tab:hover{color:var(--sc-ink)}
+.sc-tab.on{color:var(--sc-teal);border-bottom-color:var(--sc-teal)}
+.sc-badge{display:inline-block;min-width:20px;padding:1px 6px;border-radius:999px;background:var(--sc-teal);color:#fff;font-size:11px;font-weight:800;text-align:center}
+.sc-badge.zero{background:var(--sc-unk-bg);color:var(--sc-mut)}
+.sc-bar{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;margin-bottom:10px}
+.sc-field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.sc-field>span{font-size:10.5px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--sc-mut)}
+/* every <select> and input: opaque background, explicit text colour */
+.sc-in, .sc-field select, .sc-field input, .sc-field textarea{appearance:auto;border:1px solid var(--sc-border2);border-radius:9px;background:var(--sc-solid);color:var(--sc-ink);font:600 13px 'Montserrat',sans-serif;padding:7px 9px;min-width:0;max-width:100%}
+.sc-field select option{background:var(--sc-solid);color:var(--sc-ink)}
+.sc-field textarea{resize:vertical;min-height:80px;line-height:1.45}
+.sc-in:focus, .sc-field select:focus, .sc-field input:focus, .sc-field textarea:focus{outline:2px solid var(--sc-teal-soft);border-color:var(--sc-teal)}
+.sc-search{width:240px}
+.sc-seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--sc-border2);border-radius:10px;overflow:hidden;background:var(--sc-solid)}
+.sc-seg button{appearance:none;border:0;background:transparent;color:var(--sc-ink2);font:700 12.5px 'Montserrat',sans-serif;padding:7px 11px;cursor:pointer;border-right:1px solid var(--sc-border)}
+.sc-seg button:last-child{border-right:0}
+.sc-seg button:hover{color:var(--sc-ink);background:var(--sc-surface2)}
+.sc-seg button.on{background:var(--sc-teal);color:#fff}
+.sc-actions{margin-left:auto;display:flex;flex-wrap:wrap;gap:8px}
+.sc-btn{appearance:none;border:1px solid var(--sc-border2);border-radius:10px;background:var(--sc-solid);color:var(--sc-ink);font:700 12.5px 'Montserrat',sans-serif;padding:7px 13px;cursor:pointer;white-space:nowrap}
+.sc-btn:hover{border-color:var(--sc-teal);color:var(--sc-teal)}
+.sc-btn.primary{background:var(--sc-teal);border-color:var(--sc-teal);color:#fff}
+.sc-btn.primary:hover{filter:brightness(1.08);color:#fff}
+.sc-btn.danger{color:var(--sc-bad);border-color:var(--sc-bad)}
+.sc-btn.danger:hover{background:var(--sc-bad-bg)}
+.sc-btn:disabled{opacity:.5;cursor:default}
+.sc-btn.sm{padding:5px 10px;font-size:12px}
+.sc-meta{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;color:var(--sc-ink2);margin:2px 0 10px}
+.sc-meta b{color:var(--sc-ink)}
+.sc-wrap{border:1px solid var(--sc-border);border-radius:14px;background:var(--sc-surface);overflow:auto;max-height:calc(100vh - 330px);min-height:220px}
+table.sc{border-collapse:separate;border-spacing:0;font-size:12.5px;min-width:100%}
+table.sc th, table.sc td{padding:7px 11px;border-bottom:1px solid var(--sc-border);text-align:left;vertical-align:top;font-variant-numeric:tabular-nums}
+table.sc thead th{position:sticky;top:0;background:var(--sc-head);color:var(--sc-ink2);font-weight:700;font-size:11.5px;z-index:2;white-space:nowrap;cursor:pointer;user-select:none}
+table.sc thead th.nosort{cursor:default}
+table.sc thead th .ar{color:var(--sc-teal);margin-left:3px}
+table.sc tbody tr{cursor:pointer}
+table.sc tbody tr:hover td{background:var(--sc-surface2)}
+table.sc td.num, table.sc th.num{text-align:right;white-space:nowrap}
+table.sc td.addr{min-width:220px;font-weight:600;color:var(--sc-ink)}
+table.sc td .sub{display:block;color:var(--sc-mut);font-size:11.5px;font-weight:500}
+table.sc td.nw{white-space:nowrap}
+.sc-pos{color:var(--sc-pos);font-weight:700}
+.sc-neg{color:var(--sc-neg);font-weight:700}
+.sc-dash{color:var(--sc-mut)}
+.chip{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:.02em;white-space:nowrap}
+.chip.held{background:var(--sc-held-bg);color:var(--sc-held)}
+.chip.sold{background:var(--sc-sold-bg);color:var(--sc-sold)}
+.chip.listed{background:var(--sc-list-bg);color:var(--sc-list)}
+.chip.unknown, .chip.not_sold{background:var(--sc-unk-bg);color:var(--sc-unk)}
+.chip.rejected{background:var(--sc-bad-bg);color:var(--sc-bad)}
+.chip.confirmed{background:var(--sc-teal-soft);color:var(--sc-teal)}
+.chip.high{background:var(--sc-sold-bg);color:var(--sc-sold)}
+.chip.medium{background:var(--sc-list-bg);color:var(--sc-list)}
+.chip.low{background:var(--sc-unk-bg);color:var(--sc-unk)}
+.sc-empty{padding:40px 20px;text-align:center;color:var(--sc-mut);font-size:13.5px}
+.sc-note{color:var(--sc-mut);font-size:12px;margin-top:12px;line-height:1.55;max-width:980px}
+.sc-pane[hidden]{display:none}
+/* verify queue */
+.sc-cards{display:grid;gap:10px}
+.sc-card{border:1px solid var(--sc-border);background:var(--sc-surface);border-radius:14px;padding:14px 16px;display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) auto;gap:12px 18px;align-items:start}
+.sc-card h3{margin:0 0 3px;font-size:14.5px;font-weight:800}
+.sc-card .k{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--sc-mut)}
+.sc-card .row{font-size:12.5px;color:var(--sc-ink2);margin-top:4px;line-height:1.5;overflow-wrap:anywhere}
+.sc-card .row b{color:var(--sc-ink)}
+.sc-card a, .sc-dr a, table.sc a{color:var(--sc-teal);font-weight:700;text-decoration:none;overflow-wrap:anywhere}
+.sc-card a:hover, .sc-dr a:hover{text-decoration:underline}
+.sc-card .act{display:flex;flex-direction:column;gap:8px;min-width:200px}
+.sc-card .act .pair{display:flex;gap:8px}
+.sc-card .act .pair .sc-field{flex:1}
+.sc-card .act .btns{display:flex;gap:8px}
+.sc-card .act .btns .sc-btn{flex:1}
+/* drawer */
+.sc-scrim{position:fixed;inset:0;background:var(--sc-scrim);z-index:900;opacity:0;pointer-events:none;transition:opacity .18s}
+.sc-scrim.on{opacity:1;pointer-events:auto}
+.sc-dr{position:fixed;top:0;right:0;bottom:0;width:min(600px,100vw);background:var(--sc-panel);border-left:1px solid var(--sc-border2);z-index:901;transform:translateX(102%);transition:transform .2s ease;display:flex;flex-direction:column;color:var(--sc-ink);font-family:'Montserrat',sans-serif;box-shadow:-12px 0 40px rgba(0,0,0,.3)}
+.sc-dr.on{transform:none}
+.sc-dr-head{display:flex;align-items:flex-start;gap:10px;padding:16px 18px 12px;border-bottom:1px solid var(--sc-border)}
+.sc-dr-head h2{margin:0;font-size:17px;font-weight:800;line-height:1.3;overflow-wrap:anywhere}
+.sc-dr-head .sub{font-size:12px;color:var(--sc-mut);margin-top:3px}
+.sc-dr-head .x{margin-left:auto;flex:none}
+.sc-dr-body{flex:1;overflow:auto;padding:14px 18px 90px}
+.sc-dr-foot{display:flex;flex-wrap:wrap;gap:8px;padding:12px 18px;border-top:1px solid var(--sc-border);background:var(--sc-panel)}
+.sc-dr-foot .sp{flex:1}
+.sc-sec{margin:0 0 16px}
+.sc-sec h4{margin:0 0 8px;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--sc-teal)}
+.sc-kv{display:grid;grid-template-columns:150px minmax(0,1fr);gap:5px 12px;font-size:13px}
+.sc-kv dt{color:var(--sc-mut);font-weight:600}
+.sc-kv dd{margin:0;color:var(--sc-ink);overflow-wrap:anywhere}
+.sc-comments{white-space:pre-wrap;font-size:13px;line-height:1.5;color:var(--sc-ink2);background:var(--sc-surface2);border-radius:10px;padding:10px 12px;overflow-wrap:anywhere}
+.sc-hist{display:grid;gap:8px}
+.sc-hist .h{border:1px solid var(--sc-border);border-radius:10px;padding:9px 11px;font-size:12.5px;color:var(--sc-ink2);line-height:1.5;overflow-wrap:anywhere}
+.sc-hist .h .top{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:3px}
+.sc-hist .h .top b{color:var(--sc-ink)}
+.sc-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
+.sc-form .full{grid-column:1/-1}
+.sc-form .sc-field input, .sc-form .sc-field select, .sc-form .sc-field textarea{width:100%}
+.sc-err{background:var(--sc-bad-bg);color:var(--sc-bad);border-radius:10px;padding:9px 12px;font-size:12.5px;font-weight:600;margin:0 0 12px}
+.sc-err[hidden]{display:none}
+.sc-ok{background:var(--sc-sold-bg);color:var(--sc-sold);border-radius:10px;padding:9px 12px;font-size:12.5px;font-weight:600}
+/* modal */
+.sc-modal{position:fixed;inset:0;z-index:950;display:none;align-items:center;justify-content:center;padding:16px;background:var(--sc-scrim)}
+.sc-modal.on{display:flex}
+.sc-mbox{background:var(--sc-panel);border:1px solid var(--sc-border2);border-radius:16px;width:min(680px,100%);max-height:calc(100vh - 32px);display:flex;flex-direction:column;color:var(--sc-ink);font-family:'Montserrat',sans-serif;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.sc-mbox.small{width:min(440px,100%)}
+.sc-mhead{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--sc-border)}
+.sc-mhead h2{margin:0;font-size:16px;font-weight:800}
+.sc-mhead .x{margin-left:auto}
+.sc-mbody{padding:14px 18px;overflow:auto;font-size:13px;line-height:1.5;color:var(--sc-ink2)}
+.sc-mfoot{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--sc-border)}
+.sc-drop{border:1.5px dashed var(--sc-border2);border-radius:12px;padding:22px;text-align:center;color:var(--sc-ink2)}
+.sc-drop.over{border-color:var(--sc-teal);background:var(--sc-teal-soft)}
+.sc-pv{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
+.sc-pv .tw{overflow-x:auto;min-width:0}
+.sc-pv .kv{display:grid;grid-template-columns:130px minmax(0,1fr);gap:4px 12px}
+.sc-pv .kv dt{color:var(--sc-mut);font-weight:600}
+.sc-pv .kv dd{margin:0;color:var(--sc-ink);overflow-wrap:anywhere}
+.sc-pv table{border-collapse:collapse;font-size:12.5px;width:100%}
+.sc-pv table th, .sc-pv table td{padding:5px 8px;border-bottom:1px solid var(--sc-border);text-align:left}
+.sc-pv table td.num, .sc-pv table th.num{text-align:right;font-variant-numeric:tabular-nums}
+.sc-counts{display:flex;flex-wrap:wrap;gap:8px}
+.sc-counts div{border:1px solid var(--sc-border);border-radius:10px;padding:7px 12px;min-width:92px;background:var(--sc-surface)}
+.sc-counts b{display:block;font-size:18px;font-weight:800;color:var(--sc-ink);font-variant-numeric:tabular-nums}
+.sc-counts span{font-size:10.5px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--sc-mut)}
+.sc-fail{max-height:160px;overflow:auto;font-size:12px;border:1px solid var(--sc-border);border-radius:10px;padding:8px 10px;background:var(--sc-surface2)}
+/* checks tab */
+table.sc.runs tbody tr.open td{background:var(--sc-surface2)}
+table.sc.runs tr.detail td{background:var(--sc-surface2);cursor:default}
+.sc-toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--sc-teal);color:#fff;font:700 12.5px 'Montserrat',sans-serif;padding:9px 16px;border-radius:999px;box-shadow:0 8px 24px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .2s;z-index:1000;max-width:calc(100vw - 32px);text-align:center}
+.sc-toast.show{opacity:1}
+.sc-toast.bad{background:#E72347}
+[data-writer-only]{display:none !important}
+body.sc-canw [data-writer-only]{display:revert !important}
+@media (max-width: 900px){
+  .sc-card{grid-template-columns:minmax(0,1fr)}
+  .sc-card .act{min-width:0}
+}
+@media (max-width: 640px){
+  .sc-main{padding:6px 16px 110px}
+  .sc-head h1{font-size:22px}
+  .sc-search{width:100%}
+  .sc-bar .sc-field.grow{flex:1 1 100%}
+  .sc-actions{margin-left:0;width:100%}
+  .sc-wrap{max-height:none}
+  .sc-form{grid-template-columns:minmax(0,1fr)}
+  .sc-kv{grid-template-columns:110px minmax(0,1fr)}
+  .sc-pv .kv{grid-template-columns:100px minmax(0,1fr)}
+  .sc-stat{min-width:0;flex:1 1 30%}
+}
+@media print{.sc-bar,.sc-actions,.sc-tabs{display:none} .sc-wrap{max-height:none;overflow:visible;border:0}}
+</style>
+</head>
+<body>
+<div class="sc-main" id="scMain">
+  <div class="sc-head">
+    <div class="sc-eyebrow">The Vault · Properties bought for clients</div>
+    <h1>Sold Check<span class="sc-qa" id="scQaPill" hidden>QA mode</span></h1>
+    <p>Every property bought for a client, by market — what was paid, whether it is still held, and when it sold. A scheduled check looks for recent sales and listings; nothing is marked sold until a person verifies it.</p>
+  </div>
+  <div class="sc-stats" id="scStats"></div>
+  <div class="sc-tabs" role="tablist">
+    <button type="button" class="sc-tab on" data-tab="register" role="tab">Register</button>
+    <button type="button" class="sc-tab" data-tab="verify" role="tab">Verify <span class="sc-badge zero" id="scVerifyBadge">0</span></button>
+    <button type="button" class="sc-tab" data-tab="checks" role="tab">Checks</button>
+  </div>
+
+  <!-- REGISTER -->
+  <section class="sc-pane" id="paneRegister">
+    <div class="sc-bar">
+      <label class="sc-field"><span>Market</span><select id="fMarket"><option value="">All markets</option></select></label>
+      <label class="sc-field"><span>Status</span><select id="fStatus"><option value="">All</option><option value="held">Held</option><option value="sold">Sold</option><option value="unknown">Unknown</option></select></label>
+      <label class="sc-field"><span>Advisor</span><select id="fAdvisor"><option value="">All advisors</option></select></label>
+      <label class="sc-field grow"><span>Search address</span><input id="fSearch" class="sc-search" type="search" placeholder="Street, suburb or postcode" autocomplete="off"></label>
+    </div>
+    <div class="sc-bar">
+      <div class="sc-field"><span>Sold period</span>
+        <div class="sc-seg" id="fPeriod">
+          <button type="button" data-p="any" class="on">Any</button>
+          <button type="button" data-p="1">1 month</button>
+          <button type="button" data-p="3">3 months</button>
+          <button type="button" data-p="6">6 months</button>
+          <button type="button" data-p="12">12 months</button>
+          <button type="button" data-p="sold">All sold</button>
+          <button type="button" data-p="recent">Most recent sale</button>
+        </div>
+      </div>
+      <div class="sc-actions">
+        <button type="button" class="sc-btn" id="btnCsv" title="Download the visible rows as CSV">Export CSV</button>
+        <button type="button" class="sc-btn" id="btnXlsx" title="Download the visible rows as an Excel workbook">Export XLSX</button>
+        <button type="button" class="sc-btn" id="btnImport" data-writer-only>Import</button>
+        <button type="button" class="sc-btn primary" id="btnAdd" data-writer-only>Add property</button>
+      </div>
+    </div>
+    <div class="sc-meta" id="scMeta">Loading…</div>
+    <div class="sc-wrap" id="scWrap"><div class="sc-empty">Loading the register…</div></div>
+    <div class="sc-note">Hold period = years between the purchase and sale dates · ROI = sold price ÷ purchase price − 1 · CAGR = (sold ÷ purchase)<sup>1 ÷ hold</sup> − 1, shown on sold properties only. "Sold within" counts back from today on the sold date; "Most recent sale" lists every property, latest sale first. Click a row for the full record and its check history.</div>
+  </section>
+
+  <!-- VERIFY -->
+  <section class="sc-pane" id="paneVerify" hidden>
+    <div class="sc-meta" id="scVerifyMeta"></div>
+    <div class="sc-cards" id="scVerifyList"></div>
+    <div class="sc-note">A check result is a candidate until a person verifies it. Confirm a sale to mark the property sold with the date and price you save (edit them first if the source shows something different). Confirming a listing keeps the property held and saves the listing link. Reject when the result is the wrong property or wrong.</div>
+  </section>
+
+  <!-- CHECKS -->
+  <section class="sc-pane" id="paneChecks" hidden>
+    <div class="sc-meta" id="scChecksMeta"></div>
+    <div class="sc-wrap" id="scChecksWrap"></div>
+    <div class="sc-note">One row per check run (results sharing a run id). Checks recorded by hand from a property's record have no run id and are grouped by day. Click a run to see its results.</div>
+  </section>
+</div>
+
+<!-- property drawer -->
+<div class="sc-scrim" id="drScrim"></div>
+<aside class="sc-dr" id="dr" aria-hidden="true">
+  <div class="sc-dr-head"><div><h2 id="drTitle"></h2><div class="sub" id="drSub"></div></div><button type="button" class="sc-btn sm x" id="drClose">Close</button></div>
+  <div class="sc-dr-body" id="drBody"></div>
+  <div class="sc-dr-foot" id="drFoot"></div>
+</aside>
+
+<!-- import -->
+<div class="sc-modal" id="imModal" role="dialog" aria-modal="true">
+  <div class="sc-mbox">
+    <div class="sc-mhead"><h2>Import purchases</h2><button type="button" class="sc-btn sm x" id="imClose">Close</button></div>
+    <div class="sc-mbody" id="imBody"></div>
+    <div class="sc-mfoot" id="imFoot"></div>
+  </div>
+</div>
+<input type="file" id="imFile" accept=".xlsx,.xls,.xlsm" hidden>
+
+<!-- confirm -->
+<div class="sc-modal" id="cfModal" role="dialog" aria-modal="true">
+  <div class="sc-mbox small">
+    <div class="sc-mhead"><h2 id="cfTitle">Are you sure</h2></div>
+    <div class="sc-mbody" id="cfBody"></div>
+    <div class="sc-mfoot"><button type="button" class="sc-btn" id="cfNo">Cancel</button><button type="button" class="sc-btn danger" id="cfYes">Delete</button></div>
+  </div>
+</div>
+<div class="sc-toast" id="scToast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3" integrity="sha384-l8ah+VgaWtk1mvOe9VC+OirC6qHFF4yH7l7mKRidV9MSti3E9F463bMp6ZVN4kuC" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="../shared/supabase-client.js?v=b4bd183c"></script>
+<script src="../shared/tool-registry.js?v=6e74ac85"></script>
+<script src="../shared/desktop-pins.js?v=e2416017"></script>
+<script src="../shared/auth.js?v=7dce203e"></script>
+<script src="../shared/auth-gate.js?v=003cdc01"></script>
+<script src="../shared/pp-telemetry.js?v=a1e39d4f"></script>
+<script src="../shared/fit-screen.js?v=1ea58579"></script>
+<script>
+'use strict';
+PP_OS.initChrome({ name: 'Sold Check', section: 'vault' });
+
+const $ = s => document.querySelector(s);
+const esc = s => window.PP_escapeHtml(s);
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const QA = new URLSearchParams(location.search).get('qa') === '1';   /* QA runs tag their writes source='qa' */
+
+const S = {
+  props: [], results: [], byProp: new Map(), canw: false, email: '', loaded: false,
+  f: { market: '', status: '', advisor: '', q: '', period: 'any' },
+  sort: { key: 'market', dir: 1 }, tab: 'register', drawerId: null, editing: null, openRun: null,
+};
+
+/* ═══ pure helpers (shared by the import preview and the form) ══════════════
+   The address key MUST match public.sold_check_key() in migration 126: lower-
+   case; commas -> a space; periods dropped; runs of spaces collapsed; spaces
+   around "/" removed; trimmed. The DB trigger is authoritative; this copy only
+   lets the preview tell new from existing. */
+function scKey(a){
+  return String(a == null ? '' : a).toLowerCase().replace(/,/g, ' ').replace(/\./g, '')
+    .replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/').replace(/\s+/g, ' ').trim();
+}
+const PLACEHOLDER = /^(not\s*sold|unknown|unk|n\/?a|na|nil|none|tbc|tba|-+|—|–|\?+)$/i;
+function isBlank(v){ return v == null || (typeof v === 'string' && v.trim() === ''); }
+/* money: a number, or text like "$1,234,567", "1.2m", "450k". null = empty or a
+   placeholder; undefined = present but unreadable (the row fails). */
+function parseMoney(v){
+  if (isBlank(v)) return null;
+  if (typeof v === 'number') return isFinite(v) ? v : undefined;
+  let s = String(v).trim();
+  if (PLACEHOLDER.test(s)) return null;
+  s = s.replace(/^aud\s*/i, '').replace(/[$,\s]/g, '');
+  let m = s.match(/^(-?\d+(?:\.\d+)?)([km])?$/i);
+  if (!m) return undefined;
+  let n = parseFloat(m[1]);
+  if (m[2]) n *= m[2].toLowerCase() === 'k' ? 1e3 : 1e6;
+  return n;
+}
+function parseNumber(v){
+  if (isBlank(v)) return null;
+  if (typeof v === 'number') return isFinite(v) ? v : undefined;
+  const s = String(v).trim();
+  if (PLACEHOLDER.test(s)) return null;
+  const m = s.replace(/,/g, '').match(/^(\d+(?:\.\d+)?)\s*(m2|m²|sqm|sq\s*m|m)?$/i);
+  return m ? parseFloat(m[1]) : undefined;
+}
+const pad2 = n => String(n).padStart(2, '0');
+function isoOf(y, m, d){
+  if (!(y >= 1900 && y <= 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return undefined;
+  const t = new Date(Date.UTC(y, m - 1, d));
+  if (t.getUTCMonth() !== m - 1) return undefined;     /* 31/02 */
+  return y + '-' + pad2(m) + '-' + pad2(d);
+}
+const MON = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, sept:9, oct:10, nov:11, dec:12 };
+/* dates: a real date cell (SheetJS cellDates — rounded to the nearest local
+   day: the library's timezone maths can land a minute before midnight), an
+   Excel serial, or typed text d/m/yyyy · d-m-yy · dd/mmm/yyyy · d mmm yyyy ·
+   yyyy-mm-dd. Australian day-first throughout. */
+function parseDate(v){
+  if (isBlank(v)) return null;
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    if (isNaN(v)) return undefined;
+    const t = new Date(v.getTime() + 12 * 3600e3);
+    return isoOf(t.getFullYear(), t.getMonth() + 1, t.getDate());
+  }
+  if (typeof v === 'number') {
+    if (v < 20000 || v > 80000) return undefined;
+    const t = new Date(Math.round((v - 25569) * 86400e3));
+    return isoOf(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate());
+  }
+  const s = String(v).trim();
+  if (PLACEHOLDER.test(s)) return null;
+  let m;
+  const yr = y => { y = +y; return y < 100 ? (y < 70 ? 2000 + y : 1900 + y) : y; };
+  if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return isoOf(+m[1], +m[2], +m[3]);
+  /* d/m/y first; a typed month-first date (5/23/2019) is impossible day-first,
+     so it falls back to m/d/y; a zero-padded 3-digit month ("011") reads as 11 */
+  if ((m = s.match(/^(\d{1,2})[\/\-.](\d{1,2}|0\d\d)[\/\-.](\d{2}|\d{4})$/))) return isoOf(yr(m[3]), +m[2], +m[1]) || isoOf(yr(m[3]), +m[1], +m[2]);
+  if ((m = s.match(/^(\d{1,2})[\/\-.\s]+([a-z]{3,9})[\/\-.\s,]+(\d{2}|\d{4})$/i))) { const mo = MON[m[2].toLowerCase().slice(0, 4)] || MON[m[2].toLowerCase().slice(0, 3)]; return mo ? isoOf(yr(m[3]), mo, +m[1]) : undefined; }
+  if ((m = s.match(/^([a-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/i))) { const mo = MON[m[1].toLowerCase().slice(0, 3)]; return mo ? isoOf(+m[3], mo, +m[2]) : undefined; }
+  return undefined;
+}
+function parseYesNo(v){
+  if (isBlank(v)) return null;
+  if (typeof v === 'boolean') return v;
+  const s = String(v).trim().toLowerCase();
+  if (/^(y|yes|true)$/.test(s)) return true;
+  if (/^(n|no|false)$/.test(s)) return false;
+  return null;                                   /* anything else: no opinion, not a failure */
+}
+function parseLink(v, cellLink){
+  const t = cellLink || (isBlank(v) ? '' : String(v).trim());
+  if (!t || PLACEHOLDER.test(t)) return null;
+  if (/^https?:\/\//i.test(t)) return t;
+  if (/^(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+\//i.test(t)) return 'https://' + t;
+  return null;
+}
+function parseText(v){ if (isBlank(v)) return null; const s = String(v).trim(); return s || null; }
+
+/* ═══ the workbook parser ═══════════════════════════════════════════════════
+   One city workbook = Summary page (city in A1) + "<ABBR> - Total Purchases"
+   + "<ABBR> - Not Sold" + "<ABBR> - Sold" (+ instructions/helper sheets,
+   ignored). The header row is the first row holding both "Property" and
+   "Purchase Price"; columns map by header text, first occurrence wins (stray
+   far-right copies are ignored). Not Sold + Sold are authoritative; Total
+   Purchases only adds a property missing from both. */
+const HEAD_MAP = [
+  [/^property$/, 'address'], [/^purchaseprice/, 'purchase_price'], [/^purchasedate/, 'purchase_date'],
+  [/^(soldprice|saleprice)/, 'sold_price'], [/^(solddate|saledate)/, 'sold_date'],
+  [/^clientname$/, 'client_name'], [/^hubspot/, 'hubspot_url'], [/^advisor$/, 'advisor'],
+  [/^leadoriginator$/, 'lead_originator'], [/comments?$/, 'comments'], [/^salesagent$/, 'sales_agent'],
+  [/^agency$/, 'agency'], [/^link/, 'listing_url'], [/^(type|propertytype)$/, 'property_type'],
+  [/^land/, 'land_m2'], [/^salesadvisory$/, 'sales_advisory'],
+];
+const normHead = s => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');
+function sheetRole(name){
+  const n = String(name).toLowerCase().replace(/[^a-z]/g, '');
+  if (n.startsWith('summary')) return 'summary';
+  if (n.endsWith('totalpurchases')) return 'total';
+  if (n.endsWith('notsold')) return 'notsold';
+  if (n.endsWith('sold')) return 'sold';
+  return null;
+}
+const FIELD_LABEL = { address: 'Property', purchase_price: 'Purchase Price', purchase_date: 'Purchase Date', sold_price: 'Sold Price', sold_date: 'Sold Date', land_m2: 'Land' };
+const REC_FIELDS = ['market','address','purchase_price','purchase_date','status','sold_price','sold_date','client_name','hubspot_url','advisor','lead_originator','comments','sales_agent','agency','listing_url','property_type','land_m2','sales_advisory'];
+
+function parseWorkbook(wb, fileName){
+  const out = { fileName, market: null, sheets: [], records: new Map(), failed: [], merged: 0, blanked: 0 };
+  /* market: Summary page A1 minus " Summary"; else the file name's first word */
+  const sumName = wb.SheetNames.find(n => sheetRole(n) === 'summary');
+  if (sumName) { const a1 = wb.Sheets[sumName]['A1']; const t = a1 && parseText(a1.v); if (t) out.market = t.replace(/\s*summary\s*$/i, '').trim() || null; }
+  if (!out.market) out.market = (String(fileName).replace(/\.[^.]+$/, '').split(/[\s_\-]+/)[0] || 'Unknown');
+  const order = { sold: 0, notsold: 1, total: 2 };
+  const sheets = wb.SheetNames.map(n => ({ name: n, role: sheetRole(n) })).filter(s => s.role && s.role !== 'summary')
+    .sort((a, b) => order[a.role] - order[b.role]);
+  for (const sh of sheets) {
+    const ws = wb.Sheets[sh.name];
+    const info = { name: sh.name, role: sh.role, headerRow: null, parsed: 0, failed: 0, skipped: 0, added: 0 };
+    out.sheets.push(info);
+    if (!ws || !ws['!ref']) continue;
+    const rg = XLSX.utils.decode_range(ws['!ref']);
+    /* the header row */
+    let hr = -1, cols = {};
+    for (let r = rg.s.r; r <= Math.min(rg.e.r, rg.s.r + 60) && hr < 0; r++) {
+      const heads = [];                                   /* [normalised header, column] in column order */
+      for (let c = rg.s.c; c <= rg.e.c; c++) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; const h = cell ? normHead(cell.v) : ''; if (h) heads.push([h, c]); }
+      if (heads.some(([h]) => h === 'property') && heads.some(([h]) => h.startsWith('purchaseprice'))) {
+        hr = r;
+        for (const [h, c] of heads) {                     /* first occurrence wins */
+          const hit = HEAD_MAP.find(([re]) => re.test(h));
+          if (hit && !(hit[1] in cols)) cols[hit[1]] = c;
+        }
+      } else if (!heads.some(([h]) => h === 'property') && heads.some(([h]) => h.startsWith('purchaseprice')) && heads.some(([h]) => h.startsWith('purchasedate'))) {
+        /* a header row whose "Property" cell is blank (seen in one workbook):
+           the address column is the unlabelled column just left of Purchase Price */
+        const pc = heads.find(([h]) => h.startsWith('purchaseprice'))[1];
+        if (pc > rg.s.c && !heads.some(([, c]) => c === pc - 1)) {
+          hr = r; cols.address = pc - 1;
+          for (const [h, c] of heads) { const hit = HEAD_MAP.find(([re]) => re.test(h)); if (hit && !(hit[1] in cols)) cols[hit[1]] = c; }
+          info.propertyHeaderBlank = true;
+        }
+      }
+    }
+    if (hr < 0) { info.headerRow = null; continue; }
+    info.headerRow = hr + 1;
+    for (let r = hr + 1; r <= rg.e.r; r++) {
+      const get = k => { if (!(k in cols)) return { v: null, l: null }; const cell = ws[XLSX.utils.encode_cell({ r, c: cols[k] })]; return cell ? { v: cell.v, l: cell.l && cell.l.Target ? String(cell.l.Target) : null } : { v: null, l: null }; };
+      const addr = parseText(get('address').v);
+      if (!addr) { info.skipped++; continue; }              /* empty / CAGR-only rows */
+      if (!/\d/.test(addr) && !/\s/.test(addr)) { info.skipped++; continue; }   /* a one-word label (a totals / summary row) */
+      const rowNo = r + 1, bad = [];
+      const rec = { market: out.market, address: addr.replace(/\s+/g, ' ') };
+      const key = scKey(rec.address);
+      const prev = out.records.get(key);
+      /* Total Purchases adds nothing to a property the Sold / Not Sold sheets carry */
+      if (sh.role === 'total' && prev && prev._sheet !== 'total') { info.covered = (info.covered || 0) + 1; continue; }
+      if (!/\d/.test(addr)) bad.push('Property (no street number)');
+      const money = k => { const x = parseMoney(get(k).v); if (x === undefined) bad.push(FIELD_LABEL[k]); return x === undefined ? null : x; };
+      const date = k => { const x = parseDate(get(k).v); if (x === undefined) bad.push(FIELD_LABEL[k]); return x === undefined ? null : x; };
+      /* sold columns: text that is neither a price nor a date (a note on a held
+         row) reads as blank — counted for the preview, never a failure */
+      const soft = (k, fn) => { const x = fn(get(k).v); if (x === undefined) { out.blanked++; return null; } return x; };
+      rec.purchase_price = money('purchase_price');
+      rec.purchase_date = date('purchase_date');
+      const sp = sh.role === 'notsold' ? null : soft('sold_price', parseMoney), sd = sh.role === 'notsold' ? null : soft('sold_date', parseDate);
+      if (sh.role === 'notsold') { rec.status = 'held'; rec.sold_price = null; rec.sold_date = null; }
+      else if (sp != null || sd != null) { rec.status = 'sold'; rec.sold_price = sp; rec.sold_date = sd; }
+      else { rec.status = sh.role === 'sold' ? 'unknown' : 'held'; rec.sold_price = null; rec.sold_date = null; }
+      rec.client_name = parseText(get('client_name').v);
+      const hs = get('hubspot_url'); rec.hubspot_url = parseLink(hs.v, hs.l);
+      rec.advisor = parseText(get('advisor').v);
+      rec.lead_originator = parseText(get('lead_originator').v);
+      rec.comments = parseText(get('comments').v);
+      rec.sales_agent = parseText(get('sales_agent').v);
+      rec.agency = parseText(get('agency').v);
+      const ln = get('listing_url'); rec.listing_url = parseLink(ln.v, ln.l);
+      rec.property_type = parseText(get('property_type').v);
+      const land = parseNumber(get('land_m2').v); if (land === undefined) bad.push(FIELD_LABEL.land_m2); rec.land_m2 = land === undefined ? null : land;
+      rec.sales_advisory = parseYesNo(get('sales_advisory').v);
+      if (bad.length) { info.failed++; out.failed.push({ sheet: sh.name, row: rowNo, cols: bad }); continue; }
+      info.parsed++;
+      if (!prev) { out.records.set(key, Object.assign(rec, { _sheet: sh.role })); info.added++; continue; }
+      /* already seen: fill empty fields only (Sold sheet first, so its status
+         and sale fields stand) */
+      out.merged++;
+      for (const k of REC_FIELDS) if (prev[k] == null && rec[k] != null) prev[k] = rec[k];
+      if (rec.status === 'sold' && prev.status !== 'sold') prev.status = 'sold';
+    }
+  }
+  return out;
+}
+
+/* compare the file's properties with the register: new / updated / unchanged.
+   Existing rows change ONLY where the file has a value (never blank a field);
+   a sold property is never moved back to held or unknown. */
+const CMP_FIELDS = REC_FIELDS.filter(k => k !== 'address');
+function sameVal(a, b){
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  if (typeof a === 'number' || typeof b === 'number') return Math.abs(+a - +b) < 0.005;
+  return String(a) === String(b);
+}
+function planImport(parsed){
+  const byKey = new Map(S.props.map(p => [p.address_key || scKey(p.address), p]));
+  const plan = { inserts: [], updates: [], unchanged: 0 };
+  for (const [key, rec] of parsed.records) {
+    const ex = byKey.get(key);
+    if (!ex) { plan.inserts.push(rec); continue; }
+    const patch = {};
+    for (const k of CMP_FIELDS) {
+      let v = rec[k];
+      if (v == null) continue;
+      if (k === 'status') { if (ex.status === 'sold') continue; }
+      if (!sameVal(v, ex[k])) patch[k] = v;
+    }
+    if (Object.keys(patch).length) plan.updates.push({ ex, patch }); else plan.unchanged++;
+  }
+  return plan;
+}
+
+/* ═══ formatting + the derived numbers ═════════════════════════════════════ */
+const fmt$ = v => v == null || v === '' ? '' : '$' + Math.round(+v).toLocaleString('en-AU');
+function fmtDate(iso){ if (!iso) return ''; const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number); return d + ' ' + MONTHS[m - 1] + ' ' + y; }
+function fmtWhen(ts){ if (!ts) return ''; const d = new Date(ts); return d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + d.getFullYear() + ', ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
+const fmtPct = v => v == null ? '' : (v > 0 ? '+' : '') + (v * 100).toFixed(1) + '%';
+function dayNum(iso){ const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number); return Date.UTC(y, m - 1, d) / 86400e3; }
+function metrics(p){
+  if (p.status !== 'sold' || !p.purchase_date || !p.sold_date) return { hold: null, roi: null, cagr: null, roiOnly: p.status === 'sold' && p.purchase_price > 0 && p.sold_price > 0 ? +p.sold_price / +p.purchase_price - 1 : null };
+  const hold = (dayNum(p.sold_date) - dayNum(p.purchase_date)) / 365.25;
+  const ok = +p.purchase_price > 0 && +p.sold_price > 0;
+  const roi = ok ? +p.sold_price / +p.purchase_price - 1 : null;
+  const cagr = ok && hold > 0 ? Math.pow(+p.sold_price / +p.purchase_price, 1 / hold) - 1 : null;
+  return { hold: hold >= 0 ? hold : null, roi, cagr };
+}
+const chip = (cls, label) => '<span class="chip ' + esc(cls) + '">' + esc(label) + '</span>';
+const STATUS_LABEL = { held: 'Held', sold: 'Sold', unknown: 'Unknown' };
+const VERDICT_LABEL = { sold: 'Sold', listed: 'Listed', not_sold: 'Not sold', unknown: 'Unknown' };
+const todayIso = () => { const t = new Date(); return t.getFullYear() + '-' + pad2(t.getMonth() + 1) + '-' + pad2(t.getDate()); };
+function monthsBack(n){ const t = new Date(); t.setMonth(t.getMonth() - n); return t.getFullYear() + '-' + pad2(t.getMonth() + 1) + '-' + pad2(t.getDate()); }
+function lastCheck(id){ const r = S.byProp.get(id); return r && r.length ? r[0] : null; }
+
+/* ═══ data ═════════════════════════════════════════════════════════════════ */
+async function fetchAll(table, order){
+  const out = []; const page = 1000;
+  for (let from = 0; ; from += page) {
+    const { data, error } = await sb.from(table).select('*').order(order, { ascending: false }).order('id').range(from, from + page - 1);
+    if (error) throw error;
+    out.push(...(data || []));
+    if (!data || data.length < page) break;
+  }
+  return out;
+}
+async function load(){
+  const [props, results] = await Promise.all([fetchAll('sold_check_properties', 'updated_at'), fetchAll('sold_check_results', 'checked_at')]);
+  S.props = props; S.results = results;
+  S.byProp = new Map();
+  for (const r of results) { if (!S.byProp.has(r.property_id)) S.byProp.set(r.property_id, []); S.byProp.get(r.property_id).push(r); }
+  for (const list of S.byProp.values()) list.sort((a, b) => String(b.checked_at).localeCompare(String(a.checked_at)));
+  S.loaded = true;
+}
+async function resolveWriter(){
+  /* Editors = dev/admin (honouring view-as) or a 'sold-check' editor grant in
+     tool_roles. RLS (sold_check_can_write) is the real gate; this only shows
+     the buttons. */
+  const lvl = (typeof getAccessLevel === 'function') ? getAccessLevel() : '';
+  if (lvl === 'dev' || lvl === 'admin') return true;
+  if (typeof isViewOnly === 'function' && isViewOnly()) return false;
+  const auth = (typeof getAuthLevel === 'function') ? getAuthLevel() : '';
+  if ((auth === 'dev' || auth === 'admin') && lvl && lvl !== auth) return false;   /* a writer viewing as staff sees the viewer page */
+  try {
+    const prof = await sbCurrentProfile();
+    if (!prof) return false;
+    if (!S.email) S.email = prof.email || '';
+    const { data, error } = await sb.from('tool_roles').select('role').eq('user_id', prof.id).eq('tool_key', 'sold-check').eq('role', 'editor').limit(1);
+    return !error && !!(data && data.length);
+  } catch (e) { return false; }
+}
+
+async function boot(){
+  let g = 0; while (!window.sb && g++ < 80) await new Promise(r => setTimeout(r, 100));
+  if (!window.sb) { $('#scWrap').innerHTML = '<div class="sc-empty">No database connection.</div>'; $('#scMeta').textContent = ''; return; }
+  S.email = (typeof getCurrentUserEmail === 'function' && getCurrentUserEmail()) || '';
+  if (QA) $('#scQaPill').hidden = false;
+  wire();
+  try {
+    const [canw] = await Promise.all([resolveWriter(), load()]);
+    S.canw = canw;
+  } catch (e) {
+    const msg = /does not exist|schema cache/i.test(e.message || '') ? 'Not set up yet — migration 126 has not been applied.' : 'Could not load the register: ' + (e.message || e);
+    $('#scWrap').innerHTML = '<div class="sc-empty">' + esc(msg) + '</div>'; $('#scMeta').textContent = ''; return;
+  }
+  document.body.classList.toggle('sc-canw', S.canw);
+  renderAll();
+  const id = new URLSearchParams(location.search).get('id');
+  if (id && S.props.some(p => p.id === id)) openDrawer(id);
+}
+
+/* ═══ register ═════════════════════════════════════════════════════════════ */
+function fillFilters(){
+  const keep = (sel, vals, allLabel) => {
+    const el = $(sel), cur = el.value;
+    el.innerHTML = '<option value="">' + esc(allLabel) + '</option>' + vals.map(v => '<option value="' + esc(v) + '">' + esc(v) + '</option>').join('');
+    el.value = vals.includes(cur) ? cur : '';
+  };
+  const markets = [...new Set(S.props.map(p => p.market).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const advisors = [...new Set(S.props.map(p => p.advisor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  keep('#fMarket', markets, 'All markets');
+  keep('#fAdvisor', advisors, 'All advisors');
+  S.f.market = $('#fMarket').value; S.f.advisor = $('#fAdvisor').value;
+}
+function visibleRows(){
+  const f = S.f, q = f.q.trim().toLowerCase();
+  let rows = S.props.filter(p =>
+    (!f.market || p.market === f.market) && (!f.status || p.status === f.status) && (!f.advisor || p.advisor === f.advisor) &&
+    (!q || String(p.address).toLowerCase().includes(q) || scKey(p.address).includes(scKey(q))));
+  if (/^\d+$/.test(f.period)) { const from = monthsBack(+f.period); rows = rows.filter(p => p.status === 'sold' && p.sold_date && p.sold_date >= from); }
+  else if (f.period === 'sold') rows = rows.filter(p => p.status === 'sold');
+  const key = S.sort.key, dir = S.sort.dir;
+  const val = p => {
+    const m = metrics(p), lc = lastCheck(p.id);
+    switch (key) {
+      case 'market': return (p.market || '') + '\u0000' + (p.address || '');
+      case 'address': return p.address || '';
+      case 'purchased': return p.purchase_date || '';
+      case 'status': return p.status;
+      case 'sold': return p.sold_date || '';
+      case 'hold': return m.hold; case 'roi': return m.roi; case 'cagr': return m.cagr;
+      case 'advisor': return p.advisor || ''; case 'lead': return p.lead_originator || '';
+      case 'check': return lc ? lc.checked_at : '';
+    }
+    return '';
+  };
+  const cmp = (a, b) => {
+    const va = val(a), vb = val(b);
+    const ea = va == null || va === '', eb = vb == null || vb === '';
+    if (ea && eb) return 0; if (ea) return 1; if (eb) return -1;      /* blanks last either way */
+    return (typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb))) * dir;
+  };
+  if (f.period === 'recent') rows.sort((a, b) => { const ea = !a.sold_date, eb = !b.sold_date; if (ea && eb) return String(a.address).localeCompare(String(b.address)); if (ea) return 1; if (eb) return -1; return b.sold_date.localeCompare(a.sold_date); });
+  else rows.sort(cmp);
+  return rows;
+}
+const COLS = [
+  ['market', 'Market'], ['address', 'Address'], ['purchased', 'Purchased'], ['status', 'Status'], ['sold', 'Sold'],
+  ['hold', 'Hold', 'num'], ['roi', 'ROI', 'num'], ['cagr', 'CAGR', 'num'], ['advisor', 'Advisor'], ['lead', 'Lead originator'], ['check', 'Last check'],
+];
+function renderRegister(){
+  const rows = visibleRows();
+  const wrap = $('#scWrap');
+  if (!S.props.length) {
+    wrap.innerHTML = '<div class="sc-empty">The register is empty.' + (S.canw ? ' Import a purchases workbook or add a property to start.' : ' An editor imports the purchases workbooks.') + '</div>';
+  } else if (!rows.length) {
+    wrap.innerHTML = '<div class="sc-empty">No property matches these filters.</div>';
+  } else {
+    const recent = S.f.period === 'recent';
+    const head = '<tr>' + COLS.map(([k, l, cls]) => {
+      const on = !recent && S.sort.key === k;
+      return '<th data-k="' + k + '" class="' + (cls || '') + (recent ? ' nosort' : '') + '">' + esc(l) + (on ? '<span class="ar">' + (S.sort.dir > 0 ? '▲' : '▼') + '</span>' : '') + '</th>';
+    }).join('') + '</tr>';
+    const dash = '<span class="sc-dash">—</span>';
+    const body = rows.map(p => {
+      const m = metrics(p), lc = lastCheck(p.id);
+      const pct = v => v == null ? dash : '<span class="' + (v > 0 ? 'sc-pos' : v < 0 ? 'sc-neg' : '') + '">' + fmtPct(v) + '</span>';
+      return '<tr data-id="' + esc(p.id) + '">' +
+        '<td class="nw">' + esc(p.market) + '</td>' +
+        '<td class="addr">' + esc(p.address) + '</td>' +
+        '<td class="nw">' + (p.purchase_date || p.purchase_price != null ? esc(fmtDate(p.purchase_date)) + '<span class="sub">' + esc(fmt$(p.purchase_price)) + '</span>' : dash) + '</td>' +
+        '<td>' + chip(p.status, STATUS_LABEL[p.status] || p.status) + '</td>' +
+        '<td class="nw">' + (p.sold_date || p.sold_price != null ? esc(fmtDate(p.sold_date)) + '<span class="sub">' + esc(fmt$(p.sold_price)) + '</span>' : dash) + '</td>' +
+        '<td class="num">' + (m.hold == null ? dash : m.hold.toFixed(1) + ' yrs') + '</td>' +
+        '<td class="num">' + pct(m.roi != null ? m.roi : m.roiOnly) + '</td>' +
+        '<td class="num">' + pct(m.cagr) + '</td>' +
+        '<td class="nw">' + (p.advisor ? esc(p.advisor) : dash) + '</td>' +
+        '<td class="nw">' + (p.lead_originator ? esc(p.lead_originator) : dash) + '</td>' +
+        '<td class="nw">' + (lc ? esc(fmtDate(String(lc.checked_at).slice(0, 10))) + ' ' + chip(lc.verdict, VERDICT_LABEL[lc.verdict]) : dash) + '</td>' +
+        '</tr>';
+    }).join('');
+    wrap.innerHTML = '<table class="sc" id="scTable"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
+  }
+  const sold = rows.filter(p => p.status === 'sold').length;
+  const per = S.f.period;
+  $('#scMeta').innerHTML = '<span><b>' + rows.length + '</b> of ' + S.props.length + ' propert' + (S.props.length === 1 ? 'y' : 'ies') + ' shown</span>' +
+    '<span><b>' + sold + '</b> sold in view</span>' +
+    (/^\d+$/.test(per) ? '<span>Sold since <b>' + esc(fmtDate(monthsBack(+per))) + '</b></span>' : '') +
+    (per === 'recent' ? '<span>Latest sale first</span>' : '');
+}
+function renderStats(){
+  const n = s => S.props.filter(p => p.status === s).length;
+  const markets = new Set(S.props.map(p => p.market)).size;
+  const pending = verifyQueue().length;
+  $('#scStats').innerHTML = [[S.props.length, 'Properties'], [n('held'), 'Held'], [n('sold'), 'Sold'], [n('unknown'), 'Unknown'], [markets, 'Markets'], [pending, 'To verify']]
+    .map(([v, l]) => '<div class="sc-stat"><b>' + v + '</b><span>' + l + '</span></div>').join('');
+  const b = $('#scVerifyBadge'); b.textContent = pending; b.classList.toggle('zero', !pending);
+}
+function renderAll(){ fillFilters(); renderStats(); renderRegister(); renderVerify(); renderChecks(); if (S.drawerId && !S.editing) renderDrawerView(); }
+
+/* ═══ drawer: view, edit, add, delete ═════════════════════════════════════ */
+function propById(id){ return S.props.find(p => p.id === id) || null; }
+function openDrawer(id){
+  S.drawerId = id; S.editing = null;
+  renderDrawerView();
+  showDrawer(true);
+}
+function showDrawer(on){
+  $('#dr').classList.toggle('on', on); $('#drScrim').classList.toggle('on', on);
+  $('#dr').setAttribute('aria-hidden', on ? 'false' : 'true');
+  if (!on) { S.drawerId = null; S.editing = null; }
+}
+function kv(rows){ return '<dl class="sc-kv">' + rows.filter(r => r).map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + (v == null || v === '' ? '<span class="sc-dash">—</span>' : v) + '</dd>').join('') + '</dl>'; }
+const link = (u, label) => u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(label || u) + '</a>' : '';
+function histHtml(r){
+  const rv = r.review ? chip(r.review, r.review === 'confirmed' ? 'Confirmed' : 'Rejected') + (r.reviewed_by ? ' <span>by ' + esc(r.reviewed_by) + (r.reviewed_at ? ', ' + esc(fmtWhen(r.reviewed_at)) : '') + '</span>' : '')
+    : (r.verdict === 'sold' || r.verdict === 'listed' ? chip('unknown', 'To verify') : '');
+  return '<div class="h"><div class="top">' + chip(r.verdict, VERDICT_LABEL[r.verdict]) + (r.confidence ? chip(r.confidence, r.confidence + ' confidence') : '') + rv + '</div>' +
+    '<div><b>' + esc(fmtWhen(r.checked_at)) + '</b> · ' + esc(r.checked_by) + (r.run_id ? ' · run ' + esc(r.run_id) : '') + '</div>' +
+    (r.sale_date || r.sale_price != null ? '<div>Found: ' + esc([fmtDate(r.sale_date), fmt$(r.sale_price)].filter(Boolean).join(' · ')) + '</div>' : '') +
+    (r.source_url ? '<div>' + link(r.source_url, 'Source') + '</div>' : '') +
+    (r.notes ? '<div>' + esc(r.notes) + '</div>' : '') + '</div>';
+}
+function renderDrawerView(){
+  const p = propById(S.drawerId);
+  if (!p) { showDrawer(false); return; }
+  const m = metrics(p), hist = S.byProp.get(p.id) || [];
+  $('#drTitle').textContent = p.address;
+  $('#drSub').innerHTML = esc(p.market) + ' · ' + chip(p.status, STATUS_LABEL[p.status]);
+  const yn = v => v == null ? '' : v ? 'Yes' : 'No';
+  let h = '<div class="sc-sec"><h4>Purchase</h4>' + kv([['Purchase date', esc(fmtDate(p.purchase_date))], ['Purchase price', esc(fmt$(p.purchase_price))], ['Property type', esc(p.property_type || '')], ['Land', p.land_m2 != null ? esc(Number(p.land_m2).toLocaleString('en-AU')) + ' m²' : '']]) + '</div>' +
+    '<div class="sc-sec"><h4>Sale</h4>' + kv([['Status', chip(p.status, STATUS_LABEL[p.status])], ['Sold date', esc(fmtDate(p.sold_date))], ['Sold price', esc(fmt$(p.sold_price))],
+      ['Hold period', m.hold == null ? '' : m.hold.toFixed(1) + ' years'], ['ROI', fmtPct(m.roi != null ? m.roi : m.roiOnly)], ['CAGR', fmtPct(m.cagr)], ['Listing link', link(p.listing_url, 'Open listing')],
+      ['Sales agent', esc(p.sales_agent || '')], ['Agency', esc(p.agency || '')], ['Sales advisory', yn(p.sales_advisory)]]) + '</div>' +
+    '<div class="sc-sec"><h4>Client and team</h4>' + kv([['Client', esc(p.client_name || '')], ['HubSpot', link(p.hubspot_url, 'Open client card')], ['Advisor', esc(p.advisor || '')], ['Lead originator', esc(p.lead_originator || '')]]) + '</div>' +
+    '<div class="sc-sec"><h4>Comments</h4>' + (p.comments ? '<div class="sc-comments">' + esc(p.comments) + '</div>' : '<span class="sc-dash">—</span>') + '</div>' +
+    '<div class="sc-sec"><h4>Check history</h4>' + (hist.length ? '<div class="sc-hist">' + hist.map(histHtml).join('') + '</div>' : '<span class="sc-dash">Not checked yet</span>') + '</div>';
+  if (S.canw) h += '<div class="sc-sec" id="drCheckSec"><h4>Record a check by hand</h4>' + checkFormHtml() + '</div>';
+  h += '<div class="sc-sec"><h4>Record</h4>' + kv([['Source', esc(p.source + (p.import_file ? ' · ' + p.import_file : ''))], ['Added', esc([fmtWhen(p.created_at), p.created_by].filter(Boolean).join(' · '))], ['Last edited', esc([fmtWhen(p.updated_at), p.updated_by].filter(Boolean).join(' · '))]]) + '</div>';
+  $('#drBody').innerHTML = h;
+  $('#drBody').scrollTop = 0;
+  $('#drFoot').innerHTML = S.canw
+    ? '<button type="button" class="sc-btn danger" id="drDelete">Delete</button><span class="sp"></span><button type="button" class="sc-btn primary" id="drEdit">Edit</button>'
+    : '<span class="sp"></span><button type="button" class="sc-btn" id="drClose2">Close</button>';
+  if (S.canw) {
+    $('#drEdit').onclick = () => renderDrawerEdit(p);
+    $('#drDelete').onclick = () => askDelete(p);
+    $('#ckSave').onclick = () => saveManualCheck(p);
+  } else $('#drClose2').onclick = () => showDrawer(false);
+}
+function checkFormHtml(){
+  return '<div class="sc-form">' +
+    '<label class="sc-field"><span>Verdict</span><select id="ckVerdict"><option value="sold">Sold</option><option value="listed">Listed</option><option value="not_sold">Not sold</option><option value="unknown">Unknown</option></select></label>' +
+    '<label class="sc-field"><span>Confidence</span><select id="ckConf"><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></label>' +
+    '<label class="sc-field"><span>Sale date</span><input id="ckDate" type="date"></label>' +
+    '<label class="sc-field"><span>Sale price</span><input id="ckPrice" type="text" inputmode="decimal" placeholder="$"></label>' +
+    '<label class="sc-field full"><span>Source link</span><input id="ckUrl" type="url" placeholder="https://"></label>' +
+    '<label class="sc-field full"><span>Notes</span><input id="ckNotes" type="text"></label>' +
+    '<div class="full"><button type="button" class="sc-btn" id="ckSave">Add to check history</button></div></div>';
+}
+async function saveManualCheck(p){
+  const price = parseMoney($('#ckPrice').value);
+  if (price === undefined) { toast('The sale price is not a number', true); return; }
+  const row = { property_id: p.id, checked_by: S.email || 'manual', verdict: $('#ckVerdict').value, confidence: $('#ckConf').value,
+    sale_date: $('#ckDate').value || null, sale_price: price, source_url: $('#ckUrl').value.trim() || null, notes: $('#ckNotes').value.trim() || null };
+  $('#ckSave').disabled = true;
+  const { error } = await sb.from('sold_check_results').insert(row);
+  if (error) { $('#ckSave').disabled = false; toast('Could not save the check: ' + error.message, true); return; }
+  toast(row.verdict === 'sold' || row.verdict === 'listed' ? 'Check saved — it is in the Verify queue' : 'Check saved');
+  await reload();
+}
+const FORM = [
+  ['market', 'Market', 'text', 'list:mkts'], ['address', 'Address', 'text', 'full'], ['purchase_date', 'Purchase date', 'date'], ['purchase_price', 'Purchase price', 'money'],
+  ['status', 'Status', 'status'], ['property_type', 'Property type', 'text'], ['sold_date', 'Sold date', 'date'], ['sold_price', 'Sold price', 'money'],
+  ['land_m2', 'Land (m²)', 'number'], ['sales_advisory', 'Sales advisory', 'yesno'], ['client_name', 'Client name', 'text'], ['hubspot_url', 'HubSpot link', 'url'],
+  ['advisor', 'Advisor', 'text', 'list:advs'], ['lead_originator', 'Lead originator', 'text'], ['sales_agent', 'Sales agent', 'text'], ['agency', 'Agency', 'text'],
+  ['listing_url', 'Listing link', 'url', 'full'], ['comments', 'Comments', 'area', 'full'],
+];
+function renderDrawerEdit(p){
+  const isNew = !p;
+  S.editing = isNew ? 'new' : p.id;
+  if (isNew) S.drawerId = null;
+  const v = p || { status: 'held', market: S.f.market || '' };
+  $('#drTitle').textContent = isNew ? 'Add a property' : 'Edit property';
+  $('#drSub').textContent = isNew ? 'Address is required; it must not already be in the register' : p.address;
+  const val = (k, t) => { const x = v[k]; if (x == null) return ''; if (t === 'money') return String(Math.round(+x)); return String(x); };
+  const fields = FORM.map(([k, label, t, opt]) => {
+    const cls = String(opt || '').includes('full') ? ' full' : '';
+    const id = 'ef_' + k;
+    let input;
+    if (t === 'status') input = '<select id="' + id + '">' + ['held', 'sold', 'unknown'].map(s => '<option value="' + s + '"' + (v.status === s ? ' selected' : '') + '>' + STATUS_LABEL[s] + '</option>').join('') + '</select>';
+    else if (t === 'yesno') input = '<select id="' + id + '"><option value="">—</option><option value="yes"' + (v[k] === true ? ' selected' : '') + '>Yes</option><option value="no"' + (v[k] === false ? ' selected' : '') + '>No</option></select>';
+    else if (t === 'area') input = '<textarea id="' + id + '">' + esc(val(k, t)) + '</textarea>';
+    else {
+      const type = t === 'date' ? 'date' : t === 'url' ? 'url' : 'text';
+      const list = String(opt || '').startsWith('list:') ? ' list="' + opt.slice(5) + '"' : '';
+      input = '<input id="' + id + '" type="' + type + '"' + list + (t === 'money' || t === 'number' ? ' inputmode="decimal"' : '') + (k === 'address' ? ' required' : '') + ' value="' + esc(val(k, t)) + '" autocomplete="off">';
+    }
+    return '<label class="sc-field' + cls + '"><span>' + esc(label) + (k === 'address' || k === 'market' ? ' *' : '') + '</span>' + input + '</label>';
+  }).join('');
+  const mk = [...new Set(S.props.map(x => x.market).filter(Boolean))].sort();
+  const ad = [...new Set(S.props.map(x => x.advisor).filter(Boolean))].sort();
+  $('#drBody').innerHTML = '<div class="sc-err" id="efErr" hidden></div><div class="sc-form">' + fields + '</div>' +
+    '<datalist id="mkts">' + mk.map(x => '<option value="' + esc(x) + '">').join('') + '</datalist>' +
+    '<datalist id="advs">' + ad.map(x => '<option value="' + esc(x) + '">').join('') + '</datalist>';
+  $('#drFoot').innerHTML = '<button type="button" class="sc-btn" id="efCancel">Cancel</button><span class="sp"></span><button type="button" class="sc-btn primary" id="efSave">' + (isNew ? 'Add property' : 'Save changes') + '</button>';
+  $('#efCancel').onclick = () => { if (isNew) showDrawer(false); else { S.editing = null; renderDrawerView(); } };
+  $('#efSave').onclick = () => saveForm(p);
+  showDrawer(true);
+  if (isNew) S.editing = 'new';
+  setTimeout(() => { const a = $(isNew ? '#ef_address' : '#ef_purchase_price'); if (a) a.focus(); }, 220);
+}
+function formError(html){ const e = $('#efErr'); e.innerHTML = html; e.hidden = !html; if (html) $('#drBody').scrollTop = 0; }
+async function saveForm(p){
+  const g = k => { const el = $('#ef_' + k); return el ? el.value : ''; };
+  const row = {}, bad = [];
+  for (const [k, label, t] of FORM) {
+    const raw = g(k);
+    if (t === 'money') { const x = parseMoney(raw); if (x === undefined) bad.push(label); else row[k] = x; }
+    else if (t === 'number') { const x = parseNumber(raw); if (x === undefined) bad.push(label); else row[k] = x; }
+    else if (t === 'date') row[k] = raw || null;
+    else if (t === 'yesno') row[k] = raw === 'yes' ? true : raw === 'no' ? false : null;
+    else if (t === 'status') row[k] = raw || 'held';
+    else { const x = t === 'area' ? raw.trim() : raw.trim().replace(/\s+/g, ' '); row[k] = x || null; }
+  }
+  if (!row.address) { formError('The address is required.'); return; }
+  if (!row.market) { formError('The market is required (the city, as the purchase sheets name it).'); return; }
+  if (bad.length) { formError('Not a number: ' + esc(bad.join(', ')) + '.'); return; }
+  const key = scKey(row.address);
+  const clash = S.props.find(x => (x.address_key || scKey(x.address)) === key && (!p || x.id !== p.id));
+  if (clash) { formError('This address is already in the register (' + esc(clash.market) + ' · ' + esc(clash.address) + '). <button type="button" class="sc-btn sm" id="efOpenClash">Open it</button>'); $('#efOpenClash').onclick = () => openDrawer(clash.id); return; }
+  row.address_key = key;
+  row.updated_by = S.email || null;
+  $('#efSave').disabled = true;
+  let res;
+  if (!p) { row.source = QA ? 'qa' : 'manual'; row.created_by = S.email || null; res = await sb.from('sold_check_properties').insert(row).select('id').single(); }
+  else res = await sb.from('sold_check_properties').update(row).eq('id', p.id).select('id').single();
+  if (res.error) {
+    $('#efSave').disabled = false;
+    if (res.error.code === '23505') { await reload(); const c = S.props.find(x => x.address_key === key); formError('This address is already in the register.' + (c ? ' <button type="button" class="sc-btn sm" id="efOpenClash">Open it</button>' : '')); if (c) $('#efOpenClash').onclick = () => openDrawer(c.id); }
+    else formError('Could not save: ' + esc(res.error.message));
+    return;
+  }
+  toast(p ? 'Saved' : 'Property added');
+  S.editing = null;
+  await reload();
+  openDrawer(res.data.id);
+}
+let cfAction = null;
+function askConfirm(title, body, yesLabel, fn){
+  $('#cfTitle').textContent = title; $('#cfBody').innerHTML = body; $('#cfYes').textContent = yesLabel;
+  cfAction = fn; $('#cfModal').classList.add('on');
+}
+function askDelete(p){
+  const n = (S.byProp.get(p.id) || []).length;
+  askConfirm('Delete this property', '<b>' + esc(p.address) + '</b> (' + esc(p.market) + ') will be removed from the register' + (n ? ', with its ' + n + ' check result' + (n === 1 ? '' : 's') : '') + '. This cannot be undone.', 'Delete', async () => {
+    const { error } = await sb.from('sold_check_properties').delete().eq('id', p.id);
+    if (error) { toast('Could not delete: ' + error.message, true); return; }
+    toast('Property deleted'); showDrawer(false); await reload();
+  });
+}
+
+/* ═══ verify queue ═════════════════════════════════════════════════════════ */
+function verifyQueue(){ return S.results.filter(r => (r.verdict === 'sold' || r.verdict === 'listed') && !r.review).sort((a, b) => String(b.checked_at).localeCompare(String(a.checked_at))); }
+function renderVerify(){
+  const q = verifyQueue(), box = $('#scVerifyList');
+  $('#scVerifyMeta').innerHTML = '<span><b>' + q.length + '</b> result' + (q.length === 1 ? '' : 's') + ' to verify</span>' + (S.canw ? '' : '<span>Read-only — an editor confirms or rejects</span>');
+  if (!q.length) { box.innerHTML = '<div class="sc-empty">Nothing to verify. New sold or listed results from the check appear here.</div>'; return; }
+  box.innerHTML = q.map(r => {
+    const p = propById(r.property_id) || { address: '(property removed)', market: '' };
+    const act = !S.canw ? '' : r.verdict === 'sold'
+      ? '<div class="act"><div class="pair"><label class="sc-field"><span>Sold date</span><input type="date" data-f="date" value="' + esc(r.sale_date || '') + '"></label>' +
+        '<label class="sc-field"><span>Sold price</span><input type="text" inputmode="decimal" data-f="price" value="' + esc(r.sale_price != null ? String(Math.round(r.sale_price)) : '') + '"></label></div>' +
+        '<div class="btns"><button type="button" class="sc-btn danger" data-act="reject">Reject</button><button type="button" class="sc-btn primary" data-act="confirm">Confirm sold</button></div></div>'
+      : '<div class="act"><div class="row">The property stays held; confirming saves the listing link.</div><div class="btns"><button type="button" class="sc-btn danger" data-act="reject">Reject</button><button type="button" class="sc-btn primary" data-act="confirm">Confirm listed</button></div></div>';
+    return '<div class="sc-card" data-rid="' + esc(r.id) + '">' +
+      '<div><div class="k">' + esc(p.market) + '</div><h3><a href="#" data-open="' + esc(r.property_id) + '">' + esc(p.address) + '</a></h3>' +
+        '<div class="row">Purchased ' + esc([fmtDate(p.purchase_date), fmt$(p.purchase_price)].filter(Boolean).join(' · ') || '—') + ' · ' + chip(p.status || 'unknown', STATUS_LABEL[p.status] || '—') + '</div></div>' +
+      '<div><div class="row">' + chip(r.verdict, VERDICT_LABEL[r.verdict]) + ' ' + (r.confidence ? chip(r.confidence, r.confidence + ' confidence') : '') + '</div>' +
+        '<div class="row">Found: <b>' + esc([fmtDate(r.sale_date), fmt$(r.sale_price)].filter(Boolean).join(' · ') || 'no date or price') + '</b></div>' +
+        (r.source_url ? '<div class="row">' + link(r.source_url, 'Source') + '</div>' : '') +
+        (r.notes ? '<div class="row">' + esc(r.notes) + '</div>' : '') +
+        '<div class="row">Checked ' + esc(fmtWhen(r.checked_at)) + ' · ' + esc(r.checked_by) + (r.run_id ? ' · run ' + esc(r.run_id) : '') + '</div></div>' +
+      act + '</div>';
+  }).join('');
+}
+async function onVerifyClick(e){
+  const o = e.target.closest('[data-open]'); if (o) { e.preventDefault(); openDrawer(o.dataset.open); return; }
+  const b = e.target.closest('button[data-act]'); if (!b || !S.canw) return;
+  const card = b.closest('.sc-card'), rid = card.dataset.rid;
+  const r = S.results.find(x => x.id === rid); if (!r) return;
+  card.querySelectorAll('button').forEach(x => x.disabled = true);
+  let error;
+  if (b.dataset.act === 'confirm') {
+    let date = null, price = null;
+    if (r.verdict === 'sold') {
+      date = card.querySelector('[data-f="date"]').value || null;
+      price = parseMoney(card.querySelector('[data-f="price"]').value);
+      if (price === undefined) { toast('The sold price is not a number', true); card.querySelectorAll('button').forEach(x => x.disabled = false); return; }
+    }
+    ({ error } = await sb.rpc('sold_check_confirm', { p_result: rid, p_sale_date: date, p_sale_price: price }));
+    if (!error) toast(r.verdict === 'sold' ? 'Confirmed — the property is now sold' : 'Listing confirmed');
+  } else {
+    ({ error } = await sb.from('sold_check_results').update({ review: 'rejected', reviewed_at: new Date().toISOString(), reviewed_by: S.email || null }).eq('id', rid));
+    if (!error) toast('Result rejected');
+  }
+  if (error) { toast('Could not save: ' + error.message, true); card.querySelectorAll('button').forEach(x => x.disabled = false); return; }
+  await reload();
+}
+
+/* ═══ checks (runs) ════════════════════════════════════════════════════════ */
+function runs(){
+  const m = new Map();
+  for (const r of S.results) {
+    const k = r.run_id ? 'run:' + r.run_id : 'day:' + String(r.checked_at).slice(0, 10) + ':' + r.checked_by;
+    if (!m.has(k)) m.set(k, { key: k, run_id: r.run_id, by: new Set(), first: r.checked_at, last: r.checked_at, items: [] });
+    const g = m.get(k); g.items.push(r); g.by.add(r.checked_by);
+    if (r.checked_at < g.first) g.first = r.checked_at; if (r.checked_at > g.last) g.last = r.checked_at;
+  }
+  return [...m.values()].sort((a, b) => String(b.last).localeCompare(String(a.last)));
+}
+function renderChecks(){
+  const list = runs(), wrap = $('#scChecksWrap');
+  $('#scChecksMeta').innerHTML = '<span><b>' + list.length + '</b> run' + (list.length === 1 ? '' : 's') + '</span><span><b>' + S.results.length + '</b> results in all</span>';
+  if (!list.length) { wrap.innerHTML = '<div class="sc-empty">No checks have been recorded yet.</div>'; return; }
+  const cnt = (g, f) => g.items.filter(f).length;
+  let body = '';
+  for (const g of list) {
+    const open = S.openRun === g.key;
+    body += '<tr data-run="' + esc(g.key) + '" class="' + (open ? 'open' : '') + '">' +
+      '<td class="nw"><b>' + esc(g.run_id || 'By hand, ' + fmtDate(String(g.first).slice(0, 10))) + '</b></td>' +
+      '<td class="nw">' + esc(fmtWhen(g.last)) + '</td>' +
+      '<td>' + esc([...g.by].join(', ')) + '</td>' +
+      '<td class="num">' + g.items.length + '</td>' +
+      '<td class="num">' + cnt(g, r => r.verdict === 'sold' || r.verdict === 'listed') + '</td>' +
+      '<td class="num">' + cnt(g, r => r.verdict === 'not_sold') + '</td>' +
+      '<td class="num">' + cnt(g, r => r.verdict === 'unknown') + '</td>' +
+      '<td class="num">' + cnt(g, r => r.review === 'confirmed') + ' / ' + cnt(g, r => r.review === 'rejected') + '</td></tr>';
+    if (open) {
+      body += '<tr class="detail"><td colspan="8"><div class="sc-hist">' + g.items.map(r => {
+        const p = propById(r.property_id);
+        return '<div class="h"><div class="top"><b><a href="#" data-open="' + esc(r.property_id) + '">' + esc(p ? p.address : '(property removed)') + '</a></b></div>' + histHtml(r).replace(/^<div class="h">/, '').replace(/<\/div>$/, '') + '</div>';
+      }).join('') + '</div></td></tr>';
+    }
+  }
+  wrap.innerHTML = '<table class="sc runs"><thead><tr><th class="nosort">Run</th><th class="nosort">When</th><th class="nosort">Checked by</th><th class="num nosort">Checked</th><th class="num nosort">Candidates</th><th class="num nosort">Not sold</th><th class="num nosort">Unknown</th><th class="num nosort">Confirmed / rejected</th></tr></thead><tbody>' + body + '</tbody></table>';
+}
+
+/* ═══ import ═══════════════════════════════════════════════════════════════ */
+let IM = null;      /* { parsed, plan } for the file on screen */
+function openImport(){ IM = null; renderImportPick(); $('#imModal').classList.add('on'); }
+function closeImport(){ $('#imModal').classList.remove('on'); IM = null; }
+function renderImportPick(note){
+  $('#imBody').innerHTML = (note || '') +
+    '<div class="sc-drop" id="imDrop"><p style="margin:0 0 10px">Choose a city purchases workbook (.xlsx) — the one with the Summary page and the Total Purchases, Not Sold and Sold sheets.</p>' +
+    '<button type="button" class="sc-btn primary" id="imChoose">Choose file</button><p style="margin:10px 0 0;font-size:12px;color:var(--sc-mut)">Nothing is saved until you check the preview and click Import. The file is read in your browser.</p></div>';
+  $('#imFoot').innerHTML = '<button type="button" class="sc-btn" id="imDone">Close</button>';
+  $('#imChoose').onclick = () => { $('#imFile').value = ''; $('#imFile').click(); };
+  $('#imDone').onclick = closeImport;
+  const d = $('#imDrop');
+  d.addEventListener('dragover', e => { e.preventDefault(); d.classList.add('over'); });
+  d.addEventListener('dragleave', () => d.classList.remove('over'));
+  d.addEventListener('drop', e => { e.preventDefault(); d.classList.remove('over'); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) readImportFile(f); });
+}
+async function readImportFile(file){
+  if (!window.XLSX) { toast('The spreadsheet reader has not loaded', true); return; }
+  $('#imBody').innerHTML = '<div class="sc-empty">Reading the workbook…</div>';
+  $('#imFile').value = '';                          /* the same file can be picked again */
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    const parsed = parseWorkbook(wb, file.name);
+    await reload(true);                               /* compare against the register as it is now */
+    IM = { parsed, plan: planImport(parsed) };
+    renderImportPreview();
+  } catch (e) {
+    renderImportPick('<div class="sc-err">That file could not be read as a workbook.</div>');
+  }
+}
+function renderImportPreview(){
+  const { parsed, plan } = IM;
+  const roleLabel = { total: 'Total Purchases', notsold: 'Not Sold', sold: 'Sold' };
+  const sheets = parsed.sheets.length ? '<div class="tw"><table><thead><tr><th>Sheet</th><th>Read as</th><th class="num">Header row</th><th class="num">Rows parsed</th><th class="num">Failed</th><th class="num">Properties taken</th></tr></thead><tbody>' +
+    parsed.sheets.map(s => '<tr data-sheet-role="' + esc(s.role) + '"><td>' + esc(s.name) + '</td><td>' + esc(roleLabel[s.role]) + '</td><td class="num">' + (s.headerRow || 'not found') + '</td><td class="num" data-c="parsed">' + (s.parsed + (s.covered || 0)) + '</td><td class="num" data-c="failed">' + s.failed + '</td><td class="num" data-c="taken">' + s.added + '</td></tr>').join('') + '</tbody></table></div>' +
+    '<div style="font-size:12px;color:var(--sc-mut)">Not Sold and Sold are read first; Total Purchases only adds a property neither of them lists.</div>'
+    : '<div class="sc-err">No Total Purchases, Not Sold or Sold sheet was found in this workbook.</div>';
+  const fails = parsed.failed.length ? '<div><b>Rows that failed to parse</b> (not imported — fix the cell in the sheet and import again)<div class="sc-fail" id="imFails">' +
+    parsed.failed.map(f => '<div>' + esc(f.sheet) + ' · row ' + f.row + ' · ' + esc(f.cols.join(', ')) + '</div>').join('') + '</div></div>' : '';
+  $('#imBody').innerHTML = '<div class="sc-pv">' +
+    '<dl class="kv"><dt>File</dt><dd>' + esc(parsed.fileName) + '</dd><dt>Market</dt><dd><b>' + esc(parsed.market) + '</b></dd><dt>Properties</dt><dd>' + parsed.records.size + ' in the file' + (parsed.merged ? ' (' + parsed.merged + ' repeated rows merged)' : '') + '</dd>' +
+      (parsed.blanked ? '<dt>Read as blank</dt><dd>' + parsed.blanked + ' sold price / sold date cell' + (parsed.blanked === 1 ? '' : 's') + ' held a note rather than a price or date</dd>' : '') + '</dl>' +
+    sheets +
+    '<div class="sc-counts" id="imCounts"><div><b data-c="new">' + plan.inserts.length + '</b><span>New</span></div><div><b data-c="updated">' + plan.updates.length + '</b><span>Updated</span></div><div><b data-c="unchanged">' + plan.unchanged + '</b><span>Unchanged</span></div><div><b data-c="failed">' + parsed.failed.length + '</b><span>Failed</span></div></div>' +
+    fails +
+    '<div style="font-size:12px;color:var(--sc-mut)">Updates only fill or change fields the file has a value for — an empty cell never blanks the register, and a sold property is never moved back to held.' + (QA ? ' QA mode: rows are tagged qa.' : '') + '</div></div>';
+  const n = plan.inserts.length + plan.updates.length;
+  $('#imFoot').innerHTML = '<button type="button" class="sc-btn" id="imBack">Choose another file</button><button type="button" class="sc-btn primary" id="imGo"' + (n ? '' : ' disabled') + '>' + (n ? 'Import ' + n + ' propert' + (n === 1 ? 'y' : 'ies') : 'Nothing to import') + '</button>';
+  $('#imBack').onclick = () => renderImportPick();
+  $('#imGo').onclick = runImport;
+}
+async function runImport(){
+  if (!IM || !S.canw) return;
+  const { parsed, plan } = IM;
+  $('#imGo').disabled = true; $('#imBack').disabled = true; $('#imGo').textContent = 'Importing…';
+  const who = S.email || null, file = parsed.fileName;
+  const ins = plan.inserts.map(r => { const o = {}; for (const k of REC_FIELDS) o[k] = r[k] == null ? null : r[k]; o.address_key = scKey(r.address); o.source = QA ? 'qa' : 'import'; o.import_file = file; o.created_by = who; o.updated_by = who; return o; });
+  /* updates: the whole merged row, upserted on address_key (one request per
+     chunk); created_* and source are left as they are */
+  const ups = plan.updates.map(({ ex, patch }) => { const o = { id: ex.id, address: ex.address, address_key: ex.address_key }; for (const k of CMP_FIELDS) o[k] = k in patch ? patch[k] : (ex[k] == null ? null : ex[k]); o.import_file = file; o.updated_by = who; return o; });
+  let done = { inserted: 0, updated: 0 }, err = null;
+  try {
+    for (let i = 0; i < ins.length; i += 200) { const { error } = await sb.from('sold_check_properties').insert(ins.slice(i, i + 200)); if (error) throw error; done.inserted += Math.min(200, ins.length - i); }
+    for (let i = 0; i < ups.length; i += 200) { const { error } = await sb.from('sold_check_properties').upsert(ups.slice(i, i + 200), { onConflict: 'address_key' }); if (error) throw error; done.updated += Math.min(200, ups.length - i); }
+  } catch (e) { err = e; }
+  await reload();
+  const summary = '<div class="' + (err ? 'sc-err' : 'sc-ok') + '" id="imResult">' + esc(parsed.market) + ' · ' + esc(file) + ': ' + done.inserted + ' new, ' + done.updated + ' updated, ' + plan.unchanged + ' unchanged, ' + parsed.failed.length + ' failed' + (err ? ' — stopped: ' + esc(err.message || String(err)) : '') + '.</div>';
+  IM = null;
+  renderImportPick(summary + '<p style="margin:12px 0 8px">Import another workbook, or close.</p>');
+  toast(err ? 'Import stopped — see the message' : 'Import done', !!err);
+}
+
+/* ═══ export ═══════════════════════════════════════════════════════════════ */
+function exportRows(){
+  const header = ['Market','Address','Purchase date','Purchase price','Status','Sold date','Sold price','Hold (years)','ROI %','CAGR %','Advisor','Lead originator','Last check','Last check verdict'];
+  const rows = visibleRows().map(p => {
+    const m = metrics(p), lc = lastCheck(p.id), roi = m.roi != null ? m.roi : m.roiOnly;
+    return [p.market, p.address, p.purchase_date || null, p.purchase_price != null ? +p.purchase_price : null, STATUS_LABEL[p.status] || p.status, p.sold_date || null, p.sold_price != null ? +p.sold_price : null,
+      m.hold == null ? null : +m.hold.toFixed(2), roi == null ? null : +(roi * 100).toFixed(2), m.cagr == null ? null : +(m.cagr * 100).toFixed(2),
+      p.advisor || null, p.lead_originator || null, lc ? String(lc.checked_at).slice(0, 10) : null, lc ? VERDICT_LABEL[lc.verdict] : null];
+  });
+  return { header, rows };
+}
+function fileStem(){ return 'sold-check-' + (S.f.market ? S.f.market.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' : '') + (S.f.period !== 'any' ? (/^\d+$/.test(S.f.period) ? 'sold-' + S.f.period + 'm-' : S.f.period + '-') : '') + todayIso(); }
+function exportCsv(){
+  const { header, rows } = exportRows();
+  const q = v => v == null ? '' : /[",\n\r]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+  const csv = '﻿' + [header].concat(rows).map(r => r.map(q).join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = fileStem() + '.csv'; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  toast('Exported ' + rows.length + ' rows');
+}
+function exportXlsx(){
+  if (!window.XLSX) { toast('The Excel writer has not loaded', true); return; }
+  const { header, rows } = exportRows();
+  const ws = XLSX.utils.aoa_to_sheet([header].concat(rows));
+  const rg = XLSX.utils.decode_range(ws['!ref']);
+  for (let r = 1; r <= rg.e.r; r++) for (const c of [3, 6]) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell && typeof cell.v === 'number') cell.z = '$#,##0'; }
+  ws['!cols'] = header.map((h, i) => ({ wch: i === 1 ? 44 : Math.max(12, h.length + 2) }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Sold check');
+  XLSX.writeFile(wb, fileStem() + '.xlsx');
+  toast('Exported ' + rows.length + ' rows');
+}
+
+/* ═══ wiring ═══════════════════════════════════════════════════════════════ */
+async function reload(quiet){ await load(); if (!quiet) renderAll(); }
+let toastT = null;
+function toast(msg, bad){ const t = $('#scToast'); t.textContent = msg; t.classList.toggle('bad', !!bad); t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2600); }
+function setTab(t){
+  S.tab = t;
+  document.querySelectorAll('.sc-tab').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  $('#paneRegister').hidden = t !== 'register'; $('#paneVerify').hidden = t !== 'verify'; $('#paneChecks').hidden = t !== 'checks';
+}
+function wire(){
+  document.querySelectorAll('.sc-tab').forEach(b => b.addEventListener('click', () => setTab(b.dataset.tab)));
+  $('#fMarket').addEventListener('change', e => { S.f.market = e.target.value; renderRegister(); });
+  $('#fStatus').addEventListener('change', e => { S.f.status = e.target.value; renderRegister(); });
+  $('#fAdvisor').addEventListener('change', e => { S.f.advisor = e.target.value; renderRegister(); });
+  let st = null; $('#fSearch').addEventListener('input', e => { clearTimeout(st); st = setTimeout(() => { S.f.q = e.target.value; renderRegister(); }, 120); });
+  $('#fPeriod').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    $('#fPeriod').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    S.f.period = b.dataset.p; renderRegister();
+  });
+  $('#scWrap').addEventListener('click', e => {
+    const th = e.target.closest('th[data-k]');
+    if (th) { if (S.f.period === 'recent') return; const k = th.dataset.k; S.sort = { key: k, dir: S.sort.key === k ? -S.sort.dir : 1 }; renderRegister(); return; }
+    const tr = e.target.closest('tr[data-id]'); if (tr) openDrawer(tr.dataset.id);
+  });
+  $('#scVerifyList').addEventListener('click', onVerifyClick);
+  $('#scChecksWrap').addEventListener('click', e => {
+    const o = e.target.closest('[data-open]'); if (o) { e.preventDefault(); openDrawer(o.dataset.open); return; }
+    const tr = e.target.closest('tr[data-run]'); if (!tr) return;
+    S.openRun = S.openRun === tr.dataset.run ? null : tr.dataset.run; renderChecks();
+  });
+  $('#btnCsv').addEventListener('click', exportCsv);
+  $('#btnXlsx').addEventListener('click', exportXlsx);
+  $('#btnAdd').addEventListener('click', () => { if (S.canw) renderDrawerEdit(null); });
+  $('#btnImport').addEventListener('click', () => { if (S.canw) openImport(); });
+  $('#imFile').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; if (f) readImportFile(f); });
+  $('#imClose').addEventListener('click', closeImport);
+  $('#drClose').addEventListener('click', () => showDrawer(false));
+  $('#drScrim').addEventListener('click', () => showDrawer(false));
+  $('#cfNo').addEventListener('click', () => { $('#cfModal').classList.remove('on'); cfAction = null; });
+  $('#cfYes').addEventListener('click', async () => { const fn = cfAction; cfAction = null; $('#cfModal').classList.remove('on'); if (fn) await fn(); });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if ($('#cfModal').classList.contains('on')) { $('#cfModal').classList.remove('on'); cfAction = null; }
+    else if ($('#imModal').classList.contains('on')) closeImport();
+    else if ($('#dr').classList.contains('on')) showDrawer(false);
+  });
+}
+/* test hooks (pure functions only — no data) */
+window.SC_TEST = { scKey, parseMoney, parseDate, parseNumber, parseWorkbook };
+boot();
+</script>
+</body>
+</html>

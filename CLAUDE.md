@@ -130,6 +130,10 @@ assumptions.) Tools:
 - `whitepapers-strategies.html` — Documents.
 - `bookshelf.html` — staff library; book CONTENT lives in public.books (mig
   097), fetched at runtime — never commit book text (this repo is public).
+- `sold-check.html` — Sold Check: the register of properties bought for clients
+  (import of the city purchase workbooks + manual add/edit) and a sold-check
+  queue a scheduled session fills and a person verifies (mig 126; runbook
+  `docs/SOLD_CHECK.md`; feature note `docs/pp-os-migration/sold-check.md`).
 - `cadence.html` — team workflow board (Supabase-backed, realtime + notify).
 - `arena.html`, `arena-typing.html`, `arena-chess.html`, `arena-scrabble.html` —
   games with leaderboards; chess/scrabble are online multiplayer via RPCs.

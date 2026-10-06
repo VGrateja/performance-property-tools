@@ -49,6 +49,7 @@
     'investment-reports':{ sec: 'vault',    file: 'investment-reports.html',     label: 'IR Library' },
     'ir-builder':       { sec: 'vault',     file: 'ir-builder.html',             label: 'IR Builder' },
     'ir-samples':       { sec: 'vault',     file: 'ir-samples.html',             label: 'IR Samples' },
+    'sold-check':       { sec: 'vault',     file: 'sold-check.html',             label: 'Sold Check' },
     /* dev-only telemetry dashboard — deliberately in NO group and NOT in
        DEFAULT_BASELINE: auth-gate bounces company/assigned-admin deep-links
        because the key is never in their allowed set; the page itself and
