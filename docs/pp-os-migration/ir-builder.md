@@ -493,7 +493,141 @@ Line-height is 1.45 for text and 1.25 for headings, and numbers use tabular nume
 
 **For the port.** Keep the picker defaults equal to the old behaviour. Keep the label column shared within a card, the viewer rendering through the report builder, and print as a single shared path.
 
+## 12. Saskia's 6 Oct review — pages 1, 3, 4, 5
+
+Saskia reviewed the client report with Van on 6 Oct 2026. This round changes the content of pages 1, 3, 4 and 5 only. Pages 2 and 6–11, the page spacing, the §11 shell (picker, header, viewer) and `calcCashflow` are unchanged. Where this section differs from §4.1, §4.3, §4.3.2, §4.4 or §4.5, this section wins. No migration: every new field lives in the existing jsonb columns, so the mig-104 audit trigger records it.
+
+**Verified on all 94 files** (QA scripts: `scratch/ir-saskia/`):
+- **Page counts:** unchanged, at 1,002 client pages and 287 internal pages. 0 pages are over A4, and the tallest page measures 1,028 px against the 1,030 px limit.
+- **Unchanged pages:** every out-of-scope client page is byte-identical before and after (626 of 626 pages: executive summary, inspection, costs, strata, AMP, price analysis, disclaimer). The internal pack's HTML is identical too (287 of 287); only its chip colours change, through CSS.
+- **Cover:** the gap between the cover's last block and the IMPORTANT INFORMATION small print is at least 159 px, so the hero photo keeps its 440 px.
+
+### 12.1 New fields
+
+| Path | Type | Editor | Notes |
+|---|---|---|---|
+| `compliance.recommendation` | `'buy'` \| `'rejected'` \| null | Compliance → **Recommendation** card (two toggles; clicking the active one clears it); Review → Grading card select | The BA's decision. It is never derived and defaults to null. |
+| `compliance.recommendationBy`, `compliance.recommendationAt` | email, ISO time | stamped on every change | The same by/at pattern as `compliance.items`, and the trigger audits the compliance column. |
+| `setup.blockStoreys` | number \| null | Setup → Property card, "Block storeys" (optional) | The number of storeys in the block. Used only by the land-rich rule below. |
+| `setup.blockUnits` | number \| null | Setup → Property card, "Units in the block" (optional) | The number of units in the block. Used only by the land-rich rule below. |
+| `grading.propertyGradeScale` | `'A-D'` \| null | written by the Grading editor whenever a letter from the A–D scale is chosen | The marker that says the grade was chosen from Saskia's scale. A letter grade WITHOUT it predates the scale (the old "A Grade" meant investment quality) and prints as stored — see §12.5. |
+
+The Review window lists both block fields in the Setup grid (inline-editable like the other fields, shown even when empty). The Grading card now always has a kv row with **Recommendation** (a select for editors and plain text for viewers), which saves through the same path as the Compliance card. The Compliance automatic checks ("Setup complete" etc.) are unchanged.
+
+### 12.2 Page 1 — cover
+- **Exact CBD distance:** the line under the address now reads "N.N km from the CBD". It uses `cbdKm(c)`, which is the same figure as the map page's chip (the chip now calls it too).
+  - The figure is Cotality's suburb distance, `suburb_stats.cl.distCbd`, and it is used **for capital-city markets only**. Cotality measures to the state capital's CBD (`ir-chain.md` §1.3).
+  - The figure is not computed from `setup.geo`, because the hub stores no market CBD coordinates.
+  - The fallback is the old `cbdBand()` text: a regional market, or no Cotality distance.
+  - IR Samples and the Presentation slide still print the band through their own `irCbdBand`-style copies. This round left them untouched.
+- **Cover bands (`coverBands`):**
+  - The bands are Property strategy · Property grade · Suburb rating. The grade band prints "B grade" with its meaning beneath it ("Townhouse or Land-Rich Unit").
+  - The grade and rating bands turn **green** when the property grade is A or B (via `propGrade`, so the stored "A Grade" counts) **and** the suburb rating is AAA or BBB.
+  - Green styling: a Green `#71B357` border and top accent, the Green 50 `#F3F9F1` fill, and text in Green 700 `#4D7F39`. Green 500 text on white is only 2.5:1, so the text uses the 700 step.
+  - 20 of the 94 files qualify today.
+- **Recommendation band (`coverRec`):** a large band at the bottom of the flowed cover content.
+  - "RECOMMENDATION Buy" is white on Green `#71B357`.
+  - "RECOMMENDATION Rejected" is white on Red `#E72347`.
+  - "RECOMMENDATION Pending" is neutral grey, shown when the field is unset (all 94 files today).
+
+### 12.3 Grade colours (pages 3 and 4, and the internal pack and editor chips through the shared classes)
+
+| Grade | `gradeBand().cls` | Report chip `.pg .gc` / bar `.pg .bb` / `.pg .c-*` | Editor chip `.ib-gchip` |
+|---|---|---|---|
+| Excellent | g5 | Green `#71B357`, ink `#171B24` | `--ib-good` fill, dark ink |
+| Above Average | g4 | Green 300 `#A0CC8E`, ink `#171B24` | good-soft fill, good ink |
+| Average | g3 | Celestial Blue `#54A6DE`, ink `#171B24` | blue-soft fill, blue ink |
+| Below Average | g2 | grey `#9A9B9D`, ink `#171B24` | neutral surface, ink2 |
+| Poor | g1 | Yellow `#FFA91F`, ink `#171B24` | warn-soft fill, warn ink |
+
+- **Ink:** every chip uses dark ink. White text would fail contrast on all five fills.
+- **Grey:** the brand tokens have no Light Gray ramp, so `#9A9B9D` (between Light Gray and Dark Gray) is used as the brief specified.
+- **Comparability:** the comparability chips (`.rc`, price analysis) were split off the shared rule and keep their old teal/grey/yellow/red colours.
+- **DD chips:** `.c-Approved` / `.c-Review` / `.c-Failed` (internal-pack DD chips) are unchanged.
+- **Band numbers:**
+  - `gradeChip(v)` now prints the **word only**.
+  - `gradeChip(v, true)` adds the band number ("Above Average · 4"), and only the internal pack's grading matrix uses it.
+  - The numbers (2.5–5) are still stored in `GRADE_BAND` for averages.
+
+### 12.4 Page 3 — map and location grading
+- The legend "Grades on the 2.5–5 band …" is removed, along with the band numbers on the chips and the "Average of the N location grades: X on the 2.5–5 band" line.
+- The **Asset grade** tile is removed, and the asset grade moves to page 4. It is replaced by **Location grade** (`locationGrade(items)`):
+  - **Average:** the mean of the graded location attributes' band values (`gradeBand().n`, with Excellent counted as 4.75).
+  - **Nearest word:** the mean maps back to the **nearest** band word on the anchors Poor 2.5 · Below Average 3 · Average 3.5 · Above Average 4 · Excellent 4.5. The cut points are therefore 2.75 / 3.25 / 3.75 / 4.25, and an exact cut point rounds up.
+  - **Display:** the word prints as a large chip in the rule-12.3 colour, with the sub "Average of N location attributes".
+  - **No grades:** with no location grade the tile shows "—" and "Location attributes not graded yet".
+- The "Distance from the CBD" tile on this page still prints the band (only the cover changed).
+- On the 94 files: 63 Above Average, 16 Excellent, 2 Average, and 13 with no graded location attribute.
+
+### 12.5 Page 4 — asset grading
+- The tiles now read **Property type · Property grade · Property strategy**. The grade tile prints the letter and its meaning ("B · Townhouse or Land-Rich Unit"), or a legacy value as stored.
+- The chips print the word only, in the new colours, and the band-explanation footnote is removed.
+- **Property grade scale (`PROP_GRADES`):** A – House with Land · B – Townhouse or Land-Rich Unit · C – Medium Density Unit · D – High Density Unit.
+  - **Stored values:** grades are stored as **"A Grade" … "D Grade"**, the strings existing files already carry. The executive summary's "… · A Grade" line and every other reader therefore keep working.
+  - **Reading values:** `propGrade(g)` reads "A", "A Grade", "a grade" and "A – …" alike — **but only when `grading.propertyGradeScale` is `'A-D'`**. Without the marker the grade predates the scale and is treated as legacy (Van, 2026-10-06: a unit graded "A Grade" under the old scale printed "A · House with Land").
+  - **Pre-scale and legacy values:** a bare "A Grade" without the marker, "Investment Grade" and "Speculative" print as stored on the cover, page 4 and the executive summary, carry no meaning text and never turn the cover bands green. `propGradeLegacy(g)` names them.
+  - **Values on file today:** "Investment Grade" 63 · "A Grade" 20 · empty 11 — so 83 files are pre-scale (43 of them units) until re-graded; the suggestion engine would make them A 19 · B 20 · C 40 · no suggestion 4. The 20 "A Grade" × AAA/BBB covers that printed green before this change print grey until re-graded. **Decision for Saskia:** re-grade by hand file by file (the default), or a one-off backfill that writes the suggestion to the 83 files once the land-rich thresholds are confirmed.
+  - **Suburb rating values:** the suburb rating field holds "AAA" 48 · "Investment Grade" 44 · "A Grade" 1 · empty 1.
+- **The Grading editor:**
+  - `#gGrade` is now a `<select>` with "—", the four grades, and — for a pre-scale or legacy grade — a "keep for now" option (`__keep__`) that leaves the stored value and its absent marker untouched, so a save never drops or silently re-labels it. A pre-scale grade shows a **re-grade** chip and the line under the select names the suggestion. Choosing a scale letter stores "X Grade" **and** `propertyGradeScale: 'A-D'`; clearing the field clears both.
+  - When the field is empty, the select is **pre-filled with the suggestion** and shows a "suggested" chip. It is stored only when the BA saves the grading.
+  - A line under the select explains the suggestion, or says that it matches.
+- **Suggestion (`propGradeSuggest`):**
+
+| Property type | Suggestion |
+|---|---|
+| House (not townhouse) | A |
+| Townhouse / Villa / Duplex / Terrace | B |
+| Unit / Apartment / Flat that is land-rich | B |
+| Unit in a block of 9+ storeys | D |
+| any other unit | C ("block storeys and units are not recorded" when neither is known) |
+| Commercial, Unit Block, Industrial / Medical / Office / Retail, or no type | none — graded by hand |
+
+- **Land-rich unit** (constants `LAND_RICH_M2 = 150`, `LAND_RICH_STOREYS = 3`, `HIGH_DENSITY_STOREYS = 9`): `setup.landSize ÷ setup.blockUnits ≥ 150 m²` (only when both are known), **or** `setup.blockStoreys ≤ 3`. These thresholds are open for Saskia to confirm.
+
+### 12.6 Page 5 — cashflow
+- **Lending basis (Saskia: "the LVR is based off of the total acquisition costs, not just the property price. Therefore LVR can't go above 100%").** `calcCashflow` now lends the LVR on the **total acquisition cost** — `loan = totalCost × cfLvr(cf)`, where `cfLvr(cf) = min(lvr || 0.9, 1)` — so it agrees with IR Samples' copy and the Presentation cashflow slide (the `ir-chain.md` §4 difference is closed). The engine returns `lvr` so every printer uses the figure it lent at.
+  - **The basis line:** under the heading: "Lending basis: **LVR 100% of the total acquisition cost** ($898,951 — the purchase price plus acquisition costs and allowances), not the property price alone, so the LVR cannot exceed 100% and no capital is required to complete." (the last clause only at 100%).
+  - **LVR labels:** the Finance rows and the Loan amount row read "LVR N% of total acquisition cost"; the executive summary reads "Interest only at N% LVR of the total acquisition cost"; the summary card "N% LVR of total cost".
+  - **Stored LVR above 100%:** 46 of the 94 files store 104–111% (the old workaround for funding the purchase costs on the price basis) and 2 store exactly 100%. They all read as **100% of the total cost**, which is what they meant; the Cashflow editor's field ("LVR % of total acquisition cost") shows 100.00% with the note "was 110% of the price · capped at 100%", and a save writes the capped value. The field also caps anything typed above 100.
+  - **Required capital:** `max(0, totalCost − loan)`, which is **$0 at 100%** — 48 files now, 5 before.
+  - **What moved (all 94 files, measured):** the loan rises by 6.7% at the median (max 12.3%) because the purchase costs are inside the base now, so weekly cash flow falls by $55 a week at the median (max $525 on one high-budget file) and required capital falls or reaches $0. The 46 files under 100% (90% × 19, 70% × 12, 60% × 8, 80% × 4, 86%, 50%, 0%) keep their percentage, now of the total cost.
+- **Section order:** Cost of property · Acquisition costs · **Income · Finance · Running costs** · Investment summary. The "Total property + acquisition cost" row left the acquisition section and now sits in the summary.
+- **Income:** Rent (per week) and **Total income**, the green hero line with a plus sign ("+$29,120"). The "Net income (after running costs, before finance)" line is removed.
+- **Finance** (its own section), three hero lines:
+  - **Principal** ("$0" on this interest-only page).
+  - **Interest at the current rate (6.72%)**.
+  - **Interest at the IC rate (4.89%)**.
+- **Running costs:** the fee, repairs, pool, strata, council, land tax and insurance lines, then the hero line **Running costs (excluding finance)**.
+- **Investment summary:**
+  - Purchase price, Acquisition costs, and Allowances (when non-zero), then **Total acquisition cost**, **Loan amount** and **Required capital**.
+  - Gross yield, Net yield, and Expense ratio (kept).
+  - Four hero lines: **Annual cash flow at the current rate**, **Annual cash flow at the IC rate**, **Weekly cash flow at the current rate**, **Weekly cash flow at the IC rate**.
+- **Signed money** (the `sm()` / `srow()` helpers):
+  - **Which lines:** the Income, Finance and Running-costs sections and the four cash-flow lines are signed.
+  - **The rule:** inflow is "+$" in Green 700 `#4D7F39`, outflow is "−$" (U+2212) in Red `#E72347`, and zero is "$0" in black.
+  - **Unsigned lines:** capital lines (cost of property, acquisition costs, totals, loan, required capital) stay unsigned and black.
+- **Hero rows (`tr.hero`):** 11.5 px, bold, with a top rule and a light fill.
+- **Density:** the page still fits by measurement (`dense` → `denser` → `densest`). It is longer now, so the 94 files sit at 4 dense, 87 denser and 3 densest, against 82 normal and 12 dense before. Saskia's spacing pass is next.
+- **Executive summary:** the cards and draft sentences (page 2) are unchanged and still match the cashflow (same `cfTwoRate`).
+
+### 12.6a Verification (2026-10-06, later)
+- Pre-patch → patched sweep over the 94 production files (read-only, same account state): only **Executive summary 94 · Cashflow 94 · Cover 20 · Asset grading 20** pages changed; the internal pack's 287 pages are byte-identical; 0 pages over A4 (max inner 1023 px); page counts unchanged; the cashflow page sits at 90 denser · 4 densest (the basis line is one line longer).
+- Rendered checks from an anonymised in-memory row (`Desktop/ir-report-saskia-qa/lvr-legacy/`): stored 110% → "LVR 100% of the total acquisition cost", loan = total, required capital $0; 80% → loan 80% of total, capital 20%; a pre-scale "A Grade" unit's page-4 tile reads "A Grade", a scale "B Grade" reads "B · Townhouse or Land-Rich Unit"; the Grading editor shows the re-grade chip, the keep option and the suggestion; the Cashflow editor shows 100.00% with the capped note.
+- Harness note: the QA account cannot read `CFG.boilerplate`, so client reports render 10 pages (no Disclaimer) under it — a sweep is comparable only with another sweep under the same grant state.
+
+### 12.7 For the port
+- Keep the recommendation a stored BA decision (never derived) with by/at.
+- Keep grades stored as "X Grade" strings and map them on display.
+- Keep the suggestion a pre-fill only, never auto-saved.
+- Keep the location-grade rounding (nearest anchor, ties up).
+- Keep the comparability chips on their own colours.
+- The builder lends on the total acquisition cost, capped at 100% (Saskia, 2026-10-06) — `cfLvr` + `calcCashflow` above. **pp-os's round-5 port of the engine still lends on the price and must be changed to match**, together with the three LVR labels, the editor's cap and the `propertyGradeScale` marker.
+- Keep the pre-scale rule: a letter grade without `grading.propertyGradeScale === 'A-D'` prints as stored, carries no meaning, never turns the bands green, and the editor offers "keep for now" plus the suggestion.
+
 ## Changelog
+
+- 2026-10-06 (later) — Saskia's P5 basis: the LVR is of the total acquisition cost and capped at 100% (`cfLvr`, `calcCashflow` lends on the total; basis line, three LVR labels, editor field and cap; 46 stored 104–111% read as 100%; required capital $0 on 48 files); pre-scale grades: new marker `grading.propertyGradeScale`, a letter grade without it prints as stored with no meaning and no green band, Grading editor "keep for now" + re-grade prompt (Van: a unit printed "A · House with Land").
 
 - 2026-09-30 — redesign to the 30 Sep team structure (Johny's brief): the client report became eleven sections (cover with hero
   photo · executive summary with the market refresher · map with location grading · asset grading · one cashflow at the current
@@ -506,3 +640,4 @@ Line-height is 1.45 for text and 1.25 for headings, and numbers use tabular nume
   unlisted items, pricing saves keep unlisted row keys, lower-case ratings no longer blank on save. Tiles: OpenStreetMap
   (CARTO now needs a key).
 - 2026-10-05 — shell redesign: picker with search/filter/sort and list view, two-row header with stepper, aligned label/value grid and larger type, full-screen report preview (Van)
+- 2026-10-06 — Saskia's 6 Oct review, pages 1/3/4/5 (§12): cover exact CBD km + green A/B × AAA/BBB bands + Recommendation band (new `compliance.recommendation`, set on Compliance); grade colours Excellent green · Above Average light green · Average blue · Below Average grey · Poor yellow, word-only chips, no band legend; Location grade replaces the asset grade on page 3; property grade A–D with meanings, Grading select with a suggested value (new optional `setup.blockStoreys` / `setup.blockUnits`, land-rich ≥ 150 m²/unit or ≤ 3 storeys); page 4 tiles type · grade · strategy; cashflow: lending basis stated (the engine lends on the price — unchanged), Income / Finance / Running costs (excl. finance) / Investment summary with signed hero lines and annual + weekly cash flow at both rates on their own lines (Saskia, Van)
