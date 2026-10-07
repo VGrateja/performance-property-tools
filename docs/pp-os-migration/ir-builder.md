@@ -709,9 +709,16 @@ pp-os owes the mirror of §11, §12 and §13, including:
 - `isStrata` returning false for a house.
 - The Presentation picker (`tools/presentation.html`, IR sample rows) still prints the raw stored `grading.propertyGrade`; it was out of scope here and should read the same derived grade when it is next touched.
 
+### 13.9 Later on 7 October (Van, after reading the page with Saskia's notes)
+- **Page 5, investment summary:** the single Acquisition costs line is **red but unsigned** ($82,951): red like its subtotal above,
+  no minus because it is a component of the total below it (816,000 + 82,951 = 898,951). Saskia to confirm; the alternatives are
+  red with a minus (what the subtotal does) or black (what it was). One line in `pageCashflow`.
+- **Page 10:** the "Compared with this property" key moved from under the page title to **under the Comparable sales heading,
+  above its table**, and travels with the heading (`keep: true`) so a page break cannot separate them.
+
 ## Changelog
 
-- 2026-10-07 — Saskia's 7 Oct review (§13): the property grade comes from the property type (`propGradeDerived` / `propGradeOf`: house A, unit / townhouse B, BA override C or D; legacy values ignored for display, left in the data; Grading select Auto + note; Setup block storeys / units removed); cover grade + suburb rating coloured by value (A/AAA green, B/BBB light green, C/CCC yellow, D/DDD red); cashflow: cost of property = top budget only, allowances inside the red acquisition costs, "per annum" on both interest lines, yields and four cash flows as tiles; inspection notes: Summary → Accommodation → Overview (grade chips) → a larger Items requiring attention; page 7 (additional costs and settlement) removed from the client report for now; strata page never for a house; comparability on the grade scale, short-forms legend deleted, key under the title (Saskia, Van)
+- 2026-10-07 — Saskia's 7 Oct review (§13): the property grade comes from the property type (`propGradeDerived` / `propGradeOf`: house A, unit / townhouse B, BA override C or D; legacy values ignored for display, left in the data; Grading select Auto + note; Setup block storeys / units removed); cover grade + suburb rating coloured by value (A/AAA green, B/BBB light green, C/CCC yellow, D/DDD red); cashflow: cost of property = top budget only, allowances inside the red acquisition costs, "per annum" on both interest lines, yields and four cash flows as tiles; inspection notes: Summary → Accommodation → Overview (grade chips) → a larger Items requiring attention; page 7 (additional costs and settlement) removed from the client report for now; strata page never for a house; comparability on the grade scale, short-forms legend deleted, key under the title (Saskia, Van) Later the same day: the summary Acquisition costs line red and unsigned (Saskia to confirm); the comparability key under the Comparable sales heading (§13.9).
 
 - 2026-10-06 (later) — Saskia's P5 basis: the LVR is of the total acquisition cost and capped at 100% (`cfLvr`, `calcCashflow` lends on the total; basis line, three LVR labels, editor field and cap; 46 stored 104–111% read as 100%; required capital $0 on 48 files); pre-scale grades: new marker `grading.propertyGradeScale`, a letter grade without it prints as stored with no meaning and no green band, Grading editor "keep for now" + re-grade prompt (Van: a unit printed "A · House with Land").
 
