@@ -625,7 +625,93 @@ The Review window lists both block fields in the Setup grid (inline-editable lik
 - The builder lends on the total acquisition cost, capped at 100% (Saskia, 2026-10-06) — `cfLvr` + `calcCashflow` above. **pp-os's round-5 port of the engine still lends on the price and must be changed to match**, together with the three LVR labels, the editor's cap and the `propertyGradeScale` marker.
 - Keep the pre-scale rule: a letter grade without `grading.propertyGradeScale === 'A-D'` prints as stored, carries no meaning, never turns the bands green, and the editor offers "keep for now" plus the suggestion.
 
+## 13. Saskia's 7 Oct review — grade from type, cashflow sections, inspection order, costs page removed, comparability colours
+
+Saskia reviewed the client report (a unit) with Van on 7 Oct 2026. This round changes pages 1, 4, 5, 6, 7 and 10, the grade logic in the Grading and Setup editors, and the printers that show the property grade. Pages 2, 3, 8, 9 and 11, the §11 shell, publish/unpublish/delete, the audit, `calcCashflow` (the LVR is of the total acquisition cost, capped at 100%) and the executive summary's figures are unchanged. Where this section differs from §4 or §12, this section wins. No migration and no data change: nothing was written to the database.
+
+**Verified on all 94 files** (read-only sweeps under the QA account, `scratch/ir-saskia/sweep.mjs` and `sweep-norm.mjs`, which also normalises the "Page N of M" footer; QA scripts in `scratch/ir-saskia/r2/`; shots in `Desktop/ir-report-saskia-qa/round2/`, anonymised in-memory rows only):
+- **Page counts:** client 908 → 811 under the QA account (the 94 "Additional costs and settlement" pages and the 3 strata pages that houses used to get); internal pack 287 → 287. 0 pages over A4; the tallest page is still 1,023 px against the 1,030 px limit.
+- **Which pages changed** (footer numbering normalised): Cover 93 of 94 · Executive summary 83 · Asset grading 83 · Cashflow 94 · Inspection notes 94 · Price analysis 94 · internal Grading matrix 94. **Byte-identical:** Map and location grading 94 · Strata due diligence 59 · Asset management plan 94 · Preliminary DD 99 · Insurance Help 94.
+- **Cashflow density:** 87 dense · 7 denser (before: 90 denser · 4 densest). The seven tiles take less height than the seven summary lines they replace.
+- **Cover:** the gap above the IMPORTANT INFORMATION small print is still at least 227 px; no cover grew.
+
+### 13.1 The property grade comes from the property type (pages 1 and 4, and every printer)
+Saskia: "If it's a unit it will always be B grade, because we only buy B-grade units … If it's a house, A grade … But the buyer's agents still need to be able to select C or D, because they might be doing a rejected example."
+
+- **Meanings (`PROP_GRADES`):** A **House with Land** · B **Land content rich unit or townhouse** · C **Medium Density Unit** · D **High Density Unit**.
+- **`propGradeDerived(c)`:** reads `setup.propertyType` (falling back to the graded "Property Type" item, via `propTypeOf(c)`).
+  - House (not townhouse) → A.
+  - Unit / apartment / flat / townhouse / villa / duplex / terrace → B.
+  - Commercial (`setup.commercial`), a whole block ("Unit Block"), Industrial / Medical / Office / Retail, or no type → null (no grade).
+  - On the 94 files: A 19 · B 60 · none 15.
+- **`propGrade(g)`** (unchanged): the BA's override — a letter stored as "X Grade" **with** `grading.propertyGradeScale === 'A-D'`.
+- **`propGradeOf(c)`** = the override when it parses, else the derived grade. **Every printer uses it:** the cover band (`coverBands`), the page-4 tile (`pageAsset`, through `propGradeText(c)`), the executive summary's "· B Grade" line, the internal pack's grading tile (now "B · meaning" with "From the property type" or "Set by the BA" beneath), the Review window's Grading card title (with an "auto" chip when derived), the legacy inspection overview's "Property grade" row (§13.4) and the publish dialog's draft summary ("B Grade property").
+- **Legacy values are ignored for display and left in the data:** a stored grade without the marker ("A Grade" from before the scale, "Investment Grade", "Speculative") never prints. Today that is all 83 stored grades (63 "Investment Grade", 20 "A Grade"); none carries the marker, so every file now prints its derived grade. A unit never prints "House with Land" again.
+- **Removed:** `propGradeLegacy`, the "keep for now" option (`__keep__`) and the re-grade prompt; `propGradeSuggest` and the land-rich constants `LAND_RICH_M2 / LAND_RICH_STOREYS / HIGH_DENSITY_STOREYS` (folded into `propGradeDerived`).
+- **Grading editor (`propGradeField`):** the select offers **Auto** ("Auto — B · Land content rich unit or townhouse, from the property type", or "Auto — no grade from the property type") plus the four letters.
+  - Auto is selected whenever no scale choice is stored.
+  - Saving Auto stores `propertyGrade` and `propertyGradeScale` as `null`. The one exception: a legacy value already in the file (no marker) is left exactly as it is, so a save never rewrites old data — it is ignored for display anyway.
+  - Saving a letter stores "X Grade" + the marker.
+  - The chip reads **auto** (or **edited** for an override), and the line under the select says where the grade comes from: "From the property type: Unit → B." / "Set by the BA — Auto would be B." It updates live when the select changes (`propGradeWhy`).
+- **Setup editor:** the **Block storeys** and **Units in the block** fields are removed, with their save keys `blockStoreys` / `blockUnits` and the Review grid's two empty rows. The Setup save spreads the existing `setup`, so any stored values stay in the file, unread (no file carries them today).
+- **Colours by value (`letterCls`, `ratingCls`, CSS `.pg .lf-A … .lf-D`):**
+
+| Value | Colour | Ink |
+|---|---|---|
+| Grade A · rating AAA | Green `#71B357` | `#171B24` |
+| Grade B · rating BBB | Green 300 `#A0CC8E` | `#171B24` |
+| Grade C · rating CCC | Yellow `#FFA91F` | `#171B24` |
+| Grade D · rating DDD | Red `#E72347` | `#171B24` |
+
+  - The rating match is case-insensitive and trimmed. Any other rating value (legacy "Investment Grade" 44 files, "A Grade" 1) has no colour.
+  - This **replaces** the §12.2 "A/B and AAA/BBB → both green" rule; the `.grn` class is gone.
+  - The cover's grade band and suburb-rating band each take their own colour; the page-4 grade tile takes the same colour as the cover's grade band.
+
+### 13.2 Page 5 — cashflow
+- **Cost of property:** Top budget only, black and unsigned. No subtotal.
+- **Acquisition costs:** the eight purchase lines, then Maintenance allowance, Cosmetic works allowance and Minimum rental standards (each only when non-zero). Every line is signed red "−$" (a zero line reads "$0" in black, the §12.6 rule). The hero subtotal **Acquisition costs** is red "−$" and equals `totalCost − budget` from `calcCashflow`, so it matches the summary to the dollar.
+- **Finance:** "Interest at the current rate (6.72%) per annum" and "Interest at the IC rate (4.89%) per annum".
+- **Investment summary:** Purchase price · **Acquisition costs** (purchase costs and allowances on one line, "including allowances" when there are any; black and unsigned like the other capital lines; no Allowances line) · Total acquisition cost · Loan amount · Required capital. Then two tile rows in the report's `.tiles` style (`.tiles.cft`, density-aware):
+  - three tiles: Gross yield · Net yield · Expense ratio;
+  - four tiles: Annual cash flow at the current rate · Annual cash flow at the IC rate · Weekly cash flow at the current rate · Weekly cash flow at the IC rate — signed money, red when negative, Green 700 when positive, no rate sub-label.
+- The basis line, the IC-rate footnote and the disclaimer are unchanged. The page still steps its density to fit (`dense` → `denser` → `densest`); the tiles tighten with the table.
+- The executive summary's auto "What it will need" bullets now say the allowances sit "in the acquisition costs" (they said "in the cost of property"). Its figures are unchanged.
+
+### 13.3 Page 7 — additional costs and settlement: removed
+`buildReportPages` no longer pushes `pageCostsSettlement` (Saskia: "Remove it for now; if Johnny decides he wants it, we add it back"). The function stays; the internal pack never had it. **Johnny may ask for it back** — restoring it is the one line in `buildReportPages`.
+
+### 13.4 Page 6 — inspection notes, legacy format
+All 94 files print this branch today (none has checklist entries).
+- **Order:** Summary → **Accommodation** → Overview → **Items requiring attention**.
+- **Overview:** a table like the asset-grading page (Item · Assessment). Grade words print as the report's grade chips (`gradeChip`, the five §12.3 colours). The "Property grade" row prints **the** property grade (`propGradeOf`, coloured like the cover) — the stored `inspection.grade` ("Investment Grade" 57, "A Grade" 18) is a pre-scale value, left in the data and no longer printed.
+- **Items requiring attention:** set as the page's summary — a 12 px heavy heading on a light Yellow band with a Yellow rule (`.attn`), items at 10.5 px semi-bold (`.attn-i`).
+- The checklist branch (new files) is unchanged.
+
+### 13.5 Page 8 — strata due diligence
+`isStrata` covers unit / apartment / flat / townhouse / villa and the "Title Type: Strata" grading item, and excludes a whole block and commercial files. **Fixed:** 3 houses graded "Title Type: Strata" used to get the page; `isStrata` now returns false for a house (not a townhouse) before the Title Type check, so a house never gets it. 59 files print it (62 before). The same gate hides the Strata DD editor card for those 3 houses; their `dd.strata` data stays and still shows in the Review window.
+
+### 13.6 Page 10 — price analysis
+- **Comparability colours** on the grade scale: Superior Green `#71B357` · Slightly Superior Green 300 `#A0CC8E` · Comparable Celestial Blue `#54A6DE` · Slightly Inferior grey `#9A9B9D` · Inferior Yellow `#FFA91F`, dark ink — in the report (`.pg .rc.r5–r1`) and in the Pricing editor's selects (`.ib-etbl select.cr-5–1`, rendered like the Grading editor's `.ib-gchip` g5–g1 in both themes; `compCls` serves both).
+- The "short forms Sup / Sl. sup / …" legend is deleted. The comparability key ("Compared with this property: Superior · Slightly Superior · …") moves under the page title, above the adopted-value tiles and the comparables table, whenever comparable sales or rents print. The table cells keep their short chips (colour-coded; the key above decodes them).
+
+### 13.7 Decisions (defaults built; the alternative in brackets)
+1. The investment summary's single Acquisition costs line is black and unsigned like the other capital lines [red negative like the subtotal].
+2. Legacy grade values are ignored for display, not rewritten in the data [a one-off backfill clearing them].
+3. Choosing Auto stores nulls [storing the derived letter with the marker — which would freeze it if the type changed]. A legacy value already in the file is left untouched on an Auto save.
+4. The page-4 grade tile takes the cover's colour [stays uncoloured].
+5. `blockStoreys` / `blockUnits` stay in existing files unread [a backfill deleting the two keys] — no file carries them today.
+
+### 13.8 For the port
+pp-os owes the mirror of §11, §12 and §13, including:
+- `propGradeDerived` / `propGradeOf` and the rule that every printer uses `propGradeOf`; legacy values ignored for display and never rewritten; the Auto option storing nulls; no block storeys / units fields.
+- The by-value colours for the grade and suburb rating (cover bands, page-4 tile, inspection overview chip).
+- The cashflow sections and the seven tiles; page 7 out of the client report; the inspection order and the attention block; the comparability colours and the key under the title.
+- `isStrata` returning false for a house.
+- The Presentation picker (`tools/presentation.html`, IR sample rows) still prints the raw stored `grading.propertyGrade`; it was out of scope here and should read the same derived grade when it is next touched.
+
 ## Changelog
+
+- 2026-10-07 — Saskia's 7 Oct review (§13): the property grade comes from the property type (`propGradeDerived` / `propGradeOf`: house A, unit / townhouse B, BA override C or D; legacy values ignored for display, left in the data; Grading select Auto + note; Setup block storeys / units removed); cover grade + suburb rating coloured by value (A/AAA green, B/BBB light green, C/CCC yellow, D/DDD red); cashflow: cost of property = top budget only, allowances inside the red acquisition costs, "per annum" on both interest lines, yields and four cash flows as tiles; inspection notes: Summary → Accommodation → Overview (grade chips) → a larger Items requiring attention; page 7 (additional costs and settlement) removed from the client report for now; strata page never for a house; comparability on the grade scale, short-forms legend deleted, key under the title (Saskia, Van)
 
 - 2026-10-06 (later) — Saskia's P5 basis: the LVR is of the total acquisition cost and capped at 100% (`cfLvr`, `calcCashflow` lends on the total; basis line, three LVR labels, editor field and cap; 46 stored 104–111% read as 100%; required capital $0 on 48 files); pre-scale grades: new marker `grading.propertyGradeScale`, a letter grade without it prints as stored with no meaning and no green band, Grading editor "keep for now" + re-grade prompt (Van: a unit printed "A · House with Land").
 
