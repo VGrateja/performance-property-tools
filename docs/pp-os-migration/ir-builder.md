@@ -645,7 +645,7 @@ Saskia: "If it's a unit it will always be B grade, because we only buy B-grade u
   - Commercial (`setup.commercial`), a whole block ("Unit Block"), Industrial / Medical / Office / Retail, or no type → null (no grade).
   - On the 94 files: A 19 · B 60 · none 15.
 - **`propGrade(g)`** (unchanged): the BA's override — a letter stored as "X Grade" **with** `grading.propertyGradeScale === 'A-D'`.
-- **`propGradeOf(c)`** = the override when it parses, else the derived grade. **Every printer uses it:** the cover band (`coverBands`), the page-4 tile (`pageAsset`, through `propGradeText(c)`), the executive summary's "· B Grade" line, the internal pack's grading tile (now "B · meaning" with "From the property type" or "Set by the BA" beneath), the Review window's Grading card title (with an "auto" chip when derived), the legacy inspection overview's "Property grade" row (§13.4) and the publish dialog's draft summary ("B Grade property").
+- **`propGradeOf(c)`** = the override when it parses, else the derived grade. **Every printer uses it:** the cover band (`coverBands`), the page-4 tile (`pageAsset`, through `propGradeText(c)`), the executive summary's "· B Grade" line, the internal pack's grading tile (now "B · meaning" with "From the property type" or "Set by the BA" beneath), the Review window's Grading card title (with an "auto" chip when derived), the Presentation IR picker, the legacy inspection overview's "Property grade" row (§13.4) and the publish dialog's draft summary ("B Grade property").
 - **Legacy values are ignored for display and left in the data:** a stored grade without the marker ("A Grade" from before the scale, "Investment Grade", "Speculative") never prints. Today that is all 83 stored grades (63 "Investment Grade", 20 "A Grade"); none carries the marker, so every file now prints its derived grade. A unit never prints "House with Land" again.
 - **Removed:** `propGradeLegacy`, the "keep for now" option (`__keep__`) and the re-grade prompt; `propGradeSuggest` and the land-rich constants `LAND_RICH_M2 / LAND_RICH_STOREYS / HIGH_DENSITY_STOREYS` (folded into `propGradeDerived`).
 - **Grading editor (`propGradeField`):** the select offers **Auto** ("Auto — B · Land content rich unit or townhouse, from the property type", or "Auto — no grade from the property type") plus the four letters.
@@ -707,7 +707,7 @@ pp-os owes the mirror of §11, §12 and §13, including:
 - The by-value colours for the grade and suburb rating (cover bands, page-4 tile, inspection overview chip).
 - The cashflow sections and the seven tiles; page 7 out of the client report; the inspection order and the attention block; the comparability colours and the key under the title.
 - `isStrata` returning false for a house.
-- The Presentation picker (`tools/presentation.html`, IR sample rows) still prints the raw stored `grading.propertyGrade`; it was out of scope here and should read the same derived grade when it is next touched.
+- The Presentation picker (`tools/presentation.html`) now prints `propGradeOf` through its own verbatim copy (`_irPropGradeOf`, guarded by `scratch/_ir-picker-grade-parity.mjs`); pp-os's presentation IR picker must do the same.
 
 ### 13.9 Later on 7 October (Van, after reading the page with Saskia's notes)
 - **Page 5, investment summary:** the single Acquisition costs line is **red but unsigned** ($82,951): red like its subtotal above,
@@ -717,6 +717,8 @@ pp-os owes the mirror of §11, §12 and §13, including:
   above its table**, and travels with the heading (`keep: true`) so a page break cannot separate them.
 
 ## Changelog
+
+- 2026-10-08 — The Presentation IR picker now prints the derived property grade (`propGradeOf`, via `_irPropGradeOf`) as "X Grade", not the raw stored value; display only, nothing rewritten (§13.1, §13.8). (Van)
 
 - 2026-10-07 — Saskia's 7 Oct review (§13): the property grade comes from the property type (`propGradeDerived` / `propGradeOf`: house A, unit / townhouse B, BA override C or D; legacy values ignored for display, left in the data; Grading select Auto + note; Setup block storeys / units removed); cover grade + suburb rating coloured by value (A/AAA green, B/BBB light green, C/CCC yellow, D/DDD red); cashflow: cost of property = top budget only, allowances inside the red acquisition costs, "per annum" on both interest lines, yields and four cash flows as tiles; inspection notes: Summary → Accommodation → Overview (grade chips) → a larger Items requiring attention; page 7 (additional costs and settlement) removed from the client report for now; strata page never for a house; comparability on the grade scale, short-forms legend deleted, key under the title (Saskia, Van) Later the same day: the summary Acquisition costs line red and unsigned (Saskia to confirm); the comparability key under the Comparable sales heading (§13.9).
 
