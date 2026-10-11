@@ -78,13 +78,16 @@ function editionOf(filename) {
 }
 
 // ── the table → [{ year, quarter, values:{slug:value}, forecast }] ──
-function parseTable(text) {
+function parseTable(text, edition) {
   const lines = text.replace(/ /g, ' ').split(/\n/).map(l => l.trim()).filter(Boolean);
   const k = lines.findIndex(l => /^RAWLINSONS BUILDING PRICE INDEX$/i.test(l));
   if (k < 0) return null;
-  const header = norm(lines[k + 1]).toUpperCase().split(' ');
+  // The Oct-2026 PDF runs the city names together ("ADELAIDEBRISBANE…"), so split on the names, not on spaces.
+  const flat = norm(lines[k + 1]).toUpperCase().replace(/\s+/g, '');
+  const header = flat.match(new RegExp(Object.keys(CITY).join('|'), 'g')) || [];
   const slugs = header.map(h => CITY[h]);
-  if (slugs.length !== 8 || slugs.some(s => !s)) throw new Error('unexpected city header: ' + lines[k + 1]);
+  if (slugs.length !== 8 || header.join('') !== flat || new Set(slugs).size !== 8) throw new Error('unexpected city header: ' + lines[k + 1]);
+  if (/^(March|June|September|December)$/i.test(lines[k + 2])) return parseColumns(text, slugs, edition);
   const rows = [];
   let year = null, pendingQ = null;
   const takeValues = (str, quarter) => {
@@ -109,6 +112,54 @@ function parseTable(text) {
     if (pendingQ && takeValues(l, pendingQ)) { pendingQ = null; continue; }
     if (rows.length) break;   // past the table
   }
+  return rows;
+}
+
+// The Oct-2026 layout: the PDF text runs the table city by city with no year labels. After the header come the quarter
+// names, one blank-separated group per year; then, per city, one block per year (the latest year's block stops at the
+// quarters it holds); then the latest year's remaining quarters, city by city ("161.46", "163.77 (F)", …).
+// The years are not in the text: the last quarter is the edition's own quarter (the Oct edition forecasts December),
+// and the last group is the edition's year. Anything that does not fit that shape throws.
+function parseColumns(text, slugs, edition) {
+  const ls = text.split(/\n/).map(norm);
+  let i = ls.findIndex(l => /^RAWLINSONS BUILDING PRICE INDEX$/i.test(l)) + 2;
+  const qGroups = [], nGroups = [];
+  let g = null;
+  for (; i < ls.length; i++) {
+    if (!ls[i]) { g = null; continue; }
+    const m = ls[i].match(/^(March|June|September|December)$/i);
+    if (!m) break;
+    if (!g) qGroups.push(g = []);
+    g.push(m[1][0].toUpperCase() + m[1].slice(1).toLowerCase());
+  }
+  g = null;
+  for (; i < ls.length; i++) {
+    if (/^F\s*=\s*Forecast/i.test(ls[i])) break;
+    if (!ls[i]) { g = null; continue; }
+    const m = ls[i].match(/^(\d{2,3}\.\d{1,2})(\s*\(F\))?$/);
+    if (!m) break;
+    if (!g) nGroups.push(g = []);
+    g.push({ v: +m[1], f: !!m[2] });
+  }
+  const Y = qGroups.length;
+  if (Y < 1 || nGroups.length < Y) throw new Error('column layout: no quarter or value groups');
+  const held = nGroups.slice(0, Y).map(x => x.length);   // what the first city's block holds per year
+  if (held.slice(0, -1).some((n, y) => n !== qGroups[y].length)) throw new Error('column layout: an earlier year is incomplete');
+  const perCity = held.reduce((a, b) => a + b, 0), rest = qGroups[Y - 1].length - held[Y - 1];
+  const vals = nGroups.flat();
+  if (vals.length !== 8 * (perCity + rest)) throw new Error(`column layout: ${vals.length} values, expected ${8 * (perCity + rest)}`);
+
+  const lastQ = qGroups[Y - 1][qGroups[Y - 1].length - 1];
+  const edQ = ['March', 'June', 'September', 'December'][Math.floor((+edition.slice(5, 7) - 1) / 3)];
+  if (lastQ !== edQ) throw new Error(`column layout: the table ends at ${lastQ}, the ${edition} edition's quarter is ${edQ} — cannot place the years`);
+  const year0 = +edition.slice(0, 4) - (Y - 1);
+
+  const quarters = qGroups.flatMap((qs, y) => qs.map(q => ({ year: year0 + y, quarter: q })));
+  const rows = quarters.map(q => ({ ...q, values: {}, forecast: false }));
+  slugs.forEach((slug, c) => {
+    const mine = [...vals.slice(c * perCity, (c + 1) * perCity), ...vals.slice(8 * perCity + c * rest, 8 * perCity + (c + 1) * rest)];
+    mine.forEach((t, j) => { rows[j].values[slug] = t.v; if (t.f) rows[j].forecast = true; });
+  });
   return rows;
 }
 
@@ -147,7 +198,7 @@ for (const job of jobs) {
     else { const r = await fetch(job.url, { headers: UA, redirect: 'follow' }); if (!r.ok) throw new Error(`HTTP ${r.status}`); buf = Buffer.from(await r.arrayBuffer()); }
     if (buf.subarray(0, 5).toString() !== '%PDF-') throw new Error('not a PDF');
     const text = (await pdfParse(buf)).text;
-    const rows = parseTable(text);
+    const rows = parseTable(text, job.edition);
     if (!rows) throw new Error('no "RAWLINSONS BUILDING PRICE INDEX" table');
     const actual = rows.filter(r => !r.forecast);
     if (!actual.length) throw new Error('table has no actual (non-forecast) quarters');
