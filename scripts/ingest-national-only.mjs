@@ -51,7 +51,8 @@ const Q_MONTH = { Q1: '01', Q2: '04', Q3: '07', Q4: '10' };
 // series as Budget Paper No.1 Statement 11). Actuals through 2024-25, forward
 // estimates 2025-26 → 2029-30. (Per PBO note (d): between 2005-06 and 2019-20 the
 // UCB nets off Future Fund earnings; other years = receipts − payments.)
-const FEDERAL_BUDGET = [["2011-12",-43360],["2012-13",-18834],["2013-14",-48456],["2014-15",-37867],["2015-16",-39606],["2016-17",-33151],["2017-18",-10141],["2018-19",-690],["2019-20",-85272],["2020-21",-134171],["2021-22",-31962],["2022-23",22064],["2023-24",15779],["2024-25",-9990],["2025-26",-28284],["2026-27",-31542],["2027-28",-31000],["2028-29",-34445],["2029-30",-25259]];
+// 2025-26 = the Final Budget Outcome actual (−22,254, released Sep 2026; was the Budget estimate −28,284).
+const FEDERAL_BUDGET = [["2011-12",-43360],["2012-13",-18834],["2013-14",-48456],["2014-15",-37867],["2015-16",-39606],["2016-17",-33151],["2017-18",-10141],["2018-19",-690],["2019-20",-85272],["2020-21",-134171],["2021-22",-31962],["2022-23",22064],["2023-24",15779],["2024-25",-9990],["2025-26",-22254],["2026-27",-31542],["2027-28",-31000],["2028-29",-34445],["2029-30",-25259]];
 
 // ── SEEDED: Household composition by type (ABS Census; update next census) ──
 const HH_TYPES = ["Couple with children","Couples without children","One parent families","Other families","Group household","Lone person","Other not classifiable household","Visitor only households"];
