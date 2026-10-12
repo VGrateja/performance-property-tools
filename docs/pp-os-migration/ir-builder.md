@@ -673,7 +673,7 @@ Saskia: "If it's a unit it will always be B grade, because we only buy B-grade u
 - **Finance:** "Interest at the current rate (6.72%) per annum" and "Interest at the IC rate (4.89%) per annum".
 - **Investment summary:** Purchase price · **Acquisition costs** (purchase costs and allowances on one line, "including allowances" when there are any; black and unsigned like the other capital lines; no Allowances line) · Total acquisition cost · Loan amount · Required capital. Then two tile rows in the report's `.tiles` style (`.tiles.cft`, density-aware):
   - three tiles: Gross yield · Net yield · Expense ratio;
-  - four tiles: Annual cash flow at the current rate · Annual cash flow at the IC rate · Weekly cash flow at the current rate · Weekly cash flow at the IC rate — signed money, red when negative, Green 700 when positive, no rate sub-label.
+  - four tiles: Annual cash flow at the current bank rate · Annual cash flow at the IC bank rate · Weekly cash flow at the current bank rate · Weekly cash flow at the IC bank rate ("bank rate" from Saskia 2026-10-12, §13.10) — signed money, red when negative, Green 700 when positive, no rate sub-label.
 - The basis line, the IC-rate footnote and the disclaimer are unchanged. The page still steps its density to fit (`dense` → `denser` → `densest`); the tiles tighten with the table.
 - The executive summary's auto "What it will need" bullets now say the allowances sit "in the acquisition costs" (they said "in the cost of property"). Its figures are unchanged.
 
@@ -712,12 +712,18 @@ pp-os owes the mirror of §11, §12 and §13, including:
 ### 13.9 Later on 7 October (Van, after reading the page with Saskia's notes)
 - **Page 5, investment summary:** the single Acquisition costs line is **red but unsigned** ($82,951): red like its subtotal above,
   no minus because it is a component of the total below it (816,000 + 82,951 = 898,951). Saskia to confirm; the alternatives are
-  red with a minus (what the subtotal does) or black (what it was). One line in `pageCashflow`.
+  red with a minus (what the subtotal does) or black (what it was). One line in `pageCashflow`. **Superseded 12 Oct (§13.10): black.**
 - **Page 10:** the "Compared with this property" key moved from under the page title to **under the Comparable sales heading,
   above its table**, and travels with the heading (`keep: true`) so a page break cannot separate them.
 
+### 13.10 Saskia, 12 October (relayed by Van)
+- **Page 5, investment summary:** the single Acquisition costs line is **black** and unsigned again ("keep it black"), like the other capital lines — closes the §13.9 open point.
+- **Page 5, the four cash-flow tiles:** "at the current rate" → **"at the current bank rate"** (ANNUAL / WEEKLY CASH FLOW AT THE CURRENT BANK RATE), and the IC tiles "at the IC rate" → **"at the IC bank rate"** (Van, same day). The IC-rate footnote keeps "IC rate". The Finance rows ("Interest at the current rate … per annum") and the page subtitle keep "current rate" (not asked).
+- pp-os mirror: the same two edits in its cashflow page.
+
 ## Changelog
 
+- 2026-10-12 — Saskia (§13.10): the investment summary's Acquisition costs line black again; the cash-flow tiles say "at the current bank rate" and "at the IC bank rate".
 - 2026-10-08 — The Presentation IR picker now prints the derived property grade (`propGradeOf`, via `_irPropGradeOf`) as "X Grade", not the raw stored value; display only, nothing rewritten (§13.1, §13.8). (Van)
 
 - 2026-10-07 — Saskia's 7 Oct review (§13): the property grade comes from the property type (`propGradeDerived` / `propGradeOf`: house A, unit / townhouse B, BA override C or D; legacy values ignored for display, left in the data; Grading select Auto + note; Setup block storeys / units removed); cover grade + suburb rating coloured by value (A/AAA green, B/BBB light green, C/CCC yellow, D/DDD red); cashflow: cost of property = top budget only, allowances inside the red acquisition costs, "per annum" on both interest lines, yields and four cash flows as tiles; inspection notes: Summary → Accommodation → Overview (grade chips) → a larger Items requiring attention; page 7 (additional costs and settlement) removed from the client report for now; strata page never for a house; comparability on the grade scale, short-forms legend deleted, key under the title (Saskia, Van) Later the same day: the summary Acquisition costs line red and unsigned (Saskia to confirm); the comparability key under the Comparable sales heading (§13.9).
