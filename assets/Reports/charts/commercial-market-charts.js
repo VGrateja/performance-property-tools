@@ -559,10 +559,27 @@
         /* zeroLine is opt-in, and only on the FIRST series, for the charts
            where crossing zero is the whole point. Bars get this already via
            `diverging`; lines had no equivalent. */
-        markLine: (d.zeroLine && i === 0) ? {
+        /* zeroLine draws y=0; refLines draws named thresholds — both hang off
+           the FIRST series only, so one set of marks per chart rather than one
+           per city. refLines is [{ y, label }] and is for the charts where the
+           question is "are we past the line yet", which a bare axis answers
+           badly at slide size. */
+        markLine: (i === 0 && (d.zeroLine || (d.refLines && d.refLines.length))) ? {
           silent: true, symbol: 'none', animation: false,
           lineStyle: { color: '#1a2236', width: 1.2, type: 'solid' },
-          label: { show: false }, data: [{ yAxis: 0 }],
+          label: { show: false },
+          data: (d.zeroLine ? [{ yAxis: 0 }] : []).concat(
+            (d.refLines || []).map(function (r) {
+              return {
+                yAxis: r.y,
+                lineStyle: { color: r.color || '#9aa3b1', width: 1, type: 'dashed' },
+                label: r.label ? {
+                  show: true, position: 'insideStartTop', formatter: r.label,
+                  fontSize: 10, fontWeight: 600, color: r.color || '#9aa3b1',
+                } : { show: false },
+              };
+            })
+          ),
         } : undefined,
         endLabel: (d.endLabel === false || useLegend) ? { show: false } : {
           show: true, fontSize: 10, fontWeight: 600, color: col,

@@ -77,7 +77,7 @@
 <script src="../assets/Reports/charts/commercial-charts.js" defer></script>
 <!-- Deck-only extras for the one-click Commercial Market deck (loads AFTER
      commercial-charts.js — it builds on its baseOption/applyDefaults). -->
-<script src="../assets/Reports/charts/commercial-market-charts.js?v=1f1a7eb1" defer></script>
+<script src="../assets/Reports/charts/commercial-market-charts.js?v=ad91d445" defer></script>
 <script>
   /* Slide charts are CSS-scaled (rendered once at a fixed base size), so
      ECharts never needs to resize on window changes — and the report
@@ -16425,6 +16425,68 @@ const CMK_CHART_BUILDERS = {
       cats: spec.cats.slice(i0, i1 + 1), series: series,
       scale: 1, unit: '', dp: 0, axisDp: 0, tickEvery: 4,
     }, _cmkJllBounds({ series: series }, 1, 20, false)) };
+  },
+
+  /* Yield on replacement cost — the development feasibility test the
+     commercial subcommittee asked for on 6 Oct 2026: prime net rent divided by
+     what it would cost to buy the land and build the shed today.
+        rent $/m2 p.a.  /  (land $/m2 x cover + build $/m2)
+     It answers a different question from the discount chart beside it, and the
+     two point OPPOSITE ways. A wide discount is a buy signal — stock is cheap
+     against rebuilding. A HIGH yield on replacement is a warning, because the
+     same sum works for anyone else holding a site, so supply responds. The
+     meeting put the development hurdle at 8-10% and floated 7.5% as a sell
+     trigger, which sits deliberately just under it: get out before new stock
+     is viable, not after.
+     Thresholds are drawn rather than described because "are we past the line"
+     is the whole question and an axis alone answers it badly at slide size.
+     NOTE the meeting's own worked examples divided rent by CAPITAL VALUE, not
+     replacement cost, which returns the market yield it started from (capital
+     value is derived as rent / yield, so the division is circular) and
+     inverted the city order — Melbourne and Adelaide looked closest to
+     feasible when they are furthest. This builder divides by replacement cost.
+     Same COVER and BUILD_2026 as the two charts above; all three must move
+     together. */
+  'jll-ind-yield-on-replacement': async function (cache) {
+    const COVER = 2.00;
+    const BUILD_2026 = { Sydney: 1650, Melbourne: 1675, Brisbane: 1750,
+                         Perth: 1675, Adelaide: 1625 };
+    const land = await _cmkJllSeries(cache, 'jll_ind_land_value_med_2000sqm');
+    const rent = await _cmkJllSeries(cache, 'jll_ind_prime_net_rent_sqm');
+    const bld  = await _cmkAbsSeries(cache, 'abs_nonres_build_index');
+    if (!land || !rent || !bld) return null;
+    const byName = spec => {
+      const m = {};
+      spec.series.forEach(s => {
+        const o = {}; spec.cats.forEach((c, i) => { o[c] = s.data[i]; });
+        m[s.name] = o;
+      });
+      return m;
+    };
+    const L = byName(land), R = byName(rent), B = byName(bld);
+    const cats = rent.cats;
+    const last = cats[cats.length - 1];
+    const series = rent.series.map(s => {
+      const l = L[s.name], r = R[s.name], b = B[s.name];
+      const rate = BUILD_2026[s.name];
+      if (!l || !r || !b || !b[last] || !rate) return null;
+      const data = cats.map(q => {
+        const lv = l[q], rv = r[q], bi = b[q];
+        if (lv == null || rv == null || bi == null) return null;
+        const repl = lv * COVER + rate * bi / b[last];
+        return repl > 0 ? +((rv / repl) * 100).toFixed(2) : null;
+      });
+      return data.some(v => v != null) ? { name: s.name, color: s.color, data: data } : null;
+    }).filter(Boolean);
+    if (!series.length) return null;
+    return { module: 'cmk-lines', data: Object.assign({
+      cats: cats, series: series,
+      scale: 1, unit: '%', dp: 1, axisDp: 0, tickEvery: 8,
+      refLines: [
+        { y: 7.5, label: 'sell trigger 7.5%', color: '#e57b7b' },
+        { y: 8.0, label: 'development viable 8%', color: '#3ecf8e' },
+      ],
+    }, _cmkJllBounds({ series: series }, 1, 1, false)) };
   },
 
   /* Discount to replacement cost: how far established stock trades below what
