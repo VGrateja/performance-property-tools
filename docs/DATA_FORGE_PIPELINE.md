@@ -82,6 +82,7 @@ All write **`rdp_raw_series`** (long format, upsert `onConflict: source,region_s
 | 20 | ingest-sqm-rents | SQM Research (HTML scrape) | house/unit rents | — | **forge_demand_inputs** (keeps manual REA listings) |
 | 21 | ingest-sqm-vacancy | SQM Research (HTML scrape) | `vr` | — | **forge_demand_inputs** |
 | 22 | ingest-westpac-hpei | Westpac–Melbourne Institute Consumer Sentiment bulletin — the PUBLIC monthly PDF on Westpac's library, parsed | `house_price_expectations` (national) | M | rdp_raw_series (source `wmi`, same lineage as the CSV) + forge_data_status `hpei_national` |
+| 22b | ingest-nab-survey | NAB Monthly Business Survey — Table 1 "Confidence and Conditions by Industry and State" of the PUBLIC monthly PDF (found via nab.com.au/news/economy-markets → each business-survey article; filenames vary), read by text position | `business_confidence` + `business_conditions` (S.A.; NSW/Vic/Qld/SA/WA/Tas/Australia; last 3 months per report, newest wins) | M | rdp_raw_series (source `nab`, same lineage as the CSV) + forge_data_status `nab_survey` |
 | 23 | ingest-abs-patient-experiences | ABS 4839.0 Patient Experiences — data cube "Tables 1 to 3" (.xlsx linked from the release page; annual, ~November) | `gp_share` (by FY, period = FY start 1 July) + `gp_share_<band>` (8 age bands, latest release) | A | rdp_raw_series (region australia) + forge_data_status `gp_access` → feeds the two Commercial GP tabs at PUBLISH |
 | 24 | ingest-budget-health-expenses | Department of Finance Budget tables on data.gov.au ("Budget YYYY-YY and PBS - Tables and Data" → Budget Paper No.1 Tables zip → "Estimates of expenses by function", Health row; annual, May) | `fed_health_expenses` ($m by FY, period = FY start; each year = its newest Budget estimate) | A | rdp_raw_series (source `budget`) + forge_data_status `fed_health_budget` → feeds the Commercial health-budget tab at PUBLISH |
 | 25 | ingest-abs-building-price-index | ABS PPI (dataflow `PPI`, T18 house construction inputs) over the ABS Data API — six state capitals + weighted average; Canberra/Darwin history from the Rawlinsons handbook CSV when present locally | `building_price_index` | Q & A (FY-to-June) | rdp_raw_series (sources `abs`, `rawlinsons`) + forge_data_status `building_price_index` — **in the GATHER loop since 2026-09-12; before that it was run by hand** |
@@ -111,9 +112,10 @@ one launcher, `scripts/run-jsa-jobcreation.cmd`.
 
 > **Sentiment, split 2026-09-12.** The Westpac–MI **House Price Expectations Index (national, monthly)** is now
 > gathered automatically by `ingest-westpac-hpei.mjs` from the public bulletin PDF (its own Forge card,
-> `hpei_national`). The bulletin has **no state table**, so the **VIC** index that B/S page 31 charts, and
-> **NAB Business Confidence** (numbers only in charts; the data is a NAB subscriber product), stay on the
-> manual Sentiment card / the CSV export.
+> `hpei_national`). The bulletin has **no state table**, so the **VIC** index that B/S page 31 charts stays on the
+> manual Sentiment card / the CSV export. **NAB Business Confidence + Conditions** became automatic on 2026-10-12
+> (`ingest-nab-survey.mjs`, card `nab_survey`): the full monthly survey PDF — not the chart pack — prints them by
+> state in Table 1.
 
 Cotality, Mortgage Arrears (S&P SPIN), Industry REMPLAN uploads, and the REA listings in the Demand card. (`ingest-data-dump.mjs` / `ingest-deferred.mjs` exist but are one-off historical seeders — not referenced by the workflow and not scheduled.)
 
