@@ -44,7 +44,8 @@ const SRC = 'https://sdmx.oecd.org/public/rest/data/OECD.SDD.STES,DSD_STES@DF_CL
 let lastErr = '';
 async function fetchAttempt(url, accept) {
   try {
-    const r = await fetch(url, accept ? { headers: { Accept: accept } } : undefined);
+    /* an explicit language: without it OECD often answers 500 "languageTag1" (measured 2026-10-12, from Australia too) */
+    const r = await fetch(url, { headers: { 'Accept-Language': 'en', ...(accept ? { Accept: accept } : {}) } });
     const t = await r.text();
     if (r.ok) return t;
     lastErr = `OECD ${r.status}: ${t.slice(0, 100)}`;
