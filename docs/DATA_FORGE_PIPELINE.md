@@ -117,7 +117,7 @@ one launcher, `scripts/run-jsa-jobcreation.cmd`.
 > (`ingest-nab-survey.mjs`, card `nab_survey`): the full monthly survey PDF — not the chart pack — prints them by
 > state in Table 1.
 
-Cotality, Mortgage Arrears (S&P SPIN), Industry REMPLAN uploads, and the REA listings in the Demand card. (`ingest-data-dump.mjs` / `ingest-deferred.mjs` exist but are one-off historical seeders — not referenced by the workflow and not scheduled.)
+Cotality, Mortgage Arrears (S&P PDF → `ingest-sp-arrears-pdf.mjs`), the VIC House Price Expectations index (Sentiment card / CSV), the REA listings in the Demand card, the ✋ Commercial tabs, National Only's two seeded series, Oxford dwellings (`ingest-oxford-dwellings.mjs`), Commodity Prices (static) and Replacement Cost research. (Industry is no longer manual — REMPLAN is gathered automatically since 2026-09-13; the drop zone is a fallback.) (`ingest-data-dump.mjs` / `ingest-deferred.mjs` exist but are one-off historical seeders — not referenced by the workflow and not scheduled.)
 
 ---
 
@@ -128,11 +128,15 @@ Editing is gated by `_forgeCanEdit` (dev/admin tier; **defaults to DENY** until 
 | Data point | Store | How the owner updates it |
 |---|---|---|
 | **Cotality** (the main monthly drop) | `forge_cotality` (`latest` + `rentvacancy`) | COTALITY view: drop the Market Trends `.xlsx` + two Vacancy/Rent `.csv`. Parsed in-browser, filtered to capitals + 28 LGAs (matched/missing QC pill), upserts. The `.xlsx` also appends `forge_monthly_price` and recomputes CIV. Each drop replaces `latest`/`rentvacancy`. |
-| **Mortgage Arrears** | `forge_arrears` | ARR view: drop the S&P SPIN `.xlsx`; parser maps National + state columns, normalises to %, upserts (replaces the series). |
-| **Industry (Value Added)** | `forge_industry` | IND view: pick region → open its REMPLAN link → grab "Value added by industry" → drop file. Each drop **merges** regions into the store. Canberra is auto (ABS); never uploaded. |
+| **Mortgage Arrears** | `forge_arrears` | S&P serves the monthly "RMBS Arrears Statistics: Australia (Including Noncapital Market Issuance)" report as a **PDF only** (login). Download it → `node scripts/ingest-sp-arrears-pdf.mjs <pdf> [--write]` (page-2 "30+ Arrears By State", **prime** basis; appends new months, newer report overwrites overlaps). The ARR view's `.xlsx` drop is a fallback that **merges** months (never drop the old Data Dump Arrears sheet — pre-Jun-2025 it is all-loans). |
+| **Industry (Value Added)** | `forge_industry` | **Automatic since 2026-09-13** (`ingest-remplan-industry.mjs`, GATHER row 19b; Canberra from ABS). The IND view's drop zone is a manual fallback only; each drop **merges** regions. |
 | **Commercial** | `forge_commercial` (17 tabs) | COMMERCIAL view **in-place editor**: pick tab → ✏️ Edit → add/delete rows, edit cells → Save writes the whole jsonb straight to the store. No spreadsheet, no re-seed. Editing a ⚡ wired tab is allowed but a banner warns it's overwritten on the 10th by PUBLISH. |
-| **Demand listings (REA)** | `forge_demand_inputs` | DEMANDINPUTS → Listings tab: type House/Unit counts or use the one-click **"REA → Forge" bookmarklet**. Save merges only changed fields (re-fetches the store first to avoid stale-tab clobber). Rent house/unit + VR tabs are **read-only** — refreshed only by the SQM scripts. |
-| **National Only (3 seeded series)** | `forge_national_only` | NATONLY view is read-only. The 3 manual series (federalBudget, govtDebtGdp, householdComposition) are updated by editing the lists in `scripts/ingest-national-only.mjs` then running `node … --write`. No in-tool write path. |
+| **Demand listings (REA)** | `forge_demand_inputs` | DEMANDINPUTS → Listings tab: type House/Unit counts or use the one-click **"REA → Forge" bookmarklet**. Save merges only changed fields (re-fetches the store first to avoid stale-tab clobber). The "Capture month" field opens on the current month and the bookmarklet always files under the current month (until 2026-10-12 both used the last saved month, which filed a new capture over last month's `rea` history). Rent house/unit + VR tabs are **read-only** — refreshed only by the SQM scripts. |
+| **National Only (2 seeded series)** | `forge_national_only` | NATONLY view is read-only. The 2 manual series (federalBudget, householdComposition) are updated by editing the lists in `scripts/ingest-national-only.mjs`, running `node … --write`, then **pushing the script** (GATHER runs the GitHub copy and would revert a local-only edit). govtDebtGdp is now API (IMF net debt). No in-tool write path. |
+| **Sentiment — VIC House Price Expectations** | `rdp_raw_series` (`wmi`, `st-vic`, M) | SENTIMENT view form (VIC field), or the Westpac IQ CSV via `ingest-sentiment-csv.mjs`. The public bulletin is national-only (that series is automatic); NAB is automatic since 2026-10-12. |
+| **Total Dwellings (Oxford)** | `rdp_raw_series` (`oxford`, A) | `node scripts/ingest-oxford-dwellings.mjs --file <export> --write` from the licensed Oxford export (ALL DATA sheet). No in-tool upload. |
+| **Commodity Prices** | `rdp_raw_series` (`marketindex`, A) | Static seed (Data Dump "Mining" sheet). No in-tool write path — check marketindex and press "✓ No new data". |
+| **Replacement Cost** | `forge_replacement_cost` | REPLCOST view: per-region editor / workbook drop (ad-hoc research, 120/240-day freshness). Not read by B/S Slides (its Replacement Cost page is a separate `reports_state` table). |
 
 ### Freshness indicators
 
