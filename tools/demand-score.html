@@ -874,7 +874,7 @@ const PP_DEMAND_ENGINE = (function () {
     return Nb ? Math.min(80, Math.max(-20, ((N - Nb) / Nb) * 100)) : null;
   }
   /* cur / prev: the per-market snapshot shape {ds, pop, listings, avr, rg, dom?, vrr?, sqm?, vrRule?, vrAt?}
-     ctx: { Nb, prevAt, curAt, domFallback, knownCase: {rg: "recommendation text"} } */
+     ctx: { Nb, prevAt, curAt, domFallback, knownCase: {rg: "recommendation text"}, bench: {prevFb, curFb, prevNb, curNb} } */
   function explain(cur, prev, ctx) {
     ctx = ctx || {};
     if (!cur || !prev || _n(cur.ds) == null || _n(prev.ds) == null) return null;
@@ -894,13 +894,16 @@ const PP_DEMAND_ENGINE = (function () {
     const drivers = [];
     const pctTxt = (a, b) => (a ? ((b - a) / a * 100) : null);
     const sgn = v => (v > 0 ? "+" : "") + Math.round(v) + "%";
+    /* name the series the market was actually scored on — every market has been on Cotality since 2026-09-18 */
+    const SRC = cur.basis === "cotality" ? "Cotality" : "SQM", onSqm = SRC === "SQM";
+    const _src = (sqm, small) => onSqm ? _basis(sqm, small) : "";
     if (_n(cur.avr) != null && _n(prev.avr) != null && cur.avr !== prev.avr) {
       const methodBreak = (cur.vrRule && prev.vrRule && cur.vrRule !== prev.vrRule) || (!!cur.vrAt && !!ctx.prevAt && cur.vrAt > ctx.prevAt && (!ctx.curAt || cur.vrAt <= ctx.curAt));
       let cls = "market", note, detail = null, rec = null, summary = "adjusted VR moved";
       if (methodBreak) { cls = "method"; note = "method change"; detail = "The VR Projection moved to the “" + _rule(cur.vrRule) + "” supply rule on " + _day(cur.vrAt) + ", after the previous capture, so last month’s adjusted VR is on the old basis."; }
       else if (_n(cur.vrr) != null && _n(prev.vrr) != null && Math.abs(cur.vrr - prev.vrr) >= TH.sqmVR) {
-        summary = "SQM vacancy moved"; note = "SQM vacancy " + _f2(prev.vrr) + "% → " + _f2(cur.vrr) + "%" + _basis(cur.sqm);
-        if (Math.abs(cur.vrr - prev.vrr) >= TH.sqmVRBig) { cls = "source"; note = "unusual: SQM vacancy jumped " + _f2(prev.vrr) + "% → " + _f2(cur.vrr) + "% in one month" + _basis(cur.sqm, true); rec = (ctx.knownCase && ctx.knownCase.vr) || null; }
+        summary = SRC + " vacancy moved"; note = SRC + " vacancy " + _f2(prev.vrr) + "% → " + _f2(cur.vrr) + "%" + _src(cur.sqm);
+        if (Math.abs(cur.vrr - prev.vrr) >= TH.sqmVRBig) { cls = "source"; note = "unusual: " + SRC + " vacancy jumped " + _f2(prev.vrr) + "% → " + _f2(cur.vrr) + "% in one month" + _src(cur.sqm, true); rec = (ctx.knownCase && ctx.knownCase.vr) || null; }
       }
       else note = "the VR Projection’s inputs moved (vacancy, population or approvals)";
       drivers.push({ key: "avr", label: "Adjusted VR", prev: prev.avr, cur: cur.avr, fmt: v => _f2(v) + "%", effect: eff({ vr: prev.avr }), cls, note, detail, rec, summary });
@@ -908,9 +911,9 @@ const PP_DEMAND_ENGINE = (function () {
     if (_n(cur.rg) != null && _n(prev.rg) != null && cur.rg !== prev.rg) {
       const d = Math.abs(cur.rg - prev.rg);
       let cls = "market", note, rec = null, summary = "rent growth revised";
-      if (d >= TH.rg) { cls = "source"; summary = "rent growth jumped"; note = "unusual: a 3-year growth figure moved " + Math.round(d) + " points in one month. SQM series noise" + _basis(cur.sqm, true) + ", not a rent move"; rec = (ctx.knownCase && ctx.knownCase.rg) || (_isPostcode(cur.sqm) ? "Check SQM’s page for this postcode and consider SQM’s region-level series for this market." : "Check SQM’s page for this market."); }
-      else if (d >= TH.rgSoft) note = "SQM revised its 3-year change, within the normal range";
-      else note = "a small SQM revision";
+      if (d >= TH.rg) { cls = "source"; summary = "rent growth jumped"; note = "unusual: a 3-year growth figure moved " + Math.round(d) + " points in one month. " + SRC + " series noise" + _src(cur.sqm, true) + ", not a rent move"; rec = (ctx.knownCase && ctx.knownCase.rg) || (!onSqm ? "Check this market’s asking rents in the Cotality drop." : _isPostcode(cur.sqm) ? "Check SQM’s page for this postcode and consider SQM’s region-level series for this market." : "Check SQM’s page for this market."); }
+      else if (d >= TH.rgSoft) note = SRC + " revised its 3-year change, within the normal range";
+      else note = "a small " + SRC + " revision";
       drivers.push({ key: "rg", label: "Rental growth", prev: prev.rg, cur: cur.rg, fmt: v => _f2(v) + "%", effect: eff({ rentGrowth: (prev.rg || 0) / 100 }), cls, note, detail: null, rec, summary });
     }
     if (_n(cur.listings) != null && _n(prev.listings) != null && cur.listings !== prev.listings) {
@@ -935,6 +938,18 @@ const PP_DEMAND_ENGINE = (function () {
       const recon = scoreOne({ population: prev.pop, listings: prev.listings, vr: prev.avr, dom: domCur, rentGrowth: (_n(prev.rg) || 0) / 100 }, Nb);
       unexplained = { pts: Math.abs(prev.ds - recon), dom: domCur };
     }
+    /* The score is RELATIVE: it is graded against a benchmark built from the median listings per 1,000 across
+       every market. When that median moves, every market moves with it even if its own inputs did not
+       (Saskia 2026-10-13: Brisbane +9 while its listings, VR and rent growth all got worse). */
+    const B = ctx.bench;
+    if (B && canScore && _n(B.prevNb) != null && _n(B.curNb) != null && B.prevNb !== B.curNb) {
+      const effect = scoreOne(base, B.curNb) - scoreOne(base, B.prevNb), pct = pctTxt(B.prevFb, B.curFb);
+      /* own = every own input at once, against LAST month's benchmark: one-at-a-time swaps can each miss a grade step the combination crosses */
+      const prevBase = { population: prev.pop, listings: prev.listings, vr: prev.avr, dom: domPrev != null ? domPrev : domCur, rentGrowth: (_n(prev.rg) || 0) / 100 };
+      const own = scoreOne(base, B.prevNb) - scoreOne(prevBase, B.prevNb);
+      drivers.push({ key: "bench", label: "Market-wide benchmark", prev: B.prevFb, cur: B.curFb, fmt: _f2, effect, cls: "market",
+        note: "median listings per 1,000 across all markets " + _f2(B.prevFb) + " → " + _f2(B.curFb) + (pct != null ? " (" + sgn(pct) + ")" : "") + ", which moves every market’s score, not just this one", detail: null, rec: null, summary: "benchmark moved", own });
+    }
     drivers.sort((a, b) => Math.abs(b.effect || 0) - Math.abs(a.effect || 0));
     /* Verdict: a flagged input only carries the verdict when it MATTERED (≥ 3 pts,
        or its share is unknown); a flagged input that barely moved the score is a
@@ -946,7 +961,9 @@ const PP_DEMAND_ENGINE = (function () {
     let verdict;
     if (size === "small") verdict = { cls: "ok", headline: "Normal — a small month-to-month move.", detail: null };
     else if (flaggedMain.length) { const f = flaggedMain[0]; verdict = { cls: f.cls, headline: (f.cls === "source" ? "Check the source" : "Check the capture") + " — " + f.label.toLowerCase() + " moved more than one month of data should.", detail: null }; }
-    else { const top = drivers[0]; verdict = (top && top.cls === "method") ? { cls: "method", headline: "Expected — method change, not a market move.", detail: top.detail } : { cls: "market", headline: "Market move — the inputs moved within their normal ranges.", detail: null }; }
+    else { const top = drivers[0]; verdict = (top && top.cls === "method") ? { cls: "method", headline: "Expected — method change, not a market move.", detail: top.detail }
+      : (top && top.key === "bench") ? { cls: "market", headline: "Mostly a market-wide shift — the benchmark moved, more than this market’s own inputs.", detail: null }
+      : { cls: "market", headline: "Market move — the inputs moved within their normal ranges.", detail: null }; }
     return { delta, size, drivers, verdict, vcls: verdict.cls, sideChecks, unexplained, dsBase, material: MATERIAL };
   }
   return { compute, grade, median, BENCH, _A: A, benchmark, scoreOne, explain, TH };
@@ -2566,6 +2583,9 @@ function _explainText(ex) {
     if (d.effect == null || Math.abs(d.effect) >= 0.5) { minor.push(d.summary || d.label.toLowerCase()); minorPts += d.effect || 0; }
   });
   if (minor.length) L.push("• Other inputs (" + minor.join(", ") + "): " + pts(minorPts) + " together, within normal ranges.");
+  // with a benchmark move in play, say what the market's OWN inputs did on their own — the question a reader actually asks
+  const bd = ex.drivers.find(d => d.key === "bench");
+  if (bd && bd.own != null) L.push("• This market’s own inputs, all together: ≈ " + (bd.own > 0 ? "+" : bd.own < 0 ? "−" : "") + Math.abs(bd.own).toFixed(1) + " pts.");
   (ex.sideChecks || []).forEach(s => L.push("Also check — " + s + "."));
   if (ex.unexplained && ex.unexplained.pts >= 1) L.push("Days on market" + (ex.unexplained.dom != null ? " (now " + Math.round(ex.unexplained.dom) + ")" : "") + " was not stored for the earlier month, so " + pts(ex.unexplained.pts).replace("+", "") + " of the move cannot be assigned.");
   return "\n" + L.join("\n");
@@ -2732,6 +2752,10 @@ function compareView(tab) {
   const liveBySlug = {};
   (tab === "Houses" ? state.liveHouse : state.liveUnit || []).forEach(m => { const s = _fSlug(m.name); if (s) liveBySlug[s] = m; });
   const aiAt = (state.meta && state.meta.aiCeilingAt) || null;
+  // the benchmark each side was graded against, from the same 36 markets the table shows
+  const _bRows = mp => Object.values(mp).map(s => ({ population: s.pop, listings: s.listings }));
+  let bench = null;
+  try { const bp = PP_DEMAND_ENGINE.benchmark(_bRows(prevMap)), bc = PP_DEMAND_ENGINE.benchmark(_bRows(curMap)); if (Object.keys(prevMap).length) bench = { prevFb: bp.Fb, curFb: bc.Fb, prevNb: bp.Nb, curNb: bc.Nb }; } catch (e) {}
 
   const picker = h("select", { style: { padding: "7px 12px", borderRadius: "7px", border: "1px solid var(--ds-surface-4)", background: "var(--ds-surface-2)", color: "var(--ds-fg-1)", fontSize: "12px", fontWeight: "700", cursor: "pointer" }, onChange: e => { state.compareMonth = e.target.value; render(); } },
     ...options.map(o => h("option", { value: o.v, style: { background: "var(--ds-surface-2)", color: "var(--ds-fg-1)" } }, o.label)));
@@ -2760,7 +2784,7 @@ function compareView(tab) {
     const live = liveBySlug[slug] || {};
     const domLine = (p.dom != null && c.dom != null) ? "\nDays on market: " + _arrow(p.dom, c.dom, _int0) : "";   // both months or nothing — a lone dash reads as noise
     let ex = null;
-    try { ex = PP_DEMAND_ENGINE.explain(c, p, { Nb: DS_BENCH[key], prevAt, curAt, domFallback: live.dom, knownCase: DS_KNOWN_CASES[slug] }); } catch (e) { ex = null; }
+    try { ex = PP_DEMAND_ENGINE.explain(c, p, { Nb: DS_BENCH[key], prevAt, curAt, domFallback: live.dom, knownCase: DS_KNOWN_CASES[slug], bench }); } catch (e) { ex = null; }
     const dsTitle = "What changed (prev → now):\n"
       + "Population: " + _arrow(p.pop, c.pop, _int0) + "\n"
       + "Listings: " + _arrow(p.listings, c.listings, _int0) + "\n"
@@ -3329,6 +3353,8 @@ async function loadForgeAll(){
     for (const row of [...(rv.capitals || []), ...(rv.regions || [])]) {
       const slug = _fSlug(row && row.name); if (!slug) continue;
       if (typeof row.vacHouse === 'number' && isFinite(row.vacHouse)) M.cot.vr[slug] = row.vacHouse;
+      /* the drop keeps the unit reading too since 2026-10-13 — before that units fell back to the HOUSE vacancy whenever the monthly series below lacked the drop's month */
+      if (typeof row.vacUnit === 'number' && isFinite(row.vacUnit)) M.cot.vrU[slug] = row.vacUnit;
       if (typeof row.rentHouse === 'number' && isFinite(row.rentHouse)) M.cot.rentH[slug] = row.rentHouse;
       if (typeof row.rentUnit === 'number' && isFinite(row.rentUnit)) M.cot.rentU[slug] = row.rentUnit;
     }
@@ -3422,7 +3448,7 @@ function buildForgeMarkets(propertyType, DI, M){
     let basisUsed = onCot ? 'sqm-fallback' : 'sqm';
     if (onCot) {
       /* The monthly series carries a vacancy per property type; the monthly
-         DROP carries only vacHouse. So units use the unit reading wherever the
+         DROP carried only vacHouse until 2026-10-13. So units use the unit reading wherever the
          series reaches, and fall back to the house one where it does not —
          which is the old behaviour, now confined to the markets that actually
          lack the data instead of applied to all of them. */
@@ -3459,7 +3485,7 @@ function buildForgeMarkets(propertyType, DI, M){
       }
     }
     return {
-      _basisUsed: basisUsed, _vrCot: onCot ? (COT.vr[slug] ?? null) : null,
+      _basisUsed: basisUsed, _vrCot: onCot ? ((isU && COT.vrU[slug] != null) ? COT.vrU[slug] : (COT.vr[slug] ?? null)) : null,   // the reading actually scored — units' own vacancy, not the house one
       slug,
       name: M.name[slug] || (slug === 'australia' ? 'National' : slug),
       state: M.state[slug] || '',
