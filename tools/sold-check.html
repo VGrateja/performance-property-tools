@@ -27,8 +27,9 @@
    Data (migration 126): sold_check_properties (the register, one row per
    normalised address) + sold_check_results (what a checker found, and what a
    person decided). Read = any signed-in user; write = dev/admin or a
-   'sold-check' editor grant (sold_check_can_write()). The checker
-   (scripts/sold-check/record.mjs) only adds results: a property becomes sold
+   'sold-check' editor grant (sold_check_can_write()). The checker — the RP
+   Data bookmarklet this page builds (2026-10-13), or the CLI
+   scripts/sold-check/record.mjs — only adds results: a property becomes sold
    only when a person confirms it here (sold_check_confirm()).
    Runbook: docs/SOLD_CHECK.md · pp-os note: docs/pp-os-migration/sold-check.md
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -196,6 +197,12 @@ table.sc td.nw{white-space:nowrap}
 .sc-counts b{display:block;font-size:18px;font-weight:800;color:var(--sc-ink);font-variant-numeric:tabular-nums}
 .sc-counts span{font-size:10.5px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--sc-mut)}
 .sc-fail{max-height:160px;overflow:auto;font-size:12px;border:1px solid var(--sc-border);border-radius:10px;padding:8px 10px;background:var(--sc-surface2)}
+/* RP Data check: the drag-me bookmark(s) and the steps */
+.sc-bms{display:flex;flex-wrap:wrap;gap:10px 14px}
+.sc-bms>div{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+.sc-bms>div>span{font-size:11.5px;color:var(--sc-mut)}
+.sc-bm{display:inline-block;background:var(--sc-teal);color:#fff;border-radius:10px;padding:9px 14px;font-weight:800;font-size:13px;text-decoration:none;cursor:grab}
+.sc-steps{margin:0;padding-left:20px;display:grid;gap:4px}
 /* checks tab */
 table.sc.runs tbody tr.open td{background:var(--sc-surface2)}
 table.sc.runs tr.detail td{background:var(--sc-surface2);cursor:default}
@@ -228,7 +235,7 @@ body.sc-canw [data-writer-only]{display:revert !important}
   <div class="sc-head">
     <div class="sc-eyebrow">The Vault · Properties bought for clients</div>
     <h1>Sold Check<span class="sc-qa" id="scQaPill" hidden>QA mode</span></h1>
-    <p>Every property bought for a client, by market — what was paid, whether it is still held, and when it sold. A scheduled check looks for recent sales and listings; nothing is marked sold until a person verifies it.</p>
+    <p>Every property bought for a client, by market — what was paid, whether it is still held, and when it sold. A check on RP Data looks for recent sales and listings; nothing is marked sold until a person verifies it.</p>
   </div>
   <div class="sc-stats" id="scStats"></div>
   <div class="sc-tabs" role="tablist">
@@ -278,9 +285,15 @@ body.sc-canw [data-writer-only]{display:revert !important}
 
   <!-- CHECKS -->
   <section class="sc-pane" id="paneChecks" hidden>
-    <div class="sc-meta" id="scChecksMeta"></div>
+    <div class="sc-bar">
+      <div class="sc-meta" id="scChecksMeta"></div>
+      <div class="sc-actions">
+        <button type="button" class="sc-btn" id="btnRpUpload" data-writer-only>Upload RP Data results</button>
+        <button type="button" class="sc-btn primary" id="btnRpCheck" data-writer-only>Check on RP Data</button>
+      </div>
+    </div>
     <div class="sc-wrap" id="scChecksWrap"></div>
-    <div class="sc-note">One row per check run (results sharing a run id). Checks recorded by hand from a property's record have no run id and are grouped by day. Click a run to see its results.</div>
+    <div class="sc-note">One row per check run (results sharing a run id); an uploaded RP Data run is named rpdata-&lt;date&gt;. Checks recorded by hand from a property's record have no run id and are grouped by day. Click a run to see its results.</div>
   </section>
 </div>
 
@@ -300,7 +313,17 @@ body.sc-canw [data-writer-only]{display:revert !important}
     <div class="sc-mfoot" id="imFoot"></div>
   </div>
 </div>
-<input type="file" id="imFile" accept=".xlsx,.xls,.xlsm" hidden>
+<input type="file" id="imFile" accept=".xlsx,.xls,.xlsm,.json" hidden>
+
+<!-- RP Data: build the bookmarklet / upload its results -->
+<div class="sc-modal" id="rpModal" role="dialog" aria-modal="true">
+  <div class="sc-mbox">
+    <div class="sc-mhead"><h2 id="rpTitle"></h2><button type="button" class="sc-btn sm x" id="rpClose">Close</button></div>
+    <div class="sc-mbody" id="rpBody"></div>
+    <div class="sc-mfoot" id="rpFoot"></div>
+  </div>
+</div>
+<input type="file" id="rpFile" accept=".csv" hidden>
 
 <!-- confirm -->
 <div class="sc-modal" id="cfModal" role="dialog" aria-modal="true">
@@ -546,20 +569,397 @@ function sameVal(a, b){
 }
 function planImport(parsed){
   const byKey = new Map(S.props.map(p => [p.address_key || scKey(p.address), p]));
-  const plan = { inserts: [], updates: [], unchanged: 0 };
-  for (const [key, rec] of parsed.records) {
-    const ex = byKey.get(key);
+  /* the IRR register spells addresses its own way (Road / Rd, with or without
+     the state and postcode), so a property its key does not find is looked up
+     by the canonical form too; a form two register rows share fails the entry */
+  const irr = parsed.kind === 'irr';
+  const byCanon = new Map();
+  if (irr) for (const p of S.props) { const c = rpCanon(p.address); if (c) byCanon.set(c, byCanon.has(c) ? null : p); }
+  const plan = { inserts: [], updates: [], unchanged: 0, respelt: 0, failed: [] };
+  for (const [, rec] of parsed.records) {
+    let ex = byKey.get(scKey(rec.address));              /* = the map key for a workbook */
+    if (!ex && irr) {
+      const c = byCanon.get(rpCanon(rec.address));
+      if (c === null) { plan.failed.push({ entry: rec._entry, cols: ['matches more than one property in the register'] }); continue; }
+      if (c) { ex = c; plan.respelt++; }
+    }
     if (!ex) { plan.inserts.push(rec); continue; }
     const patch = {};
     for (const k of CMP_FIELDS) {
       let v = rec[k];
       if (v == null) continue;
       if (k === 'status') { if (ex.status === 'sold') continue; }
+      if (k === 'market' && irr) continue;                 /* an existing property keeps its market */
       if (!sameVal(v, ex[k])) patch[k] = v;
     }
     if (Object.keys(patch).length) plan.updates.push({ ex, patch }); else plan.unchanged++;
   }
   return plan;
+}
+
+/* ═══ the IRR register (Shaene's IRR Calculator) ═══════════════════════════
+   Its register is one JSON document: { properties: [{ id, name, category,
+   purchasePrice, purchaseDate, soldPrice, soldDate, note, outside,
+   outsideReason }], assumptions, rev }. Accepted as that body, as the table row
+   around it ({ body }), or as the SQL editor's one-row JSON copy ([{ body }]).
+   name -> address · category (the capital city) -> market · purchase price and
+   date · a sale only when it has BOTH a price and a date (her tool's test for
+   sold) · note -> comments. Entries set outside of advice are skipped, as her
+   checker skips them. Repeats of one address (canonical form, rpCanon) merge
+   like the workbook's: empty fields filled, sold wins. A held entry says
+   nothing about the status of a property already in the register. */
+function parseIrrBook(obj, fileName){
+  let body = Array.isArray(obj) ? (obj.length === 1 ? obj[0] : null) : obj;
+  if (body && typeof body.body === 'string') { try { body = JSON.parse(body.body); } catch (e) { body = null; } }
+  else if (body && body.body && typeof body.body === 'object') body = body.body;
+  if (!body || !Array.isArray(body.properties)) return null;
+  /* market is only a label for the result line: each record carries its own */
+  const out = { fileName, kind: 'irr', market: 'IRR register', sheets: [], records: new Map(), failed: [], merged: 0, blanked: 0, outside: 0, markets: new Map() };
+  body.properties.forEach((p, i) => {
+    if (!p || typeof p !== 'object') { out.failed.push({ entry: i + 1, cols: ['not a property'] }); return; }
+    if (p.outside) { out.outside++; return; }
+    const bad = [], addr = parseText(p.name), market = parseText(p.category);
+    if (!addr) bad.push('no address (name)'); else if (!/\d/.test(addr)) bad.push('address has no street number');
+    if (!market) bad.push('no capital city (category)');
+    const val = (fn, v, label) => { const x = fn(v); if (x === undefined) bad.push(label + ' unreadable'); return x === undefined ? null : x; };
+    const pp = val(parseMoney, p.purchasePrice, 'purchase price'), pd = val(parseDate, p.purchaseDate, 'purchase date');
+    const sp = val(parseMoney, p.soldPrice, 'sold price'), sd = val(parseDate, p.soldDate, 'sold date');
+    if (bad.length) { out.failed.push({ entry: i + 1, cols: bad }); return; }
+    const sold = sp != null && sp > 0 && sd != null;
+    const rec = { _entry: i + 1, market, address: addr.replace(/\s+/g, ' '), purchase_price: pp, purchase_date: pd, status: sold ? 'sold' : null,
+      sold_price: sold ? sp : null, sold_date: sold ? sd : null, comments: parseText(p.note) };
+    for (const k of REC_FIELDS) if (!(k in rec)) rec[k] = null;
+    const key = rpCanon(rec.address) || scKey(rec.address), prev = out.records.get(key);
+    if (!prev) { out.records.set(key, rec); return; }
+    out.merged++;
+    for (const k of REC_FIELDS) if (prev[k] == null && rec[k] != null) prev[k] = rec[k];
+    if (rec.status === 'sold' && prev.status !== 'sold') { prev.status = 'sold'; prev.sold_price = rec.sold_price; prev.sold_date = rec.sold_date; }
+  });
+  for (const r of out.records.values()) out.markets.set(r.market, (out.markets.get(r.market) || 0) + 1);
+  return out;
+}
+/* an address in one spelling (rpAddr): unit/number and the words, street types
+   and directions shortened, state and postcode dropped. '' without a number. */
+function rpCanon(a){ const p = rpAddr(a); return p.num ? (p.unit ? p.unit + '/' : '') + p.num + ' ' + p.words.join(' ') : ''; }
+
+/* ═══ the RP Data check ════════════════════════════════════════════════════
+   Shaene's RP Data held-property check (her IRR Calculator, handed over
+   2026-10-13) is the checker now. The panel turns the work list — the
+   pending.mjs rules: held, not checked in N days, no find waiting in Verify —
+   into a bookmarklet carrying only { id, market, address, purchase_date }. A
+   person drags it to the bookmarks bar and clicks it on rpp.corelogic.com.au,
+   signed in to RP Data as themselves. It drives the visible search box (her
+   code), decides a verdict, keeps each answer in that site's localStorage so a
+   second click resumes, and offers a results CSV that "Upload RP Data results"
+   records here. It fetches nothing and sends nothing anywhere.
+   rpAddr … rpRun are the bookmarklet's own source (rpCode() joins them), so
+   they stay self-contained: no page globals, line comments only (stripped). */
+function rpWorkList(days, market){
+  const cutoff = Date.now() - days * 86400e3, due = [], tally = { scope: 0, fresh: 0, waiting: 0, never: 0 };
+  for (const p of S.props) {
+    if (p.status !== 'held' || (market && p.market !== market)) continue;
+    tally.scope++;
+    const rs = S.byProp.get(p.id) || [];
+    const t = rs.length ? Math.max(...rs.map(r => Date.parse(r.checked_at))) : -Infinity;
+    if (t > cutoff) { tally.fresh++; continue; }
+    if (rs.some(r => (r.verdict === 'sold' || r.verdict === 'listed') && !r.review)) { tally.waiting++; continue; }
+    if (t === -Infinity) tally.never++;
+    due.push({ p, t });
+  }
+  due.sort((a, b) => a.t - b.t || String(a.p.market).localeCompare(String(b.p.market)) || String(a.p.address).localeCompare(String(b.p.address)));
+  return { list: due.map(({ p }) => ({ id: p.id, market: p.market, address: p.address, purchase_date: p.purchase_date || null })), tally };
+}
+const RP_MAX = 60000;     /* Chrome chokes on javascript: links much longer than this */
+function rpCode(){
+  const src = [rpAddr, rpSame, rpPick, rpVerdict, rpCsv, rpRun].map(f => String(f).split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('//')).join('\n'));
+  return '(function(MKTS,DATA,META){\n' + src.join('\n') + '\nrpRun(MKTS,DATA,META);\n})';
+}
+/* The list rides in the link as one string — per property
+   id(hex, no dashes)*market index*address*yyyymmdd, joined by ~ — characters
+   encodeURIComponent leaves alone, so the link stays small. Too long for one
+   link: split evenly into batches, each its own bookmark with its own resume. */
+function rpBookmarklets(list, stamp, label){
+  const mk = [...new Set(list.map(e => e.market))];
+  const items = list.map(e => String(e.id).replace(/-/g, '') + '*' + mk.indexOf(e.market) + '*' + String(e.address).replace(/[*~\s]+/g, ' ').trim() + '*' + String(e.purchase_date || '').replace(/-/g, ''));
+  const code = rpCode();
+  for (let n = 1; ; n++) {
+    const per = Math.ceil(items.length / n), out = [];
+    for (let b = 0; b * per < items.length; b++) {
+      const part = items.slice(b * per, (b + 1) * per);
+      const meta = { key: stamp + (n > 1 ? '-' + (b + 1) + 'of' + n : ''), label: label + (n > 1 ? ' (' + (b + 1) + ' of ' + n + ')' : '') };
+      out.push({ key: meta.key, label: meta.label, count: part.length,
+        href: 'javascript:' + encodeURIComponent('void ' + code + '(' + JSON.stringify(mk) + ',' + JSON.stringify(part.join('~')) + ',' + JSON.stringify(meta) + ');') });
+    }
+    if (out.every(o => o.href.length <= RP_MAX) || per === 1) return out;
+  }
+}
+function rpAddr(raw){
+  // her splitAddr without the suburb list (too big to carry): the unit, the
+  // number, and the other words with street types and directions in one
+  // spelling and the state and postcode dropped; bare = the words less the type
+  const T = { street:'st', st:'st', road:'rd', rd:'rd', avenue:'ave', ave:'ave', av:'ave', drive:'dr', dr:'dr', drv:'dr', court:'ct', ct:'ct', crt:'ct',
+    place:'pl', pl:'pl', terrace:'tce', tce:'tce', terr:'tce', crescent:'cres', cres:'cres', cr:'cres', close:'cl', cl:'cl',
+    parade:'pde', pde:'pde', boulevard:'blvd', boulevarde:'blvd', blvd:'blvd', bvd:'blvd', circuit:'cct', cct:'cct', grove:'gr', gr:'gr', grv:'gr',
+    lane:'ln', ln:'ln', way:'way', wy:'way', esplanade:'esp', esp:'esp', highway:'hwy', hwy:'hwy', square:'sq', sq:'sq', rise:'rise', walk:'walk',
+    mews:'mews', loop:'loop', link:'link', green:'green', row:'row', gardens:'gdns', gdns:'gdns', parkway:'pwy', pwy:'pwy', view:'view', vista:'vista' };
+  const D = { north:'n', south:'s', east:'e', west:'w', northeast:'ne', northwest:'nw', southeast:'se', southwest:'sw' };
+  let w = String(raw == null ? '' : raw).toLowerCase().replace(/[.'"`]/g, '').replace(/\s*\/\s*/g, '/').replace(/[^a-z0-9\/\- ]+/g, ' ').split(' ').filter(Boolean);
+  let unit = '', num = '';
+  const said = /^(unit|apt|apartment|flat|lot)$/.test(w[0] || '');
+  if (said) w.shift();
+  const sl = (w[0] || '').match(/^(\d+[a-z]?)\/(\d+[a-z]?)$/);
+  if (sl) { unit = sl[1]; num = sl[2]; w.shift(); }
+  else if (/^\d+[a-z]?$/.test(w[0] || '')) { num = w.shift(); if (said && /^\d+[a-z]?$/.test(w[0] || '')) { unit = num; num = w.shift(); } }
+  w = w.filter(x => !/^(sa|vic|nsw|qld|wa|nt|tas|act|\d{4})$/.test(x)).map(x => T[x] || D[x] || x);
+  const types = Object.values(T);
+  return { unit, num, words: w, bare: w.filter(x => !types.includes(x)) };
+}
+function rpSame(a, b, loose){
+  // the same number and the same words, one allowed to stop short of the other
+  // (an address written without its suburb); tight also wants the same unit and
+  // street type, loose forgives both (her tightKey / looseKey)
+  if (!a.num || a.num !== b.num || (!loose && a.unit !== b.unit)) return false;
+  const x = loose ? a.bare : a.words, y = loose ? b.bare : b.words, n = Math.min(x.length, y.length);
+  if (!n) return false;
+  for (let i = 0; i < n; i++) if (x[i] !== y[i]) return false;
+  return true;
+}
+function rpPick(address, texts){
+  // which of RP Data's suggestions is this property: { i, conf, note } or
+  // { i: -1, why }. Her "several sales share a street number" rule: never take
+  // a neighbour, so a unit block or several matches is unknown, with the
+  // candidates named.
+  if (!texts.length) return { i: -1, why: 'RP Data gave no suggestion for the address' };
+  const me = rpAddr(address), tight = [], loose = [];
+  texts.forEach((t, i) => { const a = rpAddr(t); if (rpSame(me, a, false)) tight.push(i); else if (rpSame(me, a, true)) loose.push(i); });
+  const names = ix => ix.slice(0, 6).map(i => texts[i]).join(' | ') + (ix.length > 6 ? ' | …' : '');
+  if (tight.length === 1) return { i: tight[0], conf: texts.length === 1 ? 'high' : 'medium', note: texts.length === 1 ? '' : 'picked the one exact match of ' + texts.length + ' suggestions' };
+  if (tight.length > 1) return { i: -1, why: tight.length + ' suggestions match the address: ' + names(tight) };
+  if (loose.length === 1 && rpAddr(texts[loose[0]]).unit === me.unit) return { i: loose[0], conf: 'low', note: 'street type differs: ' + texts[loose[0]] };
+  if (loose.length) return { i: -1, why: (me.unit ? 'unit ' + me.unit + ' not matched' : 'unit block — the register has no unit number') + '; ' + loose.length + ' suggestion' + (loose.length === 1 ? '' : 's') + ' at this street number: ' + names(loose) };
+  return { i: -1, why: 'no suggestion matched the address: ' + names(texts.map((t, i) => i)) };
+}
+function rpVerdict(e, pg){
+  // e = { purchase_date }, pg = { sale: { date, price } | null, onMarket, lastAd,
+  // url, conf, note }. sold = RP Data's last sale is NEWER than our purchase;
+  // listed = For Sale / Under Offer / Under Contract / Auction now; not_sold =
+  // the last sale IS our purchase; anything else unknown — never a guessed not_sold
+  const r = { verdict: 'unknown', sale_date: null, sale_price: null, source_url: pg.url || null, confidence: null };
+  const s = pg.sale, bought = e.purchase_date || '', notes = [];
+  const mkt = pg.onMarket ? 'RP Data shows ' + pg.onMarket + (pg.lastAd ? ', last advertised ' + pg.lastAd : '') : '';
+  if (s && s.date && bought && s.date > bought) {
+    r.verdict = 'sold'; r.sale_date = s.date; r.sale_price = s.price; r.confidence = pg.conf || 'low';
+    const days = Math.round((Date.parse(s.date) - Date.parse(bought)) / 864e5);
+    if (days <= 90) { r.confidence = 'low'; notes.push('sold ' + days + ' days after our purchase date — it may be our purchase itself'); }
+  } else if (/for sale|under offer|under contract|auction/i.test(pg.onMarket || '')) { r.verdict = 'listed'; r.confidence = pg.conf || 'low'; }
+  else if (s && s.date && s.date === bought) { r.verdict = 'not_sold'; r.confidence = pg.conf || 'low'; }
+  else notes.push(!s ? 'no sale on record in RP Data' : !s.date ? 'the last sale date could not be read' : !bought ? 'no purchase date in the register; RP Data last sale ' + s.date : 'RP Data last sale ' + s.date + ' is before our purchase date ' + bought);
+  r.notes = [pg.note, ...notes, mkt].filter(Boolean).join(' · ') || null;
+  return r;
+}
+function rpCsv(rows){
+  // the columns "Upload RP Data results" reads, one row per property
+  const C = ['id', 'verdict', 'sale_date', 'sale_price', 'source_url', 'confidence', 'notes', 'checked_at'];
+  const q = v => v == null ? '' : /[",\r\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+  return [C.join(',')].concat(rows.map(r => C.map(c => q(r[c])).join(','))).join('\r\n') + '\r\n';
+}
+async function rpRun(MKTS, DATA, META){
+  'use strict';
+  // a second click while a run is going only brings its panel back
+  if (window.scRpRun) { window.scRpRun.show(); return; }
+  const KEY = 'ppSoldCheck:' + META.key;
+  // Shaene's pacing: a pause, a random extra so it is not robotic, a long rest every 20
+  const PAUSE = 7000, JITTER = 2500, LONG_REST = [20, 45000];
+  const list = DATA.split('~').map(s => s.split('*')).map(f => ({ id: f[0].replace(/^(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-'), market: MKTS[+f[1]], address: f[2], purchase_date: f[3] ? f[3].replace(/^(\d{4})(\d\d)/, '$1-$2-') : '' }));
+  let done = {};
+  try { done = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { done = {}; }
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(done)); } catch (e) {} };
+  const rows = () => list.filter(e => done[e.id]).map(e => done[e.id]);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // ── the panel (bottom right). Its words stay clear of the ones read off the page.
+  const old = document.getElementById('scRpPanel');
+  if (old) old.remove();
+  const pnl = document.createElement('div');
+  pnl.id = 'scRpPanel';
+  pnl.style.cssText = 'position:fixed;z-index:2147483647;right:16px;bottom:16px;width:340px;max-width:calc(100vw - 32px);background:#171B24;color:#fff;font:600 13px/1.45 Montserrat,system-ui,sans-serif;border:1px solid #00A0B4;border-radius:12px;padding:12px 14px;box-shadow:0 8px 28px rgba(0,0,0,.35)';
+  const txt = document.createElement('div');
+  const bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;gap:8px;margin-top:10px';
+  const btn = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.style.cssText = 'flex:1;background:#00A0B4;color:#fff;border:0;border-radius:8px;padding:8px 10px;font:inherit;cursor:pointer'; b.onclick = fn; return b; };
+  const say = m => {
+    txt.textContent = '';
+    const r = rows(), c = v => r.filter(x => x.verdict === v).length;
+    ['Sold Check · ' + META.label, r.length + ' of ' + list.length + ' done · sold ' + c('sold') + ' · listed ' + c('listed') + ' · not sold ' + c('not_sold') + ' · unknown ' + c('unknown'), m].forEach((t, i) => { const d = document.createElement('div'); d.textContent = t; if (!i) d.style.color = '#00A0B4'; if (i === 2) d.style.fontWeight = '500'; txt.appendChild(d); });
+  };
+  const dl = btn('Download results CSV', () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([rpCsv(rows())], { type: 'text/csv;charset=utf-8' }));
+    a.download = 'sold-check-' + META.key + '.csv';
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  });
+  const stop = btn('Close', () => { if (window.scRpRun) { window.stopCheck = true; say('Stopping after this property…'); } else pnl.remove(); });
+  stop.style.background = '#3a4150';
+  bar.append(dl, stop);
+  pnl.append(txt, bar);
+  document.body.appendChild(pnl);
+  // ── page helpers: Shaene's, as they are
+  function searchBox() {
+    return document.getElementById('crux-multi-locality-search') ||
+      [...document.querySelectorAll('input')].find(x => /address|search/i.test(x.placeholder || ''));
+  }
+  // React owns this input, so set the value through the native setter and
+  // tell React about it — otherwise it reverts on the next render.
+  function typeInto(el, text) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, text);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  async function waitFor(test, ms = 9000, step = 250) {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { const v = test(); if (v) return v; await sleep(step); }
+    return null;
+  }
+  // The subject property's own sale sits before the nearby-comparables block.
+  // Read past that marker and you start picking up the neighbours.
+  // (Her line, with the price made optional: a withheld price is still a sale.)
+  function readLastSold() {
+    const t = document.body.innerText.replace(/\n{2,}/g, '\n');
+    let cut = t.length;
+    for (const k of ['Nearby', 'Similar']) { const i = t.indexOf(k); if (i >= 0 && i < cut) cut = i; }
+    const m = t.slice(0, cut).match(/Last Sold on (\d{2} \w{3} \d{4})(?: for \$([\d,]+))?/);
+    return m ? { date: iso(asDate(m[1])), price: m[2] ? Number(m[2].replace(/,/g, '')) : null } : null;
+  }
+  // On the market now? Best-effort: the summary block only (from the address
+  // line), with the most recent advertisement date beside it — two facts to
+  // judge, not one guess.
+  function readOnMarket() {
+    const t = document.body.innerText.replace(/\n{2,}/g, '\n');
+    let cut = t.length;
+    for (const k of ['Nearby', 'Similar']) { const i = t.indexOf(k); if (i >= 0 && i < cut) cut = i; }
+    const sub = t.slice(0, cut);
+    const from = sub.indexOf('Copy');
+    const head = sub.slice(from < 0 ? 0 : from, (from < 0 ? 0 : from) + 700);
+    const WORDS = ['For Sale', 'Under Offer', 'Under Contract', 'Auction', 'For Rent', 'Withdrawn'];
+    const flat = head.replace(/\s+/g, ' ').toLowerCase();
+    const seen = WORDS.filter(w => flat.indexOf(w.toLowerCase()) >= 0);
+    let last = null;
+    (sub.match(/Advertisement Date\s*(\d{2} \w{3} \d{4})/g) || []).forEach(a => { const m = /(\d{2} \w{3} \d{4})/.exec(a); const d = m && asDate(m[1]); if (d && (!last || d > last)) last = d; });
+    return { onMarket: seen.join(', '), lastAd: last ? iso(last) : '' };
+  }
+  const MONTHS = { Jan:0, Feb:1, Mar:2, Apr:3, May:4, Jun:5, Jul:6, Aug:7, Sep:8, Oct:9, Nov:10, Dec:11 };
+  function asDate(s) { const m = /^(\d{2}) (\w{3}) (\d{4})$/.exec(s); return m && m[2] in MONTHS ? new Date(+m[3], MONTHS[m[2]], +m[1]) : null; }
+  function iso(d) { return d ? d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') : ''; }
+  // ── one property: type the address, pick the suggestion that IS it, open it, read it
+  async function check(e) {
+    const box = searchBox();
+    if (!box) return { notes: 'the RP Data search box was not found' };
+    box.focus();
+    typeInto(box, '');
+    await sleep(150);
+    typeInto(box, e.address);
+    const opts = await waitFor(() => { const o = [...document.querySelectorAll('[role=option]')]; return o.length ? o : null; }, 8000);
+    const texts = (opts || []).map(o => o.innerText.replace(/\s+/g, ' ').trim());
+    const pk = rpPick(e.address, texts);
+    if (pk.i < 0) { typeInto(box, ''); return { notes: pk.why }; }
+    const before = location.pathname;
+    opts[pk.i].click();
+    const moved = await waitFor(() => location.pathname !== before && /\/property\//.test(location.pathname), 12000);
+    if (!moved) return { notes: 'the property page did not open (' + texts[pk.i] + ')' };
+    await waitFor(readLastSold, 9000);
+    const mkt = readOnMarket();
+    return rpVerdict(e, { sale: readLastSold(), onMarket: mkt.onMarket, lastAd: mkt.lastAd, url: location.href, conf: pk.conf, note: pk.note });
+  }
+  // ── the run: skip what this bookmark already answered, keep each answer as it comes
+  const todo = list.filter(e => !done[e.id]);
+  if (!todo.length) { say('All checked. Download the CSV and upload it in Sold Check.'); return; }
+  if (!searchBox()) { say('Open RP Data (rpp.corelogic.com.au), sign in, then click the bookmark again.'); return; }
+  window.stopCheck = false;
+  window.scRpRun = { show: () => document.body.appendChild(pnl) };
+  stop.textContent = 'Stop';
+  try {
+    for (let i = 0; i < todo.length; i++) {
+      if (window.stopCheck) { say('Stopped. Click the bookmark again to carry on.'); break; }
+      const e = todo[i];
+      say('Checking ' + (i + 1) + ' of ' + todo.length + ' left. Keep this tab in front.');
+      let r;
+      try { r = await check(e); } catch (err) { r = { notes: 'error: ' + (err && err.message) }; }
+      done[e.id] = Object.assign({ verdict: 'unknown', sale_date: null, sale_price: null, source_url: null, confidence: null, notes: null }, r, { id: e.id, checked_at: new Date().toISOString() });
+      save();
+      if (i < todo.length - 1 && !window.stopCheck) await sleep(PAUSE + Math.random() * JITTER + ((i + 1) % LONG_REST[0] === 0 ? LONG_REST[1] : 0));
+    }
+    if (!window.stopCheck) say('Finished. Download the CSV and upload it in Sold Check.');
+  } finally {
+    window.scRpRun = null;
+    stop.textContent = 'Close';
+  }
+}
+
+/* ═══ the RP Data results upload (pure) ════════════════════════════════════
+   The bookmarklet's CSV -> sold_check_results rows, validated the way
+   scripts/sold-check/record.mjs validates; a bad row is skipped with its line
+   and reason. One run id per upload (rpdata-<date>[-n]) is what marks a result
+   as RP Data's; checked_at is when RP Data was read. Like record.mjs it only
+   inserts results — the "last check" is the newest result — and never touches
+   a property. */
+/* CSV text -> rows of cells, each with the line it starts on (quotes, doubled
+   quotes, commas and line breaks inside quotes; a leading BOM dropped) */
+function parseCsv(text){
+  const s = String(text == null ? '' : text).replace(/^﻿/, ''), out = [];
+  let row = [], cell = '', q = false, line = 1, start = 1;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\r') continue;
+    if (q) { if (c === '"' && s[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else { if (c === '\n') line++; cell += c; } continue; }
+    if (c === '"') q = true;
+    else if (c === ',') { row.push(cell); cell = ''; }
+    else if (c === '\n') { row.push(cell); out.push({ line: start, cells: row }); row = []; cell = ''; start = ++line; }
+    else cell += c;
+  }
+  if (cell !== '' || row.length) { row.push(cell); out.push({ line: start, cells: row }); }
+  return out;
+}
+const RP_VERDICTS = new Set(['sold', 'listed', 'not_sold', 'unknown']);
+const RP_CONF = new Set(['high', 'medium', 'low']);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function planRpUpload(text, props, results, runId, who){
+  const rows = parseCsv(text).filter(r => r.cells.some(c => c.trim() !== ''));
+  if (!rows.length) return { error: 'The file is empty.' };
+  const head = rows[0].cells.map(h => h.trim().toLowerCase());
+  if (!head.includes('id') || !head.includes('verdict')) return { error: 'This is not an RP Data results file: it has no id and verdict columns.' };
+  const known = new Set(props.map(p => String(p.id).toLowerCase()));
+  const had = new Set(results.map(r => String(r.property_id).toLowerCase() + '|' + Date.parse(r.checked_at)));
+  const seen = new Set(), plan = { inserts: [], skipped: [] };
+  for (const { line, cells } of rows.slice(1)) {
+    const g = k => { const i = head.indexOf(k); return i < 0 || cells[i] == null ? '' : String(cells[i]).trim(); };
+    const why = [], id = g('id').toLowerCase(), verdict = g('verdict');
+    if (!UUID_RE.test(id)) why.push('id is not a property id');
+    else if (!known.has(id)) why.push('id is not in the register');
+    else if (seen.has(id)) why.push('id appears earlier in the file');
+    if (!RP_VERDICTS.has(verdict)) why.push('verdict must be sold/listed/not_sold/unknown');
+    const conf = g('confidence').toLowerCase() || null;
+    if (conf && !RP_CONF.has(conf)) why.push('confidence must be high/medium/low');
+    const date = g('sale_date') || null;
+    if (date && !(/^\d{4}-\d{2}-\d{2}$/.test(date) && parseDate(date) === date)) why.push('sale_date must be YYYY-MM-DD');
+    const pr = g('sale_price'), price = pr === '' ? null : Number(pr.replace(/[$,\s]/g, ''));
+    if (price !== null && !Number.isFinite(price)) why.push('sale_price must be a number');
+    const url = g('source_url') || null;
+    if (url && !/^https?:\/\//i.test(url)) why.push('source_url must start with http');
+    const at = g('checked_at'), t = at ? Date.parse(at) : Date.now();
+    if (!Number.isFinite(t) || t > Date.now() + 86400e3) why.push('checked_at is not a date and time');
+    else if (UUID_RE.test(id) && had.has(id + '|' + t)) why.push('already recorded (same property, same time)');
+    if (why.length) { plan.skipped.push({ line, why: why.join('; ') }); continue; }
+    seen.add(id);
+    plan.inserts.push({ property_id: id, checked_by: who, checked_at: new Date(t).toISOString(), run_id: runId, verdict,
+      sale_date: date, sale_price: price, source_url: url, confidence: conf, notes: g('notes') ? g('notes').slice(0, 2000) : null });
+  }
+  return plan;
+}
+function rpRunId(results, day){
+  const used = new Set(results.map(r => r.run_id));
+  let id = 'rpdata-' + day;
+  for (let n = 2; used.has(id); n++) id = 'rpdata-' + day + '-' + n;
+  return id;
 }
 
 /* ═══ formatting + the derived numbers ═════════════════════════════════════ */
@@ -992,7 +1392,7 @@ function openImport(){ IM = null; renderImportPick(); $('#imModal').classList.ad
 function closeImport(){ $('#imModal').classList.remove('on'); IM = null; }
 function renderImportPick(note){
   $('#imBody').innerHTML = (note || '') +
-    '<div class="sc-drop" id="imDrop"><p style="margin:0 0 10px">Choose a city purchases workbook (.xlsx) — the one with the Summary page and the Total Purchases, Not Sold and Sold sheets.</p>' +
+    '<div class="sc-drop" id="imDrop"><p style="margin:0 0 10px">Choose a city purchases workbook (.xlsx) — the one with the Summary page and the Total Purchases, Not Sold and Sold sheets — or the IRR Calculator register (.json).</p>' +
     '<button type="button" class="sc-btn primary" id="imChoose">Choose file</button><p style="margin:10px 0 0;font-size:12px;color:var(--sc-mut)">Nothing is saved until you check the preview and click Import. The file is read in your browser.</p></div>';
   $('#imFoot').innerHTML = '<button type="button" class="sc-btn" id="imDone">Close</button>';
   $('#imChoose').onclick = () => { $('#imFile').value = ''; $('#imFile').click(); };
@@ -1003,6 +1403,7 @@ function renderImportPick(note){
   d.addEventListener('drop', e => { e.preventDefault(); d.classList.remove('over'); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) readImportFile(f); });
 }
 async function readImportFile(file){
+  if (/\.json$/i.test(file.name)) { readIrrFile(file); return; }
   if (!window.XLSX) { toast('The spreadsheet reader has not loaded', true); return; }
   $('#imBody').innerHTML = '<div class="sc-empty">Reading the workbook…</div>';
   $('#imFile').value = '';                          /* the same file can be picked again */
@@ -1017,22 +1418,39 @@ async function readImportFile(file){
     renderImportPick('<div class="sc-err">That file could not be read as a workbook.</div>');
   }
 }
+async function readIrrFile(file){
+  $('#imBody').innerHTML = '<div class="sc-empty">Reading the register…</div>';
+  $('#imFile').value = '';
+  let parsed = null;
+  try { parsed = parseIrrBook(JSON.parse(await file.text()), file.name); } catch (e) { parsed = null; }
+  if (!parsed) { renderImportPick('<div class="sc-err">That file is not an IRR Calculator register: no properties list was found in it.</div>'); return; }
+  await reload(true);
+  IM = { parsed, plan: planImport(parsed) };
+  renderImportPreview();
+}
 function renderImportPreview(){
   const { parsed, plan } = IM;
+  const irr = parsed.kind === 'irr', failed = parsed.failed.concat(plan.failed);
   const roleLabel = { total: 'Total Purchases', notsold: 'Not Sold', sold: 'Sold' };
-  const sheets = parsed.sheets.length ? '<div class="tw"><table><thead><tr><th>Sheet</th><th>Read as</th><th class="num">Header row</th><th class="num">Rows parsed</th><th class="num">Failed</th><th class="num">Properties taken</th></tr></thead><tbody>' +
+  const sheets = irr ? '' : parsed.sheets.length ? '<div class="tw"><table><thead><tr><th>Sheet</th><th>Read as</th><th class="num">Header row</th><th class="num">Rows parsed</th><th class="num">Failed</th><th class="num">Properties taken</th></tr></thead><tbody>' +
     parsed.sheets.map(s => '<tr data-sheet-role="' + esc(s.role) + '"><td>' + esc(s.name) + '</td><td>' + esc(roleLabel[s.role]) + '</td><td class="num">' + (s.headerRow || 'not found') + '</td><td class="num" data-c="parsed">' + (s.parsed + (s.covered || 0)) + '</td><td class="num" data-c="failed">' + s.failed + '</td><td class="num" data-c="taken">' + s.added + '</td></tr>').join('') + '</tbody></table></div>' +
     '<div style="font-size:12px;color:var(--sc-mut)">Not Sold and Sold are read first; Total Purchases only adds a property neither of them lists.</div>'
     : '<div class="sc-err">No Total Purchases, Not Sold or Sold sheet was found in this workbook.</div>';
-  const fails = parsed.failed.length ? '<div><b>Rows that failed to parse</b> (not imported — fix the cell in the sheet and import again)<div class="sc-fail" id="imFails">' +
-    parsed.failed.map(f => '<div>' + esc(f.sheet) + ' · row ' + f.row + ' · ' + esc(f.cols.join(', ')) + '</div>').join('') + '</div></div>' : '';
+  const fails = failed.length ? '<div><b>' + (irr ? 'Entries' : 'Rows') + ' that failed to parse</b> (not imported — fix ' + (irr ? 'the property in the IRR Calculator, export' : 'the cell in the sheet') + ' and import again)<div class="sc-fail" id="imFails">' +
+    failed.map(f => '<div>' + (f.entry ? 'entry ' + f.entry : esc(f.sheet) + ' · row ' + f.row) + ' · ' + esc(f.cols.join(', ')) + '</div>').join('') + '</div></div>' : '';
+  const head = irr
+    ? '<dt>Read as</dt><dd><b>IRR Calculator register</b></dd><dt>Capital cities</dt><dd>' + esc([...parsed.markets].map(([m, n]) => m + ' ' + n).join(' · ') || '—') + '</dd>' +
+      (parsed.outside ? '<dt>Set aside</dt><dd>' + parsed.outside + ' outside of advice, skipped</dd>' : '') +
+      (plan.respelt ? '<dt>Spelt differently</dt><dd>' + plan.respelt + ' matched a register address written another way</dd>' : '')
+    : '<dt>Market</dt><dd><b>' + esc(parsed.market) + '</b></dd>';
   $('#imBody').innerHTML = '<div class="sc-pv">' +
-    '<dl class="kv"><dt>File</dt><dd>' + esc(parsed.fileName) + '</dd><dt>Market</dt><dd><b>' + esc(parsed.market) + '</b></dd><dt>Properties</dt><dd>' + parsed.records.size + ' in the file' + (parsed.merged ? ' (' + parsed.merged + ' repeated rows merged)' : '') + '</dd>' +
+    '<dl class="kv"><dt>File</dt><dd>' + esc(parsed.fileName) + '</dd>' + head + '<dt>Properties</dt><dd>' + parsed.records.size + ' in the file' + (parsed.merged ? ' (' + parsed.merged + ' repeated ' + (irr ? 'entries' : 'rows') + ' merged)' : '') + '</dd>' +
       (parsed.blanked ? '<dt>Read as blank</dt><dd>' + parsed.blanked + ' sold price / sold date cell' + (parsed.blanked === 1 ? '' : 's') + ' held a note rather than a price or date</dd>' : '') + '</dl>' +
     sheets +
-    '<div class="sc-counts" id="imCounts"><div><b data-c="new">' + plan.inserts.length + '</b><span>New</span></div><div><b data-c="updated">' + plan.updates.length + '</b><span>Updated</span></div><div><b data-c="unchanged">' + plan.unchanged + '</b><span>Unchanged</span></div><div><b data-c="failed">' + parsed.failed.length + '</b><span>Failed</span></div></div>' +
+    '<div class="sc-counts" id="imCounts"><div><b data-c="new">' + plan.inserts.length + '</b><span>New</span></div><div><b data-c="updated">' + plan.updates.length + '</b><span>Updated</span></div><div><b data-c="unchanged">' + plan.unchanged + '</b><span>Unchanged</span></div><div><b data-c="failed">' + failed.length + '</b><span>Failed</span></div></div>' +
     fails +
-    '<div style="font-size:12px;color:var(--sc-mut)">Updates only fill or change fields the file has a value for — an empty cell never blanks the register, and a sold property is never moved back to held.' + (QA ? ' QA mode: rows are tagged qa.' : '') + '</div></div>';
+    '<div style="font-size:12px;color:var(--sc-mut)">Updates only fill or change fields the file has a value for — an empty cell never blanks the register, and a sold property is never moved back to held.' +
+      (irr ? ' The capital city becomes the market of a new property; a property already in the register keeps its market and, unless the register here says sold, its status.' : '') + (QA ? ' QA mode: rows are tagged qa.' : '') + '</div></div>';
   const n = plan.inserts.length + plan.updates.length;
   $('#imFoot').innerHTML = '<button type="button" class="sc-btn" id="imBack">Choose another file</button><button type="button" class="sc-btn primary" id="imGo"' + (n ? '' : ' disabled') + '>' + (n ? 'Import ' + n + ' propert' + (n === 1 ? 'y' : 'ies') : 'Nothing to import') + '</button>';
   $('#imBack').onclick = () => renderImportPick();
@@ -1043,7 +1461,7 @@ async function runImport(){
   const { parsed, plan } = IM;
   $('#imGo').disabled = true; $('#imBack').disabled = true; $('#imGo').textContent = 'Importing…';
   const who = S.email || null, file = parsed.fileName;
-  const ins = plan.inserts.map(r => { const o = {}; for (const k of REC_FIELDS) o[k] = r[k] == null ? null : r[k]; o.address_key = scKey(r.address); o.source = QA ? 'qa' : 'import'; o.import_file = file; o.created_by = who; o.updated_by = who; return o; });
+  const ins = plan.inserts.map(r => { const o = {}; for (const k of REC_FIELDS) o[k] = r[k] == null ? null : r[k]; o.status = o.status || 'held'; o.address_key = scKey(r.address); o.source = QA ? 'qa' : 'import'; o.import_file = file; o.created_by = who; o.updated_by = who; return o; });
   /* updates: the whole merged row, upserted on address_key (one request per
      chunk); created_* and source are left as they are */
   const ups = plan.updates.map(({ ex, patch }) => { const o = { id: ex.id, address: ex.address, address_key: ex.address_key }; for (const k of CMP_FIELDS) o[k] = k in patch ? patch[k] : (ex[k] == null ? null : ex[k]); o.import_file = file; o.updated_by = who; return o; });
@@ -1053,10 +1471,104 @@ async function runImport(){
     for (let i = 0; i < ups.length; i += 200) { const { error } = await sb.from('sold_check_properties').upsert(ups.slice(i, i + 200), { onConflict: 'address_key' }); if (error) throw error; done.updated += Math.min(200, ups.length - i); }
   } catch (e) { err = e; }
   await reload();
-  const summary = '<div class="' + (err ? 'sc-err' : 'sc-ok') + '" id="imResult">' + esc(parsed.market) + ' · ' + esc(file) + ': ' + done.inserted + ' new, ' + done.updated + ' updated, ' + plan.unchanged + ' unchanged, ' + parsed.failed.length + ' failed' + (err ? ' — stopped: ' + esc(err.message || String(err)) : '') + '.</div>';
+  const summary = '<div class="' + (err ? 'sc-err' : 'sc-ok') + '" id="imResult">' + esc(parsed.market) + ' · ' + esc(file) + ': ' + done.inserted + ' new, ' + done.updated + ' updated, ' + plan.unchanged + ' unchanged, ' + (parsed.failed.length + plan.failed.length) + ' failed' + (err ? ' — stopped: ' + esc(err.message || String(err)) : '') + '.</div>';
   IM = null;
-  renderImportPick(summary + '<p style="margin:12px 0 8px">Import another workbook, or close.</p>');
+  renderImportPick(summary + '<p style="margin:12px 0 8px">Import another file, or close.</p>');
   toast(err ? 'Import stopped — see the message' : 'Import done', !!err);
+}
+
+/* ═══ RP Data: build the bookmarklet, upload its results ═══════════════════ */
+const RP = { days: 30, market: '' };
+let RPU = null;     /* { file, runId, plan } for the results file on screen */
+function openRp(title){ $('#rpTitle').textContent = title; $('#rpFoot').innerHTML = ''; $('#rpModal').classList.add('on'); }
+function closeRp(){ $('#rpModal').classList.remove('on'); RPU = null; }
+async function openRpCheck(){
+  openRp('Check on RP Data');
+  $('#rpBody').innerHTML = '<div class="sc-empty">Reading the register…</div>';
+  await reload();                                   /* the work list from the register as it is now */
+  const mk = [...new Set(S.props.map(p => p.market).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  if (!mk.includes(RP.market)) RP.market = '';
+  $('#rpBody').innerHTML = '<div class="sc-pv">' +
+    '<div>Builds a bookmark that checks the held properties below on RP Data, in your own browser, signed in to RP Data as yourself. It carries only each property\'s register id, market, address and purchase date, and sends nothing anywhere: its results come back here as a CSV you upload.</div>' +
+    '<div class="sc-bar"><label class="sc-field"><span>Not checked in the last (days)</span><input id="rpDays" type="number" min="0" step="1" value="' + RP.days + '" style="width:120px"></label>' +
+      '<label class="sc-field"><span>Market</span><select id="rpMarket"><option value="">All markets</option>' + mk.map(m => '<option value="' + esc(m) + '"' + (m === RP.market ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select></label></div>' +
+    '<div class="sc-pv" id="rpOut"></div></div>';
+  $('#rpFoot').innerHTML = '<button type="button" class="sc-btn" id="rpDone">Close</button>';
+  $('#rpDone').onclick = closeRp;
+  $('#rpDays').addEventListener('input', e => { const n = Math.floor(+e.target.value); if (e.target.value !== '' && n >= 0) { RP.days = n; renderRpOut(); } });
+  $('#rpMarket').addEventListener('change', e => { RP.market = e.target.value; renderRpOut(); });
+  renderRpOut();
+}
+function renderRpOut(){
+  const { list, tally } = rpWorkList(RP.days, RP.market);
+  const t = new Date(), stamp = 'rpdata-' + t.getFullYear() + pad2(t.getMonth() + 1) + pad2(t.getDate()) + '-' + pad2(t.getHours()) + pad2(t.getMinutes());
+  const bms = list.length ? rpBookmarklets(list, stamp, 'RP Data ' + t.getDate() + ' ' + MONTHS[t.getMonth()]) : [];
+  const mins = n => { const m = Math.round(n * 9.5 / 60); return m < 90 ? 'about ' + Math.max(1, m) + ' min' : 'about ' + (m / 60).toFixed(1) + ' hours'; };
+  $('#rpOut').innerHTML =
+    '<div class="sc-counts" id="rpCounts"><div><b data-c="due">' + list.length + '</b><span>To check</span></div><div><b data-c="never">' + tally.never + '</b><span>Never checked</span></div>' +
+      '<div><b data-c="fresh">' + tally.fresh + '</b><span>Checked recently</span></div><div><b data-c="waiting">' + tally.waiting + '</b><span>Waiting in Verify</span></div></div>' +
+    '<div style="font-size:12px;color:var(--sc-mut);margin-top:6px">Held properties' + (RP.market ? ' in ' + esc(RP.market) : '') + ' not checked in the last ' + RP.days + ' day' + (RP.days === 1 ? '' : 's') + ', never-checked first. Checked-recently and waiting-in-Verify properties are left out.</div>' +
+    (!bms.length ? '<div class="sc-empty" style="padding:18px">Nothing to check with these settings.</div>' :
+      '<div><b>Drag ' + (bms.length > 1 ? 'each of these' : 'this') + ' to your bookmarks bar</b>' + (bms.length > 1 ? ' — the list is too long for one bookmark, so it comes in ' + bms.length + ' batches; run them one after another' : '') + '</div>' +
+      '<div class="sc-bms" id="rpBms">' + bms.map(b => '<div><a class="sc-bm" draggable="true" href="' + esc(b.href) + '" data-bm="' + esc(b.key) + '">Sold Check · ' + esc(b.label) + '</a><span>' + b.count + ' propert' + (b.count === 1 ? 'y' : 'ies') + ' · ' + mins(b.count) + '</span></div>').join('') + '</div>' +
+      '<ol class="sc-steps"><li>Show the bookmarks bar (Ctrl+Shift+B) and drag the button onto it.</li>' +
+        '<li>Open <b>rpp.corelogic.com.au</b> and sign in with your own RP Data login.</li>' +
+        '<li>Click the bookmark. A panel opens bottom-right and counts as it goes, about 8–10 seconds a property with a longer rest every 20. Keep that tab in front, or Chrome pauses it.</li>' +
+        '<li><b>Stop</b> in the panel stops after the current property. Clicking the bookmark again carries on where it stopped, even after a reload or on another day.</li>' +
+        '<li>When it finishes (or whenever you stop), click <b>Download results CSV</b>, then <b>Upload RP Data results</b> here. Sold and listed finds wait in Verify.</li></ol>' +
+      '<div style="font-size:12px;color:var(--sc-mut)">Each build is a new bookmark with its own progress. Delete it from the bar once its results are uploaded; the next build leaves out what was uploaded.</div>');
+}
+function openRpUpload(){ RPU = null; openRp('Upload RP Data results'); renderRpPick(); }
+function renderRpPick(note){
+  $('#rpBody').innerHTML = (note || '') +
+    '<div class="sc-drop" id="rpDrop"><p style="margin:0 0 10px">Choose the results CSV the RP Data bookmark downloaded.</p>' +
+    '<button type="button" class="sc-btn primary" id="rpChoose">Choose file</button><p style="margin:10px 0 0;font-size:12px;color:var(--sc-mut)">Nothing is saved until you check the preview and click Record. A property\'s status never changes here: sold and listed finds go to Verify.</p></div>';
+  $('#rpFoot').innerHTML = '<button type="button" class="sc-btn" id="rpDone">Close</button>';
+  $('#rpChoose').onclick = () => { $('#rpFile').value = ''; $('#rpFile').click(); };
+  $('#rpDone').onclick = closeRp;
+  const d = $('#rpDrop');
+  d.addEventListener('dragover', e => { e.preventDefault(); d.classList.add('over'); });
+  d.addEventListener('dragleave', () => d.classList.remove('over'));
+  d.addEventListener('drop', e => { e.preventDefault(); d.classList.remove('over'); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) readRpFile(f); });
+}
+async function readRpFile(file){
+  $('#rpBody').innerHTML = '<div class="sc-empty">Reading the results…</div>';
+  $('#rpFile').value = '';
+  let text;
+  try { text = await file.text(); } catch (e) { renderRpPick('<div class="sc-err">That file could not be read.</div>'); return; }
+  await reload(true);                               /* validate against the register as it is now */
+  const runId = rpRunId(S.results, todayIso());
+  const plan = planRpUpload(text, S.props, S.results, runId, S.email || 'rpdata');
+  if (plan.error) { renderRpPick('<div class="sc-err">' + esc(plan.error) + '</div>'); return; }
+  RPU = { file: file.name, runId, plan };
+  renderRpPreview();
+}
+function renderRpPreview(){
+  const { file, runId, plan } = RPU, n = v => plan.inserts.filter(r => r.verdict === v).length;
+  $('#rpBody').innerHTML = '<div class="sc-pv">' +
+    '<dl class="kv"><dt>File</dt><dd>' + esc(file) + '</dd><dt>Run</dt><dd><b>' + esc(runId) + '</b></dd><dt>To verify</dt><dd>' + (n('sold') + n('listed')) + ' sold or listed find' + (n('sold') + n('listed') === 1 ? '' : 's') + ' will wait in Verify</dd></dl>' +
+    '<div class="sc-counts" id="rpUpCounts">' + [['sold', 'Sold'], ['listed', 'Listed'], ['not_sold', 'Not sold'], ['unknown', 'Unknown']].map(([v, l]) => '<div><b data-c="' + v + '">' + n(v) + '</b><span>' + l + '</span></div>').join('') +
+      '<div><b data-c="skipped">' + plan.skipped.length + '</b><span>Skipped</span></div></div>' +
+    (plan.skipped.length ? '<div><b>Rows skipped</b> (not recorded)<div class="sc-fail" id="rpSkips">' + plan.skipped.map(s => '<div>line ' + s.line + ' · ' + esc(s.why) + '</div>').join('') + '</div></div>' : '') +
+    '<div style="font-size:12px;color:var(--sc-mut)">Each row becomes a check result in this run; the check time is when RP Data was read. Nothing about the property itself changes.</div></div>';
+  const k = plan.inserts.length;
+  $('#rpFoot').innerHTML = '<button type="button" class="sc-btn" id="rpBack">Choose another file</button><button type="button" class="sc-btn primary" id="rpGo"' + (k ? '' : ' disabled') + '>' + (k ? 'Record ' + k + ' result' + (k === 1 ? '' : 's') : 'Nothing to record') + '</button>';
+  $('#rpBack').onclick = () => renderRpPick();
+  $('#rpGo').onclick = runRpUpload;
+}
+async function runRpUpload(){
+  if (!RPU || !S.canw) return;
+  const { file, runId, plan } = RPU;
+  $('#rpGo').disabled = true; $('#rpBack').disabled = true; $('#rpGo').textContent = 'Recording…';
+  let done = 0, err = null;
+  try {
+    for (let i = 0; i < plan.inserts.length; i += 200) { const { error } = await sb.from('sold_check_results').insert(plan.inserts.slice(i, i + 200)); if (error) throw error; done += Math.min(200, plan.inserts.length - i); }
+  } catch (e) { err = e; }
+  await reload();
+  const toVerify = plan.inserts.slice(0, done).filter(r => r.verdict === 'sold' || r.verdict === 'listed').length;
+  RPU = null;
+  renderRpPick('<div class="' + (err ? 'sc-err' : 'sc-ok') + '" id="rpResult">' + esc(file) + ': ' + done + ' result' + (done === 1 ? '' : 's') + ' recorded as run ' + esc(runId) + ', ' + toVerify + ' to verify, ' + plan.skipped.length + ' skipped' + (err ? ' — stopped: ' + esc(err.message || String(err)) : '') + '.</div><p style="margin:12px 0 8px">Upload another file, or close.</p>');
+  toast(err ? 'Upload stopped — see the message' : 'Results recorded', !!err);
 }
 
 /* ═══ export ═══════════════════════════════════════════════════════════════ */
@@ -1131,6 +1643,12 @@ function wire(){
   $('#btnImport').addEventListener('click', () => { if (S.canw) openImport(); });
   $('#imFile').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; if (f) readImportFile(f); });
   $('#imClose').addEventListener('click', closeImport);
+  $('#btnRpCheck').addEventListener('click', () => { if (S.canw) openRpCheck(); });
+  $('#btnRpUpload').addEventListener('click', () => { if (S.canw) openRpUpload(); });
+  $('#rpClose').addEventListener('click', closeRp);
+  $('#rpFile').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; if (f) readRpFile(f); });
+  /* the bookmark runs on RP Data: a click here would run it on this page */
+  $('#rpBody').addEventListener('click', e => { if (e.target.closest('a[data-bm]')) { e.preventDefault(); toast('Drag it to your bookmarks bar — it runs on RP Data, not here'); } });
   $('#drClose').addEventListener('click', () => showDrawer(false));
   $('#drScrim').addEventListener('click', () => showDrawer(false));
   $('#cfNo').addEventListener('click', () => { $('#cfModal').classList.remove('on'); cfAction = null; });
@@ -1139,11 +1657,12 @@ function wire(){
     if (e.key !== 'Escape') return;
     if ($('#cfModal').classList.contains('on')) { $('#cfModal').classList.remove('on'); cfAction = null; }
     else if ($('#imModal').classList.contains('on')) closeImport();
+    else if ($('#rpModal').classList.contains('on')) closeRp();
     else if ($('#dr').classList.contains('on')) showDrawer(false);
   });
 }
 /* test hooks (pure functions only — no data) */
-window.SC_TEST = { scKey, parseMoney, parseDate, parseNumber, parseWorkbook };
+window.SC_TEST = { scKey, parseMoney, parseDate, parseNumber, parseWorkbook, parseIrrBook, parseCsv, planRpUpload, rpBookmarklets, rpPick, rpVerdict };
 boot();
 </script>
 </body>

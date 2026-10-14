@@ -210,9 +210,116 @@ The function is `security invoker`, so both updates run under the caller's RLS.
 10. The page uses the cdnjs SheetJS 0.18.5 build for both the import and the XLSX export (no header styling). Loading the
     `xlsx-js-style` build too would clash on `window.XLSX`.
 
+## 8. 2026-10-13 — the RP Data checker and the IRR register import
+
+Shaene's separate "Sold check" (her IRR Calculator: an RP Data bookmarklet writing to a Google Sheet through an Apps Script, read
+back by her tool) is merged into this tool. There is now one register and one review flow. No migration: the schema of 126 is
+unchanged.
+
+### 8.1 Check on RP Data (Checks tab, editors only)
+
+- **Work list** `rpWorkList(days, market)`: the `pending.mjs` rules in the page. Held only. A property is skipped when its newest
+  result is newer than `now − days` (default 30; 0 = everything), or when it has an unreviewed sold or listed result. Never-checked
+  first, then the oldest check, then market and address. Each entry is `{ id, market, address, purchase_date }` and nothing else.
+- **The bookmarklet** is built in the browser by `rpBookmarklets(list, stamp, label)`. The code is the source text of six page
+  functions (`rpAddr`, `rpSame`, `rpPick`, `rpVerdict`, `rpCsv`, `rpRun`), joined by `rpCode()` with indentation and full-line
+  `//` comments stripped, wrapped as `void (function(MKTS,DATA,META){…})(…)` and `encodeURIComponent`-ed. Those functions must
+  stay self-contained (no page globals).
+  - The list rides as one string: per property `id-hex*market-index*address*yyyymmdd`, joined by `~` (characters
+    `encodeURIComponent` leaves alone). The markets go in a separate array.
+  - **Size:** each link stays at or under `RP_MAX` = 60,000 characters. A longer list is split evenly into "(1 of n)" batches.
+    Measured: the code alone is about 18 KB; 300 invented properties fit one link (about 49 KB); 1,000 make 3 batches of about
+    52 KB.
+  - `META = { key, label }`: `key` = `rpdata-<yyyymmdd-hhmm>[-<b>of<n>]` names the resume store and the CSV file.
+  - It fetches nothing. Shaene's `irr_book` / `supabase-config.js` read and her Apps Script POST are gone. A test asserts that the
+    built text holds no `script.google.com`, `AKfycb`, `irr_book`, `supabase-config`, `docs.google.com`, `/exec`, `fetch(` or
+    `XMLHttpRequest`.
+- **Kept as Shaene wrote it:** `searchBox()` (`#crux-multi-locality-search`, else an input whose placeholder says address or
+  search), `typeInto()` (the native value setter plus an input event, for React), `waitFor()`, the `[role=option]` suggestions,
+  the `/property/` path wait, `readLastSold()` (text before Nearby / Similar), `readOnMarket()` (700 characters after "Copy";
+  For Sale / Under Offer / Under Contract / Auction / For Rent / Withdrawn; the latest "Advertisement Date"), and the pacing:
+  7 s plus up to 2.5 s of jitter, and 45 s every 20. `stopCheck` stays a global, and a Stop button sets it.
+- **Changed from hers:**
+  - The suggestion is **chosen**, not `opts[0]`. `rpPick` compares the register address with each suggestion through `rpAddr`
+    (her `splitAddr` without the 363 KB suburb list): unit, number, and the words with street types and directions shortened and
+    the state and postcode dropped. One side may stop short of the other, for an address written without its suburb. Tight =
+    the same unit and street type; loose forgives both (her `tightKey` / `looseKey`).
+  - The "Last Sold on" price is optional, so a withheld price is still a sale.
+  - Results go to the panel and site storage instead of the sheet.
+- **Verdict** `rpVerdict`:
+  - **sold:** the last sale date is after `purchase_date`. Confidence is the match's (high = a single suggestion, matched
+    exactly; medium = the one exact match among several; low = the street type differs), forced to low when the sale is within
+    90 days of the purchase.
+  - **listed:** For Sale / Under Offer / Under Contract / Auction, with the status and last advertised date in notes.
+  - **not_sold:** the last sale date equals `purchase_date`.
+  - **unknown:** everything else, with the reason in notes: no or no matching suggestion, several exact matches, a unit block
+    (register without a unit and RP Data offering units, or a different unit) with up to 6 candidates named, a page that did not
+    open, no sale, an unreadable date, a last sale before the purchase, or no purchase date.
+  - A newer sale wins over a listing; the listing goes in notes.
+- **Resume:** `localStorage['ppSoldCheck:'+key]` on the RP Data origin maps id → result row, written after every property. A
+  click skips the ids it holds; a click while running only shows the panel; a click when all are done offers the CSV.
+- **CSV** `rpCsv`: `id,verdict,sale_date,sale_price,source_url,confidence,notes,checked_at`, CRLF, quoted where needed.
+
+### 8.2 Upload RP Data results (Checks tab, editors only)
+
+`parseCsv` reads quotes, doubled quotes, commas and line breaks in quotes, and drops a BOM. `planRpUpload(text, props, results,
+runId, who)` validates each row as `record.mjs` does: a uuid in the register, the verdict set, confidence high/medium/low or
+empty, `sale_date` a real `YYYY-MM-DD`, a numeric price (`$` and commas allowed), an http(s) `source_url`, and a `checked_at`
+that parses and is not in the future. It also skips an id repeated in the file, and a result already stored for the same
+property and the same `checked_at`, so a double upload records nothing twice. Notes are cut to 2,000 characters.
+
+Each valid row is inserted into `sold_check_results` as `{ property_id, checked_by: <editor email>, checked_at: <from the CSV>,
+run_id, verdict, sale_date, sale_price, source_url, confidence, notes }`, in chunks of 200. **How a result is marked as RP
+Data's:** the run id `rpdata-<yyyy-mm-dd>` (`-2`, `-3` … when taken, `rpRunId`) plus the `rpp.corelogic.com.au` source link.
+Nothing is written to `sold_check_properties` (as `record.mjs`, the "last check" is the newest result). The preview counts sold
+/ listed / not_sold / unknown / skipped and lists each skipped row as "line N · reason".
+
+### 8.3 IRR register import (the Import dialog, `.json`)
+
+`parseIrrBook(obj, fileName)` accepts the `irr_book` body `{ properties, assumptions, rev }`, the row `{ body }` (body as an object
+or a JSON string) and the SQL editor's `[{ body }]`. It returns the workbook parser's shape with `kind:'irr'`, `outside`,
+`markets` and per-record `_entry`.
+
+- **Field map:**
+  - `name` → `address`
+  - `category` → `market`
+  - `purchasePrice` → `purchase_price`, `purchaseDate` → `purchase_date`
+  - `soldPrice` > 0 and `soldDate` (both) → `status='sold'`, `sold_price`, `sold_date`; otherwise `status` null, and an insert
+    writes `held`
+  - `note` → `comments`
+- **Not mapped:** her `id`, `outside` (the entry is skipped), `outsideReason`, `assumptions`, `rev`. Her `soldVerified` /
+  `soldLink` are not in the shared body, so they never arrive.
+- **Failures** (by entry number): no name, no digit in the address, no category, or an unreadable price or date.
+- **Repeats:** within the file, entries merge by `rpCanon` (the canonical spelling), with empty fields filled and sold winning.
+- `planImport` for `kind:'irr'`:
+  - An address missing from `address_key` is matched by `rpCanon` against the register ("spelt differently"). A canonical
+    spelling shared by two register rows fails the entry.
+  - `market` is never patched on an existing row.
+  - The workbook rules hold: an empty value never blanks, and sold is never moved back.
+- Rows are written as `source='import'` with `import_file` = the JSON file name.
+
+### 8.4 Decisions (Van can reverse any of these)
+
+11. **Batching** over a work-list file. Each bookmark carries its list and resumes on its own. A list too long for one 60,000
+    character link becomes "(1 of n)" bookmarks. *[Alternative: one fixed bookmarklet that asks for a downloaded work-list file.
+    It has no size limit, but adds a file step.]*
+12. **No migration.** The RP Data source is the run id prefix plus the source link. *[Alternative: a `source` column on
+    `sold_check_results`.]*
+13. `checked_at` comes from the CSV (when RP Data was read), not the upload time. That is what makes a double upload detectable.
+14. A sale within 90 days after the purchase date stays **sold** at **low** confidence. A last sale before the purchase date is
+    **unknown**, never not sold.
+15. Several suggestions with exactly one exact match → that one at medium confidence. More than one, or only units at the street
+    number → unknown with the candidates.
+16. The IRR import matches by canonical spelling as well, keeps existing markets, and never changes an existing status from a held
+    entry, because her register is spelt by another hand than Rachel's workbooks.
+
 ## Changelog
 
 - 2026-10-06 — built: migration 126 (two tables, `sold_check_key`, `sold_check_can_write`, `sold_check_confirm`), the tool
   (register, sold periods, drawer, add / edit / delete, import with preview, verify queue, checks tab, CSV / XLSX export), the
   two checker scripts and the runbook. QA used synthetic data only; the three real workbooks were previewed (counts only), not
   imported.
+- 2026-10-13 — Shaene's RP Data sold check merged in (§8): Check on RP Data (the bookmarklet built in the page from the work
+  list, batched, resumable, no network calls), Upload RP Data results (run `rpdata-<date>`, results only, never a property), and
+  the IRR Calculator register (.json) in the Import dialog. No migration. Tested with invented data only: Node tests, a mock RP
+  Data page, and the page with Supabase stubbed. Not yet run on RP Data itself.
