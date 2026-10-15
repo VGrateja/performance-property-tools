@@ -48,6 +48,10 @@ const htmlFiles = ['index.html'];
 for (const f of readdirSync(join(ROOT, 'tools'))) {
   if (f.endsWith('.html')) htmlFiles.push(join('tools', f));
 }
+//    + the public client pages (client/*.html, no sign-in) — they load shared/supabase-client.js too.
+for (const f of readdirSync(join(ROOT, 'client'))) {
+  if (f.endsWith('.html')) htmlFiles.push(join('client', f));
+}
 
 // 3. Rewrite (href|src)="…shared/<name>.(css|js)[?…]" → "…shared/<name>?v=<hash>".
 //    The \2 backreference makes the closing quote match the opening one so we
