@@ -280,6 +280,11 @@ const { data: snaps, error: snapErr } = await sb.from('forge_demand_snapshots')
 if (snapErr) { console.error('could not read snapshots: ' + snapErr.message); process.exit(1); }
 const SNAP = {};
 for (const s of snaps || []) SNAP[s.version] = { h: (s.data && s.data.houses) || {}, u: (s.data && s.data.units) || {} };
+/* Since Sep 2026 the Demand Score captures only on the Cotality basis
+   ('cot-YYYY-MM'), so a label with no SQM capture takes its Cotality one. The
+   two carry identical runway, population and listings (checked on 2026-08, all
+   36 markets), and the SQM one still wins wherever both exist. */
+for (const v of Object.keys(SNAP)) if (v.startsWith('cot-') && !SNAP[v.slice(4)]) SNAP[v.slice(4)] = SNAP[v];
 console.log('snapshot months carrying runway + population: ' + Object.keys(SNAP).length
   + ' (' + Object.keys(SNAP).sort()[0] + ' .. ' + Object.keys(SNAP).sort().pop() + ')');
 
