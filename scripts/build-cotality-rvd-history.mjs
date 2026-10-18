@@ -94,7 +94,8 @@
 // September 2026 — so October onward does not exist yet.
 //
 //   node scripts/build-cotality-rvd-history.mjs            # dry run
-//   node scripts/build-cotality-rvd-history.mjs --write    # upsert snapshots
+//   node scripts/build-cotality-rvd-history.mjs --write    # upsert snapshots (stored months stay frozen)
+//   node scripts/build-cotality-rvd-history.mjs --write --restate   # rebuild every month on today's inputs
 //   node scripts/build-cotality-rvd-history.mjs --dir=<folder of the exports>
 // =============================================================================
 import XLSX from 'xlsx';
@@ -428,7 +429,7 @@ for (const month of labels) {
   };
   const h = build(false), u = build(true);
   if (!h.list.length) { notes.push(month + ': nothing buildable'); continue; }
-  out.push({ version: 'rvdcot-' + month, label: labelOf(month), data: { houses: h.list, units: u.list }, _miss: h.missing, _data: dataMonth + (useLive ? ', live runway' : '') });
+  out.push({ version: 'rvdcot-' + month, label: labelOf(month), data: { houses: h.list, units: u.list }, _miss: h.missing, _data: dataMonth + (useLive ? ', live runway' : ''), _live: useLive });
 }
 
 /* The payload keys on the DISPLAY name the timeline uses. The slugs above are
@@ -438,6 +439,45 @@ const { data: regions } = await sb.from('rdp_regions').select('slug,name');
 const NAME = {}; for (const r of regions || []) NAME[r.slug] = r.name;
 for (const o of out) for (const grp of ['houses', 'units']) {
   for (const row of o.data[grp]) row.city = NAME[row.city] || row.city;
+}
+
+/* ── FROZEN HISTORY (Van, 2026-10-19) ──────────────────────────────────────
+   A rebuild used to RESTATE every past month: the VR projection runs on
+   TODAY's rdp_vr_forecast inputs (population, household size, supply), so each
+   month's refresh moved past demand scores 1-3 points in a few markets and a
+   chart shown to a client last month no longer matched this month's. Now a
+   month already stored keeps exactly its stored values; only months the store
+   does not hold yet are built -- plus any month stored from the LIVE runway
+   (its own capture did not exist yet), which is rebuilt once its capture lands.
+   A stored month missing from this build (an export absent from Downloads) is
+   kept, not dropped. --restate rebuilds every month on today's inputs. */
+const RESTATE = process.argv.includes('--restate');
+{
+  const { data: stored, error: storedErr } = await sb.from('forge_cotality').select('data').eq('id', ROW_ID).maybeSingle();
+  if (storedErr) { console.error('could not read the stored timeline: ' + storedErr.message); process.exit(1); }
+  const kept = {};
+  for (const m of (stored && stored.data && Array.isArray(stored.data.months) ? stored.data.months : [])) {
+    if (m && m.month && !m.liveRunway) kept[m.month] = m;
+  }
+  let frozen = 0, added = 0;
+  if (!RESTATE) {
+    for (const o of out) {
+      const k = kept[o.version.replace('rvdcot-', '')];
+      if (k) { o.data = { houses: k.houses, units: k.units }; o._data += ', kept as stored'; o._live = false; frozen++; }
+    }
+    const built = new Set(out.map(o => o.version.replace('rvdcot-', '')));
+    for (const [month, k] of Object.entries(kept)) {
+      if (built.has(month)) continue;
+      out.push({ version: 'rvdcot-' + month, label: k.label || labelOf(month), data: { houses: k.houses, units: k.units },
+        _miss: { rent3: [], dom: [], listings: [], pop: [], proj: [] }, _data: 'not in this build, kept as stored', _live: false });
+      added++;
+    }
+    out.sort((a, b) => a.version.localeCompare(b.version));
+  }
+  console.log(RESTATE
+    ? '\nRESTATING every month on today\'s inputs (--restate).'
+    : '\nfrozen history: ' + frozen + ' stored month(s) kept as stored, ' + added + ' stored month(s) not in this build kept, '
+      + (out.length - frozen - added) + ' month(s) built new.');
 }
 
 console.log('');
@@ -487,6 +527,7 @@ const payload = {
     label: o.label,
     houses: o.data.houses,
     units: o.data.units,
+    ...(o._live ? { liveRunway: true } : {}),
   })),
 };
 /* ── the monthly Cotality series itself, for the browser ──────────────────
