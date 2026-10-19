@@ -723,6 +723,7 @@ pp-os owes the mirror of §11, §12 and §13, including:
 
 ## Changelog
 
+- 2026-10-19 — Print / Save PDF on a final or archived file no longer re-stamps `compliance.reportAt`: the file keeps the "Report generated" date it was signed off with; a locked file with no date yet takes its sign-off date on its first print — `published.at` when it was published, else now — so the library PDF is not flagged as older (all 94 files were final, published, with no date); an active file still stamps on every print. pp-os mirror: `markReportGenerated` refuses a locked file that already has a date and the Web skips that stamp (pp-os fx3, item H). (Van: "leave the date as signed off")
 - 2026-10-12 — Saskia (§13.10): the investment summary's Acquisition costs line black again; the cash-flow tiles say "at the current bank rate" and "at the IC bank rate".
 - 2026-10-08 — The Presentation IR picker now prints the derived property grade (`propGradeOf`, via `_irPropGradeOf`) as "X Grade", not the raw stored value; display only, nothing rewritten (§13.1, §13.8). (Van)
 
