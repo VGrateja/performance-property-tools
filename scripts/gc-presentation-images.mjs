@@ -88,6 +88,13 @@ async function collectReferencedText() {
   if (error) throw new Error('read presentation_decks: ' + error.message);
   for (const row of (decks || [])) text += JSON.stringify(row.payload || {});
 
+  /* The nightly deck backups (mig 128, last 7 nights): an image only a backup
+     still uses must survive, or restoring that backup brings back a blank. */
+  try {
+    const { data } = await sb.from('presentation_deck_backups').select('payload');
+    for (const row of (data || [])) text += JSON.stringify(row.payload || {});
+  } catch (_) { /* table may not exist — ignore */ }
+
   /* Library tool state (separate from the dead legacy blob). Best-effort. */
   try {
     const { data } = await sb.from('presentations_state').select('payload');

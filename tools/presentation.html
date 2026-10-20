@@ -5791,10 +5791,13 @@ async function assignDeckToUser(deck, userId) {
   try {
     if (!deck._rowId) await _persistDeckRow(deck);
     if (!deck._rowId) return false;
-    const { error } = await window.sb.from('presentation_decks')
+    const { data: moved, error } = await window.sb.from('presentation_decks')
       .update({ owner_id: userId, visibility: 'private' })
-      .eq('id', deck._rowId);
+      .eq('id', deck._rowId)
+      .select('updated_at');
     if (error) { console.warn('Assign deck:', error); return false; }
+    /* the update moved updated_at — keep the save check in step (see _persistDeckRow) */
+    if (moved && moved[0] && moved[0].updated_at) deck._updatedAt = moved[0].updated_at;
     deck._ownerId    = userId;
     deck._visibility = 'private';
     _mirrorDecksLocal();
@@ -20418,11 +20421,23 @@ async function _persistDeckRow(deck) {
         }
       } catch (_) { /* guard read failed → fall through to the normal save */ }
     }
+    /* ── SAVE CHECK (Van 2026-10-20) ─────────────────────────────────────────
+       The whole deck is written as one block, so a tab holding an OLDER copy
+       (a second tab, the offline copy, a stale local mirror kept at hydrate)
+       used to overwrite newer work — the Stage 4 deck lost slides and had its
+       backgrounds scrambled this way on 2026-10-20. Write only if the row is
+       still the version this tab loaded (updated_at); otherwise write nothing
+       and tell the user to reload. Once refused, the deck stays refused until
+       a reload brings in the current version. */
+    if (deck._saveConflict) throw _deckConflictError();
+    if (!deck._updatedAt) { deck._saveConflict = true; throw _deckConflictError(); }
     const { data: upd, error } = await window.sb.from('presentation_decks')
       .update({ title: title, payload: payload, visibility: visibility })
       .eq('id', deck._rowId)
+      .eq('updated_at', deck._updatedAt)
       .select('updated_at');
     if (error) throw error;
+    if (!upd || !upd.length) { deck._saveConflict = true; throw _deckConflictError(); }
     /* keep the in-memory copy in step with the row — the PDF cache is keyed
        on updated_at, so a stale value here would point every cache lookup
        (and the export-through upload) at a path that no longer matches */
@@ -20441,6 +20456,13 @@ async function _persistDeckRow(deck) {
     if (deck._visibility == null) deck._visibility = visibility;
     _deckSaveSettled(deck, sig);
   }
+}
+
+/* A save refused because the cloud row moved on since this tab loaded it. */
+function _deckConflictError() {
+  const e = new Error('This presentation was changed elsewhere since this tab loaded it');
+  e.code = 'DECK_CONFLICT';
+  return e;
 }
 
 /* Remember what we just persisted (so the next identical save is skipped) and
@@ -20465,8 +20487,11 @@ async function _setDeckLocked(deck, on) {
   if (!deck || !deck._rowId || !window.sb) return false;
   try {
     const { data, error } = await window.sb.from('presentation_decks')
-      .update({ locked: !!on }).eq('id', deck._rowId).select('id, locked');
+      .update({ locked: !!on }).eq('id', deck._rowId).select('id, locked, updated_at');
     if (error) { console.warn('Deck lock:', error); return false; }
+    /* the update moved updated_at; keep this tab's copy current so the save
+       check does not refuse this tab's next edit */
+    if (Array.isArray(data) && data[0] && data[0].updated_at) deck._updatedAt = data[0].updated_at;
     return Array.isArray(data) && data.length > 0;
   } catch (e) { console.warn('Deck lock failed:', e); return false; }
 }
@@ -20509,7 +20534,7 @@ async function _doPresCloudSave() {
   _presSavePending  = false;
   _presSaveInFlight = true;
   _setPresSaveStatus('saving');
-  let failedAny = false;
+  let failedAny = false, conflictAny = false, refusedAny = false;
   try {
     const ids = Array.from(_dirtyDeckIds);
     _dirtyDeckIds.clear();
@@ -20534,12 +20559,25 @@ async function _doPresCloudSave() {
       try {
         await _persistDeckRow(deck);
       } catch (err) {
+        if (err && err.code === 'DECK_CONFLICT') {
+          /* not retried: a retry would be refused the same way until a reload */
+          refusedAny = true;
+          if (!deck._conflictToastShown) { conflictAny = true; deck._conflictToastShown = true; }
+          console.warn('[presentation] save check: not saved — deck', ids[i], 'changed elsewhere since this tab loaded it. Reload to get the current version.');
+          continue;
+        }
         failedAny = true;
         _dirtyDeckIds.add(ids[i]);   /* requeue for retry */
         console.warn('Deck save failed for', ids[i], (err && (err.message || err.code)) || err);
       }
     }
-    if (failedAny) {
+    if (refusedAny) {
+      _setPresSaveStatus('error');
+      if (conflictAny) showPresToast(
+        'Not saved — this presentation was changed in another tab or by someone else after you opened it. Reload the page to get the latest version before editing (this protects their changes).',
+        { duration: 12000, warn: true }
+      );
+    } else if (failedAny) {
       _setPresSaveStatus('error');
       showPresToast(
         'Cloud save failed — your changes may not survive a reload. Check the network connection.',

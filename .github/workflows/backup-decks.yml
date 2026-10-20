@@ -1,0 +1,58 @@
+# =============================================================================
+# Nightly presentation deck backup (mig 128, Van 2026-10-20).
+#
+# Copies every presentation_decks row into public.presentation_deck_backups
+# under today's day of the week (Sydney time). Each day's slot is overwritten
+# a week later, so the last 7 days are always kept and storage never grows
+# (~5 MB a night for all decks).
+#
+# Why: a deck is saved as one block, and a browser holding an older copy can
+# overwrite newer work (the Stage 4 deck, 2026-10-20). This lets one deck be
+# put back from any of the last 7 nights:
+#   node scripts/restore-deck-backup.mjs                       (list backups)
+#   node scripts/restore-deck-backup.mjs --deck "<title or id>" --day mon
+#   … add --write to restore (the current version is saved to scratch first)
+#
+# Triggers:
+#   • Daily at END OF DAY: 12:00 UTC = 11:00pm AEDT (10:00pm AEST in winter).
+#   • Manual workflow_dispatch from the Actions tab.
+#
+# Required GitHub Secrets (already set for the other workflows):
+#   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+# =============================================================================
+
+name: Backup Presentation Decks
+
+on:
+  schedule:
+    - cron: '0 12 * * *'   # 12:00 UTC = 11:00pm AEDT / 10:00pm AEST — end of the day
+  workflow_dispatch:
+
+concurrency:
+  group: backup-decks
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Back up every deck into today's slot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run backup_presentation_decks()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o result.json -w '%{http_code}' -X POST \
+            "$SUPABASE_URL/rest/v1/rpc/backup_presentation_decks" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          echo "HTTP $code: $(cat result.json)"
+          if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+            echo "::error::Deck backup failed (HTTP $code)"
+            exit 1
+          fi
+          # (an empty deck table is refused inside the function, so the slot is never emptied)
