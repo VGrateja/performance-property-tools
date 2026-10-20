@@ -60,6 +60,11 @@
       }
     }
     const g = (slug, metric, y) => { const m = idx[slug + '|' + metric]; return m && m[y] != null ? m[y] : null; };
+    // Natural Increase / NIM / NOM: capitals carry these at STATE level only, so a
+    // capital reads its state. A regional city has its own (LGA) series and must
+    // never borrow the state's figure for a year its own isn't published yet —
+    // that put NSW's 2026 totals (33,200 / −20,818 / 84,600) on Albury's chart.
+    const popComp = (metric, y) => idx[region + '|' + metric] ? g(region, metric, y) : g(state, metric, y);
     // commodity index: price / 1980-base × 100 (national mining_* series, like the report's "indexed" column)
     const cidx = (metric, yy) => { const v = g('australia', metric, yy), b = g('australia', metric, 1980); return (num(v) != null && num(b) && b !== 0) ? v / b * 100 : null; };
 
@@ -92,9 +97,9 @@
         som_h: g(region, 'som_h', y), som_u: g(region, 'som_u', y),
         vacancy_rate: g(region, 'vacancy_rate', y), rent_h: AD, rent_u: AE,
         pop_metro: AJ, pop_state: ALp, pop_national: AN,
-        natural_increase: g(region, 'natural_increase', y) ?? g(state, 'natural_increase', y),   // capitals carry these at state level
-        nim: g(region, 'nim', y) ?? g(state, 'nim', y),
-        nom: g(region, 'nom', y) ?? g(state, 'nom', y),
+        natural_increase: popComp('natural_increase', y),
+        nim: popComp('nim', y),
+        nom: popComp('nom', y),
         unemp_metro: g(region, 'unemployment', y), unemp_state: g(state, 'unemployment', y), unemp_national: g('australia', 'unemployment', y),
         approvals_h: g(region, 'approvals_h', y), approvals_u: g(region, 'approvals_u', y),
         capcity_benchmark: BW, capcity_benchmark_unit: BWu, inflation_rate: g('australia', 'inflation', y),
