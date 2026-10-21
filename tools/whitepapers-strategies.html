@@ -1052,6 +1052,25 @@
   .wsx-legend b{ color:var(--wsx-title); font-weight:700 }
   .wsx-ehead--video, .wsx-erow--video{ grid-template-columns:150px 1.4fr 1.7fr 1fr 90px 36px }
   .wsx-erow--video .wsx-field--wide{ grid-column:1 / -1 }
+  /* brochures (2026-10-21): no Length column, a page glyph instead of the play button, a tall PDF preview */
+  .wsx-ehead--doc, .wsx-erow--doc{ grid-template-columns:150px 1.4fr 1.7fr 1fr 36px }
+  .wsx-thumb--doc img{ object-position:top }
+  .wsx-thumb-doc svg{ width:24px; height:24px; fill:none; stroke:#fff; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round }
+  .wsx-vmodal-frame.wsx-vmodal-frame--doc{ aspect-ratio:auto; height:min(80vh, 900px) }   /* doubled class: must beat the 16:9 base rule further down */
+  /* brochure brands: an outlined tile in the thumbnail slot + a group heading (PPA purple, PFD teal, Wholesale yellow) */
+  .wsx-brand{ --b:#C445C4; border:2px solid var(--b) }
+  .wsx-brand span{ font-size:15px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--b) }
+  .wsx-brand--ppa{ --b:#C445C4 }
+  .wsx-brand--pfd{ --b:#00A0B4 }
+  .wsx-brand--wholesale{ --b:#FFA91F }
+  .wsx-brand--wholesale span{ font-size:12px }
+  .wsx-bhead{ --b:var(--wsx-sub); display:flex; align-items:baseline; gap:10px; margin-top:18px; padding:8px 14px 8px 12px; border-left:4px solid var(--b); font-size:12px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--wsx-sub) }
+  .wsx-bhead:first-child{ margin-top:0 }
+  .wsx-bhead b{ font-size:14px; font-weight:800; letter-spacing:.06em; color:var(--wsx-title) }
+  .wsx-bhead span{ margin-left:auto; letter-spacing:0; font-variant-numeric:tabular-nums }
+  .wsx-bhead--ppa{ --b:#C445C4 }
+  .wsx-bhead--pfd{ --b:#00A0B4 }
+  .wsx-bhead--wholesale{ --b:#FFA91F }
   .wsx-erow textarea{
     width:100%; min-height:56px; padding:8px 10px; border-radius:7px; display:block;
     background:var(--wsx-field-bg); border:1px solid var(--wsx-field-line); color:var(--wsx-title);
@@ -2407,7 +2426,15 @@ function _ensureSubsections(data) {
       subsections: [ { id: 'videos-sub', title: 'Videos', kind: 'video', items: [] } ] });
     addedVideos = true;
   }
-  if (stripped || splitHappened || renamedRl || addedVideos) {
+  /* Brochures folder (2026-10-21): PDF brochure links for the EAs and Advisors,
+     same model as Videos, opened from its own dock tile (?section=brochures). */
+  let addedBrochures = false;
+  if (!data.sections.some(sec => sec && sec.id === 'brochures')) {
+    data.sections.push({ id: 'brochures', icon: '📄', title: 'Brochures',
+      subsections: [ { id: 'brochures-sub', title: 'Brochures', kind: 'brochure', items: [] } ] });
+    addedBrochures = true;
+  }
+  if (stripped || splitHappened || renamedRl || addedVideos || addedBrochures) {
     /* Persist locally so the strip / split survives a hard reload even if
        cloud is offline. _scheduleCloudSave silently no-ops when
        _canWriteCloud is false (non-admin users); admins push the
@@ -2940,11 +2967,14 @@ function addItem(secIdx, subIdx) {
      subsection actually shows a Status field. */
   const seedStatus = (isStrategy || isWhitepaper) ? 'in-progress' : '';
   const isVideo = kind === 'video';
+  const isBrochure = kind === 'brochure';
   arr.push(isStrategy
     ? { title: '', url: '', slidesUrl: '', status: seedStatus, date: '' }
     : isVideo
       ? { title: '', url: '', blurb: '', category: '', duration: '', emailText: '', status: 'in-progress', date: _todayDmy() }   /* "Added" date = today */
-      : { title: '', url: '',                status: seedStatus, date: '' });
+      : isBrochure
+        ? { title: '', url: '', blurb: '', category: '', status: 'in-progress', date: _todayDmy() }   /* "Updated" date = today; moves when the link changes */
+        : { title: '', url: '',                status: seedStatus, date: '' });
   persist();
   renderAll();
   /* Focus the new card's title input so the user can start typing
@@ -3104,7 +3134,7 @@ function renderPicker() {
      tile here is a duplicate way in (Van 2026-08-24). The SECTIONS stay in
      WS_DATA — the widgets deep-link into them with ?section=<id> — only the
      tile is hidden, and only in view mode so the content stays maintainable. */
-  const WS_HIDDEN_TILES = ['whitepapers', 'strategies', 'videos'];
+  const WS_HIDDEN_TILES = ['whitepapers', 'strategies', 'videos', 'brochures'];
   WS_DATA.sections.forEach((section, idx) => {
     if (!_editMode && WS_HIDDEN_TILES.indexOf(section && section.id) >= 0) return;
     grid.appendChild(_renderTypeTile(idx, section));
@@ -4255,10 +4285,48 @@ function _wsxVideoInfo(url) {
     return { provider: 'drive', id: m[1], embed: 'https://drive.google.com/file/d/' + m[1] + '/preview', thumb: 'https://drive.google.com/thumbnail?id=' + m[1] + '&sz=w320' };
   return { provider: 'other', id: null, embed: null, thumb: null };
 }
+/* Brochures (2026-10-21) are the same folder with PDF links: a Drive file
+   previews through Drive, any other https link (e.g. a PDF on
+   docs.performanceproperty.com.au) is framed as-is. */
+function _wsxPdfInfo(url) {
+  const u = String(url || '').trim();
+  const m = u.match(/drive\.google\.com\/file\/d\/([A-Za-z0-9_-]+)/i);
+  if (m) return { provider: 'drive', id: m[1], embed: 'https://drive.google.com/file/d/' + m[1] + '/preview', thumb: 'https://drive.google.com/thumbnail?id=' + m[1] + '&sz=w320' };
+  /* #view=Fit&navpanes=0: Chrome's viewer otherwise opens its thumbnail sidebar
+     and zooms the page wider than the frame, pushing it off-centre */
+  return { provider: 'other', id: null, embed: /^https:\/\/\S+$/i.test(u) ? (u.indexOf('#') < 0 ? u + '#view=Fit&navpanes=0' : u) : null, thumb: null };
+}
+/* Brochures come in families (Van, 2026-10-21): the title's first word says
+   which, so the list groups by it and each row carries a coloured brand tile
+   instead of a thumbnail — PPA / PFD / Wholesale readable at a glance. */
+const _WSX_BRANDS = [
+  { key: 'ppa',       code: 'PPA',       name: 'Performance Property', re: /^PPA\b[\s:–-]*/i },
+  { key: 'pfd',       code: 'PFD',       name: 'Property for Doctors', re: /^PFD\b[\s:–-]*/i },
+  { key: 'wholesale', code: 'Wholesale', name: 'Wholesale',            re: /^Wholesale\b[\s:–-]*/i }
+];
+function _wsxBrand(item) { const t = String(item.title || '').trim(); return _WSX_BRANDS.find(b => b.re.test(t)) || null; }
+/* the title without its brand word, since the tile already says it */
+function _wsxBrandTitle(item, brand) { const t = String(item.title || '').trim(); return (brand && t.replace(brand.re, '')) || t; }
+/* what differs between the Videos and Brochures folders */
+const _WSX_LINK_KINDS = {
+  video: { noun: 'video', Noun: 'Video', info: _wsxVideoInfo, doc: false, mail: true, pin: true, brands: false, dateLabel: 'Added', copyTitle: 'Copy the video link',
+           urlHead: 'Video URL<small>YouTube · Vimeo · Loom · Drive</small>', filter: 'Filter videos', empty: 'No videos yet.',
+           legend: '<b>Copy email</b> puts the approved wording and the link on your clipboard — paste it into your email. <b>Preview</b> plays it here.',
+           previewTip: 'Play here without leaving the hub',
+           note: 'Changes save as you type. Paste the share link of the video (YouTube, Vimeo, Loom or Google Drive) — the thumbnail and Preview come from it. "Copy email" uses the wording you type, or the title + blurb + link when you leave it empty.' },
+  brochure: { noun: 'brochure', Noun: 'Brochure', info: _wsxPdfInfo, doc: true, mail: false, pin: false, brands: true, dateLabel: 'Updated', copyTitle: 'Copy the brochure link',
+           urlHead: 'PDF link<small>Google Drive or a direct PDF link</small>', filter: 'Filter brochures', empty: 'No brochures yet.',
+           legend: '<b>Preview</b> opens the PDF here. <b>Copy link</b> puts the link on your clipboard, ready to send.',
+           previewTip: 'Read it here without leaving the hub',
+           note: 'Changes save as you type. Start the title with PPA, PFD or Wholesale — that picks the group and the coloured tile. Paste the link to the PDF (a Google Drive share link, or a direct link to the file) — Preview comes from it. When a brochure is replaced, paste the new link over the old one: the "Updated" date moves to today.' }
+};
+function _wsxLinkKind(section) { return _WSX_LINK_KINDS[section && section.id === 'brochures' ? 'brochure' : 'video']; }
 const _wsxVimeoThumbs = {};
-function _wsxThumb(info) {
-  const box = document.createElement('div'); box.className = 'wsx-thumb';
-  box.innerHTML = '<span class="wsx-thumb-play" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>';
+function _wsxThumb(info, doc) {
+  const box = document.createElement('div'); box.className = 'wsx-thumb' + (doc ? ' wsx-thumb--doc' : '');
+  box.innerHTML = doc
+    ? '<span class="wsx-thumb-doc" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 12h6M9 16h5"/></svg></span>'
+    : '<span class="wsx-thumb-play" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>';
   const setImg = src => {
     if (!src) return;
     const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy'; img.referrerPolicy = 'no-referrer';
@@ -4304,23 +4372,23 @@ function _wsxClosePreview() {
   _wsxVModal.remove(); _wsxVModal = null;
   document.body.classList.remove('wsx-vmodal-open');
 }
-function _wsxPreview(item, info) {
+function _wsxPreview(item, info, K) {
   _wsxClosePreview();
   const m = document.createElement('div');
-  m.className = 'wsx-vmodal'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true'); m.setAttribute('aria-label', 'Preview: ' + (item.title || 'video'));
+  m.className = 'wsx-vmodal'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true'); m.setAttribute('aria-label', 'Preview: ' + (item.title || K.noun));
   m.innerHTML = '<div class="wsx-vmodal-card">' +
-    '<div class="wsx-vmodal-head"><span class="wsx-vmodal-title">' + _esc(item.title || 'Video') + '</span>' +
+    '<div class="wsx-vmodal-head"><span class="wsx-vmodal-title">' + _esc(item.title || K.Noun) + '</span>' +
     '<a class="wsx-vmodal-open" href="' + _esc(item.url) + '" target="_blank" rel="noopener noreferrer">Open in new tab ›</a>' +
     '<button type="button" class="wsx-vmodal-close" aria-label="Close preview">×</button></div>' +
-    '<div class="wsx-vmodal-frame"><iframe src="' + _esc(info.embed) + '" title="' + _esc(item.title || 'Video') + '" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade"></iframe></div></div>';
+    '<div class="wsx-vmodal-frame' + (K.doc ? ' wsx-vmodal-frame--doc' : '') + '"><iframe src="' + _esc(info.embed) + '" title="' + _esc(item.title || K.Noun) + '" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="no-referrer-when-downgrade"></iframe></div></div>';
   m.addEventListener('click', e => { if (e.target === m || e.target.closest('.wsx-vmodal-close')) _wsxClosePreview(); });
   const onKey = e => { if (e.key === 'Escape') { _wsxClosePreview(); document.removeEventListener('keydown', onKey); } };
   document.addEventListener('keydown', onKey);
   document.body.appendChild(m); _wsxVModal = m; document.body.classList.add('wsx-vmodal-open');
   const c = m.querySelector('.wsx-vmodal-close'); if (c) c.focus();
 }
-function _wsxVideoRow(item) {
-  const state = _wsxVideoState(item), info = _wsxVideoInfo(item.url);
+function _wsxVideoRow(item, K) {
+  const state = _wsxVideoState(item), info = K.info(item.url);
   const row = document.createElement('div');
   row.className = 'wsx-row wsx-row--video wsx-row--' + state;
   const status = item.status || 'in-progress';
@@ -4328,7 +4396,13 @@ function _wsxVideoRow(item) {
   dot.className = 'wsx-dot wsx-dot--' + status; dot.title = _statusLabel(status);
   dot.setAttribute('role', 'img'); dot.setAttribute('aria-label', 'Status: ' + _statusLabel(status));
   row.appendChild(dot);
-  row.appendChild(_wsxThumb(info));
+  const brand = K.brands ? _wsxBrand(item) : null;
+  if (brand) {
+    const tile = document.createElement('div');
+    tile.className = 'wsx-thumb wsx-brand wsx-brand--' + brand.key; tile.title = brand.name;
+    tile.innerHTML = '<span>' + _esc(brand.code) + '</span>';
+    row.appendChild(tile);
+  } else row.appendChild(_wsxThumb(info, K.doc));
   const main = document.createElement('div'); main.className = 'wsx-main';
   let titleEl;
   if (state === 'normal') {
@@ -4338,13 +4412,13 @@ function _wsxVideoRow(item) {
     titleEl = document.createElement('span');
     titleEl.className = 'wsx-title wsx-title--faint';
   }
-  titleEl.textContent = item.title || 'Untitled';
+  titleEl.textContent = (brand ? _wsxBrandTitle(item, brand) : item.title) || 'Untitled';
   if (item.category) { const chip = document.createElement('span'); chip.className = 'wsx-chip'; chip.textContent = item.category; titleEl.appendChild(chip); }
   main.appendChild(titleEl);
   const bits = [];
   if (item.duration) bits.push(String(item.duration));
   if (info.provider !== 'other') bits.push({ youtube: 'YouTube', vimeo: 'Vimeo', loom: 'Loom', drive: 'Google Drive' }[info.provider]);
-  const date = _itemDate(item); if (date) bits.push('Added ' + date);
+  const date = _itemDate(item); if (date) bits.push(K.dateLabel + ' ' + date);
   if (state === 'unavailable') bits.length = 0, bits.push('No link yet');
   const subEl = document.createElement('span');
   subEl.className = 'wsx-sub' + (state === 'normal' ? '' : ' wsx-sub--faint');
@@ -4354,53 +4428,55 @@ function _wsxVideoRow(item) {
   row.appendChild(main);
   const acts = document.createElement('div'); acts.className = 'wsx-acts';
   if (state === 'updating') {
-    row.title = 'This video is being updated';
+    row.title = 'This ' + K.noun + ' is being updated';
     acts.innerHTML = '<span class="wsx-lock">' + _wsxSvg('lock') + 'Being updated</span>';
   } else if (state === 'normal') {
     if (info.embed) {
       const pv = document.createElement('button');
-      pv.type = 'button'; pv.className = 'wsx-preview'; pv.title = 'Play here without leaving the hub';
+      pv.type = 'button'; pv.className = 'wsx-preview'; pv.title = K.previewTip;
       pv.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Preview';
-      pv.addEventListener('click', e => { e.preventDefault(); _wsxPreview(item, info); });
+      pv.addEventListener('click', e => { e.preventDefault(); _wsxPreview(item, info, K); });
       acts.appendChild(pv);
       const d = document.createElement('span'); d.className = 'wsx-divider'; d.setAttribute('aria-hidden', 'true'); acts.appendChild(d);
     }
-    acts.appendChild(_wsxCopyBtn(item.url, 'Copy the video link', item.title));
-    acts.appendChild(_wsxMailBtn(item));
-    const pin = _wsxPinBtn(item.url, item.title);
+    acts.appendChild(_wsxCopyBtn(item.url, K.copyTitle, item.title));
+    if (K.mail) acts.appendChild(_wsxMailBtn(item));
+    const pin = K.pin && _wsxPinBtn(item.url, item.title);
     if (pin) acts.appendChild(pin);
   }
   row.appendChild(acts);
   return row;
 }
 /* edit mode — one grid row per video, blurb + email wording on a second line */
-function _wsxEditVideoHead() {
+function _wsxEditVideoHead(K) {
   const h = document.createElement('div');
-  h.className = 'wsx-ehead wsx-ehead--video';
-  h.innerHTML = '<div>Status</div><div>Title</div><div>Video URL<small>YouTube · Vimeo · Loom · Drive</small></div><div>Category</div><div>Length</div><div></div>';
+  h.className = 'wsx-ehead wsx-ehead--video' + (K.doc ? ' wsx-ehead--doc' : '');
+  h.innerHTML = '<div>Status</div><div>Title</div><div>' + K.urlHead + '</div><div>Category</div>' + (K.doc ? '' : '<div>Length</div>') + '<div></div>';
   return h;
 }
-function _wsxEditVideoRow(secIdx, subIdx, itemIdx, item, isNew) {
+function _wsxEditVideoRow(secIdx, subIdx, itemIdx, item, isNew, K) {
   const row = document.createElement('div');
-  row.className = 'wsx-erow wsx-erow--video' + (isNew ? ' wsx-erow--new' : '');
+  row.className = 'wsx-erow wsx-erow--video' + (K.doc ? ' wsx-erow--doc' : '') + (isNew ? ' wsx-erow--new' : '');
   const field = (inner, cls) => '<div class="wsx-field' + (cls ? ' ' + cls : '') + '">' + inner + '</div>';
   let html = field('<select data-field="status" aria-label="Status">' + _statusOptionsHtml(item.status || 'in-progress') + '</select>');
   html += field('<input type="text" data-field="title" value="' + _esc(item.title || '') + '" placeholder="Title" aria-label="Title">', 'wsx-field--title');
-  html += field('<input type="url" data-field="url" class="' + (item.url ? '' : 'is-draft') + '" value="' + _esc(item.url || '') + '" placeholder="https://…" aria-label="Video URL">');
+  html += field('<input type="url" data-field="url" class="' + (item.url ? '' : 'is-draft') + '" value="' + _esc(item.url || '') + '" placeholder="https://…" aria-label="' + K.Noun + ' URL">');
   html += field('<input type="text" data-field="category" value="' + _esc(item.category || '') + '" placeholder="e.g. Buying" aria-label="Category">');
-  html += field('<input type="text" data-field="duration" value="' + _esc(item.duration || '') + '" placeholder="4:32" aria-label="Length">');
+  if (!K.doc) html += field('<input type="text" data-field="duration" value="' + _esc(item.duration || '') + '" placeholder="4:32" aria-label="Length">');
   row.innerHTML = html;
   const rm = document.createElement('button');
   rm.type = 'button'; rm.className = 'wsx-remove'; rm.innerHTML = _wsxSvg('trash');
-  rm.title = 'Remove'; rm.setAttribute('aria-label', 'Remove ' + (item.title || 'this video'));
+  rm.title = 'Remove'; rm.setAttribute('aria-label', 'Remove ' + (item.title || 'this ' + K.noun));
   rm.addEventListener('click', () => _wsxRemoveItem(secIdx, subIdx, itemIdx));
   row.appendChild(rm);
   const wide = document.createElement('div'); wide.className = 'wsx-field wsx-field--wide';
-  wide.innerHTML = '<textarea data-field="blurb" placeholder="One or two lines the EAs can read at a glance — also the default email wording" aria-label="Blurb">' + _esc(item.blurb || '') + '</textarea>';
+  wide.innerHTML = '<textarea data-field="blurb" placeholder="One or two lines the EAs can read at a glance' + (K.mail ? ' — also the default email wording' : '') + '" aria-label="Blurb">' + _esc(item.blurb || '') + '</textarea>';
   row.appendChild(wide);
-  const mail = document.createElement('div'); mail.className = 'wsx-field wsx-field--wide';
-  mail.innerHTML = '<textarea data-field="emailText" placeholder="Optional: exact email wording for Copy email ({title} and {url} are filled in). Leave empty to use title + blurb + link." aria-label="Email wording">' + _esc(item.emailText || '') + '</textarea>';
-  row.appendChild(mail);
+  if (K.mail) {
+    const mail = document.createElement('div'); mail.className = 'wsx-field wsx-field--wide';
+    mail.innerHTML = '<textarea data-field="emailText" placeholder="Optional: exact email wording for Copy email ({title} and {url} are filled in). Leave empty to use title + blurb + link." aria-label="Email wording">' + _esc(item.emailText || '') + '</textarea>';
+    row.appendChild(mail);
+  }
   _wireEditCardFields(row, secIdx, subIdx, itemIdx);   /* autosave: input → item[field] → persist() */
   const inp = row.querySelector('input[type="url"]');
   const check = () => {
@@ -4414,9 +4490,18 @@ function _wsxEditVideoRow(secIdx, subIdx, itemIdx, item, isNew) {
   };
   inp.addEventListener('blur', check);
   inp.addEventListener('input', () => inp.classList.toggle('is-draft', !inp.value.trim()));
+  /* a brochure's "Updated" date follows its link: pasting a new PDF link dates it today */
+  if (K.doc) {
+    let was = String(item.url || '').trim();
+    inp.addEventListener('change', () => {
+      const v = inp.value.trim(), it = _itemAt(secIdx, subIdx, itemIdx);
+      if (!it || !v || v === was) return;
+      was = v; it.date = _todayDmy(); persist();
+    });
+  }
   return row;
 }
-function _wsxEditVideoSubsection(secIdx, subIdx, sub, editableName) {
+function _wsxEditVideoSubsection(secIdx, subIdx, sub, editableName, K) {
   const frag = document.createDocumentFragment();
   if (editableName) {
     const wrap = document.createElement('div'); wrap.className = 'wsx-secname';
@@ -4427,31 +4512,32 @@ function _wsxEditVideoSubsection(secIdx, subIdx, sub, editableName) {
   }
   const list = document.createElement('div');
   list.className = 'wsx-list'; list.id = _gridIdFor(secIdx, subIdx);
-  list.appendChild(_wsxEditVideoHead());
+  list.appendChild(_wsxEditVideoHead(K));
   const items = sub.items || [];
   const lastIdx = items.length - 1;
   const isNew = i => i === lastIdx && !String(items[i].title || '').trim();
   const rows = items.map((it, itemIdx) => ({ it: it, itemIdx: itemIdx }));
   const sorted = rows.filter(r => !isNew(r.itemIdx)).sort((a, b) => String(a.it.title || '').localeCompare(String(b.it.title || '')));
   if (items.length && isNew(lastIdx)) sorted.push(rows[lastIdx]);
-  sorted.forEach(r => list.appendChild(_wsxEditVideoRow(secIdx, subIdx, r.itemIdx, r.it, isNew(r.itemIdx))));
+  sorted.forEach(r => list.appendChild(_wsxEditVideoRow(secIdx, subIdx, r.itemIdx, r.it, isNew(r.itemIdx), K)));
   frag.appendChild(list);
   const add = document.createElement('button');
-  add.type = 'button'; add.className = 'wsx-add'; add.textContent = '+ Add video';
+  add.type = 'button'; add.className = 'wsx-add'; add.textContent = '+ Add ' + K.noun;
   add.addEventListener('click', () => addItem(secIdx, subIdx));
   frag.appendChild(add);
   return frag;
 }
 function _wsxRenderVideos(secIdx, section) {
+  const K = _wsxLinkKind(section);
   const wrap = document.createElement('div');
   wrap.className = 'wsx wsx--videos';
   if (_wsxQuery.sec !== section.id) _wsxQuery = { sec: section.id, q: '' };
   if (!_wsxPinsHooked && window.PP_PINS && PP_PINS.onChange) { try { PP_PINS.onChange(_wsxSyncPins); _wsxPinsHooked = true; } catch (_) {} }
   const subs = section.subsections || [];
   if (_editMode) {
-    subs.forEach((sub, subIdx) => wrap.appendChild(_wsxEditVideoSubsection(secIdx, subIdx, sub, subs.length > 1)));
+    subs.forEach((sub, subIdx) => wrap.appendChild(_wsxEditVideoSubsection(secIdx, subIdx, sub, subs.length > 1, K)));
     const note = document.createElement('div'); note.className = 'wsx-enote';
-    note.textContent = 'Changes save as you type. Paste the share link of the video (YouTube, Vimeo, Loom or Google Drive) — the thumbnail and Preview come from it. "Copy email" uses the wording you type, or the title + blurb + link when you leave it empty.';
+    note.textContent = K.note;
     wrap.appendChild(note);
     return wrap;
   }
@@ -4464,14 +4550,26 @@ function _wsxRenderVideos(secIdx, section) {
     const list = document.createElement('div'); list.className = 'wsx-list';
     const visible = all.filter(r => _wsxMatch(r.it));
     let shown = 0;
-    if (!all.length) list.innerHTML = '<div class="wsx-empty">No videos yet.</div>';
+    if (!all.length) list.innerHTML = '<div class="wsx-empty">' + K.empty + '</div>';
     else if (!visible.length) list.innerHTML = '<div class="wsx-nomatch">No matches for “' + _esc(_wsxQuery.q.trim()) + '”</div>';
-    else { visible.forEach(r => list.appendChild(_wsxVideoRow(r.it))); shown = visible.length; }
+    else if (K.brands) {
+      /* one group per brand, in _WSX_BRANDS order; titles without a brand word last */
+      _WSX_BRANDS.concat([null]).forEach(b => {
+        const rows = visible.filter(r => _wsxBrand(r.it) === b);
+        if (!rows.length) return;
+        const head = document.createElement('div');
+        head.className = 'wsx-bhead' + (b ? ' wsx-bhead--' + b.key : '');
+        head.innerHTML = (b ? '<b>' + _esc(b.code) + '</b>' + (b.name !== b.code ? _esc(b.name) : '') : 'Other') + '<span>' + rows.length + '</span>';
+        list.appendChild(head);
+        rows.forEach(r => list.appendChild(_wsxVideoRow(r.it, K)));
+      });
+      shown = visible.length;
+    }
+    else { visible.forEach(r => list.appendChild(_wsxVideoRow(r.it, K))); shown = visible.length; }
     body.appendChild(list);
-    body.appendChild(_wsxFooter(all.length, shown, 'video'));
+    body.appendChild(_wsxFooter(all.length, shown, K.noun));
   };
-  wrap.appendChild(_wsxToolbar('Filter videos', build,
-    '<b>Copy email</b> puts the approved wording and the link on your clipboard — paste it into your email. <b>Preview</b> plays it here.'));
+  wrap.appendChild(_wsxToolbar(K.filter, build, K.legend));
   wrap.appendChild(body);
   build();
   return wrap;
@@ -4545,7 +4643,7 @@ function renderSectionView() {
   }
 
   /* VIDEOS — the EA team's video links (2026-08-28), view AND edit mode. */
-  if (section.id === 'videos') {
+  if (section.id === 'videos' || section.id === 'brochures') {
     root.appendChild(_wsxRenderVideos(_currentSecIdx, section));
     return;
   }
@@ -4622,7 +4720,8 @@ const WS_WIDGET_NAMES = {
   'research-links': 'PDF Reports',
   'whitepapers':    'Whitepapers',
   'strategies':     'Strategies & Frameworks',
-  'videos':         'Videos'
+  'videos':         'Videos',
+  'brochures':      'Brochures'
 };
 function _wsSetChromeName(txt) {
   try { const n = document.querySelector('.ab-id .nm'); if (n && txt) n.textContent = txt; } catch (e) {}
@@ -4639,8 +4738,8 @@ function _setPageHeader(view, section) {
        hidden because each has its own dock widget. Say so, rather than
        listing tiles that are not on screen. */
     if (sub)     sub.textContent     = _editMode
-      ? 'Pick a document type to browse. Whitepapers, Strategies & Frameworks and Videos are hidden in view mode — each has its own desktop widget.'
-      : 'PDF reports for every market. Whitepapers, Strategies & Frameworks and Videos each open from their own widget on the desktop.';
+      ? 'Pick a document type to browse. Whitepapers, Strategies & Frameworks, Brochures and Videos are hidden in view mode — each has its own desktop widget.'
+      : 'PDF reports for every market. Whitepapers, Strategies & Frameworks, Brochures and Videos each open from their own widget on the desktop.';
   } else {
     /* Inside a type — header reflects the current section so the
        user always knows where they are. */
