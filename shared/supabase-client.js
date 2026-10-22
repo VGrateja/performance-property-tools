@@ -25,10 +25,10 @@
   'use strict';
 
   const SUPABASE_URL = 'https://cannojsxduvlewimwoxa.supabase.co';
-  /* Legacy anon JWT (role=anon, iss=supabase) rather than the newer
-     publishable key format. Kept after the freeze investigation (that
-     sign-in freeze is CLOSED; docs/BUG.md was removed 2026-07-31). */
-  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhbm5vanN4ZHV2bGV3aW13b3hhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwMzQ4MzQsImV4cCI6MjA5MzYxMDgzNH0.BQNkOTZHgmTEP1jONfRxD1-Db2rLgdIt82zbAsPxb0s';
+  /* Publishable key (sb_publishable_…): the project's legacy anon/service_role
+     JWT keys were disabled on 2026-10-22, so the page uses the new public key.
+     (May 2026's sign-in freeze hung with either key — not key-related.) */
+  const SUPABASE_KEY = 'sb_publishable_jh6BXfpWTkijbI_L31nslg_eoWhNcLf';
 
   if (!window.supabase || typeof window.supabase.createClient !== 'function') {
     console.error(
