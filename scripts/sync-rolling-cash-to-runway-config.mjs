@@ -1,6 +1,9 @@
 // ============================================================================
 // sync-rolling-cash-to-runway-config.mjs — keep the Runway forecast cash rate
-// equal to the rolling 216-month average of the RBA cash rate (Van 2026-08-11).
+// equal to the rolling 228-month (19-year) average of the RBA cash rate over
+// COMPLETED months (Van 2026-08-11; 18 -> 19 years by IC decision 2026-10-22).
+// "Completed" = before the current Sydney calendar month, exactly as the IC's
+// "Other Data Auto Gathering" sheet computes it (Oct 2007 - Sep 2026 = 2.87%).
 //
 // Since Mar 2026 the PP IC's forecast method IS the rolling average, but the
 // number lived in rdp_runway_config as a hand-typed assumption: the GATHER
@@ -10,7 +13,7 @@
 // discretionary IC number typed into the Runway Workbook's Assumptions panel
 // will be overwritten at the next PUBLISH.
 //
-// Writes rdp_runway_config key='rates': forecast.cash = avg216 (rounded to
+// Writes rdp_runway_config key='rates': forecast.cash = avg228 (rounded to
 // 2dp of percent, matching how the IC adopted it — so it only moves on a
 // genuine basis-point shift) and forecast.rate = cash + margin + apra.
 // Margin / APRA / current-side values are never touched.
@@ -20,7 +23,7 @@
 // (display re-rate basis, fetched at boot).
 //
 // Dry-run by default; --write applies. Fails loudly if the cash series is
-// short (<216 months) or the average is implausible.
+// short (<228 completed months) or the average is implausible.
 // ============================================================================
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync, existsSync } from 'node:fs';
@@ -29,15 +32,17 @@ if (existsSync('.env')) for (const ln of readFileSync('.env', 'utf8').split(/\r?
 const WRITE = process.argv.includes('--write');
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 
+const MONTHS = 228;   // 19 years (IC 2026-10-22; was 216 = 18 years)
+const thisMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit' }).format(new Date()) + '-01';
 const { data: rows, error: rerr } = await sb.from('rdp_raw_series').select('period,value')
-  .eq('source', 'rba').eq('metric', 'cash_rate').eq('freq', 'M')
-  .order('period', { ascending: false }).limit(216);
+  .eq('source', 'rba').eq('metric', 'cash_rate').eq('freq', 'M').lt('period', thisMonth)   // completed months only
+  .order('period', { ascending: false }).limit(MONTHS);
 if (rerr) { console.error('✗ cash series read failed: ' + rerr.message); process.exit(1); }
-if (!rows || rows.length < 216) { console.error(`✗ cash series too short: ${rows ? rows.length : 0} months (need 216) — refusing to move the average.`); process.exit(1); }
+if (!rows || rows.length < MONTHS) { console.error(`✗ cash series too short: ${rows ? rows.length : 0} months (need ${MONTHS}) — refusing to move the average.`); process.exit(1); }
 
 const avg = rows.reduce((s, r) => s + (+r.value), 0) / rows.length;
 const cashNew = Math.round(avg * 10000) / 10000;            // 2dp of percent (0.0265 = 2.65%)
-if (!(cashNew > 0.005 && cashNew < 0.08)) { console.error(`✗ implausible 216M average ${(cashNew * 100).toFixed(2)}% — refusing to write.`); process.exit(1); }
+if (!(cashNew > 0.005 && cashNew < 0.08)) { console.error(`✗ implausible ${MONTHS}M average ${(cashNew * 100).toFixed(2)}% — refusing to write.`); process.exit(1); }
 
 const { data: cfgRow, error: cerr } = await sb.from('rdp_runway_config').select('value').eq('key', 'rates').maybeSingle();
 if (cerr || !cfgRow) { console.error('✗ rdp_runway_config rates read failed: ' + (cerr ? cerr.message : 'no row')); process.exit(1); }
@@ -45,7 +50,7 @@ const rates = cfgRow.value, fc = rates.forecast || {};
 if (!(fc.margin > 0) || !(fc.apra >= 0)) { console.error('✗ forecast margin/apra missing in config — refusing to derive the rate.'); process.exit(1); }
 const rateNew = Math.round((cashNew + fc.margin + fc.apra) * 10000) / 10000;
 
-console.log(`rolling 216M cash avg: ${(avg * 100).toFixed(4)}% → rounded ${(cashNew * 100).toFixed(2)}%  (newest month ${rows[0].period.slice(0, 7)})`);
+console.log(`rolling ${MONTHS}M cash avg: ${(avg * 100).toFixed(4)}% → rounded ${(cashNew * 100).toFixed(2)}%  (${rows[rows.length - 1].period.slice(0, 7)} – ${rows[0].period.slice(0, 7)})`);
 console.log(`config forecast: cash ${(fc.cash * 100).toFixed(2)}% → ${(cashNew * 100).toFixed(2)}% · rate ${(fc.rate * 100).toFixed(2)}% → ${(rateNew * 100).toFixed(2)}%  (margin ${(fc.margin * 100).toFixed(2)}% + APRA ${(fc.apra * 100).toFixed(2)}% unchanged)`);
 
 /* Email Pre DD + Jonathan when the assumption moves (Saskia 2026-08-10 via
@@ -71,7 +76,7 @@ async function notifyRateChange(oldCash, oldRate, newCash, newRate, isBaseline) 
         <tr><td style="padding:4px 14px 4px 0;color:#63666A">Forecast cash rate</td><td style="padding:4px 0"><b>${isBaseline ? pct(newCash) : pct(oldCash) + ' → ' + pct(newCash)}</b></td></tr>
         <tr><td style="padding:4px 14px 4px 0;color:#63666A">PP variable rate</td><td style="padding:4px 0"><b>${isBaseline ? pct(newRate) : pct(oldRate) + ' → ' + pct(newRate)}</b> (cash + ${pct(fc.margin)} margin + ${pct(fc.apra)} APRA)</td></tr>
       </table>
-      <p>The forecast cash rate is the <b>rolling 216-month average of the RBA cash rate</b>, refreshed automatically at the monthly data publish. This rate drives the Runway Workbook, Runway v Demand and the Demand Score dashboard.</p>
+      <p>The forecast cash rate is the <b>rolling 19-year (228-month) average of the RBA cash rate over completed months</b>, refreshed automatically at the monthly data publish. This rate drives the Runway Workbook, Runway v Demand and the Demand Score dashboard.</p>
       <p style="color:#63666A;font-size:12px">Sent automatically by the Data Forge publish pipeline.</p>
     </div>`;
   try {

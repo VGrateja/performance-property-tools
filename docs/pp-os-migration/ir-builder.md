@@ -252,7 +252,7 @@ the asset attributes (+ Title Type and other asset extras). Footnote with the ba
   net income before finance) · Investment summary (loan, required capital, gross yield, net yield, expense ratio, **"Annual /
   weekly cash flow at the current rate"**, **"Annual / weekly cash flow at the IC rate"**, each "−$A / −$W", red when negative).
 - The old single "Running costs incl. finance" row is gone (it would need two values).
-- Under the table: the IC rate definition ("the Investment Committee's normalised rate: the rolling 18-year average cash rate
+- Under the table: the IC rate definition ("the Investment Committee's normalised rate: the rolling 19-year average cash rate (18-year until 2026-10-22, see cash-rate-19-year.md)
   plus 2.29 percentage points") replaces `boilerplate.normalised_note`, then Saskia's two-paragraph `CF_DISCLAIMER` verbatim.
 - Density by measurement: normal → `dense` → `denser` → `densest` until the page fits (94 files: 82 normal, 12 dense).
 

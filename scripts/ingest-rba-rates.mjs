@@ -15,7 +15,8 @@
 //     available month for the current year). [matches the existing DB annual,
 //     e.g. 2025 cash 3.60 = Dec; 2025 bank 6.00 = Dec FLRHOFVA 5.5 + 0.5.]
 //   The monthly CASH RATE is what the Runway Workbook averages over the last
-//   216 months (its long-run cash-rate assumption) — hence we need it monthly.
+//   228 completed months (19 years, IC 2026-10-22; its long-run cash-rate
+//   assumption) — hence we need it monthly.
 //
 //   Stored as DECIMAL fractions (4.31% → 0.0431) to match the existing series.
 //   ISOLATED: rdp_raw_series (source='rba', metric cash_rate|bank_rate,
@@ -104,12 +105,15 @@ try {
 } catch (e) { console.error('\n✗ RBA fetch failed:', e.message); await recordStatus('cash_rate', 'Cash Rate', 'RBA cash rate target', 'error', `fetch failed: ${e.message}`); process.exit(1); }
 
 const C = buildRows(cash, 'cash_rate'), B = buildRows(bank, 'bank_rate');
-// 216-month average of the monthly cash rate (Runway Workbook long-run assumption)
-const cashM = C.months.map(m => cash[m]); const last216 = cashM.slice(-216); const avg216 = last216.reduce((a, b) => a + b, 0) / last216.length;
+// 228-month (19-year) average of the monthly cash rate over COMPLETED months —
+// the current Sydney month is left out (Runway Workbook long-run assumption;
+// same rule as sync-rolling-cash-to-runway-config.mjs)
+const thisMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit' }).format(new Date());
+const cashM = C.months.filter(m => m < thisMonth).map(m => cash[m]); const last228 = cashM.slice(-228); const avg228 = last228.reduce((a, b) => a + b, 0) / last228.length;
 
 const latestCash = C.months[C.months.length - 1], latestBank = B.months[B.months.length - 1];
 console.log(`Cash rate (target, month-end): ${C.months.length} months ${C.months[0]}..${latestCash} = ${cash[latestCash]}%`);
-console.log(`  216-month avg = ${avg216.toFixed(2)}%  (${last216.length} months; Runway Workbook long-run cash rate)`);
+console.log(`  228-month (19-year) avg = ${avg228.toFixed(2)}%  (${last228.length} completed months; Runway Workbook long-run cash rate)`);
 console.log(`Bank rate (FLRHOFVA+0.5): ${B.months.length} months ${B.months[0]}..${latestBank} = ${bank[latestBank].toFixed(2)}%`);
 const dbCmp = async (metric) => { const { data } = await sb.from('rdp_raw_series').select('period,value').eq('source', 'rba').eq('metric', metric).eq('freq', 'A').gte('period', '2023-01-01').order('period'); return (data || []).map(r => r.period.slice(0, 4) + '=' + (+r.value * 100).toFixed(2)).join(', '); };
 console.log('\nANNUAL (new = year last month):');
@@ -122,7 +126,7 @@ const all = C.rows.concat(B.rows);
 let written = 0;
 for (let k = 0; k < all.length; k += 500) { const chunk = all.slice(k, k + 500); const { error } = await sb.from('rdp_raw_series').upsert(chunk, { onConflict: 'source,region_slug,metric,freq,period' }); if (error) { console.error('\n', error.message); process.exit(1); } written += chunk.length; }
 await sb.from('rdp_runs').insert({ dataset: 'raw', source_month: `RBA rates ${new Date().toISOString().slice(0, 7)}`, row_count: written, status: 'ok', notes: `RBA cash rate (FIRMMCRT) + bank rate (FLRHOFVA+0.5), monthly + annual, through ${latestCash}/${latestBank}` });
-await recordStatus('cash_rate', 'Cash Rate', 'RBA cash rate target', 'ok', `Current through ${latestCash} (${cash[latestCash].toFixed(2)}%). 216-month avg ${avg216.toFixed(2)}% feeds the Runway Workbook.`, { row_count: C.rows.length, region_count: 1, latest_year: +latestCash.slice(0, 4) });
+await recordStatus('cash_rate', 'Cash Rate', 'RBA cash rate target', 'ok', `Current through ${latestCash} (${cash[latestCash].toFixed(2)}%). 19-year (228-month) avg ${avg228.toFixed(2)}% feeds the Runway Workbook.`, { row_count: C.rows.length, region_count: 1, latest_year: +latestCash.slice(0, 4) });
 await recordStatus('bank_rate', 'Bank Rate', 'RBA F6 (FLRHOFVA + 0.5pp)', 'ok', `Current through ${latestBank} (${bank[latestBank].toFixed(2)}%). FLRHOFVA + 0.5pp.`, { row_count: B.rows.length, region_count: 1, latest_year: +latestBank.slice(0, 4) });
 console.log(`\n✓ Upserted ${written} rows (cash_rate + bank_rate, monthly + annual).`);
 process.exit(0);
