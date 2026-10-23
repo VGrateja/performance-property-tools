@@ -1,0 +1,12 @@
+-- 129 — close the Scrabble games UPDATE hole (2026-10-23, Van: "go with your recommendations").
+--
+-- Policy "participants update arena scrabble games" (018 → 021 → 026) let ANY player of a game
+-- UPDATE its arena_scrabble_games row straight from the browser with the public key — board, scores,
+-- to_move, status — bypassing every rule in submit_scrabble_move. Found by the pp-os port's security
+-- read (pp-os docs/plans/2026-10-23-arena-scrabble-port.md).
+--
+-- Nothing legitimate uses it: the hub page never writes this table directly, and all 14 functions that
+-- do (submit_scrabble_move, expire_scrabble_turn, resign/void/pause/resume*, settle_scrabble_game,
+-- _scrabble_* helpers) are SECURITY DEFINER and bypass RLS. Reads (SELECT policy) are unchanged.
+-- Rollback: re-create the policy from 026_supabase_linter_fixes.sql lines 187-195.
+drop policy if exists "participants update arena scrabble games" on public.arena_scrabble_games;
