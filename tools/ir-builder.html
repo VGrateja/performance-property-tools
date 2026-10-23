@@ -982,6 +982,78 @@ function isStrata(file) {
 }
 const isVicFile = c => String((c || CUR || {}).state || '').trim().toUpperCase() === 'VIC';
 
+/* ── state templates: the Property Master File template a file starts from (owner 2026-10-23):
+   NT → Darwin, VIC → Melbourne, QLD and every other or unknown state → General. DATA, not code:
+   ir_config key 'state_templates' (migration 130); IR_TEMPLATES_FALLBACK is an identical copy used
+   only while that row is missing. A new file records its template in setup.template =
+   { key, by: 'state' | 'user' }. Files made before this carry no setup.template and keep the hub's
+   ir_config 'defaults' exactly as before. Defaults only ever fill EMPTY cashflow fields when the
+   editor opens (saved on Save) — a saved value is never rewritten by a defaults change; only an
+   explicit, confirmed template switch rewrites the template's own lines. ── */
+const IR_TEMPLATES_FALLBACK = {
+  map: { NT: 'darwin', VIC: 'melbourne' }, fallback: 'general',
+  labels: { maintenanceAllowance: 'Maintenance Allowance', minRentalStdCost: 'Minimum Rental Standards Compliance', cosmeticWorks: 'Cosmetic Works Allowance',
+    titleTransfer: 'Mortgage and Title Transfer Fee', conveyancing: 'Conveyancing/Legal', buildingPest: 'Building and Pest Inspection Reports',
+    minRentalStdReport: 'Minimum Rental Standards Compliance Report', depreciationSchedule: 'Depreciation Schedule', professionalClean: 'Professional Clean',
+    rentalComplianceChecks: 'Rental Compliance Checks (Report Only)', councilWater: 'Council and Water Rates', insurance: 'Insurance Estimate' },
+  templates: {
+    general: { label: 'General', ddStartRating: null, strata: { meetingFrequency: 'Monthly' },
+      cashflow: { maintenanceAllowance: 10000, minRentalStdCost: 0, cosmeticWorks: 0, titleTransfer: 1700, conveyancing: 2000, buildingPest: 660,
+        minRentalStdReport: 0, depreciationSchedule: 900, professionalClean: 900, rentalComplianceChecks: 0, councilWater: 3500, insurance: null } },
+    darwin: { label: 'Darwin', ddStartRating: null, strata: { meetingFrequency: 'Annually', notes: 'To Be confirmed during body corporate inspection clause' },
+      cashflow: { maintenanceAllowance: 10000, minRentalStdCost: 0, cosmeticWorks: 0, titleTransfer: 362, conveyancing: 2500, buildingPest: 750,
+        minRentalStdReport: 0, depreciationSchedule: 900, professionalClean: 900, rentalComplianceChecks: 0, councilWater: 3500, insurance: 500 } },
+    melbourne: { label: 'Melbourne', ddStartRating: 'Review', strata: { meetingFrequency: 'Monthly' },
+      cashflow: { maintenanceAllowance: 10000, minRentalStdCost: 2000, cosmeticWorks: 0, titleTransfer: 1700, conveyancing: 3200, buildingPest: 660,
+        minRentalStdReport: 550, depreciationSchedule: 900, professionalClean: 900, rentalComplianceChecks: 400, councilWater: 3500, insurance: null } },
+  },
+};
+function irTemplates(cfg) { const t = (cfg || {}).state_templates; return t && t.map && t.templates ? t : IR_TEMPLATES_FALLBACK; }
+function templateKeyForState(state, T) { return T.map[String(state || '').trim().toUpperCase()] || T.fallback; }
+function fileTemplateKey(c, T) { const k = (((c || {}).setup || {}).template || {}).key; return k && T.templates[k] ? k : null; }
+function tplLineLabel(k) { return ((irTemplates(CFG).labels || {})[k]) || IR_TEMPLATES_FALLBACK.labels[k] || k; }
+/* the cashflow defaults a file starts from: the hub's shared ir_config defaults (the same 15 keys as
+   before templates), with the file's template lines on top; no template = the shared ones alone */
+const CF_DEFAULT_KEYS = ['lvr', 'loanTermYears', 'lettingFeeWeeks', 'pmFeePct', 'repairsPctOfRent', 'weeksLet', 'maintenanceAllowance',
+  'minRentalStdCost', 'cosmeticWorks', 'engagementFee', 'conveyancing', 'buildingPest', 'depreciationSchedule', 'professionalClean', 'titleTransfer'];
+function cfDefaultsFor(D, tpl) {
+  const out = {}; for (const k of CF_DEFAULT_KEYS) out[k] = (D || {})[k];
+  return tpl ? Object.assign(out, tpl.cashflow) : out;
+}
+/* switching templates (after a confirm that lists every change): each line the new template defines
+   takes its value, typed or not. A line the new template leaves blank (e.g. insurance outside Darwin)
+   is cleared only when the OLD template owned it; nothing outside the templates' lines is touched. */
+function switchTemplateCf(cf, fromTpl, toTpl) {
+  const out = { ...(cf || {}) }, diffs = [], to = toTpl.cashflow || {}, from = (fromTpl || {}).cashflow || {};
+  for (const k of new Set([...Object.keys(to), ...Object.keys(from)])) {
+    const nxt = to[k] != null ? to[k] : null;
+    if (nxt == null && from[k] == null) continue;
+    const cur = out[k] != null && out[k] !== '' ? +out[k] : null;
+    if (cur !== nxt) diffs.push({ k, from: cur, to: nxt });
+    out[k] = nxt;
+  }
+  return { cf: out, diffs };
+}
+const tplSwitchText = (label, diffs) => {
+  const v = x => x == null ? 'blank' : '$' + Math.round(x).toLocaleString('en-AU');
+  return 'Switch this file to the ' + label + ' template?\n\n' + (diffs.length
+    ? diffs.map(d => tplLineLabel(d.k) + ': ' + v(d.from) + ' → ' + v(d.to)).join('\n') : 'No cost line changes.');
+};
+/* Setup changed the state: a template picked FROM the state follows it (a hand-picked one stays) */
+function retemplateForState(setup, cashflow, state, T) {
+  const t0 = (setup || {}).template;
+  if (!t0 || t0.by !== 'state' || !T.templates[t0.key]) return null;
+  const nk = templateKeyForState(state, T); if (nk === t0.key) return null;
+  const r = cashflow && Object.keys(cashflow).length ? switchTemplateCf(cashflow, T.templates[t0.key], T.templates[nk]) : null;
+  return { key: nk, setup: { ...setup, template: { key: nk, by: 'state' } }, cashflow: r ? r.cf : null, diffs: r ? r.diffs : [] };
+}
+const ddStartRatingFor = (c, T) => { const k = fileTemplateKey(c, T); return k ? T.templates[k].ddStartRating || null : null; };
+/* the strata DD's one-time starting values (the workbook's "Meeting Frequency"; Darwin's body-corporate
+   sentence in the notes): offered while the field is blank and until the strata DD is first saved */
+const strataPrefillFor = (c, T) => { const k = fileTemplateKey(c, T), st = ((c || {}).dd || {}).strata || {};
+  return k && !st.prefilled ? { ...(T.templates[k].strata || {}) } : {}; };
+/* ── end state templates ── */
+
 /* ── the client cashflow: interest only, the SAME inputs run twice — at today's
    rate (RATES.current, rdp_runway_config rates.current.rate) and at the IC rate
    (RATES.normalised = rates.forecast.rate). calcCashflow() is untouched (LOCKSTEP
@@ -1708,9 +1780,11 @@ async function newFile() {
   const regions = ((CFG.regions || {}).regions) || [];
   const market = prompt('Market (' + regions.slice(0, 6).map(r => r.label).join(', ') + '…):') || '';
   const reg = regions.find(r => r.label.toLowerCase() === market.toLowerCase());
+  const state = reg ? reg.state : null;
   const { data, error } = await sb.from('ir_files').insert({
     address, suburb, market_label: reg ? reg.label : (market || null),
-    market_slug: reg ? reg.slug : null, state: reg ? reg.state : null,
+    market_slug: reg ? reg.slug : null, state,
+    setup: { template: { key: templateKeyForState(state, irTemplates(CFG)), by: 'state' } },
   }).select('id').single();
   if (error) { toast('Create failed: ' + error.message); return; }
   const { data: rows } = await sb.from('ir_files').select('id,address,suburb,state,market_label,market_slug,status,roles,updated_at,compliance,setup').order('updated_at', { ascending: false });
@@ -1769,7 +1843,8 @@ function renderFile() {
   $('#ibFile').innerHTML =
     '<div class="ib-fhead"><button class="ib-btn sm quiet" id="ibBack" type="button">&larr; Files</button>' +
     '<div class="ttl"><h2>' + esc(CUR.address || '') + '</h2>' +
-    '<span class="sub">' + esc([CUR.suburb, CUR.state, CUR.market_label || 'market not set'].filter(Boolean).join(' · ')) + '</span></div>' +
+    '<span class="sub">' + esc([CUR.suburb, CUR.state, CUR.market_label || 'market not set',
+      fileTemplateKey(CUR, irTemplates(CFG)) ? irTemplates(CFG).templates[fileTemplateKey(CUR, irTemplates(CFG))].label + ' template' : null].filter(Boolean).join(' · ')) + '</span></div>' +
     '<div class="ib-stgrp">' + statusCtl +
     (!CANW && CAN ? '<span class="ib-note">read-only while ' + CUR.status + '</span>' : '') + '</div>' +
     '<div class="acts"><button class="ib-btn sm" id="ibPreview" type="button">Preview report</button>' +
@@ -1981,6 +2056,7 @@ const STRATA_FIELDS = [
   ['sinkingBalance', 'Sinking fund balance', 'money'],
   ['agmReviewed', 'Last AGM minutes reviewed', 'yesno'],
   ['agmDate', 'Last AGM date', 'date'],
+  ['meetingFrequency', 'Owners corporation meeting frequency', 'text'],
   ['buildingInsurance', 'Building insurance (insurer, sum insured, expiry)', 'text'],
   ['publicLiability', 'Public liability cover', 'text'],
   ['manager', 'Building manager / strata manager contact', 'text'],
@@ -1990,8 +2066,10 @@ const STRATA_FIELDS = [
 ];
 function strataCard() {
   const st = ((CUR.dd || {}).strata) || {}, dis = CANW ? '' : ' disabled';
+  /* the file's template prefills blank fields once (meeting frequency; Darwin's body-corporate notes) */
+  const pre = strataPrefillFor(CUR, irTemplates(CFG));
   const fld = ([k, lab, t]) => {
-    const v = st[k];
+    const v = st[k] != null && st[k] !== '' ? st[k] : pre[k];
     if (t === 'yesno') return '<label>' + esc(lab) + '<select data-stk="' + k + '"' + dis + '><option value="">—</option>' +
       '<option value="yes"' + (v === 'yes' || v === true ? ' selected' : '') + '>Yes</option><option value="no"' + (v === 'no' || v === false ? ' selected' : '') + '>No</option></select></label>';
     if (t === 'date') return '<label>' + esc(lab) + '<input type="date" data-stk="' + k + '" value="' + esc(v || '') + '"' + dis + '></label>';
@@ -2018,6 +2096,7 @@ function harvestStrata() {
     else if (v === '') v = null;
     if (v == null) delete st[k]; else st[k] = v;
   });
+  if (fileTemplateKey(CUR, irTemplates(CFG))) st.prefilled = true;   /* the template's prefill is offered once */
   return st;
 }
 function harvestDdItems() {
@@ -2113,18 +2192,25 @@ function renderSetup(el) {
     const reg = regionsL.find(r => r.label === v('#fMkt'));
     const top = { address: v('#fAddr'), suburb: v('#fSub') || null, state: v('#fState') || (reg && reg.state) || null,
       postcode: v('#fPost') || null, market_label: v('#fMkt') || null, market_slug: reg ? reg.slug : null };
-    const setup = { ...CUR.setup, propertyType: v('#fType') || null, commercial: $('#fCommercial').value === '1',
+    let setup = { ...CUR.setup, propertyType: v('#fType') || null, commercial: $('#fCommercial').value === '1',
       landSize: numv('#fLand'), beds: numv('#fBeds'),
       baths: numv('#fBaths'), cars: numv('#fCars'),
       lga: v('#fLga') || null, strategy: v('#fStrat') || null,
       listingUrl: v('#fList') || null, crmUrl: v('#fCrm') || null, driveUrl: v('#fDrive') || null };
+    /* a template picked from the state follows a state change — after a confirm when saved cashflow lines would change */
+    let reT = retemplateForState(setup, CUR.cashflow, top.state, irTemplates(CFG));
+    if (reT && reT.diffs.length && !confirm(tplSwitchText(irTemplates(CFG).templates[reT.key].label, reT.diffs) +
+      '\n\n(The state changed to ' + (top.state || 'none') + '. Cancel keeps the current template.)')) reT = null;
+    if (reT) setup = reT.setup;
+    const cfT = reT && reT.cashflow ? { cashflow: reT.cashflow } : {};
     const saveBtn = $('#ibSaveSetup'); saveBtn.disabled = true;
     setup.geo = await resolveGeoOnSave(top);            /* at most ONE address lookup per save */
     const ex = harvestExec(); if (ex) setup.execSummary = ex;
     const roles2 = {}; ['consultant', 'dd_support', 'sales_admin', 'assistant'].forEach(r => { const x = v('#fRole_' + r); if (x) roles2[r] = x; });
-    const { error } = await sb.from('ir_files').update({ ...top, setup, roles: roles2 }).eq('id', CUR.id);
+    const { error } = await sb.from('ir_files').update({ ...top, setup, roles: roles2, ...cfT }).eq('id', CUR.id);
     if (error) { saveBtn.disabled = false; toast('Save failed: ' + error.message); return; }
-    Object.assign(CUR, top, { setup, roles: roles2 });
+    Object.assign(CUR, top, { setup, roles: roles2 }, cfT);
+    if (reT) toast(irTemplates(CFG).templates[setup.template.key].label + ' template now applies (state ' + (top.state || 'not set') + ')');
     const stats = await fetchIntel();
     /* the market refresher is cached with the suburb stats (read-only reference) */
     const mk = await fetchMarketPanel(top.market_slug, segOf(CUR)), prevMk = (CUR.suburb_stats || {}).market;
@@ -2336,9 +2422,14 @@ function renderDD(el) {
     return;
   }
   const res = ddResult(items);
+  /* the file's template sets the rating an unrated check starts at (Melbourne: Review); saved on Save DD */
+  const T = irTemplates(CFG), start = ddStartRatingFor(CUR, T);
+  const unrated = start ? list.filter(it => !(items[it] || {}).rating).length : 0;
   el.innerHTML = (res ? '<span class="ib-ddres ' + res + '">DD result: ' + res + '</span>' : '') +
+    (unrated ? '<div class="ib-note" style="margin:6px 0 10px">' + unrated + ' unrated check' + (unrated > 1 ? 's start' : ' starts') + ' at <b>' + esc(start) + '</b> — the ' +
+      esc(T.templates[fileTemplateKey(CUR, T)].label) + ' template\'s rule. Saving the DD records them.</div>' : '') +
     '<div class="ib-dd">' + list.map(it => {
-      const v = items[it] || {};
+      const v = { ...(items[it] || {}) }; if (!v.rating && start) v.rating = start;
       const src = ruleFor(it, 'Source');
       const crit = ['Approved', 'Review', 'Failed'].map(k => { const c = ruleFor(it, k);
         return c ? '<div><b class="' + { Approved: 'g', Review: 'w', Failed: 'b' }[k] + '">' + k + ':</b> ' + esc(c) + '</div>' : ''; }).join('');
@@ -2911,11 +3002,8 @@ function renderCashflow(el) {
   if (CFW.budget == null && adopted.topPrice) CFW.budget = adopted.topPrice;
   if (CFW.rent == null && adopted.rent) CFW.rent = adopted.rent;
   if (CFW.rate == null) CFW.rate = RATES.current;
-  const defaults = { lvr: D.lvr, loanTermYears: D.loanTermYears, lettingFeeWeeks: D.lettingFeeWeeks, pmFeePct: D.pmFeePct,
-    repairsPctOfRent: D.repairsPctOfRent, weeksLet: D.weeksLet, maintenanceAllowance: D.maintenanceAllowance,
-    minRentalStdCost: D.minRentalStdCost, cosmeticWorks: D.cosmeticWorks, engagementFee: D.engagementFee,
-    conveyancing: D.conveyancing, buildingPest: D.buildingPest, depreciationSchedule: D.depreciationSchedule,
-    professionalClean: D.professionalClean, titleTransfer: D.titleTransfer };
+  const T = irTemplates(CFG), tk = fileTemplateKey(CUR, T), tpl = tk ? T.templates[tk] : null;
+  const defaults = cfDefaultsFor(D, tpl);   /* no template (files made before them) = the shared defaults, as before */
   for (const [k, v] of Object.entries(defaults)) if (CFW[k] == null && v != null) CFW[k] = v;
   if (CFW.acquisitionFee == null && CFW.budget && D.acquisitionFeePct) CFW.acquisitionFee = Math.round(CFW.budget * D.acquisitionFeePct);
   /* pool: the tick starts from the inspection's "Pool or outdoor spa" answer and is then the
@@ -2930,18 +3018,30 @@ function renderCashflow(el) {
   if (lvrOver != null) CFW.lvr = 1;
   const F = (k, lab, extra) => '<label>' + lab +
     '<input data-ck="' + k + '" value="' + esc(CFW[k] != null ? (PCT.includes(k) ? (CFW[k] * 100).toFixed(2) + '%' : CFW[k]) : '') + '"' + (CANW ? '' : ' disabled') + '>' + (extra || '') + '</label>';
+  /* template-only lines (Melbourne's compliance report and checks): shown when the template or the file has a figure */
+  const FT = (k, suffix) => (+CFW[k] || +defaults[k]) ? F(k, esc(tplLineLabel(k)) + (suffix || '')) : '';
+  const tSuggest = templateKeyForState(CUR.state, T);
   el.innerHTML =
+    '<div class="ib-card"><h3>Property Master File template <span class="right"><span class="ib-note">' +
+      (tpl ? 'picked ' + (CUR.setup.template.by === 'user' ? 'by hand' : 'from the state (' + esc(CUR.state || 'not set') + ')') : 'none — this file predates the state templates') + '</span></span></h3>' +
+    '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">' +
+      '<b>' + (tpl ? esc(tpl.label) : 'Standard hub defaults') + '</b>' +
+      (CANW ? '<select id="cfTpl" class="ib-inp" aria-label="Template">' + Object.keys(T.templates).map(k =>
+          '<option value="' + esc(k) + '"' + (k === (tk || tSuggest) ? ' selected' : '') + '>' + esc(T.templates[k].label) + '</option>').join('') + '</select>' +
+        '<button class="ib-btn sm" id="cfTplGo" type="button">' + (tpl ? 'Switch template' : 'Apply template') + '</button>' : '') +
+      '<span class="ib-note">Switching sets the template\'s own cost lines to its figures — you confirm each change first; other fields are not touched.</span>' +
+    '</div></div>' +
     '<div class="ib-card"><h3>Cost of property & acquisition</h3><div class="ib-form" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">' +
     F('budget', 'Top budget' + (adopted.topPrice ? ' (adopted ' + money(adopted.topPrice) + ')' : '')) +
     F('maintenanceAllowance', 'Maintenance allowance') + F('minRentalStdCost', 'Min rental stds cost') + F('cosmeticWorks', 'Cosmetic works') +
     F('stampDuty', 'Stamp duty (verify)') + F('engagementFee', 'Engagement fee') + F('acquisitionFee', 'Acquisition fee') +
     F('titleTransfer', 'Mortgage & title transfer') + F('conveyancing', 'Conveyancing/legal') + F('buildingPest', 'Building & pest') +
-    F('depreciationSchedule', 'Depreciation schedule') + F('professionalClean', 'Professional clean') +
+    FT('minRentalStdReport') + F('depreciationSchedule', 'Depreciation schedule') + F('professionalClean', 'Professional clean') +
     '</div></div>' +
     '<div class="ib-card"><h3>Finance & running costs</h3><div class="ib-form" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">' +
     F('lvr', 'LVR % of total acquisition cost', lvrOver != null ? '<span class="ib-note">was ' + Math.round(lvrOver * 100) + '% of the price · capped at 100%</span>' : '') + F('rate', 'Interest rate % (live ' + pct(RATES.current) + ')') + F('loanTermYears', 'Loan term (years)') +
     F('lettingFeeWeeks', 'Letting fee (weeks rent)') + F('pmFeePct', 'PM fee % of rent') + F('repairsPctOfRent', 'Repairs % of rent') +
-    F('strata', 'Strata /yr') + F('councilWater', 'Council & water /yr') +
+    FT('rentalComplianceChecks', ' /yr') + F('strata', 'Strata /yr') + F('councilWater', 'Council & water /yr') +
     F('landTax', 'Land tax /yr', CAN ? '<button class="ib-btn sm" id="cfLT" type="button" style="margin-top:4px">suggest</button>' : '') +
     F('insurance', 'Insurance /yr', CAN ? '<button class="ib-btn sm" id="cfINS" type="button" style="margin-top:4px">suggest</button>' : '') +
     '<label style="display:flex;align-items:center;gap:8px;align-self:end;min-height:38px;cursor:pointer"><input type="checkbox" id="cfPool" style="width:16px;height:16px;margin:0"' +
@@ -3019,6 +3119,19 @@ function renderCashflow(el) {
       el.querySelector('[data-ck="insurance"]').value = s; cards(); };
   }
   $('#ibSaveCash').onclick = async () => { harvest(); if (await saveSection('cashflow', CFW)) renderFile(); };
+  const tplGo = $('#cfTplGo');
+  if (tplGo) tplGo.onclick = async () => {
+    const to = $('#cfTpl').value; if (to === tk) return;
+    harvest();   /* the editor's current (incl. unsaved) values are what the confirm lists as "old" */
+    const r = switchTemplateCf(CFW, tpl, T.templates[to]);
+    if (!confirm(tplSwitchText(T.templates[to].label, r.diffs))) { $('#cfTpl').value = tk || tSuggest; return; }
+    const setup = { ...(CUR.setup || {}), template: { key: to, by: 'user' } };
+    const { error } = await sb.from('ir_files').update({ setup, cashflow: r.cf }).eq('id', CUR.id);
+    if (error) { toast('Switch failed: ' + error.message); return; }
+    CUR.setup = setup; CUR.cashflow = r.cf;
+    toast(T.templates[to].label + ' template applied — ' + r.diffs.length + ' line' + (r.diffs.length === 1 ? '' : 's') + ' changed');
+    renderFile();
+  };
 }
 
 /* ════════ COMPLIANCE (Phase D) — auto ticks + the manual role checklist ════════ */
@@ -3370,7 +3483,9 @@ function pageCashflow(c) {
   r += sec('Acquisition costs') +
     srow('Stamp duty', '', nv('stampDuty'), 'out') + srow('Engagement fee', '', nv('engagementFee'), 'out') + srow('Acquisition fee', '', nv('acquisitionFee'), 'out') +
     srow('Mortgage &amp; title transfer fee', '', nv('titleTransfer'), 'out') + srow('Conveyancing / legal', '', nv('conveyancing'), 'out') +
-    srow('Building &amp; pest inspection reports', '', nv('buildingPest'), 'out') + srow('Depreciation schedule', '', nv('depreciationSchedule'), 'out') +
+    srow('Building &amp; pest inspection reports', '', nv('buildingPest'), 'out') +
+    (nv('minRentalStdReport') ? srow(esc(tplLineLabel('minRentalStdReport')), '', nv('minRentalStdReport'), 'out') : '') +
+    srow('Depreciation schedule', '', nv('depreciationSchedule'), 'out') +
     srow('Professional clean', '', nv('professionalClean'), 'out') +
     (nv('maintenanceAllowance') ? srow('Maintenance allowance', '', nv('maintenanceAllowance'), 'out') : '') +
     (nv('cosmeticWorks') ? srow('Cosmetic works allowance', '', nv('cosmeticWorks'), 'out') : '') +
@@ -3389,6 +3504,7 @@ function pageCashflow(c) {
     (cf.feeLines || []).map(fl => srow(esc(fl.label || 'Fee'), pctTxt(+fl.pct || 0), income * (+fl.pct || 0) + (+fl.amount || 0), 'out')).join('') +
     srow('Repairs &amp; maintenance', nv('repairsPctOfRent') ? pctTxt(nv('repairsPctOfRent')) + ' of rent' : '', repairs, 'out') +
     (pool ? (poolCost ? srow('Pool maintenance', esc(pool), poolCost, 'out') : row('Pool maintenance', esc(pool), 'not costed')) : '') +
+    (nv('rentalComplianceChecks') ? srow(esc(tplLineLabel('rentalComplianceChecks')), '', nv('rentalComplianceChecks'), 'out') : '') +
     srow('Strata fees', '', nv('strata'), 'out') + srow('Council &amp; water rates', '', nv('councilWater'), 'out') +
     srow('Land tax', '', nv('landTax'), 'out') + srow('Insurance estimate', '', nv('insurance'), 'out') +
     srow('Running costs (excluding finance)', '', x.runningLessFin, 'out', 'hero');
@@ -3535,7 +3651,7 @@ function pageCostsSettlement(c, B) {
   const TITLE = 'Additional costs and settlement';
   const acqRows = [['Stamp duty', 'stampDuty'], ['Engagement fee', 'engagementFee'], ['Acquisition fee', 'acquisitionFee'],
     ['Mortgage & title transfer fee', 'titleTransfer'], ['Conveyancing / legal', 'conveyancing'], ['Building & pest inspections', 'buildingPest'],
-    ['Depreciation schedule', 'depreciationSchedule'], ['Professional clean', 'professionalClean']].filter(([, k]) => nv(k));
+    [tplLineLabel('minRentalStdReport'), 'minRentalStdReport'], ['Depreciation schedule', 'depreciationSchedule'], ['Professional clean', 'professionalClean']].filter(([, k]) => nv(k));
   const allowRows = [['Maintenance allowance (year one)', 'maintenanceAllowance'], ['Cosmetic works allowance', 'cosmeticWorks'],
     ['Minimum rental standards works', 'minRentalStdCost']].filter(([, k]) => nv(k));
   const mini = (title, rows, total) => '<table class="t2"><tr><th>' + title + '</th><th class="r">This property</th></tr>' +
@@ -3946,7 +4062,7 @@ function calcCashflow(cf, mode, normRate) {
   const n = k => +cf[k] || 0;
   const budget = n('budget'); if (!budget) return null;
   const rate = mode === 'norm' ? (normRate || RATES.normalised || 0.0494) : (n('rate') || RATES.current || 0.065);
-  const acq = n('stampDuty') + n('engagementFee') + n('acquisitionFee') + n('titleTransfer') + n('conveyancing') + n('buildingPest') + n('depreciationSchedule') + n('professionalClean');
+  const acq = n('stampDuty') + n('engagementFee') + n('acquisitionFee') + n('titleTransfer') + n('conveyancing') + n('buildingPest') + n('depreciationSchedule') + n('professionalClean') + n('minRentalStdReport');
   const totalCost = budget + n('maintenanceAllowance') + n('minRentalStdCost') + n('cosmeticWorks') + acq;
   const lvr = cfLvr(cf);
   const loan = totalCost * lvr;
@@ -3960,7 +4076,7 @@ function calcCashflow(cf, mode, normRate) {
   /* flexible fee lines (e.g. QLD's Advice / Portfolio Management 2.2%): pct of income and/or flat $ */
   const fees = (cf.feeLines || []).reduce((a, f) => a + income * (+f.pct || 0) + (+f.amount || 0), 0);
   const pool = cf.hasPool === false ? 0 : n('poolMaintenance');   /* only while the cashflow's pool tick is on */
-  const other = n('strata') + n('councilWater') + n('landTax') + n('insurance') + pool;
+  const other = n('strata') + n('councilWater') + n('landTax') + n('insurance') + pool + n('rentalComplianceChecks');
   const runningLessFin = letting + pm + repairs + fees + other;
   const annual = income - (runningLessFin + interest + principal);
   return { loan, lvr, requiredCapital: totalCost - loan, grossYield: income / budget, netYield: (income - runningLessFin) / budget,

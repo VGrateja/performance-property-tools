@@ -721,7 +721,35 @@ pp-os owes the mirror of §11, §12 and §13, including:
 - **Page 5, the four cash-flow tiles:** "at the current rate" → **"at the current bank rate"** (ANNUAL / WEEKLY CASH FLOW AT THE CURRENT BANK RATE), and the IC tiles "at the IC rate" → **"at the IC bank rate"** (Van, same day). The IC-rate footnote keeps "IC rate". The Finance rows ("Interest at the current rate … per annum") and the page subtitle keep "current rate" (not asked).
 - pp-os mirror: the same two edits in its cashflow page.
 
+## 14. State templates — the Property Master File template by state (2026-10-23)
+
+- **Data:** `ir_config` key `state_templates` (migration 130; hub fallback `IR_TEMPLATES_FALLBACK`, identical) =
+  `{ map: { NT: 'darwin', VIC: 'melbourne' }, fallback: 'general', labels: { <cashflow key>: <workbook label> },
+  templates: { general | darwin | melbourne: { label, ddStartRating, strata: { meetingFrequency, notes? }, cashflow: { 12 lines } } } }`.
+  Cashflow lines: General 10,000 / 0 / 0 / 1,700 / 2,000 / 660 / 0 / 900 / 900 / 0 / 3,500 / insurance blank; Darwin title 362,
+  conveyancing 2,500, B&P 750, insurance 500; Melbourne min rental stds works 2,000, conveyancing 3,200, `minRentalStdReport` 550,
+  `rentalComplianceChecks` 400/yr. Finance defaults (LVR, PM fee, weeks let…) stay in `ir_config.defaults`.
+- **New file:** `setup.template = { key, by: 'state' }` from the state (QLD and anything else → general). Files made before this
+  have no `setup.template` and keep `ir_config.defaults` exactly; nothing is backfilled.
+- **Defaults** fill EMPTY cashflow fields when the editor opens (saved on Save), as before — a saved value never moves.
+- **New lines:** `minRentalStdReport` (acquisition cost, in `calcCashflow` acq) and `rentalComplianceChecks` (yearly running
+  cost, in `other`); editor + page 5 + the dormant costs page show them only when non-zero, with the workbook label. The same two
+  terms are in the LOCKSTEP copies (`ir-samples.html calcCashflow`, `presentation.html _irCfCalc`) with conditional rows.
+- **DD:** Melbourne pre-selects **Review** on unrated checks (saved with Save DD); General / Darwin keep the blank start.
+- **Strata DD:** new field `dd.strata.meetingFrequency` (workbook "5d" C11 "Meeting Frequency": Monthly / Darwin Annually) and,
+  for Darwin, `notes` = "To Be confirmed during body corporate inspection clause" — prefilled once into blank fields; the first
+  strata save sets `dd.strata.prefilled` and the prefill is never offered again.
+- **Switching** (Cashflow step, template card): a confirm lists each line old → new; on OK the new template's lines are set
+  (typed values too); a line the new template leaves blank is cleared only if the old template owned it (Darwin insurance);
+  nothing else is touched; saves `setup.template = { key, by: 'user' }` + the cashflow. A Setup state change re-picks a
+  state-picked template (same confirm when saved lines would change); a hand-picked one stays.
+- pp-os mirror: the same row, fields and rules.
+
 ## Changelog
+
+- 2026-10-23 — State templates (§14): new files start from the NT Darwin / VIC Melbourne / General template (cashflow lines,
+  Melbourne DD start Review, strata meeting frequency, Darwin body-corporate notes); two new cashflow lines; switch with a
+  confirmed old → new list; existing files unchanged (migration 130). (owner spec)
 
 - 2026-10-19 — Print / Save PDF on a final or archived file no longer re-stamps `compliance.reportAt`: the file keeps the "Report generated" date it was signed off with; a locked file with no date yet takes its sign-off date on its first print — `published.at` when it was published, else now — so the library PDF is not flagged as older (all 94 files were final, published, with no date); an active file still stamps on every print. pp-os mirror: `markReportGenerated` refuses a locked file that already has a date and the Web skips that stamp (pp-os fx3, item H). (Van: "leave the date as signed off")
 - 2026-10-12 — Saskia (§13.10): the investment summary's Acquisition costs line black again; the cash-flow tiles say "at the current bank rate" and "at the IC bank rate".
