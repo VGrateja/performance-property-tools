@@ -324,9 +324,9 @@ let RATES = { current: 0.065, normalised: 0.0494 };   /* refreshed from rdp_runw
    30 years (Saskia, meeting 2026-09-21) — `term` is kept only so the maths reads. */
 const deck = { i: -1, page: 0, lvr: null, rateMode: 'norm', rate: null, loan: 'io', term: 30 };
 const PAGES = 3;
-function defaultAssumptions(file) {
-  const cf = (file || {}).cashflow || {};
-  return { lvr: (+cf.lvr > 0 && +cf.lvr <= 1.5) ? +cf.lvr : 0.9, rateMode: 'norm', rate: null, loan: 'io', term: 30 };
+function defaultAssumptions() {
+  /* 108% of the purchase price for every sample (Van 2026-10-27), whatever LVR the file was modelled at */
+  return { lvr: 1.08, rateMode: 'norm', rate: null, loan: 'io', term: 30 };
 }
 /* What the PDF prints, whatever the toggles say (Saskia 2026-09-21). */
 function printAssumptions(file) { return defaultAssumptions(file); }
@@ -849,13 +849,15 @@ function calcCashflow(cf, mode, normRate) {
   const n = k => +cf[k] || 0;
   const budget = n('budget'); if (!budget) return null;
   const rate = mode === 'norm' ? (normRate || RATES.normalised || 0.0494) : (n('rate') || RATES.current || 0.065);
-  /* The LVR applies to the TOTAL property + acquisition cost (Saskia 2026-09-23:
-     "if the 100% LVR is calculating off of 710, that's the right way") — the
-     purchase price plus allowances plus every acquisition line below — so 100%
-     means nothing is required to complete. */
+  /* The LVR applies to the PURCHASE PRICE (Van 2026-10-27, replacing Saskia's
+     2026-09-23 total-cost basis for IR Samples only): 100% lends the purchase
+     price and the client contributes the costs (stamp duty, our fees, the other
+     acquisition lines and allowances); 108% also lends 8% of the price towards
+     them. The loan never exceeds the total cost, so the contribution is never
+     negative. IR Builder keeps the total-cost basis. */
   const acq = n('stampDuty') + n('engagementFee') + n('acquisitionFee') + n('titleTransfer') + n('conveyancing') + n('buildingPest') + n('depreciationSchedule') + n('professionalClean') + n('minRentalStdReport');
   const totalCost = budget + n('maintenanceAllowance') + n('minRentalStdCost') + n('cosmeticWorks') + acq;
-  const loan = totalCost * (n('lvr') || 0.9);
+  const loan = Math.min(totalCost, budget * (n('lvr') || 1.08));
   const interest = loan * rate;
   const mPmt = loan * (rate / 12) / (1 - Math.pow(1 + rate / 12, -((n('loanTermYears') || 30) * 12)));
   const principal = mode === 'io' ? 0 : (mPmt * 12 - interest);
@@ -907,17 +909,15 @@ function rateLabel(A, x) {
 }
 function ctlHtml(A, file) {
   const cf = (file || {}).cashflow || {};
-  const fileLvr = (+cf.lvr > 0 && +cf.lvr <= 1) ? +cf.lvr : null;
-  const lvrs = [0.6, 0.7, 0.8, 0.9, 1.0]; if (fileLvr && !lvrs.some(v => Math.abs(v - fileLvr) < 0.001)) lvrs.push(fileLvr); lvrs.sort((a, b) => a - b);
+  const lvrs = [0.8, 0.9, 1.0, 1.08];
   const seg = (lb, key, opts) => '<div class="irs-seg"><span class="lb">' + lb + '</span>' +
     opts.map(o => '<button type="button" data-set="' + key + '" data-val="' + o[0] + '"' + (o[2] ? ' class="on"' : '') + '>' + o[1] + '</button>').join('') + '</div>';
   const custom = A.rateMode === 'custom';
   const shown = rateFor(A, cf);
-  /* Saskia 2026-09-23: the LVR is on the total property + acquisition cost, and
-     says so; the report's own rate is no longer a preset (normalised, current,
-     or the stepper). */
+  /* The LVR is of the purchase price (Van 2026-10-27) and says so; the report's
+     own rate is no longer a preset (normalised, current, or the stepper). */
   return '<div class="irs-ctls">' +
-    seg('LVR (incl. acquisition costs)', 'lvr', lvrs.map(v => [v, Math.round(v * 100) + '%', Math.abs(A.lvr - v) < 0.001])) +
+    seg('LVR (of purchase price)', 'lvr', lvrs.map(v => [v, Math.round(v * 100) + '%', Math.abs(A.lvr - v) < 0.001])) +
     '<div style="display:flex;gap:5px">' +
       seg('Interest rate', 'rateMode', [['norm', 'Normalised ' + pct(RATES.normalised, 2), A.rateMode === 'norm'], ['current', 'Current ' + pct(RATES.current, 2), A.rateMode === 'current']]) +
       '<div class="irs-seg irs-step"><button type="button" data-step="-1" title="0.25% lower">&minus;</button>' +
@@ -982,6 +982,9 @@ function slideCashflow(s, A) {
     ['Professional clean', money(n('professionalClean'))],
     ['Acquisition costs', money(x.acq), 'tot'],
     ['Total property + acquisition cost', money(x.totalCost), 'tot'],
+    /* the lending calc, as on the IR report (Van 2026-10-27) */
+    ['Loan amount ' + MID + ' ' + pct(A.lvr, 0) + ' of ' + money(x.price), money(x.loan), 'tot'],
+    ['Capital contribution ' + MID + ' ' + money(x.totalCost) + ' − ' + money(x.loan), money(Math.max(0, x.requiredCapital)), 'tot'],
   ];
   /* Melbourne template line (IR Builder state templates, 2026-10-23) — only files that carry it */
   if (n('minRentalStdReport')) acqRows.splice(6, 0, ['Minimum Rental Standards Compliance Report', money(n('minRentalStdReport'))]);
