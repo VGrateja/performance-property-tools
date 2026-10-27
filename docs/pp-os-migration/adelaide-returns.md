@@ -129,3 +129,4 @@ read during the build) — research to replace with the approved wording.
 - 2026-10-14 — Built: migration 127 (`client_pages`, public read, writer write), public page `client/adelaide-returns.html` + maths
   module + tests, Vault editor `tools/adelaide-returns.html`, registry key + Vault card + search entry; `scripts/stamp-shared-assets.mjs`
   now also stamps `client/*.html`.
+- 2026-10-27 — Retired the Vault editor, the hub client page, the maths module and its tests, plus the two index.html entries (owner: "we don't need the editor anymore"). The static page in the owner's `adelaide-combined` folder (index.html + data.json, no editor) replaces them. The `client_pages` table (migration 127, 0 rows) and the registry key are left in place. Do not port this tool to pp-os.
