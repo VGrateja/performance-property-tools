@@ -70,6 +70,7 @@ table.ret thead th{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-tr
 table.ret tr.pp td{font-weight:800;color:var(--ink);background:var(--teal-soft)}
 table.ret tr.pp td:first-child{border-left:4px solid var(--teal)}
 table.ret tr.blank td{color:var(--mut);font-weight:600}
+table.ret td.tocome{text-align:left;color:var(--mut);font-weight:600;font-style:italic}
 table.ret .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:8px;vertical-align:baseline}
 .footnotes{margin:44px 0 0;padding-top:16px;border-top:1px solid var(--line)}
 .footnotes p{font-size:12.5px;color:var(--ink2);white-space:pre-line}
@@ -142,6 +143,13 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
     <p class="takeaway" id="kYears"></p>
     <p class="note" id="nYears"></p>
     <p class="src" id="srcYears"></p>
+  </section>
+
+  <section class="block" id="sPeriods">
+    <h2 id="hPeriods"></h2>
+    <p class="lead" id="tPeriodsLead"></p>
+    <div class="tbl-wrap"><table class="ret" id="tblPeriods"></table></div>
+    <p class="src" id="srcPeriods"></p>
   </section>
 
   <section class="block" id="sSelection">
@@ -239,6 +247,7 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
         startLabel: monthLabel(w && w.start), endLabel: monthLabel(w && w.end),
         ytdEndLabel: dateLabel(p.window && p.window.ytdEnd),
         purchasePeriod: pp.purchasePeriodLabel || DASH, asAt: pp.asAtLabel || DASH,
+        periodEndLabel: (fy => fy.length ? '31 December ' + fy[fy.length - 1] : DASH)((p.years || []).filter(k => /^\d{4}$/.test(k)).sort()),
       },
     };
   }
@@ -368,6 +377,37 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
     });
   }
 
+  /* ── standard periods: annual return over the last 1/3/5/10 full calendar
+     years; a period with any blank year shows "—", never an estimate ───── */
+  function periodPa(get, p, n) {
+    const ys = (p.years || []).filter(k => /^\d{4}$/.test(k)).sort(), last = ys[ys.length - 1];
+    if (!last) return null;
+    let f = 1;
+    for (let y = +last - n + 1; y <= +last; y++) {
+      const r = get(String(y));
+      if (!isNum(r)) return null;
+      f *= 1 + r;
+    }
+    return Math.pow(f, 1 / n) - 1;
+  }
+  function periodsTable(p, R, T) {
+    const NS = [1, 3, 5, 10];
+    const ppYears = (p.ppYears && p.ppYears.returns) || {};
+    const ppHas = Object.keys(ppYears).some(k => isNum(ppYears[k]));
+    const colorOf = {}; R.rows.forEach(r => { colorOf[r.key] = r.color; });
+    const yearOf = b => k => { const per = M.periodOf(k, p.window.ytdEnd); return per ? M.periodReturn(b, k, per[1] - per[0]) : null; };
+    let h = '<thead><tr><th>' + esc(fill((p.text.table && p.text.table.asset) || 'Investment', T)) + '</th>' + NS.map(n => '<th>' + n + (n === 1 ? ' year' : ' years') + '</th>').join('') + '</tr></thead><tbody>';
+    h += '<tr class="pp"><td>' + esc(p.pp.label) + '</td>' + (ppHas
+      ? NS.map(n => '<td>' + pct(periodPa(k => ppYears[k], p, n)) + '</td>').join('')
+      : '<td class="tocome" colspan="' + NS.length + '">' + esc(fill(p.text.ppRowToCome || 'Figures to come', T)) + '</td>') + '</tr>';
+    (p.benchmarks || []).forEach(b => {
+      const get = yearOf(b);
+      h += '<tr><td><span class="sw" style="background:' + (colorOf[b.key] || MUT) + '"></span>' + esc(b.label) + '</td>' +
+        NS.map(n => '<td>' + pct(periodPa(get, p, n)) + '</td>').join('') + '</tr>';
+    });
+    $('tblPeriods').innerHTML = h + '</tbody>';
+  }
+
   /* ── render ──────────────────────────────────────────────────────────── */
   function valid(p) { return p && typeof p === 'object' && p.pp && Array.isArray(p.benchmarks) && p.text && p.window; }
 
@@ -425,6 +465,13 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
     setText('kYears', k.yearByYear, T);
     setText('nYears', n.yearByYear, T);
     $('srcYears').innerHTML = '<b>' + esc(fill(tx.sourcesLabel || 'Sources', T)) + ':</b> as above.';
+
+    /* 3b · standard periods */
+    setText('hPeriods', h.periods || 'Standard periods', T);
+    setText('tPeriodsLead', tx.periodsLead, T);
+    periodsTable(p, R, T);
+    $('srcPeriods').innerHTML = '<b>' + esc(fill(tx.sourcesLabel || 'Sources', T)) + ':</b> as above' +
+      ((p.ppYears && p.ppYears.source) ? '; ' + esc(fill(p.ppYears.source, T)) : '') + '.';
 
     /* 4 · selection */
     setText('hSelection', h.selection, T);
