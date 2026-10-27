@@ -654,8 +654,19 @@ function rpCanon(a){ const p = rpAddr(a); return p.num ? (p.unit ? p.unit + '/' 
    records here. It fetches nothing and sends nothing anywhere.
    rpAddr … rpRun are the bookmarklet's own source (rpCode() joins them), so
    they stay self-contained: no page globals, line comments only (stripped). */
+/* Monday 00:00 of the week a time falls in, on this browser's own clock.
+   getDay() is Sunday 0 ... Saturday 6, so (getDay() + 6) % 7 is days-since-
+   Monday — Sunday falls out as 6, belonging to the week just worked rather
+   than starting a new one. (Shaene's weekStart, from the IRR Calculator.) */
+function rpWeekStart(from){
+  const m = new Date(from == null ? Date.now() : from);
+  m.setHours(0, 0, 0, 0);
+  m.setDate(m.getDate() - ((m.getDay() + 6) % 7));
+  return m.getTime();
+}
 function rpWorkList(days, market){
-  const cutoff = Date.now() - days * 86400e3, due = [], tally = { scope: 0, fresh: 0, waiting: 0, never: 0 };
+  const cutoff = Date.now() - days * 86400e3, monday = rpWeekStart();
+  const due = [], tally = { scope: 0, fresh: 0, waiting: 0, never: 0, unresolved: 0 };
   for (const p of S.props) {
     if (p.status !== 'held' || (market && p.market !== market)) continue;
     tally.scope++;
@@ -663,11 +674,17 @@ function rpWorkList(days, market){
     const t = rs.length ? Math.max(...rs.map(r => Date.parse(r.checked_at))) : -Infinity;
     if (t > cutoff) { tally.fresh++; continue; }
     if (rs.some(r => (r.verdict === 'sold' || r.verdict === 'listed') && !r.review)) { tally.waiting++; continue; }
+    /* Shaene's Monday rule: what RP Data could not answer this morning it
+       almost always cannot answer this afternoon — those failures are
+       structural, not weather — so an unresolved property waits for the week
+       to turn over instead of spending another eight seconds on it today. */
+    const last = rs.length ? rs.reduce((a, r) => Date.parse(r.checked_at) >= Date.parse(a.checked_at) ? r : a) : null;
+    if (last && last.verdict === 'unknown' && Date.parse(last.checked_at) >= monday) { tally.unresolved++; continue; }
     if (t === -Infinity) tally.never++;
     due.push({ p, t });
   }
   due.sort((a, b) => a.t - b.t || String(a.p.market).localeCompare(String(b.p.market)) || String(a.p.address).localeCompare(String(b.p.address)));
-  return { list: due.map(({ p }) => ({ id: p.id, market: p.market, address: p.address, purchase_date: p.purchase_date || null })), tally };
+  return { list: due.map(({ p }) => ({ id: p.id, market: p.market, address: p.address, purchase_date: p.purchase_date || null, purchase_price: p.purchase_price == null ? null : Number(p.purchase_price) })), tally };
 }
 const RP_MAX = 60000;     /* Chrome chokes on javascript: links much longer than this */
 function rpCode(){
@@ -675,12 +692,14 @@ function rpCode(){
   return '(function(MKTS,DATA,META){\n' + src.join('\n') + '\nrpRun(MKTS,DATA,META);\n})';
 }
 /* The list rides in the link as one string — per property
-   id(hex, no dashes)*market index*address*yyyymmdd, joined by ~ — characters
-   encodeURIComponent leaves alone, so the link stays small. Too long for one
-   link: split evenly into batches, each its own bookmark with its own resume. */
+   id(hex, no dashes)*market index*address*yyyymmdd*price, joined by ~ —
+   characters encodeURIComponent leaves alone, so the link stays small. Too long
+   for one link: split evenly into batches, each its own bookmark with its own
+   resume. The price travels with the address because the verdict needs it to
+   tell our own purchase settling from a genuine resale. */
 function rpBookmarklets(list, stamp, label){
   const mk = [...new Set(list.map(e => e.market))];
-  const items = list.map(e => String(e.id).replace(/-/g, '') + '*' + mk.indexOf(e.market) + '*' + String(e.address).replace(/[*~\s]+/g, ' ').trim() + '*' + String(e.purchase_date || '').replace(/-/g, ''));
+  const items = list.map(e => String(e.id).replace(/-/g, '') + '*' + mk.indexOf(e.market) + '*' + String(e.address).replace(/[*~\s]+/g, ' ').trim() + '*' + String(e.purchase_date || '').replace(/-/g, '') + '*' + (e.purchase_price == null ? '' : Math.round(e.purchase_price)));
   const code = rpCode();
   for (let n = 1; ; n++) {
     const per = Math.ceil(items.length / n), out = [];
@@ -740,20 +759,48 @@ function rpPick(address, texts){
   return { i: -1, why: 'no suggestion matched the address: ' + names(texts.map((t, i) => i)) };
 }
 function rpVerdict(e, pg){
-  // e = { purchase_date }, pg = { sale: { date, price } | null, onMarket, lastAd,
-  // url, conf, note }. sold = RP Data's last sale is NEWER than our purchase;
-  // listed = For Sale / Under Offer / Under Contract / Auction now; not_sold =
-  // the last sale IS our purchase; anything else unknown — never a guessed not_sold
+  // e = { purchase_date, purchase_price }, pg = { sale: { date, price } | null,
+  // onMarket, lastAd, url, conf, note }. Shaene's soldVerdict, ported.
+  // A sale newer than our purchase is only a RESALE if the money differs:
+  // settlement follows contract and an off-the-plan one can follow it by years,
+  // so AFTER our purchase date the date gets no vote and only the price does.
+  // BEFORE it, either a close date or the same money means the sale IS ours.
+  // Without a purchase price the money cannot be weighed, so it falls back to
+  // the date alone and says so.
   const r = { verdict: 'unknown', sale_date: null, sale_price: null, source_url: pg.url || null, confidence: null };
   const s = pg.sale, bought = e.purchase_date || '', notes = [];
   const mkt = pg.onMarket ? 'RP Data shows ' + pg.onMarket + (pg.lastAd ? ', last advertised ' + pg.lastAd : '') : '';
-  if (s && s.date && bought && s.date > bought) {
+  const onMkt = /for sale|under offer|under contract|auction/i.test(pg.onMarket || '');
+  const paid = Number(e.purchase_price) || 0;
+  const since = !!(s && s.date && bought && s.date > bought);
+  // the same money, to the nearest two per cent — which covers a rounded
+  // figure or a typo, and nothing else
+  const sameMoney = !!(paid && s && s.price && Math.abs(s.price - paid) < 0.02 * paid);
+  // six months either way, because a contract date and a settlement date are
+  // both "the purchase" and they are not the same day
+  const near = !!(s && s.date && bought && Math.abs(Date.parse(s.date) - Date.parse(bought)) < 180 * 864e5);
+  const isOurPurchase = since ? sameMoney : (near || sameMoney);
+  if (s && s.date && !bought) {
+    // nothing to judge it against, so what RP Data says is the whole answer
+    r.verdict = 'sold'; r.sale_date = s.date; r.sale_price = s.price; r.confidence = 'low';
+    notes.push('no purchase date in the register — this is RP Data\'s last sale, not a check against ours');
+  } else if (since && !isOurPurchase) {
     r.verdict = 'sold'; r.sale_date = s.date; r.sale_price = s.price; r.confidence = pg.conf || 'low';
-    const days = Math.round((Date.parse(s.date) - Date.parse(bought)) / 864e5);
-    if (days <= 90) { r.confidence = 'low'; notes.push('sold ' + days + ' days after our purchase date — it may be our purchase itself'); }
-  } else if (/for sale|under offer|under contract|auction/i.test(pg.onMarket || '')) { r.verdict = 'listed'; r.confidence = pg.conf || 'low'; }
-  else if (s && s.date && s.date === bought) { r.verdict = 'not_sold'; r.confidence = pg.conf || 'low'; }
-  else notes.push(!s ? 'no sale on record in RP Data' : !s.date ? 'the last sale date could not be read' : !bought ? 'no purchase date in the register; RP Data last sale ' + s.date : 'RP Data last sale ' + s.date + ' is before our purchase date ' + bought);
+    if (!paid) { r.confidence = 'low'; notes.push('no purchase price in the register, so this sale could not be weighed against what we paid'); }
+  } else if (onMkt) {
+    r.verdict = 'listed'; r.confidence = pg.conf || 'low';
+    if (since && isOurPurchase) notes.push('the sale on record is our own purchase settling (same price to within 2%)');
+  } else if (s && s.date && isOurPurchase) {
+    r.verdict = 'not_sold'; r.confidence = pg.conf || 'low';
+    notes.push(since ? 'the sale on record is dated after our purchase but is the same price to within 2% — our own purchase settling, not a resale' : 'the last sale on record is our own purchase');
+  } else if (s && s.date) {
+    // a sale before ours, at a different price and more than six months out:
+    // still held — our purchase simply is not the last sale on file
+    r.verdict = 'not_sold'; r.confidence = pg.conf || 'low';
+    notes.push('RP Data last sale ' + s.date + ' predates our purchase date ' + bought);
+  } else {
+    notes.push(!s ? 'no sale on record in RP Data' : 'the last sale date could not be read');
+  }
   r.notes = [pg.note, ...notes, mkt].filter(Boolean).join(' · ') || null;
   return r;
 }
@@ -770,7 +817,7 @@ async function rpRun(MKTS, DATA, META){
   const KEY = 'ppSoldCheck:' + META.key;
   // Shaene's pacing: a pause, a random extra so it is not robotic, a long rest every 20
   const PAUSE = 7000, JITTER = 2500, LONG_REST = [20, 45000];
-  const list = DATA.split('~').map(s => s.split('*')).map(f => ({ id: f[0].replace(/^(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-'), market: MKTS[+f[1]], address: f[2], purchase_date: f[3] ? f[3].replace(/^(\d{4})(\d\d)/, '$1-$2-') : '' }));
+  const list = DATA.split('~').map(s => s.split('*')).map(f => ({ id: f[0].replace(/^(.{8})(.{4})(.{4})(.{4})/, '$1-$2-$3-$4-'), market: MKTS[+f[1]], address: f[2], purchase_date: f[3] ? f[3].replace(/^(\d{4})(\d\d)/, '$1-$2-') : '', purchase_price: f[4] ? +f[4] : null }));
   let done = {};
   try { done = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { done = {}; }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(done)); } catch (e) {} };
@@ -1506,8 +1553,9 @@ function renderRpOut(){
   const mins = n => { const m = Math.round(n * 9.5 / 60); return m < 90 ? 'about ' + Math.max(1, m) + ' min' : 'about ' + (m / 60).toFixed(1) + ' hours'; };
   $('#rpOut').innerHTML =
     '<div class="sc-counts" id="rpCounts"><div><b data-c="due">' + list.length + '</b><span>To check</span></div><div><b data-c="never">' + tally.never + '</b><span>Never checked</span></div>' +
-      '<div><b data-c="fresh">' + tally.fresh + '</b><span>Checked recently</span></div><div><b data-c="waiting">' + tally.waiting + '</b><span>Waiting in Verify</span></div></div>' +
-    '<div style="font-size:12px;color:var(--sc-mut);margin-top:6px">Held properties' + (RP.market ? ' in ' + esc(RP.market) : '') + ' not checked in the last ' + RP.days + ' day' + (RP.days === 1 ? '' : 's') + ', never-checked first. Checked-recently and waiting-in-Verify properties are left out.</div>' +
+      '<div><b data-c="fresh">' + tally.fresh + '</b><span>Checked recently</span></div><div><b data-c="waiting">' + tally.waiting + '</b><span>Waiting in Verify</span></div>' +
+      '<div><b data-c="unresolved">' + tally.unresolved + '</b><span>Unresolved, until Monday</span></div></div>' +
+    '<div style="font-size:12px;color:var(--sc-mut);margin-top:6px">Held properties' + (RP.market ? ' in ' + esc(RP.market) : '') + ' not checked in the last ' + RP.days + ' day' + (RP.days === 1 ? '' : 's') + ', never-checked first. Checked-recently and waiting-in-Verify properties are left out, and one RP Data could not resolve waits until the Monday after it was tried.</div>' +
     (!bms.length ? '<div class="sc-empty" style="padding:18px">Nothing to check with these settings.</div>' :
       '<div><b>Drag ' + (bms.length > 1 ? 'each of these' : 'this') + ' to your bookmarks bar</b>' + (bms.length > 1 ? ' — the list is too long for one bookmark, so it comes in ' + bms.length + ' batches; run them one after another' : '') + '</div>' +
       '<div class="sc-bms" id="rpBms">' + bms.map(b => '<div><a class="sc-bm" draggable="true" href="' + esc(b.href) + '" data-bm="' + esc(b.key) + '">Sold Check · ' + esc(b.label) + '</a><span>' + b.count + ' propert' + (b.count === 1 ? 'y' : 'ies') + ' · ' + mins(b.count) + '</span></div>').join('') + '</div>' +
