@@ -2108,6 +2108,23 @@
   .pres-tp-size-row input{ flex:1 1 auto; text-align:center }
   .pres-tp-style-row .pres-tp-btn,
   .pres-tp-link-row .pres-tp-btn{ flex:1 1 auto }
+  /* "Link…" choices: a web address, or a slide in this deck (links between
+     slides). Lives inside the text panel, so its buttons keep the text's
+     highlighted words (preserveEditableFocus). */
+  .pres-tp-linkpop{ margin-top:6px; padding:8px; border:1px solid rgba(0,160,180,0.35); border-radius:6px }
+  .pres-tp-linkpop .pres-tp-btn{ width:100% }
+  .pres-tp-linkpop-cur{ font-size:11px; line-height:1.35; margin-bottom:6px; overflow-wrap:anywhere }
+  .pres-tp-linkpop-cur:empty{ display:none }
+  .pres-tp-linkpop-head{ font-size:10px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; opacity:0.55; margin:8px 0 4px }
+  .pres-tp-linkpop-list{ max-height:220px; overflow-y:auto; display:flex; flex-direction:column; gap:2px }
+  .pres-tp-linkpop-item{
+    flex:0 0 auto;   /* scroll the list; never squash its rows */
+    text-align:left; padding:5px 7px; border:0; border-radius:4px;
+    background:transparent; color:inherit; font:inherit; font-size:12px; cursor:pointer;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .pres-tp-linkpop-item:hover{ background:rgba(0,160,180,0.18) }
+  .pres-tp-linkpop-item.on{ background:var(--accent); color:#0a1520 }
   /* List row needs to fit 3 buttons (Bulleted / Dashed / Numbered)
      without clipping the labels when the right-rail panel is narrow.
      2-column grid pairs the first two and drops anything past that
@@ -2618,6 +2635,17 @@
     background:rgba(0,160,180,0.06); border-color:rgba(31,40,63,0.18);
   }
   [data-theme="light"] .pres-sh-link-row input[type="url"]::placeholder{ color:rgba(10,21,32,0.4) }
+  /* "Slide in this deck" picker for a shape link — opaque box + options in both
+     themes, or the native list renders white-on-white. */
+  .pres-sh-link-row select{
+    flex:1 1 auto; min-width:0; padding:6px 8px;
+    background:#16233c; color:#e8f1f6;
+    border:1px solid rgba(255,255,255,0.16); border-radius:5px;
+    font-family:inherit; font-size:12px; color-scheme:dark;
+  }
+  .pres-sh-link-row select option{ background:#16233c; color:#e8f1f6; }
+  [data-theme="light"] .pres-sh-link-row select{ background:#ffffff; color:#0a1520; border-color:rgba(31,40,63,0.18); color-scheme:light; }
+  [data-theme="light"] .pres-sh-link-row select option{ background:#ffffff; color:#0a1520; }
 
   .pres-sh-color-row{ display:flex; gap:4px; align-items:stretch }
   .pres-sh-color-row input[type="color"]{
@@ -4576,6 +4604,12 @@
       <button class="pres-tp-btn" id="pres-tp-link-add"    type="button" title="Wrap the selected words in a link (double-click the text first to enter editing mode, then highlight)">Link…</button>
       <button class="pres-tp-btn" id="pres-tp-link-remove" type="button" title="Remove the link from the selected words">Unlink</button>
     </div>
+    <div class="pres-tp-linkpop" id="pres-tp-linkpop" hidden>
+      <div class="pres-tp-linkpop-cur" id="pres-tp-linkpop-cur"></div>
+      <button class="pres-tp-btn" id="pres-tp-link-web" type="button" title="Link to a web page (opens in a new tab)">Web address…</button>
+      <div class="pres-tp-linkpop-head">Slide in this deck</div>
+      <div class="pres-tp-linkpop-list" id="pres-tp-linkpop-list"></div>
+    </div>
   </div>
   <div class="pres-tp-row">
     <label>List</label>
@@ -4829,9 +4863,16 @@
 
   <div class="pres-sh-row">
     <label><span class="pres-cap">Link<span class="pres-cap-note">Optional</span></span></label>
-    <div class="pres-sh-link-row">
+    <div class="pres-sh-mini-tabs" id="pres-sh-link-tabs" role="tablist">
+      <button class="pres-sh-mini-tab on" data-mode="web"   type="button" role="tab">Web address</button>
+      <button class="pres-sh-mini-tab"    data-mode="slide" type="button" role="tab">Slide in this deck</button>
+    </div>
+    <div class="pres-sh-link-row" id="pres-sh-link-web-row">
       <input type="url" id="pres-sh-link" placeholder="https://…" spellcheck="false" autocomplete="off">
       <button type="button" class="pres-sh-link-clear" id="pres-sh-link-clear" title="Remove link" aria-label="Remove link">×</button>
+    </div>
+    <div class="pres-sh-link-row" id="pres-sh-link-slide-row" style="display:none">
+      <select id="pres-sh-link-slide" aria-label="Slide to link to"></select>
     </div>
   </div>
 
@@ -6226,7 +6267,7 @@ async function importGoogleSlidesSnapshot() {
     /* srcPageId ties each tool-slide to its Google source page, so on re-sync a
        slide's overlays follow it (or are removed with it) even when pages are
        inserted / deleted / reordered. */
-    slides: Array.from({ length: n }, (_, i) => ({ fn: 'blank', custom: true, srcPageId: (srcSlides[i] && srcSlides[i].id) || '' })),
+    slides: Array.from({ length: n }, (_, i) => ({ fn: 'blank', custom: true, srcPageId: (srcSlides[i] && srcSlides[i].id) || '', sid: _newSlideSid() })),
     lastUpdated: now,
     /* Remember the source so the deck can be re-synced when the Google deck
        changes (manual "Sync slides" button + auto-on-open when revision differs). */
@@ -6357,7 +6398,7 @@ async function refreshSnapshotDeck(deck, opts) {
       if (opts.toast) showPresToast('Syncing slide images… ' + (j + 1) + '/' + n, { duration: 60000 });
       const pid = (srcSlides[j] && srcSlides[j].id) || ('__new_' + j);
       const prev = oldByPage[pid];
-      const slide = prev ? prev.slide : { fn: 'blank', custom: true };
+      const slide = prev ? prev.slide : { fn: 'blank', custom: true, sid: _newSlideSid() };
       slide.srcPageId = pid;
       const arr = prev ? prev.overlays : [];
       if (prev) delete oldByPage[pid];
@@ -6386,7 +6427,7 @@ async function refreshSnapshotDeck(deck, opts) {
        get identity-based overlay tracking). */
     for (let j = 0; j < n; j++) {
       if (opts.toast) showPresToast('Syncing slide images… ' + (j + 1) + '/' + n, { duration: 60000 });
-      if (j >= deck.slides.length) deck.slides.push({ fn: 'blank', custom: true });
+      if (j >= deck.slides.length) deck.slides.push({ fn: 'blank', custom: true, sid: _newSlideSid() });
       const key = deckId + '/' + j;
       if (!Array.isArray(_overlays[key])) _overlays[key] = [];
       try { await pullInto(j, _overlays[key]); ok++; } catch (e) { console.warn('Snapshot sync: slide', j, 'failed', e); fail++; }
@@ -6974,6 +7015,9 @@ function openDeck(id) {
   if (!deck) return;
   _activeDeck = deck;
   _slideIdx = 0;
+  /* Slides saved before slide ids existed get theirs now — before the undo
+     baseline below, so undo can never take them away again. */
+  _backfillSlideSids(deck);
   /* New deck = clean multi-select state. Indices are per-deck so
      keeping the previous deck's Set would highlight wrong thumbs. */
   _clearSlideSelection();
@@ -7407,7 +7451,7 @@ function insertSlideAfter(afterIdx) {
   /* Shift overlay + BG storage keys for slides AT or AFTER insertAt
      so the new slide gets a clean key + nothing collides. */
   shiftSlideStorageUp(_activeDeck.id, insertAt);
-  slides.splice(insertAt, 0, { fn: 'blank', custom: true });
+  slides.splice(insertAt, 0, { fn: 'blank', custom: true, sid: _newSlideSid() });
 
   /* If the deck has an active theme, clone its overlays + bg into
      the new slide. Themes only affect NEW slides — existing slides
@@ -7558,17 +7602,23 @@ function pasteSlidesAfter(afterIdx) {
 
   const slides = _activeDeck.slides;
   const baseInsertAt = Math.max(0, Math.min(slides.length, afterIdx + 1));
+  /* Every pasted slide gets a NEW id (never the source's), and a link that
+     points at another slide of this same paste is moved onto that slide's new
+     id. Links to slides outside the batch are left as they are. */
+  const sidMap = {};
+  entries.forEach(entry => { const s = entry.slide && entry.slide.sid; if (s) sidMap[s] = _newSlideSid(); });
   entries.forEach((entry, i) => {
     const insertAt = baseInsertAt + i;
     shiftSlideStorageUp(_activeDeck.id, insertAt);
     const cloned = JSON.parse(JSON.stringify(entry.slide));
     cloned.custom = true;
+    cloned.sid = sidMap[cloned.sid] || _newSlideSid();
     slides.splice(insertAt, 0, cloned);
 
     const destKey = _activeDeck.id + '/' + insertAt;
     if (Array.isArray(entry.overlays) && entry.overlays.length) {
       _overlays[destKey] = entry.overlays.map(o => {
-        const clone = JSON.parse(JSON.stringify(o));
+        const clone = _remapSlideLinks(o, sidMap);
         clone.id = 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
         return clone;
       });
@@ -7598,9 +7648,134 @@ function saveActiveDeckIfCustom() {
      empty), so persist whenever the active deck is one of them — don't rely
      solely on a `custom` flag that an older cloud-saved deck might lack. */
   if (_activeDeck && (_activeDeck.custom || _customDecks.indexOf(_activeDeck) !== -1)) {
+    _ensureSlideSids(_activeDeck);   /* any slide added without an id gets one before it is saved */
     saveCustomDecks();
   }
 }
+
+/* ═══ LINKS BETWEEN SLIDES (Van 2026-10-27) ═══════════════════════════════
+   A link names its target slide by a permanent id (`sid` on the slide entry),
+   never by position, so adding, deleting or reordering slides can't break it:
+     text  → <a href="#slide:<sid>" class="pres-slide-link">  (no target)
+     shape → o.link = '#slide:<sid>'
+   Web links are left exactly as they were (target=_blank). One delegated click
+   handler (below) follows slide links in View, Present and (Ctrl/Cmd) Edit. */
+const SLIDE_HREF_PREFIX = '#slide:';
+/* True once the cloud rows have loaded (_hydratePresFromCloud). The open-time
+   id backfill waits for it: a pre-hydrate copy can be stale, and saving it
+   would only be refused by the save check. */
+let _presDecksLoaded = false;
+
+function _newSlideSid() {
+  return 's_' + Date.now().toString(36).slice(-5) + Math.random().toString(36).slice(2, 8);
+}
+function _isSlideHref(href) {
+  return typeof href === 'string' && href.indexOf(SLIDE_HREF_PREFIX) === 0;
+}
+/* Does every slide have its own id? */
+function _slideSidsOk(deck) {
+  const seen = new Set();
+  return (deck.slides || []).every(s => {
+    if (!s || typeof s !== 'object') return true;
+    if (!s.sid || seen.has(s.sid)) return false;
+    seen.add(s.sid);
+    return true;
+  });
+}
+/* Give an id to every slide that lacks one, and a fresh one to a slide that
+   repeats an earlier slide's id (a copied entry). An existing, unique id is
+   never changed. True if anything changed. */
+function _ensureSlideSids(deck) {
+  if (!deck || !Array.isArray(deck.slides) || _slideSidsOk(deck)) return false;
+  const seen = new Set();
+  deck.slides.forEach(s => {
+    if (!s || typeof s !== 'object') return;
+    if (!s.sid || seen.has(s.sid)) s.sid = _newSlideSid();
+    seen.add(s.sid);
+  });
+  return true;
+}
+/* One-time backfill for a deck saved before slide ids existed, persisted through
+   the normal guarded save (save check + anti-wipe). When the ids are the deck's
+   ONLY change since it was loaded, _persistDeckRow recognises the write by
+   _sidsOnlySig and keeps the deck's "Updated" date. */
+function _backfillSlideSids(deck) {
+  if (!deck || !_presDecksLoaded || _slideSidsOk(deck)) return false;
+  /* Someone who can't save this deck gets ids for this visit only (nothing
+     links to an id that was never saved), and their local mirror is left alone. */
+  if (!_deckIsEditable(deck)) { _ensureSlideSids(deck); return true; }
+  const sigOf = () => _deckSaveSig(_deckRowPayload(deck), _deckRowTitle(deck), _deckRowVisibility(deck));
+  let clean = false;
+  try { clean = !!deck._rowId && !!deck._sig && deck._sig === sigOf(); } catch (_) {}
+  _ensureSlideSids(deck);
+  if (clean) { try { deck._sidsOnlySig = sigOf(); } catch (_) {} }
+  if (deck === _activeDeck) saveActiveDeckIfCustom();
+  return true;
+}
+/* Index of the slide a '#slide:<sid>' href points at in the open deck, or -1. */
+function _slideLinkIndex(href) {
+  if (!_activeDeck || !_isSlideHref(href)) return -1;
+  const sid = href.slice(SLIDE_HREF_PREFIX.length);
+  return sid ? _activeDeck.slides.findIndex(s => s && s.sid === sid) : -1;
+}
+/* "Title" of slide i for the pickers: its first text box's text, else "Slide N". */
+function _slideLinkTitle(i) {
+  const ovs = (_activeDeck && _overlays[_activeDeck.id + '/' + i]) || [];
+  for (let k = 0; k < ovs.length; k++) {
+    const o = ovs[k];
+    if (!o || o.type !== 'text' || !o.html) continue;
+    let html = o.html;
+    try { html = presResolveTokens(html); } catch (_) {}
+    const t = (new DOMParser().parseFromString(html, 'text/html').body.textContent || '').replace(/\s+/g, ' ').trim();
+    if (t) return t.length > 70 ? t.slice(0, 69) + '…' : t;
+  }
+  return 'Slide ' + (i + 1);
+}
+/* "6 · General Information" for slide index 5. */
+function _slideLinkLabel(i) { return (i + 1) + ' · ' + _slideLinkTitle(i); }
+/* Go to the slide a link points at — renderSlide is the same move the arrow
+   keys make, in the editor, View and Present alike (counter, rail, chart
+   builds). A target that is gone (deleted, or a link from another deck) stays
+   put and says so. */
+function _followSlideLink(href) {
+  const idx = _slideLinkIndex(href);
+  if (idx < 0) { showPresToast('That slide is no longer in this deck', { duration: 2600, warn: true }); return; }
+  renderSlide(idx);
+}
+/* Deep copy of an overlay with every '#slide:<old>' link that is in `map`
+   moved to '#slide:<new>' (html, shape link, table cells — any string). */
+function _remapSlideLinks(o, map) {
+  let s = JSON.stringify(o);
+  if (map && Object.keys(map).length) {
+    s = s.replace(/#slide:([A-Za-z0-9_-]+)/g, (m, sid) => (map[sid] ? SLIDE_HREF_PREFIX + map[sid] : m));
+  }
+  return JSON.parse(s);
+}
+/* How many links on OTHER slides of the open deck point at slide idx. */
+function _countLinksToSlide(idx) {
+  const s = _activeDeck && _activeDeck.slides[idx];
+  if (!s || !s.sid) return 0;
+  const re = new RegExp('#slide:' + s.sid.replace(/[^A-Za-z0-9_-]/g, '') + '(?![A-Za-z0-9_-])', 'g');
+  let n = 0;
+  _activeDeck.slides.forEach((_, i) => {
+    if (i === idx) return;
+    const ovs = _overlays[_activeDeck.id + '/' + i];
+    if (ovs) n += (JSON.stringify(ovs).match(re) || []).length;
+  });
+  return n;
+}
+/* One delegated handler for every slide link on the stage. Capture phase, so the
+   '#slide:' hash never reaches the address bar whatever else handles the click.
+   Edit mode keeps editing on a plain click; Ctrl/Cmd-click follows the link.
+   Links elsewhere (the rail's thumbnails) are inert. */
+document.addEventListener('click', (ev) => {
+  const a = (ev.target && ev.target.closest) ? ev.target.closest('a[href^="#slide:"]') : null;
+  if (!a) return;
+  ev.preventDefault();
+  if (!_activeDeck || !slot.contains(a)) return;
+  if (_editMode && !(ev.ctrlKey || ev.metaKey)) return;
+  _followSlideLink(a.getAttribute('href'));
+}, true);
 
 /* ═══ THEMES ═══════════════════════════════════════════════════════
    A theme is a full-slide snapshot — its overlays + background CSS —
@@ -7817,7 +7992,10 @@ function deleteSlide(idx) {
      anyway (DECKS is re-read from source on page reload, which
      restores any built-in slide that was removed). The confirm
      dialog still guards accidental presses. */
-  if (!confirm('Delete this slide?')) return;
+  const nLinks = _countLinksToSlide(idx);
+  if (!confirm('Delete this slide?' + (nLinks
+    ? '\n\n' + nLinks + (nLinks === 1 ? ' link on another slide points' : ' links on other slides point') + ' here and will stop working.'
+    : ''))) return;
   /* Index shift invalidates the multi-select Set. Easiest to clear. */
   _clearSlideSelection();
   const k = _activeDeck.id + '/' + idx;
@@ -7965,6 +8143,7 @@ function backToPicker() {
   try {
     const u = new URL(location.href);
     u.searchParams.delete('deck');
+    u.searchParams.delete('slide');   /* a deep-linked slide belongs to the deck being left */
     history.replaceState(null, '', u.toString());
   } catch (_) {}
   /* Re-render the picker so any newly-created or just-deleted user
@@ -12386,8 +12565,10 @@ function buildOverlayEl(o) {
        that fills the box; in edit mode render plain so drag / select still
        work. has-link marks it for the edit-mode hint. */
     if (o.link && !_editMode) {
-      el.innerHTML = '<a class="pres-shape-link" href="' + _psEscapeAttr(o.link) +
-        '" target="_blank" rel="noopener noreferrer">' + _svg + '</a>';
+      /* a link to a slide in this deck stays in the tab (the delegated
+         slide-link handler moves to it); a web link opens a new tab */
+      el.innerHTML = '<a class="pres-shape-link" href="' + _psEscapeAttr(o.link) + '"' +
+        (_isSlideHref(o.link) ? '' : ' target="_blank" rel="noopener noreferrer"') + '>' + _svg + '</a>';
     } else {
       el.innerHTML = _svg;
     }
@@ -12865,6 +13046,7 @@ function _toggleSelected(id) {
   syncTextPanel(); syncShapePanel();
 }
 function syncTextPanel() {
+  _tpLinkPopClose();   /* the Link… choices belong to the selection they were opened for */
   const o = getSelectedOverlay();
   /* Cell mode kicks in when a table cell is focused AND the table
      overlay it belongs to is the currently-selected overlay. The
@@ -13788,7 +13970,8 @@ function syncShapePanel() {
   _shApplyPaintToPanel('fill',   o.fill);
   _shApplyPaintToPanel('stroke', o.stroke);
   shStrokeWidthEl.value = String(o.strokeWidth != null ? o.strokeWidth : 2);
-  if (shLinkEl) shLinkEl.value = o.link || '';
+  if (shLinkEl) shLinkEl.value = _isSlideHref(o.link) ? '' : (o.link || '');
+  _shSyncSlideLink(o);
   /* Lines and arrows have no fill region — hide the fill row so
      the panel doesn't show controls that have no visual effect. */
   const hideFill = (o.kind === 'line' || o.kind === 'arrow');
@@ -14313,6 +14496,58 @@ if (shLinkClearBtn) {
   shLinkClearBtn.addEventListener('click', () => {
     if (shLinkEl) shLinkEl.value = '';
     _shCommitSelected(o => { o.link = ''; });
+    pushHistory();
+  });
+}
+
+/* Shape link → "Web address" or "Slide in this deck". The tabs only switch
+   which control shows; the link changes when a URL is typed or a slide picked. */
+const shLinkSlideSel = document.getElementById('pres-sh-link-slide');
+function _shShowLinkMode(mode) {
+  document.querySelectorAll('#pres-sh-link-tabs .pres-sh-mini-tab').forEach(t => {
+    const on = t.dataset.mode === mode;
+    t.classList.toggle('on', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  const web = document.getElementById('pres-sh-link-web-row');
+  const sl  = document.getElementById('pres-sh-link-slide-row');
+  if (web) web.style.display = mode === 'slide' ? 'none' : '';
+  if (sl)  sl.style.display  = mode === 'slide' ? '' : 'none';
+}
+function _shFillSlideLinkSelect(o) {
+  const sel = document.getElementById('pres-sh-link-slide');
+  if (!sel || !_activeDeck) return;
+  _ensureSlideSids(_activeDeck);   /* in memory; saved with the link itself */
+  const cur = _isSlideHref(o.link) ? o.link.slice(SLIDE_HREF_PREFIX.length) : '';
+  sel.innerHTML = '';
+  const add = (value, text) => {
+    const opt = document.createElement('option');
+    opt.value = value; opt.textContent = text;
+    sel.appendChild(opt);
+  };
+  add('', 'Pick a slide…');
+  _activeDeck.slides.forEach((s, i) => { if (s && s.sid) add(s.sid, _slideLinkLabel(i)); });
+  if (cur && _slideLinkIndex(o.link) < 0) add(cur, '(slide no longer in this deck)');
+  sel.value = cur;
+}
+/* Panel sync: a slide link shows the slide picker; a web link the URL box; no
+   link leaves whichever tab the user last chose. */
+function _shSyncSlideLink(o) {
+  if (_isSlideHref(o.link)) _shShowLinkMode('slide');
+  else if (o.link) _shShowLinkMode('web');
+  _shFillSlideLinkSelect(o);
+}
+document.querySelectorAll('#pres-sh-link-tabs .pres-sh-mini-tab').forEach(t => {
+  t.addEventListener('click', () => {
+    _shShowLinkMode(t.dataset.mode);
+    const o = getSelectedOverlay();
+    if (o && o.type === 'shape') _shFillSlideLinkSelect(o);
+  });
+});
+if (shLinkSlideSel) {
+  shLinkSlideSel.addEventListener('change', () => {
+    const sid = shLinkSlideSel.value;
+    _shCommitSelected(o => { o.link = sid ? SLIDE_HREF_PREFIX + sid : ''; });
     pushHistory();
   });
 }
@@ -15341,7 +15576,7 @@ function _fmtIntroPackage(adv) {
    the active deck. Returns its index. */
 function _fmtAppendSlide(overlays, bg) {
   const at = _activeDeck.slides.length;
-  _activeDeck.slides.push({ fn: 'blank', custom: true });
+  _activeDeck.slides.push({ fn: 'blank', custom: true, sid: _newSlideSid() });
   _overlays[_activeDeck.id + '/' + at] = overlays;
   if (bg) _slideBgs[_activeDeck.id + '/' + at] = bg;
   return at;
@@ -19938,7 +20173,109 @@ function _selectionInsideEditable(el) {
   if (!el.contains(range.commonAncestorContainer)) return null;
   return sel;
 }
+/* "Link…" opens the choices: Web address… (the original prompt flow below,
+   unchanged) or a slide in this deck. With the caret inside an existing link
+   it shows where that link goes, and picking a slide re-points it. */
 tpLinkAdd.addEventListener('click', () => {
+  const pop = document.getElementById('pres-tp-linkpop');
+  if (pop && !pop.hidden) { _tpLinkPopClose(); return; }
+  const ctx = _tpLinkCtx();
+  const sel = window.getSelection();
+  const r = (sel && sel.rangeCount) ? sel.getRangeAt(0) : null;
+  if (ctx && r && ctx.root.contains(r.commonAncestorContainer) && (!sel.isCollapsed || _tpLinkAnchor(ctx.root))) {
+    _tpLinkPopOpen(ctx.root);
+    return;
+  }
+  if (_getFocusedCell()) { alert('Highlight the words you want to link inside the cell first.'); return; }
+  const o = getSelectedOverlay();
+  if (!o || o.type !== 'text') return;
+  alert('Double-click the text first, then highlight the words you want to link.');
+});
+/* Where a slide link can be made: the focused table cell, or the text box
+   being typed in. commit() persists the edited markup + one undo step. */
+function _tpLinkCtx() {
+  const fc = _getFocusedCell();
+  if (fc) return { root: fc.td, commit: () => { fc.cell.html = fc.td.innerHTML; saveOverlays(); pushHistory(); } };
+  const o = getSelectedOverlay();
+  if (!o || o.type !== 'text') return null;
+  const el = slot.querySelector('.pres-overlay[data-id="' + o.id + '"]');
+  if (!el || el.contentEditable !== 'true') return null;
+  return { root: el, commit: () => { o.html = _editableHtml(el); saveOverlays(); pushHistory(); } };
+}
+/* The <a> the selection sits in (both ends inside the same link), or null. */
+function _tpLinkAnchor(root) {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return null;
+  const up = (n) => {
+    for (; n && n !== root; n = n.parentNode) if (n.nodeType === 1 && n.tagName === 'A') return n;
+    return null;
+  };
+  const a = up(sel.anchorNode);
+  return (a && a === up(sel.focusNode)) ? a : null;
+}
+function _tpLinkPopClose() {
+  const pop = document.getElementById('pres-tp-linkpop');
+  if (pop) pop.hidden = true;
+}
+function _tpLinkPopOpen(root) {
+  const pop  = document.getElementById('pres-tp-linkpop');
+  const list = document.getElementById('pres-tp-linkpop-list');
+  const cur  = document.getElementById('pres-tp-linkpop-cur');
+  if (!pop || !list || !_activeDeck) return;
+  _ensureSlideSids(_activeDeck);   /* in memory; saved with the link itself */
+  const a = _tpLinkAnchor(root);
+  const href = a ? (a.getAttribute('href') || '') : '';
+  const idx = _slideLinkIndex(href);
+  cur.textContent = !a ? ''
+    : _isSlideHref(href) ? (idx >= 0 ? 'Links to slide ' + _slideLinkLabel(idx) : 'Links to a slide that is no longer in this deck')
+    : 'Links to ' + href;
+  list.innerHTML = '';
+  _activeDeck.slides.forEach((s, i) => {
+    if (!s || !s.sid) return;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pres-tp-linkpop-item' + (i === idx ? ' on' : '');
+    b.dataset.sid = s.sid;
+    b.textContent = b.title = _slideLinkLabel(i);
+    list.appendChild(b);
+  });
+  pop.hidden = false;
+}
+/* Wrap the highlighted words in a link to slide `sid` — or, with the caret in
+   an existing link, re-point that link. No target: it stays in this tab. */
+function _tpLinkToSlide(sid) {
+  _tpLinkPopClose();
+  const ctx = _tpLinkCtx();
+  if (!ctx || !sid) return;
+  const href = SLIDE_HREF_PREFIX + sid;
+  const tidy = (x) => { x.removeAttribute('target'); x.removeAttribute('rel'); x.classList.add('pres-slide-link'); };
+  const a = _tpLinkAnchor(ctx.root);
+  if (a) {
+    a.setAttribute('href', href);
+    tidy(a);
+  } else {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+    document.execCommand('createLink', false, href);
+    ctx.root.querySelectorAll('a[href="' + href + '"]').forEach(tidy);
+  }
+  ctx.commit();
+}
+(function () {
+  const pop = document.getElementById('pres-tp-linkpop');
+  if (!pop) return;
+  /* Any press inside the choices (incl. the list's scrollbar) must not take
+     focus from the text, or its highlighted words are gone. */
+  pop.addEventListener('mousedown', (ev) => ev.preventDefault());
+  pop.addEventListener('click', (ev) => {
+    const b = ev.target.closest('.pres-tp-linkpop-item');
+    if (b) _tpLinkToSlide(b.dataset.sid);
+  });
+  const web = document.getElementById('pres-tp-link-web');
+  if (web) web.addEventListener('click', () => { _tpLinkPopClose(); _tpLinkWeb(); });
+})();
+/* Web address — the original "Link…" behaviour, unchanged. */
+function _tpLinkWeb() {
   /* Cell mode — wrap selected words inside the focused cell. */
   const fc = _getFocusedCell();
   if (fc) {
@@ -19977,7 +20314,7 @@ tpLinkAdd.addEventListener('click', () => {
   o.html = _editableHtml(el);   /* strip the edit-mode handles — see _editableHtml */
   saveOverlays();
   pushHistory();
-});
+}
 tpLinkRemove.addEventListener('click', () => {
   const fc = _getFocusedCell();
   if (fc) {
@@ -20501,10 +20838,13 @@ async function _persistDeckRow(deck) {
   const forced = !!deck._forceDateSave;   /* manual back-date: date-only write */
   deck._forceDateSave = false;
   if (!contentChanged && !forced) return;
+  /* Slide ids added to an otherwise-unchanged deck (_backfillSlideSids) are
+     written, but they are not an edit — they must not re-date the deck. */
+  const sidsOnly = contentChanged && !!deck._rowId && deck._sidsOnlySig === sig;
 
   /* A real edit re-dates the deck; a forced date-only save keeps the date the
      user just picked. The picker card reads deck.lastUpdated. */
-  if (contentChanged) {
+  if (contentChanged && !sidsOnly) {
     deck.lastUpdated = new Date().toISOString();
     payload.deck.lastUpdated = deck.lastUpdated;
   }
@@ -20579,6 +20919,7 @@ function _deckConflictError() {
    once more when no deck is open so the card isn't left showing the old date. */
 function _deckSaveSettled(deck, sig) {
   deck._sig = sig;
+  deck._sidsOnlySig = null;   /* the id backfill is written; later saves date normally */
   if (typeof _mirrorDecksLocal === 'function') _mirrorDecksLocal();
   if (!_activeDeck && typeof buildPicker === 'function') buildPicker();
 }
@@ -21031,6 +21372,19 @@ async function _hydratePresFromCloud() {
         }
       }
       _applyPresReadonly();
+    }
+    /* Slide ids: a deck opened before this load finished was left without its
+       backfill (see _backfillSlideSids) — do it now, on the current copy. Undo
+       steps taken since opening hold the same id-less slide list (adding a
+       slide would already have given every slide an id), so copy the new ids
+       into them by position; undo then can't take the ids away. */
+    _presDecksLoaded = true;
+    if (_activeDeck && _backfillSlideSids(_activeDeck)) {
+      const live = _activeDeck.slides;
+      _history.forEach(h => {
+        if (!h || !Array.isArray(h.slides) || h.slides.length !== live.length) return;
+        h.slides.forEach((s, i) => { if (s && typeof s === 'object' && !s.sid && live[i]) s.sid = live[i].sid; });
+      });
     }
     if (_activeDeck && typeof renderOverlays === 'function') renderOverlays();
     if (document.body.classList.contains('pres-theme-panel-open')) renderThemePanel();
@@ -22015,9 +22369,25 @@ const initialDeck = new URLSearchParams(location.search).get('deck');
 function _clearDeckPending() {
   document.body.classList.remove('pres-deck-pending');
 }
+/* &slide=<number or slide id> opens the deck on that slide (1-based number, or a
+   slide's permanent id — the one links use). True once it has been applied. */
+const initialSlide = new URLSearchParams(location.search).get('slide');
+function _openInitialSlide() {
+  if (!initialSlide || !_activeDeck || _activeDeck.id !== initialDeck) return false;
+  const n = /^\d+$/.test(initialSlide) ? parseInt(initialSlide, 10) - 1 : -1;
+  const idx = n >= 0 ? (n < _activeDeck.slides.length ? n : -1)
+    : _activeDeck.slides.findIndex(s => s && s.sid === initialSlide);
+  if (idx < 0) return false;
+  renderSlide(idx);
+  return true;
+}
 if (initialDeck) {
   if (findDeck(initialDeck)) {
     openDeck(initialDeck);
+    /* a slide id the cached copy doesn't know yet may arrive with the cloud load */
+    if (initialSlide && !_openInitialSlide()) {
+      Promise.resolve(_presHydrated).catch(() => {}).then(() => { if (_slideIdx === 0) _openInitialSlide(); });
+    }
     _clearDeckPending();
   } else {
     /* Belt-and-braces: if the cloud fetch stalls, stop holding the picker
@@ -22026,7 +22396,7 @@ if (initialDeck) {
     Promise.resolve(_presHydrated)
       .catch(() => {})
       .then(() => {
-        if (!_activeDeck && findDeck(initialDeck)) openDeck(initialDeck);
+        if (!_activeDeck && findDeck(initialDeck)) { openDeck(initialDeck); _openInitialSlide(); }
       })
       .catch(() => {})
       .then(() => { clearTimeout(_pendingBail); _clearDeckPending(); });
