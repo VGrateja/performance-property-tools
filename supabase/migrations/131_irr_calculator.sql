@@ -1,6 +1,7 @@
 -- 131: the IRR Calculator — the shared book and its change log.
 --
--- Two tables, like 126_sold_check.sql: the thing, and what people did to it.
+-- Three tables, like 126_sold_check.sql: the thing, what people did to it,
+-- and the one setting that belongs to the team rather than to a browser.
 --
 --   irr_book  one row per capital-city book ('adelaide', 'brisbane', …).
 --             `body` is the whole register exactly as the tool already
@@ -61,6 +62,27 @@ create table if not exists public.irr_log (
 
 create index if not exists irr_log_at_idx on public.irr_log (at desc);
 
+-- ── the shared setting ────────────────────────────────────────────────────
+-- One row: key 'rpdata_exec', the /exec address of the Apps Script behind the
+-- sold-check sheet. It lives here so that whoever sets it up sets it up once
+-- for everyone, instead of each person pasting it into their own browser.
+--
+-- The tool treats this table as optional - both call sites fall back to the
+-- local copy if it is unreachable - so a project without it degrades to
+-- per-browser configuration rather than failing.
+
+create table if not exists public.irr_config (
+  key         text primary key check (btrim(key) <> ''),
+  value       text,
+  updated_at  timestamptz not null default now(),
+  updated_by  text
+);
+
+drop trigger if exists trg_irr_config_touch on public.irr_config;
+create trigger trg_irr_config_touch
+  before insert or update on public.irr_config
+  for each row execute function public.irr_book_touch();
+
 -- ── who may write ─────────────────────────────────────────────────────────
 -- dev/admin, or an 'irr-calculator' editor grant: the scorecards /
 -- sold-check tool-scoped pattern.
@@ -69,14 +91,18 @@ create or replace function public.irr_calculator_can_write() returns boolean
   select coalesce(public.is_writer() or public.has_tool_role('irr-calculator', 'editor'), false);
 $$;
 
-alter table public.irr_book enable row level security;
-alter table public.irr_log  enable row level security;
+alter table public.irr_book   enable row level security;
+alter table public.irr_log    enable row level security;
+alter table public.irr_config enable row level security;
 
 drop policy if exists "irr book read"   on public.irr_book;
 drop policy if exists "irr book insert" on public.irr_book;
 drop policy if exists "irr book update" on public.irr_book;
 drop policy if exists "irr log read"    on public.irr_log;
 drop policy if exists "irr log insert"  on public.irr_log;
+drop policy if exists "irr config read"   on public.irr_config;
+drop policy if exists "irr config insert" on public.irr_config;
+drop policy if exists "irr config update" on public.irr_config;
 
 -- To open reading to all signed-in staff later, these two policies become
 --   using (true)
@@ -97,10 +123,22 @@ create policy "irr log insert"  on public.irr_log for insert to authenticated
 -- No UPDATE or DELETE on the log, by design: it is the record of what was
 -- done, and the tool only ever appends to it.
 
-revoke all on public.irr_book from anon;
-revoke all on public.irr_log  from anon;
-grant select, insert, update on public.irr_book to authenticated;
-grant select, insert         on public.irr_log  to authenticated;
+-- Writers only, and not merely any signed-in reader: this value is a
+-- capability. Anyone holding that address can append rows to the sheet
+-- without signing in to anything.
+create policy "irr config read"   on public.irr_config for select to authenticated
+  using (public.irr_calculator_can_write());
+create policy "irr config insert" on public.irr_config for insert to authenticated
+  with check (public.irr_calculator_can_write());
+create policy "irr config update" on public.irr_config for update to authenticated
+  using (public.irr_calculator_can_write()) with check (public.irr_calculator_can_write());
+
+revoke all on public.irr_book   from anon;
+revoke all on public.irr_log    from anon;
+revoke all on public.irr_config from anon;
+grant select, insert, update on public.irr_book   to authenticated;
+grant select, insert         on public.irr_log    to authenticated;
+grant select, insert, update on public.irr_config to authenticated;
 grant usage, select on sequence public.irr_log_id_seq to authenticated;
 
 -- The tool subscribes to postgres_changes on the book so one person's edit
