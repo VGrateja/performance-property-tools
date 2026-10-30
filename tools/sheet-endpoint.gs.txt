@@ -1,0 +1,370 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   Google Sheet endpoint for the RP Data held check.
+
+   Setup, once (about three minutes)
+     1. Make a new Google Sheet. Name it whatever you like.
+     2. Extensions → Apps Script. Delete whatever is in the editor.
+     3. Paste this whole file in. Save.
+     4. Deploy → New deployment → gear icon → Web app
+          Execute as:        Me (your address)
+          Who has access:    Anyone
+        Deploy, approve the permission prompt, and copy the Web app URL.
+        It looks like  https://script.google.com/macros/s/AKfy..../exec
+     5. Paste that URL into the IRR Calculator, Sold check tab, under
+        "Check RP Data directly". It is kept in that browser and nowhere else.
+
+   Changing this file later
+     Edit, save, then Deploy → Manage deployments → pencil →
+     Version: New version → Deploy. Use Manage deployments, NOT New
+     deployment: a new deployment gets a new URL and the old one keeps
+     serving the old code.
+
+   "Who has access: Anyone" is required — the request comes from
+   rpp.corelogic.com.au, not from a signed-in Google page, so it arrives
+   anonymous. It still runs as YOU and writes only to YOUR sheet. Treat the
+   URL as a secret: anyone holding it can append rows. If it ever leaks,
+   Deploy → Manage deployments → Archive, and make a new one.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Two tabs, because they are two passes. RP Data goes first and answers for
+   nearly everything; Pricefinder is only ever asked about what RP Data could
+   not resolve, and keeping that apart is what makes it obvious which source
+   a figure came from. */
+/* Where to send someone when neither pass could find a property. The shape
+   of this URL has NOT been checked against the live site — nobody has put an
+   address through Pricefinder by hand yet. If the first link you click is
+   wrong, this one line is the fix. */
+var PRICEFINDER_SEARCH = 'https://www.pricefinder.com.au/search?q=';
+
+var TAB  = 'RP Data check';
+var TAB2 = 'Pricefinder check';
+function tabName_(which) { return which === 'pricefinder' ? TAB2 : TAB; }
+
+/* RP Data answered for a property when it found a sale, either way. Anything
+   else — no suggestion, page never opened, nothing on record — is the second
+   pass. */
+function resolved_(status) {
+  return /still held|SOLD SINCE PURCHASE/.test(String(status || ''));
+}
+
+var HEADERS = [
+  'Address',
+  'City',
+  'Purchase date',
+  'Purchase price',
+  'Sold date',
+  'Sold price',
+  'Status',
+  'Source',
+  'Checked by',
+  'On market',
+  'Last advertised',
+  'Property link',
+  'What RP Data offered',
+  'Look up',
+  'Checked at'
+];
+
+function make_(ss, name) {
+  var sh = ss.insertSheet(name);
+  sh.appendRow(HEADERS);
+  sh.getRange(1, 1, 1, HEADERS.length).setFontWeight('bold');
+  sh.setFrozenRows(1);
+  sh.setColumnWidth(1, 280);
+  sh.getRange('D:D').setNumberFormat('$#,##0');
+  sh.getRange('F:F').setNumberFormat('$#,##0');
+  return sh;
+}
+
+function sheet_(which) {
+  var name = tabName_(which);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(name);
+  if (!sh) return make_(ss, name);
+
+  /* A tab built by an older version of this file has fewer columns, and
+     appending ten values to a nine-column header puts every value one place
+     to the left of the name above it. That is worse than an error, because
+     it looks like data. So the header row is checked every time.
+
+     Empty of rows: rewrite the header in place.
+     Holding rows:  rename it out of the way and start a clean one. Nothing
+                    is deleted — the old run stays readable beside the new. */
+  var width = Math.max(sh.getLastColumn(), 1);
+  var head = sh.getRange(1, 1, 1, width).getValues()[0]
+               .map(function (h) { return String(h || '').trim(); });
+  if (head.join('|') === HEADERS.join('|')) return sh;
+
+  if (sh.getLastRow() < 2) {
+    sh.clear();
+    sh.appendRow(HEADERS);
+    sh.getRange(1, 1, 1, HEADERS.length).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.setColumnWidth(1, 280);
+    sh.getRange('D:D').setNumberFormat('$#,##0');
+    sh.getRange('F:F').setNumberFormat('$#,##0');
+    return sh;
+  }
+  sh.setName(name + ' — before ' +
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'));
+  return make_(ss, name);
+}
+
+function doPost(e) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);                    // rows arrive one at a time; queue them
+  try {
+    var payload = JSON.parse(e.postData.contents);
+    var rows = payload.rows || [];
+    /* Only sent deliberately. A normal run updates what is already here and
+       skips what has settled, so stopping half way and clicking again
+       resumes. */
+    if (payload.reset) {
+      var ss = SpreadsheetApp.getActiveSpreadsheet();
+      var old = ss.getSheetByName(tabName_(payload.tab));
+      if (old) ss.deleteSheet(old);
+    }
+    var sh = sheet_(payload.tab);
+
+    /* One property, one row. A retry used to append a second row beside the
+       first, so a sheet that had been through a few passes carried the same
+       address three and four times over and you could not see at a glance
+       which line was current. The address is the key; a row that is already
+       here is overwritten in place. */
+    var addrCol = HEADERS.indexOf('Address') + 1;
+    var rowOf = {};
+    var last = sh.getLastRow();
+    if (last > 1) {
+      var keys = sh.getRange(2, addrCol, last - 1, 1).getValues();
+      for (var k = 0; k < keys.length; k++) {
+        var key = String(keys[k][0] || '').trim();
+        if (key) rowOf[key] = k + 2;       // the row number in the sheet
+      }
+    }
+
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var vals = [
+        r.address || '',
+        r.city || '',
+        r.purchased || '',
+        r.purchasePrice || '',
+        r.soldDate || '',
+        r.soldPrice || '',
+        r.status || '',
+        /* Not taken from the row: the tab it is being written to IS the
+           source, so the two can never disagree. */
+        payload.tab === 'pricefinder' ? 'Pricefinder' : 'RP Data',
+        /* Taken from the row: the bookmarklet carries whoever was signed in
+           to the tool when it was built, and the sheet cannot know that. */
+        r.who || '',
+        r.onMarket || '',
+        r.lastAd || '',
+        r.resolved || '',
+        /* What it put in front of us when it could not be matched. Not a
+           link — this used to go in the link column, which is how a near
+           miss came to look like a resolved property. */
+        r.offered || '',
+        /* Only where there is nothing to click. A search link beside a found
+           property is noise; beside a dead end it is the next thing to do. */
+        r.resolved ? '' : (r.address ? PRICEFINDER_SEARCH + encodeURIComponent(r.address) : ''),
+        new Date()
+      ];
+
+      var at = rowOf[String(r.address || '').trim()];
+      if (at) {
+        sh.getRange(at, 1, 1, HEADERS.length).setValues([vals]);
+      } else {
+        sh.appendRow(vals);
+        at = sh.getLastRow();
+        if (r.address) rowOf[String(r.address).trim()] = at;
+      }
+
+      /* Sold outranks listed: a sale is settled, a listing is only a signal.
+         Red for one, amber for the other, nothing for the quiet ones. Set
+         every time, not only when it applies — a row being updated may have
+         been red last pass and must not stay red if it is not any more. */
+      var band = sh.getRange(at, 1, 1, HEADERS.length);
+      if (r.status === 'SOLD SINCE PURCHASE') {
+        band.setBackground('#fde8e6').setFontWeight('bold');
+      } else if (r.onMarket) {
+        band.setBackground('#fef7e0').setFontWeight('normal');
+      } else {
+        band.setBackground(null).setFontWeight('normal');
+      }
+    }
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: true, added: rows.length }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function json_(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function fmt_(v) {                        // Date cells → "2026-09-18"
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  return v === '' || v == null ? '' : String(v);
+}
+
+/* Plain /exec  →  a liveness check, and the sheet's own address. The IRR
+                   Calculator shows that as an "open the sheet" link, so the
+                   address never has to be written into a published page.
+   ?done=1      →  the addresses already in a tab. A run asks for this first
+                   and skips them, so stopping half way and clicking again
+                   carries on instead of starting the book over.
+   ?todo=1      →  the addresses RP Data could not answer for, minus anything
+                   Pricefinder has since answered. That is the second pass,
+                   and it is the list the Pricefinder bookmarklet works from.
+   ?rows=1      →  both tabs, RP Data first, each row carrying the source it
+                   came from. This is what the Sold check tab reads.
+
+   ?tab=pricefinder narrows done= to that tab. */
+function doGet(e) {
+  var p = (e && e.parameter) || {};
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  if (!p.rows && !p.done && !p.todo) {
+    return json_({ ok: true, endpoint: 'rpdata held check',
+                   tabs: [TAB, TAB2], sheetUrl: ss.getUrl() });
+  }
+
+  /* One tab, read once, as {header: value} objects. Reading by header name
+     and not by position is what lets a tab written by an older version of
+     this file still answer. */
+  /* Rows are appended, never updated, so a retry leaves two rows for one
+     address. The later one is the answer — it is what the retry found. */
+  function latestPerAddress_(rows) {
+    var seen = {}, out = [];
+    for (var i = rows.length - 1; i >= 0; i--) {
+      var a = rows[i].address;
+      if (!a || seen[a]) continue;
+      seen[a] = 1;
+      out.unshift(rows[i]);
+    }
+    return out;
+  }
+  function read_(name) {
+    var sh = ss.getSheetByName(name);
+    if (!sh || sh.getLastRow() < 2) return [];
+    var head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+                 .map(function (h) { return String(h || '').trim(); });
+    var at = function (n) { return head.indexOf(n); };
+    var get = function (v, n) { var i = at(n); return i < 0 ? '' : v[i]; };
+    var rows = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues()
+      .map(function (v) {
+        return {
+          address:       fmt_(get(v, 'Address')),
+          city:          fmt_(get(v, 'City')),
+          purchased:     fmt_(get(v, 'Purchase date')),
+          purchasePrice: get(v, 'Purchase price'),
+          soldDate:      fmt_(get(v, 'Sold date')),
+          soldPrice:     get(v, 'Sold price'),
+          status:        fmt_(get(v, 'Status')),
+          who:           fmt_(get(v, 'Checked by')),
+          onMarket:      fmt_(get(v, 'On market')),
+          lastAd:        fmt_(get(v, 'Last advertised')),
+          /* the old name too: a tab written before the rename still answers */
+          resolved:      fmt_(get(v, 'Property link')) || fmt_(get(v, 'RP Data record')),
+          offered:       fmt_(get(v, 'What RP Data offered')),
+          lookup:        fmt_(get(v, 'Look up')),
+          checkedAt:     fmt_(get(v, 'Checked at')),
+          /* the column where there is one; the tab otherwise, so a row
+             written before the column existed still answers */
+          source:        fmt_(get(v, 'Source')) ||
+                         (name === TAB2 ? 'Pricefinder' : 'RP Data')
+        };
+      });
+    return latestPerAddress_(rows);
+  }
+
+  /* Resume only from a tab this version of the file wrote. One left over from
+     an older version is about to be renamed out of the way by the first write
+     — saying "already done" about rows that are about to move somewhere else
+     would skip those properties and leave a hole in the new tab. */
+  if (p.done) {
+    var sh = ss.getSheetByName(tabName_(p.tab));
+    if (sh && sh.getLastColumn() > 0) {
+      var h = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+                .map(function (x) { return String(x || '').trim(); }).join('|');
+      if (h !== HEADERS.join('|')) return json_({ ok: true, addresses: [], count: 0, stale: true });
+    }
+    /* Only rows that actually settled. "no match in RP Data" and friends are
+       not verdicts about a property — they mean the suggestion list never
+       appeared, or the page never opened. Counting those as done froze a
+       one-off blip in permanently: the next run skipped the address and it
+       was never asked again. They are retried instead. */
+    var mine = read_(tabName_(p.tab))
+      .filter(function (r) { return r.address && resolved_(r.status); })
+      .map(function (r) { return r.address; });
+    return json_({ ok: true, addresses: mine, count: mine.length });
+  }
+
+  if (p.todo) {
+    var settled = {};
+    read_(TAB2).forEach(function (r) {
+      if (r.address && resolved_(r.status)) settled[r.address] = 1;
+    });
+    var todo = read_(TAB).filter(function (r) {
+      return r.address && !resolved_(r.status) && !settled[r.address];
+    });
+    return json_({ ok: true, rows: todo, count: todo.length });
+  }
+
+  /* RP Data first, then anything Pricefinder settled that RP Data could not.
+     A property never appears twice: the second pass only ever runs on what
+     the first one left open, and where it answered, its answer is the one
+     that counts. */
+  var pf = read_(TAB2);
+  var answered = {};
+  pf.forEach(function (r) { if (resolved_(r.status)) answered[r.address] = r; });
+  var rows = read_(TAB).map(function (r) {
+    return (!resolved_(r.status) && answered[r.address]) ? answered[r.address] : r;
+  });
+  pf.forEach(function (r) {              // Pricefinder-only rows, if any
+    if (!rows.some(function (x) { return x.address === r.address; })) rows.push(r);
+  });
+  return json_({ ok: true, rows: rows, count: rows.length });
+}
+
+/* ── one-off tidy: collapse the duplicates already in the sheet ───────────
+   Run this once from the editor (pick dedupeTabs from the function list and
+   press Run). New rows no longer duplicate — doPost updates in place — but
+   anything written before that change is still doubled up.
+
+   For each address it keeps the LAST row, which is the most recent pass, and
+   deletes the earlier ones. Nothing is merged: the newest row is the whole
+   answer for that property. */
+function dedupeTabs() {
+  [TAB, TAB2].forEach(function (name) {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+    if (!sh || sh.getLastRow() < 3) return;
+
+    var addrCol = HEADERS.indexOf('Address') + 1;
+    var vals = sh.getRange(2, addrCol, sh.getLastRow() - 1, 1).getValues();
+
+    /* Walk upwards and keep the first of each address we meet — which, going
+       up, is the last one in the sheet. Deleting from the bottom also means
+       the row numbers above never shift under us. */
+    var seen = {}, removed = 0;
+    for (var i = vals.length - 1; i >= 0; i--) {
+      var key = String(vals[i][0] || '').trim();
+      if (!key) continue;
+      if (seen[key]) { sh.deleteRow(i + 2); removed++; }
+      else seen[key] = true;
+    }
+    Logger.log(name + ': removed ' + removed + ' duplicate row(s), ' +
+               Object.keys(seen).length + ' properties remain');
+  });
+}
