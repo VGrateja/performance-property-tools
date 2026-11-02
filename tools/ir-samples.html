@@ -904,9 +904,6 @@ function runModel(file, A) {
   const x = calcCashflow(cf, A.loan === 'io' ? 'io' : 'pi', rate);
   return x ? Object.assign(x, { price, rate, cf }) : null;
 }
-function rateLabel(A, x) {
-  return (A.rateMode === 'norm' ? 'normalised rate ' : A.rateMode === 'current' ? 'current rate ' : A.rateMode === 'custom' ? 'rate ' : 'report rate ') + pct(x.rate, 2);
-}
 function ctlHtml(A, file) {
   const cf = (file || {}).cashflow || {};
   const lvrs = [0.8, 0.9, 1.0, 1.08];
@@ -957,14 +954,13 @@ function slideCashflow(s, A) {
   const pctTxt = v => v ? ((v * 100).toFixed(2).replace(/\.?0+$/, '') + '%') : '';
   const isTot = r => /\btot\b/.test(r[2] || '');
 
-  /* Three columns (Saskia, 2026-09-23 meeting; Van: summary first): the summary as four
-     standout numbers; the cost of the property —
-     the purchase price beside the total property + acquisition cost, then the
-     lines that make it up; 2 · the annual cash flow as a breakdown — running
-     costs including finance, then income, then income minus running costs;
-     3 · the summary as four standout numbers. No headline strip, no investment
-     summary, no report figure. Every column ends above the footer hairline
-     at y572; the toggle rail ends at y138, so the band is y150–y562. */
+  /* Three columns (advisor review 2026-11-02; Van: the investment summary replaces the
+     left summary column): 1 · the cost of the property — the purchase price beside the
+     total property + acquisition cost, then the lines that make it up; 2 · the annual
+     running costs including finance; 3 · income (rent per week, income for the weeks
+     let), then the investment summary as on the IR report's cashflow, without the
+     expense ratio. Every column ends above the footer hairline at y572; the toggle
+     rail ends at y138, so the band is y150–y562. */
   const costRows = [
     ['Maintenance allowance', money(n('maintenanceAllowance'))],
     ['Cosmetic works allowance', money(n('cosmeticWorks'))],
@@ -1005,7 +1001,14 @@ function slideCashflow(s, A) {
   const incRows = [
     ['Rent per week', money(rentWk)],
     ['Income ' + MID + ' ' + weeks + ' weeks let', money(x.income)],
-    ['Income minus running costs ' + MID + ' ' + (neg ? 'out of pocket' : 'surplus'), money(x.annual), 'tot' + (neg ? ' neg' : '')],
+  ];
+  const invRows = [
+    ['Loan amount', money(x.loan)],
+    ['Required capital', money(Math.max(0, x.requiredCapital))],
+    ['Gross yield', pct(x.grossYield)],
+    ['Net yield', pct(x.netYield)],
+    ['Annual cash flow ' + MID + ' ' + (neg ? 'out of pocket' : 'surplus'), money(x.annual), 'tot' + (neg ? ' neg' : '')],
+    ['Weekly cash flow ' + MID + ' ' + (neg ? 'out of pocket' : 'surplus'), money(x.weekly), 'tot' + (neg ? ' neg' : '')],
   ];
 
   /* geometry — the three columns share one grid (Saskia: "play with the
@@ -1019,7 +1022,7 @@ function slideCashflow(s, A) {
   /* fixed pixels in a breakdown column: title · tiles · two sub-headings · one gap */
   const FIXED = HDR + TILE_H + TILE_GAP + SUB + GAP + SUB;
   const fit = rows => Math.floor((BOTTOM - TOP - FIXED - totsOf(rows) * 4) / Math.max(1, rows.length));
-  let rowH = Math.min(20, fit(costRows.concat(acqRows)), fit(runRows.concat(incRows)));
+  let rowH = Math.min(20, fit(costRows.concat(acqRows)), fit(runRows));
   rowH = Math.max(14, rowH);
   const fs = rowH >= 19 ? 12.5 : (rowH >= 17 ? 11.5 : 10.5);
   const rowsHtml = (x0, y0, w, rows) => '<div class="b" style="left:' + x0 + 'px;top:' + y0 + 'px;width:' + w + 'px;font-size:' + fs + 'px">' +
@@ -1030,41 +1033,41 @@ function slideCashflow(s, A) {
   const w1 = 146, w2 = W - w1 - TILE_GAP;
   const pair = (x0, y0, a, b) => tile(x0, y0, w1, TILE_H, a[0], a[1], null, { fs: 20, vTop: 24, kfs: 9.5 }) +
     tile(x0 + w1 + TILE_GAP, y0, w2, TILE_H, b[0], b[1], null, { fs: 20, vTop: 24, kfs: 9.5 });
-  /* a breakdown column: title, tiles, then two sections whose gap absorbs the leftover */
+  /* a breakdown column: title, tiles, then one or two sections; the gap between two absorbs the leftover */
   const column = (x0, ttl, tiles, s1, s2) => {
     let y = TOP;
     let out = title(x0, y, ttl); y += HDR;
     out += pair(x0, y, tiles[0], tiles[1]); y += TILE_H + TILE_GAP;
+    out += sub(x0, y, s1.t); y += SUB;
+    out += rowsHtml(x0, y - 2, W, s1.rows);
+    if (!s2) return out;
     const used = FIXED + listH(s1.rows) + listH(s2.rows);
     const gap = Math.max(GAP, BOTTOM - TOP - used + GAP);   /* what is left over widens the gap between the sections */
-    out += sub(x0, y, s1.t); y += SUB;
-    out += rowsHtml(x0, y - 2, W, s1.rows); y += listH(s1.rows) + gap;
+    y += listH(s1.rows) + gap;
     out += sub(x0, y, s2.t); y += SUB;
     out += rowsHtml(x0, y - 2, W, s2.rows);
     return out;
   };
 
-  /* column 1 — the summary, four standout numbers, filling the same band (4 × 90 + 3 × 10 under the title = y562) */
-  const big = [
-    ['Annual cash flow', money(x.annual), (neg ? 'out of pocket' : 'surplus') + ' ' + MID + ' ' + (A.loan === 'io' ? 'interest only' : 'principal & interest') + ', ' + rateLabel(A, x), neg],
-    ['Weekly cash flow', money(x.weekly), neg ? 'out of pocket each week' : 'surplus each week', neg],
-    ['Gross yield', pct(x.grossYield), 'annual rent ÷ purchase price', false],
-    ['Net yield', pct(x.netYield), 'net rent (ex finance) ÷ purchase price', false],
-  ];
-  const BIG_GAP = 10, BIG_H = Math.floor((BOTTOM - TOP - HDR - 3 * BIG_GAP) / 4);
-  let y = TOP;
-  h += title(X[0], y, 'Summary'); y += HDR;
-  big.forEach(t => { h += tile(X[0], y, W, BIG_H, t[0], t[1], t[2], { fs: 30, vTop: 30, sTop: BIG_H - 24, neg: t[3] }); y += BIG_H + BIG_GAP; });
-
-  /* column 2 — the cost of the property */
-  h += column(X[1], 'Cost of property',
+  /* column 1 — the cost of the property */
+  h += column(X[0], 'Cost of property',
     [['Purchase price', money(x.price)], ['Total acquisition cost', money(x.totalCost)]],
     { t: 'Allowances', rows: costRows }, { t: 'Acquisition costs', rows: acqRows });
 
-  /* column 3 — the annual cash flow as a breakdown */
-  h += column(X[2], 'Annual cash flow',
+  /* column 2 — the annual running costs */
+  h += column(X[1], 'Annual cash flow',
     [['Income (annual)', money(x.income)], ['Running costs', money(x.runningLessFin + x.interest + x.principal)]],
-    { t: 'Running costs (annual)', rows: runRows }, { t: 'Income (annual)', rows: incRows });
+    { t: 'Running costs (annual)', rows: runRows });
+
+  /* column 3 — income, then the investment summary in a tinted box that ends on y562 */
+  const INV_H = 30, INV_PAD = 8, invH = invRows.length * INV_H + 2 * INV_PAD;
+  const invTop = BOTTOM - invH;
+  h += title(X[2], TOP, 'Income');
+  h += '<div class="b" style="left:' + X[2] + 'px;top:' + (TOP + HDR - 2) + 'px;width:' + W + 'px;font-size:12.5px">' +
+    incRows.map(r => '<div class="irs-li" style="height:24px;font-size:inherit"><i>' + esc(r[0]) + '</i><b>' + esc(r[1]) + '</b></div>').join('') + '</div>';
+  h += title(X[2], invTop - HDR - 2, 'Investment summary');
+  h += '<div class="irs-tile irs-inv" style="left:' + X[2] + 'px;top:' + invTop + 'px;width:' + W + 'px;height:' + invH + 'px;padding:' + INV_PAD + 'px 16px;box-sizing:border-box">' +
+    invRows.map(r => '<div class="irs-li' + (r[2] ? ' ' + r[2] : '') + '" style="height:' + INV_H + 'px;font-size:13.5px;margin-top:0"><i>' + esc(r[0]) + '</i><b>' + esc(r[1]) + '</b></div>').join('') + '</div>';
 
   h += FOOTER_DISCLAIMER();
   return h;
