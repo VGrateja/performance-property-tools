@@ -132,3 +132,4 @@ register, the overview, the sold check — is untouched.
 - 2026-10-28 — Ported: the tool, its engine and suburb file, migration 131, the registry key, the Vault card and the hub
   search entry.
 - 2026-11-05 — "Update returns data" saves a draft (`draftPp` on the city's `client_pages` row) instead of writing the live `pp`; it is published from that city's Returns page in the Vault (Ian, PR #16). See adelaide-returns.md.
+- 2026-11-05 (later) — "Update returns data" also works when the city has no `client_pages` row yet: it creates a draft-only row, and the Vault Returns page fills the rest from SEED on Publish (Ian, `46d1297`). See adelaide-returns.md.
