@@ -71,6 +71,9 @@ body{margin:0;font-family:'Montserrat',system-ui,sans-serif;color:var(--irs-ink)
 .irs-cta{border:0;border-radius:10px;background:var(--irs-teal);color:#fff;
   font:800 12.5px 'Montserrat',sans-serif;padding:10px 16px;cursor:pointer}
 .irs-cta:hover{filter:brightness(1.08)}
+.irs-acts{display:flex;gap:10px;flex-wrap:wrap}
+.irs-cta.ghost{background:transparent;color:var(--irs-teal);box-shadow:inset 0 0 0 1.5px var(--irs-teal)}
+.irs-allnote{font-size:12.5px;color:var(--irs-mut);margin:0 2px 6px}
 .irs-ghead{font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--irs-teal);
   margin:20px 2px 10px;display:flex;align-items:center;gap:10px}
 .irs-ghead:first-child{margin-top:2px}
@@ -252,7 +255,10 @@ body.irs-present .irs-stage{align-items:center;height:100vh;background:#0b0e14}
         walk a client through &mdash; the property, the cashflow with its full breakdown, and the pricing and
         comparable sales behind the recommendation. Pick a sample to open it, then present or save a PDF.</p>
     </div>
-    <button class="irs-cta" id="irsCurateBtn" type="button" style="display:none">Curate</button>
+    <div class="irs-acts">
+      <button class="irs-cta ghost" id="irsAllBtn" type="button">View All Samples</button>
+      <button class="irs-cta" id="irsCurateBtn" type="button" style="display:none">Curate</button>
+    </div>
   </div>
   <div id="irsGroups"></div>
 </div>
@@ -260,7 +266,7 @@ body.irs-present .irs-stage{align-items:center;height:100vh;background:#0b0e14}
 <!-- deck -->
 <div class="irs-deck" id="irsDeck">
   <div class="irs-bar">
-    <button class="irs-btn" id="irsBack" type="button">&larr; All samples</button>
+    <button class="irs-btn" id="irsBack" type="button">&larr; Back to samples</button>
     <div class="irs-who" id="irsWho"></div>
     <div class="grow"></div>
     <button class="irs-btn" id="irsPrev" type="button">&larr; Prev</button>
@@ -321,7 +327,10 @@ function toast(msg) {
 /* ── state ─────────────────────────────────────────────────────────────── */
 const PICKS_REGION = 'ir-samples-picks';
 const MAX_PER_MARKET = 2;
-let SAMPLES = [];               /* [{ pick, file, lib, photoUrl }] in display order */
+let SAMPLES = [];               /* the list on screen: CURATED, or ALL after "View All Samples" */
+let CURATED = [];               /* [{ pick, file, lib, photoUrl }] in display order */
+let ALL = null;                 /* every published IR as { pick:null, file, lib:null, photoUrl }, loaded on first view */
+let VIEW = 'curated';           /* 'curated' | 'all' (Van 2026-11-04: "list all of the available samples") */
 let PICKS_PAYLOAD = null;       /* the raw reports_state payload (round-tripped on save) */
 let CURATOR = false;
 let ALL_PUB = null;             /* curate modal cache of every published ir_files row */
@@ -423,6 +432,7 @@ async function boot() {
   CURATOR = lvl === 'dev' || lvl === 'admin';
   $('#irsCurateBtn').style.display = CURATOR ? '' : 'none';
   $('#irsCurateBtn').addEventListener('click', openCurate);
+  $('#irsAllBtn').addEventListener('click', toggleView);
 
   wireDeck();
   try {
@@ -434,6 +444,7 @@ async function boot() {
   } catch (e) { /* fail soft — calcCashflow keeps its own defaults */ }
 
   await loadSamples();
+  SAMPLES = CURATED;
   renderLanding();
   applyMarketDeepLink();
 }
@@ -459,7 +470,7 @@ function applyMarketDeepLink() {
 }
 
 async function loadSamples() {
-  SAMPLES = [];
+  CURATED = [];
   let picks = [];
   try {
     const { data, error } = await sb.from('reports_state').select('payload').eq('region', PICKS_REGION).maybeSingle();
@@ -487,15 +498,48 @@ async function loadSamples() {
     .filter(r => r.file);
   rows.sort((a, b) => groupSort(groupOf(a.file), groupOf(b.file)) ||
     String(a.file.address || '').localeCompare(String(b.file.address || '')));
-  SAMPLES = rows;
+  CURATED = rows;
 
-  const urls = await signPhotoUrls(SAMPLES.map(s => coverPath(s.file)));
-  SAMPLES.forEach((s, i) => { s.photoUrl = urls[i]; });
+  const urls = await signPhotoUrls(CURATED.map(s => coverPath(s.file)));
+  CURATED.forEach((s, i) => { s.photoUrl = urls[i]; });
+}
+
+/* Every published IR, not just the curated picks — the same PUBLISHED rule the
+   curate list uses (compliance.published). Loaded once, on the first click. */
+async function loadAll() {
+  const { data, error } = await sb.from('ir_files')
+    .select('id, address, suburb, state, postcode, market_label, status, setup, inspection, grading, pricing, cashflow, compliance, suburb_stats')
+    .not('compliance->published', 'is', null);
+  if (error) throw error;
+  const rows = (data || []).map(f => ({ pick: null, file: f, lib: null, photoUrl: null }));
+  rows.sort((a, b) => groupSort(groupOf(a.file), groupOf(b.file)) ||
+    String(a.file.address || '').localeCompare(String(b.file.address || '')));
+  const urls = await signPhotoUrls(rows.map(s => coverPath(s.file)));
+  rows.forEach((s, i) => { s.photoUrl = urls[i]; });
+  return rows;
+}
+async function toggleView() {
+  const btn = $('#irsAllBtn');
+  if (VIEW === 'curated') {
+    if (!ALL) {
+      btn.disabled = true; btn.textContent = 'Loading' + ELL;
+      try { ALL = await loadAll(); }
+      catch (e) { toast('Could not load the samples: ' + (e.message || e)); btn.disabled = false; btn.textContent = 'View All Samples'; return; }
+      btn.disabled = false;
+      /* a deck opened while the list loaded indexes CURATED — switching now would swap its property */
+      if (deck.i >= 0) { btn.textContent = 'View All Samples'; return; }
+    }
+    VIEW = 'all'; SAMPLES = ALL; btn.textContent = 'Curated Samples';
+  } else {
+    VIEW = 'curated'; SAMPLES = CURATED; btn.textContent = 'View All Samples';
+  }
+  renderLanding();
 }
 
 /* ── landing ───────────────────────────────────────────────────────────── */
 function renderLanding() {
   const box = $('#irsGroups');
+  if (VIEW === 'all' && !SAMPLES.length) { box.innerHTML = '<div class="irs-empty">No published Investment Reports yet.</div>'; return; }
   if (!SAMPLES.length) {
     box.innerHTML = '<div class="irs-empty">No samples curated yet.<br>' +
       (CURATOR ? 'Use <b>Curate</b> to pick up to two published Investment Reports per market.'
@@ -505,7 +549,9 @@ function renderLanding() {
   const groups = {};
   SAMPLES.forEach((s, i) => { const g = groupOf(s.file); (groups[g] = groups[g] || []).push(i); });
   /* data-g carries the market label so ?market=<label> can find its group */
-  box.innerHTML = Object.keys(groups).sort(groupSort).map(g =>
+  box.innerHTML = (VIEW === 'all'
+    ? '<p class="irs-allnote">All ' + SAMPLES.length + ' published Investment Reports across ' + Object.keys(groups).length + ' markets.</p>' : '') +
+    Object.keys(groups).sort(groupSort).map(g =>
     '<div class="irs-ghead" data-g="' + esc(g) + '">' + esc(g) + '<span class="n">' + groups[g].length + '</span></div>' +
     '<div class="irs-grid" data-g="' + esc(g) + '">' + groups[g].map(i => cardHtml(SAMPLES[i], i)).join('') + '</div>').join('');
   box.querySelectorAll('.irs-card').forEach(el =>
@@ -1112,7 +1158,7 @@ async function openCurate() {
       return;
     }
   }
-  SEL = new Set(SAMPLES.map(s => s.file.id));
+  SEL = new Set(CURATED.map(s => s.file.id));
   dlg.innerHTML = '<h2>Curate the samples</h2>' +
     '<p class="note">Tick the published Investment Reports that should appear as client mini-decks. ' +
     'Maximum <b>' + MAX_PER_MARKET + ' per market</b> — untick one to swap it out.</p>' +
@@ -1176,6 +1222,7 @@ async function saveCurate() {
     if (error) throw error;
     closeCurate();
     await loadSamples();
+    if (VIEW === 'curated') SAMPLES = CURATED;
     renderLanding();
     toast('Samples updated — ' + picks.length + ' curated.');
   } catch (e) {
