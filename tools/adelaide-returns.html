@@ -283,17 +283,26 @@ async function boot() {
     const { data, error } = await sb.from('client_pages').select('payload, updated_at').eq('key', KEY).maybeSingle();
     if (error) throw error;
     if (data && data.payload) {
-      S.publishedPayload = data.payload; S.origin = 'row';
+      /* The IRR Calculator can create this row from nothing but
+         { draftPp, draftSavedAt } — no "must already be published" guard
+         there any more. Backfill anything structural (benchmarks, text,
+         legal, window, years, risk, selection) from SEED wherever the row
+         doesn't have its own, so the preview always has something real to
+         render and Publish always writes a complete, valid payload — never
+         a bare one missing everything the client page needs. Shallow
+         assign is enough: SEED only fills keys the row never set at all. */
+      S.publishedPayload = Object.assign({}, SEED, data.payload);
+      S.origin = 'row';
       S.savedAt = new Date(data.updated_at).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
       S.hasPendingDraft = !!data.payload.draftPp;
       if (S.hasPendingDraft) {
         S.draftSavedAt = data.payload.draftSavedAt
           ? new Date(data.payload.draftSavedAt).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
           : null;
-        S.draft = Object.assign({}, data.payload, { pp: data.payload.draftPp });
+        S.draft = Object.assign({}, S.publishedPayload, { pp: data.payload.draftPp });
         note = 'Draft pending' + (S.draftSavedAt ? ' · saved ' + S.draftSavedAt : '') + ' — review below, then Publish';
       } else {
-        S.draft = data.payload;
+        S.draft = S.publishedPayload;
         note = 'Published version · saved ' + S.savedAt;
       }
     }
