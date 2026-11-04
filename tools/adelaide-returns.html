@@ -23,6 +23,15 @@
    'adelaide-returns-2026' wins when a row exists (none has been saved); the
    preview IS the public page (?preview=1 in an iframe), fed by postMessage.
    Feature note: docs/pp-os-migration/adelaide-returns.md
+
+   2026-11-04: draft/publish for the IRR Calculator's "Update returns data"
+   button. That button no longer writes straight to the live `pp` block — it
+   saves a sibling `draftPp` on the same row instead. When `draftPp` is
+   present, the preview below renders it in place of the live `pp` (so the
+   new medians can be checked before anyone sees them) and a Publish button
+   appears to promote it: copy draftPp → pp, drop draftPp, upsert. Until
+   Publish is clicked, client/adelaide-returns.html (which only ever reads
+   `pp`) is completely unaffected.
    ═══════════════════════════════════════════════════════════════════════════ */
 :root{
   --ar-ink:#F4F6F8; --ar-ink2:rgba(220,228,240,0.74); --ar-mut:rgba(220,228,240,0.52);
@@ -53,6 +62,10 @@ html,body{overflow-x:hidden}
 .ar-btn{appearance:none;border:1px solid var(--ar-border2);border-radius:10px;background:var(--ar-solid);color:var(--ar-ink);font:700 12.5px 'Montserrat',sans-serif;padding:7px 13px;cursor:pointer;white-space:nowrap;text-decoration:none;display:inline-block}
 .ar-btn:hover{border-color:var(--ar-teal);color:var(--ar-teal)}
 .ar-btn.sm{padding:4px 9px;font-size:11.5px}
+.ar-btn.primary{background:var(--ar-teal);border-color:var(--ar-teal);color:#fff}
+.ar-btn.primary:hover{opacity:.88;color:#fff}
+.ar-btn:disabled{opacity:.5;cursor:not-allowed}
+.ar-btn[hidden]{display:none}
 .ar-preview{border:1px solid var(--ar-border);border-radius:14px;overflow:hidden;background:#fff}
 .ar-pvbar{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:7px 12px;background:var(--ar-head);color:var(--ar-ink2);font-size:11.5px;font-weight:700}
 .ar-pvbar .seg{display:inline-flex;gap:4px}
@@ -71,6 +84,7 @@ html,body{overflow-x:hidden}
   </div>
   <div class="ar-bar">
     <div class="ar-status" id="arStatus"><b>Loading…</b></div>
+    <button type="button" class="ar-btn primary" id="btnPublish" hidden>Publish</button>
     <button type="button" class="ar-btn" id="btnCopy">Copy client link</button>
     <a class="ar-btn" id="lnkOpen" href="../client/adelaide-returns.html" target="_blank" rel="noopener">Open client page</a>
   </div>
@@ -223,15 +237,24 @@ const SEED = {
   },
 };
 
-/* ═══ state ═════════════════════════════════════════════════════════════ */
-const S = { draft: null, savedAt: null, origin: '', pvReady: false };
+/* ═══ state ═════════════════════════════════════════════════════════════
+   `draft` here is what gets PREVIEWED (and is pre-existing naming — the
+   whole payload as shown in the iframe). `publishedPayload` is the row
+   exactly as it reads from the database, draftPp included, untouched — the
+   only thing Publish ever writes from. `hasPendingDraft` is just whether
+   that row currently carries a draftPp from the IRR Calculator. */
+const S = { draft: null, savedAt: null, origin: '', pvReady: false,
+  publishedPayload: null, hasPendingDraft: false, draftSavedAt: null };
 
 /* ═══ preview (the public page in an iframe, fed by postMessage) ════════ */
 function postPreview() {
   const f = $('#pv'); if (!f.contentWindow || !S.draft) return;
-  const saved = !!S.savedAt;
-  f.contentWindow.postMessage({ type: 'adl-preview', payload: S.draft, saved,
-    status: saved ? 'Saved · ' + S.savedAt : 'Draft — not published to the client link' }, location.origin);
+  const live = !!S.savedAt && !S.hasPendingDraft;
+  const status = S.hasPendingDraft
+    ? 'Draft preview — new figures from the IRR Calculator, not live yet'
+    : live ? 'Saved · ' + S.savedAt
+    : 'Draft — not published to the client link';
+  f.contentWindow.postMessage({ type: 'adl-preview', payload: S.draft, saved: live, status }, location.origin);
 }
 window.addEventListener('message', e => {
   if (e.origin !== location.origin || !e.data || e.data.type !== 'adl-ready') return;
@@ -248,6 +271,10 @@ let toastT = null;
 function toast(msg) { const t = $('#arToast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2200); }
 function clientUrl() { return new URL(CLIENT_PATH, location.href).href; }
 
+function syncPublishBtn() {
+  $('#btnPublish').hidden = !S.hasPendingDraft;
+}
+
 async function boot() {
   let g = 0; while (!window.sb && g++ < 80) await new Promise(r => setTimeout(r, 100));
   let note = '';
@@ -256,18 +283,59 @@ async function boot() {
     const { data, error } = await sb.from('client_pages').select('payload, updated_at').eq('key', KEY).maybeSingle();
     if (error) throw error;
     if (data && data.payload) {
-      S.draft = data.payload; S.origin = 'row';
+      S.publishedPayload = data.payload; S.origin = 'row';
       S.savedAt = new Date(data.updated_at).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
-      note = 'Published version · saved ' + S.savedAt;
+      S.hasPendingDraft = !!data.payload.draftPp;
+      if (S.hasPendingDraft) {
+        S.draftSavedAt = data.payload.draftSavedAt
+          ? new Date(data.payload.draftSavedAt).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+          : null;
+        S.draft = Object.assign({}, data.payload, { pp: data.payload.draftPp });
+        note = 'Draft pending' + (S.draftSavedAt ? ' · saved ' + S.draftSavedAt : '') + ' — review below, then Publish';
+      } else {
+        S.draft = data.payload;
+        note = 'Published version · saved ' + S.savedAt;
+      }
     }
   } catch (e) {
     note = 'Could not read the saved page (' + ((e && e.message) || e) + ') — showing the built-in figures.';
   }
   if (!S.draft) { S.draft = structuredClone(SEED); S.origin = 'seed'; note = note || 'Built-in figures · not published to the client link yet.'; }
-  status(S.origin === 'row' ? 'ok' : '', S.origin === 'row' ? 'Loaded' : 'Preview', note);
+  status(S.hasPendingDraft ? 'dirty' : S.origin === 'row' ? 'ok' : '',
+    S.hasPendingDraft ? 'Draft pending' : S.origin === 'row' ? 'Loaded' : 'Preview', note);
+  syncPublishBtn();
   if (S.pvReady) postPreview();
   $('#pv').addEventListener('load', () => setTimeout(postPreview, 50));
 }
+
+$('#btnPublish').addEventListener('click', async () => {
+  if (!S.hasPendingDraft || !S.publishedPayload) return;
+  const pp = S.publishedPayload.draftPp;
+  const summary = 'median IRR ' + (typeof pp.medianIrr === 'number' ? (pp.medianIrr * 100).toFixed(1) + '%' : '—') +
+    ', CAGR ' + (typeof pp.medianCagr === 'number' ? (pp.medianCagr * 100).toFixed(1) + '%' : '—') +
+    ', ' + (pp.properties != null ? pp.properties : '—') + ' properties';
+  if (!confirm('Publish this draft (' + summary + ') to the live client page? Anyone with the link will see it immediately.')) return;
+  const btn = $('#btnPublish'); btn.disabled = true;
+  status('', 'Publishing…', '');
+  try {
+    const payload = Object.assign({}, S.publishedPayload, { pp: pp });
+    delete payload.draftPp;
+    delete payload.draftSavedAt;
+    const { error } = await sb.from('client_pages').upsert({ key: KEY, payload }, { onConflict: 'key' });
+    if (error) throw error;
+    S.publishedPayload = payload; S.hasPendingDraft = false; S.draftSavedAt = null;
+    S.draft = payload; S.origin = 'row';
+    S.savedAt = new Date().toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+    status('ok', 'Loaded', 'Published · saved ' + S.savedAt);
+    syncPublishBtn();
+    postPreview();
+    toast('Published to the client page');
+  } catch (e) {
+    status('err', 'Publish failed', (e && e.message) || String(e));
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 $('#btnCopy').addEventListener('click', () => {
   const url = clientUrl(), label = (S.draft && S.draft.text && S.draft.text.title) || 'Adelaide returns';
