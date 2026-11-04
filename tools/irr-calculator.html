@@ -1316,6 +1316,13 @@ details .body strong{color:var(--text)}
                  control now, on the Register, and this tab says what it is
                  set to. Archived is still reachable: tick it in Show. -->
             <div class="btns" style="margin:0">
+              <!-- Hidden until the active city has a published Returns client
+                   page (RETURNS_PAGES) — there's nothing to push to otherwise.
+                   Pushes exactly the medians this card is currently showing,
+                   so whatever the Register's filters have narrowed to is what
+                   goes out; the confirm dialog repeats the scope line so that
+                   is never a surprise. -->
+              <button type="button" class="btn-ghost btn-sm" id="btnPushReturns" hidden>Update returns data</button>
               <button type="button" class="btn-ghost btn-sm" id="btnOvCsv">Export CSV</button>
             </div>
           </div>
@@ -3694,6 +3701,21 @@ window.stopCheck=false;
     return !activeCity ? 'None yet'
          : activeCity === NO_CAT ? 'Not set' : activeCity;
   }
+  /* Cities with a published Returns client page (see the Vault's Returns
+     picker, index.html) — add a city here once tools/<city>-returns.html and
+     its client_pages row exist. "Update returns data" stays hidden on every
+     other city tab until then. */
+  var RETURNS_PAGES = { adelaide: 'adelaide-returns-2026' };
+  function returnsKeyForCity(){
+    return RETURNS_PAGES[(activeCity || '').trim().toLowerCase()] || null;
+  }
+  function syncReturnsBtn(){
+    var b = $('btnPushReturns');
+    if (!b) return;
+    var key = returnsKeyForCity();
+    b.hidden = !key;
+    if (key) b.title = 'Push ' + cityLabel() + '’s current medians to its Returns client page';
+  }
   /* Switching city is switching books, so anything on screen that belongs to
      the old one goes with it: an open result, a selection, a suburb that only
      exists over there, an IRR band picked off the other book's chart. */
@@ -3746,6 +3768,7 @@ window.stopCheck=false;
         ? 'Give these unfiled properties a capital city'
         : 'Rename ' + cityLabel() + ' across every property filed under it';
     }
+    syncReturnsBtn();
 
     $('catList').innerHTML = cats.map(function(c){ return '<option value="'+esc(c)+'"></option>'; }).join('');
   }
@@ -4046,6 +4069,30 @@ window.stopCheck=false;
       .filter(function(v){ return v !== null; });
     return out;
   }
+  /* The four headline medians "Update returns data" pushes out, struck over
+     the same `data` set the Overview card renders — not a re-count of the
+     whole book, so whatever the Register's filters are showing is what goes
+     out. Deliberately narrower than renderOverview's own card math (no nets,
+     winners, held count, sale-side median): those don't travel to the client
+     page, so there is nothing here to keep in step with them. */
+  function computeOverviewMedians(data){
+    var irrs = [], holds = [], buys = [], cagrs = [];
+    data.forEach(function(d){
+      if (d.irr !== null && isFinite(d.irr)) irrs.push(d.irr);
+      if (d.hold !== null && isFinite(d.hold)) holds.push(d.hold);
+      var b = Number(d.e.purchasePrice), s = Number(d.e.soldPrice);
+      if (isFinite(b) && b > 0) buys.push(b);
+      if (isFinite(b) && b > 0 && isFinite(s) && s > 0 && d.hold > 0)
+        cagrs.push(Math.pow(s / b, 1 / d.hold) - 1);
+    });
+    return {
+      count: data.length,
+      medianIrr: irrs.length ? median(irrs) : null,
+      medianCagr: cagrs.length ? median(cagrs) : null,
+      medianHoldYears: holds.length ? median(holds) : null,
+      medianPurchasePrice: buys.length ? median(buys) : null,
+    };
+  }
   /* The date behind a median price. One property → its own date. Two or more
      → the earliest of them. A midpoint would be a day nothing happened on,
      which is no use as an anchor for reading a market figure off; the earliest
@@ -4342,9 +4389,12 @@ var MHP_FROM='1980-03', MHP={
     if (currentTab() === 'overview') drawOverview();
     if (currentTab() === 'growth') drawGrowth();
   }
-  function drawOverview(){
+  /* Same derivation drawOverview renders from, pulled out so "Update returns
+     data" can read exactly what the card is showing without re-running the
+     filter/derive pipeline a second, slightly different way. */
+  function overviewData(){
     var all = cityProps(loadProps());
-    if (!all.length) { ovStale = false; renderOverview([], [], 0); return; }
+    if (!all.length) return { data: [], spread: [], scoped: 0 };
     /* No override on f.show any more: Show is the only answer to "which
        kinds", and this tab reads it like the Register does. */
     var f = readFilters();
@@ -4353,8 +4403,12 @@ var MHP_FROM='1980-03', MHP={
     var spread = derived.filter(function(d){ return passDerived(d, f, false); });
     var data   = spread.filter(function(d){ return passDerived(d, f, true); });
     var scoped = all.filter(function(e){ return !!f.show[kindOf(e)]; });
+    return { data: data, spread: spread, scoped: scoped.length };
+  }
+  function drawOverview(){
+    var o = overviewData();
     ovStale = false;
-    renderOverview(data, spread, scoped.length);
+    renderOverview(o.data, o.spread, o.scoped);
   }
   /* ══════════ GROWTH COMPARISON ══════════
      Aggregate, not per-property. Take the median purchase price and the median
@@ -8415,6 +8469,87 @@ var MHP_FROM='1980-03', MHP={
     download(toCsvText(L), 'irr-overview.csv');
   }
   $('btnOvCsv').addEventListener('click', exportOverview);
+
+  /* ── Update returns data ──────────────────────────────────────────────
+     Pushes the Overview card's current medians into the active city's
+     Returns client page (public.client_pages). Only the `pp` headline block
+     is touched — benchmarks, wording and legal text are the page's own and
+     are left exactly as published. Refuses rather than creates a row: a
+     partial payload (no benchmarks/text/window) would fail the client
+     page's own validity check and break a live client link. */
+  $('btnPushReturns').addEventListener('click', function(){
+    var key = returnsKeyForCity();
+    if (!key) return;
+    if (!share.sb) {
+      $('messages').innerHTML = msg('warn', 'Still connecting to the database — try again in a moment.');
+      return;
+    }
+    var city = cityLabel();
+    var o = overviewData();
+    var m = computeOverviewMedians(o.data);
+    if (!m.count || m.medianIrr === null || m.medianCagr === null ||
+        m.medianHoldYears === null || m.medianPurchasePrice === null) {
+      $('messages').innerHTML = msg('warn', 'Not enough sold ' + esc(city) +
+        ' properties under the current filters to strike every median.');
+      return;
+    }
+    var now = new Date();
+    var asAtLabel = now.getDate() + ' ' + MONTHS[now.getMonth()] + ' ' + now.getFullYear();
+    var buyDates = o.data.map(function(d){ return dayStamp(d.e.purchaseDate); })
+      .filter(function(t){ return t !== null; });
+    var periodLabel = '';
+    if (buyDates.length) {
+      var lo = mLabel(new Date(Math.min.apply(null, buyDates)));
+      var hi = mLabel(new Date(Math.max.apply(null, buyDates)));
+      periodLabel = lo === hi ? lo : lo + ' to ' + hi;
+    }
+    var opts = readOpts();
+    var pp = {
+      label: 'Performance Property — ' + city + ' (research-selected)',
+      properties: m.count,
+      medianIrr: m.medianIrr,
+      medianCagr: m.medianCagr,
+      medianHoldYears: Math.round(m.medianHoldYears * 100) / 100,
+      medianPurchasePrice: Math.round(m.medianPurchasePrice),
+      depositPct: opts.depositAndFee,
+      lvr: opts.lvr,
+      purchasePeriodLabel: periodLabel,
+      asAtLabel: asAtLabel,
+      source: 'Performance Property IRR calculator (book as at ' + asAtLabel + '): medians across the ' +
+        m.count + ' ' + city + ' propert' + (m.count === 1 ? 'y' : 'ies') +
+        ' our clients have sold; net of purchase costs and our fee, before tax.',
+    };
+    askConfirm(
+      'Push the current ' + esc(city) + ' medians — IRR ' + pct(m.medianIrr) + ', CAGR ' +
+      pct(m.medianCagr) + ', hold ' + m.medianHoldYears.toFixed(1) + ' yrs, ' + m.count +
+      ' propert' + (m.count === 1 ? 'y' : 'ies') + ' — to the <strong>' + esc(city) +
+      ' Returns</strong> client page?<br><br>' + esc(ovLine(o.data.length, o.scoped)) +
+      '<br><br>This overwrites that page’s headline figures only — benchmarks, wording and legal text are untouched.',
+      'Update returns data',
+      function(){
+        $('messages').innerHTML = msg('ok', 'Updating ' + esc(city) + ' Returns…');
+        share.sb.from('client_pages').select('payload').eq('key', key).maybeSingle()
+          .then(function(r){
+            if (r.error) throw new Error(r.error.message);
+            if (!r.data || !r.data.payload) throw new Error(
+              'No published ' + city + ' Returns page exists yet — it has to be published once before this can update it.');
+            var payload = Object.assign({}, r.data.payload, { pp: pp });
+            return share.sb.from('client_pages')
+              .upsert({ key: key, payload: payload }, { onConflict: 'key' });
+          })
+          .then(function(r){
+            if (r && r.error) throw new Error(r.error.message);
+            $('messages').innerHTML = msg('ok', esc(city) + ' Returns updated — median IRR ' +
+              pct(m.medianIrr) + ', CAGR ' + pct(m.medianCagr) + ', ' + m.count +
+              ' propert' + (m.count === 1 ? 'y' : 'ies') + '.');
+          })
+          .catch(function(e){
+            $('messages').innerHTML = msg('err', 'Could not update ' + esc(city) +
+              ' Returns — ' + esc((e && e.message) || String(e)) + '.');
+          });
+      }
+    );
+  });
 
   /* Clicking a bar sets the band; clicking the lit one clears it. */
   $('ovBody').addEventListener('click', function(ev){
