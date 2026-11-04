@@ -3704,17 +3704,22 @@ window.stopCheck=false;
   /* Cities with a published Returns client page (see the Vault's Returns
      picker, index.html) — add a city here once tools/<city>-returns.html and
      its client_pages row exist. "Update returns data" stays hidden on every
-     other city tab until then. */
-  var RETURNS_PAGES = { adelaide: 'adelaide-returns-2026', brisbane: 'brisbane-returns-2026' };
-  function returnsKeyForCity(){
+     other city tab until then. `tool` is a path relative to this file
+     (both live in tools/), used for the "review the draft" link after a
+     successful save. */
+  var RETURNS_PAGES = {
+    adelaide: { key: 'adelaide-returns-2026', tool: 'adelaide-returns.html' },
+    brisbane: { key: 'brisbane-returns-2026', tool: 'brisbane-returns.html' },
+  };
+  function returnsPageForCity(){
     return RETURNS_PAGES[(activeCity || '').trim().toLowerCase()] || null;
   }
   function syncReturnsBtn(){
     var b = $('btnPushReturns');
     if (!b) return;
-    var key = returnsKeyForCity();
-    b.hidden = !key;
-    if (key) b.title = 'Push ' + cityLabel() + '’s current medians to its Returns client page';
+    var rp = returnsPageForCity();
+    b.hidden = !rp;
+    if (rp) b.title = 'Save ' + cityLabel() + '’s current medians as a draft on its Returns client page';
   }
   /* Switching city is switching books, so anything on screen that belongs to
      the old one goes with it: an open result, a selection, a suburb that only
@@ -8478,8 +8483,8 @@ var MHP_FROM='1980-03', MHP={
      partial payload (no benchmarks/text/window) would fail the client
      page's own validity check and break a live client link. */
   $('btnPushReturns').addEventListener('click', function(){
-    var key = returnsKeyForCity();
-    if (!key) return;
+    var rp = returnsPageForCity();
+    if (!rp) return;
     if (!share.sb) {
       $('messages').innerHTML = msg('warn', 'Still connecting to the database — try again in a moment.');
       return;
@@ -8520,32 +8525,34 @@ var MHP_FROM='1980-03', MHP={
         ' our clients have sold; net of purchase costs and our fee, before tax.',
     };
     askConfirm(
-      'Push the current ' + esc(city) + ' medians — IRR ' + pct(m.medianIrr) + ', CAGR ' +
+      'Save the current ' + esc(city) + ' medians — IRR ' + pct(m.medianIrr) + ', CAGR ' +
       pct(m.medianCagr) + ', hold ' + m.medianHoldYears.toFixed(1) + ' yrs, ' + m.count +
-      ' propert' + (m.count === 1 ? 'y' : 'ies') + ' — to the <strong>' + esc(city) +
-      ' Returns</strong> client page?<br><br>' + esc(ovLine(o.data.length, o.scoped)) +
-      '<br><br>This overwrites that page’s headline figures only — benchmarks, wording and legal text are untouched.',
-      'Update returns data',
+      ' propert' + (m.count === 1 ? 'y' : 'ies') + ' — as a <strong>draft</strong> on the <strong>' +
+      esc(city) + ' Returns</strong> client page?<br><br>' + esc(ovLine(o.data.length, o.scoped)) +
+      '<br><br>This does not go live yet — the draft sits beside the published figures until someone reviews and publishes it on the Returns page.',
+      'Save draft',
       function(){
-        $('messages').innerHTML = msg('ok', 'Updating ' + esc(city) + ' Returns…');
-        share.sb.from('client_pages').select('payload').eq('key', key).maybeSingle()
+        $('messages').innerHTML = msg('ok', 'Saving a draft for ' + esc(city) + ' Returns…');
+        share.sb.from('client_pages').select('payload').eq('key', rp.key).maybeSingle()
           .then(function(r){
             if (r.error) throw new Error(r.error.message);
             if (!r.data || !r.data.payload) throw new Error(
               'No published ' + city + ' Returns page exists yet — it has to be published once before this can update it.');
-            var payload = Object.assign({}, r.data.payload, { pp: pp });
+            var payload = Object.assign({}, r.data.payload,
+              { draftPp: pp, draftSavedAt: new Date().toISOString() });
             return share.sb.from('client_pages')
-              .upsert({ key: key, payload: payload }, { onConflict: 'key' });
+              .upsert({ key: rp.key, payload: payload }, { onConflict: 'key' });
           })
           .then(function(r){
             if (r && r.error) throw new Error(r.error.message);
-            $('messages').innerHTML = msg('ok', esc(city) + ' Returns updated — median IRR ' +
+            $('messages').innerHTML = msg('ok', 'Draft saved for ' + esc(city) + ' Returns — median IRR ' +
               pct(m.medianIrr) + ', CAGR ' + pct(m.medianCagr) + ', ' + m.count +
-              ' propert' + (m.count === 1 ? 'y' : 'ies') + '.');
+              ' propert' + (m.count === 1 ? 'y' : 'ies') + '. <a href="' + esc(rp.tool) +
+              '" target="_blank" rel="noopener">Review the draft and publish &rarr;</a>');
           })
           .catch(function(e){
-            $('messages').innerHTML = msg('err', 'Could not update ' + esc(city) +
-              ' Returns — ' + esc((e && e.message) || String(e)) + '.');
+            $('messages').innerHTML = msg('err', 'Could not save the ' + esc(city) +
+              ' Returns draft — ' + esc((e && e.message) || String(e)) + '.');
           });
       }
     );
