@@ -5205,15 +5205,28 @@ const isReportCluster = (c) => REPORT_CLUSTERS.indexOf(c) >= 0;
 const REPORTS_DATA_CACHE_TTL_MS = 15 * 60 * 1000; // 15 min — was 1 h; tightened so users see sheet edits sooner without manual refresh
 const REPORTS_DATA_CACHE_KEY = (cluster) => 'ppa-reports-data-cache-v1-' + cluster;
 
+/* A cache entry that can no longer be read is dropped where it is found.
+   The TTL above decides whether an entry is READ; until 2026-10-30 nothing
+   decided whether it was KEPT, so an entry written once sat there for good.
+   Three clusters at roughly 600 KB each held 1.7 MB of this origin's ~5 MB
+   for seventeen days — unreadable by this function the whole time, and
+   unavailable to every other tool on the domain. It is what pushed the IRR
+   Calculator's register past the quota.
+
+   Dropping it here costs nothing: every path that reaches one of these
+   returns null, and a null sends the caller to fetch the data again. */
+function liveDataDropCache(cluster) {
+  try { localStorage.removeItem(REPORTS_DATA_CACHE_KEY(cluster)); } catch (_) { /* nothing to do */ }
+}
 function liveDataReadCache(cluster) {
   try {
     const raw = localStorage.getItem(REPORTS_DATA_CACHE_KEY(cluster));
     if (!raw) return null;
     const obj = JSON.parse(raw);
-    if (!obj || !obj.fetchedAt || !obj.data) return null;
-    if (Date.now() - obj.fetchedAt > REPORTS_DATA_CACHE_TTL_MS) return null;
+    if (!obj || !obj.fetchedAt || !obj.data) { liveDataDropCache(cluster); return null; }
+    if (Date.now() - obj.fetchedAt > REPORTS_DATA_CACHE_TTL_MS) { liveDataDropCache(cluster); return null; }
     return obj.data;
-  } catch { return null; }
+  } catch { liveDataDropCache(cluster); return null; }
 }
 function liveDataWriteCache(cluster, data) {
   try {
