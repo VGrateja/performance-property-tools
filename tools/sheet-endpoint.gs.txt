@@ -62,17 +62,88 @@ var HEADERS = [
   'Property link',
   'What RP Data offered',
   'Look up',
-  'Checked at'
+  'Checked at',
+  /* What RP Data said this property is, and the raw words it said it in.
+     Both, because the verdict is only as good as the wording it was read
+     from, and the wording has changed before. */
+  'Property type',
+  'RP Data type'
+];
+
+/* ── the worklist ─────────────────────────────────────────────────────────
+   WHERE THE REGISTER COMES FROM, and why it is here at all.
+
+   The bookmarklets run on RP Data's own pages. The register is behind a
+   sign-in that lives on the tool's origin, and one origin cannot read
+   another's - so a bookmarklet can never borrow that sign-in. Reading the
+   register directly would mean carrying a credential in the bookmark, and a
+   link on a bookmarks bar gets copied, shared and screenshotted.
+
+   So the IRR Calculator, which IS signed in, writes the worklist here every
+   time its Sold check tab is opened, and the bookmarklets read it back
+   through the one address they already hold. One capability instead of two,
+   and the register stays shut to anyone who is not signed in.
+
+   This tab is a COPY, not a record. Every sync replaces it outright, nothing
+   is ever written back to it, and deleting it costs nothing - the next time
+   the Sold check tab is opened it is simply written again. Answers still go
+   to the results tabs, which are untouched by any of this. */
+var REG_TAB = 'Register';
+var REG_HEADERS = [
+  'Address',
+  'City',
+  'Purchase date',
+  'Purchase price',
+  'Sold date',
+  'Sold price',
+  'Property type',
+  'Outside',
+  /* The header cell itself carries the stamp - 'Synced at 2026-10-30 10:04'.
+     Putting it in the column would repeat one string down a thousand rows to
+     say a thing that is true of the tab, not of any row; putting it in a
+     script property would hide it from the person who opens the sheet to ask
+     how old this is. Nothing looks this column up by name. */
+  'Synced at'
+];
+
+/* ── the Adelaide tracking sheet ──────────────────────────────────────────
+   A second spreadsheet, and NOT the one this script is bound to: "Adelaide
+   Total Purchases & Sales - TrackingSheet", kept by hand by the advisory
+   team. Its "ADL - Sold" tab is the record of every Adelaide sale, and a sale
+   is written there before anybody thinks about the IRR Calculator — so it is
+   the place a sale shows up first, ahead of RP Data and ahead of the book.
+
+   It is opened here, by id, rather than fetched by the browser, for the same
+   reason the worklist exists: the tool and the sheet are different origins
+   and the sheet is not public. This script already holds the spreadsheets
+   scope, so reading a second file costs no new permission.
+
+   The ids are pinned in this file on purpose. Taking one from the request
+   would turn a capability that can append rows to one sheet into one that can
+   read every sheet the owner of this script can see, which is a far larger
+   thing to leave on a bookmarks bar.
+
+   To add a city: put a row in TRACKING. Nothing else changes — the columns
+   are found by name, so a tab that spells its headers the same way is read
+   the same way even when they sit in different places, which BRI - Sold does
+   (it has no IRR column, so Link is a column to the left of where ADL - Sold
+   keeps it). */
+/* The real ids are NOT in this published copy — these are spreadsheets of
+   client sales and this file is served on the open web, so the ids live only
+   in the deployed script. Open each tracking sheet, take the long string out
+   of its address between /d/ and /edit, and paste it in below before
+   deploying. */
+var TRACKING = [
+  { id: 'PUT_THE_ADL_SHEET_ID_HERE',
+    tab: 'ADL - Sold', city: 'Adelaide' },
+  { id: 'PUT_THE_BRI_SHEET_ID_HERE',
+    tab: 'BRI - Sold', city: 'Brisbane' }
 ];
 
 function make_(ss, name) {
   var sh = ss.insertSheet(name);
   sh.appendRow(HEADERS);
-  sh.getRange(1, 1, 1, HEADERS.length).setFontWeight('bold');
-  sh.setFrozenRows(1);
-  sh.setColumnWidth(1, 280);
-  sh.getRange('D:D').setNumberFormat('$#,##0');
-  sh.getRange('F:F').setNumberFormat('$#,##0');
+  dress_(sh);
   return sh;
 }
 
@@ -98,16 +169,49 @@ function sheet_(which) {
   if (sh.getLastRow() < 2) {
     sh.clear();
     sh.appendRow(HEADERS);
-    sh.getRange(1, 1, 1, HEADERS.length).setFontWeight('bold');
-    sh.setFrozenRows(1);
-    sh.setColumnWidth(1, 280);
-    sh.getRange('D:D').setNumberFormat('$#,##0');
-    sh.getRange('F:F').setNumberFormat('$#,##0');
+    dress_(sh);
     return sh;
   }
+
+  /* Every column it already had is still a column we write, so this is an
+     ADDED column rather than a different sheet. Move each one into its new
+     place by NAME and leave the new ones empty.
+
+     Worth the care: this tab is the skip list. Archiving it to be safe would
+     make the next run ask about every property in the book again, which on
+     this book is an hour of somebody's afternoon for no answer that was not
+     already on the screen. */
+  var unknown = head.filter(function (h) { return h && HEADERS.indexOf(h) < 0; });
+  if (!unknown.length) {
+    var n = sh.getLastRow() - 1;
+    var old = sh.getRange(2, 1, n, width).getValues();
+    var at = {};
+    head.forEach(function (h, i) { if (h) at[h] = i; });
+    var moved = old.map(function (row) {
+      return HEADERS.map(function (col) {
+        return at[col] === undefined ? '' : row[at[col]];
+      });
+    });
+    sh.clear();
+    sh.appendRow(HEADERS);
+    sh.getRange(2, 1, n, HEADERS.length).setValues(moved);
+    dress_(sh);
+    return sh;
+  }
+
+  /* A column we do not recognise means this tab is not ours to rearrange. */
   sh.setName(name + ' — before ' +
     Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm'));
   return make_(ss, name);
+}
+
+/* The formatting, in one place, because it is now applied from three. */
+function dress_(sh) {
+  sh.getRange(1, 1, 1, HEADERS.length).setFontWeight('bold');
+  sh.setFrozenRows(1);
+  sh.setColumnWidth(1, 280);
+  sh.getRange('D:D').setNumberFormat('$#,##0');
+  sh.getRange('F:F').setNumberFormat('$#,##0');
 }
 
 function doPost(e) {
@@ -116,6 +220,9 @@ function doPost(e) {
   try {
     var payload = JSON.parse(e.postData.contents);
     var rows = payload.rows || [];
+    /* The worklist replaces itself wholesale, so it shares none of the
+       merge-by-address machinery below and returns before any of it. */
+    if (payload.kind === 'register') return register_(rows);
     /* Only sent deliberately. A normal run updates what is already here and
        skips what has settled, so stopping half way and clicking again
        resumes. */
@@ -140,6 +247,44 @@ function doPost(e) {
         var key = String(keys[k][0] || '').trim();
         if (key) rowOf[key] = k + 2;       // the row number in the sheet
       }
+    }
+
+    /* A type sweep carries no sale data, so it writes none. It fills the two
+       type columns on the row already here and leaves every other cell as it
+       found it — including "Checked at", which belongs to the sold-check and
+       decides when a property next comes round.
+
+       A property the sheet has never seen gets a row with its address, its
+       city and its type, and nothing else. Such a row is still READ by the
+       sold-check — doGet fills a blank Source in from the tab name, so it
+       does not go unnoticed — but it cannot stop a property being checked:
+       Status is empty, so it is not an answer, and Checked at is empty, so
+       it does not count as checked this week or this month. The property
+       comes round exactly as if the row were not there. */
+    if (payload.kind === 'type') {
+      var pCol = HEADERS.indexOf('Property type') + 1;
+      var cityCol = HEADERS.indexOf('City');
+      var filled = 0, created = 0;
+      for (var t = 0; t < rows.length; t++) {
+        var tr = rows[t];
+        var addr = String(tr.address || '').trim();
+        if (!addr) continue;
+        var at = rowOf[addr];
+        if (at) {
+          filled++;
+        } else {
+          var blank = HEADERS.map(function () { return ''; });
+          blank[addrCol - 1] = addr;
+          if (cityCol >= 0) blank[cityCol] = tr.city || '';
+          sh.appendRow(blank);
+          at = sh.getLastRow();
+          rowOf[addr] = at;
+          created++;
+        }
+        sh.getRange(at, pCol, 1, 2)
+          .setValues([[tr.ptype || '', tr.rpType || '']]);
+      }
+      return json_({ ok: true, kind: 'type', filled: filled, created: created });
     }
 
     for (var i = 0; i < rows.length; i++) {
@@ -168,7 +313,9 @@ function doPost(e) {
         /* Only where there is nothing to click. A search link beside a found
            property is noise; beside a dead end it is the next thing to do. */
         r.resolved ? '' : (r.address ? PRICEFINDER_SEARCH + encodeURIComponent(r.address) : ''),
-        new Date()
+        new Date(),
+        r.ptype || '',
+        r.rpType || ''
       ];
 
       var at = rowOf[String(r.address || '').trim()];
@@ -211,6 +358,183 @@ function json_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+/* Replace the worklist with what the tool has now. Wholesale and not a merge:
+   a property deleted from the register has to disappear from here too, and a
+   merge would leave it behind to be checked forever. */
+function register_(rows) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(REG_TAB);
+  if (!sh) sh = ss.insertSheet(REG_TAB); else sh.clear();
+
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(),
+                                   'yyyy-MM-dd HH:mm');
+  var head = REG_HEADERS.slice();
+  head[head.length - 1] = 'Synced at ' + stamp;
+
+  var out = [head];
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i] || {};
+    out.push([
+      r.address || '', r.city || '',
+      r.purchased || '', r.purchasePrice || '',
+      r.soldDate || '', r.soldPrice || '',
+      r.ptype || '',
+      /* A word, not TRUE/FALSE: this tab gets read by people as well. */
+      r.outside ? 'outside' : '',
+      ''
+    ]);
+  }
+  sh.getRange(1, 1, out.length, head.length).setValues(out);
+  sh.getRange(1, 1, 1, head.length).setFontWeight('bold');
+  sh.setFrozenRows(1);
+  sh.setColumnWidth(1, 280);
+  return json_({ ok: true, wrote: rows.length, syncedAt: stamp });
+}
+
+/* The tab as the tool needs it: one row per address, latest sale.
+
+   Columns are found by name, never by position. This is a working document —
+   a column gets inserted in it now and then — and a reader that counted would
+   not fail, it would quietly start returning the wrong field, which is worse. */
+/* Every tracking sheet, in one answer. Each row carries the city it came
+   from, so the caller never has to know which sheet is which.
+
+   A sheet that cannot be read does NOT take the others down with it: it comes
+   back as a source with an `error` on it and no rows. That distinction is the
+   whole point — a failed read and an empty tab look identical from the far
+   end, and "no new sales" is the one wrong answer that reads as good news. */
+function tracking_() {
+  var sources = [], rows = [];
+  for (var i = 0; i < TRACKING.length; i++) {
+    var one = oneTracking_(TRACKING[i]);
+    var meta = { city: TRACKING[i].city, tab: TRACKING[i].tab };
+    if (one.error) {
+      meta.error = one.error;
+      if (one.tabs) meta.tabs = one.tabs;
+      meta.count = 0;
+    } else {
+      meta.title = one.title; meta.sheetUrl = one.sheetUrl;
+      meta.tz = one.tz; meta.count = one.rows.length; meta.collapsed = one.collapsed;
+      rows = rows.concat(one.rows);
+    }
+    sources.push(meta);
+  }
+  var live = sources.filter(function (x) { return !x.error; }).length;
+  return json_({ ok: live > 0, kind: 'tracking',
+                 error: live ? '' : 'none of the tracking sheets could be read',
+                 rows: rows, count: rows.length, sources: sources,
+                 script: Session.getScriptTimeZone() });
+}
+
+/* One sheet. Returns { rows, ... } or { error }. */
+function oneTracking_(src) {
+  var ss;
+  try { ss = SpreadsheetApp.openById(src.id); }
+  catch (err) {
+    return { error: 'cannot open the spreadsheet: ' + ((err && err.message) || err) };
+  }
+  var sh = ss.getSheetByName(src.tab);
+  if (!sh) {
+    return { error: 'no tab named "' + src.tab + '" in "' + ss.getName() + '"',
+             tabs: ss.getSheets().map(function (x) { return x.getName(); }) };
+  }
+  /* A date cell holds an instant, and which DAY that instant falls on depends
+     on the time zone you read it in. The cells in this file were written in
+     THIS spreadsheet's zone, so that is the zone they have to be formatted
+     back in — not the script's, which belongs to the other spreadsheet and is
+     not the same. Reading them in the script's zone moved every sale in the
+     tab one day earlier, silently and consistently, which is exactly the kind
+     of wrong that gets believed. */
+  var tz = ss.getSpreadsheetTimeZone();
+  var out = { sheetUrl: ss.getUrl(), title: ss.getName(), tz: tz, collapsed: 0 };
+  var last = sh.getLastRow();
+  if (last < 2) { out.rows = []; return out; }
+  var wide = sh.getLastColumn();
+  var head = sh.getRange(1, 1, 1, wide).getValues()[0].map(adlHead_);
+  var at = function (name) { return head.indexOf(adlHead_(name)); };
+  var iAddr = at('Property'), iSoldD = at('Sold Date'), iSoldP = at('Sold Price');
+  if (iAddr < 0 || iSoldD < 0 || iSoldP < 0) {
+    return { error: '"' + src.tab + '" is missing one of Property / Sold Date / Sold Price',
+             saw: head };
+  }
+  var iBuyD = at('Purchase Date'), iBuyP = at('Purchase Price'),
+      iLink = at('Link'), iType = at('Type');
+  var get = function (v, i) { return i < 0 ? '' : v[i]; };
+
+  var grid = sh.getRange(2, 1, last - 1, wide).getValues();
+  var byAddr = {}, order = [], collapsed = 0;
+  for (var i = 0; i < grid.length; i++) {
+    var v = grid[i];
+    var addr = String(get(v, iAddr) == null ? '' : get(v, iAddr)).replace(/\s+/g, ' ').trim();
+    if (!addr) continue;
+    var soldDate = adlDate_(get(v, iSoldD), tz);
+    var soldPrice = adlNum_(get(v, iSoldP));
+    /* This is the SOLD tab, so a row with neither a date nor a price on it is
+       a row somebody started, not a property that is still held. */
+    if (!soldDate && soldPrice === '') continue;
+    var rec = {
+      address: addr, city: src.city, tab: src.tab,
+      purchased: adlDate_(get(v, iBuyD), tz),
+      purchasePrice: adlNum_(get(v, iBuyP)),
+      soldDate: soldDate, soldPrice: soldPrice,
+      ptype: String(get(v, iType) == null ? '' : get(v, iType)).replace(/\s+/g, ' ').trim(),
+      link: String(get(v, iLink) == null ? '' : get(v, iLink)).trim(),
+      row: i + 2
+    };
+    var k = addr.toLowerCase();
+    if (!byAddr[k]) { byAddr[k] = rec; order.push(k); continue; }
+    /* The same address twice is a property that has been sold twice, or a row
+       entered twice. Either way the latest sale is the one that is true now.
+       Dates are yyyy-mm-dd by here, so comparing them as strings is comparing
+       them as dates. */
+    collapsed++;
+    if (String(rec.soldDate) > String(byAddr[k].soldDate)) byAddr[k] = rec;
+  }
+  var rows = [];
+  for (var j = 0; j < order.length; j++) rows.push(byAddr[order[j]]);
+  out.rows = rows;
+  out.collapsed = collapsed;
+  return out;
+}
+
+/* Headers in a working sheet carry trailing spaces and the odd line break
+   ("Running cost (excld fnce)" then a newline then "Annually"), so they are
+   compared flattened rather than exactly. */
+function adlHead_(s) {
+  return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function pad2_(n) { return (n < 10 ? '0' : '') + n; }
+
+/* A date cell is usually a real date, in which case there is nothing to read.
+   Where somebody has typed one in as text instead, it is day-first: the
+   spreadsheet's own locale is en_GB and its time zone Australia/Adelaide.
+   That is read off the file, not guessed from the numbers — guessing would
+   take 7/8/2016 as 7 August in one row and 8 July in the next, and never say
+   which it had done. */
+function adlDate_(v, tz) {
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, tz || Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  var s = String(v == null ? '' : v).trim();
+  if (!s) return '';
+  var m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (!m) return s;
+  var d = +m[1], mo = +m[2], y = +m[3];
+  if (y < 100) y += 2000;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return s;
+  return y + '-' + pad2_(mo) + '-' + pad2_(d);
+}
+
+/* "$621,000" where the cell holds text rather than a number. An empty cell
+   comes back as '' and not 0, because 0 is a price and '' is the absence of
+   one. */
+function adlNum_(v) {
+  if (typeof v === 'number') return v;
+  var s = String(v == null ? '' : v).replace(/[^0-9.\-]/g, '');
+  return s === '' || isNaN(Number(s)) ? '' : Number(s);
+}
+
 function fmt_(v) {                        // Date cells → "2026-09-18"
   if (v instanceof Date) {
     return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
@@ -229,15 +553,62 @@ function fmt_(v) {                        // Date cells → "2026-09-18"
                    and it is the list the Pricefinder bookmarklet works from.
    ?rows=1      →  both tabs, RP Data first, each row carrying the source it
                    came from. This is what the Sold check tab reads.
+   ?register=1  →  the worklist the IRR Calculator last wrote, with the stamp
+                   saying when. This is where the bookmarklets get the list of
+                   properties to work through - see REG_TAB above for why it
+                   comes from here and not from the database.
+
+   ?tracking=1  →  the sold tab of every tracking sheet in TRACKING above —
+                   "ADL - Sold" and "BRI - Sold" today — one row per address
+                   carrying its latest sale and the city it came from. Those
+                   are different spreadsheets entirely. ?adl=1 is the old name
+                   for it and still answers, so a tool published before this
+                   existed keeps working.
 
    ?tab=pricefinder narrows done= to that tab. */
 function doGet(e) {
   var p = (e && e.parameter) || {};
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  if (!p.rows && !p.done && !p.todo) {
+  if (p.adl || p.tracking) return tracking_();
+
+  if (!p.rows && !p.done && !p.todo && !p.register) {
+    /* `kinds` is how a bookmarklet tells this deployment from an older one.
+       A sweep that cannot see 'register' here must not run: it would read an
+       empty worklist and report, perfectly truthfully, that there was
+       nothing to do. */
     return json_({ ok: true, endpoint: 'rpdata held check',
+                   kinds: ['type', 'register', 'adl', 'tracking'],
                    tabs: [TAB, TAB2], sheetUrl: ss.getUrl() });
+  }
+
+  /* Read back exactly as written. No merging, no latest-per-address: the tab
+     was replaced wholesale a moment ago and holds one row per property. */
+  if (p.register) {
+    var rsh = ss.getSheetByName(REG_TAB);
+    if (!rsh || rsh.getLastRow() < 2) {
+      return json_({ ok: true, rows: [], count: 0, syncedAt: '', empty: true });
+    }
+    var rhead = rsh.getRange(1, 1, 1, rsh.getLastColumn()).getValues()[0]
+                   .map(function (x) { return String(x || '').trim(); });
+    var rget = function (v, n) { var i = rhead.indexOf(n); return i < 0 ? '' : v[i]; };
+    var rrows = rsh.getRange(2, 1, rsh.getLastRow() - 1, rsh.getLastColumn()).getValues()
+      .map(function (v) {
+        return {
+          address:       fmt_(rget(v, 'Address')),
+          city:          fmt_(rget(v, 'City')),
+          purchased:     fmt_(rget(v, 'Purchase date')),
+          purchasePrice: rget(v, 'Purchase price'),
+          soldDate:      fmt_(rget(v, 'Sold date')),
+          soldPrice:     rget(v, 'Sold price'),
+          ptype:         fmt_(rget(v, 'Property type')),
+          outside:       !!String(rget(v, 'Outside') || '').trim()
+        };
+      })
+      .filter(function (r) { return r.address; });
+    var last = String(rhead[rhead.length - 1] || '');
+    return json_({ ok: true, rows: rrows, count: rrows.length,
+                   syncedAt: last.replace(/^Synced at\s*/, '') });
   }
 
   /* One tab, read once, as {header: value} objects. Reading by header name
@@ -280,6 +651,9 @@ function doGet(e) {
           offered:       fmt_(get(v, 'What RP Data offered')),
           lookup:        fmt_(get(v, 'Look up')),
           checkedAt:     fmt_(get(v, 'Checked at')),
+          /* So a sweep can skip what another machine already answered. The
+             column is the record; there is no second list to keep in step. */
+          ptype:         fmt_(get(v, 'Property type')),
           /* the column where there is one; the tab otherwise, so a row
              written before the column existed still answers */
           source:        fmt_(get(v, 'Source')) ||
@@ -335,7 +709,10 @@ function doGet(e) {
   pf.forEach(function (r) {              // Pricefinder-only rows, if any
     if (!rows.some(function (x) { return x.address === r.address; })) rows.push(r);
   });
-  return json_({ ok: true, rows: rows, count: rows.length });
+  /* Advertised on the reply a run actually reads, so a sweep can tell
+     whether this deployment understands a type post BEFORE it sends one. An
+     older deployment simply has no `kinds`, which is the answer. */
+  return json_({ ok: true, kinds: ['type'], rows: rows, count: rows.length });
 }
 
 /* ── one-off tidy: collapse the duplicates already in the sheet ───────────
@@ -368,3 +745,201 @@ function dedupeTabs() {
                Object.keys(seen).length + ' properties remain');
   });
 }
+
+/* ââ one-off tidy: take the purchase back out of the Sold columns âââââââââ
+   A property that is still held has a last sale on record â the owner's own
+   purchase of it â and until now that went into Sold date and Sold price
+   anyway. So a held row read as a sold one, dated before the purchase it was
+   supposed to have followed.
+
+   New rows no longer do that. These ones will not fix themselves, though: a
+   settled row is skipped on the next run, by design, so it is never
+   rewritten. Hence this.
+
+   Blanks Sold date and Sold price on every row that is still held. A row
+   that sold since purchase is left exactly as it is, and no other column is
+   touched. Run it once from the editor (pick clearHeldSales from the
+   function list and press Run). */
+function clearHeldSales() {
+  [TAB, TAB2].forEach(function (name) {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+    if (!sh || sh.getLastRow() < 2) return;
+
+    var statusCol = HEADERS.indexOf('Status') + 1;
+    var dateCol   = HEADERS.indexOf('Sold date') + 1;
+    var priceCol  = HEADERS.indexOf('Sold price') + 1;
+    /* Read and written as one block, which is the difference between a second
+       and a minute on a few hundred rows â so say so if they ever stop being
+       side by side rather than quietly clearing the wrong column. */
+    if (priceCol !== dateCol + 1) {
+      throw new Error('Sold date and Sold price are no longer next to each other');
+    }
+
+    var n = sh.getLastRow() - 1;
+    var st = sh.getRange(2, statusCol, n, 1).getValues();
+    var sale = sh.getRange(2, dateCol, n, 2).getValues();
+    var cleared = 0;
+    for (var i = 0; i < n; i++) {
+      if (!/^still held/.test(String(st[i][0] || ''))) continue;
+      if (sale[i][0] === '' && sale[i][1] === '') continue;
+      sale[i][0] = '';
+      sale[i][1] = '';
+      cleared++;
+    }
+    if (cleared) sh.getRange(2, dateCol, n, 2).setValues(sale);
+    Logger.log(name + ': took the purchase out of ' + cleared + ' held row(s)');
+  });
+}
+
+/* ── one-off tidy: the sales that were only the purchase, recorded late ───
+   A register entry dated after the purchase on file is ordinary — settlement
+   follows contract, and off the plan it can follow it by years — and every
+   one of those was announced here as a sale.
+
+   The sheet already holds both figures, so this needs nothing re-checked: a
+   row that sold for the purchase price, to within two per cent, was never a
+   sale. Those go back to being held, and their Sold date and Sold price are
+   cleared. A row that sold for different money is left exactly as it is,
+   however soon after the purchase it was — that is what a renovation looks
+   like.
+
+   Worth running once after 13 Oct 2026. New rows already follow this rule. */
+function recheckRecordedSales() {
+  function money_(v) {
+    if (typeof v === 'number') return v;
+    var n = Number(String(v == null ? '' : v).replace(/[^0-9.]/g, ''));
+    return isNaN(n) ? 0 : n;
+  }
+  [TAB, TAB2].forEach(function (name) {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+    if (!sh || sh.getLastRow() < 2) return;
+
+    var n = sh.getLastRow() - 1;
+    var all = sh.getRange(2, 1, n, HEADERS.length).getValues();
+    var cStatus = HEADERS.indexOf('Status');
+    var cPaid   = HEADERS.indexOf('Purchase price');
+    var cDate   = HEADERS.indexOf('Sold date');
+    var cPrice  = HEADERS.indexOf('Sold price');
+    var changed = 0;
+
+    for (var i = 0; i < n; i++) {
+      if (String(all[i][cStatus] || '').indexOf('SOLD SINCE PURCHASE') !== 0) continue;
+      var paid = money_(all[i][cPaid]), got = money_(all[i][cPrice]);
+      if (!paid || !got) continue;                       // nothing to compare
+      if (Math.abs(got - paid) >= 0.02 * paid) continue; // different money: a sale
+
+      all[i][cStatus] = 'still held — sale on record matches the purchase price';
+      all[i][cDate] = '';
+      all[i][cPrice] = '';
+      changed++;
+      /* It was red for being a sale. It is not one. */
+      var band = sh.getRange(i + 2, 1, 1, HEADERS.length);
+      if (all[i][HEADERS.indexOf('On market')]) {
+        band.setBackground('#fef7e0').setFontWeight('normal');
+      } else {
+        band.setBackground(null).setFontWeight('normal');
+      }
+    }
+    if (changed) sh.getRange(2, 1, n, HEADERS.length).setValues(all);
+    Logger.log(name + ': ' + changed + ' row(s) were the purchase, not a sale');
+  });
+}
+
+/* ── one-off: how long the book actually took ────────────────────────────
+   Pick runTiming from the function list, press Run, then View → Logs.
+
+   It reads two columns, "Checked at" and "Status". No addresses are read and
+   none are printed.
+
+   One row per property, overwritten in place on a retry, so what survives is
+   the LAST time each property was written — which is already "without the
+   retries": a property asked three times is counted once.
+
+   WALL CLOCK is first write to last write and includes every pause: a night,
+   a tab left in the background, a cup of tea. WORKING TIME is the same
+   stamps with the pauses taken out — sort them, measure the gap between each
+   consecutive pair, and keep only the gaps short enough to be a property
+   being checked rather than nobody at the keyboard.
+
+   A gap belongs to the property at its END: that is the stretch of time that
+   produced the row. The very first property has no gap before it and so is
+   not counted — one out of several hundred, and there is nothing to measure
+   it against. */
+function runTiming() {
+  var PAUSE = 120;                 // seconds; a gap longer than this is not work
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TAB);
+  if (!sh || sh.getLastRow() < 2) { Logger.log('nothing in "' + TAB + '"'); return; }
+
+  var n     = sh.getLastRow() - 1;
+  var atCol = HEADERS.indexOf('Checked at') + 1;
+  var stCol = HEADERS.indexOf('Status') + 1;
+  var at    = sh.getRange(2, atCol, n, 1).getValues();
+  var st    = sh.getRange(2, stCol, n, 1).getValues();
+
+  var rows = [];
+  for (var i = 0; i < n; i++) {
+    if (at[i][0] instanceof Date) {
+      rows.push({ t: at[i][0].getTime(), s: String(st[i][0] || '(blank)') });
+    }
+  }
+  Logger.log('rows in the tab: ' + n + ', of them timestamped: ' + rows.length);
+  if (rows.length < 2) return;
+  rows.sort(function (a, b) { return a.t - b.t; });
+
+  var work = 0, gaps = [], pauses = [], byStatus = {};
+  for (var j = 1; j < rows.length; j++) {
+    var g = (rows[j].t - rows[j - 1].t) / 1000;
+    if (g > PAUSE) { pauses.push(g); continue; }
+    work += g;
+    gaps.push(g);
+    (byStatus[rows[j].s] = byStatus[rows[j].s] || []).push(g);
+  }
+
+  var wall = (rows[rows.length - 1].t - rows[0].t) / 1000;
+  Logger.log('');
+  Logger.log('first row written  ' + stamp_(rows[0].t));
+  Logger.log('last row written   ' + stamp_(rows[rows.length - 1].t));
+  Logger.log('wall clock         ' + dur_(wall));
+  Logger.log('working time       ' + dur_(work) + '   <- the answer');
+  Logger.log('paused             ' + dur_(wall - work) + ' across ' +
+             pauses.length + ' break(s) longer than ' + PAUSE + 's');
+  if (pauses.length) {
+    pauses.sort(function (a, b) { return b - a; });
+    var top = [];
+    for (var p = 0; p < Math.min(5, pauses.length); p++) top.push(dur_(pauses[p]));
+    Logger.log('longest breaks     ' + top.join(', '));
+  }
+  Logger.log('');
+  Logger.log('per property       median ' + median_(gaps).toFixed(1) + 's, ' +
+             'mean ' + (work / gaps.length).toFixed(1) + 's, ' +
+             'over ' + gaps.length + ' measured');
+
+  Logger.log('');
+  Logger.log('where the time went, by what RP Data came back with:');
+  var keys = Object.keys(byStatus).sort(function (a, b) {
+    return byStatus[b].length - byStatus[a].length;
+  });
+  keys.forEach(function (k) {
+    var v = byStatus[k], sum = 0;
+    for (var q = 0; q < v.length; q++) sum += v[q];
+    Logger.log('  ' + pad_(String(v.length), 5) + pad_(median_(v).toFixed(1) + 's', 9) +
+               pad_(dur_(sum), 12) + k);
+  });
+}
+
+function median_(a) {
+  if (!a.length) return 0;
+  var b = a.slice().sort(function (x, y) { return x - y; });
+  var m = Math.floor(b.length / 2);
+  return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2;
+}
+function dur_(sec) {
+  sec = Math.round(sec);
+  var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? h + ' h ' + m + ' m' : m ? m + ' m ' + s + ' s' : s + ' s';
+}
+function stamp_(ms) {
+  return Utilities.formatDate(new Date(ms), Session.getScriptTimeZone(),
+                              'EEE d MMM HH:mm:ss');
+}
+function pad_(s, w) { while (s.length < w) s += ' '; return s; }
