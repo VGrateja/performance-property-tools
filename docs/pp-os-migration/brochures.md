@@ -75,3 +75,4 @@ lands (they are in `documents_state` → section `brochures`).
 - 2026-10-21 — PPA and PFD colours swapped (PPA purple, PFD teal); tiles outlined in the brand colour instead of filled.
 - 2026-11-05 — Case Studies: renamed Brochures & Case Studies; a Case Studies tab (one A–Z list) beside Brochures; `?tab=case-studies`; search entry.
 - 2026-11-05 (later) — Case studies drop Status and Category (Van): no status dot or legend, editor columns Title | Link | Portfolio Value | Size; the row's sub line reads "Portfolio Value … · Size … · Updated …". New fields `portfolioValue`, `size` (free text); old `status` values on case studies are kept but not shown.
+- 2026-11-05 (later) — A case study stored with status "updating" is no longer locked as "Being updated" (case studies have no status, and the editor no longer offers one to clear it): `_wsxVideoState(item, K)` skips the status check when `K.caseStudy`.
