@@ -1651,6 +1651,12 @@ details .body strong{color:var(--text)}
                  goes away and stays away: it is a thing you do once, not a
                  setting to keep an eye on. Without it a new browser — a new
                  person signing in — has no way to point the tool anywhere. -->
+            <!-- Open until there is an address, shut afterwards, and always
+                 re-openable from the button below. Shut-for-ever is what made
+                 a leaked address unrotatable without editing the DOM. -->
+            <button type="button" class="btn-ghost btn-sm" id="btnBmSetup" hidden>
+              Change the sheet address or key</button>
+            <div id="bmSetup">
             <div class="field" id="bmSheetField" hidden>
               <label for="bmSheet">Google Sheet address</label>
               <input type="text" id="bmSheet" spellcheck="false" autocomplete="off"
@@ -1663,6 +1669,27 @@ details .body strong{color:var(--text)}
                  one else has to. It is never written into this page, and nothing
                  goes anywhere but your own sheet.</p>
               <p class="hint" id="bmSheetShared" hidden></p>
+            </div>
+
+            <div class="field" id="bmKeyField">
+              <label for="bmKey">Endpoint key</label>
+              <input type="text" id="bmKey" spellcheck="false" autocomplete="off"
+                     autocapitalize="off" placeholder="the READ_KEY set in the script">
+              <p class="hint">The <code>READ_KEY</code> at the top of
+                 <a href="sheet-endpoint.gs.txt" target="_blank" rel="noopener">sheet-endpoint.gs</a>.
+                 Without it the address alone lets anyone who has it read every
+                 purchase and sale price, replace the worklist, or delete a results
+                 tab — a web app has to be deployed to <em>Anyone</em> for the
+                 bookmarklets to reach it, so Google will not do this part.
+                 Set it in both places, then <strong>drag the bookmarks again</strong>:
+                 they carry the key, and an old one stops being answered.</p>
+              <p class="hint" id="bmKeyShared" hidden></p>
+            </div>
+              <div class="btns" style="margin-top:var(--sp-3)">
+                <button type="button" class="btn-primary btn-sm" id="btnBmSave">Save</button>
+                <button type="button" class="btn-ghost btn-sm" id="btnBmCancel" hidden>Cancel</button>
+              </div>
+              <p class="hint" id="bmSaveMsg" hidden></p>
             </div>
 
             <h3>1 · RP Data — the first run, then the weekly catch-up</h3>
@@ -2146,6 +2173,16 @@ window.stopCheck=false;
   /* An unsubstituted placeholder is not an address. Treated as one it
      would POST every row at nothing and report success. */
   const SHEET_URL = /^https:/.test(RAW_SHEET) ? RAW_SHEET : '';
+  /* The endpoint's key, baked in at the moment this was dragged. An
+     unsubstituted placeholder still begins with an underscore, and an
+     endpoint with no key of its own ignores this entirely — so an older
+     bookmark keeps working until the key is actually set. */
+  const RAW_KEY   = (localStorage.getItem('ppSheetKey') || '__READ_KEY__').trim();
+  const READ_KEY  = RAW_KEY.charAt(0) === '_' ? '' : RAW_KEY;
+  /* Every request goes through here, so there is one place the key can be
+     forgotten rather than four. */
+  const api = q => SHEET_URL + (SHEET_URL.includes('?') ? '&' : '?') +
+    [READ_KEY ? 'key=' + encodeURIComponent(READ_KEY) : '', q].filter(Boolean).join('&');
   /* Slower than it was. A run that produced 9 "no match" out of 14 was not
      unlucky — it was going too fast and RP Data stopped answering. A check
      that takes twice as long and is right is cheaper than one that is quick
@@ -2185,7 +2222,7 @@ window.stopCheck=false;
   let reg = null;
   try {
     reg = await withTimeout(
-      fetch(SHEET_URL + (SHEET_URL.includes('?') ? '&' : '?') + 'register=1')
+      fetch(api('register=1'))
         .then(r => r.json()),
       25000, 'reading the register from the sheet');
   } catch (e) {
@@ -2235,8 +2272,7 @@ window.stopCheck=false;
     .filter(r =>
       r.address &&
       (!CITY || (r.city || '').trim() === CITY) &&
-      (TYPES_ONLY ? !r.ptype
-                  : (!r.outside && !(r.soldDate && r.soldPrice))))
+      (TYPES_ONLY ? !r.ptype : !!r.check))
     .map(r => ({
       name:          r.address,
       category:      r.city,
@@ -2389,7 +2425,7 @@ window.stopCheck=false;
   if (SHEET_URL) {
     try {
       const d = await withTimeout(
-        fetch(SHEET_URL + (SHEET_URL.includes('?') ? '&' : '?') + 'rows=1').then(r => r.json()),
+        fetch(api('rows=1')).then(r => r.json()),
         20000, 'asking the sheet what it already has');
       /* Both sides are yyyy-mm-dd, so a string compare IS a date compare and
          nothing has to be parsed back into a Date to be got wrong. */
@@ -2512,7 +2548,9 @@ window.stopCheck=false;
   async function send(rows, reset) {
     if (!SHEET_URL) return;
     try {
-      await withTimeout(fetch(SHEET_URL, {
+      /* The key goes in the query string, not the body: doPost checks it
+         before it reads anything the caller sent. */
+      await withTimeout(fetch(api(''), {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -7517,7 +7555,7 @@ var MHP_FROM='1980-03', MHP={
   function buildBm(id, mode){
     var src = bmSource(id);
     if (!src) return '';
-    var url = sheetUrl();
+    var url = sheetUrl(), key = sheetKey();
     /* a function replacement, not a string: a $ in the address would
        otherwise be read as a back-reference and silently mangle the script */
     /* The sheet is shared, so a row has to say who put it there. The
@@ -7526,6 +7564,7 @@ var MHP_FROM='1980-03', MHP={
     var who = '';
     try { who = (localStorage.getItem('pp-irr-email') || '').trim(); } catch (e) {}
     src = src.replace(/__SHEET_URL__/g, function(){ return url; })
+             .replace(/__READ_KEY__/g,  function(){ return key; })
              .replace(/__CITY__/g,      function(){ return ''; })
              .replace(/__WHO__/g,       function(){ return who; })
              /* Which pass this bookmark is. Empty means the weekly catch-up,
@@ -7537,7 +7576,24 @@ var MHP_FROM='1980-03', MHP={
   }
   var bmLast = null;             // what the href was last built from
   var bmReady = false;           // signed in, with something to check
-  var bmShareT = null;           // debounce for sharing a typed-in address
+  var bmShareT = null, bmKeyT = null;
+  /* Shut once there is an address to shut over, open while there is not, and
+     opened again by the button whenever somebody needs to change either. */
+  var bmSetupOpen = false;
+  function syncBmSetup(){
+    var wrap = $('bmSetup'), btn = $('btnBmSetup'), cancel = $('btnBmCancel');
+    if (!wrap || !btn) return;
+    var configured = !!sheetUrl();
+    var open = bmSetupOpen || !configured;
+    wrap.hidden = !open;
+    btn.hidden = open;
+    if (cancel) cancel.hidden = !configured;
+    if (open) {
+      var i = $('bmSheet'), k = $('bmKey');
+      if (i && document.activeElement !== i) i.value = sheetUrl();
+      if (k && document.activeElement !== k) k.value = sheetKey();
+    }
+  }           // debounce for sharing a typed-in address
   function syncBm(){
     var a = $('bmLink');
     if (!a) return;
@@ -7586,8 +7642,47 @@ var MHP_FROM='1980-03', MHP={
      The copy in localStorage is only a cache, so the tab works before the
      session resolves and keeps working if the table is ever unreachable. */
   var CFG_KEY = 'rpdata_exec';
+  /* The key the endpoint now asks for. Same class of secret as the address
+     and kept the same way — in the database behind the sign-in, cached here so
+     the tab works before the session resolves. Without it the address alone
+     opened the sheet to reads, writes and tab deletion. */
+  var CFG_KEYK = 'rpdata_key';
+  function sheetKey(){
+    try { return (localStorage.getItem('ppSheetKey') || '').trim(); }
+    catch (e) { return ''; }
+  }
+  /* What every request actually goes to. sheetUrl() stays the bare address:
+     it is what gets stored, compared and shown, and a key glued onto it
+     would end up in all three. */
+  function sheetApi(){
+    var u = sheetUrl(), k = sheetKey();
+    if (!u || !k) return u;
+    return u + (u.indexOf('?') < 0 ? '?' : '&') + 'key=' + encodeURIComponent(k);
+  }
+  /* The key, fetched beside the address and cached the same way. Quiet on
+     every failure: a browser that cannot read it still works against an
+     endpoint whose own key is unset, which is every endpoint until somebody
+     sets one. */
+  function loadSharedKey(){
+    if (!share.sb || share.canWrite !== true) return Promise.resolve(false);
+    return share.sb.from('irr_config').select('value').eq('key', CFG_KEYK).maybeSingle()
+      .then(function(r){
+        if (r && r.error) return false;
+        var v = r && r.data ? String(r.data.value || '').trim() : '';
+        if (!v) {
+          if (sheetKey()) shareSheetKey(sheetKey());
+          return false;
+        }
+        if (v === sheetKey()) return false;
+        try { localStorage.setItem('ppSheetKey', v); } catch (e) {}
+        syncBm();                       // the bookmarklets carry it, so rebuild them
+        return true;
+      })
+      .catch(function(){ return false; });
+  }
   function loadSharedSheet(){
     if (!share.sb || share.canWrite !== true) return Promise.resolve(false);
+    loadSharedKey();
     return share.sb.from('irr_config').select('value').eq('key', CFG_KEY).maybeSingle()
       .then(function(r){
         if (r && r.error) return false;        // table missing: the local copy stands
@@ -7613,10 +7708,12 @@ var MHP_FROM='1980-03', MHP={
       .catch(function(){ return false; });   // table missing: the local copy stands
   }
   /* Set once, by whoever sets it up. Everybody else just finds it there. */
-  function shareSheetUrl(v){
+  function shareSheetUrl(v){ return shareCfg(CFG_KEY, v); }
+  function shareSheetKey(v){ return shareCfg(CFG_KEYK, v); }
+  function shareCfg(k, v){
     if (!share.sb || share.canWrite !== true || !v) return Promise.resolve(false);
     return share.sb.from('irr_config')
-      .upsert({ key: CFG_KEY, value: v, updated_at: new Date().toISOString() })
+      .upsert({ key: k, value: v, updated_at: new Date().toISOString() })
       .then(function(r){ return !(r && r.error); })
       .catch(function(){ return false; });
   }
@@ -7626,14 +7723,21 @@ var MHP_FROM='1980-03', MHP={
      opened the page source. The address itself has no field on the tab — it
      is set once per browser and is not a thing to fiddle with. */
   function bmSheetLink(){
-    var p = $('bmSheetLine'), u = sheetUrl();
+    /* sheetApi(), not sheetUrl(): this one asks the endpoint for the
+       spreadsheet's own link, and an endpoint with a key refuses an unkeyed
+       request however harmless it looks. It was the last call that was not
+       going through the one door. */
+    var p = $('bmSheetLine'), u = sheetApi();
     if (!p) return;
     var view = '';
     try { view = (localStorage.getItem('ppSheetView') || '').trim(); } catch (e) {}
 
-    /* One or the other: the address, or where its results go. */
+    /* The address field used to disappear the moment one was set, which made
+       the address unchangeable from the UI — discovered the hard way while
+       rotating a leaked one. It is behind a button now, not gone. */
     var field = $('bmSheetField');
-    if (field) field.hidden = !!u;
+    if (field) field.hidden = false;
+    syncBmSetup();
     p.hidden = !u;
     if (!p.hidden) {
       /* A sheet with a page corner and lines on it. Decorative — the sentence
@@ -7678,24 +7782,63 @@ var MHP_FROM='1980-03', MHP={
      wants the ones with no type, the sold check wants the held ones — so the
      list carries the facts and lets it choose. */
   var regSentAt = 0;             // last successful POST, as this page saw it
+  /* What the bookmarklets are given, and nothing else.
+
+     This leaves the browser, crosses to a Google Sheet, and comes back out of
+     an endpoint that answers anyone holding its address — so the question is
+     not "what might be useful over there", it is "what is the run unable to
+     proceed without".
+
+     It used to send the whole book: 1,214 rows, every purchase and sale price,
+     including the 444 set outside of advice and the 600 already sold — half of
+     which the bookmarklet discarded on arrival with this same test. Sending
+     them was a copy of the client register sitting behind one address.
+
+     What stays: the address and city to search on, the purchase date, and the
+     purchase PRICE, which is load-bearing — soldVerdict() matches a sale against
+     it to within two per cent to tell our own purchase, showing up in RP Data
+     as a transfer, from a genuine resale. Without it every settlement record
+     is announced as a sale. The type goes because the types pass fills it in.
+
+     What goes: soldDate and soldPrice (every row here is unsold by
+     definition now) and the outside flag (every row here is in advice). The
+     sheet keeps those columns and they come back blank, so an older
+     bookmarklet reading them is unchanged. */
   function registerRows(){
-    return loadProps().filter(function(e){ return e.name; }).map(function(e){
-      return { address: e.name,
-               city: (e.category || '').trim(),
-               purchased: e.purchaseDate || '',
-               purchasePrice: e.purchasePrice || '',
-               soldDate: e.soldDate || '',
-               soldPrice: e.soldPrice || '',
-               ptype: e.ptype || '',
-               outside: e.outside ? 1 : 0 };
-    });
+    return loadProps().map(function(e){
+      if (!e.name) return null;
+      /* Two different runs read this one list, and they want different
+         properties. The sold check wants the ones still open: in advice and
+         without a sale. The type sweep wants the ones with no type, and a
+         property can be sold, or outside the advice, and still have no type
+         — 247 of the 818 untyped are exactly that, and narrowing this list to
+         sold-check work alone put them out of its reach. */
+      var check = !e.outside && !(Number(e.soldPrice) > 0 && e.soldDate);
+      var type  = !e.ptype;
+      if (!check && !type) return null;
+      /* Each row carries what its own job needs and no more. A row that is
+         only here to be typed needs an address to search for; it does not
+         need what the property cost. */
+      var r = { address: e.name,
+                city: (e.category || '').trim(),
+                ptype: e.ptype || '',
+                check: check ? 1 : 0 };
+      if (check) {
+        r.purchased = e.purchaseDate || '';
+        /* Load-bearing: soldVerdict() matches a found sale against this to
+           within two per cent to tell our own purchase, appearing in RP Data
+           as a transfer, from a genuine resale. */
+        r.purchasePrice = e.purchasePrice || '';
+      }
+      return r;
+    }).filter(Boolean);
   }
   /* Opening the tab is the trigger, so this can run several times in a
      sitting. Once a minute is plenty: the register does not change while you
      are looking at the Sold check tab, and a sync is a whole-tab rewrite at
      the other end. */
   function syncRegisterToSheet(){
-    var u = sheetUrl();
+    var u = sheetApi();
     if (!u || share.canWrite !== true) return;
     var rows = registerRows();
     if (!rows.length) return;
@@ -7724,7 +7867,7 @@ var MHP_FROM='1980-03', MHP={
   /* What the sheet says it is holding — read back, never assumed. If this
      disagrees with the register, that difference is the thing worth seeing. */
   function bmWorklistLine(){
-    var u = sheetUrl(), w = $('bmWorklist');
+    var u = sheetApi(), w = $('bmWorklist');
     if (!w) return;
     if (!u) { w.hidden = true; return; }
     fetch(u + (u.indexOf('?') < 0 ? '?' : '&') + 'register=1')
@@ -8199,7 +8342,7 @@ var MHP_FROM='1980-03', MHP={
 
      The button still queues, because pressing it is asking for exactly that. */
   function chkLoadSheet(quiet, onDone){
-    var u = sheetUrl();
+    var u = sheetApi();
     if (!u) { if (onDone) onDone(); return; }
     showTab('check');
     chkBusy(true);
@@ -8371,9 +8514,24 @@ var MHP_FROM='1980-03', MHP={
     try { localStorage.setItem(TRK_KEY, JSON.stringify(rec)); } catch (e) {}
     renderTrackNote(rec);
   }
+  /* The badge counts what is still OUTSTANDING, not what the last scan found.
+     Those are the same number right up until something else deals with the
+     findings — a colleague recording them, a register imported from the other
+     copy of this tool — and then the scan record is the only thing still saying
+     27 while the list under it is empty. That is the badge lying, and a badge
+     that disagrees with the thing it counts is the bug we have already had
+     twice. So when findings are held, they decide it. */
   function renderTrackNote(rec){
     var p = $('chkDaily'), b = $('badgeCheck');
     if (!p) return;
+    if (rec && !rec.failed && foundStore()) {
+      var live = foundList().length;
+      if (live !== rec.found) {
+        var fixed = {}; for (var kk in rec) fixed[kk] = rec[kk];
+        fixed.found = live;
+        rec = fixed;
+      }
+    }
     if (!rec) {
       p.hidden = true;
       if (b) { b.hidden = true; b.classList.remove('badge-alert'); }
@@ -8505,7 +8663,7 @@ var MHP_FROM='1980-03', MHP={
     if (!trackDue()) return;                    // nowhere to ask, or asked today
     trackRunning = true;
     chkBusy(true);
-    var u = sheetUrl();
+    var u = sheetApi();
     var at = function(p){ return u + (u.indexOf('?') < 0 ? '?' : '&') + p; };
     /* Both reads together. The badge is what is waiting on this tab, and this
        tab has three sheets behind it, so counting two of them was the whole
@@ -8552,7 +8710,7 @@ var MHP_FROM='1980-03', MHP={
   var chkTrackBusy = false;
   function chkAdlSold(){
     if (chkTrackBusy) return;
-    var u = sheetUrl();
+    var u = sheetApi();
     if (!u) {
       chkSay(msg('err','This browser does not know where the sheet is yet — the box for '+
         'the address is under <strong>How this works</strong>.'));
@@ -10782,37 +10940,64 @@ var MHP_FROM='1980-03', MHP={
   $('btnChkAdl').addEventListener('click', function(){ chkAdlSold(); });
   /* Typed in, never in this file. Saved as it is typed so there is no
      button to forget to press. */
-  $('bmSheet').addEventListener('input', function(){
-    var v = this.value.trim();
+  /* Typing no longer commits anything. It used to save on every keystroke,
+     which works and tells you nothing — there was no moment at which you had
+     done it. Save is that moment. */
+  function bmTouched(){
+    var m = $('bmSaveMsg'); if (m) { m.hidden = true; m.innerHTML = ''; }
+    var k = $('bmKeyShared'); if (k) k.hidden = true;
+    var h = $('bmSheetShared'); if (h) h.hidden = true;
+  }
+  $('bmKey').addEventListener('input', bmTouched);
+  $('btnBmSetup').addEventListener('click', function(){
+    bmSetupOpen = true; syncBmSetup();
+    var i = $('bmSheet'); if (i) i.focus();
+  });
+  $('btnBmCancel').addEventListener('click', function(){
+    bmSetupOpen = false; bmTouched(); syncBmSetup();
+  });
+  $('btnBmSave').addEventListener('click', function(){
+    var m = $('bmSaveMsg');
+    var url = ($('bmSheet').value || '').trim();
+    var key = ($('bmKey').value || '').trim();
+    var say = function(html){ if (m) { m.hidden = false; m.innerHTML = html; } };
+    /* A shape test, not a regex for its own sake: this only has to tell a
+       finished address from half of one pasted by accident. */
+    if (url && (url.indexOf('https://script.google.com/macros/s/') !== 0 ||
+                url.slice(-5) !== '/exec')) {
+      say('That does not look like an <code>/exec</code> address. It should start ' +
+          '<code>https://script.google.com/macros/s/</code> and end <code>/exec</code>. ' +
+          'Nothing has been changed.');
+      return;
+    }
+    var before = sheetUrl();
     try {
-      if (v !== sheetUrl()) localStorage.removeItem('ppSheetView');
-      if (v) localStorage.setItem('ppSheetUrl', v);
-      else   localStorage.removeItem('ppSheetUrl');
+      if (url) localStorage.setItem('ppSheetUrl', url); else localStorage.removeItem('ppSheetUrl');
+      if (key) localStorage.setItem('ppSheetKey', key); else localStorage.removeItem('ppSheetKey');
+      /* a different address is a different book; the cached link to the old
+         one would send you to the wrong place */
+      if (url !== before) localStorage.removeItem('ppSheetView');
     } catch (e) { /* private window: this session only, still useful */ }
     syncSheetBtn();
-    syncBm();
-    /* Shared the moment it looks like a finished address, because the
-       whole point is that nobody else has to do this. Debounced: this
-       fires on every keystroke and the last one is the real one. */
-    clearTimeout(bmShareT);
-    /* A plain shape test, not a regex: this only has to tell a finished
-       address from one still being typed. */
-    if (v.indexOf('https://script.google.com/macros/s/') !== 0) return;
-    if (v.slice(-5) !== '/exec') return;
-    bmShareT = setTimeout(function(){
-      shareSheetUrl(v).then(function(ok){
-        var p = $('bmSheetShared');
-        if (!p) return;
-        p.hidden = false;
-        p.innerHTML = ok
-          ? '✓ Shared — everyone signed in picks this up on their next visit. ' +
-            'Nobody else has to set it up.'
-          : 'Saved in this browser, but it could not be shared with the team. ' +
-            'The <code>irr_config</code> table is missing or not writable, so ' +
-            'everyone else will have to paste it in themselves.';
+    syncBm();                       // the bookmarklets carry both, so rebuild them
+    Promise.all([ url ? shareSheetUrl(url) : Promise.resolve(false),
+                  key ? shareSheetKey(key) : Promise.resolve(false) ])
+      .then(function(r){
+        var shared = r[0] || r[1];
+        say((shared
+              ? '✓ Saved and shared — everyone signed in picks this up on their next visit.'
+              : '✓ Saved in this browser. It could not be shared, so anyone else has to set it too.') +
+            (key ? '' : ' No key set, so the endpoint is open to anyone holding its address.') +
+            ' <strong>Drag the bookmarks again</strong> — they carry both, and the old ones ' +
+            'stop being answered.');
+        bmSetupOpen = false;
+        syncBmSetup();
       });
-    }, 600);
   });
+  /* Typing changes nothing until Save: a half-typed address used to be
+     written to storage and, once it happened to look finished, shared
+     with everyone. */
+  $('bmSheet').addEventListener('input', bmTouched);
   /* Delegated, because the empty state is rebuilt from scratch on every
      Clear: a listener bound to the button it shipped with would be bound
      to a node that is no longer in the page. */
@@ -11125,7 +11310,11 @@ var MHP_FROM='1980-03', MHP={
     }
     if (!share.ready || (!share.db && !share.sb)) return;
     var body = shareBody(), json = JSON.stringify(body);
-    if (json === share.sent) return;                 // nothing actually changed
+    /* bodyKey, not the raw string: shareBody() ends `rev: Date.now()`, so two
+       copies of the same book never stringify alike and this check could only
+       ever be false — every save was a real write to a shared row, however
+       little had changed. */
+    if (bodyKey(json) === bodyKey(share.sent)) return;      // nothing actually changed
     /* The 200 KB guard belongs to the artifact's document store, which has a
        256 KiB ceiling per document. Supabase has no such limit: body is jsonb
        and Postgres holds up to a gigabyte in one field. Applying the artifact's

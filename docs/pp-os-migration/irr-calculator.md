@@ -813,6 +813,165 @@ Consequences worth knowing:
   verdict.
 - `__CFG_SRC__` is gone from the source. There is no longer a placeholder to forget to substitute.
 
+### The endpoint was the only lock
+
+Worth stating plainly, because the PR that added the worklist sync did not:
+the Apps Script `/exec` address was the single thing standing between anyone
+holding it and this book. `doGet` and `doPost` checked nothing. With the
+address alone, and no sign-in anywhere:
+
+| request | effect |
+|---|---|
+| `?rows=1`, `?todo=`, `?done=` | the sold-check tab: addresses, purchase and sale prices |
+| `?register=1` | **every** property in the register, same fields |
+| `?tracking=1` | both tracking spreadsheets, ~600 sales |
+| bare `GET` | the spreadsheet's own URL |
+| `POST {kind:'register'}` | **replaces the worklist** |
+| `POST {rows:[...]}` | writes rows into the results tabs |
+| `POST {reset:true, tab}` | **deletes a results tab** |
+
+Only `?register=1` was new. The price-bearing reads and all three writes
+predate it &mdash; which is the part worth remembering, because the review that
+caught this assumed the opposite and recommended dropping the purchase price
+to fix it. That would have broken `soldVerdict()` (see below) and left
+`?rows=1` handing out prices anyway.
+
+A web app has to be deployed **Anyone** or the bookmarklets cannot reach it
+from RP Data's pages: they carry no Google session, and a deployment set to
+"Anyone with a Google Account" answers them with a login redirect. So Google
+will not solve this part.
+
+**`READ_KEY`** does. One constant at the top of `sheet-endpoint.gs`, checked
+by `keyOk_()` at the top of `doGet` and of `doPost` &mdash; before the lock, so a
+refused call does not make everyone queue. The key travels in the query
+string even on POSTs: the body is a JSON blob the caller controls, and a check
+that reads its own input from the thing it is checking is not a check.
+
+**Left empty it changes nothing**, so the script can be deployed before the
+key exists. In the tool, `sheetApi()` is the one door every request goes
+through; `render/endpointkey.html` asserts that all eight of them carry the
+key, that the bookmarklets do, and that with no key set none of them do. It
+earned that last assertion immediately: two calls were still going through
+`sheetUrl()`, one of them `bmSheetLink()`, which only asks for the
+spreadsheet's link and would have been refused.
+
+The address field also used to vanish once set (`field.hidden = !!u`), which
+made rotating a leaked address impossible from the UI. It stays now, with the
+key beside it.
+
+### What the worklist carries
+
+The bookmarklets cannot read the database &mdash; see **The worklist** above &mdash; so the
+tool writes what they need to the sheet. "What they need" was the whole book:
+1,214 rows with every purchase and sale price, of which the bookmarklet threw
+away half on arrival (444 outside of advice, 600 already answered).
+
+`registerRows()` now sends **860 of the 1,214**: the 613 the sold check can
+still answer, and 247 more that only need a type (see **One worklist, two
+jobs** below). A sold-check row carries five fields:
+address and city to search on, the purchase date, the purchase price, and the
+type. **The purchase price stays and must**: `soldVerdict()` matches a found
+sale against it to within two per cent, which is what tells our own purchase
+&mdash; appearing in RP Data as a transfer &mdash; from a genuine resale. Drop it and
+every settlement record is announced as a sale.
+
+`soldDate`, `soldPrice` and the `outside` flag are gone: every row in a
+worklist is unsold and in advice by construction. The sheet keeps those
+columns and they come back blank, so an older bookmarklet reading them is
+unaffected. `render/worklist.html` holds it.
+
+### Saving the address and the key
+
+Both fields sit behind **Change the sheet address or key** once an address is
+set, and Save is what commits them. Before, they wrote on every keystroke: a
+half-typed address reached `localStorage` and, the moment it happened to look
+finished, `irr_config` and therefore everyone. Save also says the thing that
+is easy to forget &mdash; *drag the bookmarks again* &mdash; because they carry both the
+address and the key, and an old one is simply not answered any more.
+
+The button to re-open the fields is not optional. They used to vanish for good
+once set (`field.hidden = !!u`), which is why rotating a leaked address meant
+un-hiding the field from the console. `render/savekey.html` holds the whole of
+it: typing commits nothing, a malformed address is refused and changes
+nothing, a good save stores and shares both and closes, and the way back in
+still works afterwards.
+
+### One worklist, two jobs
+
+The sold check wants properties that are still open &mdash; in advice, no sale. The
+type sweep wants properties with no type, and a property can be sold, or
+outside the advice, and still have no type: **247 of the 818 untyped are
+exactly that**. Narrowing the worklist to sold-check work alone put those 247
+out of the type sweep's reach, which is the only list it reads.
+
+So a row is sent if it is work for *either*, and carries what its own job
+needs: every row has an address, a city and the type; only a sold-check row
+carries the purchase date and price. The run tells them apart by an explicit
+`check` flag rather than by inferring from `outside` / `soldDate` / `soldPrice`,
+which are no longer sent at all.
+
+**This changed the contract with the bookmarklets**, so they must be re-dragged
+from a build that includes it. An older one reads no `check` and treats every
+row as sold-check work. `render/worklist.html` covers both jobs.
+
+### `rev` made every save a write
+
+`pushShared` opens with "nothing actually changed, so do not write" and
+compared `JSON.stringify(shareBody())` against the last sent string. Since
+`shareBody()` ends `rev: Date.now()`, those never matched: the guard could
+only ever be false, so **every save was a real write to the shared row**, and
+every write wakes every other open tab through the realtime channel. It now
+compares `bodyKey()`, which leaves `rev` out.
+
+Worth saying plainly: this one is reasoned, not directly tested. Every path
+that reaches `pushShared` changes the book in the same breath, so there is no
+honest way to press a button twice and have the second press change nothing
+&mdash; the one candidate, re-sending findings that are already queued, is refused
+earlier because the findings list excludes them. A harness was written for it
+and deleted rather than kept green while testing nothing.
+
+### The badge counts what is left, not what was found
+
+`renderTrackNote` drew the badge from the stored scan record. That is the
+number the scan found, and it stays that number until somebody looks again
+&mdash; so the moment the findings are dealt with by anything other than this
+browser's own scan, the badge is the only thing still claiming work.
+
+It showed up the day the register was imported from the standalone copy: the
+badge read 27, the store held 631 rows, and every one of those 27 resolved to
+a property the import had already queued or recorded. Empty list, confident
+badge. The same shape as the badge that said 12 while the dialog said 9.
+
+So when findings are held, they decide it: `renderTrackNote` takes
+`foundList().length` over the record's own count. The record is a record of a
+scan; it is not the answer to "is there anything to do".
+
+`render/stalebadge.html` seeds a scan claiming two, a book where both are
+already recorded, and asserts the badge goes quiet &mdash; then undoes one and
+asserts it reads 1. It also caught a dishonest fixture in `render/daily.html`,
+which invented `found: 7` and passed only because the badge echoed the record
+straight back; it now asserts the badge and the list agree.
+
+### Re-porting drops their work, every time
+
+`tools/irr-calculator.html` here is a whole-file regeneration of the
+standalone build. The Overview's **Update returns data** exists only in this
+repo, so **every re-port deletes it** and the only thing preventing a silent
+revert is remembering. It has already happened twice.
+
+The port is therefore a three-way merge, not a copy:
+
+```
+base   = vaultise+stripdead of the PREVIOUS published standalone build
+         (recoverable from pp-research git history by byte size)
+mine   = vaultise+stripdead of the current standalone build
+theirs = origin/main:tools/irr-calculator.html
+git merge-file -p --diff3 mine base theirs
+```
+
+Then check `btnPushReturns`, `RETURNS_PAGES`, `syncReturnsBtn`,
+`returnsPageForCity` and `overviewData` all survive before committing.
+
 ## 4. Known gaps
 
 - A new key needs a Groups tick (Van) before admins assigned to a group, or staff, see the Vault card.
@@ -823,6 +982,28 @@ Consequences worth knowing:
 
 ## Changelog
 
+- 2026-11-05 &mdash; **The Sold check badge counts what is outstanding.** It read the
+  last scan's number, so a register imported from the other copy left it
+  claiming 27 over an empty list.
+- 2026-11-05 &mdash; **Save, and a way back to the fields.** The address and key
+  commit on Save rather than on every keystroke, and sit behind a button
+  afterwards instead of vanishing.
+- 2026-11-05 &mdash; **The worklist serves both runs again.** Narrowing it to
+  sold-check work hid 247 untyped properties from the type sweep. Rows now
+  carry a `check` flag, and only sold-check rows carry a price.
+- 2026-11-05 &mdash; **A save that changes nothing no longer writes.** `rev:
+  Date.now()` had made `pushShared`'s own guard impossible to satisfy.
+- 2026-11-05 &mdash; **The endpoint asks for a key.** `doGet` and `doPost` checked
+  nothing, so the address alone read every price, replaced the worklist and
+  could delete a results tab. `READ_KEY` closes all of it; empty, it changes
+  nothing, so the script can be deployed before the key is set.
+- 2026-11-05 &mdash; **The worklist carries what a run needs, not the book.** 860 of
+  1,214 rows: 613 the sold check can answer, carrying address, city, purchase
+  date, purchase price and type; and 247 that only need typing, carrying no
+  price at all. No sale figures anywhere, and nothing that is neither.
+- 2026-11-05 &mdash; **The sheet address can be changed again.** The field used to
+  disappear once set, which made rotating a leaked address impossible without
+  editing the DOM by hand.
 - 2026-11-05 &mdash; **The For review note can be hidden.** It is a setup you read
   once; **Hide** in its corner puts it away and a **?** beside the heading
   brings it back (the words are in its title and aria-label), the way the Sold check's guide already waits
