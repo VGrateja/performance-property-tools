@@ -1071,6 +1071,13 @@
   .wsx-bhead--ppa{ --b:#C445C4 }
   .wsx-bhead--pfd{ --b:#00A0B4 }
   .wsx-bhead--wholesale{ --b:#FFA91F }
+  /* Brochures & Case Studies (2026-11-05): one tab per list, the count beside each name */
+  .wsx-tabs{ display:inline-flex; gap:4px; padding:4px; margin:0 0 14px; border:1px solid var(--wsx-hair); border-radius:12px }
+  .wsx-tab{ appearance:none; border:0; background:transparent; color:var(--wsx-sub); font:600 13px 'Montserrat',sans-serif; padding:8px 14px; border-radius:9px; cursor:pointer; display:inline-flex; gap:8px; align-items:baseline }
+  .wsx-tab:hover{ color:var(--wsx-title) }
+  .wsx-tab span{ font-variant-numeric:tabular-nums; opacity:.75 }
+  .wsx-tab[aria-selected="true"]{ background:var(--wsx-teal); color:#fff }
+  .wsx-tab:focus-visible{ outline:2px solid var(--wsx-teal); outline-offset:2px }
   .wsx-erow textarea{
     width:100%; min-height:56px; padding:8px 10px; border-radius:7px; display:block;
     background:var(--wsx-field-bg); border:1px solid var(--wsx-field-line); color:var(--wsx-title);
@@ -2434,7 +2441,20 @@ function _ensureSubsections(data) {
       subsections: [ { id: 'brochures-sub', title: 'Brochures', kind: 'brochure', items: [] } ] });
     addedBrochures = true;
   }
-  if (stripped || splitHappened || renamedRl || addedVideos || addedBrochures) {
+  /* Brochures & Case Studies (2026-11-05, Van): the folder gains a Case
+     Studies list (property case studies, one A–Z list, no groups) beside the
+     brochures, and its default title follows. Idempotent. */
+  let addedCaseStudies = false;
+  data.sections.forEach(sec => {
+    if (!sec || sec.id !== 'brochures') return;
+    if (!sec.title || sec.title === 'Brochures') { sec.title = 'Brochures & Case Studies'; addedCaseStudies = true; }
+    if (!Array.isArray(sec.subsections)) sec.subsections = [];
+    if (!sec.subsections.some(s => s && s.id === 'case-studies-sub')) {
+      sec.subsections.push({ id: 'case-studies-sub', title: 'Case Studies', kind: 'casestudy', items: [] });
+      addedCaseStudies = true;
+    }
+  });
+  if (stripped || splitHappened || renamedRl || addedVideos || addedBrochures || addedCaseStudies) {
     /* Persist locally so the strip / split survives a hard reload even if
        cloud is offline. _scheduleCloudSave silently no-ops when
        _canWriteCloud is false (non-admin users); admins push the
@@ -2967,7 +2987,7 @@ function addItem(secIdx, subIdx) {
      subsection actually shows a Status field. */
   const seedStatus = (isStrategy || isWhitepaper) ? 'in-progress' : '';
   const isVideo = kind === 'video';
-  const isBrochure = kind === 'brochure';
+  const isBrochure = kind === 'brochure' || kind === 'casestudy';   /* a case study is a brochure-style link */
   arr.push(isStrategy
     ? { title: '', url: '', slidesUrl: '', status: seedStatus, date: '' }
     : isVideo
@@ -4158,7 +4178,7 @@ function _wsxToolbar(placeholder, onInput, legendHtml) {
   bar.appendChild(legend);
   return bar;
 }
-function _wsxFooter(total, shown, noun) {
+function _wsxFooter(total, shown, noun, plural) {
   const foot = document.createElement('div'); foot.className = 'wsx-foot';
   const keys = document.createElement('div'); keys.className = 'wsx-keys';
   keys.innerHTML = Object.keys(WS_STATUS_LABELS).map(k =>
@@ -4166,7 +4186,7 @@ function _wsxFooter(total, shown, noun) {
   foot.appendChild(keys);
   const count = document.createElement('div'); count.className = 'wsx-count';
   const filtering = !!(_wsxQuery.q || '').trim();
-  count.textContent = filtering ? shown + ' of ' + total + ' shown' : total + ' ' + (noun || 'document') + (total === 1 ? '' : 's');
+  count.textContent = filtering ? shown + ' of ' + total + ' shown' : total + ' ' + (total === 1 ? (noun || 'document') : (plural || (noun || 'document') + 's'));
   foot.appendChild(count);
   return foot;
 }
@@ -4320,7 +4340,31 @@ const _WSX_LINK_KINDS = {
            previewTip: 'Read it here without leaving the hub',
            note: 'Changes save as you type. Start the title with PPA, PFD or Wholesale — that picks the group and the coloured tile. Paste the link to the PDF (a Google Drive share link, or a direct link to the file) — Preview comes from it. When a brochure is replaced, paste the new link over the old one: the "Updated" date moves to today.' }
 };
-function _wsxLinkKind(section) { return _WSX_LINK_KINDS[section && section.id === 'brochures' ? 'brochure' : 'video']; }
+_WSX_LINK_KINDS.casestudy = Object.assign({}, _WSX_LINK_KINDS.brochure, {
+  noun: 'case study', nouns: 'case studies', Noun: 'Case study', brands: false, copyTitle: 'Copy the case study link',
+  urlHead: 'Link<small>Google Drive, a PDF or a web page</small>', filter: 'Filter case studies', empty: 'No case studies yet.',
+  legend: '<b>Preview</b> opens the case study here. <b>Copy link</b> puts the link on your clipboard, ready to send.',
+  note: 'Changes save as you type. One list, A–Z by title. Paste the link to the case study (a Google Drive share link, a PDF or a web page) — Preview comes from it. When a case study is replaced, paste the new link over the old one: the "Updated" date moves to today.' });
+/* a subsection's own kind wins (Case Studies inside the Brochures folder) */
+function _wsxLinkKind(section, sub) {
+  if (sub && _WSX_LINK_KINDS[sub.kind]) return _WSX_LINK_KINDS[sub.kind];
+  return _WSX_LINK_KINDS[section && section.id === 'brochures' ? 'brochure' : 'video'];
+}
+/* Brochures & Case Studies: which tab is open. ?tab=case-studies opens that
+   one; a tab is a subsection, named by its id without "-sub". */
+let _wsxTab = null;
+function _wsxTabs(subs, onPick) {
+  const bar = document.createElement('div'); bar.className = 'wsx-tabs'; bar.setAttribute('role', 'tablist');
+  subs.forEach(sub => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'wsx-tab'; b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', String(sub.id === _wsxTab));
+    b.innerHTML = _esc(sub.title || 'Untitled') + '<span>' + (sub.items || []).length + '</span>';
+    b.addEventListener('click', () => { if (sub.id !== _wsxTab) onPick(sub.id); });
+    bar.appendChild(b);
+  });
+  return bar;
+}
 const _wsxVimeoThumbs = {};
 function _wsxThumb(info, doc) {
   const box = document.createElement('div'); box.className = 'wsx-thumb' + (doc ? ' wsx-thumb--doc' : '');
@@ -4528,14 +4572,32 @@ function _wsxEditVideoSubsection(secIdx, subIdx, sub, editableName, K) {
   return frag;
 }
 function _wsxRenderVideos(secIdx, section) {
-  const K = _wsxLinkKind(section);
+  let K = _wsxLinkKind(section);
   const wrap = document.createElement('div');
   wrap.className = 'wsx wsx--videos';
   if (_wsxQuery.sec !== section.id) _wsxQuery = { sec: section.id, q: '' };
   if (!_wsxPinsHooked && window.PP_PINS && PP_PINS.onChange) { try { PP_PINS.onChange(_wsxSyncPins); _wsxPinsHooked = true; } catch (_) {} }
-  const subs = section.subsections || [];
+  const allSubs = section.subsections || [];
+  let pairs = allSubs.map((sub, subIdx) => ({ sub: sub, subIdx: subIdx }));
+  /* Brochures & Case Studies: one tab per list, only the open one drawn */
+  const tabbed = section.id === 'brochures' && allSubs.length > 1;
+  if (tabbed) {
+    if (!allSubs.some(s => s.id === _wsxTab)) {
+      let want = null; try { want = new URLSearchParams(location.search).get('tab'); } catch (_) {}
+      const hit = want && allSubs.find(s => s.id === want + '-sub');
+      _wsxTab = (hit || allSubs[0]).id;
+    }
+    pairs = pairs.filter(p => p.sub.id === _wsxTab);
+    K = _wsxLinkKind(section, pairs[0].sub);
+    wrap.appendChild(_wsxTabs(allSubs, id => {
+      _wsxTab = id;
+      try { const u = new URL(location.href); u.searchParams.set('tab', id.replace(/-sub$/, '')); history.replaceState(history.state, '', u); } catch (_) {}
+      renderSectionView();
+    }));
+  }
+  const subs = pairs.map(p => p.sub);
   if (_editMode) {
-    subs.forEach((sub, subIdx) => wrap.appendChild(_wsxEditVideoSubsection(secIdx, subIdx, sub, subs.length > 1, K)));
+    pairs.forEach(p => wrap.appendChild(_wsxEditVideoSubsection(secIdx, p.subIdx, p.sub, allSubs.length > 1 && !tabbed, K)));
     const note = document.createElement('div'); note.className = 'wsx-enote';
     note.textContent = K.note;
     wrap.appendChild(note);
@@ -4567,7 +4629,7 @@ function _wsxRenderVideos(secIdx, section) {
     }
     else { visible.forEach(r => list.appendChild(_wsxVideoRow(r.it, K))); shown = visible.length; }
     body.appendChild(list);
-    body.appendChild(_wsxFooter(all.length, shown, K.noun));
+    body.appendChild(_wsxFooter(all.length, shown, K.noun, K.nouns));
   };
   wrap.appendChild(_wsxToolbar(K.filter, build, K.legend));
   wrap.appendChild(body);
@@ -4721,7 +4783,7 @@ const WS_WIDGET_NAMES = {
   'whitepapers':    'Whitepapers',
   'strategies':     'Strategies & Frameworks',
   'videos':         'Videos',
-  'brochures':      'Brochures'
+  'brochures':      'Brochures & Case Studies'
 };
 function _wsSetChromeName(txt) {
   try { const n = document.querySelector('.ab-id .nm'); if (n && txt) n.textContent = txt; } catch (e) {}
@@ -4738,8 +4800,8 @@ function _setPageHeader(view, section) {
        hidden because each has its own dock widget. Say so, rather than
        listing tiles that are not on screen. */
     if (sub)     sub.textContent     = _editMode
-      ? 'Pick a document type to browse. Whitepapers, Strategies & Frameworks, Brochures and Videos are hidden in view mode — each has its own desktop widget.'
-      : 'PDF reports for every market. Whitepapers, Strategies & Frameworks, Brochures and Videos each open from their own widget on the desktop.';
+      ? 'Pick a document type to browse. Whitepapers, Strategies & Frameworks, Brochures & Case Studies, and Videos are hidden in view mode — each has its own desktop widget.'
+      : 'PDF reports for every market. Whitepapers, Strategies & Frameworks, Brochures & Case Studies, and Videos each open from their own widget on the desktop.';
   } else {
     /* Inside a type — header reflects the current section so the
        user always knows where they are. */

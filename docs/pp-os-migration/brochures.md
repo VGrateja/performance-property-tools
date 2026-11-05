@@ -46,6 +46,20 @@ saved; runs on the real brochure list read from the cloud plus one in-page sampl
 `scratch/_verify-videos-folder.mjs` passes for Videos except its best-effort Vimeo
 thumbnail check, whose sample video now answers 404 on Vimeo's oEmbed.
 
+## Case Studies (2026-11-05)
+
+Van: add Case Studies to the folder and rename it **Brochures & Case Studies** (dock tile, page title, app
+bar, search). The section id stays `brochures` (so `?section=brochures` and the stored data are unchanged).
+The section gains a second subsection `{ id: 'case-studies-sub', title: 'Case Studies', kind: 'casestudy' }`,
+added on load when missing, and a stored title of exactly "Brochures" is renamed. The page shows two tabs,
+Brochures and Case Studies, each with its count; `?tab=case-studies` opens the second, and the hub search
+has a "Case Studies" entry that goes there. Case studies are property case studies — one A–Z list, no
+groups and no brand tiles (Van: "We don't need to separate the case studies for now"). Same item shape and
+row as a brochure (status, title, link, category, blurb, "Updated" date that follows the link; Preview +
+Copy link), but the link may be Google Drive, a PDF or a web page. Edit mode keeps the tabs and edits only
+the open list. Verified: `scratch/_verify-case-studies.mjs` (test account, samples in-page only, cloud
+writes off) — all checks pass.
+
 ## pp-os
 
 pp-os mirror owed: a Brochures entry in Advisory beside Strategies & Frameworks and Videos, the same item
@@ -59,3 +73,4 @@ lands (they are in `documents_state` → section `brochures`).
 - 2026-10-21 — Copy email and pin removed; PPA / PFD / Wholesale groups and brand tiles; Preview shows the
   whole page centred (fit, sidebar closed, frame no longer 16:9-wide).
 - 2026-10-21 — PPA and PFD colours swapped (PPA purple, PFD teal); tiles outlined in the brand colour instead of filled.
+- 2026-11-05 — Case Studies: renamed Brochures & Case Studies; a Case Studies tab (one A–Z list) beside Brochures; `?tab=case-studies`; search entry.
