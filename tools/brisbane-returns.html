@@ -75,6 +75,18 @@ html,body{overflow-x:hidden}
 .ar-preview iframe{display:block;width:100%;height:calc(100vh - 150px);min-height:520px;border:0;background:#fff;margin:0 auto}
 .ar-toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--ar-teal);color:#fff;font:700 13px 'Montserrat',sans-serif;padding:9px 16px;border-radius:10px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50}
 .ar-toast.on{opacity:1}
+.ar-textpanel{margin:0 0 14px;border:1px solid var(--ar-border);border-radius:14px;background:var(--ar-surface);padding:2px 18px}
+.ar-textpanel summary{cursor:pointer;padding:12px 0;font-weight:700;font-size:13px;color:var(--ar-ink);list-style:none}
+.ar-textpanel summary::-webkit-details-marker{display:none}
+.ar-textpanel summary::before{content:'▸ ';color:var(--ar-teal)}
+.ar-textpanel[open] summary::before{content:'▾ '}
+.ar-textpanel p.hint{color:var(--ar-mut);font-size:12px;margin:-6px 0 14px}
+.ar-textgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;padding-bottom:14px}
+.ar-tf-row{display:flex;flex-direction:column;gap:5px;font-size:11px;font-weight:700;color:var(--ar-ink2);text-transform:uppercase;letter-spacing:.05em}
+.ar-tf-row input,.ar-tf-row textarea{font:500 13px 'Montserrat',sans-serif;text-transform:none;letter-spacing:normal;line-height:1.4;padding:8px 10px;border:1px solid var(--ar-border2);border-radius:8px;background:var(--ar-solid);color:var(--ar-ink);resize:vertical}
+.ar-tf-row input:focus,.ar-tf-row textarea:focus{outline:2px solid var(--ar-teal);outline-offset:1px}
+.ar-textactions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding-bottom:16px;border-top:1px solid var(--ar-border);padding-top:14px}
+.ar-textactions .spacer{flex:1 1 auto}
 @media (max-width:1100px){ .ar-preview iframe{height:80vh} }
 </style>
 </head>
@@ -91,6 +103,17 @@ html,body{overflow-x:hidden}
     <button type="button" class="ar-btn" id="btnCopy">Copy client link</button>
     <a class="ar-btn" id="lnkOpen" href="../client/brisbane-returns.html" target="_blank" rel="noopener">Open client page</a>
   </div>
+  <details class="ar-textpanel" id="textPanel">
+    <summary>Edit copy</summary>
+    <p class="hint">Changes here save as a draft, same as the IRR Calculator's figures — nothing below goes live until you click Publish.</p>
+    <div class="ar-textgrid" id="textFields"></div>
+    <div class="ar-textactions">
+      <button type="button" class="ar-btn primary" id="btnSaveText" disabled>Save text draft</button>
+      <button type="button" class="ar-btn" id="btnResetText">Discard changes</button>
+      <span class="spacer"></span>
+      <span id="copyToOthers"></span>
+    </div>
+  </details>
   <div class="ar-preview">
     <div class="ar-pvbar"><span>The client page</span>
       <span class="seg"><button type="button" class="ar-btn sm" data-w="">Full width</button><button type="button" class="ar-btn sm" data-w="390">Phone</button></span></div>
@@ -237,14 +260,71 @@ const SEED = {
   },
 };
 
+/* ═══ editable copy ═══════════════════════════════════════════════════════
+   2026-11-05: manual text editing, mirroring tools/adelaide-returns.html —
+   see that file's header for the full explanation of why this is a side
+   panel rather than contenteditable inside the rendered preview. */
+const EDITABLE_TEXT_FIELDS = [
+  { path: 'eyebrow', label: 'Eyebrow' },
+  { path: 'title', label: 'Title' },
+  { path: 'subtitle', label: 'Subtitle', area: true },
+  { path: 'meta', label: 'Meta line' },
+  { path: 'beforeTax.title', label: 'Before-tax notice — title' },
+  { path: 'beforeTax.body', label: 'Before-tax notice — body', area: true },
+  { path: 'depositLine', label: 'Deposit section — intro', area: true },
+  { path: 'windowLine', label: 'Deposit section — window line' },
+  { path: 'takeaways.deposit', label: 'Deposit section — takeaway', area: true },
+  { path: 'takeaways.yearByYear', label: 'Year by year — takeaway', area: true },
+  { path: 'takeaways.risk', label: 'Risk v return — takeaway', area: true },
+  { path: 'notes.yearByYear', label: 'Year by year — note', area: true },
+  { path: 'notes.risk', label: 'Risk v return — note', area: true },
+  { path: 'footnotes.leverage', label: 'Footnote — leverage', area: true },
+  { path: 'footnotes.method', label: 'Footnote — method', area: true },
+  { path: 'sourcesLabel', label: 'Sources label' },
+  { path: 'footer', label: 'Footer' },
+];
+/* Other markets this page's finalised wording can be copied to — a plain
+   find/replace of the city name, not an AI rewrite. */
+const OTHER_MARKETS = [
+  { name: 'Adelaide', key: 'adelaide-returns-2026', tool: 'adelaide-returns.html' },
+];
+const THIS_CITY = 'Brisbane';
+
+function getPath(obj, path) {
+  return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+}
+function setPath(obj, path, value) {
+  const keys = path.split('.'), last = keys.pop();
+  let o = obj;
+  keys.forEach(k => { if (typeof o[k] !== 'object' || o[k] === null) o[k] = {}; o = o[k]; });
+  o[last] = value;
+}
+function cityNameSwap(value, from, to) {
+  if (typeof value !== 'string') return value;
+  return [[from, to], [from.toLowerCase(), to.toLowerCase()], [from.toUpperCase(), to.toUpperCase()]]
+    .reduce((out, [a, b]) => out.split(a).join(b), value);
+}
+function swapCityDeep(node, from, to) {
+  if (typeof node === 'string') return cityNameSwap(node, from, to);
+  if (Array.isArray(node)) return node.map(v => swapCityDeep(v, from, to));
+  if (node && typeof node === 'object') {
+    const out = {};
+    Object.keys(node).forEach(k => { out[k] = swapCityDeep(node[k], from, to); });
+    return out;
+  }
+  return node;
+}
+
 /* ═══ state ═════════════════════════════════════════════════════════════
    `draft` here is what gets PREVIEWED (and is pre-existing naming — the
    whole payload as shown in the iframe). `publishedPayload` is the row
-   exactly as it reads from the database, draftPp included, untouched — the
-   only thing Publish ever writes from. `hasPendingDraft` is just whether
-   that row currently carries a draftPp from the IRR Calculator. */
+   exactly as it reads from the database, draftPp/draftText included,
+   untouched — the only thing Publish ever writes from. `hasPendingDraft`
+   is whether that row currently carries a draftPp AND/OR a draftText.
+   `textDraft` is the locally-edited text object, present only while there
+   are unsaved keystrokes in the panel below. */
 const S = { draft: null, savedAt: null, origin: '', pvReady: false,
-  publishedPayload: null, hasPendingDraft: false, draftSavedAt: null };
+  publishedPayload: null, hasPendingDraft: false, draftSavedAt: null, textDraft: null };
 
 /* ═══ preview (the public page in an iframe, fed by postMessage) ════════ */
 function postPreview() {
@@ -275,8 +355,96 @@ function syncPublishBtn() {
   $('#btnPublish').hidden = !S.hasPendingDraft;
 }
 
-async function boot() {
-  let g = 0; while (!window.sb && g++ < 80) await new Promise(r => setTimeout(r, 100));
+/* ═══ text editing panel ══════════════════════════════════════════════════
+   Mirrors tools/adelaide-returns.html — see that file for the full
+   reasoning. Reads from S.draft.text (whatever's currently showing — draft
+   or published) so reopening the panel always starts from the true state. */
+function renderTextFields() {
+  const wrap = $('#textFields'); wrap.innerHTML = '';
+  EDITABLE_TEXT_FIELDS.forEach(f => {
+    const val = getPath(S.draft.text, f.path) || '';
+    const row = document.createElement('label');
+    row.className = 'ar-tf-row';
+    const span = document.createElement('span'); span.textContent = f.label;
+    const el = document.createElement(f.area ? 'textarea' : 'input');
+    if (f.area) el.rows = 3;
+    el.value = val;
+    el.dataset.path = f.path;
+    el.addEventListener('input', onTextFieldInput);
+    row.append(span, el);
+    wrap.appendChild(row);
+  });
+  syncSaveTextBtn();
+}
+function onTextFieldInput(ev) {
+  if (!S.textDraft) S.textDraft = structuredClone(S.draft.text);
+  setPath(S.textDraft, ev.target.dataset.path, ev.target.value);
+  S.draft = Object.assign({}, S.draft, { text: S.textDraft });
+  syncSaveTextBtn();
+  postPreview();
+}
+function syncSaveTextBtn() {
+  $('#btnSaveText').disabled = !S.textDraft;
+}
+$('#btnResetText').addEventListener('click', () => {
+  S.textDraft = null;
+  S.draft = Object.assign({}, S.publishedPayload,
+    S.publishedPayload.draftPp ? { pp: S.publishedPayload.draftPp } : {},
+    S.publishedPayload.draftText ? { text: S.publishedPayload.draftText } : {});
+  renderTextFields();
+  postPreview();
+});
+$('#btnSaveText').addEventListener('click', async () => {
+  if (!S.textDraft) return;
+  const btn = $('#btnSaveText'); btn.disabled = true;
+  try {
+    const { data, error } = await sb.from('client_pages').select('payload').eq('key', KEY).maybeSingle();
+    if (error) throw error;
+    const existing = (data && data.payload) || {};
+    const payload = Object.assign({}, existing, { draftText: S.textDraft, draftSavedAt: new Date().toISOString() });
+    const { error: upErr } = await sb.from('client_pages').upsert({ key: KEY, payload }, { onConflict: 'key' });
+    if (upErr) throw upErr;
+    toast('Text draft saved');
+    await loadRow();
+  } catch (e) {
+    toast('Could not save — ' + ((e && e.message) || e));
+    btn.disabled = false;
+  }
+});
+
+/* ═══ copy finalised wording to another market ═══════════════════════════ */
+function renderCopyButtons() {
+  const wrap = $('#copyToOthers'); wrap.innerHTML = '';
+  OTHER_MARKETS.forEach(m => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'ar-btn sm';
+    b.textContent = 'Copy text to ' + m.name + ' →';
+    b.addEventListener('click', () => copyTextTo(m));
+    wrap.appendChild(b);
+  });
+}
+async function copyTextTo(m) {
+  const swapped = swapCityDeep(S.draft.text, THIS_CITY, m.name);
+  if (!confirm('Copy the current ' + THIS_CITY + ' wording to ' + m.name + ' as a draft ("' +
+    THIS_CITY + '" swapped for "' + m.name + '" everywhere it appears)? You\'ll still review and ' +
+    'publish it from the ' + m.name + ' page — this does not go live on its own.')) return;
+  try {
+    const { data, error } = await sb.from('client_pages').select('payload').eq('key', m.key).maybeSingle();
+    if (error) throw error;
+    const existing = (data && data.payload) || {};
+    const payload = Object.assign({}, existing, { draftText: swapped, draftSavedAt: new Date().toISOString() });
+    const { error: upErr } = await sb.from('client_pages').upsert({ key: m.key, payload }, { onConflict: 'key' });
+    if (upErr) throw upErr;
+    toast('Copied to ' + m.name + ' as a draft');
+    window.open(m.tool, '_blank', 'noopener');
+  } catch (e) {
+    toast('Could not copy — ' + ((e && e.message) || e));
+  }
+}
+
+/* Pulled out of boot() so a text-draft save can re-sync state without
+   re-attaching the iframe's 'load' listener a second time. */
+async function loadRow() {
   let note = '';
   try {
     if (!window.sb) throw new Error('No database connection');
@@ -294,12 +462,14 @@ async function boot() {
       S.publishedPayload = Object.assign({}, SEED, data.payload);
       S.origin = 'row';
       S.savedAt = new Date(data.updated_at).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
-      S.hasPendingDraft = !!data.payload.draftPp;
+      S.hasPendingDraft = !!(data.payload.draftPp || data.payload.draftText);
       if (S.hasPendingDraft) {
         S.draftSavedAt = data.payload.draftSavedAt
           ? new Date(data.payload.draftSavedAt).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
           : null;
-        S.draft = Object.assign({}, S.publishedPayload, { pp: data.payload.draftPp });
+        S.draft = Object.assign({}, S.publishedPayload,
+          data.payload.draftPp ? { pp: data.payload.draftPp } : {},
+          data.payload.draftText ? { text: data.payload.draftText } : {});
         note = 'Draft pending' + (S.draftSavedAt ? ' · saved ' + S.draftSavedAt : '') + ' — review below, then Publish';
       } else {
         S.draft = S.publishedPayload;
@@ -313,30 +483,45 @@ async function boot() {
   status(S.hasPendingDraft ? 'dirty' : S.origin === 'row' ? 'ok' : '',
     S.hasPendingDraft ? 'Draft pending' : S.origin === 'row' ? 'Loaded' : 'Preview', note);
   syncPublishBtn();
+  S.textDraft = null;
+  renderTextFields();
+  renderCopyButtons();
   if (S.pvReady) postPreview();
+}
+
+async function boot() {
+  let g = 0; while (!window.sb && g++ < 80) await new Promise(r => setTimeout(r, 100));
+  await loadRow();
   $('#pv').addEventListener('load', () => setTimeout(postPreview, 50));
 }
 
 $('#btnPublish').addEventListener('click', async () => {
   if (!S.hasPendingDraft || !S.publishedPayload) return;
   const pp = S.publishedPayload.draftPp;
-  const summary = 'median IRR ' + (typeof pp.medianIrr === 'number' ? (pp.medianIrr * 100).toFixed(1) + '%' : '—') +
+  const hasTextDraft = !!S.publishedPayload.draftText;
+  const parts = [];
+  if (pp) parts.push('median IRR ' + (typeof pp.medianIrr === 'number' ? (pp.medianIrr * 100).toFixed(1) + '%' : '—') +
     ', CAGR ' + (typeof pp.medianCagr === 'number' ? (pp.medianCagr * 100).toFixed(1) + '%' : '—') +
-    ', ' + (pp.properties != null ? pp.properties : '—') + ' properties';
-  if (!confirm('Publish this draft (' + summary + ') to the live client page? Anyone with the link will see it immediately.')) return;
+    ', ' + (pp.properties != null ? pp.properties : '—') + ' properties');
+  if (hasTextDraft) parts.push('updated wording');
+  if (!confirm('Publish ' + (parts.join(' and ') || 'this draft') +
+    ' to the live client page? Anyone with the link will see it immediately.')) return;
   const btn = $('#btnPublish'); btn.disabled = true;
   status('', 'Publishing…', '');
   try {
-    const payload = Object.assign({}, S.publishedPayload, { pp: pp });
+    const payload = Object.assign({}, S.publishedPayload,
+      pp ? { pp: pp } : {}, hasTextDraft ? { text: S.publishedPayload.draftText } : {});
     delete payload.draftPp;
     delete payload.draftSavedAt;
+    delete payload.draftText;
     const { error } = await sb.from('client_pages').upsert({ key: KEY, payload }, { onConflict: 'key' });
     if (error) throw error;
-    S.publishedPayload = payload; S.hasPendingDraft = false; S.draftSavedAt = null;
+    S.publishedPayload = payload; S.hasPendingDraft = false; S.draftSavedAt = null; S.textDraft = null;
     S.draft = payload; S.origin = 'row';
     S.savedAt = new Date().toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
     status('ok', 'Loaded', 'Published · saved ' + S.savedAt);
     syncPublishBtn();
+    renderTextFields();
     postPreview();
     toast('Published to the client page');
   } catch (e) {
