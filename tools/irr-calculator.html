@@ -7561,8 +7561,7 @@ var MHP_FROM='1980-03', MHP={
     /* The sheet is shared, so a row has to say who put it there. The
        bookmarklet cannot ask — it runs on RP Data, signed in to nothing of
        ours — so the answer is baked in here, where the sign-in is known. */
-    var who = '';
-    try { who = (localStorage.getItem('pp-irr-email') || '').trim(); } catch (e) {}
+    var who = whoAmI();
     src = src.replace(/__SHEET_URL__/g, function(){ return url; })
              .replace(/__READ_KEY__/g,  function(){ return key; })
              .replace(/__CITY__/g,      function(){ return ''; })
@@ -7604,8 +7603,7 @@ var MHP_FROM='1980-03', MHP={
     /* syncCheckTab runs on every render, and rebuilding the bookmarklets means
        a regex pass and a URL-encode over twenty-five kilobytes. Nothing has
        changed most times. */
-    var who = '';
-    try { who = localStorage.getItem('pp-irr-email') || ''; } catch (e) {}
+    var who = whoAmI();
     var sig = (sheetUrl() || '-') + ' :: ' + who;
     if (sig === bmLast) return;
     bmLast = sig;
@@ -8524,8 +8522,11 @@ var MHP_FROM='1980-03', MHP={
   function renderTrackNote(rec){
     var p = $('chkDaily'), b = $('badgeCheck');
     if (!p) return;
-    if (rec && !rec.failed && foundStore()) {
-      var live = foundList().length;
+    if (rec && !rec.failed) {
+      /* The findings are the thing the number is about. While they are held
+         they decide it; once they are gone there is nothing left to offer,
+         and the scan's own total is a badge with nothing behind it. */
+      var live = foundStore() ? foundList().length : 0;
       if (live !== rec.found) {
         var fixed = {}; for (var kk in rec) fixed[kk] = rec[kk];
         fixed.found = live;
@@ -8860,6 +8861,12 @@ var MHP_FROM='1980-03', MHP={
               fresh: items.filter(function(x){ return x.kind === 'new'; }).map(function(x){ return x.r; }) };
     adlFound = d;
     if (!items.length) {
+      /* Nothing this scan found is work any more - somebody else recorded
+         them, or a register arrived from the other copy of this tool. The
+         rows cost room on an origin already close to its limit and buy
+         nothing: the next scan reads them again. Dropping them first is also
+         what lets the note above say zero rather than the old total. */
+      if (st && st.rows && st.rows.length) dropFound();
       host.hidden = true; host.innerHTML = '';
       renderTrackNote(trackSeen());
       syncSheetBtn();
@@ -10715,9 +10722,14 @@ var MHP_FROM='1980-03', MHP={
     fr.readAsText(file);
   }
   function logChange(rows){
+    /* applyShared() is this browser being told what somebody else decided,
+       and one of the things it does is save the assumptions it received -
+       which, from here, looks exactly like someone at this desk changing
+       them. The history is how you tell your own changes from theirs, so a
+       change that was received must not be written down as made. */
+    if (share.applying) return;
     if (!share.sb || share.canWrite === false || !rows || !rows.length) return;
-    var who = '';
-    try { who = localStorage.getItem('pp-irr-email') || ''; } catch (e) {}
+    var who = whoAmI();
     var body = rows.slice(0, 500).map(function(r){
       return { who: who, action: r.action, property: r.property || null, detail: r.detail || null };
     });
@@ -11454,6 +11466,31 @@ var MHP_FROM='1980-03', MHP={
      and who can sign in is decided in the Supabase dashboard, not here. If the
      config file still holds its placeholders, or the library did not load, none
      of this runs and the tool is what it always was. */
+  /* ══════════ WHO ══════════
+     The name that goes against a change, and against a row in the shared
+     sheet. The standalone build asks for the address in its own sign-in
+     dialog and keeps it here; the hub build has no dialog - its appbar
+     signs you in - so there, nothing ever wrote this key and every change
+     was logged as nobody. The session has the address either way, so take
+     it from there, and let the dialog be one way of arriving at it rather
+     than the only one. */
+  function whoAmI(){
+    try { return (localStorage.getItem('pp-irr-email') || '').trim(); }
+    catch (e) { return ''; }
+  }
+  /* Called wherever a session turns up: at startup, and again when one
+     arrives or goes. Signing out does not forget it - the standalone's
+     dialog offers it back as the address to sign in with, and either way
+     the bookmarklet you dragged yesterday is still yours. */
+  function rememberWho(session){
+    var e = '';
+    try { e = ((session && session.user && session.user.email) || '').trim(); }
+    catch (x) { e = ''; }
+    if (!e || e === whoAmI()) return;
+    try { localStorage.setItem('pp-irr-email', e); } catch (x) {}
+    /* the bookmarklets bake it in, so the ones on the page are now stale */
+    try { syncBm(); } catch (x) {}
+  }
   /* Email then password, because that is what the team was given: one shared
      password, and their own address so a change has a name against it. The
      password is never stored anywhere in this page — Supabase swaps it for a
@@ -11490,6 +11527,7 @@ var MHP_FROM='1980-03', MHP={
 
     share.sb.auth.getSession().then(function(r){
       share.canWrite = !!(r && r.data && r.data.session) && hubCanWrite();
+      rememberWho(r && r.data && r.data.session);
       applyShareMode();
       loadSharedSheet();      // the sheet address, for anyone who can sign in
       return load();
@@ -11545,6 +11583,7 @@ var MHP_FROM='1980-03', MHP={
     share.sb.auth.onAuthStateChange(function(evt, session){
       var was = share.canWrite;
       share.canWrite = !!session && hubCanWrite();
+      rememberWho(session);
       if (was !== share.canWrite) { applyShareMode(); }
       if (share.canWrite) loadSharedSheet();
     });

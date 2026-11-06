@@ -952,6 +952,66 @@ asserts it reads 1. It also caught a dishonest fixture in `render/daily.html`,
 which invented `found: 7` and passed only because the badge echoed the record
 straight back; it now asserts the badge and the list agree.
 
+### A change with nobody's name on it
+
+The history is how you tell your own changes from a colleague's. Every row
+carries `who`, read from `pp-irr-email`.
+
+**This build never wrote that key.** The standalone learns the address from
+its own sign-in dialog; the port removes that dialog &mdash; correctly, the
+appbar owns sign-in &mdash; and `stripdead.pl` is supposed to remove it. But
+the dialog was the only writer. Three places read the key: the log's `who`,
+and the bookmarklet's baked-in `WHO`, twice. All three got an empty string.
+
+Found live on 6 Nov: `pp-irr-email` empty while `pp-sb-auth` held a valid
+session, and the two newest rows in `irr_log` &mdash; the only two written
+from here rather than imported &mdash; both blank. The bookmarklet this page
+was offering carried `WHO = ''`, so every row it wrote to the shared sheet
+would have been unsigned.
+
+`rememberWho()` takes the address from the session at startup and whenever
+one arrives; `whoAmI()` is the single reader. The session exists in both
+builds, so the dialog becomes one way of arriving at the address rather than
+the only one. `render/whostamp.html` covers it.
+
+**The general rule this came from:** when porting, grep every `localStorage`
+key the tool *reads* for a writer in the ported file. A key with readers and
+no writer is this bug. The port checklist watched for features to keep and
+chrome to remove; nothing watched for state the removed chrome produced.
+`pp-irr-email` was the only one.
+
+### Receiving a change is not making one
+
+`applyShared()` is this browser being told what somebody else decided. One of
+the things it does is `saveAssumptions()`, which compares what was stored
+against what has just arrived and writes the difference to the history.
+
+So a colleague changing one assumption wrote a row in their browser, and then
+another row in every browser that received it, under whoever was sitting
+there. Twelve rows in the live log are exactly this shape &mdash; all
+`setting` or `assumption`, none of them a change anyone made here.
+
+`logChange` now returns while `share.applying` is set. Every other caller is
+a deliberate action and none of them runs inside `applyShared`, so nothing
+else changes. `render/echolog.html` asserts a received change writes nothing
+and a local one still writes.
+
+### A spent scan is not kept
+
+`stalebadge.html` fixed the badge by re-reading the stored findings every
+time it draws. Two things followed that it did not cover.
+
+The findings were kept for ever. On the live hub that was 631 rows and 184 KB
+of an origin already at 3.5 MB of its 5 MB, every one of them already dealt
+with. And the correction only happened *while* they were kept: drop them
+&mdash; which is what acting on them does &mdash; and the badge fell back to
+the number the scan wrote down, over an empty list. The same bug, by the
+other road.
+
+So a scan with nothing outstanding in it is spent: `drawFound` throws it
+away, and `renderTrackNote` counts a missing store as zero rather than
+trusting the record's own total. `render/foundgone.html` covers both halves.
+
 ### Re-porting drops their work, every time
 
 `tools/irr-calculator.html` here is a whole-file regeneration of the
@@ -969,8 +1029,18 @@ theirs = origin/main:tools/irr-calculator.html
 git merge-file -p --diff3 mine base theirs
 ```
 
-Then check `btnPushReturns`, `RETURNS_PAGES`, `syncReturnsBtn`,
-`returnsPageForCity` and `overviewData` all survive before committing.
+Then, before committing:
+
+- check `btnPushReturns`, `RETURNS_PAGES`, `syncReturnsBtn`,
+  `returnsPageForCity` and `overviewData` all survive;
+- grep every `localStorage` key the tool reads for a writer in the ported
+  file &mdash; readers with no writer are state the stripped chrome used to
+  produce (see **A change with nobody's name on it**);
+- boot it from a local server with the hub's `shared/` beside it.
+
+`vaultise.pl` matches on exact blocks, so a change inside one of its anchors
+fails loudly rather than silently skipping &mdash; which is what it should
+do, but it means the script needs the same edit the tool got.
 
 ## 4. Known gaps
 
@@ -981,6 +1051,17 @@ Then check `btnPushReturns`, `RETURNS_PAGES`, `syncReturnsBtn`,
   CSV export of the register — that only ever holds the visible, filtered rows.
 
 ## Changelog
+
+- 2026-11-06 &mdash; **A change has a name against it again.** The port removes
+  the tool's own sign-in dialog, which was the only writer of
+  `pp-irr-email` &mdash; so on the hub the history, and every row a
+  bookmarklet wrote to the shared sheet, was anonymous.
+- 2026-11-06 &mdash; **Receiving a colleague's change no longer logs it as
+  yours.** `applyShared` saves the assumptions it receives, and that looked
+  from here exactly like somebody at this desk changing them.
+- 2026-11-06 &mdash; **A spent scan is thrown away.** 631 findings, all already
+  dealt with, were being kept for ever; and once they were gone the badge
+  fell back to the old total over an empty list.
 
 - 2026-11-05 &mdash; **The Sold check badge counts what is outstanding.** It read the
   last scan's number, so a register imported from the other copy left it
