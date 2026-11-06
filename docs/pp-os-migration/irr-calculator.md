@@ -1142,6 +1142,20 @@ do, but it means the script needs the same edit the tool got.
 
 ## Changelog
 
+- 2026-11-06 &mdash; **No date under a median price.** The Overview's Median
+  purchase price and Median sale price cards named the day the property on
+  that price changed hands, and listed every property sharing it. Read
+  quickly it was a "median date" &mdash; which the Growth comparison strikes
+  quite differently &mdash; so the date and the list are gone from the cards
+  and from the Overview CSV; the count and the spread stay.
+- 2026-11-06 &mdash; **A Median dates card, struck as method B.** The
+  Properties card became a card for the median purchase date and the median
+  sale date, worked out exactly as the Growth comparison's method B works
+  them: the middle date of the sold, not-archived set, and on an even count
+  both middle dates as a span. Month and year only &mdash; "May 2018 | Apr
+  2026", captioned Purchase and Sale &mdash; and no note under it. The
+  Overview CSV carries the same two dates to the day, labelled "(method B)".
+
 - 2026-11-06 &mdash; **A review of the whole file.** Seven fixes and three
   removals: a refused save that had already happened in memory, the
   worklist sent to the sheet from every edit, every pasted-in property
