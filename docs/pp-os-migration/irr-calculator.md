@@ -1153,8 +1153,15 @@ do, but it means the script needs the same edit the tool got.
   sale date, worked out exactly as the Growth comparison's method B works
   them: the middle date of the sold, not-archived set, and on an even count
   both middle dates as a span. Month and year only &mdash; "May 2018 | Apr
-  2026", captioned Purchase and Sale &mdash; and no note under it. The
-  Overview CSV carries the same two dates to the day, labelled "(method B)".
+  2026", captioned Purchase and Sale &mdash; and no note under it; what it was
+  struck over is on the card's title. The Overview CSV carries the same two
+  dates to the day, labelled "(method B)". One rule, `gcEligible`, now
+  decides which rows the Growth comparison, the card and the CSV read, so
+  the three cannot drift. A review of the change also removed what the old
+  cards left behind &mdash; an orphaned comment, `card()`'s unused list
+  argument, three helpers nothing called &mdash; and let the pair wrap at
+  phone widths rather than spill. On a phone the card values also step down
+  a size, so a seven-figure sale price no longer breaks after its last comma.
 
 - 2026-11-06 &mdash; **A review of the whole file.** Seven fixes and three
   removals: a refused save that had already happened in memory, the
