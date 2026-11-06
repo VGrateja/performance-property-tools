@@ -594,8 +594,12 @@ button:disabled{opacity:.45;cursor:not-allowed}
 #chkFound .btns{margin:var(--sp-4) 0 0}
 #chkFound .src-line{display:block;margin-top:2px;font-size:12px;line-height:16px}
 .rec-link{white-space:nowrap}
+/* Property and "What was found" wrap; everything between them - city,
+   finding, the purchase price over its date - stays on one line. The
+   Purchase column went in as the fourth, which is where this used to
+   point. */
 #chkFound table.mini td:nth-child(1),
-#chkFound table.mini td:nth-child(4){white-space:normal}
+#chkFound table.mini td:nth-child(5){white-space:normal}
 #panel-review #revNote{display:block;margin:0 0 var(--sp-4)}
 /* Top right of the note, out of the text rather than in the flow of it:
    the note is display:block here, so a floated button lets the sentences
@@ -1072,7 +1076,7 @@ table.mini tbody tr:last-child th,table.mini tbody tr:last-child td{border-botto
    sentences are allowed to wrap; the figures, the city and the buttons are
    not. */
 #panel-review table.mini td:nth-child(2),
-#panel-review table.mini td:nth-child(5){white-space:normal}
+#panel-review table.mini td:nth-child(6){white-space:normal}
 #panel-review table.mini td.acts{white-space:nowrap}
 td.acts{white-space:nowrap}
 td.acts button{margin-right:6px}
@@ -3921,7 +3925,14 @@ window.stopCheck=false;
   var memProps = null;              // set only while localStorage is refusing
   var storageFull = false, storageKept = false;
   function loadProps(){
-    if (memProps) return memProps;
+    /* A copy, never the array itself. Every caller mutates what this returns
+       and then asks putProps to keep it; when putProps refuses, the caller
+       drops the change - but if this had handed out the live array, the
+       change was already made, and the register would show as done a thing
+       that was stored nowhere and pushed to nobody. */
+    if (memProps) {
+      try { return JSON.parse(JSON.stringify(memProps)); } catch (e) { return memProps; }
+    }
     try { var v = JSON.parse(localStorage.getItem(STORE) || '[]'); return Array.isArray(v) ? v : []; }
     catch (e) { return []; }
   }
@@ -4102,7 +4113,7 @@ window.stopCheck=false;
     irrBand = null;
     renderProps();
     drawQueue();          // the queue is this city's now, so it switches too
-    if (chk) chkRun(); else syncCheckTab();
+    redrawCheck();
     if (currentTab() === 'history') showHistory();
   }
 
@@ -4322,7 +4333,7 @@ window.stopCheck=false;
                       : mhpLook(city || activeCity, new Date(t), type);
   }
   function deriveOne(e, opts){
-    var d = { e:e, irr:null, net:null, hold:null, held:isHeld(e),
+    var d = { e:e, s:null, irr:null, net:null, hold:null, held:isHeld(e),
               mkBuy:null, mkSell:null, vsMkt:null, ourCagr:null, mktCagr:null,
               ourTotal:null, mktTotal:null, vsMktTotal:null,
               lga:'', lgaBuy:null, lgaSell:null, lgaTotal:null, vsLgaTotal:null,
@@ -4330,6 +4341,7 @@ window.stopCheck=false;
     if (d.held) return d;          /* nothing to discount until there is a sale */
     try {
       var r = window.IRRBreakdown.computeBreakdown(e, opts);
+      d.s = r.summary;
       d.irr = r.summary.irr; d.net = r.summary.netProfit; d.hold = r.summary.holdYears;
       /* What the market did over THIS property's own months — the only
          comparison where both sides faced the same years. Per year, because
@@ -6362,9 +6374,9 @@ var MHP_FROM='1980-03', MHP={
        has to be told — otherwise the count it is still showing is yesterday's */
     syncCheckTab();
     loadIntoForm(e.name, e, e.category);
-    $('messages').innerHTML = changes.length
+    savedNote(changes.length
       ? msg('ok','Saved — '+esc(changes.join(', '))+' updated on '+esc(e.name)+'.')
-      : msg('ok','Nothing had changed on '+esc(e.name)+'.');
+      : msg('ok','Nothing had changed on '+esc(e.name)+'.'));
   }
 
   /* ══════════ IMPORT ══════════ */
@@ -7840,7 +7852,8 @@ var MHP_FROM='1980-03', MHP={
     if (!u || share.canWrite !== true) return;
     var rows = registerRows();
     if (!rows.length) return;
-    if (Date.now() - regSentAt < 60000) { bmWorklistLine(); return; }
+    if (!regDirty && Date.now() - regSentAt < 60000) { bmWorklistLine(); return; }
+    regDirty = false;
     regSentAt = Date.now();
     var w = $('bmWorklist');
     if (w) { w.hidden = false; w.textContent = 'Sending the worklist to the sheet…'; }
@@ -7936,7 +7949,7 @@ var MHP_FROM='1980-03', MHP={
     return n === 'Google Sheet' ? 'Sold check sheet' : (n || 'Sold check');
   }
   function addOrigin(){
-    var src = (window.addPending && addPending.source) || '';
+    var src = (addPending && addPending.source) || '';
     if (!src) return 'Added by hand';
     return src === 'the paste' ? 'Pasted in' : src;
   }
@@ -8053,23 +8066,6 @@ var MHP_FROM='1980-03', MHP={
   function revSay(html){ var m = $('revMsg'); if (m) m.innerHTML = html || ''; }
   var revPicked = {};
 
-  /* Everything the sheet just said had sold, parked in one go. Called only
-     from chkLoadSheet: chkRun() runs on every redraw and queueing there would
-     re-queue on every glance at the tab. */
-  function queueFound(){
-    var ids = (chk && chk.results || [])
-      /* Not the archived ones. Setting a property outside of advice at review
-         is a decision, and a weekly re-run that put it straight back in the
-         queue would quietly undo it — the sold check still reports on them,
-         it just stops asking you to approve the same sale every Monday. */
-      .filter(function(r){
-        return r.status === 'sold' && !isPending(r.e) && !r.e.outside &&
-               !saleRejected(r.e, r.hit && r.hit.price, r.hit && r.hit.date);
-      })
-      .map(function(r){ return r.e.id; });
-    if (!ids.length) { syncReviewBadge(); return; }
-    markSold(ids);
-  }
 
   function drawQueue(){
     var list = queueShown();
@@ -8332,16 +8328,13 @@ var MHP_FROM='1980-03', MHP={
       });
   }
 
-  /* `quiet` loads the records WITHOUT queueing what they find: the table
-     fills, the count line reports, and nothing is written. That is what the
-     automatic path uses, so opening a tab can never queue anything on your
-     behalf — and, just as importantly, so the tracking check that runs after
-     it is counting the same book the badge counted.
-
-     The button still queues, because pressing it is asking for exactly that. */
-  function chkLoadSheet(quiet, onDone){
+  /* Reads the sold check sheet and draws what it found. Nothing is queued
+     from here: the findings sit on the tab with a Send button under them,
+     and the only automatic read is the daily scan, which goes its own way.
+     Only the two buttons call this. */
+  function chkLoadSheet(){
     var u = sheetApi();
-    if (!u) { if (onDone) onDone(); return; }
+    if (!u) return;
     showTab('check');
     chkBusy(true);
     chkSay(msg('ok','Reading the Google Sheet…'));
@@ -8353,7 +8346,6 @@ var MHP_FROM='1980-03', MHP={
         if (!all.length) {
           chkSay(msg('err','The sheet has no rows yet — run the RP Data check first.'));
           chkBusy(false);
-          if (onDone) onDone();
           return;
         }
         /* Only the ones RP Data says changed hands AFTER the purchase. A row
@@ -8416,14 +8408,12 @@ var MHP_FROM='1980-03', MHP={
           ' from the sold check sheet.');
         drawFound();
         chkBusy(false);
-        if (onDone) onDone();
       })
       .catch(function(e){
         chkSay(msg('err','Could not read the sheet: '+esc(e.message)+
           '<br>Check <code>localStorage.ppSheetUrl</code> points at the deployment’s '+
           '<code>/exec</code> address, and that it is deployed for “Anyone”.'));
         chkBusy(false);
-        if (onDone) onDone();
       });
   }
 
@@ -8530,6 +8520,9 @@ var MHP_FROM='1980-03', MHP={
       if (live !== rec.found) {
         var fixed = {}; for (var kk in rec) fixed[kk] = rec[kk];
         fixed.found = live;
+        /* the per-sheet counts were the scan's; corrected, the total no
+           longer splits that way, and "3 sales - 20 in ADL" is nonsense */
+        fixed.tabs = [];
         rec = fixed;
       }
     }
@@ -8872,6 +8865,15 @@ var MHP_FROM='1980-03', MHP={
       syncSheetBtn();
       return;
     }
+    /* Not now was pressed on this very scan: going to another tab and coming
+       back does not re-ask. The findings are still counted above; a fresh
+       load, or a scan that reads something new, lists them again. */
+    if (foundSnoozedAt && st && st.at === foundSnoozedAt) {
+      host.hidden = true; host.innerHTML = '';
+      renderTrackNote(trackSeen());
+      syncSheetBtn();
+      return;
+    }
     var row = function(r, kind, also){
       var e = r.match;
       var sd = r.soldDate ? new Date(r.soldDate + 'T00:00:00Z') : null;
@@ -8916,8 +8918,21 @@ var MHP_FROM='1980-03', MHP={
     host.hidden = false;
     syncSheetBtn();
   }
+  /* Not now: the list goes, the findings stay. They were found and nobody
+     has dealt with them, so the badge keeps counting them and the next
+     visit shows them again. Throwing them away here left the tab saying
+     there was nothing to do for the rest of the day. */
+  var foundSnoozedAt = 0;        // the scan (by its timestamp) Not now was pressed on
+  function hideFound(){
+    var st = foundStore();
+    foundSnoozedAt = (st && st.at) || 0;
+    var host = $('chkFound');
+    if (host) { host.hidden = true; host.innerHTML = ''; }
+    syncSheetBtn();
+  }
   function clearFound(){
     adlFound = null;
+    foundSnoozedAt = 0;
     dropFound();
     var host = $('chkFound');
     if (host) { host.hidden = true; host.innerHTML = ''; }
@@ -8980,7 +8995,7 @@ var MHP_FROM='1980-03', MHP={
        count as new, so the stored answer is wrong the moment this runs. */
     trackInvalidate();
     syncReviewBadge();
-    if (chk) chkRun();
+    redrawCheck();
     chkSay(msg('ok',
       (parked ? '<strong>'+parked+'</strong> sale'+(parked===1?'':'s')+' parked against '+
                 (parked===1?'a property':'properties')+' you already hold' : '') +
@@ -9044,6 +9059,16 @@ var MHP_FROM='1980-03', MHP={
   }
 
   /* ── the match ── */
+  /* After the book changes under the Sold check tab. Two flows share `chk`:
+     the paste-import one draws its own match table and chkRun is that
+     table; the sheet one draws the findings, which re-read the book. Calling
+     chkRun for the sheet flow drew the retired table back in under the
+     findings - two accounts of the same question on one tab. */
+  function redrawCheck(){
+    if (chk && chk.name !== 'Google Sheet') { chkRun(); return; }
+    syncCheckTab();
+    drawFound();
+  }
   function chkRun(){
     if (!chk) return;
     var m = chk.map;
@@ -9320,7 +9345,7 @@ var MHP_FROM='1980-03', MHP={
                detail:'sale found by ' + (e.pending.src || 'an import') };
     }));
     renderProps();
-    chkRun();
+    redrawCheck();
     chkSay(msg('ok', done.length + ' propert' + (done.length===1?'y':'ies') +
       ' sent to <strong>For review</strong>. The sale is written when it is approved.'));
   }
@@ -9434,11 +9459,19 @@ var MHP_FROM='1980-03', MHP={
      and there are no exports any more — the bookmarklet works through the
      whole book by itself. All that survives of it is keeping the how-to
      in step with what is actually held. */
+  var regDirty = false;    // the register changed while the Sold check tab was hidden
   function syncCheckTab(){
     syncBmBox(loadProps().filter(isHeld));
     /* The bookmarklets read the register from the sheet, so opening this tab
-       is what keeps that copy current. See syncRegisterToSheet. */
-    syncRegisterToSheet();
+       is what keeps that copy current. See syncRegisterToSheet. This also
+       runs after every edit and every city switch, from tabs that have no
+       sheet in view - and from there it was reading the whole worklist back
+       to fill a line nobody could see, and rewriting the sheet's tab once a
+       minute. So: send from this tab; elsewhere, only remember that there is
+       something to send. */
+    var panel = $('panel-check');
+    if (panel && !panel.hidden) syncRegisterToSheet();
+    else regDirty = true;
   }
 
   /* ══════════ CSV OUT ══════════ */
@@ -9527,24 +9560,39 @@ var MHP_FROM='1980-03', MHP={
     if (!all.length) { $('messages').innerHTML = msg('warn', activeCity
       ? 'Nothing is filed under ' + cityLabel() + ' to export.' : 'No properties to export yet.'); return; }
     var f = readFilters(), xOpts = readOpts();
-    var derived = filterEntries(all, f).map(function(e){
-      var d = { e:e, irr:null, net:null, hold:null, s:null, held:isHeld(e) };
-      if (d.held) return d;
-      try { var r = window.IRRBreakdown.computeBreakdown(e, xOpts);
-            d.s = r.summary; d.irr = r.summary.irr; d.net = r.summary.netProfit; d.hold = r.summary.holdYears; }
-      catch (err) {}
-      return d;
-    });
+    /* The same derivation the register draws from, so the market and council
+       figures in the file are the ones on screen - not a second reading that
+       could drift from the first. */
+    var derived = filterEntries(all, f).map(function(e){ return deriveOne(e, xOpts); });
     var list = derived.filter(function(d){ return passDerived(d, f, false) && passDerived(d, f, true); });
     if (!list.length) { $('messages').innerHTML = msg('warn','Nothing matches the current filters, so there is nothing to export.'); return; }
     /* The stored fields first, the computed ones last. Everything the register
        holds about a property is in here, so an export is a full record and
        re-importing one restores it — which it would not if the sale's source,
        its link or the archive reason were left out. */
+    /* The two views the register can show beside the sale - vs Market and vs
+       Council - were not in the file at all, so an export of the register was
+       not the register. Both sets ride along, as the raw figures the cells are
+       made from: the growth columns and the two "vs" columns are fractions,
+       like IRR, so a spreadsheet can format them as percentages itself. */
     var L = [['Property','Capital city','Property type','Scope','Reason outside advice',
               'Purchase price','Purchase date','Sold price','Sold date',
               'Sold verified by','Sale record link','Sold check','Note',
-              'Hold period (yrs)','Gross profit','Net profit','IRR']];
+              'Hold period (yrs)','Gross profit','Net profit','IRR',
+              'Market at purchase','Market at sale','Market growth','vs Market',
+              'Council','Council at purchase','Council at sale','Council growth','vs Council',
+              'Market figure note']];
+    var nz = function(v){ return (v === null || v === undefined) ? '' : v; };
+    /* The register marks a borrowed month with an asterisk on the figure. A
+       star inside a number cell would stop it being a number, so the file
+       says it in words, in a column of its own. */
+    var carryNote = function(d){
+      var parts = [];
+      if (d.mkBuyCarried)  parts.push('purchase figure carried ' + d.mkBuyCarried + ' month' + (d.mkBuyCarried === 1 ? '' : 's'));
+      if (d.mkSellCarried) parts.push('sale figure carried ' + d.mkSellCarried + ' month' + (d.mkSellCarried === 1 ? '' : 's'));
+      return parts.join('; ');
+    };
+    var EMPTY_MKT = ['', '', '', '', '', '', '', '', '', ''];
     list.forEach(function(d){
       var e = d.e, s = d.s;
       var stored = [e.name, e.category||'', ptypeLabel(ptypeOf(e)),
@@ -9552,11 +9600,14 @@ var MHP_FROM='1980-03', MHP={
                     e.outsideReason||''];
       var extra = [verifiedOf(e), e.soldLink||'', e.soldCheck||'', e.note||''];
       if (s) L.push(stored.concat([s.purchasePrice, iso(s.purchaseDate), s.soldPrice, iso(s.soldDate)],
-                     extra, [s.holdYears, s.grossProfit, s.netProfit, s.irr === null ? '' : s.irr]));
+                     extra, [s.holdYears, s.grossProfit, s.netProfit, s.irr === null ? '' : s.irr],
+                     [nz(d.mkBuy), nz(d.mkSell), nz(d.mktTotal), nz(d.vsMktTotal),
+                      d.lga || '', nz(d.lgaBuy), nz(d.lgaSell), nz(d.lgaTotal), nz(d.vsLgaTotal),
+                      carryNote(d)]));
       /* held, or it would not compute: the stored figures, and the derived
          columns left empty rather than filled with something made up */
       else   L.push(stored.concat([e.purchasePrice, e.purchaseDate, e.soldPrice, e.soldDate],
-                     extra, ['', '', '', '']));
+                     extra, ['', '', '', ''], EMPTY_MKT));
     });
     /* The register and the archive are two tabs over one table, so exporting
        both used to write the same filename twice and the second file quietly
@@ -9819,7 +9870,7 @@ var MHP_FROM='1980-03', MHP={
   $('btnSave').addEventListener('click', function(){
     if (!last) { $('messages').innerHTML = msg('warn','Calculate a result before saving it.'); return; }
     var r = addEntries([entryFrom($('pName').value.trim() || autoName(last.summary), readDeal(), readOpts(), $('pCat').value)]);
-    if (r) { closeQuick(); $('messages').innerHTML = msg('ok', r.updated ? 'Updated this property on the list.' : 'Saved to properties — this browser only.'); }
+    if (r) { closeQuick(); savedNote(msg('ok', r.updated ? 'Updated this property on the list.' : 'Saved to properties.')); }
   });
   /* NO LONGER WIRED TO ANYTHING. The Detect types button is gone: this guessed
      a unit from a slash in the address, which earned its place when nothing
@@ -10517,24 +10568,9 @@ var MHP_FROM='1980-03', MHP={
     /* The History is the whole book's, whichever city is on screen. What
        happened, happened; filing it away behind a filter means a change you
        made this morning can vanish from the log this afternoon because you
-       switched city. The lookup below is kept because it still answers "which
-       city was this?" for anything that wants to ask. */
+       switched city. A by-city lookup used to follow; it answered nothing
+       behind the return, so it is gone - git has it if a filter comes back. */
     return rows;
-    var byName = {};
-    loadProps().forEach(function(e){
-      byName[String(e.name||'').trim().toLowerCase()] = (e.category||'').trim();
-    });
-    var here = function(c){ return activeCity === NO_CAT ? !c : c === activeCity; };
-    return rows.filter(function(x){
-      if (x.detail && String(x.detail).charAt(0) === '{') {
-        try {
-          var rec = JSON.parse(x.detail);
-          if (rec && typeof rec.category === 'string') return here(rec.category.trim());
-        } catch (e) { /* not a record after all — fall through to the name */ }
-      }
-      var k = String(x.property||'').trim().toLowerCase();
-      return (k && byName[k] !== undefined) ? here(byName[k]) : true;
-    });
   }
   function showHistory(){
     drawSync();
@@ -11022,7 +11058,7 @@ var MHP_FROM='1980-03', MHP={
      silently nothing else. */
   $('chkFound').addEventListener('click', function(ev){
     if (ev.target.closest && ev.target.closest('#btnFoundSend')) adlApply();
-    if (ev.target.closest && ev.target.closest('#btnFoundClose')) clearFound();
+    if (ev.target.closest && ev.target.closest('#btnFoundClose')) hideFound();
   });
   syncSheetBtn();
   /* Clicking either bookmarklet would run it against this page, which is
@@ -11307,6 +11343,18 @@ var MHP_FROM='1980-03', MHP={
   /* One body, two possible homes. The artifact keeps it in its own store; a
      published web page keeps it in Supabase. Neither is present on a plain
      local copy, and then this does nothing at all. */
+  function unsharedWarn(){
+    return msg('warn','That change is saved in this browser only '+
+      '— you are signed out, so the shared list has not been updated. '+
+      'Sign in and make it again.');
+  }
+  /* The "Saved" a caller writes after a put. pushShared had already said the
+     change went nowhere, and the caller's green line wrote over it - so a
+     signed-out edit ended with "Saved" and existed in one browser. The
+     warning wins. */
+  function savedNote(html){
+    $('messages').innerHTML = (share.canWrite === false) ? unsharedWarn() : html;
+  }
   function pushShared(){
     if (share.applying) return;
     /* It used to return here without a word. A change made while signed out
@@ -11315,9 +11363,7 @@ var MHP_FROM='1980-03', MHP={
        browsers on 5 Nov. The 42501 branch below says this when the server
        refuses; it has to be said when we refuse ourselves too. */
     if (share.canWrite === false) {
-      $('messages').innerHTML = msg('warn','That change is saved in this browser only '+
-        '— you are signed out, so the shared list has not been updated. '+
-        'Sign in and make it again.');
+      $('messages').innerHTML = unsharedWarn();
       return;
     }
     if (!share.ready || (!share.db && !share.sb)) return;
@@ -11407,8 +11453,8 @@ var MHP_FROM='1980-03', MHP={
     logChange([{ action:'restored unsent', property:null,
                  detail: added + ' propert' + (added===1?'y':'ies') + ' this browser held but the shared list did not' }]);
     renderProps();
-    $('messages').innerHTML = msg('ok', added + ' propert' + (added===1?'y':'ies') +
-      ' put back and sent to the shared list.');
+    savedNote(msg('ok', added + ' propert' + (added===1?'y':'ies') +
+      ' put back and sent to the shared list.'));
   });
 
   function applyShared(body){

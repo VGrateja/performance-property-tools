@@ -1012,6 +1012,96 @@ So a scan with nothing outstanding in it is spent: `drawFound` throws it
 away, and `renderTrackNote` counts a missing store as zero rather than
 trusting the record's own total. `render/foundgone.html` covers both halves.
 
+### The register export was not the register
+
+The register shows three things beside a sale &mdash; Returns, vs Market, vs
+Council &mdash; and the CSV carried the first and nothing of the other two.
+An export of the register was a different, smaller table.
+
+The file now carries both sets, as the raw figures the cells are made from:
+market at purchase and at sale, market growth, vs Market; the council, its
+figure at purchase and at sale, council growth, vs Council. The growth and
+"vs" columns are fractions, like IRR, so a spreadsheet formats them itself.
+The register marks a borrowed month with an asterisk on the figure; a star
+inside a number cell would stop it being a number, so the file says it in
+words in a column of its own, *Market figure note*.
+
+The export also derives the way the register does &mdash; one `deriveOne`
+per row &mdash; rather than a second reading of its own, so the two cannot
+drift. `render/exportmkt.html` reads the vs Market and vs Council cells off
+the page, presses Export, and checks the file says the same thing, with one
+property in a suburb the council map does not know so its council columns
+must stay empty while its market columns do not.
+
+**Export everything carries them already.** None of these figures is
+stored: they are worked out when the register draws, from the address (the
+suburb is what follows the last comma), the capital city, the type, and the
+purchase and sale dates and prices, set against the median series bundled
+in the tool. So the book export carries them by carrying those &mdash; which
+it does, untouched. `render/bookroundtrip.html` presses Export everything,
+feeds the file to Import everything through the real file input, and
+asserts the properties come back byte-identical, assumptions included.
+
+### What a review of the whole file found
+
+A pass over the whole tool (not the diff) on 6 Nov, with every finding
+checked against the code before it was acted on. Ten held up; each has a
+harness or a reason it does not need one.
+
+- **A refused save had already happened.** While localStorage is refusing
+  (the hub origin is at 3.5 MB of its 5 MB), `loadProps()` handed out the
+  live in-memory array. Every caller mutates what it gets and then asks
+  `putProps` to keep it; when that refused, the caller dropped the change
+  &mdash; but it was already made, so the register showed as done a thing
+  stored nowhere. `loadProps` now hands out a copy while in that state.
+- **The worklist went to the sheet from every edit.** `syncCheckTab()` runs
+  after every save and city switch, and it sent the register to the sheet
+  &mdash; from tabs with no sheet in view, reading the whole worklist back
+  to fill a line nobody could see, and rewriting the sheet's tab once a
+  minute. It now sends only while the Sold check tab is showing; elsewhere
+  it remembers there is something to send, and the next visit sends at
+  once regardless of the throttle.
+- **Every pasted-in property said "Added by hand".** `addOrigin()` read
+  `window.addPending`, but `addPending` is a `var` inside the page's own
+  closure, so the check was always undefined and the provenance line on
+  every queued add was wrong. One word.
+- **The wrap rules were off by one column.** The Purchase column went in
+  ahead of the "What was found" sentence on 5 Nov, and the by-number rules
+  that let the sentence wrap landed on the price instead. At narrow widths
+  the price split from its date and the sentence pushed the table out of
+  its panel &mdash; the overflow the rule was written to prevent.
+  `render/wrapcols.html` reads the computed wrap of every column in both
+  tables.
+- **The retired match table came back.** `chkLoadSheet` sets `chk`, and
+  three places (city switch, applying findings, sending for review) still
+  called `chkRun()` when `chk` was set &mdash; which drew the old tally
+  table into the tab under the findings list that replaced it. A
+  `redrawCheck()` now tells the two flows apart: the paste-import one keeps
+  its table, the sheet one redraws the findings.
+- **"Not now" said there was nothing to do.** It threw the findings away,
+  and a spent scan counts zero, so the tab read "No sale in the sheets the
+  register does not already have" for the rest of the day with two sales
+  nobody had dealt with. Not now is now a snooze for the page's lifetime:
+  the list closes, coming back to the tab does not re-ask, but the badge
+  keeps counting and a fresh load lists them again. And when the badge is
+  corrected from the live list, the note no longer carries the scan's
+  per-sheet breakdown ("1 sale &mdash; 2 in ADL &ndash; Sold").
+  `render/notnow.html`; `render/autoopen.html` still holds the other half.
+- **"Saved" wrote over "saved in this browser only".** `pushShared` says
+  so when you are signed out, and then the caller's green "Saved" line
+  replaced it. `savedNote()` lets the warning win.
+- Three pieces of dead weight: `queueFound()` (no caller, and a comment
+  saying the opposite of what happens), `chkLoadSheet(quiet, onDone)` (two
+  parameters nobody passed and a paragraph about a mode that did not
+  exist), and fifteen unreachable lines behind `return rows` in
+  `histInCity`. Gone.
+
+Two of the review's findings were not taken: nothing in it was wrong, but
+the checks on `localStorage.setItem` and on duplicate element ids were
+false alarms &mdash; the writes are inside `try` blocks the static pass
+did not see, and the "duplicate" ids are the empty state and the string
+that rebuilds it, never both in the DOM at once.
+
 ### Re-porting drops their work, every time
 
 `tools/irr-calculator.html` here is a whole-file regeneration of the
@@ -1051,6 +1141,18 @@ do, but it means the script needs the same edit the tool got.
   CSV export of the register — that only ever holds the visible, filtered rows.
 
 ## Changelog
+
+- 2026-11-06 &mdash; **A review of the whole file.** Seven fixes and three
+  removals: a refused save that had already happened in memory, the
+  worklist sent to the sheet from every edit, every pasted-in property
+  marked "Added by hand", wrap rules a column out, the retired match table
+  drawn back over the findings, "Not now" claiming nothing to do, and
+  "Saved" writing over the signed-out warning.
+
+- 2026-11-06 &mdash; **The register export carries vs Market and vs Council.**
+  Both views ride along as raw figures, derived the same way the register
+  draws them. Export everything already carried everything they are made
+  from; a round-trip harness now proves it.
 
 - 2026-11-06 &mdash; **A change has a name against it again.** The port removes
   the tool's own sign-in dialog, which was the only writer of
