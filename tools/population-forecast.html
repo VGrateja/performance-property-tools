@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Population Forecast — Performance Property</title>
+<link rel="icon" href="../assets/logo.png" type="image/png"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
+<!-- OS chrome: mode/period/shade + legacy data-theme bridge (replaces theme.js) -->
+<script src="../shared/os-chrome.js?v=ea374003"></script>
+<link rel="stylesheet" href="../shared/os-theme.css?v=bcea6d52"/>
+<style>
+  /* PERFORMANCE OS SKIN — same tokens and components as vr-projection.html
+     (Vault section accent). Dark = default; light via the bridge's data-theme.
+     Brand palette (Nov 2026): Teal #00A0B4 is the accent and the forecast
+     bars, Yellow #FFA91F the infrastructure workforce, Red for a shrinking
+     year, Dark Teal / Dark Gray for text in the light theme. The historical
+     average is a neutral dashed line. */
+  *,*::before,*::after{ box-sizing:border-box; }
+  :root{
+    --bg:transparent; --ink:#F5F3FA; --muted:#9A94B0; --line:rgba(255,255,255,.10);
+    --panel:rgba(255,255,255,.04); --panel2:rgba(255,255,255,.06);
+    --cyan:#7E8CF1; --violet:#47DAFF; --green:#71B357; --amber:#FFA91F; --red:#F17E93;
+    --teal:#00A0B4; --accent:var(--teal); --wf:#FFA91F; --cur:rgba(245,243,250,.38); --pop:#1b1830; --halo:#17152a;
+  }
+  html,body{ margin:0; padding:0; }
+  body{
+    background:transparent;   /* the OS day-cycle wallpaper (.wall.scrim) owns the background */
+    color:var(--ink); min-height:100vh; font-family:'Montserrat','Segoe UI',system-ui,-apple-system,sans-serif; -webkit-font-smoothing:antialiased;
+  }
+
+  .wrap{ max-width:1260px; margin:0 auto; padding:64px 22px 70px; }
+  .eyebrow{ font-size:.7rem; font-weight:800; letter-spacing:.22em; text-transform:uppercase; color:var(--accent); }
+  h1{ font-size:1.9rem; font-weight:800; margin:8px 0 4px; letter-spacing:-.02em;
+    background:linear-gradient(90deg,#fff,#C8CEF9 60%,#7E8CF1); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .lede{ color:var(--muted); font-size:.92rem; max-width:820px; }
+
+  .controls{ display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin:20px 0 18px; }
+  .ctl{ display:flex; flex-direction:column; gap:5px; font-size:.7rem; font-weight:700; color:var(--muted); letter-spacing:.04em; text-transform:uppercase; }
+  select#pfRegion{ padding:10px 14px; border:1px solid var(--line); border-radius:10px; background:var(--pop); color:var(--ink); font-family:inherit; font-weight:600; font-size:.9rem; min-width:280px; }
+  select#pfRegion option, select#pfRegion optgroup{ background:var(--pop); color:var(--ink); }
+  .seg{ display:inline-flex; border:1px solid var(--line); border-radius:10px; overflow:hidden; height:41px; }
+  .seg button{ appearance:none; border:0; background:var(--pop); color:var(--muted); font-family:inherit; font-weight:700; font-size:.85rem; padding:0 18px; cursor:pointer; letter-spacing:.01em; transition:background .12s,color .12s; }
+  .seg button + button{ border-left:1px solid var(--line); }
+  .seg button.on{ background:var(--accent); color:#fff; }
+  .seg button:disabled{ opacity:.4; cursor:not-allowed; }
+  .seg.sm{ height:34px; } .seg.sm button{ font-size:.76rem; padding:0 14px; }
+  button:focus-visible, select:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+  .stack{ display:flex; flex-direction:column; gap:18px; }
+  .card{ background:linear-gradient(160deg, rgba(255,255,255,.05), rgba(255,255,255,.015)); border:1px solid var(--line); border-radius:18px; padding:20px 22px; backdrop-filter:blur(10px); }
+  .card h2{ font-size:.72rem; font-weight:800; letter-spacing:.1em; text-transform:uppercase; color:var(--accent); margin:0 0 16px; }
+  .cardHead{ display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .cardHead h2{ margin:0; }
+
+  .heroTop{ display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap; }
+  .region-name{ font-size:1.4rem; font-weight:800; }
+  .region-sub{ font-size:.76rem; color:var(--muted); margin-top:2px; }
+  .region-sub b{ color:var(--ink); }
+  .chips{ display:flex; gap:10px; flex-wrap:wrap; }
+  .dirchip{ text-align:center; padding:8px 15px; border-radius:12px; border:1px solid var(--line); background:var(--panel2); }
+  .dirchip .t{ font-size:1.05rem; font-weight:800; font-variant-numeric:tabular-nums; }
+  .dirchip .l{ font-size:.6rem; color:var(--muted); letter-spacing:.1em; text-transform:uppercase; }
+
+  .legend{ display:flex; flex-wrap:wrap; gap:16px; font-size:.7rem; font-weight:700; color:var(--muted); margin:18px 0 6px; }
+  .legend span{ display:inline-flex; align-items:center; gap:7px; }
+  .legend i{ width:11px; height:11px; border-radius:3px; display:inline-block; }
+  .sw-cur{ background:var(--cur); } .sw-fc{ background:var(--teal); } .sw-wf{ background:var(--wf); } .sw-neg{ background:var(--red); }
+
+  .chart{ position:relative; }
+  .chart svg{ display:block; width:100%; }
+  .chart svg text{ fill:var(--muted); font-family:inherit; font-size:11px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .chart svg text.v{ fill:var(--ink); font-weight:800; font-size:12px; }
+  .chart svg text.w{ fill:var(--wf); font-weight:800; }
+  .chart svg text.wi{ fill:#0d0b1a; font-weight:800; }
+  .chart svg text.avg{ fill:var(--ink); font-weight:800; paint-order:stroke; stroke:var(--halo); stroke-width:4px; stroke-linejoin:round; }
+  .sw-avg{ width:16px !important; height:0 !important; border-top:2px dashed var(--muted); border-radius:0 !important; }
+  [data-theme="light"] .chart svg text.wi{ fill:#fff; }
+  .tip{ position:absolute; pointer-events:none; background:#1b1830; border:1px solid var(--line); border-radius:10px; padding:9px 12px; font-size:.74rem; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; z-index:5; box-shadow:0 10px 30px -12px rgba(0,0,0,.6); }
+  .tip .t{ color:var(--muted); font-size:.64rem; letter-spacing:.08em; text-transform:uppercase; font-weight:800; margin-bottom:4px; }
+  .tip .wf{ color:var(--wf); }
+  .tip .tot{ margin-top:4px; padding-top:4px; border-top:1px solid var(--line); font-weight:800; }
+
+  /* year-by-year chain table (same pattern as vr-projection's .vpt) */
+  .vpt-wrap{ overflow-x:auto; }
+  table.vpt{ width:100%; border-collapse:collapse; min-width:640px; }
+  .vpt th{ text-align:left; font-size:.62rem; color:var(--muted); letter-spacing:.1em; text-transform:uppercase; font-weight:800; padding:8px 12px; border-bottom:1px solid var(--line); }
+  .vpt td{ padding:13px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .vpt tr:last-child td{ border-bottom:0; }
+  .vpt tr.r0 td{ background:color-mix(in srgb, var(--wf) 7%, transparent); }
+  .vpt td b{ display:block; font-size:1.18rem; font-weight:800; font-variant-numeric:tabular-nums; line-height:1.15; }
+  .vpt td span{ display:block; font-size:.68rem; color:var(--muted); margin-top:3px; }
+  .vpt td.lbl{ white-space:nowrap; }
+  .vpt td.lbl b{ display:inline; font-size:.92rem; }
+  .vpt td.lbl span{ margin-left:18px; margin-top:1px; }
+  .vpt .dot{ width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:8px; vertical-align:baseline; }
+  .vpt .dot.d0{ background:var(--ink); box-shadow:inset 0 0 0 1.5px var(--muted); } .vpt .dot.d1{ background:var(--teal); }
+  .vpt .mig span{ display:block; font-size:.66rem; color:var(--muted); font-weight:700; font-variant-numeric:tabular-nums; margin-top:1px; }
+  .vpt .mig span.neg{ color:var(--red); } .vpt .mig span.wf{ color:var(--wf); }
+  .vpt td.add b.neg{ color:var(--red); }
+
+  /* all-markets overview (same pattern as vr-projection's .ovrow) */
+  .ovgrid{ display:grid; grid-template-columns:1fr 1fr; gap:1px 28px; }
+  @media (max-width:880px){ .ovgrid{ grid-template-columns:1fr; } }
+  .ovrow{ display:flex; align-items:center; gap:10px; padding:5px 6px; cursor:pointer; border-radius:8px; border:0; background:none; color:inherit; font:inherit; text-align:left; width:100%; }
+  .ovrow:hover{ background:var(--panel); }
+  .ovrow.sel{ background:color-mix(in srgb,var(--accent) 12%, transparent); }
+  .ovrow .nm{ width:150px; font-size:.8rem; font-weight:600; flex:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ovrow .nm.buy{ font-weight:800; }
+  .ovrow .tk{ flex:1; height:16px; border-radius:5px; background:rgba(255,255,255,.05); position:relative; overflow:hidden; }
+  .ovrow .b2{ position:absolute; top:0; bottom:0; border-radius:4px; }
+  .ovrow .pc{ width:70px; text-align:right; font-size:.76rem; font-weight:700; font-variant-numeric:tabular-nums; flex:none; }
+  .ovnote{ color:var(--muted); font-size:.7rem; margin-top:12px; }
+
+  /* method & assumptions */
+  .mnote{ border:1px solid var(--line); background:var(--panel); border-radius:12px; padding:12px 16px; font-size:.76rem; line-height:1.6; color:var(--muted); }
+  .mnote + .mnote{ margin-top:9px; }
+  .mnote b{ color:var(--ink); }
+  .mnote.warn{ border-color:var(--amber); background:rgba(255,169,31,.08); }
+  .mnote.warn b{ color:var(--amber); }
+
+  .note{ color:var(--muted); font-size:.74rem; margin-top:8px; line-height:1.5; }
+  .note b{ color:var(--ink); }
+  .srcnote{ margin-top:18px; padding:13px 16px; border:1px solid var(--amber); border-radius:12px; background:rgba(255,169,31,.08); color:var(--ink); font-size:.79rem; line-height:1.65; }
+  .srcnote b.h{ display:block; margin-bottom:5px; font-size:.72rem; letter-spacing:.06em; text-transform:uppercase; color:var(--amber); }
+  .srcnote .ok{ color:var(--green); font-weight:800; }
+  .srcnote .wb{ color:var(--amber); font-weight:800; }
+  .msg{ text-align:center; color:var(--muted); padding:70px 20px; font-size:.95rem; }
+
+  /* ── LIGHT THEME (follows the OS bridge's data-theme attribute) ── */
+  [data-theme="light"]{
+    --bg:transparent; --ink:#171B24; --muted:#63666A; --line:rgba(23,27,36,.12);
+    --panel:rgba(31,40,63,.04); --panel2:rgba(31,40,63,.07);
+    --cyan:#233AE7; --violet:#2478BC; --red:#E72347; --cur:rgba(28,24,38,.28); --pop:#ffffff; --halo:#ffffff;
+  }
+  [data-theme="light"] h1{ background:linear-gradient(90deg,#171B24,#0B6F7C 55%,#00A0B4); -webkit-background-clip:text; background-clip:text; }
+  [data-theme="light"] .card{ background:#ffffff; box-shadow:0 10px 30px -18px rgba(31,40,63,.28); }
+  [data-theme="light"] .dirchip{ background:#ffffff; }
+  [data-theme="light"] .seg button{ color:var(--ink); }
+  [data-theme="light"] .seg button.on{ color:#fff; }
+  [data-theme="light"] .tip{ background:#ffffff; box-shadow:0 10px 30px -14px rgba(31,40,63,.35); }
+  [data-theme="light"] .ovrow .tk{ background:rgba(31,40,63,.06); }
+</style>
+</head>
+<body>
+<div class="wall scrim" aria-hidden="true"></div>
+<script>
+  PP_OS.initChrome({ name: 'Population Forecast', section: 'vault', backHref: '../' });
+</script>
+
+<div class="wrap">
+  <div class="eyebrow">Performance Property · Population</div>
+  <h1>Population Forecast</h1>
+  <p class="lede">How many people each market is expected to add each year to 2028-29: births minus deaths, moves within Australia and overseas migration, plus residents from major projects in the eight markets that have them. Built on the same inputs as the Vacancy Rate Projection, so the two agree.</p>
+
+  <div class="controls" id="pfControls" style="display:none">
+    <label class="ctl">Region<select id="pfRegion"></select></label>
+    <label class="ctl">View<div class="seg" id="pfView"><button type="button" data-view="pop" class="on">Population</button><button type="button" data-view="added">Added each year</button></div></label>
+    <label class="ctl">Infrastructure WF<div class="seg" id="pfWf"><button type="button" data-wf="on" class="on">Included</button><button type="button" data-wf="off">Excluded</button></div></label>
+  </div>
+  <div class="note" id="pfStamp"></div>
+
+  <div id="pfBody"><div class="msg" id="pfMsg">Loading…</div></div>
+
+  <div class="srcnote" id="pfSrcNote" style="display:none">
+    <b class="h">Data sources</b>
+    <span class="ok">✅ From Forge</span>, the same stored rows as the Vacancy Rate Projection (<code>rdp_vr_forecast</code>): population at 30 June 2025 (ABS, capitals on GCCSA, regional markets on their LGA) · natural increase and internal migration (V1 two-year averages) · each market's FY2024-25 share of national overseas migration · the national overseas migration forecast.<br/>
+    <span class="wb">✍️ Manual input</span> — the <b>infrastructure workforce</b> modifier only (<code>public.vr_workforce</code>, behind auth, reviewed quarterly).
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3" integrity="sha384-l8ah+VgaWtk1mvOe9VC+OirC6qHFF4yH7l7mKRidV9MSti3E9F463bMp6ZVN4kuC" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="../shared/supabase-client.js?v=afefc0c4"></script>
+<script src="../shared/tool-registry.js?v=54b94095"></script>
+<script src="../shared/auth.js?v=7dce203e"></script>
+<script src="../shared/auth-gate.js?v=003cdc01"></script>
+<script src="../shared/pp-telemetry.js?v=a1e39d4f"></script>
+<script>
+/* =============================================================================
+   Population Forecast — four forecast years per market, on the Vacancy Rate
+   Projection's own inputs (no workbook, no numbers in this public repo).
+
+   Every year:  added = NI + IM + OM(year) + WF(year)
+                population(year) = population(previous year) + added
+     NI   payload.demand.v1.ni1      two-year average, held flat (same as the VR tool)
+     IM   payload.demand.v1.imBase1  two-year average before workforce, held flat
+                                     (Melbourne's manual override is already in it)
+     OM   national forecast for the year x payload.demand.inputs.nomShare1
+          (the market's FY2024-25 share; National's share is 1)
+     WF   public.vr_workforce, EACH YEAR'S OWN FIGURE: y1 -> FY2025-26,
+          y2 -> FY2026-27, y3 -> FY2027-28 when that column exists. This is the
+          one deliberate difference from the VR tool, whose V1 method repeats
+          y1 in year 2. Without WF, and in year 1 with WF, the figures equal the
+          VR tool's stored people1 / people2 exactly (checked on load).
+
+   Years: the base is the ABS ERP at 30 June 2025, i.e. FY2024-25. Forecast
+   year 1 is FY2025-26 — the year the 295,000 national overseas migration
+   figure belongs to (Budget Paper 3, Table A.5, years ending 30 June).
+   ============================================================================= */
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const num = v => v == null || !isFinite(v) ? '—' : Math.round(v).toLocaleString('en-AU');
+const signed = v => v == null || !isFinite(v) ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(Math.round(v)).toLocaleString('en-AU');
+const pct1 = v => v == null || !isFinite(v) ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v * 100).toFixed(1) + '%';
+
+const BASE_LABEL = '2024-25';
+const YEARS = ['2025-26', '2026-27', '2027-28', '2028-29'];
+/* National overseas migration from FY2027-28 on, used only when the stored
+   nationalNom has no yr3 / yr4. Public figure: 2026-27 Budget, Budget Paper
+   No. 3, Appendix A, Table A.5 ("FY2027-28 onward 225,000"). */
+const NOM_LATER_YEARS = 225000;
+const BUYING = ['darwin', 'melbourne', 'townsville'];          // current buying regions, shown bold
+const INSIDE = { rockingham: 'Perth', mandurah: 'Perth' };      // modelled markets inside another market
+
+let MARKETS = [], BY = {}, WF_Y3_MISSING = false, CHECK_FAILS = [];
+const state = { slug: 'darwin', view: 'pop', wf: true, filter: 'all' };
+
+function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); load(); } else if (++n > 60){ clearInterval(t); $('#pfMsg').textContent = 'Could not connect.'; } }, 100); }
+
+async function load(){
+  try {
+    const [reg, vr, wfq] = await Promise.all([
+      window.sb.from('rdp_regions').select('slug,name,state,cluster'),
+      window.sb.from('rdp_vr_forecast').select('region_slug,payload,computed_at'),
+      window.sb.from('vr_workforce').select('*'),
+    ]);
+    if (vr.error){ $('#pfMsg').textContent = 'Sign in required to read the research database.'; return; }
+    const regions = Object.fromEntries((reg.data || []).map(r => [r.slug, r]));
+    const wfTable = {};
+    if (!wfq.error) for (const r of (wfq.data || [])) wfTable[r.region_slug] = r;
+    // Actual components for the base year (FY2024-25 = period '2025-01-01', the
+    // June-ending year the VR demand build calls latestYear) — same Forge series.
+    const first = (vr.data || []).find(r => r.payload && r.payload.demand && r.payload.demand.inputs);
+    const latest = (first && first.payload.demand.inputs.latestYear) || 2025;
+    const act = await window.sb.from('rdp_raw_series').select('region_slug,metric,value')
+      .in('metric', ['natural_increase_fy', 'nim_fy', 'nom_fy']).eq('period', `${latest}-01-01`);
+    const actual = {};
+    if (!act.error) for (const r of (act.data || [])) (actual[r.region_slug] = actual[r.region_slug] || {})[{ natural_increase_fy: 'ni', nim_fy: 'im', nom_fy: 'om' }[r.metric]] = +r.value;
+    build(vr.data || [], regions, wfTable, actual);
+    // Historical average yearly increase, computed exactly as the B/S slides do
+    const hist = await fetchHistoricalAverages();
+    for (const m of MARKETS) m.hist = hist[m.slug] || null;
+    if (!MARKETS.length){ $('#pfMsg').textContent = 'No forecast rows yet.'; return; }
+    stamp(vr.data);
+    initUI();
+  } catch (e){ $('#pfMsg').textContent = 'Error: ' + e.message; }
+}
+
+const n0 = v => (v == null || !isFinite(+v)) ? null : +v;
+
+/* Annual population history for one Forge metric, paged past the 1,000-row cap. */
+async function fetchSeries(metric){
+  const by = {};
+  try {
+    for (let from = 0; from < 20000; from += 1000){
+      const r = await window.sb.from('rdp_raw_series').select('region_slug,period,value')
+        .eq('metric', metric).order('region_slug').order('period').range(from, from + 999);
+      if (r.error || !r.data) break;
+      for (const x of r.data) (by[x.region_slug] = by[x.region_slug] || []).push(x);
+      if (r.data.length < 1000) break;
+    }
+  } catch (e) {}
+  return by;
+}
+
+/* Historical average yearly increase — the SAME figure the Buying/Selling
+   slides draw on their Forecasted Population (summary) chart
+   (_renderPopForecastSummary in buying-selling-slides.html):
+     series   population_gccsa for capitals (1980 on), else population (2001 on)
+     average  mean of the year-on-year changes across the full series
+     label    first change's FY to the latest FY, e.g. "1980-81 to 2024-25" */
+async function fetchHistoricalAverages(){
+  const [pop, gccsa] = await Promise.all([fetchSeries('population'), fetchSeries('population_gccsa')]);
+  const fy = y => (y - 1) + '-' + String(y).slice(-2);
+  const out = {};
+  for (const slug of new Set(Object.keys(pop).concat(Object.keys(gccsa)))){
+    const rows = ((gccsa[slug] && gccsa[slug].length) ? gccsa[slug] : (pop[slug] || [])).slice()
+      .sort((a, b) => a.period < b.period ? -1 : 1);
+    const yrs = rows.map(r => +String(r.period).slice(0, 4)), vals = rows.map(r => +r.value);
+    const diffs = [];
+    for (let i = 1; i < vals.length; i++) if (isFinite(vals[i - 1]) && isFinite(vals[i])) diffs.push(vals[i] - vals[i - 1]);
+    if (!diffs.length) continue;
+    out[slug] = { avg: diffs.reduce((s, v) => s + v, 0) / diffs.length, label: fy(yrs[1]) + ' to ' + fy(yrs[yrs.length - 1]) };
+  }
+  return out;
+}
+
+function build(rows, regions, wfTable, actual){
+  MARKETS = []; BY = {}; CHECK_FAILS = []; WF_Y3_MISSING = false;
+  for (const row of rows){
+    const p = row.payload, d = p && p.demand, v1 = d && d.v1, inp = (d && d.inputs) || {};
+    if (!p || !v1 || n0(p.population) == null) continue;
+    const slug = row.region_slug, reg = regions[slug] || {};
+    const nn = d.nationalNom || d.treasuryNom || {};
+    const nomNat = [n0(nn.yr1), n0(nn.yr2), n0(nn.yr3) ?? NOM_LATER_YEARS, n0(nn.yr4) ?? NOM_LATER_YEARS];
+    const share = n0(inp.nomShare1) ?? (n0(nn.yr1) ? n0(v1.om1) / n0(nn.yr1) : null);
+    if (share == null || nomNat[0] == null || nomNat[1] == null) continue;
+    // workforce: the manual table first; the per-region payload copy (V2 carries the real year 2) as fallback
+    const t = wfTable[slug], v2 = d.v2 || {};
+    let wf = null;
+    if (t) wf = [n0(t.y1) || 0, n0(t.y2) || 0, n0(t.y3), n0(t.y4)];
+    else if (n0(v2.wf1)) wf = [n0(v2.wf1), n0(v2.wf2) || 0, null, null];
+    if (wf && wf[2] == null) WF_Y3_MISSING = true;
+    const m = {
+      slug, name: slug === 'australia' ? 'Australia' : (reg.name || slug),
+      state: reg.state || '', capital: reg.cluster === 'capital' && slug !== 'australia',
+      pop0: +p.population, ni: n0(v1.ni1) || 0, im: n0(v1.imBase1) || 0, share, nomNat, wf,
+      stored1: n0(v1.people1), stored1NoWf: n0(v1.people1NoWf), stored2NoWf: n0(v1.people2NoWf),
+      actual: null,
+    };
+    const a = (actual || {})[slug];
+    if (a && a.ni != null && a.im != null && a.om != null) m.actual = { ni: a.ni, im: a.im, om: a.om, add: a.ni + a.im + a.om };
+    // self-check against the VR tool's stored figures (year 1 with and without WF, year 2 without)
+    const on = series(m, true), off = series(m, false);
+    const close = (a, b) => a == null || b == null || Math.abs(a - b) < 1;
+    if (!close(on[0].add, m.stored1) || !close(off[0].add, m.stored1NoWf) || !close(off[1].add, m.stored2NoWf)) CHECK_FAILS.push(m.name);
+    MARKETS.push(m); BY[slug] = m;
+  }
+  if (CHECK_FAILS.length) console.warn('[population-forecast] differs from the stored VR demand for:', CHECK_FAILS.join(', '));
+}
+
+/* One market's four forecast years. wfOn=false drops the workforce entirely. */
+function series(m, wfOn){
+  let pop = m.pop0, cumWf = 0;
+  return YEARS.map((label, k) => {
+    const om = m.share * m.nomNat[k];
+    const wf = wfOn && m.wf ? (m.wf[k] || 0) : 0;
+    const add = m.ni + m.im + om + wf;
+    pop += add; cumWf += wf;
+    return { label, ni: m.ni, im: m.im, om, wf, add, pop, cumWf };
+  });
+}
+
+function stamp(rows){
+  const newest = (rows || []).reduce((mx, r) => r.computed_at && (!mx || r.computed_at > mx) ? r.computed_at : mx, null);
+  if (!newest) return;
+  const d = new Date(newest);
+  $('#pfStamp').innerHTML = 'Inputs from the VR forecast computed <b>' + String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + d.getFullYear() + '</b>';
+}
+
+function initUI(){
+  $('#pfControls').style.display = 'flex';
+  $('#pfSrcNote').style.display = 'block';
+  const nat = MARKETS.filter(m => m.slug === 'australia');
+  const states = Array.from(new Set(MARKETS.filter(m => m.slug !== 'australia').map(m => m.state))).sort();
+  const sel = $('#pfRegion');
+  sel.innerHTML = nat.map(m => `<option value="${esc(m.slug)}">${esc(m.name)}</option>`).join('') +
+    states.map(s => `<optgroup label="${esc(s)}">` + MARKETS.filter(m => m.state === s && m.slug !== 'australia')
+      .sort((a, b) => (b.capital - a.capital) || a.name.localeCompare(b.name))
+      .map(m => `<option value="${esc(m.slug)}">${esc(m.name)}</option>`).join('') + '</optgroup>').join('');
+  if (!BY[state.slug]) state.slug = MARKETS[0].slug;
+  sel.value = state.slug;
+  sel.onchange = () => { state.slug = sel.value; paint(); };
+  segment('#pfView', 'view', v => { state.view = v; paint(); });
+  segment('#pfWf', 'wf', v => { state.wf = v === 'on'; paint(); });
+  paint();
+  window.addEventListener('resize', () => { clearTimeout(window._pfR); window._pfR = setTimeout(paint, 120); });
+}
+
+function segment(sel, key, fn){
+  const seg = $(sel);
+  seg.querySelectorAll('button').forEach(b => b.onclick = () => {
+    if (b.disabled) return;
+    seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    fn(b.dataset[key]);
+  });
+}
+
+function paint(){
+  const m = BY[state.slug];
+  if (!m) return;
+  // the WF toggle only applies where there is a workforce entry
+  const wfBtns = document.querySelectorAll('#pfWf button');
+  wfBtns.forEach(b => { b.disabled = !m.wf; });
+  const wfOn = state.wf && !!m.wf;
+  const ys = series(m, wfOn);
+  const last = ys[ys.length - 1];
+  const change = last.pop - m.pop0, growth = change / m.pop0;
+  const cagr = Math.pow(last.pop / m.pop0, 1 / ys.length) - 1;
+
+  const sub = [m.state, m.slug === 'australia' ? 'National' : (m.capital ? 'Capital city' : 'Regional'), 'pop <b>' + num(m.pop0) + '</b> at June 2025']
+    .filter(Boolean).join(' · ') + (INSIDE[m.slug] ? ` · inside ${INSIDE[m.slug]}, already counted there` : '');
+
+  $('#pfBody').innerHTML = `
+  <div class="stack">
+    <div class="card">
+      <div class="heroTop">
+        <div><div class="region-name">${esc(m.name)}</div><div class="region-sub">${sub}</div></div>
+        <div class="chips">
+          <div class="dirchip"><div class="t">${signed(change)}</div><div class="l">people to 2028-29</div></div>
+          <div class="dirchip"><div class="t">${pct1(growth)}</div><div class="l">${pct1(cagr)} a year</div></div>
+          ${wfOn && last.cumWf > 0 ? `<div class="dirchip"><div class="t" style="color:var(--wf)">+${num(last.cumWf)}</div><div class="l">from major projects</div></div>` : ''}
+        </div>
+      </div>
+      <div class="legend">
+        ${state.view === 'pop' ? '<span><i class="sw-cur"></i>Current, ' + BASE_LABEL + '</span>' : (m.actual ? '<span><i class="sw-cur"></i>Actual, ' + BASE_LABEL + '</span>' : '')}
+        <span><i class="sw-fc"></i>Births, deaths and migration</span>
+        ${wfOn ? '<span><i class="sw-wf"></i>Major-project residents (WF)</span>' : ''}
+        ${state.view === 'added' && ys.some(y => y.add - y.wf < 0) ? '<span><i class="sw-neg"></i>Shrinking year</span>' : ''}
+        ${state.view === 'added' && m.hist ? `<span><i class="sw-avg"></i>Historical average, ${m.hist.label}</span>` : ''}
+      </div>
+      <div class="chart" id="pfChart"></div>
+    </div>
+
+    <div class="card">
+      <h2>Year by year</h2>
+      <div class="vpt-wrap"><table class="vpt">
+        <thead><tr><th>Year</th><th>Population at 30 June</th><th>Added in the year</th><th>Change on ${BASE_LABEL}</th></tr></thead>
+        <tbody>
+          <tr class="r0"><td class="lbl"><i class="dot d0"></i><b>Current</b><span>FY${BASE_LABEL}</span></td><td><b>${num(m.pop0)}</b><span>ABS ERP</span></td>
+            <td class="add">${m.actual ? `<b class="${m.actual.add < 0 ? 'neg' : ''}">${signed(m.actual.add)}</b>
+              <div class="mig"><span>NI ${signed(m.actual.ni)}</span><span class="${m.actual.im < 0 ? 'neg' : ''}">IM ${signed(m.actual.im)}</span><span>OM ${signed(m.actual.om)}</span><span>actual (ABS)</span></div>` : '<span>—</span>'}</td><td><span>—</span></td></tr>
+          ${ys.map(y => `
+          <tr><td class="lbl"><i class="dot d1"></i><b>${y.label}</b><span>forecast</span></td>
+            <td><b>${num(y.pop)}</b></td>
+            <td class="add"><b class="${y.add < 0 ? 'neg' : ''}">${signed(y.add)}</b><span>${pct1(y.add / (y.pop - y.add))} on the year before</span>
+              <div class="mig"><span>NI ${signed(y.ni)}</span><span class="${y.im < 0 ? 'neg' : ''}">IM ${signed(y.im)}</span><span>OM ${signed(y.om)}</span>${y.wf ? `<span class="wf">WF +${num(y.wf)}</span>` : ''}</div></td>
+            <td><b>${signed(y.pop - m.pop0)}</b><span>${pct1(y.pop / m.pop0 - 1)}</span></td></tr>`).join('')}
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <div class="cardHead"><h2>All markets · growth to 2028-29</h2>
+        <div class="seg sm" id="pfFilter"><button type="button" data-f="all">All</button><button type="button" data-f="cap">Capitals</button><button type="button" data-f="reg">Regional</button></div></div>
+      <div class="ovgrid" id="pfOverview"></div>
+      <div class="ovnote">Bold = current buying regions. Click a market to open it. Major-project residents ${state.wf ? 'included' : 'excluded'}, following the toggle above.</div>
+    </div>
+
+    ${methodNotes()}
+  </div>`;
+
+  drawChart($('#pfChart'), m, ys, wfOn);
+  drawOverview();
+  const fb = $('#pfFilter');
+  fb.querySelectorAll('button').forEach(b => {
+    b.classList.toggle('on', b.dataset.f === state.filter);
+    b.onclick = () => { state.filter = b.dataset.f; drawOverview(); fb.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); };
+  });
+}
+
+function drawOverview(){
+  const list = MARKETS.filter(m => m.slug !== 'australia' && (state.filter === 'all' || (state.filter === 'cap') === m.capital))
+    .map(m => { const ys = series(m, state.wf); const g = ys[ys.length - 1].pop / m.pop0 - 1; return { m, g }; })
+    .sort((a, b) => b.g - a.g);
+  const lo = Math.min(0, ...list.map(r => r.g)), hi = Math.max(0.0001, ...list.map(r => r.g));
+  const span = hi - lo, zero = (-lo / span) * 100;
+  $('#pfOverview').innerHTML = list.map(({ m, g }) => {
+    const left = g < 0 ? zero - (-g / span) * 100 : zero, width = Math.max(0.6, Math.abs(g) / span * 100);
+    return `<button type="button" class="ovrow${m.slug === state.slug ? ' sel' : ''}" data-slug="${esc(m.slug)}">
+      <span class="nm${BUYING.includes(m.slug) ? ' buy' : ''}">${esc(m.name)}</span>
+      <span class="tk"><span class="b2" style="left:${left}%;width:${width}%;background:${g < 0 ? 'var(--red)' : 'var(--teal)'}"></span></span>
+      <span class="pc">${pct1(g)}</span></button>`;
+  }).join('');
+  $('#pfOverview').querySelectorAll('.ovrow').forEach(b => b.onclick = () => {
+    state.slug = b.dataset.slug; $('#pfRegion').value = state.slug; paint();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
+/* ── chart: plain SVG, no library ─────────────────────────────────────────── */
+function drawChart(el, m, ys, wfOn){
+  const W = Math.max(300, el.clientWidth || 700), H = 300, top = 44, bottom = 26;
+  let bars;
+  if (state.view === 'pop'){
+    bars = [{ label: BASE_LABEL, base: m.pop0, wf: 0, total: m.pop0, cur: true }]
+      .concat(ys.map(y => ({ label: y.label, base: y.pop - y.cumWf, wf: y.cumWf, total: y.pop, y })));
+  } else {
+    bars = (m.actual ? [{ label: BASE_LABEL, base: m.actual.add, wf: 0, total: m.actual.add, cur: true, y: m.actual }] : [])
+      .concat(ys.map(y => ({ label: y.label, base: y.add - y.wf, wf: y.wf, total: y.add, y })));
+  }
+  const avg = state.view === 'added' && m.hist ? m.hist.avg : null;
+  const lo = Math.min(0, ...bars.map(b => Math.min(b.base, b.total)), avg == null ? 0 : avg);
+  const hi = Math.max(1, ...bars.map(b => Math.max(b.base, b.total)), avg == null ? 0 : avg);
+  const plotBottom = H - bottom - (lo < 0 ? 18 : 0);
+  const Y = v => plotBottom - (v - lo) / (hi - lo) * (plotBottom - top);
+  const n = bars.length, step = W / n, bw = Math.min(96, step * 0.62);
+  const cx = i => step * i + step / 2;
+  const NS = 'http://www.w3.org/2000/svg';
+  const mk = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+  const svg = mk('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', 'aria-label': `${m.name}: ${state.view === 'pop' ? 'population by year' : 'people added each year'}` });
+  svg.append(mk('line', { x1: 0, x2: W, y1: Y(0), y2: Y(0), stroke: 'var(--line)', 'stroke-width': 1.5 }));
+  const fmtTop = v => state.view === 'pop' ? (W < 520 ? (v / 1e6 >= 1 ? (v / 1e6).toFixed(2) + 'M' : Math.round(v / 1e3) + 'k') : num(v)) : signed(v);
+  /* One bar = one block: segments sit flush, and only the outer end is rounded
+     (top for growth, bottom for a shrinking year). */
+  const R = 5;
+  const seg = (x, yTop, h, roundTop, roundBottom) => {
+    const r = Math.min(R, h / 2, bw / 2), y1 = yTop + h;
+    const rt = roundTop ? r : 0, rb = roundBottom ? r : 0;
+    return `M${x},${yTop + rt}` + (rt ? `Q${x},${yTop} ${x + rt},${yTop}` : '') + `H${x + bw - rt}` + (rt ? `Q${x + bw},${yTop} ${x + bw},${yTop + rt}` : '') +
+      `V${y1 - rb}` + (rb ? `Q${x + bw},${y1} ${x + bw - rb},${y1}` : '') + `H${x + rb}` + (rb ? `Q${x},${y1} ${x},${y1 - rb}` : '') + 'Z';
+  };
+  bars.forEach((b, i) => {
+    const x = cx(i) - bw / 2, y0 = Y(0);
+    const hasWf = b.wf > 0;
+    let topY;
+    if (b.base >= 0){
+      const yb = Y(b.base), h = Math.max(1, y0 - yb);
+      svg.append(mk('path', { d: seg(x, y0 - h, h, !hasWf, false), fill: b.cur ? 'var(--cur)' : 'var(--teal)' }));
+      topY = y0 - h;
+    } else {
+      const h = Math.max(1, Y(b.base) - y0);
+      svg.append(mk('path', { d: seg(x, y0, h, false, true), fill: b.cur ? 'var(--cur)' : 'var(--red)' }));
+      topY = y0;
+    }
+    if (hasWf){
+      const yStart = b.base >= 0 ? topY : y0;
+      // at least 6px so a small workforce still reads against a large population bar
+      const h = Math.max(6, yStart - Y((b.base >= 0 ? b.base : 0) + b.wf));
+      svg.append(mk('path', { d: seg(x, yStart - h, h, true, false), fill: 'var(--wf)' }));
+      topY = yStart - h;
+      // WF figure: inside its own segment when there's room, otherwise beside the bar
+      // (on the right, or on the left for a bar too close to the right edge)
+      const lbl = `+${num(b.wf)} WF`, room = x + bw + 6 + lbl.length * 7 <= W;
+      if (h >= 20) svg.append(mk('text', { class: 'wi', x: cx(i), y: topY + h / 2 + 4, 'text-anchor': 'middle' }, `+${num(b.wf)}`));
+      else svg.append(mk('text', { class: 'w', x: room ? x + bw + 6 : x - 6, y: topY + h / 2 + 4, 'text-anchor': room ? 'start' : 'end' }, lbl));
+    }
+    if (b.total >= 0) svg.append(mk('text', { class: 'v', x: cx(i), y: topY - 7, 'text-anchor': 'middle' }, fmtTop(b.total)));
+    else svg.append(mk('text', { class: 'v', x: cx(i), y: Y(Math.min(b.base, b.total)) + 15, 'text-anchor': 'middle' }, fmtTop(b.total)));
+    svg.append(mk('text', { x: cx(i), y: H - 7, 'text-anchor': 'middle' }, b.label));
+    const hit = mk('rect', { x: step * i, width: step, y: 0, height: H, fill: 'transparent' });
+    hit.addEventListener('pointerenter', ev => showTip(el, ev, m, b));
+    hit.addEventListener('pointermove', ev => showTip(el, ev, m, b));
+    hit.addEventListener('pointerleave', () => { const t = el.querySelector('.tip'); if (t) t.hidden = true; });
+    svg.append(hit);
+  });
+  // long-term average yearly increase, drawn over the bars as a dashed reference line
+  if (avg != null){
+    const ya = Y(avg);
+    svg.append(mk('line', { x1: 0, x2: W, y1: ya, y2: ya, stroke: 'var(--muted)', 'stroke-width': 2, 'stroke-dasharray': '6 5', 'pointer-events': 'none' }));
+    svg.append(mk('text', { class: 'avg', x: W - 2, y: ya - 7, 'text-anchor': 'end', 'pointer-events': 'none' },
+      `Historical average ${signed(avg)} a year`));
+  }
+  el.replaceChildren(svg);
+  const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; el.append(tip);
+}
+
+function showTip(el, ev, m, b){
+  const tip = el.querySelector('.tip');
+  let html = `<div class="t">${esc(m.name)} · ${esc(b.label)}${b.cur ? (state.view === 'added' ? ' (actual)' : ' (current)') : ''}</div>`;
+  if (b.cur && state.view === 'added'){
+    const a = b.y;
+    html += `<div>Births minus deaths: ${signed(a.ni)}</div><div>Moves within Australia: ${signed(a.im)}</div><div>Overseas migration: ${signed(a.om)}</div>` +
+      `<div class="tot">Added in the year: ${signed(a.add)}</div>`;
+  }
+  else if (b.cur) html += `<div>${num(b.total)}</div>`;
+  else if (state.view === 'pop'){
+    html += `<div>Without major projects: ${num(b.base)}</div>` + (b.wf ? `<div class="wf">Major-project residents: +${num(b.wf)}</div>` : '') +
+      `<div class="tot">Population: ${num(b.total)} (${signed(b.total - m.pop0)} on ${BASE_LABEL})</div>`;
+  } else {
+    const y = b.y;
+    html += `<div>Births minus deaths: ${signed(y.ni)}</div><div>Moves within Australia: ${signed(y.im)}</div><div>Overseas migration: ${signed(y.om)}</div>` +
+      (y.wf ? `<div class="wf">Major projects (WF): +${num(y.wf)}</div>` : '') + `<div class="tot">Added in the year: ${signed(y.add)}</div>`;
+  }
+  tip.innerHTML = html; tip.hidden = false;
+  const box = el.getBoundingClientRect();
+  tip.style.left = Math.max(0, Math.min(ev.clientX - box.left + 12, el.clientWidth - tip.offsetWidth)) + 'px';
+  tip.style.top = (ev.clientY - box.top + 14) + 'px';
+}
+
+function methodNotes(){
+  const nat = MARKETS.find(m => m.slug === 'australia') || MARKETS[0];
+  const nom = nat.nomNat.map((v, k) => `${YEARS[k]} ${num(v)}`).join(' · ');
+  return `
+    <div class="card">
+      <h2>Method &amp; assumptions</h2>
+      <div class="mnote"><b>Each year</b> adds natural increase + internal migration + overseas migration + the infrastructure workforce, on top of the population at 30 June 2025 (FY${BASE_LABEL}). Forecast year 1 is FY2025-26.</div>
+      <div class="mnote"><b>Natural increase and internal migration</b> are the Vacancy Rate Projection's two-year averages (V1), held flat in every year. Melbourne carries that tool's manual internal-migration override.</div>
+      <div class="mnote"><b>Overseas migration</b> is the national forecast for each year multiplied by the market's FY2024-25 share of national overseas migration: ${nom}. The shares are of the national total, so the markets don't add up to it.</div>
+      <div class="mnote"><b>Infrastructure workforce</b> uses each year's own figure from the manual workforce table. This is the one difference from the Vacancy Rate Projection, which repeats the year-1 figure in year 2; without the workforce, both years match it exactly. No local-hire, FIFO or camp discount is applied.</div>
+      ${WF_Y3_MISSING ? `<div class="mnote warn"><b>FY2027-28 workforce not loaded.</b> The workforce table holds two years (y1, y2). Add a y3 column to <code>public.vr_workforce</code> for FY2027-28; this page picks it up automatically. FY2028-29 has no workforce figure.</div>` : ''}
+      ${CHECK_FAILS.length ? `<div class="mnote warn"><b>Check:</b> year 1 differs from the stored VR demand for ${esc(CHECK_FAILS.join(', '))}. Rebuild the VR forecast or review this page's inputs.</div>` : ''}
+      <div class="mnote"><b>Historical average</b> (the dashed line in "Added each year") is the average yearly change in population across the market's full ABS history, the same figure the Buying/Selling slides show: capital cities on their Greater Capital City series from 1980, regional markets from 2001 (ABS doesn't publish council-area populations on current boundaries before then).</div>
+      <div class="mnote"><b>Overlaps:</b> Rockingham and Mandurah sit inside Greater Perth. Don't add them to the Perth figure.</div>
+    </div>`;
+}
+
+boot();
+</script>
+</body>
+</html>
