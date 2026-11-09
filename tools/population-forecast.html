@@ -155,16 +155,17 @@
   .psec .lg i{ display:inline-block; width:14px; height:8px; border-radius:3px; }
   .pnote{ font-size:.72rem; color:var(--muted); line-height:1.55; margin-top:10px; }
   .tl{ display:grid; grid-template-columns:minmax(160px,300px) minmax(0,1fr) 92px; gap:0 14px; align-items:center; font-size:.8rem; }
-  .tl .nm{ padding:6px 0; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tl .nm{ padding:2px 0; font-size:.76rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .tl .ax{ position:relative; height:18px; color:var(--muted); font-size:.68rem; font-weight:600; font-variant-numeric:tabular-nums; }
   .tl .ax span{ position:absolute; transform:translateX(-50%); }
   .tl .axh{ text-align:right; color:var(--muted); font-size:.62rem; font-weight:800; letter-spacing:.09em; text-transform:uppercase; }
-  .tl .tr{ position:relative; height:26px; background:var(--panel); border-radius:6px; }
+  .tl .tr{ position:relative; height:18px; background:var(--panel); border-radius:5px; }
   .tl .win{ position:absolute; top:0; bottom:0; background:rgba(255,169,31,.12); border-left:1px solid rgba(255,169,31,.5); border-right:1px solid rgba(255,169,31,.5); }
-  .tl .bar{ position:absolute; top:6px; height:14px; border-radius:7px; background:var(--muted); }
+  .tl .bar{ position:absolute; top:4px; height:10px; border-radius:5px; background:var(--muted); }
   .tl .bar.underway{ background:var(--teal); } .tl .bar.confirmed{ background:var(--green); } .tl .bar.planning{ background:#54A6DE; }
   .tl .nd{ position:absolute; left:10px; top:5px; font-size:.68rem; color:var(--muted); }
-  .tl .cost{ text-align:right; font-weight:700; font-variant-numeric:tabular-nums; }
+  .tl .cost{ text-align:right; font-size:.76rem; font-weight:700; font-variant-numeric:tabular-nums; }
+  .tl + .pnote .more, .tlmore{ appearance:none; border:1px solid var(--line); border-radius:8px; background:var(--pop); color:var(--ink); font-family:inherit; font-weight:700; font-size:.74rem; padding:6px 12px; cursor:pointer; margin-top:10px; }
   .tl .nm.listed, .tl .cost.listed{ color:var(--muted); }
   .st{ display:inline-block; padding:2px 9px; border-radius:999px; font-weight:700; font-size:.66rem; background:var(--panel2); color:var(--muted); white-space:nowrap; }
   .st.underway{ background:rgba(0,160,180,.18); color:var(--teal); } .st.confirmed{ background:rgba(113,179,87,.18); color:var(--green); } .st.planning{ background:rgba(84,166,222,.18); color:#54A6DE; }
@@ -443,6 +444,8 @@ async function fetchWfSheet(url){
    CONSTRUCTION / OPERATION, Proponent, SOURCE - COST, Basis). gviz answers an unknown tab
    name with the FIRST tab, so a result without a projects header counts as "no tab". */
 let PROJ_CACHE = {};
+let TL_ALL = false;            // Major projects timeline: all dated rows, or the largest TL_TOP
+const TL_TOP = 12;
 const sheetEntry = m => WF_SHEET ? (WF_SHEET.byName[wfNorm(m.name)] || WF_SHEET.byName[wfNorm(m.slug)] || null) : null;
 function parseProjects(csv){
   const rows = parseCsv(csv);
@@ -931,6 +934,7 @@ function drawChart(el, m, ys, wfOn){
 const avgLine = m => m.hist ? `<div class="avg">Historical average: ${signed(Math.round(m.hist.avg))} a year (${esc(m.hist.label)})</div>` : '';
 /* ── Major projects view ─────────────────────────────────────────────────────── */
 function paintProjects(m){
+  if (paintProjects.last !== m.slug){ TL_ALL = false; paintProjects.last = m.slug; }
   const sub = [m.state, m.slug === 'australia' ? 'National' : (m.capital ? 'Capital city' : 'Regional'), 'pop <b>' + num(m.pop0) + '</b> at June 2025'].filter(Boolean).join(' · ');
   const wf = wfOf(m), res4 = wf ? wf.reduce((s, v) => s + (v || 0), 0) : 0;
   $('#pfBody').innerHTML = `
@@ -998,6 +1002,12 @@ function jobsResidentsHtml(m){
 }
 function bindJr(){}
 
+function renderProjectsAgain(m, data){
+  // re-render the body only; the tiles and the subtitle are already in place
+  $('#pfProjChips').querySelectorAll('.dirchip .t.money').forEach(t => t.closest('.dirchip').remove());
+  const sub = $('#pfProjSub'); sub.innerHTML = sub.innerHTML.replace(/ · <b>\d+<\/b> live project.*$/, '');
+  renderProjects(m, data);
+}
 function renderProjects(m, data){
   const body = $('#pfProjBody');
   if (!data){
@@ -1026,20 +1036,19 @@ function renderProjects(m, data){
     for (let y = Math.ceil(lo / step) * step; y < hi; y += step) ticks.push(y);
     const sts = [...new Set(rows.map(r => stClass(r.status)))];
     const lgName = { underway: 'Underway', confirmed: 'Confirmed', planning: 'Planning', other: 'Other status' };
+    const shown = TL_ALL ? dated : dated.slice(0, TL_TOP);
     tl = `
     <div class="psec">
-      <h3>Construction timeline</h3>
+      <h3>Construction timeline${dated.length > TL_TOP ? ` · ${TL_ALL ? `all ${dated.length}` : `the ${TL_TOP} largest of ${dated.length}`} dated projects` : ''}</h3>
       <div class="lg">${sts.map(c => `<span><i class="bar ${c}" style="background:${c === 'underway' ? 'var(--teal)' : c === 'confirmed' ? 'var(--green)' : c === 'planning' ? '#54A6DE' : 'var(--muted)'}"></i>${lgName[c]}</span>`).join('')}<span><i style="background:rgba(255,169,31,.18);border:1px solid rgba(255,169,31,.6)"></i>Forecast years 2025-26 to 2028-29</span></div>
       <div class="tl">
         <div></div><div class="ax">${ticks.map(y => `<span style="left:${X(y)}">${y}</span>`).join('')}</div><div class="axh">Cost</div>
-        ${dated.map(r => `<div class="nm ${r.listed ? 'listed' : ''}" title="${esc(r.name)}">${esc(r.name)}</div>
+        ${shown.map(r => `<div class="nm ${r.listed ? 'listed' : ''}" title="${esc(r.name)}">${esc(r.name)}</div>
           <div class="tr"><div class="win" style="left:${X(2026)};width:${W(2026, 2029)}"></div><div class="bar ${stClass(r.status)}" style="left:${X(r.start)};width:${W(r.start, r.end)}" title="${esc(r.name)}: ${r.start}–${r.end}, ${esc(r.status)}"></div></div>
           <div class="cost ${r.listed ? 'listed' : ''}">${money(r.cost)}</div>`).join('')}
-        ${undated.map(r => `<div class="nm ${r.listed ? 'listed' : ''}" title="${esc(r.name)}">${esc(r.name)}</div>
-          <div class="tr"><div class="win" style="left:${X(2026)};width:${W(2026, 2029)}"></div><span class="nd">no published start and end years</span></div>
-          <div class="cost ${r.listed ? 'listed' : ''}">${money(r.cost)}</div>`).join('')}
       </div>
-      <div class="pnote">Sorted by cost. Bars run from the sheet's START to END year; the amber band is the forecast window the population chart uses.${undated.length ? ` ${undated.length} project${undated.length === 1 ? ' has' : 's have'} no published dates and so contribute no workforce to any year.` : ''}</div>
+      ${dated.length > TL_TOP ? `<button type="button" class="tlmore" id="pfTlMore">${TL_ALL ? `Show the ${TL_TOP} largest only` : `Show all ${dated.length} dated projects`}</button>` : ''}
+      <div class="pnote">Sorted by cost. Bars run from the sheet's START to END year; the amber band is the forecast window the population chart uses.${undated.length ? ` ${undated.length} project${undated.length === 1 ? ' has' : 's have'} no published dates: not drawn here, listed in the table below, and contributing no workforce to any year.` : ''}</div>
     </div>`;
   }
 
@@ -1066,6 +1075,8 @@ function renderProjects(m, data){
     </div>`;
 
   body.innerHTML = jobsResidentsHtml(m) + tl + table;   // jobs → residents first: it is what feeds the forecast
+  const more = $('#pfTlMore');
+  if (more) more.onclick = () => { TL_ALL = !TL_ALL; const y = scrollY; renderProjectsAgain(m, data); scrollTo(0, y); };
   const q = $('#pfProjQ');
   if (q) q.addEventListener('input', () => {
     const t = q.value.trim().toLowerCase();
