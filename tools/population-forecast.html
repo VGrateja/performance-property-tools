@@ -748,6 +748,7 @@ function drawChart(el, m, ys, wfOn){
     return `M${x},${yTop + rt}` + (rt ? `Q${x},${yTop} ${x + rt},${yTop}` : '') + `H${x + bw - rt}` + (rt ? `Q${x + bw},${yTop} ${x + bw},${yTop + rt}` : '') +
       `V${y1 - rb}` + (rb ? `Q${x + bw},${y1} ${x + bw - rb},${y1}` : '') + `H${x + rb}` + (rb ? `Q${x},${y1} ${x},${y1 - rb}` : '') + 'Z';
   };
+  const occ = [];   // boxes the bars and their labels occupy, so the average label can avoid them
   bars.forEach((b, i) => {
     const x = cx(i) - bw / 2, y0 = Y(0);
     const hasWf = b.wf > 0;
@@ -771,10 +772,20 @@ function drawChart(el, m, ys, wfOn){
       // (on the right, or on the left for a bar too close to the right edge)
       const lbl = `+${num(b.wf)} WF`, room = x + bw + 6 + lbl.length * 7 <= W;
       if (h >= 20) svg.append(mk('text', { class: 'wi', x: cx(i), y: topY + h / 2 + 4, 'text-anchor': 'middle' }, `+${num(b.wf)}`));
-      else svg.append(mk('text', { class: 'w', x: room ? x + bw + 6 : x - 6, y: topY + h / 2 + 4, 'text-anchor': room ? 'start' : 'end' }, lbl));
+      else {
+        svg.append(mk('text', { class: 'w', x: room ? x + bw + 6 : x - 6, y: topY + h / 2 + 4, 'text-anchor': room ? 'start' : 'end' }, lbl));
+        const lw = lbl.length * 7;
+        occ.push({ x1: room ? x + bw + 6 : x - 6 - lw, x2: room ? x + bw + 6 + lw : x - 6, y1: topY + h / 2 - 8, y2: topY + h / 2 + 6 });
+      }
     }
-    if (b.total >= 0) svg.append(mk('text', { class: 'v', x: cx(i), y: topY - 7, 'text-anchor': 'middle' }, fmtTop(b.total)));
-    else svg.append(mk('text', { class: 'v', x: cx(i), y: Y(Math.min(b.base, b.total)) + 15, 'text-anchor': 'middle' }, fmtTop(b.total)));
+    if (b.total >= 0){
+      svg.append(mk('text', { class: 'v', x: cx(i), y: topY - 7, 'text-anchor': 'middle' }, fmtTop(b.total)));
+      occ.push({ x1: x, x2: x + bw, y1: topY - 20, y2: y0 });
+    } else {
+      const yl = Y(Math.min(b.base, b.total)) + 15;
+      svg.append(mk('text', { class: 'v', x: cx(i), y: yl, 'text-anchor': 'middle' }, fmtTop(b.total)));
+      occ.push({ x1: x, x2: x + bw, y1: y0, y2: yl + 4 });
+    }
     svg.append(mk('text', { x: cx(i), y: H - 7, 'text-anchor': 'middle' }, b.label));
     const hit = mk('rect', { x: step * i, width: step, y: 0, height: H, fill: 'transparent' });
     hit.addEventListener('pointerenter', ev => showTip(el, ev, m, b));
@@ -786,8 +797,33 @@ function drawChart(el, m, ys, wfOn){
   if (avg != null){
     const ya = Y(avg);
     svg.append(mk('line', { x1: 0, x2: W, y1: ya, y2: ya, stroke: 'var(--muted)', 'stroke-width': 2, 'stroke-dasharray': '6 5', 'pointer-events': 'none' }));
-    svg.append(mk('text', { class: 'avg', x: W - 2, y: ya - 7, 'text-anchor': 'end', 'pointer-events': 'none' },
-      `Historical average ${signed(avg)} a year`));
+    /* Label placement: the right end is the natural spot, but when the line
+       crosses the last bar (Darwin with the sheet workforce) the label would
+       sit on the bar. Candidates, in order: right end, left end, the gaps
+       between bars (right to left), over each bar — first just above the line,
+       then just below it. The full label is tried first; if every spot is
+       blocked (all years above the average) a short "Avg +2,215/yr" is tried
+       in the same spots, which fits between two bars. Last resort: right end. */
+    const full = `Historical average ${signed(avg)} a year`, short = `Avg ${signed(avg)}/yr`;
+    const spotsFor = tw => {
+      const out = [];
+      for (const dy of [-7, 15]){
+        out.push({ x: W - 2, a: 'end', x1: W - 2 - tw, x2: W - 2, dy });
+        out.push({ x: 2, a: 'start', x1: 2, x2: 2 + tw, dy });
+        for (let i = bars.length - 1; i > 0; i--){ const gx = (cx(i - 1) + cx(i)) / 2; out.push({ x: gx, a: 'middle', x1: gx - tw / 2, x2: gx + tw / 2, dy }); }
+        bars.forEach((b, i) => out.push({ x: cx(i), a: 'middle', x1: cx(i) - tw / 2, x2: cx(i) + tw / 2, dy }));
+      }
+      return out;
+    };
+    const clear = sp => {
+      const y1 = ya + sp.dy - 11, y2 = ya + sp.dy + 3;
+      return sp.x1 >= 0 && sp.x2 <= W && y1 >= 2 && y2 <= H - bottom &&
+        !occ.some(o => sp.x1 < o.x2 && sp.x2 > o.x1 && y1 < o.y2 && y2 > o.y1);
+    };
+    let txt = full, sp = spotsFor(full.length * 6.6 + 6).find(clear);
+    if (!sp){ const s2 = spotsFor(short.length * 6.6 + 6).find(clear); if (s2){ txt = short; sp = s2; } }
+    if (!sp) sp = { x: W - 2, a: 'end', dy: -7 };
+    svg.append(mk('text', { class: 'avg', x: sp.x, y: ya + sp.dy, 'text-anchor': sp.a, 'pointer-events': 'none' }, txt));
   }
   el.replaceChildren(svg);
   const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; el.append(tip);
