@@ -192,7 +192,7 @@
   <div class="srcnote" id="pfSrcNote" style="display:none">
     <b class="h">Data sources</b>
     <span class="ok">✅ From Forge</span>, the same stored rows as the Vacancy Rate Projection (<code>rdp_vr_forecast</code>): population at 30 June 2025 (ABS, capitals on GCCSA, regional markets on their LGA) · natural increase and internal migration (V1 two-year averages) · each market's FY2024-25 share of national overseas migration · the national overseas migration forecast.<br/>
-    <span class="wb">✍️ Manual input</span> — the <b>infrastructure workforce</b> modifier only: the hub table <code>public.vr_workforce</code> (behind auth, reviewed quarterly), or the major projects Google Sheet pasted above — its <b>Region Calculation</b> tab, "All regions: new residents by year" (new jobs × resident conversion % × household size).
+    <span class="wb">✍️ Manual input</span> — the <b>infrastructure workforce</b> modifier only: the hub table <code>public.vr_workforce</code> (behind auth, reviewed quarterly), or the major projects Google Sheet pasted above — its <b>Jobs to Residents</b> tab, "New residents (population input)" per region and year (new jobs × resident conversion % × household size); the older "All regions: new residents by year" table on <b>Region Calculation</b> is read when that tab is missing.
   </div>
 </div>
 
@@ -254,7 +254,8 @@ let MARKETS = [], BY = {}, WF_Y3_MISSING = false, CHECK_FAILS = [];
 /* ── workforce from the major projects Google Sheet ───────────────────────── */
 const WF_CFG_KEY = 'population_forecast_wf_sheet';   // rdp_runway_config key, shared by signed-in users
 const WF_LS_KEY = 'ppPopForecastWfSheet';            // this browser's copy / fallback
-const WF_SHEET_TAB = 'Region Calculation';
+const WF_SHEET_TAB = 'Jobs to Residents';       // one row per region and year; "New residents (population input)"
+const WF_SHEET_TAB_ALT = 'Region Calculation';  // older layout: "All regions: new residents by year" (Region, 2025, 2026, …)
 const WF_YEAR_COL = { 2026: 0, 2027: 1, 2028: 2, 2029: 3 }; // sheet calendar column -> forecast year index
 let WF_SHEET = null;   // { url, id, byName, matched, unmatched, loadedAt } when a sheet is in use
 let WF_SHARED = null;  // true: link saved for everyone; false: this browser only; null: unknown
@@ -278,10 +279,44 @@ function parseCsv(text){
   return rows.filter(r => r.some(x => String(x).trim() !== ''));
 }
 
-/* Finds "All regions: new residents by year" (header: Region, 2025, 2026, …) and
-   returns { byName: { normalisedName: { name, wf: [y1..y4] } }, years: [...] }. */
+const wfNum = v => { const n = +String(v == null ? '' : v).replace(/[,\s$]/g, ''); return isFinite(n) ? n : 0; };
+
+/* Returns { byName: { normalisedName: { name, wf: [y1..y4] } }, years: [...] } from
+   either layout:
+     long  "Jobs to Residents": REGION | YEAR | … | New residents (population input),
+           one row per region and year (the region label repeats down column A)
+     wide  "All regions: new residents by year": Region, 2025, 2026, … one row per region */
 function parseWfTable(csv){
   const rows = parseCsv(csv);
+  return parseWfLong(rows) || parseWfWide(rows);
+}
+
+function parseWfLong(rows){
+  const hi = rows.findIndex(r => r.some(c => /^year$/i.test(String(c).trim())) && r.some(c => /new residents/i.test(String(c))));
+  if (hi < 0) return null;
+  const head = rows[hi].map(c => String(c).trim());
+  const yearCol = head.findIndex(c => /^year$/i.test(c));
+  const valCol = head.findIndex(c => /new residents/i.test(c));
+  const regionCol = yearCol > 0 ? yearCol - 1 : 0;
+  const byName = {}, seen = new Set();
+  let region = '';
+  for (let i = hi; i < rows.length; i++){
+    const r = rows[i];
+    const label = String(r[regionCol] == null ? '' : r[regionCol]).trim();
+    if (label) region = label;
+    const y = String(r[yearCol] == null ? '' : r[yearCol]).trim();
+    if (!region || !/^\d{4}$/.test(y)) continue;
+    const k = WF_YEAR_COL[+y];
+    if (k == null) continue;                       // 2025 catch-up and years past the forecast are not used
+    const key = wfNorm(region);
+    const e = byName[key] || (byName[key] = { name: region.replace(/\s+/g, ' ').replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1).toLowerCase()), wf: [0, 0, 0, 0] });
+    e.wf[k] = wfNum(r[valCol]); seen.add(k);
+  }
+  if (!Object.keys(byName).length || seen.size < 2) return null;
+  return { byName, years: [...seen].sort().map(k => YEARS[k]), layout: 'long' };
+}
+
+function parseWfWide(rows){
   let start = -1;
   for (let i = 0; i < rows.length; i++){
     if (/^all regions/i.test(String(rows[i][0]).trim())) { start = i; }
@@ -305,7 +340,7 @@ function parseWfTable(csv){
     for (const { col, k } of cols){ const v = +String(rows[i][col] == null ? '' : rows[i][col]).replace(/[,\s]/g, ''); wf[k] = isFinite(v) ? v : 0; }
     byName[wfNorm(name)] = { name, wf };
   }
-  return Object.keys(byName).length ? { byName, years } : null;
+  return Object.keys(byName).length ? { byName, years, layout: 'wide' } : null;
 }
 
 /* Google's CSV export of one tab (gviz). Works without a key or server for a sheet
@@ -314,7 +349,7 @@ async function fetchWfSheet(url){
   const id = sheetIdFrom(url);
   if (!id) throw new Error('That is not a Google Sheets link. Paste the address of the major projects workbook.');
   const gid = gidFrom(url);
-  const tries = ['sheet=' + encodeURIComponent(WF_SHEET_TAB)].concat(gid ? ['gid=' + gid] : [], ['']);
+  const tries = ['sheet=' + encodeURIComponent(WF_SHEET_TAB), 'sheet=' + encodeURIComponent(WF_SHEET_TAB_ALT)].concat(gid ? ['gid=' + gid] : [], ['']);
   let last = null;
   for (const q of tries){
     try {
@@ -322,7 +357,7 @@ async function fetchWfSheet(url){
       if (!r.ok){ last = new Error(`Google answered ${r.status}. Check the link and that the sheet is shared “Anyone with the link can view”.`); continue; }
       const parsed = parseWfTable(await r.text());
       if (parsed) return Object.assign({ id }, parsed);
-      last = new Error(`Couldn't find the "All regions: new residents by year" table (Region, 2025, 2026, …) on the “${WF_SHEET_TAB}” tab.`);
+      last = new Error(`Couldn't find a workforce table: neither “${WF_SHEET_TAB}” (REGION, YEAR, …, New residents) nor “${WF_SHEET_TAB_ALT}” ("All regions: new residents by year").`);
     } catch (e){
       last = (e instanceof TypeError) ? new Error('Couldn\'t reach the sheet. Share it as “Anyone with the link can view” (Share → General access), then try again.') : e;
     }
@@ -392,10 +427,10 @@ function renderWfSrc(msg, cls){
   const el = $('#pfWfMsg');
   el.className = 'wfsrc-msg' + (cls ? ' ' + cls : '');
   if (msg != null) el.innerHTML = msg;
-  else if (WF_SHEET) el.innerHTML = `Years: sheet column 2026 → FY2025-26, 2027 → FY2026-27, 2028 → FY2027-28, 2029 → FY2028-29; the 2025 catch-up column is not used.` +
+  else if (WF_SHEET) el.innerHTML = `Years: sheet year 2026 → FY2025-26, 2027 → FY2026-27, 2028 → FY2027-28, 2029 → FY2028-29; the 2025 catch-up year and later years are not used.` +
       (WF_SHEET.unmatched.length ? ` Not a market on this page, skipped: ${esc(WF_SHEET.unmatched.join(', '))}.` : '') +
       ` Markets not in the sheet have no workforce while it is in use.`;
-  else el.innerHTML = `Paste the link of the latest major projects workbook to use its “${WF_SHEET_TAB}” tab instead. The sheet must be shared “Anyone with the link can view”.`;
+  else el.innerHTML = `Paste the link of the latest major projects workbook to use its “${WF_SHEET_TAB}” tab (New residents by region and year) instead. The sheet must be shared “Anyone with the link can view”.`;
 }
 
 function initWfSrc(){
@@ -791,7 +826,7 @@ function methodNotes(){
       <div class="mnote"><b>Natural increase and internal migration</b> are the Vacancy Rate Projection's two-year averages (V1), held flat in every year. Melbourne carries that tool's manual internal-migration override.</div>
       <div class="mnote"><b>Overseas migration</b> is the national forecast for each year multiplied by the market's FY2024-25 share of national overseas migration: ${nom}. The shares are of the national total, so the markets don't add up to it.</div>
       ${WF_SHEET
-        ? `<div class="mnote"><b>Infrastructure workforce</b> uses each year's new residents from the major projects sheet (“${esc(WF_SHEET_TAB)}” tab, "All regions: new residents by year": new jobs × resident conversion % × household size, as that sheet computes them). Sheet column 2026 is FY2025-26, 2027 is FY2026-27, 2028 is FY2027-28 and 2029 is FY2028-29; the 2025 catch-up column is not used. This is the one difference from the Vacancy Rate Projection, which uses the hub's workforce table and repeats the year-1 figure in year 2; without the workforce, both match exactly. No local-hire, FIFO or camp discount is applied beyond the sheet's conversion %.</div>`
+        ? `<div class="mnote"><b>Infrastructure workforce</b> uses each year's new residents from the major projects sheet (“${esc(WF_SHEET_TAB)}” tab, "New residents (population input)" per region and year: new jobs × resident conversion % × household size, as that sheet computes them; the older "All regions: new residents by year" table on “${esc(WF_SHEET_TAB_ALT)}” is read when that tab is missing). Sheet year 2026 is FY2025-26, 2027 is FY2026-27, 2028 is FY2027-28 and 2029 is FY2028-29; the 2025 catch-up year and later years are not used. This is the one difference from the Vacancy Rate Projection, which uses the hub's workforce table and repeats the year-1 figure in year 2; without the workforce, both match exactly. No local-hire, FIFO or camp discount is applied beyond the sheet's conversion %.</div>`
         : `<div class="mnote"><b>Infrastructure workforce</b> uses each year's own figure from the manual workforce table. This is the one difference from the Vacancy Rate Projection, which repeats the year-1 figure in year 2; without the workforce, both years match it exactly. No local-hire, FIFO or camp discount is applied.</div>`}
       ${!WF_SHEET && WF_Y3_MISSING ? `<div class="mnote warn"><b>FY2027-28 workforce not loaded.</b> The workforce table holds two years (y1, y2). Add a y3 column to <code>public.vr_workforce</code> for FY2027-28, or paste the major projects sheet above. FY2028-29 has no workforce figure in the hub table.</div>` : ''}
       ${CHECK_FAILS.length ? `<div class="mnote warn"><b>Check:</b> year 1 differs from the stored VR demand for ${esc(CHECK_FAILS.join(', '))}. Rebuild the VR forecast or review this page's inputs.</div>` : ''}
