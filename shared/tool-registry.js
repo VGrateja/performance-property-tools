@@ -30,6 +30,7 @@
     /* vault */
     'runway-workbook':  { sec: 'vault',     file: 'runway-workbook.html',        label: 'Runway Workbook' },
     'vr-projection':    { sec: 'vault',     file: 'vr-projection.html',          label: 'Vacancy Rate Projection' },
+    'population-forecast':{ sec: 'vault',   file: 'population-forecast.html',    label: 'Population Forecast' },
     'forge':            { sec: 'vault',     file: 'data-forge.html',             label: 'Data Forge' },
     'data-extractor':   { sec: 'vault',     file: 'data-extractor.html',         label: 'Data Extractor' },
     'traffic-lights':   { sec: 'vault',     file: 'traffic-lights.html',         label: 'Traffic Lights' },
