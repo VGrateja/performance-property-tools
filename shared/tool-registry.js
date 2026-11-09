@@ -47,6 +47,7 @@
     'lite-links':       { sec: 'vault',     file: 'lite-report-links.html',      label: 'Lite Report Links' },
     'results':          { sec: 'vault',     file: 'results.html',                label: 'Results' },
     'bookshelf':        { sec: 'vault',     file: 'bookshelf.html',              label: 'Bookshelf' },
+    'academy':          { sec: 'vault',     file: 'academy.html',                label: 'Academy' },
     'investment-reports':{ sec: 'vault',    file: 'investment-reports.html',     label: 'IR Library' },
     'ir-builder':       { sec: 'vault',     file: 'ir-builder.html',             label: 'IR Builder' },
     'ir-samples':       { sec: 'vault',     file: 'ir-samples.html',             label: 'IR Samples' },

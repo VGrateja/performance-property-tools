@@ -130,6 +130,16 @@ assumptions.) Tools:
 - `whitepapers-strategies.html` — Documents.
 - `bookshelf.html` — staff library; book CONTENT lives in public.books (mig
   097), fetched at runtime — never commit book text (this repo is public).
+- `academy.html` — Performance Academy, the staff learning tool: a shelf of
+  "videotape" volumes → chapters → scenes (text, infographics, playable charts
+  that pause on beats, quizzes), teaching runway, demand, the clocks and the
+  Forge from the live data. Course CONTENT lives in the `academy_*` tables
+  (mig 121) and is seeded by `scratch/seed-academy.mjs` from
+  `scratch/academy-content/*.json` — the narrative is proprietary, never commit
+  it. Maths is `shared/academy-math.js` (verbatim copy of the Demand Score
+  engine + the clock/quadrant tables; `scratch/_verify-academy-math.mjs` proves
+  parity with `demand-score.html` for every market — re-run after touching
+  either).
 - `sold-check.html` — Sold Check: the register of properties bought for clients
   (import of the city purchase workbooks + manual add/edit) and a sold-check
   queue a scheduled session fills and a person verifies (mig 126; runbook
