@@ -128,6 +128,22 @@
   .srcnote .wb{ color:var(--amber); font-weight:800; }
   .msg{ text-align:center; color:var(--muted); padding:70px 20px; font-size:.95rem; }
 
+  /* workforce source: the hub table, or a major-projects Google Sheet pasted here */
+  .wfsrc{ margin:6px 0 16px; padding:12px 14px; border:1px dashed var(--line); border-radius:12px; background:var(--panel); }
+  .wfsrc-head{ display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; font-size:.7rem; letter-spacing:.06em; text-transform:uppercase; font-weight:800; color:var(--accent); }
+  .wfsrc-head span{ text-transform:none; letter-spacing:0; font-weight:600; color:var(--muted); font-size:.74rem; }
+  .wfsrc-head span b{ color:var(--ink); }
+  .wfsrc-row{ display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+  .wfsrc-row input{ flex:1 1 360px; min-width:0; padding:9px 12px; border:1px solid var(--line); border-radius:10px; background:var(--pop); color:var(--ink); font-family:inherit; font-weight:500; font-size:.82rem; }
+  .wfsrc-row input::placeholder{ color:var(--muted); }
+  .wfsrc-row button{ appearance:none; border:1px solid var(--line); border-radius:10px; background:var(--accent); color:#fff; font-family:inherit; font-weight:700; font-size:.8rem; padding:0 16px; height:38px; cursor:pointer; }
+  .wfsrc-row button.ghost{ background:var(--pop); color:var(--ink); }
+  .wfsrc-row button:disabled{ opacity:.45; cursor:wait; }
+  .wfsrc-msg{ margin-top:7px; font-size:.74rem; color:var(--muted); line-height:1.5; }
+  .wfsrc-msg.err{ color:var(--red); } .wfsrc-msg.ok{ color:var(--green); }
+  .wfsrc-msg code{ font-size:.72rem; }
+  [data-theme="light"] .wfsrc{ background:#ffffff; }
+
   /* ── LIGHT THEME (follows the OS bridge's data-theme attribute) ── */
   [data-theme="light"]{
     --bg:transparent; --ink:#171B24; --muted:#63666A; --line:rgba(23,27,36,.12);
@@ -152,7 +168,7 @@
 <div class="wrap">
   <div class="eyebrow">Performance Property · Population</div>
   <h1>Population Forecast</h1>
-  <p class="lede">How many people each market is expected to add each year to 2028-29: births minus deaths, moves within Australia and overseas migration, plus residents from major projects in the eight markets that have them. Built on the same inputs as the Vacancy Rate Projection, so the two agree.</p>
+  <p class="lede">How many people each market is expected to add each year to 2028-29: births minus deaths, moves within Australia and overseas migration, plus residents from major projects in the markets that have them. Built on the same inputs as the Vacancy Rate Projection, so the two agree.</p>
 
   <div class="controls" id="pfControls" style="display:none">
     <label class="ctl">Region<select id="pfRegion"></select></label>
@@ -161,12 +177,22 @@
   </div>
   <div class="note" id="pfStamp"></div>
 
+  <div class="wfsrc" id="pfWfSrc" style="display:none">
+    <div class="wfsrc-head">Major-project workforce <span id="pfWfState"></span></div>
+    <div class="wfsrc-row">
+      <input type="url" id="pfWfUrl" placeholder="Paste the major projects Google Sheet link (shared as “Anyone with the link can view”)" autocomplete="off" spellcheck="false"/>
+      <button type="button" id="pfWfLoad">Load from sheet</button>
+      <button type="button" id="pfWfClear" class="ghost">Use hub table</button>
+    </div>
+    <div class="wfsrc-msg" id="pfWfMsg"></div>
+  </div>
+
   <div id="pfBody"><div class="msg" id="pfMsg">Loading…</div></div>
 
   <div class="srcnote" id="pfSrcNote" style="display:none">
     <b class="h">Data sources</b>
     <span class="ok">✅ From Forge</span>, the same stored rows as the Vacancy Rate Projection (<code>rdp_vr_forecast</code>): population at 30 June 2025 (ABS, capitals on GCCSA, regional markets on their LGA) · natural increase and internal migration (V1 two-year averages) · each market's FY2024-25 share of national overseas migration · the national overseas migration forecast.<br/>
-    <span class="wb">✍️ Manual input</span> — the <b>infrastructure workforce</b> modifier only (<code>public.vr_workforce</code>, behind auth, reviewed quarterly).
+    <span class="wb">✍️ Manual input</span> — the <b>infrastructure workforce</b> modifier only: the hub table <code>public.vr_workforce</code> (behind auth, reviewed quarterly), or the major projects Google Sheet pasted above — its <b>Region Calculation</b> tab, "All regions: new residents by year" (new jobs × resident conversion % × household size).
   </div>
 </div>
 
@@ -188,11 +214,21 @@
                                      (Melbourne's manual override is already in it)
      OM   national forecast for the year x payload.demand.inputs.nomShare1
           (the market's FY2024-25 share; National's share is 1)
-     WF   public.vr_workforce, EACH YEAR'S OWN FIGURE: y1 -> FY2025-26,
-          y2 -> FY2026-27, y3 -> FY2027-28 when that column exists. This is the
-          one deliberate difference from the VR tool, whose V1 method repeats
-          y1 in year 2. Without WF, and in year 1 with WF, the figures equal the
-          VR tool's stored people1 / people2 exactly (checked on load).
+     WF   EACH YEAR'S OWN FIGURE, from one of two sources:
+            - public.vr_workforce: y1 -> FY2025-26, y2 -> FY2026-27, y3 -> FY2027-28
+              when that column exists (the default);
+            - the major projects Google Sheet pasted into the page: its "Region
+              Calculation" tab, "All regions: new residents by year", calendar
+              column 2026 -> FY2025-26 … 2029 -> FY2028-29 (the 2025 catch-up
+              column is not used). The link is kept in rdp_runway_config
+              (key population_forecast_wf_sheet) for every signed-in user when
+              the account may write there, and in this browser otherwise. The
+              sheet must be shared "Anyone with the link can view": the page
+              reads it through Google's CSV export (gviz), no key, no server.
+          This is the one deliberate difference from the VR tool, whose V1
+          method repeats y1 in year 2. Without WF, and in year 1 with the hub
+          table's WF, the figures equal the VR tool's stored people1 / people2
+          exactly (checked on load against the hub table, whatever the source).
 
    Years: the base is the ABS ERP at 30 June 2025, i.e. FY2024-25. Forecast
    year 1 is FY2025-26 — the year the 295,000 national overseas migration
@@ -214,6 +250,178 @@ const BUYING = ['darwin', 'melbourne', 'townsville'];          // current buying
 const INSIDE = { rockingham: 'Perth', mandurah: 'Perth' };      // modelled markets inside another market
 
 let MARKETS = [], BY = {}, WF_Y3_MISSING = false, CHECK_FAILS = [];
+
+/* ── workforce from the major projects Google Sheet ───────────────────────── */
+const WF_CFG_KEY = 'population_forecast_wf_sheet';   // rdp_runway_config key, shared by signed-in users
+const WF_LS_KEY = 'ppPopForecastWfSheet';            // this browser's copy / fallback
+const WF_SHEET_TAB = 'Region Calculation';
+const WF_YEAR_COL = { 2026: 0, 2027: 1, 2028: 2, 2029: 3 }; // sheet calendar column -> forecast year index
+let WF_SHEET = null;   // { url, id, byName, matched, unmatched, loadedAt } when a sheet is in use
+let WF_SHARED = null;  // true: link saved for everyone; false: this browser only; null: unknown
+
+const wfNorm = n => String(n == null ? '' : n).toLowerCase().replace(/\(.*?\)/g, '').replace(/^greater\s+/, '').replace(/[^a-z]+/g, ' ').trim();
+const sheetIdFrom = url => { const m = String(url || '').match(/\/spreadsheets\/d\/([A-Za-z0-9_-]{20,})/); return m ? m[1] : null; };
+const gidFrom = url => { const m = String(url || '').match(/[#?&]gid=(\d+)/); return m ? m[1] : null; };
+
+/* RFC-4180-ish CSV: quoted fields, doubled quotes, CRLF. */
+function parseCsv(text){
+  const rows = [[]]; let cell = '', q = false;
+  for (let i = 0; i < text.length; i++){
+    const c = text[i];
+    if (q){ if (c === '"'){ if (text[i + 1] === '"'){ cell += '"'; i++; } else q = false; } else cell += c; }
+    else if (c === '"') q = true;
+    else if (c === ','){ rows[rows.length - 1].push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r'){ if (c === '\r' && text[i + 1] === '\n') i++; rows[rows.length - 1].push(cell); cell = ''; rows.push([]); }
+    else cell += c;
+  }
+  rows[rows.length - 1].push(cell);
+  return rows.filter(r => r.some(x => String(x).trim() !== ''));
+}
+
+/* Finds "All regions: new residents by year" (header: Region, 2025, 2026, …) and
+   returns { byName: { normalisedName: { name, wf: [y1..y4] } }, years: [...] }. */
+function parseWfTable(csv){
+  const rows = parseCsv(csv);
+  let start = -1;
+  for (let i = 0; i < rows.length; i++){
+    if (/^all regions/i.test(String(rows[i][0]).trim())) { start = i; }
+    else if (start >= 0 && String(rows[i][0]).trim().toLowerCase() === 'region' && /^\d{4}$/.test(String(rows[i][1]).trim())){ start = i; break; }
+  }
+  if (start < 0){
+    // fall back to the first "Region, YYYY, YYYY…" header anywhere
+    start = rows.findIndex(r => String(r[0]).trim().toLowerCase() === 'region' && /^\d{4}$/.test(String(r[1]).trim()));
+    if (start < 0) return null;
+  }
+  const head = rows[start].map(c => String(c).trim());
+  if (head[0].toLowerCase() !== 'region') return null;
+  const cols = [];  // [{ col, k }] sheet column -> forecast year index
+  head.forEach((h, c) => { if (/^\d{4}$/.test(h) && WF_YEAR_COL[+h] != null) cols.push({ col: c, k: WF_YEAR_COL[+h] }); });
+  if (cols.length < 2) return null;
+  const byName = {}, years = cols.map(x => YEARS[x.k]);
+  for (let i = start + 1; i < rows.length; i++){
+    const name = String(rows[i][0] || '').trim();
+    if (!name || /^all\b/i.test(name) || /^how\b/i.test(name)) break;
+    const wf = [0, 0, 0, 0];
+    for (const { col, k } of cols){ const v = +String(rows[i][col] == null ? '' : rows[i][col]).replace(/[,\s]/g, ''); wf[k] = isFinite(v) ? v : 0; }
+    byName[wfNorm(name)] = { name, wf };
+  }
+  return Object.keys(byName).length ? { byName, years } : null;
+}
+
+/* Google's CSV export of one tab (gviz). Works without a key or server for a sheet
+   shared "Anyone with the link can view"; a private sheet fails the CORS check. */
+async function fetchWfSheet(url){
+  const id = sheetIdFrom(url);
+  if (!id) throw new Error('That is not a Google Sheets link. Paste the address of the major projects workbook.');
+  const gid = gidFrom(url);
+  const tries = ['sheet=' + encodeURIComponent(WF_SHEET_TAB)].concat(gid ? ['gid=' + gid] : [], ['']);
+  let last = null;
+  for (const q of tries){
+    try {
+      const r = await fetch(`https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv${q ? '&' + q : ''}`, { credentials: 'omit', cache: 'no-store' });
+      if (!r.ok){ last = new Error(`Google answered ${r.status}. Check the link and that the sheet is shared “Anyone with the link can view”.`); continue; }
+      const parsed = parseWfTable(await r.text());
+      if (parsed) return Object.assign({ id }, parsed);
+      last = new Error(`Couldn't find the "All regions: new residents by year" table (Region, 2025, 2026, …) on the “${WF_SHEET_TAB}” tab.`);
+    } catch (e){
+      last = (e instanceof TypeError) ? new Error('Couldn\'t reach the sheet. Share it as “Anyone with the link can view” (Share → General access), then try again.') : e;
+    }
+  }
+  throw last || new Error('Could not read the sheet.');
+}
+
+/* Give every market its sheet figure (matched by name: "Greater Perth" = Perth). */
+function attachSheetWf(){
+  for (const m of MARKETS) m.wfSheet = null;
+  if (!WF_SHEET) return;
+  WF_SHEET.matched = []; WF_SHEET.unmatched = [];
+  const bySlugName = {};
+  for (const m of MARKETS){ bySlugName[wfNorm(m.name)] = m; bySlugName[wfNorm(m.slug)] = m; }
+  for (const key of Object.keys(WF_SHEET.byName)){
+    const e = WF_SHEET.byName[key], m = bySlugName[key];
+    if (m){ m.wfSheet = e.wf.slice(); WF_SHEET.matched.push(m.name); }
+    else WF_SHEET.unmatched.push(e.name);
+  }
+}
+const wfOf = m => WF_SHEET ? m.wfSheet : m.wfHub;
+
+async function useWfSheet(url, persist){
+  const data = await fetchWfSheet(url);
+  WF_SHEET = { url, id: data.id, byName: data.byName, years: data.years, matched: [], unmatched: [], loadedAt: new Date() };
+  attachSheetWf();
+  if (persist) await persistWfUrl(url);
+}
+
+async function persistWfUrl(url){
+  try { if (url) localStorage.setItem(WF_LS_KEY, url); else localStorage.removeItem(WF_LS_KEY); } catch (e) {}
+  WF_SHARED = false;
+  try {
+    const r = url
+      ? await window.sb.from('rdp_runway_config').upsert({ key: WF_CFG_KEY, value: { url, saved_at: new Date().toISOString() } })
+      : await window.sb.from('rdp_runway_config').delete().eq('key', WF_CFG_KEY);
+    if (!r.error) WF_SHARED = true;
+  } catch (e) {}
+}
+
+async function readSavedWfUrl(){
+  let url = null, shared = false;
+  try {
+    const r = await window.sb.from('rdp_runway_config').select('value').eq('key', WF_CFG_KEY).maybeSingle();
+    if (!r.error && r.data && r.data.value && r.data.value.url){ url = String(r.data.value.url); shared = true; }
+  } catch (e) {}
+  if (!url){ try { url = localStorage.getItem(WF_LS_KEY) || null; } catch (e) {} }
+  return { url, shared };
+}
+
+function renderWfSrc(msg, cls){
+  const box = $('#pfWfSrc'); if (!box) return;
+  box.style.display = 'block';
+  const hubN = MARKETS.filter(m => m.wfHub).length;
+  const st = $('#pfWfState');
+  if (WF_SHEET){
+    st.innerHTML = `· from the sheet: <b>${WF_SHEET.matched.length}</b> markets, ${esc(WF_SHEET.years[0])} to ${esc(WF_SHEET.years[WF_SHEET.years.length - 1])}` +
+      (WF_SHARED === true ? ' · saved for everyone on the hub' : WF_SHARED === false ? ' · saved in this browser only' : '');
+  } else {
+    st.innerHTML = `· from the hub table <code>vr_workforce</code>: <b>${hubN}</b> markets` + (WF_Y3_MISSING ? ', FY2027-28 missing' : '');
+  }
+  const inp = $('#pfWfUrl');
+  if (WF_SHEET && document.activeElement !== inp) inp.value = WF_SHEET.url;
+  $('#pfWfClear').style.display = WF_SHEET ? '' : 'none';
+  const el = $('#pfWfMsg');
+  el.className = 'wfsrc-msg' + (cls ? ' ' + cls : '');
+  if (msg != null) el.innerHTML = msg;
+  else if (WF_SHEET) el.innerHTML = `Years: sheet column 2026 → FY2025-26, 2027 → FY2026-27, 2028 → FY2027-28, 2029 → FY2028-29; the 2025 catch-up column is not used.` +
+      (WF_SHEET.unmatched.length ? ` Not a market on this page, skipped: ${esc(WF_SHEET.unmatched.join(', '))}.` : '') +
+      ` Markets not in the sheet have no workforce while it is in use.`;
+  else el.innerHTML = `Paste the link of the latest major projects workbook to use its “${WF_SHEET_TAB}” tab instead. The sheet must be shared “Anyone with the link can view”.`;
+}
+
+function initWfSrc(){
+  const load = $('#pfWfLoad'), clear = $('#pfWfClear'), inp = $('#pfWfUrl');
+  const busy = on => { load.disabled = on; clear.disabled = on; };
+  load.onclick = async () => {
+    const url = inp.value.trim();
+    if (!url){ renderWfSrc('Paste a Google Sheets link first.', 'err'); return; }
+    busy(true); renderWfSrc('Reading the sheet…');
+    try {
+      await useWfSheet(url, true);
+      renderWfSrc(`Loaded ${WF_SHEET.matched.length} markets from the sheet` + (WF_SHARED ? ' and saved the link for everyone on the hub.' : ' and saved the link in this browser (the shared setting could not be written).') +
+        (WF_SHEET.unmatched.length ? ` Skipped: ${esc(WF_SHEET.unmatched.join(', '))}.` : ''), 'ok');
+      paint();
+    } catch (e){ renderWfSrc(esc(e.message), 'err'); }
+    busy(false);
+  };
+  clear.onclick = async () => {
+    busy(true);
+    WF_SHEET = null; attachSheetWf(); inp.value = '';
+    await persistWfUrl(null);
+    renderWfSrc(WF_SHARED ? 'Back to the hub table, for everyone on the hub.' : 'Back to the hub table in this browser.', 'ok');
+    WF_SHARED = null;
+    paint();
+    busy(false);
+  };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); load.click(); } });
+}
 const state = { slug: 'darwin', view: 'pop', wf: true, filter: 'all' };
 
 function boot(){ let n = 0; const t = setInterval(() => { if (window.sb){ clearInterval(t); load(); } else if (++n > 60){ clearInterval(t); $('#pfMsg').textContent = 'Could not connect.'; } }, 100); }
@@ -238,12 +446,20 @@ async function load(){
     const actual = {};
     if (!act.error) for (const r of (act.data || [])) (actual[r.region_slug] = actual[r.region_slug] || {})[{ natural_increase_fy: 'ni', nim_fy: 'im', nom_fy: 'om' }[r.metric]] = +r.value;
     build(vr.data || [], regions, wfTable, actual);
+    // Workforce from the saved major projects sheet, if one has been set
+    let wfErr = null;
+    const saved = await readSavedWfUrl();
+    if (saved.url){
+      try { await useWfSheet(saved.url, false); WF_SHARED = saved.shared; }
+      catch (e){ wfErr = e.message; try { $('#pfWfUrl').value = saved.url; } catch (_) {} }
+    }
     // Historical average yearly increase, computed exactly as the B/S slides do
     const hist = await fetchHistoricalAverages();
     for (const m of MARKETS) m.hist = hist[m.slug] || null;
     if (!MARKETS.length){ $('#pfMsg').textContent = 'No forecast rows yet.'; return; }
     stamp(vr.data);
     initUI();
+    renderWfSrc(wfErr ? `The saved sheet could not be read, so the hub table is in use. ${esc(wfErr)}` : null, wfErr ? 'err' : '');
   } catch (e){ $('#pfMsg').textContent = 'Error: ' + e.message; }
 }
 
@@ -305,27 +521,30 @@ function build(rows, regions, wfTable, actual){
     const m = {
       slug, name: slug === 'australia' ? 'Australia' : (reg.name || slug),
       state: reg.state || '', capital: reg.cluster === 'capital' && slug !== 'australia',
-      pop0: +p.population, ni: n0(v1.ni1) || 0, im: n0(v1.imBase1) || 0, share, nomNat, wf,
+      pop0: +p.population, ni: n0(v1.ni1) || 0, im: n0(v1.imBase1) || 0, share, nomNat, wfHub: wf, wfSheet: null,
       stored1: n0(v1.people1), stored1NoWf: n0(v1.people1NoWf), stored2NoWf: n0(v1.people2NoWf),
       actual: null,
     };
     const a = (actual || {})[slug];
     if (a && a.ni != null && a.im != null && a.om != null) m.actual = { ni: a.ni, im: a.im, om: a.om, add: a.ni + a.im + a.om };
     // self-check against the VR tool's stored figures (year 1 with and without WF, year 2 without)
-    const on = series(m, true), off = series(m, false);
+    const on = seriesWith(m, m.wfHub), off = seriesWith(m, null);
     const close = (a, b) => a == null || b == null || Math.abs(a - b) < 1;
     if (!close(on[0].add, m.stored1) || !close(off[0].add, m.stored1NoWf) || !close(off[1].add, m.stored2NoWf)) CHECK_FAILS.push(m.name);
     MARKETS.push(m); BY[slug] = m;
   }
   if (CHECK_FAILS.length) console.warn('[population-forecast] differs from the stored VR demand for:', CHECK_FAILS.join(', '));
+  attachSheetWf();
 }
 
-/* One market's four forecast years. wfOn=false drops the workforce entirely. */
-function series(m, wfOn){
+/* One market's four forecast years. wfOn=false drops the workforce entirely;
+   the workforce comes from the sheet when one is loaded, else the hub table. */
+function series(m, wfOn){ return seriesWith(m, wfOn ? wfOf(m) : null); }
+function seriesWith(m, wfArr){
   let pop = m.pop0, cumWf = 0;
   return YEARS.map((label, k) => {
     const om = m.share * m.nomNat[k];
-    const wf = wfOn && m.wf ? (m.wf[k] || 0) : 0;
+    const wf = wfArr ? (wfArr[k] || 0) : 0;
     const add = m.ni + m.im + om + wf;
     pop += add; cumWf += wf;
     return { label, ni: m.ni, im: m.im, om, wf, add, pop, cumWf };
@@ -342,6 +561,7 @@ function stamp(rows){
 function initUI(){
   $('#pfControls').style.display = 'flex';
   $('#pfSrcNote').style.display = 'block';
+  initWfSrc();
   const nat = MARKETS.filter(m => m.slug === 'australia');
   const states = Array.from(new Set(MARKETS.filter(m => m.slug !== 'australia').map(m => m.state))).sort();
   const sel = $('#pfRegion');
@@ -372,8 +592,8 @@ function paint(){
   if (!m) return;
   // the WF toggle only applies where there is a workforce entry
   const wfBtns = document.querySelectorAll('#pfWf button');
-  wfBtns.forEach(b => { b.disabled = !m.wf; });
-  const wfOn = state.wf && !!m.wf;
+  wfBtns.forEach(b => { b.disabled = !wfOf(m); });
+  const wfOn = state.wf && !!wfOf(m);
   const ys = series(m, wfOn);
   const last = ys[ys.length - 1];
   const change = last.pop - m.pop0, growth = change / m.pop0;
@@ -568,8 +788,10 @@ function methodNotes(){
       <div class="mnote"><b>Each year</b> adds natural increase + internal migration + overseas migration + the infrastructure workforce, on top of the population at 30 June 2025 (FY${BASE_LABEL}). Forecast year 1 is FY2025-26.</div>
       <div class="mnote"><b>Natural increase and internal migration</b> are the Vacancy Rate Projection's two-year averages (V1), held flat in every year. Melbourne carries that tool's manual internal-migration override.</div>
       <div class="mnote"><b>Overseas migration</b> is the national forecast for each year multiplied by the market's FY2024-25 share of national overseas migration: ${nom}. The shares are of the national total, so the markets don't add up to it.</div>
-      <div class="mnote"><b>Infrastructure workforce</b> uses each year's own figure from the manual workforce table. This is the one difference from the Vacancy Rate Projection, which repeats the year-1 figure in year 2; without the workforce, both years match it exactly. No local-hire, FIFO or camp discount is applied.</div>
-      ${WF_Y3_MISSING ? `<div class="mnote warn"><b>FY2027-28 workforce not loaded.</b> The workforce table holds two years (y1, y2). Add a y3 column to <code>public.vr_workforce</code> for FY2027-28; this page picks it up automatically. FY2028-29 has no workforce figure.</div>` : ''}
+      ${WF_SHEET
+        ? `<div class="mnote"><b>Infrastructure workforce</b> uses each year's new residents from the major projects sheet (“${esc(WF_SHEET_TAB)}” tab, "All regions: new residents by year": new jobs × resident conversion % × household size, as that sheet computes them). Sheet column 2026 is FY2025-26, 2027 is FY2026-27, 2028 is FY2027-28 and 2029 is FY2028-29; the 2025 catch-up column is not used. This is the one difference from the Vacancy Rate Projection, which uses the hub's workforce table and repeats the year-1 figure in year 2; without the workforce, both match exactly. No local-hire, FIFO or camp discount is applied beyond the sheet's conversion %.</div>`
+        : `<div class="mnote"><b>Infrastructure workforce</b> uses each year's own figure from the manual workforce table. This is the one difference from the Vacancy Rate Projection, which repeats the year-1 figure in year 2; without the workforce, both years match it exactly. No local-hire, FIFO or camp discount is applied.</div>`}
+      ${!WF_SHEET && WF_Y3_MISSING ? `<div class="mnote warn"><b>FY2027-28 workforce not loaded.</b> The workforce table holds two years (y1, y2). Add a y3 column to <code>public.vr_workforce</code> for FY2027-28, or paste the major projects sheet above. FY2028-29 has no workforce figure in the hub table.</div>` : ''}
       ${CHECK_FAILS.length ? `<div class="mnote warn"><b>Check:</b> year 1 differs from the stored VR demand for ${esc(CHECK_FAILS.join(', '))}. Rebuild the VR forecast or review this page's inputs.</div>` : ''}
       <div class="mnote"><b>Historical average</b> (the dashed line in "Added each year") is the average yearly change in population across the market's full ABS history, the same figure the Buying/Selling slides show: capital cities on their Greater Capital City series from 1980, regional markets from 2001 (ABS doesn't publish council-area populations on current boundaries before then).</div>
       <div class="mnote"><b>Overlaps:</b> Rockingham and Mandurah sit inside Greater Perth. Don't add them to the Perth figure.</div>
