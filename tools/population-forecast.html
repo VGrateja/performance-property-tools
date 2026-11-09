@@ -40,6 +40,7 @@
   .ctl{ display:flex; flex-direction:column; gap:5px; font-size:.7rem; font-weight:700; color:var(--muted); letter-spacing:.04em; text-transform:uppercase; }
   select#pfRegion{ padding:10px 14px; border:1px solid var(--line); border-radius:10px; background:var(--pop); color:var(--ink); font-family:inherit; font-weight:600; font-size:.9rem; min-width:280px; }
   select#pfRegion option, select#pfRegion optgroup{ background:var(--pop); color:var(--ink); }
+  select#pfRegion option.haswf{ color:var(--wf); font-weight:700; }
   .seg{ display:inline-flex; border:1px solid var(--line); border-radius:10px; overflow:hidden; height:41px; }
   .seg button{ appearance:none; border:0; background:var(--pop); color:var(--muted); font-family:inherit; font-weight:700; font-size:.85rem; padding:0 18px; cursor:pointer; letter-spacing:.01em; transition:background .12s,color .12s; }
   .seg button + button{ border-left:1px solid var(--line); }
@@ -74,12 +75,12 @@
   .chart svg text.v{ fill:var(--ink); font-weight:800; font-size:12px; }
   .chart svg text.w{ fill:var(--wf); font-weight:800; }
   .chart svg text.wi{ fill:#0d0b1a; font-weight:800; }
-  .chart svg text.avg{ fill:var(--ink); font-weight:800; paint-order:stroke; stroke:var(--halo); stroke-width:4px; stroke-linejoin:round; }
   .sw-avg{ width:16px !important; height:0 !important; border-top:2px dashed var(--muted); border-radius:0 !important; }
   [data-theme="light"] .chart svg text.wi{ fill:#fff; }
   .tip{ position:absolute; pointer-events:none; background:#1b1830; border:1px solid var(--line); border-radius:10px; padding:9px 12px; font-size:.74rem; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; z-index:5; box-shadow:0 10px 30px -12px rgba(0,0,0,.6); }
   .tip .t{ color:var(--muted); font-size:.64rem; letter-spacing:.08em; text-transform:uppercase; font-weight:800; margin-bottom:4px; }
   .tip .wf{ color:var(--wf); }
+  .tip .avg{ color:var(--muted); margin-top:4px; }
   .tip .tot{ margin-top:4px; padding-top:4px; border-top:1px solid var(--line); font-weight:800; }
 
   /* year-by-year chain table (same pattern as vr-projection's .vpt) */
@@ -629,7 +630,9 @@ function segment(sel, key, fn){
 function markWfRegions(){
   document.querySelectorAll('#pfRegion option').forEach(o => {
     const m = BY[o.value], wf = m && wfOf(m);
-    o.textContent = m ? m.name + (wf && wf.some(v => v > 0) ? ' +WF' : '') : o.textContent;
+    const has = !!(wf && wf.some(v => v > 0));
+    o.textContent = m ? m.name + (has ? ' +WF' : '') : o.textContent;
+    o.classList.toggle('haswf', has);
   });
 }
 
@@ -758,7 +761,6 @@ function drawChart(el, m, ys, wfOn){
     return `M${x},${yTop + rt}` + (rt ? `Q${x},${yTop} ${x + rt},${yTop}` : '') + `H${x + bw - rt}` + (rt ? `Q${x + bw},${yTop} ${x + bw},${yTop + rt}` : '') +
       `V${y1 - rb}` + (rb ? `Q${x + bw},${y1} ${x + bw - rb},${y1}` : '') + `H${x + rb}` + (rb ? `Q${x},${y1} ${x},${y1 - rb}` : '') + 'Z';
   };
-  const occ = [];   // boxes the bars and their labels occupy, so the average label can avoid them
   bars.forEach((b, i) => {
     const x = cx(i) - bw / 2, y0 = Y(0);
     const hasWf = b.wf > 0;
@@ -784,17 +786,13 @@ function drawChart(el, m, ys, wfOn){
       if (h >= 20) svg.append(mk('text', { class: 'wi', x: cx(i), y: topY + h / 2 + 4, 'text-anchor': 'middle' }, `+${num(b.wf)}`));
       else {
         svg.append(mk('text', { class: 'w', x: room ? x + bw + 6 : x - 6, y: topY + h / 2 + 4, 'text-anchor': room ? 'start' : 'end' }, lbl));
-        const lw = lbl.length * 7;
-        occ.push({ x1: room ? x + bw + 6 : x - 6 - lw, x2: room ? x + bw + 6 + lw : x - 6, y1: topY + h / 2 - 8, y2: topY + h / 2 + 6 });
       }
     }
     if (b.total >= 0){
       svg.append(mk('text', { class: 'v', x: cx(i), y: topY - 7, 'text-anchor': 'middle' }, fmtTop(b.total)));
-      occ.push({ x1: x, x2: x + bw, y1: topY - 20, y2: y0 });
     } else {
       const yl = Y(Math.min(b.base, b.total)) + 15;
       svg.append(mk('text', { class: 'v', x: cx(i), y: yl, 'text-anchor': 'middle' }, fmtTop(b.total)));
-      occ.push({ x1: x, x2: x + bw, y1: y0, y2: yl + 4 });
     }
     svg.append(mk('text', { x: cx(i), y: H - 7, 'text-anchor': 'middle' }, b.label));
     const hit = mk('rect', { x: step * i, width: step, y: 0, height: H, fill: 'transparent' });
@@ -807,45 +805,20 @@ function drawChart(el, m, ys, wfOn){
   if (avg != null){
     const ya = Y(avg);
     svg.append(mk('line', { x1: 0, x2: W, y1: ya, y2: ya, stroke: 'var(--muted)', 'stroke-width': 2, 'stroke-dasharray': '6 5', 'pointer-events': 'none' }));
-    /* Label placement: the right end is the natural spot, but when the line
-       crosses the last bar (Darwin with the sheet workforce) the label would
-       sit on the bar. Candidates, in order: right end, left end, the gaps
-       between bars (right to left), over each bar — first just above the line,
-       then just below it. The full label is tried first; if every spot is
-       blocked (all years above the average) a short "Avg +2,215/yr" is tried
-       in the same spots, which fits between two bars. Last resort: right end. */
-    const full = `Historical average ${signed(avg)} a year`, short = `Avg ${signed(avg)}/yr`;
-    const spotsFor = tw => {
-      const out = [];
-      for (const dy of [-7, 15]){
-        out.push({ x: W - 2, a: 'end', x1: W - 2 - tw, x2: W - 2, dy });
-        out.push({ x: 2, a: 'start', x1: 2, x2: 2 + tw, dy });
-        for (let i = bars.length - 1; i > 0; i--){ const gx = (cx(i - 1) + cx(i)) / 2; out.push({ x: gx, a: 'middle', x1: gx - tw / 2, x2: gx + tw / 2, dy }); }
-        bars.forEach((b, i) => out.push({ x: cx(i), a: 'middle', x1: cx(i) - tw / 2, x2: cx(i) + tw / 2, dy }));
-      }
-      return out;
-    };
-    const clear = sp => {
-      const y1 = ya + sp.dy - 11, y2 = ya + sp.dy + 3;
-      return sp.x1 >= 0 && sp.x2 <= W && y1 >= 2 && y2 <= H - bottom &&
-        !occ.some(o => sp.x1 < o.x2 && sp.x2 > o.x1 && y1 < o.y2 && y2 > o.y1);
-    };
-    let txt = full, sp = spotsFor(full.length * 6.6 + 6).find(clear);
-    if (!sp){ const s2 = spotsFor(short.length * 6.6 + 6).find(clear); if (s2){ txt = short; sp = s2; } }
-    if (!sp) sp = { x: W - 2, a: 'end', dy: -7 };
-    svg.append(mk('text', { class: 'avg', x: sp.x, y: ya + sp.dy, 'text-anchor': sp.a, 'pointer-events': 'none' }, txt));
+    // no on-chart label: the legend names the line and every bar's tooltip carries the figure
   }
   el.replaceChildren(svg);
   const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; el.append(tip);
 }
 
+const avgLine = m => m.hist ? `<div class="avg">Historical average: ${signed(Math.round(m.hist.avg))} a year (${esc(m.hist.label)})</div>` : '';
 function showTip(el, ev, m, b){
   const tip = el.querySelector('.tip');
   let html = `<div class="t">${esc(m.name)} · ${esc(b.label)}${b.cur ? (state.view === 'added' ? ' (actual)' : ' (current)') : ''}</div>`;
   if (b.cur && state.view === 'added'){
     const a = b.y;
     html += `<div>Births minus deaths: ${signed(a.ni)}</div><div>Moves within Australia: ${signed(a.im)}</div><div>Overseas migration: ${signed(a.om)}</div>` +
-      `<div class="tot">Added in the year: ${signed(a.add)}</div>`;
+      `<div class="tot">Added in the year: ${signed(a.add)}</div>` + avgLine(m);
   }
   else if (b.cur) html += `<div>${num(b.total)}</div>`;
   else if (state.view === 'pop'){
@@ -854,7 +827,7 @@ function showTip(el, ev, m, b){
   } else {
     const y = b.y;
     html += `<div>Births minus deaths: ${signed(y.ni)}</div><div>Moves within Australia: ${signed(y.im)}</div><div>Overseas migration: ${signed(y.om)}</div>` +
-      (y.wf ? `<div class="wf">Major projects (WF): +${num(y.wf)}</div>` : '') + `<div class="tot">Added in the year: ${signed(y.add)}</div>`;
+      (y.wf ? `<div class="wf">Major projects (WF): +${num(y.wf)}</div>` : '') + `<div class="tot">Added in the year: ${signed(y.add)}</div>` + avgLine(m);
   }
   tip.innerHTML = html; tip.hidden = false;
   const box = el.getBoundingClientRect();
