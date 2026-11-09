@@ -176,6 +176,7 @@
   .jr .v{ font-size:.68rem; font-weight:800; color:var(--wf); font-variant-numeric:tabular-nums; }
   .jr .bars{ display:flex; gap:3px; align-items:flex-end; width:100%; justify-content:center; }
   .jr .b{ width:38%; border-radius:4px 4px 0 0; min-height:2px; } .jr .b.j{ background:var(--teal); } .jr .b.r{ background:var(--wf); }
+  .jr.pl .b{ width:28%; } .jr .b.f{ background:var(--red); } .jr .b.o{ background:var(--muted); } .jr .v.ink{ color:var(--ink); }
   .jrx{ display:grid; gap:10px; font-size:.68rem; font-weight:600; color:var(--muted); text-align:center; font-variant-numeric:tabular-nums; margin-top:6px; }
   .jrx .fy{ display:block; color:var(--wf); } .jrx .cu{ display:block; color:var(--muted); opacity:.7; }
   .conv{ padding:16px 18px; border-radius:14px; background:var(--panel2); border:1px solid var(--line); font-size:.8rem; }
@@ -283,7 +284,7 @@
               (key population_forecast_wf_sheet) for every signed-in user when
               the account may write there, and in this browser otherwise. The
               sheet must be shared "Anyone with the link can view": the page
-              reads it through Google's CSV export (gviz), no key, no server.
+              reads it through Google's tab list (/htmlview) and per-tab CSV export, no key, no server.
           This is the one deliberate difference from the VR tool, whose V1
           method repeats y1 in year 2. Without WF, and in year 1 with the hub
           table's WF, the figures equal the VR tool's stored people1 / people2
@@ -315,8 +316,12 @@ const WF_CFG_KEY = 'population_forecast_wf_sheet';   // rdp_runway_config key, s
 const WF_LS_KEY = 'ppPopForecastWfSheet';            // this browser's copy / fallback
 const WF_SHEET_TAB = 'Jobs to Residents';       // one row per region and year; "New residents (population input)"
 const WF_SHEET_TAB_ALT = 'Region Calculation';  // older layout: "All regions: new residents by year" (Region, 2025, 2026, …)
+const PLOTTED_TAB = 'Plotted';                  // June 2026 layout: per-region blocks of construction jobs added / finalised / ongoing / active by year
+// region tabs in the June 2026 workbook are named by code
+const TAB_ALIASES = { darwin: ['DAR'], gladstone: ['GLA'], townsville: ['TVL'], rockhampton: ['RKHP'], 'gold-coast': ['GC'], 'sunshine-coast': ['SC'], brisbane: ['BRIS'], perth: ['PER'], melbourne: ['MELB'], sydney: ['SYD'], mackay: ['MAC'] };
 const WF_YEAR_COL = { 2026: 0, 2027: 1, 2028: 2, 2029: 3 }; // sheet calendar column -> forecast year index
-let WF_SHEET = null;   // { url, id, byName, matched, unmatched, loadedAt } when a sheet is in use
+let WB = null;         // the loaded workbook: { url, id, j2r, plotted, found } — any tab kind may be missing
+let WF_SHEET = null;   // { url, id, byName, conv, years, matched, unmatched, loadedAt } when the workbook carries a workforce tab
 let WF_SHARED = null;  // true: link saved for everyone; false: this browser only; null: unknown
 
 const wfNorm = n => String(n == null ? '' : n).toLowerCase().replace(/\(.*?\)/g, '').replace(/^greater\s+/, '').replace(/[^a-z]+/g, ' ').trim();
@@ -417,32 +422,82 @@ function parseWfWide(rows){
   return Object.keys(byName).length ? { byName, years, layout: 'wide' } : null;
 }
 
-/* Google's CSV export of one tab (gviz). Works without a key or server for a sheet
-   shared "Anyone with the link can view"; a private sheet fails the CORS check. */
-async function fetchWfSheet(url){
-  const id = sheetIdFrom(url);
-  if (!id) throw new Error('That is not a Google Sheets link. Paste the address of the major projects workbook.');
-  const gid = gidFrom(url);
-  const tries = ['sheet=' + encodeURIComponent(WF_SHEET_TAB), 'sheet=' + encodeURIComponent(WF_SHEET_TAB_ALT)].concat(gid ? ['gid=' + gid] : [], ['']);
-  let last = null;
-  for (const q of tries){
-    try {
-      const r = await fetch(`https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv${q ? '&' + q : ''}`, { credentials: 'omit', cache: 'no-store' });
-      if (!r.ok){ last = new Error(`Google answered ${r.status}. Check the link and that the sheet is shared “Anyone with the link can view”.`); continue; }
-      const parsed = parseWfTable(await r.text());
-      if (parsed) return Object.assign({ id }, parsed);
-      last = new Error(`Couldn't find a workforce table: neither “${WF_SHEET_TAB}” (REGION, YEAR, …, New residents) nor “${WF_SHEET_TAB_ALT}” ("All regions: new residents by year").`);
-    } catch (e){
-      last = (e instanceof TypeError) ? new Error('Couldn\'t reach the sheet. Share it as “Anyone with the link can view” (Share → General access), then try again.') : e;
+/* "Plotted" tab: blocks headed REGION | Construction jobs added | Construction jobs finalised |
+   Finalisation jobs ongoing | Total project jobs active, then one row per year. */
+function parsePlotted(csv){
+  const rows = parseCsv(csv);
+  const byName = {};
+  let cur = null, cols = null;
+  for (const r of rows){
+    const c0 = String(r[0] == null ? '' : r[0]).trim();
+    if (c0 && !/^\d{4}$/.test(c0) && r.some(c => /jobs added/i.test(String(c))) && r.some(c => /active/i.test(String(c)))){
+      const head = r.map(c => String(c).trim());
+      cols = { added: head.findIndex(c => /added/i.test(c)), fin: head.findIndex(c => /finalised|finalized/i.test(c)), ongoing: head.findIndex(c => /ongoing/i.test(c)), active: head.findIndex(c => /active/i.test(c)) };
+      cur = byName[wfNorm(c0)] = { name: c0.replace(/\s+/g, ' ').replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1).toLowerCase()), years: {} };
+      continue;
+    }
+    if (cur && /^\d{4}$/.test(c0)){
+      const g = i => i >= 0 ? wfNum(r[i]) : null;
+      cur.years[+c0] = { added: g(cols.added), fin: g(cols.fin), ongoing: g(cols.ongoing), active: g(cols.active) };
     }
   }
-  throw last || new Error('Could not read the sheet.');
+  return Object.keys(byName).length ? { byName } : null;
+}
+
+/* Reading a workbook without a key or server. Two Google endpoints, both CORS-enabled for a
+   sheet shared "Anyone with the link can view":
+     /htmlview            lists every tab with its gid (items.push({name: "...", gid: "..."}))
+     /export?format=csv&gid=N   that tab as plain CSV, every row intact
+   The gviz export used before infers a type per column and drops text cells (block headers)
+   from numeric columns, which broke the "Plotted" layout and merged header rows. */
+const TABS_CACHE = {};
+async function listTabs(id){
+  if (TABS_CACHE[id]) return TABS_CACHE[id];
+  const p = (async () => {
+    const r = await fetch(`https://docs.google.com/spreadsheets/d/${id}/htmlview`, { credentials: 'omit', cache: 'no-store' });
+    if (!r.ok) throw new Error(`Google answered ${r.status}. Check the link and that the sheet is shared “Anyone with the link can view”.`);
+    const html = await r.text(), tabs = {};
+    const re = /items\.push\(\{name: "((?:[^"\\]|\\.)*)"[^}]*?gid: "(\d+)"/g;
+    let m; while ((m = re.exec(html))) tabs[JSON.parse('"' + m[1] + '"')] = m[2];
+    if (!Object.keys(tabs).length) throw new Error('Could not read the list of tabs in that sheet.');
+    return tabs;
+  })();
+  TABS_CACHE[id] = p; p.catch(() => { delete TABS_CACHE[id]; });
+  return p;
+}
+const tabGid = (tabs, name) => { const k = Object.keys(tabs).find(t => t.trim().toLowerCase() === String(name).trim().toLowerCase()); return k == null ? null : tabs[k]; };
+async function getTab(id, tabs, name){
+  const gid = tabGid(tabs, name);
+  if (gid == null) return null;
+  const r = await fetch(`https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`, { credentials: 'omit', cache: 'no-store' });
+  if (!r.ok) throw new Error(`Google answered ${r.status} for the “${name}” tab.`);
+  return r.text();
+}
+const shareErr = e => (e instanceof TypeError) ? new Error('Couldn\'t reach the sheet. Share it as “Anyone with the link can view” (Share → General access), then try again.') : e;
+
+async function fetchWorkbook(url){
+  const id = sheetIdFrom(url);
+  if (!id) throw new Error('That is not a Google Sheets link. Paste the address of the major projects workbook.');
+  let tabs, j2r = null, plotted = null, found = [];
+  try {
+    tabs = await listTabs(id);
+    for (const tab of [WF_SHEET_TAB, WF_SHEET_TAB_ALT]){
+      const csv = await getTab(id, tabs, tab);
+      const parsed = csv && parseWfTable(csv);
+      if (parsed){ j2r = parsed; found.push(tab); break; }
+    }
+    const pcsv = await getTab(id, tabs, PLOTTED_TAB);
+    plotted = pcsv ? parsePlotted(pcsv) : null;
+    if (plotted) found.push(PLOTTED_TAB);
+  } catch (e){ throw shareErr(e); }
+  if (!j2r && !plotted) throw new Error(`Couldn't find a workforce or jobs table: no “${WF_SHEET_TAB}” (REGION, YEAR, …, New residents), “${WF_SHEET_TAB_ALT}” ("All regions: new residents by year") or “${PLOTTED_TAB}” tab. Tabs seen: ${Object.keys(tabs).join(', ')}.`);
+  return { id, tabs, j2r, plotted, found };
 }
 
 /* The region's own tab of the workbook: one row per project. Columns are found by
    header text (PROJECTS, LOCATION, STATUS, START, END, ESTIMATED COST, JOBS CREATED -
-   CONSTRUCTION / OPERATION, Proponent, SOURCE - COST, Basis). gviz answers an unknown tab
-   name with the FIRST tab, so a result without a projects header counts as "no tab". */
+   CONSTRUCTION / OPERATION, Proponent, SOURCE - COST, Basis). A tab is looked up by name
+   (then by the June 2026 code, DAR / PER …) in the workbook's tab list. */
 let PROJ_CACHE = {};
 let TL_ALL = false;            // Major projects timeline: all dated rows, or the largest TL_TOP
 const TL_TOP = 12;
@@ -469,12 +524,17 @@ function parseProjects(csv){
   return { rows: out, hasBasis: C.basis >= 0 };
 }
 async function fetchProjects(m){
-  const key = WF_SHEET.id + '|' + m.name;
+  const key = WB.id + '|' + m.slug;
   if (PROJ_CACHE[key]) return PROJ_CACHE[key];
   const p = (async () => {
-    const r = await fetch(`https://docs.google.com/spreadsheets/d/${WF_SHEET.id}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(m.name)}`, { credentials: 'omit', cache: 'no-store' });
-    if (!r.ok) throw new Error(`Google answered ${r.status} for the “${m.name}” tab.`);
-    return parseProjects(await r.text());
+    for (const tab of [m.name].concat(TAB_ALIASES[m.slug] || [])){
+      let csv;
+      try { csv = await getTab(WB.id, WB.tabs, tab); } catch (e){ throw shareErr(e); }
+      if (!csv) continue;                           // no tab of that name
+      const parsed = parseProjects(csv);
+      if (parsed) return Object.assign(parsed, { tab });
+    }
+    return null;
   })();
   PROJ_CACHE[key] = p;
   p.catch(() => { delete PROJ_CACHE[key]; });
@@ -499,8 +559,9 @@ function attachSheetWf(){
 const wfOf = m => WF_SHEET ? m.wfSheet : m.wfHub;
 
 async function useWfSheet(url, persist){
-  const data = await fetchWfSheet(url);
-  WF_SHEET = { url, id: data.id, byName: data.byName, conv: data.conv || {}, years: data.years, matched: [], unmatched: [], loadedAt: new Date() };
+  const wb = await fetchWorkbook(url);
+  WB = { url, id: wb.id, tabs: wb.tabs, j2r: wb.j2r, plotted: wb.plotted, found: wb.found, loadedAt: new Date() };
+  WF_SHEET = wb.j2r ? { url, id: wb.id, byName: wb.j2r.byName, conv: wb.j2r.conv || {}, years: wb.j2r.years, matched: [], unmatched: [], loadedAt: WB.loadedAt } : null;
   PROJ_CACHE = {};
   attachSheetWf();
   if (persist) await persistWfUrl(url);
@@ -534,22 +595,26 @@ function renderWfSrc(msg, cls){
   box.style.display = 'block';
   const hubN = MARKETS.filter(m => m.wfHub).length;
   const st = $('#pfWfState');
-  if (WF_SHEET){
-    st.innerHTML = `· from the sheet: <b>${WF_SHEET.matched.length}</b> markets, ${esc(WF_SHEET.years[0])} to ${esc(WF_SHEET.years[WF_SHEET.years.length - 1])}` +
-      (WF_SHARED === true ? ' · saved for everyone on the hub' : WF_SHARED === false ? ' · saved in this browser only' : '');
+  if (WB){
+    const parts = [];
+    parts.push(WF_SHEET ? `workforce from the sheet: <b>${WF_SHEET.matched.length}</b> markets, ${esc(WF_SHEET.years[0])} to ${esc(WF_SHEET.years[WF_SHEET.years.length - 1])}`
+                        : `no workforce tab, so the hub table <code>vr_workforce</code> stays in use (<b>${hubN}</b> markets)`);
+    if (WB.plotted) parts.push(`“${esc(PLOTTED_TAB)}” jobs for <b>${Object.keys(WB.plotted.byName).length}</b> regions`);
+    st.innerHTML = '· ' + parts.join(' · ') + (WF_SHARED === true ? ' · saved for everyone on the hub' : WF_SHARED === false ? ' · saved in this browser only' : '');
   } else {
     st.innerHTML = `· from the hub table <code>vr_workforce</code>: <b>${hubN}</b> markets` + (WF_Y3_MISSING ? ', FY2027-28 missing' : '');
   }
   const inp = $('#pfWfUrl');
-  if (WF_SHEET && document.activeElement !== inp) inp.value = WF_SHEET.url;
-  $('#pfWfClear').style.display = WF_SHEET ? '' : 'none';
+  if (WB && document.activeElement !== inp) inp.value = WB.url;
+  $('#pfWfClear').style.display = WB ? '' : 'none';
   const el = $('#pfWfMsg');
   el.className = 'wfsrc-msg' + (cls ? ' ' + cls : '');
   if (msg != null) el.innerHTML = msg;
+  else if (WB && !WF_SHEET) el.innerHTML = `This workbook has no “${esc(WF_SHEET_TAB)}” tab, so the forecast keeps the hub workforce table. Its “${esc(PLOTTED_TAB)}” jobs and project tabs show below.`;
   else if (WF_SHEET) el.innerHTML = `Years: sheet year 2026 → FY2025-26, 2027 → FY2026-27, 2028 → FY2027-28, 2029 → FY2028-29; the 2025 catch-up year and later years are not used.` +
       (WF_SHEET.unmatched.length ? ` Not a market on this page, skipped: ${esc(WF_SHEET.unmatched.join(', '))}.` : '') +
       ` Markets not in the sheet have no workforce while it is in use.`;
-  else el.innerHTML = `Paste the link of the latest major projects workbook to use its “${WF_SHEET_TAB}” tab (New residents by region and year) instead. The sheet must be shared “Anyone with the link can view”.`;
+  else el.innerHTML = `Paste the link of a major projects workbook. Its “${WF_SHEET_TAB}” tab (new residents by region and year) replaces the hub workforce table; its “${PLOTTED_TAB}” tab and the market's own tab fill this view. The sheet must be shared “Anyone with the link can view”.`;
 }
 
 function initWfSrc(){
@@ -561,15 +626,16 @@ function initWfSrc(){
     busy(true); renderWfSrc('Reading the sheet…');
     try {
       await useWfSheet(url, true);
-      renderWfSrc(`Loaded ${WF_SHEET.matched.length} markets from the sheet` + (WF_SHARED ? ' and saved the link for everyone on the hub.' : ' and saved the link in this browser (the shared setting could not be written).') +
-        (WF_SHEET.unmatched.length ? ` Skipped: ${esc(WF_SHEET.unmatched.join(', '))}.` : ''), 'ok');
+      renderWfSrc(`Loaded the workbook (${WB.found.map(t => '“' + esc(t) + '”').join(', ')})` + (WF_SHEET ? `: workforce for ${WF_SHEET.matched.length} markets` : ': no workforce tab, hub table kept') +
+        (WF_SHARED ? '; link saved for everyone on the hub.' : '; link saved in this browser (the shared setting could not be written).') +
+        (WF_SHEET && WF_SHEET.unmatched.length ? ` Skipped: ${esc(WF_SHEET.unmatched.join(', '))}.` : ''), 'ok');
       paint();
     } catch (e){ renderWfSrc(esc(e.message), 'err'); }
     busy(false);
   };
   clear.onclick = async () => {
     busy(true);
-    WF_SHEET = null; attachSheetWf(); inp.value = '';
+    WB = null; WF_SHEET = null; PROJ_CACHE = {}; attachSheetWf(); inp.value = '';
     await persistWfUrl(null);
     renderWfSrc(WF_SHARED ? 'Back to the hub table, for everyone on the hub.' : 'Back to the hub table in this browser.', 'ok');
     WF_SHARED = null;
@@ -953,7 +1019,7 @@ function paintProjects(m){
   </div>`;
   $('#pfProjSrc').appendChild($('#pfWfSrc'));
   const body = $('#pfProjBody');
-  if (!WF_SHEET){
+  if (!WB){
     body.innerHTML = `<div class="pnote" style="margin-top:14px">The hub workforce table holds yearly figures only, no project list. Paste the major projects workbook link above to see the projects behind the amber bars${wf ? `. Hub table for ${esc(m.name)}: ${YEARS.map((y, k) => `${y} <b>+${num(wf[k] || 0)}</b>`).join(' · ')}` : ''}.</div>`;
     return;
   }
@@ -964,9 +1030,29 @@ function paintProjects(m){
     renderProjects(m, data);
   }).catch(e => {
     if (state.slug !== slug || state.view !== 'proj') return;
-    body.innerHTML = `<div class="pnote" style="margin-top:14px">Couldn't read the “${esc(m.name)}” tab: ${esc(e.message)}</div>` + jobsResidentsHtml(m);
+    body.innerHTML = `<div class="pnote" style="margin-top:14px">Couldn't read the “${esc(m.name)}” tab: ${esc(e.message)}</div>` + jobsResidentsHtml(m) + plottedHtml(m);
     bindJr();
   });
+}
+
+/* "Plotted" tab for this market: construction jobs added, finalised, ongoing, and the total active. */
+function plottedHtml(m){
+  const e = WB && WB.plotted ? (WB.plotted.byName[wfNorm(m.name)] || WB.plotted.byName[wfNorm(m.slug)]) : null;
+  if (!e) return '';
+  const all = Object.keys(e.years).map(Number).sort((a, b) => a - b), yrs = all.slice(0, 12);
+  const max = Math.max(1, ...yrs.map(y => Math.max(e.years[y].added || 0, e.years[y].fin || 0, e.years[y].ongoing || 0)));
+  const H = 110, h = v => Math.max(2, Math.round((v || 0) / max * H));
+  const fy = y => WF_YEAR_COL[y] != null ? `<span class="fy">FY${YEARS[WF_YEAR_COL[y]].replace(/^20/, '')}</span>` : '';
+  return `
+    <div class="psec">
+      <h3>Project jobs by year · “${esc(PLOTTED_TAB)}” tab</h3>
+      <div class="lg"><span><i style="background:var(--teal)"></i>Construction jobs added</span><span><i style="background:var(--red)"></i>Construction jobs finalised</span><span><i style="background:var(--muted)"></i>Finalisation jobs ongoing</span><span><b style="color:var(--ink)">Label</b>&nbsp;Total project jobs active</span></div>
+      <div class="jr pl" style="grid-template-columns:repeat(${yrs.length},minmax(0,1fr))">
+        ${yrs.map(y => { const v = e.years[y]; return `<div class="col"><div class="v ink">${num(v.active)}</div><div class="bars"><div class="b j" style="height:${h(v.added)}px" title="Added ${num(v.added)}"></div><div class="b f" style="height:${h(v.fin)}px" title="Finalised ${num(v.fin)}"></div><div class="b o" style="height:${h(v.ongoing)}px" title="Ongoing ${num(v.ongoing)}"></div></div></div>`; }).join('')}
+      </div>
+      <div class="jrx" style="grid-template-columns:repeat(${yrs.length},minmax(0,1fr))">${yrs.map(y => `<div>${y}${fy(y)}</div>`).join('')}</div>
+      <div class="pnote">Total project jobs active = the year before + added − finalised + ongoing, as the sheet computes it. Jobs, not residents: this workbook layout has no conversion to new residents${WF_SHEET ? '' : ', so the forecast keeps the hub workforce table'}.${all.length > yrs.length ? ` Years after ${yrs[yrs.length - 1]} are not shown.` : ''}</div>
+    </div>`;
 }
 
 function jobsResidentsHtml(m){
@@ -1011,7 +1097,7 @@ function renderProjectsAgain(m, data){
 function renderProjects(m, data){
   const body = $('#pfProjBody');
   if (!data){
-    body.innerHTML = `<div class="pnote" style="margin-top:14px">The workbook has no “${esc(m.name)}” tab, so there is no project list for this market. The workforce figures still come from the “${esc(WF_SHEET_TAB)}” tab.</div>` + jobsResidentsHtml(m);
+    body.innerHTML = `<div class="pnote" style="margin-top:14px">The workbook has no “${esc(m.name)}” tab, so there is no project list for this market.${WF_SHEET ? ` The workforce figures still come from the “${esc(WF_SHEET_TAB)}” tab.` : ''}</div>` + jobsResidentsHtml(m) + plottedHtml(m);
     return;
   }
   const rows = data.rows.slice().sort((a, b) => (b.cost || 0) - (a.cost || 0));
@@ -1024,7 +1110,7 @@ function renderProjects(m, data){
     `<div class="dirchip"><div class="t money">${money(tot.cost)}</div><div class="l">estimated cost</div></div>` +
     `<div class="dirchip"><div class="t money">${num(tot.jc)}</div><div class="l">construction jobs</div></div>` +
     `<div class="dirchip"><div class="t money">${num(tot.jo)}</div><div class="l">operational jobs</div></div>`);
-  $('#pfProjSub').insertAdjacentHTML('beforeend', ` · <b>${rows.length}</b> live project${rows.length === 1 ? '' : 's'} on the sheet${data.hasBasis ? ` (${rows.length - nListed} Verified, ${nListed} Listed)` : ''}`);
+  $('#pfProjSub').insertAdjacentHTML('beforeend', ` · <b>${rows.length}</b> live project${rows.length === 1 ? '' : 's'} on the “${esc(data.tab)}” tab${data.hasBasis ? ` (${rows.length - nListed} Verified, ${nListed} Listed)` : ''}`);
 
   // timeline
   const dated = rows.filter(r => r.start && r.end && r.end >= r.start), undated = rows.filter(r => !(r.start && r.end && r.end >= r.start));
@@ -1075,7 +1161,7 @@ function renderProjects(m, data){
       ${data.hasBasis ? `<div class="pnote"><b style="color:var(--ink)">Verified</b> rows pass the workbook's strict test: a live project (Planning, Confirmed or Underway on a dated status check) with a published cost from an official or primary source, published start and end years, inside the region and above its minimum cost. <b style="color:var(--ink)">Listed</b> rows (greyed) are live and above the minimum but fail one of those tests: programs or packages rather than one project, proposals without a final investment decision, budget allocations or contract values standing in for a cost, news-only or 2025-list figures, or no published dates. Completed, cancelled, moved, uncosted and below-minimum projects are in neither tier. Both tiers count in the totals and in the jobs that become residents; "of which Verified" keeps the strict figure.</div>` : ''}
     </div>`;
 
-  body.innerHTML = jobsResidentsHtml(m) + tl + table;   // jobs → residents first: it is what feeds the forecast
+  body.innerHTML = jobsResidentsHtml(m) + plottedHtml(m) + tl + table;   // jobs → residents first: it is what feeds the forecast
   const more = $('#pfTlMore');
   if (more) more.onclick = () => { TL_ALL = !TL_ALL; const y = scrollY; renderProjectsAgain(m, data); scrollTo(0, y); };
   const q = $('#pfProjQ');
@@ -1123,7 +1209,7 @@ function methodNotes(){
       ${!WF_SHEET && WF_Y3_MISSING ? `<div class="mnote warn"><b>FY2027-28 workforce not loaded.</b> The workforce table holds two years (y1, y2). Add a y3 column to <code>public.vr_workforce</code> for FY2027-28, or paste the major projects sheet above. FY2028-29 has no workforce figure in the hub table.</div>` : ''}
       ${CHECK_FAILS.length ? `<div class="mnote warn"><b>Check:</b> year 1 differs from the stored VR demand for ${esc(CHECK_FAILS.join(', '))}. Rebuild the VR forecast or review this page's inputs.</div>` : ''}
       <div class="mnote"><b>Historical average</b> (the dashed line in "Added each year") is the average yearly change in population across the market's full ABS history, the same figure the Buying/Selling slides show: capital cities on their Greater Capital City series from 1980, regional markets from 2001 (ABS doesn't publish council-area populations on current boundaries before then).</div>
-      <div class="mnote"><b>Major projects view</b> reads the selected market's own tab of the pasted workbook (project, status, start and end years, estimated cost, construction and operational jobs, proponent, sources) and that workbook's “${esc(WF_SHEET_TAB)}” tab for the yearly conversion. Where the tab carries a Basis column, <b>Verified</b> rows meet the strict test (live, officially costed, dated, in the region, above the minimum cost) and <b>Listed</b> rows are live but fail one of those tests; both count. Nothing from it is stored on the hub; markets without a tab show the workforce figures only.</div>
+      <div class="mnote"><b>Major projects view</b> reads the selected market's own tab of the pasted workbook (project, status, start and end years, estimated cost, construction and operational jobs, proponent, sources) and that workbook's “${esc(WF_SHEET_TAB)}” tab for the yearly conversion. Where the tab carries a Basis column, <b>Verified</b> rows meet the strict test (live, officially costed, dated, in the region, above the minimum cost) and <b>Listed</b> rows are live but fail one of those tests; both count. A workbook with a “${esc(PLOTTED_TAB)}” tab (June 2026 layout) also shows construction jobs added, finalised, ongoing and active by year; that layout has no residents conversion, so on its own it leaves the forecast on the hub workforce table. Nothing from it is stored on the hub; markets without a tab show the workforce figures only.</div>
       <div class="mnote"><b>Overlaps:</b> Rockingham and Mandurah sit inside Greater Perth. Don't add them to the Perth figure.</div>
     </div>`;
 }
