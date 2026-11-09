@@ -2245,7 +2245,8 @@ function _bssAxisTipWrap(option){
     const list=augment(params);
     if(custom) return custom(list);
     const p0=list[0]||{}; const head=p0.axisValueLabel!=null?p0.axisValueLabel:p0.axisValue;
-    const rows=list.map(p=>{ const v=_bssRawVal(p.value); const txt=v==null?'—':(vf?vf(v,p.dataIndex):String(v));
+    const rows=list.map(p=>{ const v=_bssRawVal(p.value); const sr=series[p.seriesIndex], f=(sr&&sr.tooltip&&typeof sr.tooltip.valueFormatter==='function')?sr.tooltip.valueFormatter:vf;   /* a series-level valueFormatter wins, as in plain ECharts (the cash-rate % line on the $ Median Price chart) */
+      const txt=v==null?'—':(f?f(v,p.dataIndex):String(v));
       return '<div style="margin:10px 0 0;line-height:1;">'+p.marker+'<span style="font-size:14px;color:#666;font-weight:400;margin-left:2px">'+esc(p.seriesName==null?'':String(p.seriesName))+'</span><span style="float:right;margin-left:20px;font-size:14px;color:#666;font-weight:900">'+txt+'</span><div style="clear:both"></div></div>'; }).join('');
     return '<div style="font-size:14px;color:#666;font-weight:400;line-height:1;">'+esc(head==null?'':String(head))+'</div>'+rows;
   };
@@ -2343,11 +2344,38 @@ async function renderHouseUnit(host, slug){
   await whenChartsReady();
   if(!window.echarts||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
   if(!window.PP_BSS){ host.innerHTML='<div class="bss-chartload">Chart definitions unavailable.</div>'; return; }
-  const payload=await getFeed(slug);
+  const [payload,cash]=await Promise.all([getFeed(slug),getCashRateA()]);
   if(!payload){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
   const option=await window.PP_BSS.option('house_unit',{slug:slug,mode:state.mode});
   if(!option){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  try{ _bssHouseUnitCash(option,cash); }catch(e){}
   _drawEChart(host, option);
+}
+/* RBA cash rate on House v Unit (2026-11-09) — layered on HERE, after the
+   shared module builds the chart, so shared/bss-slides.js stays untouched (no
+   re-stamp). The module already owns a right % axis (% Difference H v U), so
+   the rate gets a THIRD axis further out (offset) named "Interest rate". Same
+   rules as the Median Price slide: year-end freq='A' values from
+   getCashRateA(), gap before 1990, max = peak rounded up to even + 2. No rate
+   data → the option is left exactly as the module built it. Note the
+   Presentation builder's B/S Library draws house_unit from the shared module
+   directly, so it does not get this line. */
+function _bssHouseUnitCash(option, cash){
+  const NAME='RBA cash rate', years=option&&option.xAxis&&option.xAxis.data;
+  if(!cash||!Array.isArray(years)||!Array.isArray(option.yAxis)) return;
+  const cr=years.map(y=>(cash[+y]!=null)?+(cash[+y]*100).toFixed(2):null);
+  if(!cr.some(v=>v!=null)) return;
+  const max=Math.ceil(Math.max.apply(null,cr.filter(v=>v!=null))/2)*2+2;
+  const fmt=option.tooltip.formatter;
+  const axis={ type:'value', position:'right', offset:46, min:0, max:max, interval:2, name:'Interest rate', nameLocation:'middle', nameGap:34, nameRotate:-90,
+    nameTextStyle:{color:'#444',fontSize:10,fontWeight:700}, axisLine:{show:true,lineStyle:{color:'#999'}}, axisLabel:{color:'#444',fontSize:9,formatter:v=>v+'%'}, splitLine:{show:false} };
+  const tip=params=>{ const list=Array.isArray(params)?params:[params], rest=list.filter(p=>p.seriesName!==NAME);
+    return fmt(rest.length?rest:list)+list.filter(p=>p.seriesName===NAME).map(p=>'<br>'+p.marker+p.seriesName+': <b>'+(p.value==null?'—':Number(p.value).toFixed(2)+'%')+'</b>').join(''); };
+  option.yAxis=option.yAxis.concat([axis]);
+  option.series=option.series.concat([{ name:NAME, type:'line', yAxisIndex:option.yAxis.length-1, data:cr, showSymbol:false, lineStyle:{color:'#233AE7',width:2}, itemStyle:{color:'#233AE7'} }]);
+  option.legend.data=option.legend.data.concat([{name:NAME,icon:'circle'}]);
+  option.grid.right=(option.grid.right||52)+50;   /* room for the outer axis labels + its name */
+  if(typeof fmt==='function') option.tooltip.formatter=tip;
 }
 /* ── Capital Cities Yield (slide 21) — House Yield (teal) + Unit Yield (grey)
       grouped bars per capital, % labels. Latest rent/price from the mart.
@@ -3788,12 +3816,29 @@ const STAG_PERIODS = {
      unchanged on screen; only the last band's end moves 2022 → 2019. */
   rockhampton: [[1985,1989],[1993,2002],[2007,2019]],
 };
+/* RBA cash rate overlay on the Median Price slide (2026-11-09): year-end value
+   per year = the freq='A' row (the ingest stores December there, or the latest
+   month for the current year). Its own loader on purpose — getRateSeries()
+   (slide 20) reads bank_rate with no freq filter and must not change. Stored
+   as fractions (0.046 = 4.60%); the series starts 1990, earlier years stay empty. */
+let _CASHA=null,_cashP=null;
+async function getCashRateA(){
+  if(_CASHA) return _CASHA; if(_cashP) return _cashP;
+  _cashP=(async()=>{ try{
+    const {data,error}=await window.sb.from('rdp_raw_series').select('period,value')
+      .eq('source','rba').eq('metric','cash_rate').eq('region_slug','australia').eq('freq','A').order('period');
+    if(error) throw error;
+    const m={}; (data||[]).forEach(r=>{ const v=r.value==null?NaN:Number(r.value); if(isFinite(v)) m[+String(r.period).slice(0,4)]=v; });
+    return (_CASHA=m);
+  }catch(e){ _cashP=null; return null; } })();
+  return _cashP;
+}
 function mountMedianCombined(el,slug){ const host=el.querySelector('.bss-chart'); if(host) renderMedianCombined(host,slug); }
 async function renderMedianCombined(host,slug){
   host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
   await whenChartsReady();
   if(!window.echarts||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
-  const payload=await getFeed(slug);
+  const [payload,cash]=await Promise.all([getFeed(slug),getCashRateA()]);
   if(!payload){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
   let years=[],h=[],u=[];
   try{ const raw=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug);
@@ -3802,6 +3847,9 @@ async function renderMedianCombined(host,slug){
   if(!years.length){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
   /* start at 1980 like the sample deck (drops the sparse pre-1980 Cotality tail) */
   { const i0=years.findIndex(y=>y>=1980); if(i0>0){ years=years.slice(i0); h=h.slice(i0); u=u.slice(i0); } }
+  const cr=years.map(y=>(cash&&cash[y]!=null)?+(cash[y]*100).toFixed(2):null);   /* % on the right axis; null before 1990 = a gap, never back-filled */
+  const hasCash=cr.some(v=>v!=null);
+  const crMax=hasCash?Math.ceil(Math.max.apply(null,cr.filter(v=>v!=null))/2)*2+2:null;   /* headroom: next even % + one 2% step (12% peak → 14%), so the 1990 point doesn't sit on the ceiling */
   const money=v=>'$'+Number(v).toLocaleString();
   const lastY=years[years.length-1];
   /* per-region workbook periods (STAG_PERIODS) when known, else the algorithmic
@@ -3821,18 +3869,76 @@ async function renderMedianCombined(host,slug){
   const option={ backgroundColor:'transparent', animation:false,
     tooltip:{ trigger:'axis', confine:true, valueFormatter:v=>(v==null?'—':money(v)) },
     legend:{ top:2, left:'center', icon:'circle', itemWidth:9, itemHeight:9, textStyle:{color:'#333',fontSize:11,fontWeight:700},
-      data:['House Median Price','Unit Median Price',{name:'Stagnation Period', icon:'rect'}] },
-    grid:{left:64,right:44,top:40,bottom:46},
+      data:['House Median Price','Unit Median Price'].concat(hasCash?['RBA cash rate']:[],[{name:'Stagnation Period', icon:'rect'}]) },
+    grid:{left:64,right:hasCash?70:44,top:40,bottom:46},
     xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{lineStyle:{color:'#999'}} },
-    yAxis:{ type:'value', splitNumber:10, axisLabel:{color:'#444',fontSize:9,formatter:v=>'$'+v.toLocaleString()}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
+    yAxis:[{ type:'value', splitNumber:10, axisLabel:{color:'#444',fontSize:9,formatter:v=>'$'+v.toLocaleString()}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
+      { type:'value', show:hasCash, position:'right', min:0, max:crMax, interval:2, name:'Interest rate', nameLocation:'middle', nameGap:38, nameRotate:-90,
+        nameTextStyle:{color:'#444',fontSize:10,fontWeight:700}, axisLabel:{color:'#444',fontSize:9,formatter:v=>v+'%'}, splitLine:{show:false} }],
     series:[
       { name:'House Median Price', type:'line', data:h, smooth:true, symbol:'none', connectNulls:true, z:3, lineStyle:{color:'#00A0B4',width:3}, itemStyle:{color:'#00A0B4'},
         markArea:areaData.length?{silent:true,data:areaData}:undefined,
-        markPoint:{ symbol:'circle', symbolSize:1, label:{show:true,position:'top',distance:8,fontWeight:700,fontSize:12}, data:marks } },
+        markPoint:{ symbol:'circle', symbolSize:1, label:{show:true,position:'top',distance:8,fontWeight:700,fontSize:12,align:hasCash?'right':undefined}, data:marks } },   /* with the rate axis on the right, end-point $ labels end AT the last point instead of running into its % labels */
       { name:'Unit Median Price', type:'line', data:u, smooth:true, symbol:'none', connectNulls:true, z:2, lineStyle:{color:'#171B24',width:3}, itemStyle:{color:'#171B24'} },
+      ...(hasCash?[{ name:'RBA cash rate', type:'line', yAxisIndex:1, data:cr, showSymbol:false, z:1, lineStyle:{color:'#233AE7',width:2}, itemStyle:{color:'#233AE7'},
+        tooltip:{ valueFormatter:v=>(v==null?'—':Number(v).toFixed(2)+'%') } }]:[]),
       { name:'Stagnation Period', type:'line', data:[], silent:true, itemStyle:{color:'#c9c9c9'}, lineStyle:{opacity:0} } ] };   /* legend-only proxy for the grey stagnation bands (markArea can't legend itself) */
   _drawEChart(host, option);
 }
+/* ── Year on Year Price Movement (key yoy_price, 2026-11-09) — House (teal) +
+      Unit (dark) % change on the previous year, from the SAME feed medians as
+      the Median Price slide (only adjacent years: y vs y-1), with the RBA cash
+      rate (getCashRateA, year-end freq='A', gap before 1990) on a right
+      "Interest rate" axis. Its title/disclaimer/rule/logo/source come from
+      BSS_DEFAULT_CHROME until a deck authors its own overlays for the key. ── */
+function mountYoYPrice(el,slug){ const host=el.querySelector('.bss-chart'); if(host) renderYoYPrice(host,slug); }
+async function renderYoYPrice(host,slug){
+  host.innerHTML='<div class="bss-chartload">Loading chart…</div>';
+  await whenChartsReady();
+  if(!window.echarts||!window.ForgeReportAdapter){ host.innerHTML='<div class="bss-chartload">Chart engine unavailable.</div>'; return; }
+  const [payload,cash]=await Promise.all([getFeed(slug),getCashRateA()]);
+  if(!payload){ host.innerHTML='<div class="bss-chartload">No report data in Forge for this region yet.</div>'; return; }
+  const H={},U={};
+  try{ const raw=window.ForgeReportAdapter.forgeRegionToFeed(payload,slug);
+    const a=_orAlignCols(raw.year,[raw.medianHousePrice,raw.medianUnitPrice],{mode:'loose'});
+    a.keys.forEach((y,i)=>{ if(a.cols[0][i]!=null) H[y]=a.cols[0][i]; if(a.cols[1][i]!=null) U[y]=a.cols[1][i]; }); }catch(e){}
+  const yoy=(m,y)=>(m[y]!=null&&m[y-1])?+((m[y]/m[y-1]-1)*100).toFixed(2):null;
+  const all=Object.keys(H).concat(Object.keys(U)).map(Number).filter((y,i,s)=>y>=1980&&s.indexOf(y)===i).sort((a,b)=>a-b);   /* 1980 start like Median Price */
+  const years=all.filter(y=>yoy(H,y)!=null||yoy(U,y)!=null);
+  if(!years.length){ host.innerHTML='<div class="bss-chartload">Not enough data for this chart.</div>'; return; }
+  const hy=years.map(y=>yoy(H,y)), uy=years.map(y=>yoy(U,y));
+  const cr=years.map(y=>(cash&&cash[y]!=null)?+(cash[y]*100).toFixed(2):null), hasCash=cr.some(v=>v!=null);
+  const crMax=hasCash?Math.ceil(Math.max.apply(null,cr.filter(v=>v!=null))/2)*2+2:null;   /* next even % + one 2% step, as on Median Price */
+  const HN='House % Change Year on Year', UN='Unit % Change Year on Year', CN='RBA cash rate';
+  const option={ backgroundColor:'transparent', animation:false,
+    tooltip:{ trigger:'axis', confine:true, valueFormatter:v=>(v==null?'—':Number(v).toFixed(2)+'%') },
+    legend:{ top:2, left:'center', icon:'circle', itemWidth:9, itemHeight:9, textStyle:{color:'#333',fontSize:11,fontWeight:700}, data:[HN,UN].concat(hasCash?[CN]:[]) },
+    grid:{left:54,right:hasCash?70:28,top:40,bottom:46},
+    xAxis:{ type:'category', data:years, axisLabel:{color:'#444',fontSize:8.5,interval:0,rotate:90}, axisTick:{alignWithLabel:true}, axisLine:{onZero:false,lineStyle:{color:'#999'}} },
+    yAxis:[{ type:'value', axisLabel:{color:'#444',fontSize:9,formatter:v=>v+'%'}, splitLine:{lineStyle:{color:'rgba(0,0,0,0.10)'}} },
+      { type:'value', show:hasCash, position:'right', min:0, max:crMax, interval:2, name:'Interest rate', nameLocation:'middle', nameGap:38, nameRotate:-90,
+        nameTextStyle:{color:'#444',fontSize:10,fontWeight:700}, axisLabel:{color:'#444',fontSize:9,formatter:v=>v+'%'}, splitLine:{show:false} }],
+    series:[
+      { name:HN, type:'line', data:hy, showSymbol:false, z:3, lineStyle:{color:'#00A0B4',width:2.6}, itemStyle:{color:'#00A0B4'},
+        markLine:{ silent:true, symbol:'none', label:{show:false}, lineStyle:{color:'#777',width:1,type:'solid'}, data:[{yAxis:0}] } },   /* the 0% line */
+      { name:UN, type:'line', data:uy, showSymbol:false, z:2, lineStyle:{color:'#171B24',width:2.6}, itemStyle:{color:'#171B24'} } ]
+      .concat(hasCash?[{ name:CN, type:'line', yAxisIndex:1, data:cr, showSymbol:false, z:1, lineStyle:{color:'#233AE7',width:2}, itemStyle:{color:'#233AE7'} }]:[]) };
+  _drawEChart(host, option);
+}
+/* Standard chrome for pages added in code after the decks were authored —
+   the exact overlay objects (same x/y/fonts/colours) the decks hold for
+   median_combined, with this page's title + source. renderOverlays() draws
+   them, locked and unsaved, only while a deck has no overlays of its own for
+   the key. */
+const BSS_DEFAULT_CHROME={
+  yoy_price:[
+    { id:'yoy_price_t', type:'text', x:74, y:47, html:'YEAR ON YEAR PRICE MOVEMENT', color:'#434343', weight:700, fontSize:42, fontFamily:"'Montserrat',sans-serif" },
+    { id:'yoy_price_d', type:'text', x:871, y:6, w:398, bg:'#c8e8ebff', align:'left', color:'#000000', weight:400, fontSize:12, fontFamily:"'Montserrat',sans-serif",
+      html:'<b>DISCLAIMER:</b> Performance Property accepts no responsibility or liability for anyone who uses this information to inform decision-making. <b><i>Copyright {year} Performance Property</i></b>' },
+    { id:'yoy_price_r', type:'shape', shape:'line', x:75, y:113, w:1127, h:20, stroke:'#00A0B4', strokeWidth:1, fill:'#00A0B438', fillNone:true },
+    { id:'yoy_price_l', type:'image', x:1037, y:665, w:226, h:36, src:'../assets/Reports/logo-color-black.png', aspect:6.202479338842975 },
+    { id:'yoy_price_s', type:'text', x:24, y:694, w:1000, html:'Source: Cotality (formerly Corelogic); RBA', color:'#63666A', weight:400, fontSize:12, fontFamily:"'Montserrat',sans-serif" } ]
+};
 /* ── Price to Income + peer (slide 19) — {region} House/Unit vs {peer} House/Unit
       P2I (feed priceToIncome*), 4 lines. Peer = ratioPeer() (Melbourne→Sydney). ── */
 function mountP2IPeer(el,slug){ const host=el.querySelector('.bss-chart'); if(host) renderP2IPeer(host,slug); }
@@ -3987,6 +4093,7 @@ const SLIDE_DEFS = [
   { key:'median_combined', t:'Median Price', render: c=>lightChartSlide(60), mount:(el,c)=>mountMedianCombined(el,c.slug) },
   { key:'house_unit', t:'House v Unit', render: c=>lightChartSlide(60), mount:(el,c)=>mountHouseUnit(el,c.slug) },
   { key:'f8', t:'Price to Income', render: c=>lightChartSlide(_bssNarrPad('f8',88,56)), mount:(el,c)=>mountP2IPeer(el,c.slug) },   /* keeps f8 so the old Price-to-Income overlays follow; now the +peer chart. Pad is per-deck (_bssNarrPad): 88 while the authored narrative (y642) is present, else 56 — chart fills to the logo strip */
+  { key:'yoy_price', t:'Year on Year Price Movement', render: c=>lightChartSlide(60), mount:(el,c)=>mountYoYPrice(el,c.slug) },   /* NEW 2026-11-09 — chrome from BSS_DEFAULT_CHROME until authored */
   { key:'yield_rate', t:'Yield v Variable Rate', render: c=>lightChartSlide(60), mount:(el,c)=>mountYieldRate(el,c.slug) },
   { key:'cap_yield', t:'Capital Cities Yield', render: c=>lightChartSlide(84), mount:(el,c)=>mountCapitalYield(el,c.slug) },
   { key:'f10', t:c=>'% of '+ratioPeerName(c.slug),   /* the TOC label follows the peer rule — Adelaide/Sydney/regionals are NOT "% of Sydney" (Saskia 2026-09-03) */ render: c=>chartSlideBare(56), mount:(el,c)=>mountRatio(el,c.slug) },   /* 56: narrative overlay removed (Van 2026-07-27) — chart fills down to the logo strip */
@@ -4023,7 +4130,7 @@ const SUMMARY_ORDER = [
   'f0',                                                                                   /* cover */
   'sum_verdict','sum_verdict_u',                                                          /* the verdict, houses then units (Saskia 2026-09-09) — "What's driving" + "Confidence and next steps" REMOVED (Van + Shaene review 2026-09-07) */
   'f1','f2','demand_h','glance',                                                          /* where the market sits */
-  'div_value','median_combined','house_unit','f8','f10','f6','f14','f15','yield_rate',    /* value — Units sensitivity added, Capital Cities Yield → Yield v Variable Rate (2026-09-07) */
+  'div_value','median_combined','house_unit','f8','f10','f6','f14','f15','yoy_price','yield_rate',    /* value — Units sensitivity added, Capital Cities Yield → Yield v Variable Rate (2026-09-07) */
   /* demand, then SUPPLY, then the balance between them: who is arriving
      (pop_move, f13), why (infra_projects), what is being built against them
      (stub_dwellings), the vacancy that follows (vr_proj) and what it does to
@@ -5266,7 +5373,12 @@ function renderOverlays(){
        can't be selected or dragged here — they're edited in the Full Report.
        Outside Summary _bssKeyEditable() is always true, so nothing changes. */
     const editable=_bssKeyEditable(key);
-    ((key&&OVL[key])||[]).forEach(o=>{ const el=makeOverlayEl(o); if(EDIT&&!editable) el.classList.add('bss-ov-lock'); slide.appendChild(el); if(EDIT&&editable) attachOverlayHandlers(el,o); });
+    const own=(key&&OVL[key])||[];
+    own.forEach(o=>{ const el=makeOverlayEl(o); if(EDIT&&!editable) el.classList.add('bss-ov-lock'); slide.appendChild(el); if(EDIT&&editable) attachOverlayHandlers(el,o); });
+    /* a code-added page with no authored chrome in this deck yet draws the
+       standard chrome from BSS_DEFAULT_CHROME — display only: locked, never
+       saved; the deck's own overlays replace it once any are authored */
+    if(!own.length&&key&&BSS_DEFAULT_CHROME[key]) BSS_DEFAULT_CHROME[key].forEach(o=>{ const el=makeOverlayEl(o); el.classList.add('bss-ov-lock'); slide.appendChild(el); });
   });
 }
 /* Text tokens (resolved at render time, like the Online Reports editor):

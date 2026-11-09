@@ -811,6 +811,7 @@ function renderTable(w){
    animation (perf invariant). One colour per market, consistent across all
    three charts — sanctioned hexes only. ═══ */
 const MKCOLORS=['#00A0B4','#7E8CF1','#FFA91F'];
+const RATE_NAME='RBA cash rate', RATE_COLOR='#233AE7';   /* brand Cobalt Blue — the cash-rate overlay */
 let _echartsP=null, _charts=[], _trendsWired=false;
 function loadECharts(){
   if(window.echarts) return Promise.resolve();
@@ -876,18 +877,28 @@ async function renderTrends(){
         return +(v*100).toFixed(2);
       })
     }));
+    /* RBA cash rate overlay — indexed price chart only, on its own right-hand %
+       axis. Year-end rate per year from the feed's cash_rate (rdp_raw_series
+       rba/cash_rate freq A). It is national, so any selected market's feed has
+       it; it follows the chart's own years. */
+    const rateMaps=d.mode==='idx'?state.markets.map(s=>seriesRows(s,'cash_rate')):[];
+    const rate=years.map(y=>{ const m=rateMaps.find(m=>m[y]!=null); return m?+(m[y]*100).toFixed(2):null; });
+    const hasRate=rate.some(v=>v!=null);
+    if(hasRate) series.push({name:RATE_NAME,type:'line',yAxisIndex:1,showSymbol:false,data:rate,
+      lineStyle:{width:2,type:'solid',color:RATE_COLOR},itemStyle:{color:RATE_COLOR},emphasis:{focus:'series'}});
     const ch=echarts.init(el,null,{renderer:'canvas'});
     ch.setOption({
       animation:false, backgroundColor:'transparent', color:MKCOLORS,
       legend:{top:0,left:0,icon:'roundRect',itemWidth:14,itemHeight:3,
         textStyle:{color:ink,fontFamily:'Montserrat',fontSize:11,fontWeight:600}},
-      grid:{left:8,right:12,top:32,bottom:4,containLabel:true},
+      grid:{left:8,right:hasRate?26:12,top:32,bottom:4,containLabel:true},
       tooltip:{trigger:'axis',backgroundColor:solid,borderColor:border,
         textStyle:{color:ink,fontFamily:'Montserrat',fontSize:11.5},
         formatter:params=>{
           const yr=params.length?params[0].axisValue:'';
           const lines=params.map(p=>{
             if(p.value==null) return null;
+            if(p.seriesName===RATE_NAME) return p.marker+' '+RATE_NAME+'  <b>'+Number(p.value).toFixed(2)+'%</b>';
             let val=d.mode==='idx'?Number(p.value).toFixed(0):Number(p.value).toFixed(2)+'%';
             if(d.mode==='idx'){ const raw=seriesRows(state.markets[p.seriesIndex],d.keyFor(T(p.seriesIndex)))[+yr]; if(raw!=null) val+=' · '+money(raw); }
             return p.marker+' '+esc(p.seriesName)+'  <b>'+val+'</b>';
@@ -897,9 +908,12 @@ async function renderTrends(){
       xAxis:{type:'category',data:years,boundaryGap:false,
         axisLine:{lineStyle:{color:border}},axisTick:{show:false},
         axisLabel:{color:mut,fontFamily:'Montserrat',fontSize:10.5}},
-      yAxis:{type:'value',scale:true,
+      yAxis:[{type:'value',scale:true,
         axisLabel:{color:mut,fontFamily:'Montserrat',fontSize:10.5,formatter:d.mode==='pct'?'{value}%':'{value}'},
-        splitLine:{lineStyle:{color:border}}},
+        splitLine:{lineStyle:{color:border}}}].concat(hasRate?[{type:'value',name:'Interest rate',min:0,position:'right',
+        max:Math.ceil(Math.max(...rate.filter(v=>v!=null))/2)*2+2,interval:2,   /* headroom: peak up to the next even %, plus one 2% step; ticks every 2% */
+        nameLocation:'middle',nameRotate:-90,nameGap:34,nameTextStyle:{color:mut,fontFamily:'Montserrat',fontSize:10.5},
+        axisLabel:{color:mut,fontFamily:'Montserrat',fontSize:10.5,formatter:'{value}%'},splitLine:{show:false}}]:[]),
       series:series
     });
     _charts.push(ch);

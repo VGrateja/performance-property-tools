@@ -2520,6 +2520,8 @@ function _mountChart(pageId, option) {
         f = _xa.axisLabel && _xa.axisLabel.formatter;
       } else {
         const s  = (option.series || [])[p.seriesIndex];
+        /* A series can carry its own tooltip format (the cash-rate overlay: 2 decimals vs the axis's whole %). */
+        if (s && s.tooltip && typeof s.tooltip.valueFormatter === 'function') return s.tooltip.valueFormatter(p.value);
         const yi = (s && s.yAxisIndex) || 0;
         const ax = _yAxes[yi] || _yAxes[0];
         f = ax && ax.axisLabel && ax.axisLabel.formatter;
@@ -2587,6 +2589,41 @@ function _mountChart(pageId, option) {
    national-charts.js (PpaCharts.national.builders). renderAllCharts below
    renders from them via _mountChart, so the report and the presentation tool
    share ONE definition per chart. */
+
+/* RBA cash rate overlay on the median price charts (2026-11): one solid
+   brand Cobalt Blue line on a right-hand "Interest rate" % axis. Data is the
+   year-end rate per year (rdp_raw_series australia/cash_rate freq='A', already
+   in the feed as d.cashRate); it starts in 1990, so earlier years stay a gap.
+   Added here, not in the shared national-charts.js builders, so the
+   presentation tool's copies of these charts are unchanged. The line stops at
+   the last year the price series have, so the chart's x range doesn't move. */
+const _CASH_RATE_PAGES = ['p2', 'p3', 'p4'];
+function _addCashRateOverlay(option, d) {
+  if (!Array.isArray(d.year) || !Array.isArray(d.cashRate)) return;
+  const xs = (option.xAxis && option.xAxis.data) || [];
+  const left = Array.isArray(option.yAxis) ? null : option.yAxis;
+  if (!xs.length || !left || !Array.isArray(option.series)) return;
+  const rate = {};
+  d.year.forEach((y, i) => { const v = d.cashRate[i]; if (v != null && isFinite(v)) rate[String(y)] = Number(v); });
+  let lastIdx = -1;
+  option.series.forEach(s => { (s.data || []).forEach((v, i) => { if (v != null && v !== '' && i > lastIdx) lastIdx = i; }); });
+  const data = xs.map((y, i) => (i <= lastIdx && rate[String(y)] != null) ? +(rate[String(y)] * 100).toFixed(2) : null);
+  if (!data.some(v => v != null)) return;
+  option.yAxis = [left, {
+    /* headroom: peak rounded up to the next even %, plus one 2% step (12% → 14%); ticks every 2% */
+    type: 'value', name: 'Interest rate', min: 0, max: Math.ceil(Math.max(...data.filter(v => v != null)) / 2) * 2 + 2, interval: 2, position: 'right',
+    axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false },
+    axisLabel: { color: (left.axisLabel && left.axisLabel.color) || '#1a2236', fontSize: 11, formatter: v => v + '%' },
+  }];
+  option.grid = Object.assign({}, option.grid, { right: 60 });
+  option.series.push({
+    name: 'RBA cash rate', type: 'line', yAxisIndex: 1, data, showSymbol: false,
+    lineStyle: { width: 2, type: 'solid', color: '#233AE7' }, itemStyle: { color: '#233AE7' },
+    tooltip: { valueFormatter: v => (v == null || isNaN(Number(v))) ? '—' : Number(v).toFixed(2) + '%' },
+  });
+  if (option.legend && Array.isArray(option.legend.data)) option.legend.data = option.legend.data.concat(['RBA cash rate']);
+}
+
 function renderAllCharts(payload) {
   const d = (payload && payload.data) || {};
   /* Charts render from the shared modules (assets/Reports/charts/
@@ -2605,6 +2642,7 @@ function renderAllCharts(payload) {
     try {
       const build = NB[pg];
       const opt = build && build(d);
+      if (opt && _CASH_RATE_PAGES.indexOf(pg) >= 0) _addCashRateOverlay(opt, d);
       if (opt) _mountChart(pg, opt);
     } catch (e) { console.warn('[' + pg + ']', e); }
   });

@@ -5668,7 +5668,13 @@ function mapLiveToRegion(raw, slug, peerRaw) {
       house.push(houseAligned.values[hi]);
       unit.push(unitAligned.values[ui]);
     }
-    if (years.length) out.medianPrice = { years, house, unit };
+    /* RBA cash rate per price year (year-end Forge value, fraction → %),
+       for the interest-rate overlay on p3 + p4. null before 1990 (no data). */
+    const cashRate = years.map(y => {
+      const v = (raw.cashRate || [])[(raw.year || []).indexOf(y)];
+      return (v === '' || v == null || isNaN(Number(v))) ? null : Number(v) * 100;
+    });
+    if (years.length) out.medianPrice = { years, house, unit, cashRate };
   }
 
   /* At-a-Glance top tiles (page 1, top row). Sparklines use percent-form
@@ -6862,6 +6868,7 @@ async function liveBoot() {
     REGIONS[slug].priceYears = mapped.medianPrice.years;
     REGIONS[slug].priceHouse = mapped.medianPrice.house;
     REGIONS[slug].priceUnit  = mapped.medianPrice.unit;
+    REGIONS[slug].priceCashRate = mapped.medianPrice.cashRate;
   }
   if (mapped.stockVsDom) {
     REGIONS[slug].stockYears = mapped.stockVsDom.years;
@@ -7364,6 +7371,44 @@ function crisisMarkAreas() {
 // them manually via the draggable custom-text overlay so they can line up
 // exactly under each red crisis line on the chart.
 
+/* ── RBA cash rate overlay (p3 Median Price + p4 YoY Price) ──
+   One solid Cobalt Blue line on a right-hand "Interest rate" % axis. Data is
+   medianPrice.cashRate (year-end Forge rba/cash_rate, already ×100, null
+   before 1990 — the gap is left as a gap). The plot grid is NOT widened:
+   authored text overlays under each chart are hand-placed under the crisis
+   lines, so the x-geometry must stay put. The right labels fit the existing
+   25px right margin and the axis name sits above the axis top. */
+const CASH_RATE_NAME  = 'RBA cash rate';
+const CASH_RATE_COLOR = '#233AE7';
+function cashRateAxis(data) {
+  /* Headroom: data max rounded up to the next even %, plus one 2% step
+     (12% peak → 14%), so the 1990 point never sits on the ceiling. */
+  const vals = (data || []).filter(v => v != null && isFinite(v));
+  const max = vals.length ? Math.ceil(Math.max.apply(null, vals) / 2) * 2 + 2 : null;
+  return {
+    type: 'value', min: 0, max, interval: 2, position: 'right',
+    axisLabel: Object.assign({}, AXIS_FONT, { formatter: v => v + '%', margin: 3 }),
+    splitLine: { show: false },
+    name: 'Interest rate',
+    nameLocation: 'end', nameGap: 8,
+    nameTextStyle: { fontFamily: CHART_FONT, fontStyle: 'italic', fontSize: 10, color: '#2f3d4a', fontWeight: 500, align: 'right' },
+  };
+}
+function cashRateSeries(data) {
+  return {
+    id: 'rba-cash-rate', name: CASH_RATE_NAME, type: 'line', yAxisIndex: 1, connectNulls: false,
+    symbol: 'circle', symbolSize: 6, showSymbol: false, emphasis: { scale: false },
+    lineStyle: { color: CASH_RATE_COLOR, width: 2, type: 'solid' },
+    itemStyle: { color: CASH_RATE_COLOR },
+    data: data || [],
+  };
+}
+function cashRateTooltipLine(params) {
+  const p = (params || []).find(q => q.seriesName === CASH_RATE_NAME);
+  if (!p || p.value == null || p.value === '' || isNaN(Number(p.value))) return '';
+  return `<br/><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${CASH_RATE_COLOR};margin-right:6px"></span>${CASH_RATE_NAME} <strong>${Number(p.value).toFixed(2)}%</strong>`;
+}
+
 /* ═════════════ MEDIAN PRICE ═════════════ */
 function renderMedianPrice() {
   const el = document.getElementById('chart-median-price');
@@ -7382,6 +7427,7 @@ function renderMedianPrice() {
   const mpYears = _mpAllYears.slice(_mpFrom).map(String);
   const mpHouse = (R().priceHouse || []).slice(_mpFrom);
   const mpUnit  = (R().priceUnit  || []).slice(_mpFrom);
+  const mpCash  = (R().priceCashRate || []).slice(_mpFrom);
   const chart = echarts.init(el, null, { renderer: 'svg' });
   chart.setOption({
     animation: false,
@@ -7405,7 +7451,7 @@ function renderMedianPrice() {
             const fmt = v >= 1e6 ? '$' + (v/1e6).toFixed(2) + 'M' : '$' + Math.round(v/1000) + 'K';
             return `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${p.color};margin-right:6px"></span>${p.seriesName}: <strong>${fmt}</strong>`;
           });
-        return `<div style="font-weight:700;margin-bottom:4px">${year}</div>${lines.join('<br/>')}`;
+        return `<div style="font-weight:700;margin-bottom:4px">${year}</div>${lines.join('<br/>')}${cashRateTooltipLine(params)}`;
       },
     },
     legend: {
@@ -7423,6 +7469,7 @@ function renderMedianPrice() {
       data: [
         { name: 'Median House Price' },
         { name: 'Median Unit Price'  },
+        { name: CASH_RATE_NAME },
         { name: 'Growth Period',     icon: 'rect' },
         { name: 'Correction Period', icon: 'rect' },
       ],
@@ -7441,7 +7488,7 @@ function renderMedianPrice() {
       axisTick: { alignWithLabel: true, lineStyle: { color: '#6a7a88' } },
       boundaryGap: false,
     },
-    yAxis: {
+    yAxis: [{
       type: 'value',
       /* Auto-scaled max — Sydney's $1.55M baseline doesn't fit Darwin
          ($600k) or future regions; let ECharts pick a round max from
@@ -7458,7 +7505,7 @@ function renderMedianPrice() {
       nameGap: 45,
       nameRotate: 90,
       nameTextStyle: { fontFamily: CHART_FONT, fontStyle: 'italic', fontSize: 10, color: '#2f3d4a', fontWeight: 500 },
-    },
+    }, cashRateAxis(mpCash)],
     series: [
       // Dummy series to produce a legend entry for the growth/correction bands.
       // Their itemStyle drives the legend swatch fill, so they reference the
@@ -7502,9 +7549,50 @@ function renderMedianPrice() {
         itemStyle: { color: '#d99759' },
         data: mpUnit,
       },
+      cashRateSeries(mpCash),
     ],
   });
 }
+
+/* p4 YoY Price is the shared module assets/Reports/charts/chart-yoy-price.js
+   (not editable from this tool). Wrap its registered renderer so EVERY call
+   path (renderAll, bandsRefreshCharts, PPA_RERENDER_CHARTS) gets the cash-rate
+   line too: run the module, then merge in the right axis + series. The
+   module's YoY math slices medianPrice from the first year >= yoyStartYear
+   (default 1980); the same slice keeps the rate aligned to its x-axis. */
+(function wrapYoyWithCashRate() {
+  const NS = window.PpaCharts;
+  const orig = NS && NS.registry && NS.registry['yoy-price'];
+  if (!orig) return;
+  NS.register('yoy-price', function (el, data, opts) {
+    const chart = orig(el, data, opts);
+    const D = data && data.medianPrice;
+    if (!chart || !D || !Array.isArray(D.years)) return chart;
+    const startYear = Number(data.yoyStartYear) || 1980;
+    const i0 = D.years.findIndex(y => Number(y) >= startYear);
+    const cash = (D.cashRate || []).slice(i0 > 0 ? i0 : 0);
+    const cur = chart.getOption();
+    const origFmt = cur.tooltip && cur.tooltip[0] && cur.tooltip[0].formatter;
+    const legendData = ((cur.legend && cur.legend[0] && cur.legend[0].data) || []).slice();
+    const at = legendData.findIndex(d => (d && d.name) === 'Growth Period');
+    if (!legendData.some(d => d && d.name === CASH_RATE_NAME)) {
+      legendData.splice(at < 0 ? legendData.length : at, 0, { name: CASH_RATE_NAME });
+    }
+    chart.setOption({
+      legend: { data: legendData },
+      yAxis: [{}, cashRateAxis(cash)],
+      /* {} placeholders merge into the module's series by index (no change);
+         the cash-rate series appends after them, or (on a re-render into the
+         same instance) merges into its earlier copy by id. */
+      series: (cur.series || []).filter(s => s.id !== 'rba-cash-rate').map(() => ({}))
+        .concat([cashRateSeries(cash)]),
+      tooltip: typeof origFmt === 'function'
+        ? { formatter: (params) => origFmt(params) + cashRateTooltipLine(params) }
+        : {},
+    });
+    return chart;
+  });
+})();
 
 /* ═════════════ STOCK ON MARKET vs DOM ═════════════ */
 function renderStockDom() {

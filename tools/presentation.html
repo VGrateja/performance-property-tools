@@ -89,6 +89,96 @@
   document.addEventListener('DOMContentLoaded', function () {
     if (window.PpaCharts) window.PpaCharts.attachResize = function () { return function () {}; };
   });
+  /* RBA cash-rate overlay (2026-11-09) on the Median Price, YoY price and
+     National median price (p2-p4) slide charts: one solid Cobalt Blue line on a
+     right-hand "Interest rate" % axis. The shared report modules stay untouched
+     (national-report.html draws its own overlay from national-charts.js) — this
+     wraps their renderers on THIS page only, after the module has drawn, and only
+     when the spec carries data.rbaCashRate {years[], values[] (fractions)} —
+     buildReportChartSpec adds it (not `cashRate`: the National snapshot already
+     has a field by that name). Points align to the chart's own year axis, so a
+     module's 1980+ clip is respected; years before 1990 have no rate (a gap). */
+  document.addEventListener('DOMContentLoaded', function () {
+    var NS = window.PpaCharts;
+    if (!NS || !NS.registry) return;
+    var NAME = 'RBA cash rate', COLOR = '#233AE7';
+    function addCashRate(chart, data) {
+      var CR = data && data.rbaCashRate;
+      if (!chart || !CR || !Array.isArray(CR.years) || !Array.isArray(CR.values)) return;
+      var byYear = {};
+      CR.years.forEach(function (y, i) {
+        var raw = CR.values[i], v = Number(raw);
+        if (raw != null && raw !== '' && isFinite(v)) byYear[String(y)] = Math.round(v * 1e6) / 1e4;   /* fraction → % */
+      });
+      var opt = chart.getOption();
+      var xs = (opt.xAxis && opt.xAxis[0] && opt.xAxis[0].data) || [];
+      var vals = xs.map(function (y) { return byYear[String(y)] != null ? byYear[String(y)] : null; });
+      if (!vals.some(function (v) { return v != null; })) return;
+      /* Headroom: round the visible peak up to the next even %, plus one 2% step
+         (a 12% peak → 14% max). */
+      var peak = Math.max.apply(null, vals.filter(function (v) { return v != null; }));
+      var yMax = Math.ceil(peak / 2) * 2 + 2;
+      var T = NS.theme || {};
+      var dot = NS.dot || function () { return ''; };
+      var tip = opt.tooltip && opt.tooltip[0];
+      var baseFmt = tip && typeof tip.formatter === 'function' ? tip.formatter : null;
+      var leg = (opt.legend && opt.legend[0] && opt.legend[0].data) || [];
+      var first = leg[0] && typeof leg[0] === 'object' ? leg[0] : {};
+      var grid = opt.grid && opt.grid[0];
+      /* right-axis labels take the left axis's own text style (report theme
+         tokens on median/yoy, the National palette on national-p*) */
+      var y0L = (opt.yAxis && opt.yAxis[0] && opt.yAxis[0].axisLabel) || {};
+      var lab = { formatter: function (v) { return v + '%'; } };
+      ['color', 'fontSize', 'fontFamily', 'fontWeight'].forEach(function (k) { if (y0L[k] != null) lab[k] = y0L[k]; });
+      chart.setOption({
+        grid: Object.assign({},
+          (grid && typeof grid.right === 'number' && grid.right < 70) ? { right: 70 } : {},
+          /* an 8th legend entry (National p4: seven markets + the rate) wraps the
+             top legend to a second row — drop the plot one legend row (ECharts
+             spaces wrapped rows by itemHeight + itemGap) so it clears it */
+          (grid && typeof grid.top === 'number' && leg.length >= 7)
+            ? { top: grid.top + (Number(opt.legend[0].itemHeight) || 14) + (Number(opt.legend[0].itemGap) || 10) } : {}),
+        legend: { data: leg.concat([first.icon ? { name: NAME, icon: first.icon } : { name: NAME }]) },
+        tooltip: {
+          formatter: function (params) {
+            var arr = Array.isArray(params) ? params : [params];
+            /* the module's formatter never sees the rate (the National one lists
+               every series and would print it again with its money formatter) */
+            var rest = arr.filter(function (q) { return q && q.seriesName !== NAME; });
+            var out = baseFmt ? baseFmt(rest.length ? rest : arr) : '';
+            var p = arr.filter(function (q) { return q && q.seriesName === NAME; })[0];
+            if (p && p.value != null && isFinite(p.value)) {
+              out += '<br/>' + dot(COLOR) + NAME + ': <strong>' + Number(p.value).toFixed(2) + '%</strong>';
+            }
+            return out;
+          },
+        },
+        yAxis: [{}, {
+          type: 'value', position: 'right', min: 0, max: yMax, interval: 2,
+          name: 'Interest rate', nameLocation: 'middle', nameGap: 40, nameRotate: 90,
+          nameTextStyle: T.axisName,
+          axisLabel: lab,
+          splitLine: { show: false },
+        }],
+        series: (opt.series || []).concat([{
+          name: NAME, type: 'line', yAxisIndex: 1, data: vals, connectNulls: false,
+          symbol: 'circle', symbolSize: 6, showSymbol: false, emphasis: { scale: false },
+          lineStyle: { color: COLOR, width: 2, type: 'solid' }, itemStyle: { color: COLOR },
+        }]),
+      });
+    }
+    ['median-price', 'yoy-price', 'national-p2', 'national-p3', 'national-p4'].forEach(function (key) {
+      var base = NS.registry[key];
+      if (typeof base !== 'function') return;
+      NS.registry[key] = function (el, data) {
+        var chart = base.apply(this, arguments);
+        try {
+          addCashRate(chart || (window.echarts && window.echarts.getInstanceByDom && window.echarts.getInstanceByDom(el)), data);
+        } catch (e) { console.warn('[presentation] cash-rate overlay skipped:', e && e.message || e); }
+        return chart;
+      };
+    });
+  });
 </script>
 
 <!-- Montserrat's own ARROWS (U+2190–2199). Google Fonts' latin subset stops short
@@ -7081,12 +7171,15 @@ function openDeck(id) {
 
      Delayed past the first render so the deck appears instantly and nothing
      waits on the source tool booting. */
-  setTimeout(() => {
-    if (typeof refreshReportCharts === 'function') {
-      refreshReportCharts({ toast: false }).catch(() => {});
-    }
-  }, 400);
+  /* Kept as a promise so a live export can wait for it (downloadDeck) — an
+     export started straight after open would otherwise capture the charts as
+     stored, without this pass's data (e.g. the cash-rate line on Median Price). */
+  _presOpenRefresh = new Promise(resolve => setTimeout(() => {
+    if (typeof refreshReportCharts !== 'function') { resolve(); return; }
+    refreshReportCharts({ toast: false }).catch(() => {}).then(resolve);
+  }, 400));
 }
+let _presOpenRefresh = null;
 
 /* ─── Thumbnail rail ─── render every slide of the active deck as a
    mini 1280×720 canvas scaled by transform (matches Google Slides'
@@ -9358,6 +9451,32 @@ async function _orRegionBands(slug, snapCache) {
   if (snapCache) snapCache[ck] = out;
   return out;
 }
+/* RBA cash rate, year-end (Forge rdp_raw_series rba/cash_rate/australia,
+   freq 'A' = December's rate, or the latest month for the current year).
+   Values stay FRACTIONS (0.046 = 4.60%); the chart wrapper in <head> scales
+   them. Starts 1990. Memoised via snapCache like the bands. */
+async function _orCashRate(snapCache) {
+  const ck = 'rates:cash_rate';
+  if (snapCache && Object.prototype.hasOwnProperty.call(snapCache, ck)) return snapCache[ck];
+  let out = null;
+  try {
+    if (window.sb) {
+      const { data, error } = await window.sb.from('rdp_raw_series').select('period,value')
+        .eq('source', 'rba').eq('metric', 'cash_rate').eq('region_slug', 'australia').eq('freq', 'A')
+        .order('period', { ascending: true });
+      if (error) throw error;
+      const years = [], values = [];
+      (data || []).forEach(r => {
+        const y = parseInt(String(r.period).slice(0, 4), 10), v = Number(r.value);
+        if (!y || r.value == null || r.value === '' || !isFinite(v)) return;
+        years.push(y); values.push(v);
+      });
+      if (years.length) out = { years, values };
+    }
+  } catch (e) { console.warn('[presentation] cash rate unavailable:', e && e.message || e); out = null; }
+  if (snapCache) snapCache[ck] = out;
+  return out;
+}
 /* Per-page recipes: raw region feed → a slide chart spec { module, data }.
    `module` is the online-report chart module (assets/Reports/charts/
    chart-<module>.js); `data` is that module's OWN data shape — so the slide
@@ -10048,6 +10167,24 @@ async function buildReportChartSpec(slug, pageId, snapCache) {
     const rb = await _orRegionBands(slug, snapCache);
     if (rb && rb.length) spec.data.bands = rb;
   }
+  /* Median Price / YoY price / National median price (p2-p4): RBA cash-rate
+     overlay, clipped to the chart's own year range (drawn by the module wrapper
+     in <head>). Copied onto a NEW data object — the National spec's data is the
+     memoised snapshot itself. */
+  const _crYears = !spec.data ? null
+    : (region.cluster !== 'Research Reports' && spec.data.medianPrice
+       && (spec.module === 'median-price' || spec.module === 'yoy-price')) ? spec.data.medianPrice.years
+    : (region.slug === 'national' && /^national-p[234]$/.test(spec.module || '')) ? spec.data.year
+    : null;
+  if (Array.isArray(_crYears) && _crYears.length) {
+    const cr = await _orCashRate(snapCache);
+    const ys = _crYears.map(y => parseInt(y, 10)).filter(y => isFinite(y));
+    if (cr && ys.length) {
+      const lo = Math.min.apply(null, ys), hi = Math.max.apply(null, ys), years = [], values = [];
+      cr.years.forEach((y, i) => { if (y >= lo && y <= hi) { years.push(y); values.push(cr.values[i]); } });
+      if (years.length) spec.data = Object.assign({}, spec.data, { rbaCashRate: { years, values } });
+    }
+  }
   return { spec: spec };
 }
 
@@ -10092,9 +10229,11 @@ async function refreshReportCharts(opts) {
   opts = opts || {};
   if (!_activeDeck) return { updated: 0, total: 0 };
   const jobs = [];
+  const jobSlide = new Map(), chartSlides = new Set();   /* rail thumbs to redraw for rebuilt charts */
   Object.keys(_overlays).forEach(k => {
     if (k.indexOf(_activeDeck.id + '/') !== 0) return;
     (_overlays[k] || []).forEach(o => {
+      jobSlide.set(o, Number(k.slice(_activeDeck.id.length + 1)));
       /* Native Buying/Selling pages (image / table / html) refresh too. They are
          real overlays rather than iframes so they still export, and rebuilding
          them here is what keeps them current — a stored table is out of date the
@@ -10167,6 +10306,7 @@ async function refreshReportCharts(opts) {
          doesn't churn cloud saves or needlessly re-animate the charts. */
       if (spec && JSON.stringify(spec) !== JSON.stringify(o.spec)) {
         o.spec = spec;
+        chartSlides.add(jobSlide.get(o));
         updated++;
       }
     } catch (_) { /* keep this chart's existing data */ }
@@ -10174,6 +10314,12 @@ async function refreshReportCharts(opts) {
   /* save:false is still honoured for any caller that wants a look without a
      write; the on-open pass deliberately does persist (see openDeck). */
   if (updated) { if (opts.save !== false) saveOverlays(); renderOverlays(); }
+  /* the rail drew these slides before their charts were rebuilt — redraw them
+     (saveOverlays only refreshes the current slide's thumb). Not in Present:
+     the rail's charts are disposed there and rebuilt on exit. */
+  if (!document.body.classList.contains('pres-fullscreen')) {
+    chartSlides.forEach(i => { if (typeof refreshThumb === 'function') refreshThumb(i); });
+  }
   if (opts.toast) {
     /* "slides", not "charts" — this pass also rebuilds the Buying/Selling
        tables, panels and graphics, not just the chart pages */
@@ -22125,6 +22271,12 @@ async function downloadDeck(format, opts) {
   _presExportProgress('Preparing…', '', 0);
   try {
     await _presExportLibs(format);
+    /* Let the on-open data refresh land first (capped), so the export carries
+       today's chart data — including the cash-rate line — not the stored copy. */
+    if (_presOpenRefresh) {
+      _presExportProgress('Preparing…', 'Refreshing chart data', 0.005);
+      await Promise.race([_presOpenRefresh, new Promise(function (r) { setTimeout(r, 20000); })]);
+    }
     /* Editing chrome off and nothing selected — a selection ring would
        otherwise be baked into the page. */
     if (editWas) { try { setEditMode(false); } catch (_) {} }
