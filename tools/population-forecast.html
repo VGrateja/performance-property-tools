@@ -362,6 +362,8 @@ function parseWfLong(rows){
   const yearCol = head.findIndex(c => /^year$/i.test(c));
   const valCol = head.findIndex(c => /new residents/i.test(c));
   const jobsCol = head.findIndex(c => /^new jobs/i.test(c));
+  const addCol = head.findIndex(c => /jobs added/i.test(c)), finCol = head.findIndex(c => /finalised|finalized/i.test(c)),
+        opCol = head.findIndex(c => /operational jobs|ongoing/i.test(c)), actCol = head.findIndex(c => /jobs active/i.test(c));
   const regionCol = yearCol > 0 ? yearCol - 1 : 0;
   // side table: Region | Conversion % | Household size (anywhere to the right of the block)
   const convCol = head.findIndex(c => /conversion/i.test(c)), hhCol = head.findIndex(c => /household/i.test(c));
@@ -386,7 +388,8 @@ function parseWfLong(rows){
     const key = wfNorm(region);
     const e = byName[key] || (byName[key] = { name: region.replace(/\s+/g, ' ').replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1).toLowerCase()), wf: [0, 0, 0, 0], years: {} });
     const res = wfNum(r[valCol]);
-    e.years[+y] = { res, jobs: jobsCol >= 0 ? wfNum(r[jobsCol]) : null };   // every year, for the Major projects view
+    const g = i => i >= 0 ? wfNum(r[i]) : null;
+    e.years[+y] = { res, jobs: g(jobsCol), added: g(addCol), fin: g(finCol), ongoing: g(opCol), active: g(actCol) };   // every year, for the Major projects view
     const k = WF_YEAR_COL[+y];
     if (k == null) continue;                       // 2025 catch-up and years past the forecast are not used in the forecast
     e.wf[k] = res; seen.add(k);
@@ -1037,7 +1040,13 @@ function paintProjects(m){
 
 /* "Plotted" tab for this market: construction jobs added, finalised, ongoing, and the total active. */
 function plottedHtml(m){
-  const e = WB && WB.plotted ? (WB.plotted.byName[wfNorm(m.name)] || WB.plotted.byName[wfNorm(m.slug)]) : null;
+  let e = WB && WB.plotted ? (WB.plotted.byName[wfNorm(m.name)] || WB.plotted.byName[wfNorm(m.slug)]) : null;
+  let src = PLOTTED_TAB, third = 'Finalisation jobs ongoing';
+  if (!e){
+    // no Plotted tab: the Jobs to Residents rows carry the same flows (added, finalised, operational, active)
+    const j = sheetEntry(m);
+    if (j && j.years && Object.values(j.years).some(v => v.active != null || v.added != null)){ e = j; src = WF_SHEET_TAB; third = 'Operational jobs'; }
+  }
   if (!e) return '';
   const all = Object.keys(e.years).map(Number).sort((a, b) => a - b), yrs = all.slice(0, 12);
   const max = Math.max(1, ...yrs.map(y => Math.max(e.years[y].added || 0, e.years[y].fin || 0, e.years[y].ongoing || 0)));
@@ -1045,13 +1054,13 @@ function plottedHtml(m){
   const fy = y => WF_YEAR_COL[y] != null ? `<span class="fy">FY${YEARS[WF_YEAR_COL[y]].replace(/^20/, '')}</span>` : '';
   return `
     <div class="psec">
-      <h3>Project jobs by year · “${esc(PLOTTED_TAB)}” tab</h3>
-      <div class="lg"><span><i style="background:var(--teal)"></i>Construction jobs added</span><span><i style="background:var(--red)"></i>Construction jobs finalised</span><span><i style="background:var(--muted)"></i>Finalisation jobs ongoing</span><span><b style="color:var(--ink)">Label</b>&nbsp;Total project jobs active</span></div>
+      <h3>Project jobs by year · “${esc(src)}” tab</h3>
+      <div class="lg"><span><i style="background:var(--teal)"></i>Construction jobs added</span><span><i style="background:var(--red)"></i>Construction jobs finalised</span><span><i style="background:var(--muted)"></i>${third}</span><span><b style="color:var(--ink)">Label</b>&nbsp;Total project jobs active</span></div>
       <div class="jr pl" style="grid-template-columns:repeat(${yrs.length},minmax(0,1fr))">
         ${yrs.map(y => { const v = e.years[y]; return `<div class="col"><div class="v ink">${num(v.active)}</div><div class="bars"><div class="b j" style="height:${h(v.added)}px" title="Added ${num(v.added)}"></div><div class="b f" style="height:${h(v.fin)}px" title="Finalised ${num(v.fin)}"></div><div class="b o" style="height:${h(v.ongoing)}px" title="Ongoing ${num(v.ongoing)}"></div></div></div>`; }).join('')}
       </div>
       <div class="jrx" style="grid-template-columns:repeat(${yrs.length},minmax(0,1fr))">${yrs.map(y => `<div>${y}${fy(y)}</div>`).join('')}</div>
-      <div class="pnote">Total project jobs active = the year before + added − finalised + ongoing, as the sheet computes it. Jobs, not residents: this workbook layout has no conversion to new residents${WF_SHEET ? '' : ', so the forecast keeps the hub workforce table'}.${all.length > yrs.length ? ` Years after ${yrs[yrs.length - 1]} are not shown.` : ''}</div>
+      <div class="pnote">Total project jobs active = the year before + added − finalised + ${third.toLowerCase()}, as the sheet computes it.${src === PLOTTED_TAB ? ` Jobs, not residents: this workbook layout has no conversion to new residents${WF_SHEET ? '' : ', so the forecast keeps the hub workforce table'}.` : ' The new residents above are the new jobs of each year × conversion % × household size.'}${all.length > yrs.length ? ` Years after ${yrs[yrs.length - 1]} are not shown.` : ''}</div>
     </div>`;
 }
 
