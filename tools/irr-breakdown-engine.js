@@ -122,6 +122,8 @@
     cashRateBasis:    'Normalised', // B14  Normalised | Actual
     negativeGearing:  'Off',        // B15  Off | On
     rentBasis:        'Growing',    // B16  Growing | Flat
+    cgt:              'Off',        // Off | On — capital gains tax at sale. Not in
+                                    // the workbook; off, so the figures stay pre-tax
 
     /* Settlement-accurate timing (default). The workbook dates every cashflow
        to the 1st of its month and charges a whole month of interest, rent and
@@ -165,6 +167,7 @@
     var normalised = (a.cashRateBasis === 'Normalised');
     var flatRent = (a.rentBasis === 'Flat');
     var ngOn = (a.negativeGearing === 'On');
+    var cgtOn = (a.cgt === 'On');
     var exact = (a.settlementAccurate !== false);
 
     /* ── summary block (sheet rows 4–5) ── */
@@ -174,6 +177,33 @@
     var grossProfit  = S - P;                                  // I5
     var sellingCosts = -(S * a.sellingCommission + a.sellingMarketSpend); // P5
     var rowLoan      = loan;                                             // E column
+    /* The cash in at the start is two different things wearing one number.
+       Of depositAndFee (18.5% by default), 1 − lvr (10%) is the DEPOSIT — the
+       client's own equity, which comes back out of the sale, and which
+       grossProfit = S − P already assumes is recovered. The rest — 8.5% — is
+       stamp duty, legals and the performance fee. That money is spent and
+       never returns, and it was missing from net profit, so every figure
+       read about $51k high on a $600k purchase.
+
+       Negative, and added, to match sellingCosts' convention a line up.
+       The IRR is unaffected and always has been: it runs off the cashflow
+       rows, where the FULL depositAndFee already lands on the purchase date. */
+    var entryCosts   = -P * (a.depositAndFee - (1 - a.lvr));
+
+    /* ── capital gains tax (not in the workbook; off by default) ──
+       Cost base = purchase price + the spent entry costs + the selling costs,
+       the ATO's first and second elements. The gain above it is halved when
+       the hold runs more than 12 months (the 50% discount — struck on
+       contract dates in law; these are the dates the register holds), then
+       taxed at the marginal rate and booked in the sale month, which is when
+       the owner's return for that year picks it up. A capital loss carries
+       forward against other gains in life; here it is simply no tax.
+       Pre-July-2027 law: indexation and the 30% floor are not modelled. */
+    var cgtCostBase  = P - entryCosts - sellingCosts;
+    var cgtGain      = S - cgtCostBase;
+    var cgtDiscount  = (sDate.getTime() > edate(pDate, 12).getTime()) ? 0.5 : 0;
+    var cgtTaxable   = Math.max(cgtGain, 0) * (1 - cgtDiscount);
+    var cgt          = cgtOn ? cgtTaxable * a.marginalTaxRate : 0;
 
     /* ── month grid: 1st of purchase month → 1st of sale month ── */
     var dates = [];
@@ -245,7 +275,7 @@
       // K — net cashflow: deposit on the first row, sale proceeds on the last
       var netCF = monthlyCF
         + (i === 0 ? deposit : 0)
-        + (isLast ? (S - loan + sellingCosts) : 0);
+        + (isLast ? (S - loan + sellingCosts - cgt) : 0);
 
       cumFin += interest;
       cumCash += netCF;
@@ -254,6 +284,7 @@
         date: d, cfDate: cfDate, monthFraction: frac,
         year: y, month: mo, cashRate: cashRate, loan: rowLoan,
         interest: interest, running: running, rent: rent, ngRefund: ngRefund,
+        cgt: isLast ? cgt : 0,
         monthlyCF: monthlyCF, netCF: netCF, cumFinance: cumFin,
         cumCashflow: cumCash, accumLoss: accumLoss, propValue: propValue
       });
@@ -275,19 +306,10 @@
     }
     var netHoldingPreTax = financeCosts + runningCosts - rentalIncome;
     var afterTaxHolding = netHoldingPreTax - ngTotal;
-    /* The cash in at the start is two different things wearing one number.
-       Of depositAndFee (18.5% by default), 1 − lvr (10%) is the DEPOSIT — the
-       client's own equity, which comes back out of the sale, and which
-       grossProfit = S − P already assumes is recovered. The rest — 8.5% — is
-       stamp duty, legals and the performance fee. That money is spent and
-       never returns, and it was missing from this sum, so every net profit
-       read about $51k high on a $600k purchase.
-
-       Negative, and added, to match sellingCosts' convention a few lines up.
-       The IRR is unaffected and always has been: it runs off the cashflow
-       rows, where the FULL depositAndFee already lands on the purchase date. */
-    var entryCosts = -P * (a.depositAndFee - (1 - a.lvr));
-    var netProfit = grossProfit - afterTaxHolding + sellingCosts + entryCosts;
+    /* entryCosts is struck up with the other summary figures, beside
+       sellingCosts; see there. CGT, when on, has already come off the sale
+       row, so it comes off here too and net profit stays the sum of the rows. */
+    var netProfit = grossProfit - afterTaxHolding + sellingCosts + entryCosts - cgt;
 
     var amounts = rows.map(function (r) { return r.netCF; });
     var cfDates = rows.map(function (r) { return r.cfDate; });
@@ -307,6 +329,8 @@
         runningCosts: runningCosts, rentalIncome: rentalIncome,
         netHoldingPreTax: netHoldingPreTax, ngRefund: ngTotal,
         afterTaxHolding: afterTaxHolding, sellingCosts: sellingCosts,
+        cgtOn: cgtOn, cgtCostBase: cgtCostBase, cgtGain: cgtGain,
+        cgtDiscount: cgtDiscount, cgtTaxable: cgtTaxable, cgt: cgt,
         netProfit: netProfit, irr: irr, months: rows.length
       }
     };
