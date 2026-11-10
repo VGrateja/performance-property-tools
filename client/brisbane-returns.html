@@ -108,8 +108,16 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
   /* the deposit bar chart has 7 category rows (some wrapping to 2 lines) —
      the generic 300px print height squeezes the bottom bars' value labels
      into the x-axis labels (seen clipped/overlapping in the PDF export) */
-  #chDeposit{height:360px}
+  #chDeposit{height:520px}
   .takeaway,.note,.src,.taxflag,.tiles,.legal,.footnotes{break-inside:avoid}
+  /* break-inside:avoid on .chart alone isn't reliable once a real browser's
+     print dialog reserves its own header/footer margin (shrinks the usable
+     page height below what this page's CSS heights assume) — seen slicing
+     the Risk v Return chart clean in half across a page break, with no
+     x-axis on either side. Forcing each chart section to start a fresh page
+     is guaranteed correct regardless of what margin the browser/user ends up
+     with, at the cost of some blank space on the page before it. */
+  section#sDeposit, section#sYears, section#sRisk{break-before:page}
 }
 </style>
 </head>
@@ -269,7 +277,21 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
   window.addEventListener('resize', () => charts.forEach(c => c.resize()));
   /* Print = A4 portrait with 12mm side margins: a 186mm (~703px) column. The charts are drawn at that
      size before the print layout (which comes after beforeprint), and back to the screen size after. */
-  window.addEventListener('beforeprint', () => charts.forEach(c => c.resize({ width: 700, height: c.getDom().classList.contains('tall') ? 340 : 300 })));
+  window.addEventListener('beforeprint', () => charts.forEach(c => {
+    const el = c.getDom();
+    const h = el.id === 'chDeposit' ? 520 : (el.classList.contains('tall') ? 340 : 300);
+    c.resize({ width: 700, height: h });
+    /* resize() alone can leave label positions (e.g. the risk chart's
+       scatter labelLayout overlap pass) mid-recompute — the SVG's own width
+       updates immediately, but a browser print snapshot taken right after
+       beforeprint returns doesn't wait for that follow-up layout pass, so a
+       near-edge label can get printed at its pre-resize (wider-canvas)
+       position and run off the page. Forcing a non-lazy setOption right
+       after resize makes that follow-up layout settle synchronously instead
+       of on a later frame — verified by inspecting the actual rendered SVG
+       text position before/after adding this line. */
+    c.setOption(c.getOption(), { lazyUpdate: false });
+  }));
   window.addEventListener('afterprint', () => charts.forEach(c => c.resize({ width: 'auto', height: 'auto' })));
   /* Download PDF = the browser's print-to-PDF of the A4 print layout below (vector text and charts) */
   $('pdfBtn').addEventListener('click', () => window.print());
@@ -354,7 +376,7 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
       });
     }
     chart('chRisk', {
-      grid: { left: narrow() ? 30 : 40, right: narrow() ? 20 : 40, top: 24, bottom: 34, containLabel: true },
+      grid: { left: narrow() ? 30 : 40, right: narrow() ? 60 : 80, top: 24, bottom: 34, containLabel: true },
       tooltip: { trigger: 'item', formatter: q => q.name + '<br>Risk score ' + q.value[0] + ' · return ' + pa(q.value[1]) },
       xAxis: { type: 'value', name: rk.xLabel || 'Risk score', nameLocation: 'middle', nameGap: 26, min: 0, max: xMax,
         nameTextStyle: { color: MUT, fontSize: 11, fontWeight: 600 }, axisLabel: { color: MUT, fontSize: 11 },
