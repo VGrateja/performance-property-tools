@@ -15,6 +15,12 @@
     return new Date(y, m - 1, 1).toLocaleDateString('en-AU', { month: 'short', year: 'numeric' });
   }
 
+  /* Months where the S&P series steps for a reason other than arrears
+     themselves; the tooltip says so on that month. */
+  const NOTES = {
+    '2026-08': 'S&amp;P added a large block of loans to this index (loans covered rose from A$117b to A$129b), so the step up reflects that change in coverage, not a sudden rise in arrears.',
+  };
+
   /* Compact "Mon YY" form for the visible axis labels — short enough
      to fit a label every 6 months across the Jan 2010 → Oct 2025
      monthly range (~32 labels). `month: 'short'` resolves to the
@@ -47,7 +53,9 @@
         formatter: (params) => {
           const lines = params.map(p =>
             `${dot(p.color)}${p.seriesName}: <strong>${Number(p.value).toFixed(2)}%</strong>`);
-          return `<div style="font-weight:700;margin-bottom:4px">${monthLabel(params[0].axisValue)}</div>${lines.join('<br/>')}`;
+          const note = NOTES[params[0].axisValue];
+          return `<div style="font-weight:700;margin-bottom:4px">${monthLabel(params[0].axisValue)}</div>${lines.join('<br/>')}` +
+            (note ? `<div style="max-width:260px;white-space:normal;margin-top:6px;font-size:11px;opacity:.85">${note}</div>` : '');
         },
       }),
       legend: standardLegend([

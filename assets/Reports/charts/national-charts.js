@@ -863,6 +863,27 @@
     return o;
   });
 
+  /* Months where the S&P arrears series steps for a reason other than arrears
+     themselves; p31/p32's tooltips say so on that month (axis value "D Mon YYYY"). */
+  var ARREARS_NOTES = {
+    'Aug 2026': 'S&amp;P added a large block of loans to this index (loans covered rose from A$117b to A$129b), so the step up reflects that change in coverage, not a sudden rise in arrears.',
+  };
+  function arrearsTooltip() {
+    return {
+      trigger: 'axis', axisPointer: { type: 'line', lineStyle: { color: '#6a7a88', type: 'dashed' } },
+      backgroundColor: 'rgba(15,25,34,0.95)', borderColor: '#2a3a48',
+      textStyle: { color: '#fff', fontFamily: FONT, fontSize: 12 },
+      formatter: function (params) {
+        var arr = Array.isArray(params) ? params : [params];
+        var head = arr.length ? arr[0].axisValue : '';
+        var lines = arr.map(function (p) { var v = Number(p.value); var fmt = isNaN(v) ? '—' : (v * 100).toFixed(2) + '%'; return '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + p.color + ';margin-right:6px"></span>' + p.seriesName + ': <strong>' + fmt + '</strong>'; });
+        var note = ARREARS_NOTES[String(head).replace(/^\d+\s+/, '')];
+        return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + lines.join('<br/>') +
+          (note ? '<div style="max-width:260px;white-space:normal;margin-top:6px;font-size:11px;opacity:.85">' + note + '</div>' : '');
+      },
+    };
+  }
+
   /* ── p31 — Mortgage Arrears National (Arrears % left + Monthly Cash Rate % right, monthly date axis) ── */
   reg('national-p31', function (d) {
     var raw = d.lendingDate || [];
@@ -874,17 +895,7 @@
     var sl = function (a) { return Array.isArray(a) ? a.slice(f) : a; };
     var dates = raw.slice(f).map(shortDate);
     var o = baseOption();
-    o.tooltip = {
-      trigger: 'axis', axisPointer: { type: 'line', lineStyle: { color: '#6a7a88', type: 'dashed' } },
-      backgroundColor: 'rgba(15,25,34,0.95)', borderColor: '#2a3a48',
-      textStyle: { color: '#fff', fontFamily: FONT, fontSize: 12 },
-      formatter: function (params) {
-        var arr = Array.isArray(params) ? params : [params];
-        var head = arr.length ? arr[0].axisValue : '';
-        var lines = arr.map(function (p) { var v = Number(p.value); var fmt = isNaN(v) ? '—' : (v * 100).toFixed(2) + '%'; return '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + p.color + ';margin-right:6px"></span>' + p.seriesName + ': <strong>' + fmt + '</strong>'; });
-        return '<div style="font-weight:700;margin-bottom:4px">' + head + '</div>' + lines.join('<br/>');
-      },
-    };
+    o.tooltip = arrearsTooltip();
     o.legend = Object.assign(o.legend, { data: ['Arrears', 'Monthly Cash Rate'] });
     o.xAxis = Object.assign(o.xAxis, { data: dates, axisLabel: dateAxisLabel(dates.length) });
     o.yAxis = [
@@ -912,6 +923,7 @@
     var sl = function (a) { return Array.isArray(a) ? a.slice(f) : a; };
     var dates = raw.slice(f).map(shortDate);
     var o = baseOption();
+    o.tooltip = arrearsTooltip();
     o.legend = Object.assign(o.legend, { data: series.map(function (s) { return s[0]; }) });
     o.xAxis = Object.assign(o.xAxis, { data: dates, axisLabel: dateAxisLabel(dates.length) });
     o.yAxis = Object.assign(o.yAxis, {
