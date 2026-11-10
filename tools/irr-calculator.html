@@ -2991,7 +2991,10 @@ window.stopCheck=false;
      candidate instead of giving up on the property. */
   function rank(want, offered) {
     return offered
-      .map((t, idx) => ({ idx, s: sameProperty(want, t, true) ? score(want, t) : -1 }))
+      /* a record RP Data marks HISTORICAL is the land as it used to be, never
+         the property as it is - even if the tick box was missed */
+      .map((t, idx) => ({ idx, s: /\bhistorical\b/i.test(t) ? -1
+                                 : sameProperty(want, t, true) ? score(want, t) : -1 }))
       .filter(x => x.s >= 0)
       .sort((x, y) => y.s - x.s)
       .map(x => x.idx);
@@ -3040,14 +3043,37 @@ window.stopCheck=false;
     await sleep(250);
 
     typeInto(box, name);
-    return waitFor(() => {
+    const fresh = () => {
       const o = [...document.querySelectorAll('[role=option]')];
       if (!o.length) return null;
       const now = (o[0].innerText || '').replace(/\s+/g, ' ').trim();
       /* a list that is still the old one is not an answer to this query */
       if (was && now === was) return null;
       return o;
-    }, ms);
+    };
+    const got = await waitFor(fresh, ms);
+    if (!got) return got;
+    /* RP Data's search can include HISTORICAL records - the land a property
+       was before it was subdivided or renumbered - behind a tick box that
+       only exists while this list is open. Ticked, a search for a current
+       address lands on a list mixing old records with the current one,
+       which is where "several results, none matched" came from (10 Nov
+       2026). So it is unticked for the run, wherever it was left. Looked up
+       again after the click: the box is re-rendered and the old element
+       goes stale. */
+    const cb = document.getElementById('historic-properties-checkbox');
+    if (cb && cb.checked) {
+      historicWasOn = true;
+      cb.click();
+      await waitFor(() => {
+        const c = document.getElementById('historic-properties-checkbox');
+        return c && !c.checked ? true : null;
+      }, 3000, 150);
+      await sleep(900);
+      return [...document.querySelectorAll('[role=option]')].length
+        ? [...document.querySelectorAll('[role=option]')] : got;
+    }
+    return got;
   }
 
   /* Narrated for the first property only. A silent stall and a slow answer
@@ -3090,7 +3116,11 @@ window.stopCheck=false;
      items if it is not, and failing both, the block around each link to a
      property, which is the one thing a list of properties has to contain. */
   function rowText(el) {
-    return (el.innerText || '').replace(/\s+/g, ' ').trim();
+    /* A results card opens with its photo counter - "1 of 43" - and the
+       first "<number> <word>" in it is what parts() reads as the address,
+       so "1 of" was being taken for a street number and name. */
+    return (el.innerText || '').replace(/\s+/g, ' ').trim()
+      .replace(/^\d+\s+of\s+\d+\s+/i, '');
   }
   /* Positive evidence that this is a list OF properties rather than one of
      them. A property page carries tables of its own — its sale history, the
@@ -3123,6 +3153,25 @@ window.stopCheck=false;
     }
     return a;
   }
+  /* The card around a property link: climb from the link while the block
+     above still holds only that one property, so the row carries the
+     address AND its last sale, never just one fragment of it. */
+  function cardOf(a) {
+    let n = a;
+    for (let i = 0; i < 8 && n.parentElement && n.parentElement !== document.body; i++) {
+      const up = n.parentElement;
+      if (up.querySelectorAll('a[href*="/property/"]').length > 1) break;
+      n = up;
+    }
+    return n;
+  }
+  /* What counts as a row on a results list. Each row is the card around ONE
+     link to a property - not any <li> that happens to hold a number and a
+     word. The list of 10 Nov 2026 was cards of divs whose features (beds,
+     baths, "223 m2") were list items, and those were being read as the rows:
+     no address in them, so "several results, none matched" every time, with
+     the right property on screen. Tables and ARIA rows still count, but only
+     when they carry a property link of their own. */
   function resultRows() {
     const seen = [], out = [];
     const add = el => {
@@ -3131,12 +3180,15 @@ window.stopCheck=false;
       const t = rowText(el);
       if (t && t.length < 800 && parts(t)) out.push(el);
     };
-    [...document.querySelectorAll('tr,[role=row]')]
-      .filter(r => !r.querySelector('th,[role=columnheader]')).forEach(add);
-    if (!out.length) document.querySelectorAll('li').forEach(add);
+    document.querySelectorAll('a[href*="/property/"]').forEach(a => {
+      if (!parts(rowText(a))) return;             // a nav link, not an address
+      add(cardOf(a));
+    });
     if (!out.length) {
-      document.querySelectorAll('a[href*="/property/"]')
-        .forEach(a => add(blockOf(a)));
+      [...document.querySelectorAll('tr,[role=row]')]
+        .filter(r => !r.querySelector('th,[role=columnheader]') &&
+                     r.querySelector('a[href*="/property/"]'))
+        .forEach(add);
     }
     /* A row inside a row: keep the innermost, or a nested list hands back the
        whole list as one of its own rows. */
@@ -3172,6 +3224,8 @@ window.stopCheck=false;
      being one; a page in transition does not. The property is still answered
      the instant it is true — only the list is made to wait. */
   const LIST_STEADY = 4;               // polls, at waitFor's 250ms step
+  /* set when the run had to untick RP Data's "Include historical properties" */
+  let historicWasOn = false;
   function landing(before, state) {
     if (location.pathname !== before && /\/property\//.test(location.pathname)) return 'property';
     if (resultsPage() && resultRows().length) {
@@ -3303,12 +3357,25 @@ window.stopCheck=false;
                       offered: rows.slice(0, 3).map(rowText).join(' | ').slice(0, 200) };
           continue;
         }
-        /* Last, not first. Where the same address lists more than once the
-           later row is the current title — the earlier ones are the history
-           of the land it was subdivided from. */
-        if (await openRow(mine[mine.length - 1])) { moved = true; break; }
+        /* Which of them is ours. Where a card's last sale is our purchase -
+           the price within two per cent, the same test soldVerdict() uses -
+           that card is the property we bought, whatever the register's
+           address leaves out: "4 Example Street" bought after subdivision is
+           RP Data's "1/4 Example Street", with the parent lot beside it
+           still showing a sale from decades earlier (10 Nov 2026). Otherwise
+           the last row, as before: where the same address lists more than
+           once the later row is the current title. */
+        const paid = Number(String(p.purchasePrice || '').replace(/[^0-9.]/g, ''));
+        const soldFor = el => {
+          const m = rowText(el).match(/last\s+sold\s+on\s+\d{1,2}\s+\w{3}\s+\d{4}\s+for\s+\$\s*([\d,]+)/i);
+          return m ? Number(m[1].replace(/,/g, '')) : 0;
+        };
+        const ours = paid > 0 ? mine.filter(el => { const v = soldFor(el); return v > 0 && Math.abs(v - paid) <= paid * 0.02; }) : [];
+        const pick = ours.length ? ours[ours.length - 1] : mine[mine.length - 1];
+        if (ours.length) step('picked the card whose last sale matches the purchase');
+        if (await openRow(pick)) { moved = true; break; }
         return { status: 'result row would not open', shape: shape(),
-                 offered: rowText(mine[mine.length - 1]).slice(0, 120) };
+                 offered: rowText(pick).slice(0, 120) };
       }
     }
     /* A list we could not find ourselves in is a more specific answer than
@@ -3620,6 +3687,11 @@ window.stopCheck=false;
     `${listed.length} showing a listing · ${unknown.length} need a second look` +
     (left > 0 ? ` · ${left} still to do — click the bookmark again` : ''),
     'font-weight:bold;font-size:13px');
+  if (historicWasOn) {
+    console.log('RP Data’s "Include historical properties" was ticked, so this run unticked it ' +
+      'to keep old records out of the matches. Tick it again in the search box if you want ' +
+      'historical records for your own searches.');
+  }
   if (sold.length)    console.table(sold,    ['address','city','purchased','purchasePrice','soldDate','soldPrice']);
   if (listed.length)  console.table(listed,  ['address','city','onMarket','lastAd','status']);
   if (unknown.length) {
