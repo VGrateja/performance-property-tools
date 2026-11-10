@@ -1102,6 +1102,42 @@ false alarms &mdash; the writes are inside `try` blocks the static pass
 did not see, and the "duplicate" ids are the empty state and the string
 that rebuilds it, never both in the DOM at once.
 
+### CGT, as a toggle that defaults to Off
+
+Every IRR the tool has ever shown is pre-tax. That came from the workbook it
+was ported from (*Updated IRR Calculation, 15 Sep 2026*), whose only tax
+item is the negative-gearing refund; it also suits the tool's job, because
+the market and council medians it compares against are pre-tax, and the tax
+on a sale depends on who owned it. A fourth toggle, **CGT Off | On**, sits
+beside Negative gearing. Off, nothing changes anywhere. On:
+
+- cost base = purchase price + the spent entry costs (`depositAndFee −
+  (1 − LVR)`, the 8.5% of stamp duty, legals and fee) + the selling costs;
+- the gain above it is halved when the sale is MORE than 12 months after
+  the purchase (`edate(pDate, 12)`, strict — the law strikes it on contract
+  dates, the register holds settlement dates, which for this book cannot
+  change the answer), otherwise taxed in full; a loss is no tax;
+- × the marginal tax rate already on the form, booked in the sale row, so
+  net profit stays the sum of the rows and the IRR falls with it.
+
+The IRR card then says *after CGT*, the summary grows Cost base, Capital
+gain, Taxable gain and CGT rows, the monthly table gains a CGT column, the
+CSV carries the same, and the basis line on the Register and Overview says
+*after CGT*. Price-based figures (Median return, CAGR, vs Market, vs Council)
+do not move. On the book as it stood on 10 Nov 2026 the median IRR drop was
+341 bps (Adelaide 12.52% → 8.67%, Brisbane 10.75% → 7.78%), larger on short
+holds. Not modelled, on purpose: indexation and the 30% floor that replace
+the discount from 1 July 2027 (no sale in the register is affected yet),
+capital-works clawback, and owner structure (a super fund's one-third
+discount, a company's none). Whether the performance fee belongs in the cost
+base is for the accountant; the toggle stays Off until then.
+
+This is the first change to `tools/irr-breakdown-engine.js` since the port
+(`cgt` in `DEFAULTS`; `cgtOn, cgtCostBase, cgtGain, cgtDiscount, cgtTaxable,
+cgt` in the summary; `cgt` on each row), so the page requests `?v=3` and the
+engine ships with it. The engine's self-test still pins the workbook with the
+toggle off.
+
 ### Re-porting drops their work, every time
 
 `tools/irr-calculator.html` here is a whole-file regeneration of the
@@ -1142,6 +1178,11 @@ do, but it means the script needs the same edit the tool got.
 
 ## Changelog
 
+- 2026-11-10 &mdash; **CGT toggle**, Off by default: cost base of price + spent
+  entry costs + selling costs, the 50% discount past 12 months, the marginal
+  rate, booked in the sale row. Carries a new `irr-breakdown-engine.js`
+  (`?v=3`). The pp-research copy's host-keyed freeze is stripped from the
+  port and does not ship here.
 - 2026-11-06 &mdash; **No date under a median price.** The Overview's Median
   purchase price and Median sale price cards named the day the property on
   that price changed hands, and listed every property sharing it. Read

@@ -1228,6 +1228,15 @@ details .body strong{color:var(--text)}
           </div>
         </div>
         <div class="seg-row">
+          <span class="seg-label" id="lbl-cgt">CGT</span>
+          <div class="seg" role="radiogroup" aria-labelledby="lbl-cgt">
+            <input type="radio" name="tCgt" id="tCgt-a" value="Off" checked>
+            <label for="tCgt-a">Off</label>
+            <input type="radio" name="tCgt" id="tCgt-b" value="On">
+            <label for="tCgt-b">On</label>
+          </div>
+        </div>
+        <div class="seg-row">
           <span class="seg-label" id="lbl-rent">Rent</span>
           <div class="seg" role="radiogroup" aria-labelledby="lbl-rent">
             <input type="radio" name="tRent" id="tRent-a" value="Growing" checked>
@@ -1382,6 +1391,7 @@ details .body strong{color:var(--text)}
                 <li><strong>Running costs</strong> and <strong>rent</strong> are struck off that month's property value (rent uses the purchase/sold midpoint instead when the rent basis is Flat).</li>
                 <li><strong>Net CF</strong> = holding cashflow, plus the deposit in month 1, plus <em>(sold price − loan + selling costs)</em> in the final month.</li>
                 <li><strong>Negative gearing</strong>, when on, refunds the accumulated FY loss × marginal tax rate each June and at sale. The FY accumulator resets in July.</li>
+                <li><strong>CGT</strong>, when on, is booked in the sale month: sold price less the cost base (purchase price, the spent entry costs and the selling costs), halved when the hold runs more than 12 months, × marginal tax rate. Off by default — the market and council comparisons are pre-tax, and the rate depends on who owns the property. Pre-July-2027 law; indexation is not modelled.</li>
                 <li><strong>Hold period</strong> uses Excel's <code>YEARFRAC</code> basis 0 (US 30/360).</li>
               </ul>
               <p>Columns that would hold the same value on every row are stated once above the table rather than repeated: the loan never changes, and neither does the cash rate on the Normalised basis. <strong>Accum loss (FY)</strong> and <strong>NG refund</strong> appear only when negative gearing is on, and <strong>Cash rate</strong> only on the Actual basis. Export CSV always writes every column, including the loan and cumulative interest, so it still ties column-for-column to the workbook.</p>
@@ -2138,7 +2148,7 @@ details .body strong{color:var(--text)}
 <script src="../shared/pp-telemetry.js?v=a1e39d4f"></script>
 <script src="../shared/fit-screen.js?v=1ea58579"></script>
 <script>PP_OS.initChrome({ name: 'IRR Calculator', section: 'vault' });</script>
-<script src="irr-breakdown-engine.js?v=2"></script>
+<script src="irr-breakdown-engine.js?v=3"></script>
 <!-- which council each suburb is in; see the file for where it comes from -->
 <script src="suburb-lga.js?v=1"></script>
 <script src="lga-median.js?v=1"></script>
@@ -3831,7 +3841,7 @@ window.stopCheck=false;
 
   /* readOpts answers "what is in force", which since the Save button is not
      the same as "what is in the fields". The ten numbers come from the
-     committed set; the three toggles are one click each and still apply on the
+     committed set; the four toggles are one click each and still apply on the
      spot, so they come from the radios. */
   function readOpts(){
     var src = committedOpts || fieldOpts();
@@ -3842,7 +3852,7 @@ window.stopCheck=false;
       sellingCommission: p('aComm'), sellingMarketSpend: Number(src.aSpend),
       bankMargin: p('aMargin'), apraBuffer: p('aApra'),
       cashRateBasis: radioVal('tRate'), negativeGearing: radioVal('tNg'),
-      rentBasis: radioVal('tRent')
+      rentBasis: radioVal('tRent'), cgt: radioVal('tCgt')
     };
   }
   /* writeOpts used to push a saved entry's assumptions back into the panel when
@@ -4715,10 +4725,12 @@ var MHP_FROM='1980-03', MHP={
     return OPT_IDS.some(function(id){ return String($(id).value) !== String(committedOpts[id]); });
   }
   function basisText(){
-    return [radioVal('tRate') + ' rate',
-            radioVal('tNg') === 'On' ? 'gearing on' : 'gearing off',
-            radioVal('tRent') === 'Flat' ? 'midpoint rent' : 'growing rent']
-           .join(' · ') + (assumptionsEdited() ? ' · assumptions edited' : '');
+    var parts = [radioVal('tRate') + ' rate',
+                 radioVal('tNg') === 'On' ? 'gearing on' : 'gearing off',
+                 radioVal('tRent') === 'Flat' ? 'midpoint rent' : 'growing rent'];
+    /* said only when on: off is how every figure has always read */
+    if (radioVal('tCgt') === 'On') parts.push('after CGT');
+    return parts.join(' · ') + (assumptionsEdited() ? ' · assumptions edited' : '');
   }
   function syncAssumpFlag(){
     /* Only "unsaved" now. "Edited" — what is in force differing from the
@@ -6007,10 +6019,10 @@ var MHP_FROM='1980-03', MHP={
       '<div class="kpis">'+
         '<div class="kpi lead"><div class="k-label">IRR (monthly)</div>'+
           '<div class="k-value">'+irrTxt+'</div>'+
-          '<div class="k-note">'+s.months+' monthly cashflows</div></div>'+
+          '<div class="k-note">'+s.months+' monthly cashflows'+(s.cgtOn ? ' · after CGT' : '')+'</div></div>'+
         '<div class="kpi"><div class="k-label">Net profit</div>'+
           '<div class="k-value '+(s.netProfit<0?'neg':'pos')+'">'+aud(s.netProfit)+'</div>'+
-          '<div class="k-note">after holding &amp; selling costs</div></div>'+
+          '<div class="k-note">'+(s.cgtOn ? 'after holding, selling costs &amp; CGT' : 'after holding &amp; selling costs')+'</div></div>'+
         '<div class="kpi"><div class="k-label">Gross profit</div>'+
           '<div class="k-value">'+aud(s.grossProfit)+'</div>'+
           '<div class="k-note">'+pct(s.grossProfit/s.purchasePrice,1)+' on purchase</div></div>'+
@@ -6037,6 +6049,11 @@ var MHP_FROM='1980-03', MHP={
           row2('Negative gearing refund', aud(s.ngRefund))+
           row2('After-tax holding', aud(s.afterTaxHolding))+
           row2('Selling costs', signed(s.sellingCosts))+
+          /* the tax rows only when the toggle is on — off, the table reads as it always has */
+          (s.cgtOn ? row2('Cost base', aud(s.cgtCostBase))+
+                     row2('Capital gain', signed(s.cgtGain))+
+                     row2(s.cgtDiscount ? 'Taxable gain (50% discount)' : 'Taxable gain (no discount — held 12 months or less)', aud(s.cgtTaxable))+
+                     row2('CGT at '+pct(res.assumptions.marginalTaxRate,0), signed(-s.cgt)) : '')+
           '<tr class="total"><td>Net profit</td><td>'+signed(s.netProfit)+'</td></tr>'+
         '</tbody></table>'+
       '</div>';
@@ -6058,6 +6075,7 @@ var MHP_FROM='1980-03', MHP={
     var a = res.assumptions, rows = res.rows, s = res.summary;
     var showRate = (a.cashRateBasis === 'Actual');
     var showNg   = (a.negativeGearing === 'On');
+    var showCgt  = (a.cgt === 'On');
 
     var cols = [
       { h:'Month', cls:'', f:function(r,last,first){
@@ -6077,6 +6095,9 @@ var MHP_FROM='1980-03', MHP={
     if (showNg) cols.push(
       { h:'Accum loss (FY)', cls:'num', f:function(r){ return aud(r.accumLoss); } },
       { h:'NG refund',       cls:'num', f:function(r){ return aud(r.ngRefund); } }
+    );
+    if (showCgt) cols.push(
+      { h:'CGT', cls:'num', f:function(r){ return r.cgt ? signed(-r.cgt) : '—'; } }
     );
     cols.push(
       { h:'Holding CF',    cls:'num', f:function(r){ return signed(r.monthlyCF); } },
@@ -6101,6 +6122,7 @@ var MHP_FROM='1980-03', MHP={
     var bits = [s.months + ' months', 'interest-only on a ' + aud(s.loan) + ' loan'];
     bits.push(showRate ? 'cash rate varies by month' : 'cash rate ' + pct(a.normalisedRate,2) + ' throughout');
     if (!showNg) bits.push('negative gearing off');
+    if (showCgt) bits.push('CGT ' + aud(s.cgt) + ' booked at sale');
     if (a.settlementAccurate !== false) bits.push('first and last months pro rata to settlement');
     $('bdConstants').textContent = bits.join(' · ');
   }
@@ -9494,22 +9516,24 @@ var MHP_FROM='1980-03', MHP={
            ['Gross profit', s.grossProfit], ['Finance costs', s.financeCosts],
            ['Running costs', s.runningCosts], ['Rental income', s.rentalIncome],
            ['Net holding (pre-tax)', s.netHoldingPreTax], ['Negative gearing refund', s.ngRefund],
-           ['After-tax holding', s.afterTaxHolding], ['Selling costs', s.sellingCosts],
-           ['Net profit', s.netProfit], ['IRR', s.irr === null ? '' : s.irr]);
+           ['After-tax holding', s.afterTaxHolding], ['Selling costs', s.sellingCosts]);
+    if (s.cgtOn) L.push(['Cost base (CGT)', s.cgtCostBase], ['Capital gain', s.cgtGain],
+                        ['CGT discount', s.cgtDiscount], ['Taxable gain', s.cgtTaxable], ['CGT', -s.cgt]);
+    L.push(['Net profit', s.netProfit], ['IRR', s.irr === null ? '' : s.irr]);
     L.push([]);
     L.push(['Cash rate basis', a.cashRateBasis], ['Negative gearing', a.negativeGearing],
-           ['Rent basis', a.rentBasis],
+           ['Rent basis', a.rentBasis], ['CGT', a.cgt],
            ['Deposit + fee', a.depositAndFee], ['LVR', a.lvr], ['Running cost p.a.', a.runningCostPa],
            ['Rental yield', a.rentalYield], ['Normalised cash rate', a.normalisedRate],
            ['Marginal tax rate', a.marginalTaxRate], ['Selling commission', a.sellingCommission],
            ['Selling market spend', a.sellingMarketSpend], ['Bank margin', a.bankMargin], ['APRA buffer', a.apraBuffer]);
     L.push([]);
     L.push(['Date','Cashflow date','Month fraction','Year','Month','Cash rate','Loan','Interest',
-            'Running costs','Rental income','NG refund','Holding cashflow','Net cashflow',
+            'Running costs','Rental income','NG refund','CGT','Holding cashflow','Net cashflow',
             'Cumulative finance','Cumulative cashflow','Accum loss (FY)','Property value']);
     last.rows.forEach(function(r){
       L.push([iso(r.date), iso(r.cfDate), r.monthFraction, r.year, MONTHS[r.month-1], r.cashRate, r.loan,
-              r.interest, r.running, r.rent, r.ngRefund, r.monthlyCF, r.netCF, r.cumFinance,
+              r.interest, r.running, r.rent, r.ngRefund, -r.cgt, r.monthlyCF, r.netCF, r.cumFinance,
               r.cumCashflow, r.accumLoss, r.propValue]);
     });
     download(toCsvText(L), 'irr-calculator-'+iso(s.purchaseDate)+'-to-'+iso(s.soldDate)+'.csv');
@@ -9596,7 +9620,7 @@ var MHP_FROM='1980-03', MHP={
     aDep:18.5, aLvr:90, aRun:2, aYield:3, aNorm:4.9, aTax:47,
     aComm:1.8, aSpend:20000, aMargin:1.75, aApra:0.5
   };
-  var DEFAULT_TOGGLES = { tRate:'Normalised', tNg:'Off', tRent:'Growing' };
+  var DEFAULT_TOGGLES = { tRate:'Normalised', tNg:'Off', tRent:'Growing', tCgt:'Off' };
 
   /* ── assumptions: edit, then Save ──
      They used to apply and store themselves the moment a field lost focus,
@@ -9624,7 +9648,7 @@ var MHP_FROM='1980-03', MHP={
   /* What a setting WAS, for the history. Read back from what was written
      last time rather than kept in a variable someone has to remember to
      update — the stored object is the only thing that is always right. */
-  var TOG_LABEL = { tRate:'Cash rate', tNg:'Negative gearing', tRent:'Rent basis' };
+  var TOG_LABEL = { tRate:'Cash rate', tNg:'Negative gearing', tRent:'Rent basis', tCgt:'CGT' };
   var OPT_LABEL = { aDep:'Deposit + fee', aLvr:'LVR', aRun:'Running cost p.a.',
     aYield:'Rental yield', aNorm:'Normalised cash rate', aTax:'Marginal tax rate',
     aComm:'Selling commission', aSpend:'Selling market spend',
@@ -9657,7 +9681,7 @@ var MHP_FROM='1980-03', MHP={
   function saveAssumptions(){
     var o = {};
     OPT_IDS.forEach(function(id){ o[id] = (committedOpts || fieldOpts())[id]; });
-    o.tRate = radioVal('tRate'); o.tNg = radioVal('tNg'); o.tRent = radioVal('tRent');
+    o.tRate = radioVal('tRate'); o.tNg = radioVal('tNg'); o.tRent = radioVal('tRent'); o.tCgt = radioVal('tCgt');
     var was = null;
     try { was = JSON.parse(localStorage.getItem(OPTS_KEY) || 'null'); } catch (e) {}
     try { localStorage.setItem(OPTS_KEY, JSON.stringify(o)); } catch (e) {}
@@ -9679,6 +9703,7 @@ var MHP_FROM='1980-03', MHP={
         if (o.tRate) setRadio('tRate', o.tRate);
         if (o.tNg)   setRadio('tNg',   o.tNg);
         if (o.tRent) setRadio('tRent', o.tRent);
+        if (o.tCgt)  setRadio('tCgt',  o.tCgt);
       }
     } catch (e) {}
     committedOpts = fieldOpts();   // whatever the fields hold now is what is in force
@@ -10023,13 +10048,13 @@ var MHP_FROM='1980-03', MHP={
     }
   });
 
-  /* The ten numbers wait for Save; the three toggles are one click and apply on
+  /* The ten numbers wait for Save; the four toggles are one click and apply on
      the spot, so they commit themselves. The deal fields on the left are not
      assumptions at all and only ever recompute the one deal. */
   var ASSUMPTION_IDS = { aDep:1, aLvr:1, aRun:1, aYield:1, aNorm:1, aTax:1,
                          aComm:1, aSpend:1, aMargin:1, aApra:1 };
   function isAssumptionNumber(el){ return ASSUMPTION_IDS[el.id] === 1; }
-  function isToggle(el){ return el.name === 'tRate' || el.name === 'tNg' || el.name === 'tRent'; }
+  function isToggle(el){ return el.name === 'tRate' || el.name === 'tNg' || el.name === 'tRent' || el.name === 'tCgt'; }
 
   document.querySelectorAll('input,select').forEach(function(el){
     if (el.id === 'impCat' || el.id === 'pasteBox') return;
@@ -11291,7 +11316,7 @@ var MHP_FROM='1980-03', MHP={
     });
     var a = {};
     OPT_IDS.forEach(function(id){ a[id] = (committedOpts || fieldOpts())[id]; });
-    a.tRate = radioVal('tRate'); a.tNg = radioVal('tNg'); a.tRent = radioVal('tRent');
+    a.tRate = radioVal('tRate'); a.tNg = radioVal('tNg'); a.tRent = radioVal('tRent'); a.tCgt = radioVal('tCgt');
     return { properties: list, assumptions: a, rev: Date.now() };
   }
   /* rev is a timestamp, so two copies of the same book never stringify alike.
@@ -11438,6 +11463,7 @@ var MHP_FROM='1980-03', MHP={
         if (body.assumptions.tRate) setRadio('tRate', body.assumptions.tRate);
         if (body.assumptions.tNg)   setRadio('tNg',   body.assumptions.tNg);
         if (body.assumptions.tRent) setRadio('tRent', body.assumptions.tRent);
+        if (body.assumptions.tCgt)  setRadio('tCgt',  body.assumptions.tCgt);
         committedOpts = fieldOpts();
         saveAssumptions();
       }
