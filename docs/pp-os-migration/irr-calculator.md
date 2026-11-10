@@ -1214,6 +1214,30 @@ every request through `api()`, leaves no placeholder, and that the lifted
 row test gives the right answer for both shapes of reply. Edit the source
 and run `mkbm.pl`; never the embedded copy.
 
+### A stale address saved on RP Data's pages beat the built-in one
+
+The bookmarklet read `localStorage.ppSheetUrl` **on RP Data's own origin**
+first and fell back to the address baked in when it was dragged. That
+order dates from before the tool built the bookmarks, when the address was
+typed into RP Data's console by hand. Checked on 10 Nov 2026: RP Data's
+storage in the browser that runs the checks still held an address that had
+been retired (a different deployment, which no longer answers), so every
+run asked a dead endpoint for its worklist and stopped before the first
+property, while the bookmark itself carried the right address unused.
+
+The order is now the other way round: the **baked** address and key come
+first, because the tool keeps them current for everyone; a stored copy is
+only the fallback for a bookmark built with nothing baked in. A stored
+address that differs is reported once in the console and ignored.
+`render/bmlinks.html` asserts both are carried as the preferred values.
+
+Verified the same day with a dry run on RP Data in that browser, using the
+bookmark exactly as built (writes to the sheet intercepted, the run's own
+notes put back afterwards): it used the built-in address, read the 860-row
+worklist, chose the 613 held properties for the monthly pass, and answered
+the first three as *still held* with their types and listing details,
+identical to the sheet's stored answers and to the register's types.
+
 ### Re-porting drops their work, every time
 
 `tools/irr-calculator.html` here is a whole-file regeneration of the
@@ -1279,6 +1303,9 @@ do, but it means the script needs the same edit the tool got.
 - 2026-11-10 &mdash; **Show the list** under the types note: what will be
   recorded, and type now against RP Data's for every disagreement, with an
   edit button on each.
+- 2026-11-10 &mdash; **The bookmark's built-in sheet address now beats one saved
+  by hand on RP Data's pages.** A retired address saved there stopped every
+  run before the first property.
 - 2026-11-06 &mdash; **No date under a median price.** The Overview's Median
   purchase price and Median sale price cards named the day the property on
   that price changed hands, and listed every property sharing it. Read
