@@ -914,6 +914,47 @@ which are no longer sent at all.
 from a build that includes it. An older one reads no `check` and treats every
 row as sold-check work. `render/worklist.html` covers both jobs.
 
+**Narrowed 10 Nov 2026: the type sweep is for sold properties only**, in
+advice or out of it. A held property in advice is typed by the weekly and
+monthly passes as they go (they read the type from every page they open),
+so the sweep only needs what those passes never open again. A type-only row
+is now sent only for a sold property, and carries its **sold date** &mdash;
+through the `Register` tab's existing *Sold date* column, so the deployed
+script carries it unchanged &mdash; and the sweep selects `!ptype && soldDate`.
+A held property outside advice with no type is no longer sent at all (1 in
+the book on 6 Nov; 246 sold untyped, 245 of them outside advice). A worklist
+written by an older tool has no sold dates, so a new sweep reads nothing to
+do rather than straying onto held properties.
+
+**One sold-check bookmark, 10 Nov 2026: "Run RPData Check".** The weekly
+bookmark is gone. The one left is built in the monthly mode: it re-asks
+every held property in advice once a calendar month and skips what was
+checked this month, so clicked once a week it does the weekly's catch-up as
+well. The cost, accepted: a property RP Data could not find waits for the
+1st rather than for Monday, and the first click of each month is a long run
+(about four hours for the book as it stood). A re-check overwrites the
+property's row in place, failures included &mdash; kept on purpose, because
+the latest answer showing a miss is how errors are spotted. The script's
+`weekly` mode is still in the source and simply no longer built.
+
+**Types the bookmarklets read now reach the register, on request.** Both
+the sweep and Run RPData Check write the type to the `RP Data check` tab's
+*Property type* column, and until 10 Nov 2026 nothing read it back.
+**Load sold check records** now gathers every row whose type the register
+is missing (`typesFromSheet`) and shows *N property types found* with a
+**Record N types** button (`#chkTypes`, `recordTypes`). It only ever fills
+a missing type: a property that already has one keeps it, and where RP Data
+says otherwise the note counts it and writes nothing &mdash; a type set by hand
+is a decision, and RP Data's wording is a guess at Cotality's title-based
+line. Matched on `addrKey_` (spacing and case), and an address that two
+properties share is skipped. Each recorded type is an `edited` row in the
+History. **Show the list** opens two tables under the note: *To record*
+(property, city, type now, what RP Data found) and *Different from the
+register* (type now against RP Data's), each disagreement with the
+register's own edit button. The list is worked out from the sheet rows each
+time it is drawn, so an edit made from it drops out at once.
+`render/rectypes.html` holds all of it.
+
 ### `rev` made every save a write
 
 `pushShared` opens with "nothing actually changed, so do not write" and
@@ -1138,6 +1179,65 @@ cgt` in the summary; `cgt` on each row), so the page requests `?v=3` and the
 engine ships with it. The engine's self-test still pins the workbook with the
 toggle off.
 
+### The sold-check mark never came back from the sheet
+
+**One worklist, two jobs** (above) had the tool mark each worklist row
+`check: 1` or `0`, and the bookmarklet select its sold-check rows by that
+mark. Checked against the live endpoint on 10 Nov 2026: the Apps Script's
+`register_()` writes a fixed set of columns and had no column for the mark,
+and `?register=1` reads back by column name, so `check` left the tool and
+never returned. The weekly and monthly passes filtered on `!!r.check`, which
+was always false &mdash; an empty worklist, reported as nothing to do. The
+type sweep selects on `!r.ptype` and was unaffected. The results tab bears it
+out: 992 rows, the latest *Checked at* 2026-10-28, two days before the mark
+was introduced; nothing has been written since. (375 of those rows have a
+blank *Checked by*, which is the WHO gap closed in #20.)
+
+Two fixes, each sufficient on its own:
+
+- the bookmarklet reads the mark when the row carries one and otherwise
+  infers it the way the tool makes it &mdash; only a sold-check row is sent
+  with its purchase date and price (`isCheckWork` in `rpdata-held-check.js`);
+  this works against the endpoint as deployed today, after a re-drag;
+- `sheet-endpoint.gs.txt` gains a `Check` column and returns `check` from
+  `?register=1`; a tab written before the column existed still answers,
+  because reads are by name. Needs a new deployment (Manage deployments,
+  not New) to take effect.
+
+Found alongside: the page's embedded copy of the bookmarklet carried the
+`READ_KEY` / `api()` work from **The endpoint was the only lock**, but
+`rpdata-held-check.js` &mdash; the source `mkbm.pl` embeds from &mdash; did
+not. A rebuild from source would have silently dropped the key from every
+bookmarklet; the source now carries it, and `render/bmlinks.html` asserts
+that every built bookmarklet carries the address, the key and WHO, routes
+every request through `api()`, leaves no placeholder, and that the lifted
+row test gives the right answer for both shapes of reply. Edit the source
+and run `mkbm.pl`; never the embedded copy.
+
+### A stale address saved on RP Data's pages beat the built-in one
+
+The bookmarklet read `localStorage.ppSheetUrl` **on RP Data's own origin**
+first and fell back to the address baked in when it was dragged. That
+order dates from before the tool built the bookmarks, when the address was
+typed into RP Data's console by hand. Checked on 10 Nov 2026: RP Data's
+storage in the browser that runs the checks still held an address that had
+been retired (a different deployment, which no longer answers), so every
+run asked a dead endpoint for its worklist and stopped before the first
+property, while the bookmark itself carried the right address unused.
+
+The order is now the other way round: the **baked** address and key come
+first, because the tool keeps them current for everyone; a stored copy is
+only the fallback for a bookmark built with nothing baked in. A stored
+address that differs is reported once in the console and ignored.
+`render/bmlinks.html` asserts both are carried as the preferred values.
+
+Verified the same day with a dry run on RP Data in that browser, using the
+bookmark exactly as built (writes to the sheet intercepted, the run's own
+notes put back afterwards): it used the built-in address, read the 860-row
+worklist, chose the 613 held properties for the monthly pass, and answered
+the first three as *still held* with their types and listing details,
+identical to the sheet's stored answers and to the register's types.
+
 ### Re-porting drops their work, every time
 
 `tools/irr-calculator.html` here is a whole-file regeneration of the
@@ -1183,6 +1283,29 @@ do, but it means the script needs the same edit the tool got.
   rate, booked in the sale row. Carries a new `irr-breakdown-engine.js`
   (`?v=3`). The pp-research copy's host-keyed freeze is stripped from the
   port and does not ship here.
+- 2026-11-10 &mdash; **The sold-check bookmarklets select their rows again.** The
+  `check` mark the tool has sent since 30 Oct never survived the sheet, so the
+  weekly and monthly passes read an empty worklist. The bookmarklet now infers
+  the mark from the row itself; the Apps Script gains a `Check` column
+  (redeploy to take effect). The bookmarklet source regains the key support
+  that had only ever been in the page. **Re-drag all three bookmarks after the
+  merge.**
+- 2026-11-10 &mdash; **The type sweep reads sold properties only**, in advice or
+  out; a type-only worklist row carries its sold date so the sweep can pick
+  it. The pp-research copy's worklist sync is frozen with the rest of it.
+- 2026-11-10 &mdash; **One sold-check bookmark, "Run RPData Check"**, built in
+  the monthly mode and meant to be clicked weekly; the weekly bookmark is
+  removed. How this works is rewritten for two bookmarks. Delete the old
+  RP Data weekly and RP Data monthly bookmarks and drag the new one.
+- 2026-11-10 &mdash; **Load sold check records records the property types RP
+  Data found**, for properties the register has no type for, behind one
+  button; never overwrites a type already set.
+- 2026-11-10 &mdash; **Show the list** under the types note: what will be
+  recorded, and type now against RP Data's for every disagreement, with an
+  edit button on each.
+- 2026-11-10 &mdash; **The bookmark's built-in sheet address now beats one saved
+  by hand on RP Data's pages.** A retired address saved there stopped every
+  run before the first property.
 - 2026-11-06 &mdash; **No date under a median price.** The Overview's Median
   purchase price and Median sale price cards named the day the property on
   that price changed hands, and listed every property sharing it. Read
