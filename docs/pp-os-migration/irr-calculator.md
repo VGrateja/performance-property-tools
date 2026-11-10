@@ -1138,6 +1138,41 @@ cgt` in the summary; `cgt` on each row), so the page requests `?v=3` and the
 engine ships with it. The engine's self-test still pins the workbook with the
 toggle off.
 
+### The sold-check mark never came back from the sheet
+
+**One worklist, two jobs** (above) had the tool mark each worklist row
+`check: 1` or `0`, and the bookmarklet select its sold-check rows by that
+mark. Checked against the live endpoint on 10 Nov 2026: the Apps Script's
+`register_()` writes a fixed set of columns and had no column for the mark,
+and `?register=1` reads back by column name, so `check` left the tool and
+never returned. The weekly and monthly passes filtered on `!!r.check`, which
+was always false &mdash; an empty worklist, reported as nothing to do. The
+type sweep selects on `!r.ptype` and was unaffected. The results tab bears it
+out: 992 rows, the latest *Checked at* 2026-10-28, two days before the mark
+was introduced; nothing has been written since. (375 of those rows have a
+blank *Checked by*, which is the WHO gap closed in #20.)
+
+Two fixes, each sufficient on its own:
+
+- the bookmarklet reads the mark when the row carries one and otherwise
+  infers it the way the tool makes it &mdash; only a sold-check row is sent
+  with its purchase date and price (`isCheckWork` in `rpdata-held-check.js`);
+  this works against the endpoint as deployed today, after a re-drag;
+- `sheet-endpoint.gs.txt` gains a `Check` column and returns `check` from
+  `?register=1`; a tab written before the column existed still answers,
+  because reads are by name. Needs a new deployment (Manage deployments,
+  not New) to take effect.
+
+Found alongside: the page's embedded copy of the bookmarklet carried the
+`READ_KEY` / `api()` work from **The endpoint was the only lock**, but
+`rpdata-held-check.js` &mdash; the source `mkbm.pl` embeds from &mdash; did
+not. A rebuild from source would have silently dropped the key from every
+bookmarklet; the source now carries it, and `render/bmlinks.html` asserts
+that every built bookmarklet carries the address, the key and WHO, routes
+every request through `api()`, leaves no placeholder, and that the lifted
+row test gives the right answer for both shapes of reply. Edit the source
+and run `mkbm.pl`; never the embedded copy.
+
 ### Re-porting drops their work, every time
 
 `tools/irr-calculator.html` here is a whole-file regeneration of the
@@ -1183,6 +1218,13 @@ do, but it means the script needs the same edit the tool got.
   rate, booked in the sale row. Carries a new `irr-breakdown-engine.js`
   (`?v=3`). The pp-research copy's host-keyed freeze is stripped from the
   port and does not ship here.
+- 2026-11-10 &mdash; **The sold-check bookmarklets select their rows again.** The
+  `check` mark the tool has sent since 30 Oct never survived the sheet, so the
+  weekly and monthly passes read an empty worklist. The bookmarklet now infers
+  the mark from the row itself; the Apps Script gains a `Check` column
+  (redeploy to take effect). The bookmarklet source regains the key support
+  that had only ever been in the page. **Re-drag all three bookmarks after the
+  merge.**
 - 2026-11-06 &mdash; **No date under a median price.** The Overview's Median
   purchase price and Median sale price cards named the day the property on
   that price changed hands, and listed every property sharing it. Read
