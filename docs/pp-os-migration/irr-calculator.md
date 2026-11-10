@@ -914,6 +914,47 @@ which are no longer sent at all.
 from a build that includes it. An older one reads no `check` and treats every
 row as sold-check work. `render/worklist.html` covers both jobs.
 
+**Narrowed 10 Nov 2026: the type sweep is for sold properties only**, in
+advice or out of it. A held property in advice is typed by the weekly and
+monthly passes as they go (they read the type from every page they open),
+so the sweep only needs what those passes never open again. A type-only row
+is now sent only for a sold property, and carries its **sold date** &mdash;
+through the `Register` tab's existing *Sold date* column, so the deployed
+script carries it unchanged &mdash; and the sweep selects `!ptype && soldDate`.
+A held property outside advice with no type is no longer sent at all (1 in
+the book on 6 Nov; 246 sold untyped, 245 of them outside advice). A worklist
+written by an older tool has no sold dates, so a new sweep reads nothing to
+do rather than straying onto held properties.
+
+**One sold-check bookmark, 10 Nov 2026: "Run RPData Check".** The weekly
+bookmark is gone. The one left is built in the monthly mode: it re-asks
+every held property in advice once a calendar month and skips what was
+checked this month, so clicked once a week it does the weekly's catch-up as
+well. The cost, accepted: a property RP Data could not find waits for the
+1st rather than for Monday, and the first click of each month is a long run
+(about four hours for the book as it stood). A re-check overwrites the
+property's row in place, failures included &mdash; kept on purpose, because
+the latest answer showing a miss is how errors are spotted. The script's
+`weekly` mode is still in the source and simply no longer built.
+
+**Types the bookmarklets read now reach the register, on request.** Both
+the sweep and Run RPData Check write the type to the `RP Data check` tab's
+*Property type* column, and until 10 Nov 2026 nothing read it back.
+**Load sold check records** now gathers every row whose type the register
+is missing (`typesFromSheet`) and shows *N property types found* with a
+**Record N types** button (`#chkTypes`, `recordTypes`). It only ever fills
+a missing type: a property that already has one keeps it, and where RP Data
+says otherwise the note counts it and writes nothing &mdash; a type set by hand
+is a decision, and RP Data's wording is a guess at Cotality's title-based
+line. Matched on `addrKey_` (spacing and case), and an address that two
+properties share is skipped. Each recorded type is an `edited` row in the
+History. **Show the list** opens two tables under the note: *To record*
+(property, city, type now, what RP Data found) and *Different from the
+register* (type now against RP Data's), each disagreement with the
+register's own edit button. The list is worked out from the sheet rows each
+time it is drawn, so an edit made from it drops out at once.
+`render/rectypes.html` holds all of it.
+
 ### `rev` made every save a write
 
 `pushShared` opens with "nothing actually changed, so do not write" and
@@ -1225,6 +1266,19 @@ do, but it means the script needs the same edit the tool got.
   (redeploy to take effect). The bookmarklet source regains the key support
   that had only ever been in the page. **Re-drag all three bookmarks after the
   merge.**
+- 2026-11-10 &mdash; **The type sweep reads sold properties only**, in advice or
+  out; a type-only worklist row carries its sold date so the sweep can pick
+  it. The pp-research copy's worklist sync is frozen with the rest of it.
+- 2026-11-10 &mdash; **One sold-check bookmark, "Run RPData Check"**, built in
+  the monthly mode and meant to be clicked weekly; the weekly bookmark is
+  removed. How this works is rewritten for two bookmarks. Delete the old
+  RP Data weekly and RP Data monthly bookmarks and drag the new one.
+- 2026-11-10 &mdash; **Load sold check records records the property types RP
+  Data found**, for properties the register has no type for, behind one
+  button; never overwrites a type already set.
+- 2026-11-10 &mdash; **Show the list** under the types note: what will be
+  recorded, and type now against RP Data's for every disagreement, with an
+  edit button on each.
 - 2026-11-06 &mdash; **No date under a median price.** The Overview's Median
   purchase price and Median sale price cards named the day the property on
   that price changed hands, and listed every property sharing it. Read
