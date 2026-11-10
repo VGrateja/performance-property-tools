@@ -1238,6 +1238,40 @@ worklist, chose the 613 held properties for the monthly pass, and answered
 the first three as *still held* with their types and listing details,
 identical to the sheet's stored answers and to the register's types.
 
+### "Several results, none matched" was the right property, unread
+
+Seen on the first monthly run, 10 Nov 2026: a run of properties came back
+*several results, none matched* although the property was on RP Data's
+results list in plain sight. Three faults, each enough on its own:
+
+- **Historical records.** RP Data's search has an *Include historical
+  properties* tick box, only present while the suggestion list is open. It
+  had been ticked, so searches mixed in records marked HISTORICAL &mdash; the
+  land before a subdivision or renumbering &mdash; and landed on a list instead
+  of the property. The run now unticks it whenever it finds it ticked (and
+  says so at the end), and never picks a suggestion marked HISTORICAL.
+- **What a row is.** RP Data's results are cards of divs, and the beds,
+  baths and land area inside each card are `<li>` items. The row finder
+  took any `<li>` with a number and a word, so the rows it read were "223 m2"
+  &mdash; no address, never a match. A row is now the card around ONE link to a
+  property (`cardOf`); tables and ARIA rows count only if they carry such a
+  link. Each card also opens with its photo counter, "1 of 43", which the
+  address parser read as a street number and name; `rowText` strips it.
+- **Which card.** With no unit in the register's address, every card at that
+  number matches, and the run took the last &mdash; on the list in question,
+  the parent lot with a 1996 sale, when the purchase was the "1/4" beside it
+  (sold to us for exactly the purchase price). The card whose last sale
+  matches the purchase price within two per cent now wins; otherwise the
+  last, as before.
+
+Checked on that live results list with the bookmarklet's own functions: the
+three cards read whole, all three matched, and the 1/4 with the matching
+sale was chosen where the old rule took the parent lot.
+
+Properties already answered *several results, none matched* this month are
+not asked again until the 1st; delete their rows in *RP Data check* and the
+next click asks them again.
+
 ### Re-porting drops their work, every time
 
 `tools/irr-calculator.html` here is a whole-file regeneration of the
@@ -1306,6 +1340,10 @@ do, but it means the script needs the same edit the tool got.
 - 2026-11-10 &mdash; **The bookmark's built-in sheet address now beats one saved
   by hand on RP Data's pages.** A retired address saved there stopped every
   run before the first property.
+- 2026-11-10 &mdash; **"Several results, none matched" fixed**: the run unticks
+  RP Data's *Include historical properties*, skips HISTORICAL suggestions,
+  reads a results row as the whole card around one property link, and prefers
+  the card whose last sale is our purchase.
 - 2026-11-06 &mdash; **No date under a median price.** The Overview's Median
   purchase price and Median sale price cards named the day the property on
   that price changed hands, and listed every property sharing it. Read
