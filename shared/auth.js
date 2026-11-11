@@ -175,7 +175,16 @@ function _ppSetAllowed(st) {
 }
 
 window.ppResolveAllowedTools = function (force) {
-  if (!force && _ppAllowed && !_ppAllowed.fallback) return Promise.resolve(_ppAllowed);
+  /* An 'external' answer cached while the profile had not loaded yet (or from an
+     earlier load of this tab) is stale once the tier says staff: resolve again. */
+  const staleExternal = _ppAllowed && _ppAllowed.mode === 'external' && /^(dev|admin|company|leads)$/.test(getViewAsLevel());
+  if (!force && _ppAllowed && !_ppAllowed.fallback && !staleExternal) return Promise.resolve(_ppAllowed);
+  /* No tier yet = the profile has not loaded (a fresh tab asks at DOMContentLoaded,
+     before _hydrateFromSession). Answer 'external' for now but cache NOTHING — not
+     the state, not the in-flight promise — or the hydrate's own resolve gets this
+     answer back and staff stay on it all tab (2026-11-11: the IRR Calculator went
+     read-only for Pre-DD in a new tab). */
+  if (!getViewAsLevel()) return Promise.resolve({ mode: 'external', keys: new Set() });
   if (_ppAllowedPromise) return _ppAllowedPromise;
   _ppAllowedPromise = (async () => {
     const lvl = getViewAsLevel();
@@ -196,7 +205,7 @@ window.ppResolveAllowedTools = function (force) {
       }
       const st = { mode: 'all', keys: new Set() }; _ppSetAllowed(st); return st;
     }
-    if (lvl === 'client' || lvl === 'guest' || !lvl) { const st = { mode: 'external', keys: new Set() }; _ppSetAllowed(st); return st; }
+    if (lvl === 'client' || lvl === 'guest') { const st = { mode: 'external', keys: new Set() }; _ppSetAllowed(st); return st; }
     if (!REG) { const st = { mode: 'external', keys: new Set() }; _ppSetAllowed(st); return st; }   /* no registry on this page → legacy gates */
     try {
       const { data, error } = await window.sb.from('hub_groups').select('key,name,tools,sort').order('sort');

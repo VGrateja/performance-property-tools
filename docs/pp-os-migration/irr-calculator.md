@@ -1312,6 +1312,15 @@ do, but it means the script needs the same edit the tool got.
 
 ## Changelog
 
+- 2026-11-11 &mdash; **A new tab no longer opens the tool read-only.** Opened from a
+  bookmark or a pasted link, the page asked `shared/auth.js` for the group's tools
+  before the profile had loaded; `ppResolveAllowedTools()` cached that "external"
+  answer (state AND in-flight promise), and the profile's own resolve got it back, so
+  Pre-DD staff stayed read-only all tab. It now caches nothing until there is a tier,
+  and re-resolves a cached "external" once the tier says staff (heals tabs already
+  stuck). The page also re-decides `share.canWrite` on `pp-allowed-tools-changed`,
+  and `applyShareMode()` re-renders the rows and the types box both ways, not only
+  when going read-only. Every page's `auth.js?v=` stamp moved.
 - 2026-11-11 &mdash; **"How this works" no longer goes missing on the Sold check.**
   The guide and its button follow `syncBmBox()`, which needs a held property in
   the book; it ran from `applyShareMode()` before the shared book had loaded, and
