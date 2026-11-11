@@ -539,6 +539,10 @@ function parseWholesalePdf(pages, file) {
       /* Wholesale's tax implications block (2026-11): the depreciation they assume and the marginal rate the refund uses */
       if ((m = l.match(/Annual Depreciation Assumption\s+-?\$([\d,]+)/i))) cf.depreciationAnnual = num(m[1]);
       if ((m = l.match(/Marginal Tax Rate\s+([\d.]+)%/i))) cf.marginalTaxRate = +m[1] / 100;
+      if ((m = l.match(/^Income - Annual with vacancy allowance\s+(\d+)\s+\d+\s+\$/i))) cf.vacancyWeeks = +m[1];
+      /* the Wholesale running-cost lines the August 2026 import missed: % of rent fees, and the compliance checks */
+      if ((m = l.match(/^(Advice|Portfolio) Management Fee\s+([\d.]+)%/i)) && +m[2] > 0) (cf.feeLines = cf.feeLines || []).push({ label: m[1] + ' Management Fee', pct: +(m[2] / 100).toFixed(6) });
+      if ((m = l.match(/^Rental Compliance Checks \(Report Only\)\s+\$([\d,]+)/i))) cf.rentalComplianceChecks = num(m[1]);
     } cf.weeksLet = cf.weeksLet || 52; cf.maintenanceAllowance = 0; cf.cosmeticWorks = 0; cf.engagementFee = 0; cf.professionalClean = 0; cf.minRentalStdCost = 0; }
   // comparable sales
   const S = pages.find(p => p.some(l => /^Comparable Sales? Analysis/i.test(l)));

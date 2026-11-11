@@ -448,12 +448,16 @@ function taxOf(file) {
   const dep = cf.depreciationAnnual;
   if (dep == null || dep === '' || !isFinite(+dep)) return null;
   const mtr = +cf.marginalTaxRate;
-  return { dep: +dep, mtr: (isFinite(mtr) && mtr > 0) ? mtr : 0.47 };
+  return { dep: +dep, mtr: (isFinite(mtr) && mtr > 0) ? mtr : 0.47, vac: Math.max(0, +cf.vacancyWeeks || 0), rent: +cf.rent || 0 };
 }
-/* The report's own sum: the rental result less the depreciation is the taxable
-   result; at the marginal rate a loss is a refund and a gain is tax payable. */
-function afterTax(x, dep, mtr) {
-  const taxable = x.annual - dep;
+/* The report's own sum (Mark's Final IR, Rathcown Road, 9 Sep 2026): the taxable
+   result is the rental result WITH the report's vacancy allowance ("Income -
+   Annual with vacancy allowance", cashflow.vacancyWeeks), less the depreciation;
+   at the marginal rate a loss is a refund and a gain is tax payable. The refund is
+   then added to the cash flow the page shows, at full occupancy — the report does
+   exactly this (−$46,824 + $31,971 = −$14,852 at 107% · 6.50%). */
+function afterTax(x, tax, mtr) {
+  const taxable = x.annual - tax.vac * tax.rent - tax.dep;
   const refund = -taxable * mtr;          /* + = refund, − = tax payable */
   const annual = x.annual + refund;
   return { taxable, refund, annual, weekly: annual / 52 };
@@ -1281,7 +1285,7 @@ function slideCashflow(s, A) {
      switch — then the cash flow after tax. The yields and the before-tax cash flow
      become two pairs of tiles to make room; the after-tax pair ends on y562. */
   const mtr = A.mtr > 0 ? A.mtr : tax.mtr;
-  const t = afterTax(x, tax.dep, mtr);
+  const t = afterTax(x, tax, mtr);
   const negT = t.annual < 0;
   const W3 = WC[2], TX_ROW = 20, AT_H = 104;
   const rates = TAX_RATES.some(v => Math.abs(v - tax.mtr) < 0.0001) ? TAX_RATES : [tax.mtr].concat(TAX_RATES);
@@ -1300,7 +1304,7 @@ function slideCashflow(s, A) {
   y3 += SUB + 4;
   const txRows = [
     ['Depreciation assumption', money(tax.dep)],
-    ['Taxable rental result', money(t.taxable), t.taxable < 0 ? 'neg' : ''],
+    ['Taxable rental result' + (tax.vac ? ' ' + MID + ' ' + (52 - tax.vac) + ' weeks let' : ''), money(t.taxable), t.taxable < 0 ? 'neg' : ''],
     [(t.refund >= 0 ? 'Tax refund' : 'Tax payable') + ' ' + MID + ' ' + Math.round(mtr * 100) + '% marginal rate', money(Math.abs(t.refund))],
   ];
   h += '<div class="b" style="left:' + X[2] + 'px;top:' + y3 + 'px;width:' + W3 + 'px;font-size:12.5px">' +
