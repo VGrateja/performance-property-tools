@@ -536,6 +536,9 @@ function parseWholesalePdf(pages, file) {
       else if ((m = l.match(/^Gross Yield\s+([\d.]+)%/i))) out.cashflowMeta.grossYield = +m[1] / 100;
       else if ((m = l.match(/^Net Yield\s+([\d.]+)%/i))) out.cashflowMeta.netYield = +m[1] / 100;
       else if ((m = l.match(/^Loan Amount\s+\$([\d,]+)/i))) out.cashflowMeta.loanAmount = num(m[1]);
+      /* Wholesale's tax implications block (2026-11): the depreciation they assume and the marginal rate the refund uses */
+      if ((m = l.match(/Annual Depreciation Assumption\s+-?\$([\d,]+)/i))) cf.depreciationAnnual = num(m[1]);
+      if ((m = l.match(/Marginal Tax Rate\s+([\d.]+)%/i))) cf.marginalTaxRate = +m[1] / 100;
     } cf.weeksLet = cf.weeksLet || 52; cf.maintenanceAllowance = 0; cf.cosmeticWorks = 0; cf.engagementFee = 0; cf.professionalClean = 0; cf.minRentalStdCost = 0; }
   // comparable sales
   const S = pages.find(p => p.some(l => /^Comparable Sales? Analysis/i.test(l)));

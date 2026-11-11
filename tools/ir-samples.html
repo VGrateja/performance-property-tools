@@ -198,6 +198,9 @@ body.irs-present .irs-stage{align-items:center;height:100vh;background:#0b0e14}
 .irs-ctls .irs-step .lb{text-transform:none;letter-spacing:0;font-size:12px;color:#171B24;padding:0 4px;min-width:52px;text-align:center}
 .irs-ctls .irs-step .lb.on{color:#00A0B4}
 .irs-ctls .irs-step button{padding:4px 9px;font-size:14px;line-height:1}
+/* the marginal tax rate switch on a Wholesale file's tax implications heading (2026-11) */
+.irs-seg.irs-taxseg{padding:2px;gap:2px}
+.irs-seg.irs-taxseg button{padding:2px 8px;font-size:11px}
 .irs-fixed{font:700 11px 'Montserrat',sans-serif;letter-spacing:.1em;text-transform:uppercase;color:#63666A;white-space:nowrap;padding:0 4px}
 /* line-item breakdown rows */
 .irs-li{display:flex;align-items:center;justify-content:space-between;gap:10px;height:20px;border-bottom:1px solid #F1F3F5;font-size:12.5px}
@@ -220,7 +223,7 @@ body.irs-present .irs-stage{align-items:center;height:100vh;background:#0b0e14}
   .irs-pp{width:1280px;height:720px;position:relative;overflow:hidden;page-break-after:always;break-after:page}
   .irs-pp:last-child{page-break-after:auto;break-after:auto}
   .irs-pp .irs-slide{position:relative;transform:none !important;box-shadow:none;border-radius:0}
-  .irs-pp .irs-ctls{display:none}
+  .irs-pp .irs-ctls,.irs-pp .irs-taxseg{display:none}
 }
 
 /* ── curate modal ──────────────────────────────────────────────────────── */
@@ -370,7 +373,7 @@ const deck = { i: -1, page: 0, lvr: null, rateMode: 'norm', rate: null, loan: 'i
 const PAGES = 3;
 function defaultAssumptions() {
   /* 108% of the purchase price for every sample (Van 2026-10-27), whatever LVR the file was modelled at */
-  return { lvr: 1.08, rateMode: 'norm', rate: null, loan: 'io', term: 30 };
+  return { lvr: 1.08, rateMode: 'norm', rate: null, loan: 'io', term: 30, mtr: null };   /* mtr null = the file's own marginal tax rate */
 }
 /* What the PDF prints, whatever the toggles say (Saskia 2026-09-21). */
 function printAssumptions(file) { return defaultAssumptions(file); }
@@ -431,6 +434,32 @@ const CF_DISCLAIMER = [
   'The above cashflow is an indicative example considering many variables and assumptions.',
   'It does not include any tax impacts that may be applicable, including benefits such as depreciation and negative gearing. Where negative gearing is not available, the annual loss may still be carried forward and applied to the final capital gains outcome. Tax outcomes are individual and must be discussed with an accountant or financial planner, and are therefore not factored into the cashflow.',
 ];
+/* A Wholesale file models its tax (Mark, 2026-11-11), so its second paragraph
+   says what the tax lines assume instead of saying tax is left out. */
+const CF_DISCLAIMER_TAX = [
+  CF_DISCLAIMER[0],
+  'The tax figures are assumptions only, not tax advice: the depreciation is the report’s estimate, and the refund assumes the whole rental loss is deductible at the selected marginal tax rate, including the Medicare levy. Where negative gearing is not available, the annual loss may still be carried forward and applied to the final capital gains outcome. Tax outcomes are individual and must be discussed with an accountant or financial planner.',
+];
+/* Wholesale reports carry a depreciation assumption and a marginal tax rate
+   (cashflow.depreciationAnnual / marginalTaxRate, read from the report's "Tax
+   implications" block). Only files that carry the depreciation get the tax lines. */
+function taxOf(file) {
+  const cf = (file || {}).cashflow || {};
+  const dep = cf.depreciationAnnual;
+  if (dep == null || dep === '' || !isFinite(+dep)) return null;
+  const mtr = +cf.marginalTaxRate;
+  return { dep: +dep, mtr: (isFinite(mtr) && mtr > 0) ? mtr : 0.47 };
+}
+/* The report's own sum: the rental result less the depreciation is the taxable
+   result; at the marginal rate a loss is a refund and a gain is tax payable. */
+function afterTax(x, dep, mtr) {
+  const taxable = x.annual - dep;
+  const refund = -taxable * mtr;          /* + = refund, − = tax payable */
+  const annual = x.annual + refund;
+  return { taxable, refund, annual, weekly: annual / 52 };
+}
+/* 2026-27 resident marginal rates plus the 2% Medicare levy */
+const TAX_RATES = [0.47, 0.39, 0.32, 0.17];
 
 /* Purchase price (Van 2026-08-28): the settled figure captured at "Publish as
    example IR", else the file's OWN modelled purchase figure (cashflow.budget). */
@@ -753,7 +782,7 @@ function renderSlide() {
   /* assumption toggles: data-set="key" data-val="value" */
   $('#irsScale').querySelectorAll('button[data-set]').forEach(b => b.addEventListener('click', () => {
     const k = b.getAttribute('data-set'), v = b.getAttribute('data-val');
-    deck[k] = (k === 'lvr') ? +v : (k === 'term' ? +v : v);
+    deck[k] = (k === 'lvr' || k === 'term' || k === 'mtr') ? +v : v;
     if (k === 'rateMode') deck.rate = null;          /* back on a preset */
     renderSlide();
   }));
@@ -846,10 +875,10 @@ function FOOTER_WIDE(extra) {
    as every page, then the two paragraphs in the page's small print on the
    footer's own 940px measure, so they stay clear of the logo column (logo box
    x1024–1244 × y661–696). Measured: 1 + 3 lines at 11px end at y≈647. */
-function FOOTER_DISCLAIMER() {
+function FOOTER_DISCLAIMER(paras) {
   return HAIR(72, 572, 1136) +
     '<div class="b irs-disc" style="left:72px;top:580px;width:940px">' +
-      CF_DISCLAIMER.map(p => '<p>' + esc(p) + '</p>').join('') + '</div>' + LOGO();
+      (paras || CF_DISCLAIMER).map(p => '<p>' + esc(p) + '</p>').join('') + '</div>' + LOGO();
 }
 /* Every follow-on slide wears the same header (property line + section title
    + teal accent rule) so a slide still identifies itself mid-deck. */
@@ -1240,9 +1269,46 @@ function slideCashflow(s, A) {
   ];
   const BIG_GAP = 10, BIG_H = Math.floor((BOTTOM - TOP - HDR - 3 * BIG_GAP) / 4);
   h += title(X[2], TOP, 'Summary');
-  big.forEach((t, i) => { h += tile(X[2], TOP + HDR + i * (BIG_H + BIG_GAP), WC[2], BIG_H, t[0], t[1], t[2], { fs: 30, vTop: 30, sTop: BIG_H - 24, sfs: 11, neg: t[3] }); });
+  const tax = taxOf(f);
+  if (!tax) {
+    big.forEach((t, i) => { h += tile(X[2], TOP + HDR + i * (BIG_H + BIG_GAP), WC[2], BIG_H, t[0], t[1], t[2], { fs: 30, vTop: 30, sTop: BIG_H - 24, sfs: 11, neg: t[3] }); });
+    h += FOOTER_DISCLAIMER();
+    return h;
+  }
 
-  h += FOOTER_DISCLAIMER();
+  /* A Wholesale file (Mark, 2026-11-11): the report's "Tax implications" — the
+     depreciation it assumes and the refund at a marginal tax rate the advisor can
+     switch — then the cash flow after tax. The yields and the before-tax cash flow
+     become two pairs of tiles to make room; the after-tax pair ends on y562. */
+  const mtr = A.mtr > 0 ? A.mtr : tax.mtr;
+  const t = afterTax(x, tax.dep, mtr);
+  const negT = t.annual < 0;
+  const W3 = WC[2], TX_ROW = 20, AT_H = 104;
+  const rates = TAX_RATES.some(v => Math.abs(v - tax.mtr) < 0.0001) ? TAX_RATES : [tax.mtr].concat(TAX_RATES);
+  const pairW = (x0, y0, a, b, hh, o) => { const w1 = (W3 - TILE_GAP) / 2;
+    return tile(x0, y0, w1, hh, a[0], a[1], a[2], Object.assign({ neg: a[3] }, o)) +
+      tile(x0 + w1 + TILE_GAP, y0, w1, hh, b[0], b[1], b[2], Object.assign({ neg: b[3] }, o)); };
+  let y3 = TOP + HDR;
+  h += pairW(X[2], y3, ['Gross yield', pct(x.grossYield)], ['Net yield', pct(x.netYield)], TILE_H, { fs: 20, vTop: 24, kfs: 9 });
+  y3 += TILE_H + TILE_GAP;
+  h += pairW(X[2], y3, ['Annual · before tax', money(x.annual), null, neg], ['Weekly · before tax', money(x.weekly), null, neg], TILE_H, { fs: 20, vTop: 24, kfs: 9 });
+  y3 += TILE_H + 14;
+  h += T(X[2], y3, W3, 'Tax implications', { fs: 11, bold: true, color: '#63666A', ls: 1.4 });
+  h += '<div class="irs-seg irs-taxseg" style="right:' + (1280 - X[2] - W3) + 'px;top:' + (y3 - 5) + 'px">' +
+    rates.map(v => '<button type="button" data-set="mtr" data-val="' + v + '"' + (Math.abs(v - mtr) < 0.0001 ? ' class="on"' : '') +
+      ' title="Marginal tax rate incl. Medicare levy">' + Math.round(v * 100) + '%</button>').join('') + '</div>';
+  y3 += SUB + 4;
+  const txRows = [
+    ['Depreciation assumption', money(tax.dep)],
+    ['Taxable rental result', money(t.taxable), t.taxable < 0 ? 'neg' : ''],
+    [(t.refund >= 0 ? 'Tax refund' : 'Tax payable') + ' ' + MID + ' ' + Math.round(mtr * 100) + '% marginal rate', money(Math.abs(t.refund))],
+  ];
+  h += '<div class="b" style="left:' + X[2] + 'px;top:' + y3 + 'px;width:' + W3 + 'px;font-size:12.5px">' +
+    txRows.map(r => '<div class="irs-li' + (r[2] ? ' ' + r[2] : '') + '" style="height:' + TX_ROW + 'px;font-size:inherit"><i>' + esc(r[0]) + '</i><b>' + esc(r[1]) + '</b></div>').join('') + '</div>';
+  h += pairW(X[2], BOTTOM - AT_H, ['Annual · after tax', money(t.annual), negT ? 'out of pocket' : 'surplus', negT],
+    ['Weekly · after tax', money(t.weekly), negT ? 'out of pocket' : 'surplus', negT], AT_H, { fs: 26, vTop: 34, kfs: 9, sTop: AT_H - 26, sfs: 11 });
+
+  h += FOOTER_DISCLAIMER(CF_DISCLAIMER_TAX);
   return h;
 }
 
