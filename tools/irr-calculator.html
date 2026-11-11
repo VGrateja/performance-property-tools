@@ -11754,9 +11754,9 @@ var MHP_FROM='1980-03', MHP={
     syncBmBox();             // signing out takes the bookmarklet away with it
   }
   /* ── the shared list on a published web page ──
-     Reading needs nothing: the publishable key allows SELECT on this one table
-     and the database refuses every write it is offered. Writing needs a sign-in,
-     and who can sign in is decided in the Supabase dashboard, not here. If the
+     Reading and writing both need a sign-in that irr_calculator_can_write()
+     accepts (migrations 131 + 136: dev/admin, an editor grant, or a hub group
+     that shows this tool); anyone else gets an empty register. If the
      config file still holds its placeholders, or the library did not load, none
      of this runs and the tool is what it always was. */
   /* ══════════ WHO ══════════
@@ -11790,14 +11790,22 @@ var MHP_FROM='1980-03', MHP={
      session token and that is what the browser keeps. */
   /* One screen. Two prompts made you finish a step before you could see what
      the next one wanted, and there is nothing to decide between them. */
-  /* Writing is dev/admin, or an 'irr-calculator' editor grant — the same
-     answer the RLS gives, asked on the client only so the UI can disable
-     what the database would refuse. RLS is the gate; this is the courtesy. */
+  /* Writing is dev/admin, an 'irr-calculator' editor grant, or a hub group
+     that shows this tool (migration 136, Van 2026-11-11: everyone who can see
+     the tool works it like an admin) — the same answer the RLS gives, asked on
+     the client only so the UI can disable what the database would refuse.
+     RLS is the gate; this is the courtesy. */
   function hubCanWrite(){
     if (typeof getAccessLevel !== 'function') return false;
     var lvl = getAccessLevel();
     if (lvl === 'dev' || lvl === 'admin') return true;
-    return (typeof ppHasToolRole === 'function') && !!ppHasToolRole('irr-calculator', 'editor');
+    if ((typeof ppHasToolRole === 'function') && ppHasToolRole('irr-calculator', 'editor')) return true;
+    var st = (typeof ppAllowedState === 'function') && ppAllowedState();
+    return !!(st && st.mode === 'set' && st.keys && st.keys.has('irr-calculator'));
+  }
+  /* the group answer may not be resolved yet on a fresh tab: wait for it, never fail on it */
+  function groupsReady(){
+    return (typeof ppResolveAllowedTools === 'function') ? ppResolveAllowedTools().catch(function(){}) : Promise.resolve();
   }
   (function connectSupabase(){
     /* The hub's client, not one of our own: one sign-in for the whole OS,
@@ -11819,6 +11827,8 @@ var MHP_FROM='1980-03', MHP={
     };
 
     share.sb.auth.getSession().then(function(r){
+      return groupsReady().then(function(){ return r; });
+    }).then(function(r){
       share.canWrite = !!(r && r.data && r.data.session) && hubCanWrite();
       rememberWho(r && r.data && r.data.session);
       applyShareMode();

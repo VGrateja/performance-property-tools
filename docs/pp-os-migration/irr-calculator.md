@@ -1312,6 +1312,16 @@ do, but it means the script needs the same edit the tool got.
 
 ## Changelog
 
+- 2026-11-11 &mdash; **Everyone who can see the tool can use all of it** (Van:
+  "all who can see that tool will have the same access as us admins"). The Pre-DD
+  team opened the tool through their hub group but got an empty register and no
+  sold check, because every policy, reads included, called
+  `irr_calculator_can_write()` = dev/admin or an editor grant. Migration 136 adds a
+  third yes: an internal staff member whose hub group (or the company baseline)
+  includes `irr-calculator`. Ticking the tool into a group is now the whole grant.
+  The page's `hubCanWrite()` asks the same question (`ppAllowedState()`, waiting for
+  the groups to resolve on a fresh tab). pp-os: give the IRR Calculator's write and
+  read the same "can open the tool" rule.
 - 2026-11-10 &mdash; **CGT toggle**, Off by default: cost base of price + spent
   entry costs + selling costs, the 50% discount past 12 months, the marginal
   rate, booked in the sale row. Carries a new `irr-breakdown-engine.js`
