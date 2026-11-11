@@ -1312,6 +1312,12 @@ do, but it means the script needs the same edit the tool got.
 
 ## Changelog
 
+- 2026-11-11 &mdash; **"How this works" no longer goes missing on the Sold check.**
+  The guide and its button follow `syncBmBox()`, which needs a held property in
+  the book; it ran from `applyShareMode()` before the shared book had loaded, and
+  `applyShared()` never ran it again, so someone opening the tool with no local
+  copy (every Pre-DD user, whom the database had been sending nothing) kept it
+  hidden. `applyShared()` now calls `syncBmBox()` after the book lands.
 - 2026-11-11 &mdash; **Everyone who can see the tool can use all of it** (Van:
   "all who can see that tool will have the same access as us admins"). The Pre-DD
   team opened the tool through their hub group but got an empty register and no
