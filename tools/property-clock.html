@@ -1471,6 +1471,14 @@ html:not([data-theme="light"]) .fbar-divider{background:rgba(148,163,184,.20)}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
       Download PDF (A4)
     </button>
+    <button class="tbtn pdf-btn" id="clock-pdf-link-btn" onclick="copyClockPdfLink()" title="Copy the link to the online Property Clock PDF">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+      Copy PDF Link
+    </button>
+    <button class="tbtn edit-only" onclick="editClockPdfLink()" title="Change the online PDF link (new edition)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+      Edit PDF Link
+    </button>
     <button class="tbtn pdf-btn" onclick="exportClockJPEG()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
       Download JPEG (HD)
@@ -4432,6 +4440,66 @@ async function loadState(){
   return false;
 }
 
+/* ═══ COPY PDF LINK ═══
+   The online Property Clock PDF lives on the company docs site (not this repo)
+   and its URL changes with every monthly edition (the docs site picks the
+   suffix). The current URL is the reports_state row 'property-clock-pdf',
+   payload {url, edition, updated_at}: any signed-in user reads it, only
+   writers (is_writer() via RLS) change it, from "Edit PDF Link" in Edit mode.
+   Deliberately NOT in clock_state: a clock Save and the backfill job overwrite
+   that payload whole. Row missing or read failed -> the Edition 10 URL below. */
+const CLOCK_PDF_REGION='property-clock-pdf';
+const CLOCK_PDF_DEFAULT_URL='https://docs.performanceproperty.com.au/research/Clocks/2026/Clock_diagram_Smooth&Workforce_Edition_10_2026-idutw04.pdf';
+let _clockPdfUrl=CLOCK_PDF_DEFAULT_URL;
+
+async function loadClockPdfLink(){
+  try{
+    if(!window.sb) throw new Error('Supabase client not loaded');
+    const { data, error }=await window.sb.from('reports_state').select('payload').eq('region',CLOCK_PDF_REGION).maybeSingle();
+    if(error) throw error;
+    if(data && data.payload && data.payload.url) _clockPdfUrl=data.payload.url;
+  }catch(e){ console.warn('[clock] pdf link load failed, using the default', e); }
+}
+
+function copyClockPdfLink(){
+  const url=_clockPdfUrl;
+  /* Clipboard API refused (permissions, insecure origin, old browser):
+     try a hidden textarea + execCommand, else show the URL to copy by hand. */
+  const fallback=()=>{
+    const ta=document.createElement('textarea');
+    ta.value=url;ta.setAttribute('readonly','');
+    ta.style.cssText='position:fixed;top:-1000px;left:0;opacity:0';
+    document.body.appendChild(ta);ta.select();
+    let ok=false;
+    try{ ok=document.execCommand('copy'); }catch(e){}
+    ta.remove();
+    if(ok) toast('PDF link copied');
+    else window.prompt('Copy the PDF link:',url);
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(()=>toast('PDF link copied')).catch(fallback);
+  }else fallback();
+}
+
+async function editClockPdfLink(){
+  if(!isAdmin()){toast('Only editors can change the PDF link.');return;}
+  const v=window.prompt('Paste the link to the new Property Clock PDF:',_clockPdfUrl);
+  if(v==null) return;
+  const url=v.trim();
+  if(!/^https:\/\/\S+$/i.test(url)){toast('Not saved: the link must start with https://');return;}
+  const m=url.match(/Edition_(\d+)/i);
+  const payload={ url, edition: m?Number(m[1]):null, updated_at: new Date().toISOString() };
+  try{
+    const { error }=await window.sb.from('reports_state').upsert({region:CLOCK_PDF_REGION,payload},{onConflict:'region'});
+    if(error) throw error;
+    _clockPdfUrl=url;
+    toast('PDF link updated'+(payload.edition?' (Edition '+payload.edition+')':''));
+  }catch(e){
+    console.error('[clock] pdf link save failed', e);
+    toast('PDF link not saved: '+((e&&e.message)||'error'));
+  }
+}
+
 /* ═══ TOAST ═══ */
 let _tt=null;
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>t.classList.remove('show'),2400);}
@@ -4479,6 +4547,7 @@ document.addEventListener('DOMContentLoaded',async()=>{
   // Show loading state while fetching from Supabase
   document.getElementById('save-indicator').textContent='Loading…';
 
+  loadClockPdfLink();   // not awaited: the button works with the default until it lands
   const didLoad=await loadState();
 
   applyHdr();
