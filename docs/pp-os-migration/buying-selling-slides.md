@@ -29,5 +29,6 @@ A deck with a saved custom order (`payload.order`) shows a new key at the end of
 
 ## Changelog
 
+- 2026-11-11 — At-a-glance **Job Creation Index** card reads the live JSA `job_creation_index` first and falls back to the Data Dump `jci` per region (the rule `enrich-marts.mjs` already used). The `jci` copy stopped at Apr 2026 and carried three wrong IVI regions: Tamworth showed Gosford & Central Coast, Ipswich showed Toowoomba & South West QLD, Rockingham showed South West WA. Found by a leak scan of every chart source (all other shared series were national/state by design). pp-os: same change in `api/src/bss/rules.ts` (`read('jci')`).
 - 2026-10-13: Stock on Market v ADOM (`f11`) restored to the Demand section of the Full Report and the Summary deck.
 - 2026-11-04 — Vacancy Rate Projection slide: the People cell now draws the VR Projection tool's breakdown from payload.demand.v1 — Year 1 and Year 2 each list NI / IM (base interstate) / OM, plus a separate WF line in the 8 infrastructure-workforce markets. Before, the slide showed IM with the workforce folded in (e.g. Darwin IM −858 = −1,677 + 819) and no Year 2 lines. Totals and vacancy rates were already equal; all 37 markets checked to sum. pp-os mirror owed: bss-page-tables.tsx still shows the old cell. (Van)
