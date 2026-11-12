@@ -207,7 +207,7 @@ body{
    narrow viewports). The region button is capped narrower so the row still fits
    1120px even when the widest dropdown option ("Current 216M Ave") is picked. */
 .ctrl-group{display:flex;flex-direction:column}
-.ctrl-group label{display:block;font-size:.66rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;height:16px}
+.ctrl-group label{display:block;font-size:.66rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;height:16px;white-space:nowrap}
 
 /* Multi-select region picker */
 .region-picker{position:relative}
@@ -488,6 +488,7 @@ body.embed-mode #runwayPdfBtn,
 body.embed-mode #runwayJpegBtn,
 body.embed-mode #runwayManageBtn,
 body.embed-mode #basisGroup,
+body.embed-mode #dsMethodGroup,
 body.embed-mode .header,
 body.embed-mode .appbar,
 body.embed-mode .mobile-control-bar,
@@ -720,6 +721,18 @@ body.embed-mode html { overflow: hidden; }
        scores in front of an advisor, with nothing saying which, is worse than
        one they can question. That argument retires the picker too. -->
 
+  <!-- Demand Score benchmark method (Saskia/Van, 2026-11-12). Current is the
+       default and the only method a deck embed shows. A and B are re-scored
+       for every month by build-cotality-rvd-history.mjs (dsA / dsB). -->
+  <div class="ctrl-group" id="dsMethodGroup">
+    <label>Demand Method</label>
+    <select id="dsMethodSelect" title="How the demand score's benchmark is set">
+      <option value="ds" selected>Current</option>
+      <option value="dsA">Option A: fixed benchmark</option>
+      <option value="dsB">Option B: season-adjusted</option>
+    </select>
+  </div>
+
   <div class="ctrl-group">
     <label>Wage Growth</label>
     <select id="wageYearsSelect">
@@ -918,7 +931,19 @@ const RVD_COTALITY_ID = 'rvd_cotality';
    The earlier V3 -- SQM vacancy and rent, by scripts/build-sqm-rvd-history.mjs
    -- is superseded, not deleted: that script still builds and is the way back
    if the SQM basis is ever wanted again. */
-const RVD_SQM_ID = 'rvd_v3';
+/* Since 2026-11-12 the same V3 timeline plus the A/B benchmark methods (dsA,
+   dsB on every row), built with --id=rvd_v3_methods. `rvd_v3` is the row the
+   page read before; it is left as it was. */
+const RVD_SQM_ID = 'rvd_v3_methods';
+
+/* ── DEMAND METHOD (Saskia/Van, 2026-11-12) ────────────────────────────────
+   Which demand score each point plots: 'ds' = Current (benchmark from this
+   month's median listings per 1,000), 'dsA' = Option A (fixed benchmark),
+   'dsB' = Option B (season-adjusted listings, fixed benchmark). Not
+   remembered between visits, and an embed is always Current: a deck shows the
+   published method. */
+let rvdDsField = 'ds';
+function rvdDsOf(r){ const v = r[rvdDsField] != null ? r[rvdDsField] : r.ds; return Number(v)||0; }
 
 /* ── THE THREE SERIES, AND WHICH ARE BEING COMPARED ────────────────────────
    Compare draws one dot per TICKED series per market, and they all sit at the
@@ -1077,12 +1102,13 @@ window.__forgePushed = null;
             if (!Array.isArray(list) || RAW[pref+month]) return;   // local (baseline/localStorage) data wins for the same month
             RAW[pref+month] = list.filter(r => r && r.city).map(r => {
               const city = CITY_RENAMES[r.city] || String(r.city);   // boot-time rename pass already ran — apply it here
-              return { city, rw: Number(r.rw)||0, ds: Number(r.ds)||0, type: typeLookup[city]||'smooth' };
+              return { city, rw: Number(r.rw)||0, ds: rvdDsOf(r), type: typeLookup[city]||'smooth' };
             });
             addedAny = true;
           });
         }
         window.__forgePushed = pushed;                    // legend source — see _readPushedLegend
+        if (_cot) { window.__rvdBuiltRows = data; window.__rvdTypeLookup = typeLookup; }   // the Demand Method switch re-maps these
         if (!addedAny) { applyRunwayLegend(); return; }   // no new months, but the legend may still be fresher
         months = _computeMonths();
         if (atEnd) currentIdx = months.length - 1;
@@ -1445,6 +1471,25 @@ let currentIdx=Math.max(0, months.length-1), selectedCities=new Set(), playing=f
 
 /* ── WAGE-GROWTH TOGGLE (5-year baked ↔ 1-year) ── switches the runway axis only
    (wage growth doesn't affect the demand score). */
+/* Demand Method: re-map every prebuilt month onto the chosen score and repaint.
+   Runway (x) never changes; only each point's demand score (y). */
+(function(){ const sel=document.getElementById('dsMethodSelect'); if(!sel) return;
+  if(rvdIsEmbed()){ sel.value='ds'; return; }
+  sel.value='ds';
+  sel.addEventListener('change',()=>{
+    rvdDsField=['ds','dsA','dsB'].includes(sel.value)?sel.value:'ds';
+    const rows=window.__rvdBuiltRows, tl=window.__rvdTypeLookup||{};
+    if(!rows) return;
+    for(const row of rows){
+      const month=row.label, p=row.data; if(!month||!p) continue;
+      [['houses','house_'],['units','unit_']].forEach(([grp,pref])=>{
+        const list=p[grp]; if(!Array.isArray(list)) return;
+        RAW[pref+month]=list.filter(r=>r&&r.city).map(r=>{ const city=CITY_RENAMES[r.city]||String(r.city); return { city, rw:Number(r.rw)||0, ds:rvdDsOf(r), type:tl[city]||'smooth' }; });
+      });
+    }
+    render();
+  });
+})();
 (function(){ const sel=document.getElementById('wageYearsSelect'); if(sel){ sel.value=String(wageYears); sel.addEventListener('change',()=>{ wageYears=(+sel.value===1)?1:5; applyRunwayLegend(); render(); }); } })();
 
 /* 1-YEAR MACHINE — recompute each region's runway with 1-year wage growth from the

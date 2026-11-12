@@ -126,7 +126,13 @@ const WRITE = process.argv.includes('--write');
    supply rule, the engine, the vintages -- is shared, so nothing else can be
    blamed for a difference between them. */
 const LISTINGS = (process.argv.find(a => a.startsWith('--listings=')) || '--listings=cl').slice(11) === 'rea' ? 'rea' : 'cl';
-const ROW_ID = LISTINGS === 'rea' ? 'rvd_v3' : 'rvd_cotality';
+/* --id=<row> writes the timeline to another forge_cotality row (Van, 2026-11-12:
+   the A/B methods and Nov 2026 go to `rvd_v3_methods`, read only by the page on
+   staging, so production keeps `rvd_v3` until that page is pushed). Months the
+   target row does not hold yet are frozen from the BASE row, so "Current" stays
+   exactly what is live; and the shared cot_rentvacancy_history is not rewritten. */
+const BASE_ID = LISTINGS === 'rea' ? 'rvd_v3' : 'rvd_cotality';
+const ROW_ID = (process.argv.find(a => a.startsWith('--id=')) || '').slice(5) || BASE_ID;
 console.log('building ' + (LISTINGS === 'rea' ? 'V3 (Cotality rent + vacancy, REA listings)' : 'V2 (pure Cotality)') + ' -> forge_cotality id=' + ROW_ID);
 const DIR = (process.argv.find(a => a.startsWith('--dir=')) || '').slice(6) || join(homedir(), 'Downloads');
 
@@ -188,7 +194,6 @@ for (const entry of readdirSync(DIR, { withFileTypes: true })) {
     }
   }
 }
-if (!candidates.length) { console.error('No Cotality VR/rent exports found under ' + DIR); process.exit(1); }
 console.log('reading ' + candidates.length + ' Cotality export(s) under ' + DIR);
 /* A month can arrive twice — the same drop as a zip and as a "(1)" copy. Keep
    the first reading and count the rest, rather than letting a duplicate file
@@ -227,6 +232,33 @@ for (const [dir, f] of candidates) {
 }
 if (dupes) console.log('  (' + dupes + ' duplicate readings ignored — the same month downloaded twice)');
 if (pcts) console.log('  (' + pcts + ' readings already came as a percentage rather than a fraction — taken as-is)');
+/* The stored monthly series fills every reading the exports above do not carry
+   (Van, 2026-11-12: Nov 2026 would not build). The 3-year rent growth needs the
+   rent 36 months back, and once the historic export left Downloads only the
+   newest month was readable, so every market failed "no rent-3yr" and the new
+   label was silently skipped. forge_cotality/cot_rentvacancy_history holds the
+   same Cotality readings for our markets (2019 on), already in percent, and the
+   Data Forge upload merges each new drop into it. Exports still win where both
+   exist. */
+{
+  const { data: hRow, error: hErr } = await sb.from('forge_cotality').select('data').eq('id', 'cot_rentvacancy_history').maybeSingle();
+  if (hErr) { console.error('could not read cot_rentvacancy_history: ' + hErr.message); process.exit(1); }
+  let filled = 0;
+  for (const [slug, months] of Object.entries((hRow && hRow.data && hRow.data.regions) || {})) {
+    for (const [m, byType] of Object.entries(months || {})) {
+      for (const t of ['h', 'u']) {
+        const rec = (byType || {})[t];
+        if (!rec || num(rec.vr) == null) continue;
+        const bucket = (VR[slug] || (VR[slug] = {}))[m] || (VR[slug][m] = {});
+        if (bucket[t]) continue;
+        bucket[t] = { vr: rec.vr, rent: num(rec.rent) };
+        filled++;
+      }
+    }
+  }
+  console.log('  stored series (cot_rentvacancy_history): ' + filled + ' readings filled in that the exports did not carry');
+}
+if (!Object.keys(VR).length) { console.error('No Cotality vacancy/rent readings: no exports under ' + DIR + ' and no stored series'); process.exit(1); }
 const vrMonths = new Set();
 for (const s of Object.keys(VR)) for (const m of Object.keys(VR[s])) vrMonths.add(m);
 console.log('  -> ' + Object.keys(VR).length + ' markets, ' + vrMonths.size + ' months, '
@@ -381,6 +413,7 @@ const labels = [...new Set([...vrMonths].map(m => shift(m, LAG)))]
   .filter(l => SNAP[l] || l === newestLabel)
   .sort();
 const out = [];
+const INPUTS = {};   /* 'YYYY-MM|h' -> { fb: that month's median listings per 1,000, rows: the engine inputs } */
 const notes = [];
 for (const month of labels) {
   const dataMonth = shift(month, -LAG);
@@ -421,6 +454,8 @@ for (const month of labels) {
         _rw: snap.rw, isNational: false,
       });
     }
+    /* the month's own inputs, kept for the A/B methods (section 4a) */
+    INPUTS[month + '|' + t] = { fb: ENGINE.benchmark(raw).Fb, rows: raw.map(r => ({ slug: r.slug, population: r.population, listings: r.listings, vr: r.vr, dom: r.dom, rentGrowth: r.rentGrowth })) };
     ENGINE.compute(raw);
     return {
       list: raw.map(r => ({ city: r.slug, rw: Math.round(r._rw * 10000) / 100, ds: Math.round(r.demandScore) })),
@@ -452,12 +487,22 @@ for (const o of out) for (const grp of ['houses', 'units']) {
    A stored month missing from this build (an export absent from Downloads) is
    kept, not dropped. --restate rebuilds every month on today's inputs. */
 const RESTATE = process.argv.includes('--restate');
+let STORED_BENCH = null;
 {
   const { data: stored, error: storedErr } = await sb.from('forge_cotality').select('data').eq('id', ROW_ID).maybeSingle();
   if (storedErr) { console.error('could not read the stored timeline: ' + storedErr.message); process.exit(1); }
+  STORED_BENCH = (stored && stored.data && stored.data.benchFixed) || null;
   const kept = {};
   for (const m of (stored && stored.data && Array.isArray(stored.data.months) ? stored.data.months : [])) {
     if (m && m.month && !m.liveRunway) kept[m.month] = m;
+  }
+  /* --id: a month the target row does not hold yet is frozen from the base row */
+  if (ROW_ID !== BASE_ID) {
+    const { data: base, error: baseErr } = await sb.from('forge_cotality').select('data').eq('id', BASE_ID).maybeSingle();
+    if (baseErr) { console.error('could not read the base timeline ' + BASE_ID + ': ' + baseErr.message); process.exit(1); }
+    for (const m of (base && base.data && Array.isArray(base.data.months) ? base.data.months : [])) {
+      if (m && m.month && !m.liveRunway && !kept[m.month]) kept[m.month] = m;
+    }
   }
   let frozen = 0, added = 0;
   if (!RESTATE) {
@@ -478,6 +523,63 @@ const RESTATE = process.argv.includes('--restate');
     ? '\nRESTATING every month on today\'s inputs (--restate).'
     : '\nfrozen history: ' + frozen + ' stored month(s) kept as stored, ' + added + ' stored month(s) not in this build kept, '
       + (out.length - frozen - added) + ' month(s) built new.');
+}
+
+// ── 4a. the two alternative benchmark methods (Saskia/Van, 2026-11-12) ───────
+/* "ds" stays the CURRENT method: graded against a benchmark built from THIS
+   month's median listings per 1,000, so a market-wide (seasonal) listings move
+   shifts every market's score even when its own inputs did not change.
+     dsA  FIXED BENCHMARK: the benchmark's listings per 1,000 is one constant --
+          the average of the monthly medians, Jan 2025 .. the newest month at
+          the time it was first set -- stored once (benchFixed) and reused, so
+          later months never move it.
+     dsB  SEASON-ADJUSTED: each market's listings are first rescaled by
+          (fixed / this month's median), so only its position RELATIVE to the
+          month's median counts; then graded against the same fixed benchmark.
+   Both reuse the engine's own benchmark()/scoreOne()/grade(), nothing copied.
+   A month already stored with dsA/dsB keeps them (frozen like ds). */
+const BENCH_FIXED = {};
+for (const t of ['h', 'u']) {
+  if (STORED_BENCH && num(STORED_BENCH[t]) != null && !RESTATE) { BENCH_FIXED[t] = STORED_BENCH[t]; continue; }
+  const fbs = out.map(o => INPUTS[o.version.replace('rvdcot-', '') + '|' + t]).filter(Boolean).map(x => x.fb);
+  BENCH_FIXED[t] = fbs.length ? fbs.reduce((a, b) => a + b, 0) / fbs.length : null;
+}
+{
+  const B = ENGINE.BENCH;
+  const nbOf = fb => ENGINE.grade((B.dom * (1 - B.rentGrowth)) * (B.vr * fb));
+  let filled = 0, missing = 0, drift = 0, rows = 0;
+  for (const o of out) {
+    const month = o.version.replace('rvdcot-', '');
+    for (const [grp, t] of [['houses', 'h'], ['units', 'u']]) {
+      const inp = INPUTS[month + '|' + t];
+      const byCity = {};
+      if (inp && BENCH_FIXED[t] != null) {
+        const nbFix = nbOf(BENCH_FIXED[t]), nbMonth = nbOf(inp.fb), k = BENCH_FIXED[t] / inp.fb;
+        for (const r of inp.rows) byCity[NAME[r.slug] || r.slug] = {
+          cur: Math.round(ENGINE.scoreOne(r, nbMonth)),
+          dsA: Math.round(ENGINE.scoreOne(r, nbFix)),
+          dsB: Math.round(ENGINE.scoreOne(Object.assign({}, r, { listings: r.listings * k }), nbFix)),
+        };
+      }
+      for (const row of o.data[grp] || []) {
+        rows++;
+        const c = byCity[row.city];
+        if (c && c.cur !== row.ds) drift++;
+        if (row.dsA != null && row.dsB != null && !RESTATE) continue;
+        if (!c) { missing++; continue; }
+        /* Anchored on the STORED ds: today's inputs re-score a few frozen
+           market-months a few points off what is stored (see the drift count), so
+           A and B carry only the METHOD's difference from what Current shows --
+           switching the method must never move a point for any other reason. */
+        const clamp = v => Math.min(80, Math.max(-20, v));
+        row.dsA = clamp(row.ds + c.dsA - c.cur); row.dsB = clamp(row.ds + c.dsB - c.cur); filled++;
+      }
+    }
+  }
+  console.log('\nA/B methods: fixed benchmark listings per 1,000 houses ' + (BENCH_FIXED.h != null ? BENCH_FIXED.h.toFixed(3) : '—')
+    + ', units ' + (BENCH_FIXED.u != null ? BENCH_FIXED.u.toFixed(3) : '—') + (STORED_BENCH && !RESTATE ? ' (stored)' : ' (set now)'));
+  console.log('  ' + filled + ' market-months given dsA/dsB, ' + missing + ' with no inputs this build (left without)');
+  console.log('  ' + drift + ' of ' + rows + ' market-months: today\'s inputs re-score the CURRENT method differently from the stored ds (the VR projection uses today\'s forecast inputs; ds is kept as stored)');
 }
 
 console.log('');
@@ -522,6 +624,7 @@ const payload = {
   builtAt: new Date().toISOString(),
   builtBy: 'build-cotality-rvd-history.mjs',
   note: 'Runway v Demand V2 — the Cotality-based timeline. Deliberately NOT in forge_demand_snapshots; see the comment in this script.',
+  benchFixed: { h: BENCH_FIXED.h, u: BENCH_FIXED.u, note: 'listings per 1,000 for methods A and B: the average monthly median, set once' },
   months: out.map((o) => ({
     month: o.version.replace('rvdcot-', ''),
     label: o.label,
@@ -562,7 +665,8 @@ const payload = {
   const payload = { updated: new Date().toISOString(), from: '2019-01', regions: hist };
   const kb = (JSON.stringify(payload).length / 1024).toFixed(0);
   console.log('\nmonthly Cotality series for the browser: ' + Object.keys(hist).length + ' markets, ' + points + ' readings (' + kb + ' kB)');
-  if (WRITE) {
+  if (WRITE && ROW_ID !== BASE_ID) console.log('not rewriting cot_rentvacancy_history (--id build; production reads it)');
+  else if (WRITE) {
     const { error: hErr } = await sb.from('forge_cotality').upsert(
       { id: 'cot_rentvacancy_history', data: payload, file_name: 'Cotality monthly VR + rent, our markets', uploaded_by: 'build-cotality-rvd-history.mjs' },
       { onConflict: 'id' });
