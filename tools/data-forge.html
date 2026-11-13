@@ -322,10 +322,10 @@
 <!-- OS chrome — the UNIFORM tool header (same on every tool). -->
 <div class="wall scrim" aria-hidden="true"></div>
 <script>
-  PP_OS.initChrome({ name: 'Data Forge', section: 'vault', backHref: '../',
-    actions: [{ id: 'df-extract-btn', label: 'Data Extractor',
-      svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>' }] });
-  document.addEventListener('click', function (e) { if (e.target.closest && e.target.closest('#df-extract-btn')) location.href = 'data-extractor.html'; });
+  /* The Data Extractor button that sat here moved out 2026-11-13 (Van): the tool
+     has its own card in the Vault now, so people who never open the Forge can
+     reach it. */
+  PP_OS.initChrome({ name: 'Data Forge', section: 'vault', backHref: '../' });
 </script>
 
 <div id="dfApp">
@@ -4037,10 +4037,20 @@ function parseRvCsv(text){
   const cCap = ci('capital city'), cLga = ci('council name'), isCap = cCap >= 0, cName = isCap ? cCap : cLga;
   if (cName < 0 || cState < 0 || cType < 0 || cVac < 0 || cRent < 0) throw new Error('unexpected CSV columns — expected State, Capital City/Council Name, Property Type, Vacancy Rate, Median Asking Rent');
   const by = new Map(); let monthEnd = '';
+  /* EVERY council in the LGA file, not only our 28 markets (2026-11-13): the
+     council area is the closest vacancy reading a suburb has, and the Data
+     Extractor shows it beside a suburb's rent. Kept apart from `by` so the
+     `rentvacancy` row and everything that reads it stay exactly as they were. */
+  const all = new Map();
   for (let i = 1; i < grid.length; i++){
     const r = grid[i] || []; const name = String(r[cName] || '').trim(); if (!name) continue;
     if (!monthEnd) monthEnd = String(r[cMonth] || '').trim();
     const type = String(r[cType] || '').trim().toUpperCase();
+    if (!isCap && (type === 'H' || type === 'U')){
+      const st = normState(r[cState]), ak = lgaKey(st, name), a = all.get(ak) || { key: ak, state: st, name };
+      a[type === 'H' ? 'vacHouse' : 'vacUnit'] = rvPct(r[cVac]); a[type === 'H' ? 'rentHouse' : 'rentUnit'] = rvNum(r[cRent]);
+      all.set(ak, a);
+    }
     let key, disp, state;
     if (isCap){ state = normState(r[cState]); key = normalizeName(name) + '|' + state; disp = name; }
     else { const tgt = matchTarget(r[cState], name); if (!tgt) continue; state = normState(tgt[1]); key = normalizeName(tgt[0]) + '|' + state; disp = tgt[0]; }
@@ -4057,9 +4067,14 @@ function parseRvCsv(text){
      fractions. Scaled values round to 2dp (the store's convention — and VR
      needs both decimals, never one). */
   const _vacs = [...by.values()].map(e => e.vacHouse).filter(v => v != null && isFinite(v));
-  if (_vacs.length && Math.max(..._vacs) < 0.5)
-    by.forEach(e => { if (e.vacHouse != null) e.vacHouse = Math.round(e.vacHouse * 10000) / 100; if (e.vacUnit != null) e.vacUnit = Math.round(e.vacUnit * 10000) / 100; });
-  return { isCap, monthEnd, list: [...by.values()] };
+  /* One decision for the whole file, applied to both lists. It is taken from our
+     markets (`by`), never from `all`: a tiny council can post a 60% vacancy, which
+     as a fraction is 0.6 and would defeat the < 0.5 test. */
+  if (_vacs.length && Math.max(..._vacs) < 0.5){
+    const toPct = e => { if (e.vacHouse != null) e.vacHouse = Math.round(e.vacHouse * 10000) / 100; if (e.vacUnit != null) e.vacUnit = Math.round(e.vacUnit * 10000) / 100; };
+    by.forEach(toPct); all.forEach(toPct);
+  }
+  return { isCap, monthEnd, list: [...by.values()], all: [...all.values()] };
 }
 
 async function importRentVacancy(files){
@@ -4068,11 +4083,13 @@ async function importRentVacancy(files){
   out.innerHTML = '<div class="df-note">Reading ' + files.map(f => esc(f.name)).join(', ') + ' …</div>';
   try {
     const state = RV_STATE ? { ...RV_STATE } : { capitals: [], regions: [] };   // merge — dropping one file keeps the other
+    let lgaAll = null;                                                           // every council in this drop's LGA file
     for (const f of files){
       const p = parseRvCsv(await f.text());
       if (p.monthEnd) state.monthEnd = p.monthEnd;
       if (p.isCap){ state.capitals = p.list; state.capFile = f.name; }
       else {
+        lgaAll = { monthEnd: p.monthEnd, all: p.all };
         state.regions = p.list; state.lgaFile = f.name;
         const matched = new Set(p.list.map(e => normalizeName(e.name) + '|' + normState(e.state)));
         state.lgaMissing = LGA_TARGETS.filter(([n, s]) => !matched.has(normalizeName(n) + '|' + normState(s)));
@@ -4082,6 +4099,7 @@ async function importRentVacancy(files){
     RV_STATE = state;
     renderRentVacancy(state);
     saveRentVacancy(state);
+    if (lgaAll) saveLgaVacancy(lgaAll.monthEnd, lgaAll.all);
   } catch (err){ console.warn('csv import failed', err); out.innerHTML = '<div class="df-empty">Could not read that file: ' + esc(err.message || err) + '</div>'; }
 }
 
@@ -4146,6 +4164,32 @@ async function appendRvHistory(result){
     if (e.vacUnit != null || e.rentUnit != null) m.u = { vr: e.vacUnit != null ? e.vacUnit : (m.u && m.u.vr), rent: e.rentUnit != null ? e.rentUnit : (m.u && m.u.rent) };
   }
   await window.sb.from('forge_cotality').upsert({ id: 'cot_rentvacancy_history', data: { ...row.data, updated: new Date().toISOString(), regions: hist }, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+}
+/* Every council's vacancy + rent for this drop's month -> forge_cotality/lga_vacancy_history, the series the
+   Data Extractor reads for "Vacancy rate (council area)". Same percent convention and the same merge-only rule
+   as appendRvHistory above. The key rule is shared with the Extractor and scripts/build-lga-vacancy-history.mjs
+   (which seeded the row): change it in all three or a council is filed where nobody looks. Never blocks or
+   fails the upload: this is an extra copy, the `rentvacancy` row is already saved. */
+function lgaKey(state, name){ return (String(state || '') + '_' + String(name || '')).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); }
+async function saveLgaVacancy(monthEnd, all){
+  try {
+    const month = rvMonth(monthEnd); if (!month || !all || !all.length) return;
+    const { data: row, error } = await window.sb.from('forge_cotality').select('data').eq('id', 'lga_vacancy_history').maybeSingle();
+    if (error) return;
+    const data = (row && row.data) || { note: 'Cotality CustomMT LGA export, every council: vacancy rate (1 month, PERCENT) and median asking rent (3 months, $/week), by month.', lgas: {} };
+    const lgas = data.lgas || (data.lgas = {});
+    for (const e of all){
+      const hasH = e.vacHouse != null || e.rentHouse != null, hasU = e.vacUnit != null || e.rentUnit != null;
+      if (!hasH && !hasU) continue;                                   // the file lists councils it has no reading for
+      const rec = lgas[e.key] || (lgas[e.key] = { name: e.name, state: e.state, months: {} });
+      const m = rec.months[month] || (rec.months[month] = {});
+      if (hasH) m.h = { vr: e.vacHouse != null ? e.vacHouse : (m.h ? m.h.vr : null), rent: e.rentHouse != null ? e.rentHouse : (m.h ? m.h.rent : null) };
+      if (hasU) m.u = { vr: e.vacUnit != null ? e.vacUnit : (m.u ? m.u.vr : null), rent: e.rentUnit != null ? e.rentUnit : (m.u ? m.u.rent : null) };
+    }
+    const months = new Set(); Object.values(lgas).forEach(r => Object.keys(r.months || {}).forEach(k => months.add(k)));
+    const sorted = [...months].sort();
+    await window.sb.from('forge_cotality').upsert({ id: 'lga_vacancy_history', data: { ...data, updated: new Date().toISOString(), from: sorted[0], to: sorted[sorted.length - 1], lgas }, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+  } catch (e) { console.warn('lga vacancy history not saved', e); }
 }
 
 function card(title, body){ return '<div class="df-card"><h2>' + title + '</h2>' + body + '</div>'; }
