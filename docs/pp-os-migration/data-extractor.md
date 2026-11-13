@@ -25,16 +25,31 @@ make the export a finished product.
 
 ## The three steps
 
-1. **Where?** One search box: suburb name, postcode, or market. "richmond vic" narrows to a state. Markets can also be
-   ticked from a list. Search does not filter on property type, because Docklands and Southbank have unit rows only.
-2. **What data?** Quick picks (Rental appraisal, Prices and growth, Sales and listings) add their data points and can be
-   combined; clicking one again takes its points off. Suburb data is grouped into five topics with a Houses / Units /
-   Both switch. Market data only lists what the picked markets actually hold (`rdp_metric_coverage`).
-3. **How far back?** Latest only, 1 year, 5 years, all history. The window hangs off the latest reading, or off today
-   when a series runs into the future (dwelling pipeline, population projections).
+1. **Where?** A switch at the top, **Suburbs** or **Research markets**, because the two kinds of place hold different
+   data. Suburbs is the default, with the caret in its search box on load: suburb name or postcode, and "richmond vic"
+   narrows to a state (a research market whose name matches is listed too). Research markets is the list of 45 to
+   tick; it says that a market is not split into its suburbs. Both kinds can be picked together. Search does not
+   filter on property type, because Docklands and Southbank have unit rows only.
+2. **What data?** Empty until a place is picked ("Add a place in step 1 first"), then it lists only what the picked
+   places hold (Van, 2026-11-13). A suburb data point is listed when at least one picked suburb has a figure for it,
+   in any month, for houses or units; council vacancy when a picked suburb's council has a reading; a market series
+   when at least one picked market holds it (`rdp_metric_coverage`). So each new place is looked up before step 2
+   offers anything: a suburb's rows, its council's vacancy, a market's list of series.
+   - Quick picks (Rental appraisal, Prices and growth, Sales and listings) show only when the places hold at least
+     one of their points, and are lit when every point they can show is ticked. Clicking one ticks its whole list,
+     including points no picked place holds, so a place added later shows its share without another click. Clicking
+     it again takes the list off. Two can be combined.
+   - Suburb data is grouped into five topics with a Houses / Units / Both switch.
+   - When only markets are picked, the Suburb data heading stays, with one line saying to add a suburb and a link
+     that opens the suburb search.
+3. **How far back?** Latest only, All history, or "Last N years" with N typed into a box (1 to 99). The box applies
+   on a click, on typing or on Enter, not on focus alone, and keeps its number while another choice is on. Rental
+   appraisal puts 1 in it. The window hangs off the latest reading, or off today when a series runs into the future
+   (dwelling pipeline, population projections).
 
-The result is live: no Preview button. The last set of data points, property type and period is remembered in
-`localStorage` (`pp_dx_prefs_v2`); places are not.
+The result is live: no Preview button. The ticks, property type, period and typed number of years are remembered in
+`localStorage` (`pp_dx_prefs_v2`); places are not. A remembered tick for a data point the current places do not hold
+is kept, but it is neither listed nor exported.
 
 ## Data it reads (all live, read-only)
 
@@ -70,7 +85,11 @@ The tool asks PostgREST for only the councils it needs (`data->lgas-><key>`), so
   file the same quarter under different months, which used to print each quarter twice.
 - **Each frequency is its own block** on a market sheet (Year, Quarter, Month side by side, each with its own date
   column). One shared axis buries yearly figures under monthly rows.
-- **A column with nothing in it is dropped and named in a footnote**, never exported empty.
+- **A column with nothing in it is dropped and named in a footnote**, never exported empty. The same goes for a place
+  with nothing in any column of a "Latest figures" sheet.
+- **Column widths come from measuring the text** in Arial (canvas `measureText`), not from counting characters: bold
+  and wide letters need more room than a count allows. An indented cell needs about 26 px around its text, a plain
+  one 8 px. A year under a heading is written as a number, or Excel flags it "number stored as text".
 - **Every Forge percentage is a fraction** (0.052 is 5.2%); the one exception is `gp_share_pct`. Council vacancy is
   stored as a percent and divided by 100 on the way in.
 - **NT postcodes** are stored without their leading zero ("810"). The tool searches the short form and shows "0810".
@@ -100,7 +119,9 @@ The tool asks PostgREST for only the councils it needs (`data->lgas-><key>`), so
 
 `_dx-drive.mjs` (the whole flow, both themes, three screen sizes), `_dx-edge.mjs` (odd searches, unit-only suburbs,
 councils with no vacancy), `_dx-hub-check.mjs` (card, search, Forge bar), `_dx-forge-lga-check.mjs` (the upload keeps
-the 28-market list unchanged and matches the seeded row), `_dx-samples.mjs` (sample downloads).
+the 28-market list unchanged and matches the seeded row), `_dx-samples.mjs` (sample downloads), `_dx-van-case.mjs`
+(Van's three cases: markets only, a state with none of the quick-pick data, and the typed number of years),
+`_dx-clipcheck.mjs` (lays a workbook out the way Excel does and lists any cell that would be cut off).
 
 ## Changelog
 
@@ -109,3 +130,15 @@ the 28-market list unchanged and matches the seeded row), `_dx-samples.mjs` (sam
   August 2026, with history from 2019 for the 28 regional markets). Market data limited to what the picked markets hold
   (`rdp_metric_coverage`, mig 137). Excel export moved from xlsx-js-style to ExcelJS; CSV added. Fixed along the way:
   quarters printed twice when two sources dated them differently; suburbs with unit rows only could not be found.
+- 2026-11-13, after the first real use: Van ticked two markets from the "browse" list, found no suburb options, and
+  asked where the suburb level was. Step 1 is now a Suburbs / Research markets switch with the caret in the suburb
+  search, and step 2 keeps a Suburb data heading that says how to get it. His download also showed three flaws, all
+  fixed: a name cut short ("New South Wale") because widths were counted in characters, now measured; an empty row
+  for a market with no data, now left out and footnoted; Excel's "number stored as text" flag on every year under a
+  heading, now written as numbers.
+- 2026-11-13, Van's second review: step 2 lists nothing until a place is picked, then only what the picked places
+  hold. He had picked New South Wales and clicked Rental appraisal and Sales and listings, and nothing showed: the
+  state holds none of those series, so those quick picks are no longer offered for it. Step 3 lost its fixed
+  "1 year" and "5 years" buttons for "Last N years" with a typed number (an old remembered "1" or "5" comes back as
+  that number). Found on the way: a click on the thin edge of the step 3 control read `data-period` off `<html>`,
+  where the page shell keeps day or night, and the result stopped updating until a period button was clicked.
