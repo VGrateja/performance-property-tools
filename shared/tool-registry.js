@@ -27,12 +27,15 @@
     /* analytics */
     'clock':            { sec: 'analytics', file: 'property-clock.html',         label: 'National Property Clock' },
     'runway-demand':    { sec: 'analytics', file: 'runway-demand.html',          label: 'Runway v Demand Score' },
+    /* a dock tile since 2026-11-18 (it was a Vault card). The section matters:
+       left under 'vault', a group holding this key would be shown the Vault
+       icon (ppSectionAllowed) with nothing behind it. */
+    'data-extractor':   { sec: 'analytics', file: 'data-extractor.html',         label: 'Data Extractor' },
     /* vault */
     'runway-workbook':  { sec: 'vault',     file: 'runway-workbook.html',        label: 'Runway Workbook' },
     'vr-projection':    { sec: 'vault',     file: 'vr-projection.html',          label: 'Vacancy Rate Projection' },
     'population-forecast':{ sec: 'vault',   file: 'population-forecast.html',    label: 'Population Forecast' },
     'forge':            { sec: 'vault',     file: 'data-forge.html',             label: 'Data Forge' },
-    'data-extractor':   { sec: 'vault',     file: 'data-extractor.html',         label: 'Data Extractor' },
     'traffic-lights':   { sec: 'vault',     file: 'traffic-lights.html',         label: 'Traffic Lights' },
     'demand-score':     { sec: 'vault',     file: 'demand-score.html',           label: 'Demand Score Dashboard' },
     'market-compare':   { sec: 'vault',     file: 'market-compare.html',         label: 'Market Compare' },

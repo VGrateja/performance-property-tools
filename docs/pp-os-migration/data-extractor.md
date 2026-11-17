@@ -1,11 +1,12 @@
 # Data Extractor — feature note for the pp-os port
 
-A Vault tool: pick places (any suburb in Australia, or a research market), pick data points, pick how far back, and
-download a spreadsheet that is ready to hand on. Hub only for now (Van, 2026-11-13: "do this in hub for now"). This note
-records what a pp-os port must copy. It is not a full description of the tool.
+Pick places (any suburb in Australia, or a research market), pick data points, pick how far back, and download a
+spreadsheet that is ready to hand on. Built on the hub first (Van, 2026-11-13: "do this in hub for now") and ported to
+pp-os on 2026-11-16. This note records what a pp-os port must copy. It is not a full description of the tool.
 
-Source of truth in the hub repo: `tools/data-extractor.html`. Registry key `data-extractor` (sec `vault`); it has a Vault
-window card and a search entry in `index.html`. Until 2026-11-13 it was only a button in the Data Forge bar.
+Source of truth in the hub repo: `tools/data-extractor.html`. Registry key `data-extractor` (sec `analytics`); it has a
+tile on the hub dock and a search entry in `index.html`. It was a button in the Data Forge bar until 2026-11-13, then a
+Vault card until 2026-11-18.
 
 ## Why it was rebuilt
 
@@ -189,3 +190,10 @@ the monthly table, the workbook, the 8-year rule; both themes).
   first median on record. The starting medians come from the CoreLogic 1980 to 2018 history, loaded once into
   `forge_cotality` row `cl_start_medians` by `scripts/build-cl-start-medians.mjs`. Mount Barker houses: 7.06% for the
   suburb, 6.78% for the council area. Tailem Bend has no history of its own, so only its council area shows: 7.96%.
+- 2026-11-18, out of the Vault: Van asked for the Data Extractor to move "from Vault to Advisor Tools" on the hub and in
+  pp-os. The hub has no section of that name, so he chose a tile on the dock, straight after Videos, with the Vault card
+  removed, and chose that every staff member sees it (the key goes into the Company Baseline group when this goes
+  live; before that only Admins and the Pre Due Diligence Team held it). The registry section moved from `vault` to
+  `analytics`: left under `vault`, a group holding the key is shown the Vault icon with nothing behind it. The dock is
+  sized for twelve tiles instead of eleven, because an admin now sees twelve and the last one fell off the edge at
+  1440 and 1280 wide. The page says "Analytics" where it said "The Vault". Check: `scratch/_dx-dock-check.mjs`.
