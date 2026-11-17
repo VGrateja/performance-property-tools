@@ -24,6 +24,9 @@
      forge_cl_suburbs      Cotality Market Trends by suburb, monthly from 2018-07
      forge_cotality        row lga_vacancy_history — vacancy by COUNCIL AREA,
                            the closest vacancy reading a suburb has
+     forge_cotality        row cl_start_medians — the first median on record
+                           for each suburb and council area (history from
+                           1980), where the long-term growth rate starts
      rdp_raw_series        the market-level series behind the reports
      rdp_metric_catalog    labels + units for those series (mig 086)
      rdp_metric_coverage   which markets each series covers (mig 137)
@@ -316,7 +319,9 @@ const famRank = f => { const i = FAM_ORDER.indexOf(f); return i < 0 ? FAM_ORDER.
    Keys are the Data Forge's CL_SUB_MAP keys (forge_cl_suburbs.metrics); the
    wording follows Cotality's own data dictionary. `lgaVr` is the one that is
    NOT a suburb figure: Cotality publishes vacancy by council area only, so a
-   suburb shows the reading for the council it sits in, and says so. */
+   suburb shows the reading for the council it sits in, and says so.
+   `ltCagr` and `ltCagrLga` are worked out here, not stored: the month's median
+   against the first median on record (sVal, loadLongTerm). */
 const S_POINTS = [
   { key: 'rent',         fam: 'rent',   kind: 'money', label: 'Median asking rent',              def: 'Median advertised weekly rent over the last 12 months.' },
   { key: 'rentChg12',    fam: 'rent',   kind: 'pct',   label: 'Rent change (12 months)',         def: 'Change in the median asking rent compared with 12 months earlier.' },
@@ -337,6 +342,8 @@ const S_POINTS = [
   { key: 'cagr5',        fam: 'growth', kind: 'pct',   label: 'Annual growth rate (5 years)',    def: 'Average yearly compound growth in the median sale price over 5 years.' },
   { key: 'cagr10',       fam: 'growth', kind: 'pct',   label: 'Annual growth rate (10 years)',   def: 'Average yearly compound growth in the median sale price over 10 years.' },
   { key: 'cagr20',       fam: 'growth', kind: 'pct',   label: 'Annual growth rate (20 years)',   def: 'Average yearly compound growth in the median sale price over 20 years.' },
+  { key: 'ltCagr',       fam: 'growth', kind: 'pct',   label: 'Long-term growth rate',           def: 'Average yearly compound growth in the 12-month median sale price, from the first median on record for the suburb to the month shown.' },
+  { key: 'ltCagrLga',    fam: 'growth', kind: 'pct',   label: 'Long-term growth rate (council area)', def: 'The same long-term growth rate for the council area the suburb sits in, from the council area\'s first median on record.' },
   { key: 'sales12',      fam: 'sales',  kind: 'int',   label: 'Sales (12 months)',               def: 'Number of sales over the last 12 months.' },
   { key: 'sales6',       fam: 'sales',  kind: 'int',   label: 'Sales (6 months)',                def: 'Number of sales over the last 6 months.' },
   { key: 'sales3',       fam: 'sales',  kind: 'int',   label: 'Sales (3 months)',                def: 'Number of sales over the last 3 months.' },
@@ -469,6 +476,10 @@ const keyOf = p => p.type + ':' + p.id;
 /* The council key — the same rule as the Data Forge upload and
    scripts/build-lga-vacancy-history.mjs. Change all three together. */
 const lgaKey = (st, name) => (String(st || '') + '_' + String(name || '')).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+/* A council's name without what Cotality has added or dropped since 2018 ("The Coorong (DC)", "The Coorong",
+   "Coorong") — the same rule as scripts/build-cl-start-medians.mjs. Change both together. */
+const canonLga = n => String(n || '').toUpperCase().replace(/\s*\([^)]*\)/g, ' ').replace(/&/g, ' ').replace(/[^A-Z0-9]+/g, ' ')
+  .replace(/\b(THE|AND)\b/g, ' ').replace(/\s+/g, ' ').trim().replace(/ (SHIRE|REGIONAL|CITY)$/, '');
 const nowP = (() => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); })();
 
 const PREF_KEY = 'pp_dx_prefs_v2';
@@ -790,7 +801,27 @@ async function loadSuburb(P){
   const rows = await pageAll(() => sb.from('forge_cl_suburbs').select('month,ptype,metrics').eq('level', 'suburb').eq('state', P.state).eq('name_key', P.nameKey).order('ptype').order('month'));
   const d = { rows: {}, months: [], has: new Set() }, ms = new Set();          /* has: the data points with a figure in any month */
   rows.forEach(r => { const m = r.metrics || {}; (d.rows[r.ptype] = d.rows[r.ptype] || {})[r.month] = m; ms.add(r.month); for (const k in m) if (num(m[k]) != null) d.has.add(k); });
-  d.months = [...ms].sort(); cache.suburb[P.id] = d;
+  d.months = [...ms].sort();
+  d.lt = await loadLongTerm(P);
+  ['ltCagr', 'ltCagrLga'].forEach(k => { if (['H', 'U'].some(pt => d.months.some(m => sVal(d, null, k, pt, m) != null))) d.has.add(k); });
+  cache.suburb[P.id] = d;
+}
+/* Where the long-term growth rate starts: the first median on record for the suburb and for its council
+   area (history from 1980; the Forge's own months start in July 2018), plus the council area's median in
+   each Forge month. Only the two places asked for come back, so the 1 MB store row is never downloaded.
+   lm: { H|U: { month: median } }, read under every spelling Cotality has used for the council. */
+async function loadLongTerm(P){
+  const canon = P.lga ? canonLga(P.lga) : '';
+  const { data, error } = await sb.from('forge_cotality').select('s:data->suburbs->' + lgaKey(P.state, P.nameKey) + (canon ? ',l:data->lgas->' + lgaKey(P.state, canon) : '')).eq('id', 'cl_start_medians').maybeSingle();
+  if (error) throw error;
+  const lt = { s: (data && data.s) || null, l: (data && data.l) || null, lm: {} };
+  if (lt.l) {
+    const word = canon.split(' ').sort((a, b) => b.length - a.length)[0];
+    const rows = await pageAll(() => sb.from('forge_cl_suburbs').select('month,ptype,name_key,med12:metrics->med12').eq('level', 'lga').eq('state', P.state)
+      .ilike('name_key', '%' + likeEsc(word) + '%').order('name_key').order('ptype').order('month'));
+    rows.forEach(r => { if (canonLga(r.name_key) === canon && num(r.med12) != null) (lt.lm[r.ptype] = lt.lm[r.ptype] || {})[r.month] = num(r.med12); });
+  }
+  return lt;
 }
 /* Only the councils asked for come back: PostgREST reads straight into the
    stored JSON (data -> lgas -> <key>), so the ~200 KB row is never downloaded. */
@@ -835,10 +866,29 @@ async function ensureData(pl){
      rows  [[ id text | { p, f } period | number | null ]]
    `ax` on a data column is the index of the period column it is read against. */
 function vrOf(lga, month, pt){ const x = lga && lga[month] && lga[month][pt === 'H' ? 'h' : 'u'], v = x ? num(x.vr) : null; return v == null ? null : Math.round(v * 100) / 10000; }   /* stored as a 2-decimal percent */
-function sVal(d, lga, key, pt, month){ if (key === 'lgaVr') return vrOf(lga, month, pt); const r = d.rows[pt] && d.rows[pt][month]; return r ? num(r[key]) : null; }
+/* start: ['YYYY-MM', median]. Under 8 years between the two months there is no long-term rate. */
+function ltRate(start, med, month){
+  if (!start || med == null) return null;
+  const n = (+month.slice(0, 4) - +start[0].slice(0, 4)) * 12 + (+month.slice(5, 7) - +start[0].slice(5, 7));
+  return n >= 96 && start[1] > 0 && med > 0 ? Math.pow(med / start[1], 12 / n) - 1 : null;
+}
+function sVal(d, lga, key, pt, month){
+  if (key === 'lgaVr') return vrOf(lga, month, pt);
+  const r = d.rows[pt] && d.rows[pt][month], t = pt === 'H' ? 'h' : 'u';
+  if (key === 'ltCagr') return d.lt && d.lt.s ? ltRate(d.lt.s[t], r ? num(r.med12) : null, month) : null;
+  if (key === 'ltCagrLga') return d.lt && d.lt.l && d.lt.lm[pt] ? ltRate(d.lt.l[t], d.lt.lm[pt][month], month) : null;
+  return r ? num(r[key]) : null;
+}
+/* "Long-term growth rate is measured from the first 12-month median on record for the suburb: houses Jan 1993, units Feb 1993." */
+function ltNote(cols, key, start, who){
+  const c = cols.filter(x => x.key === key && start && start[x.pt === 'H' ? 'h' : 'u']); if (!c.length) return null;
+  const from = c.map(x => (c.length > 1 ? PT[x.pt].toLowerCase() + ' ' : '') + pLabel(start[x.pt === 'H' ? 'h' : 'u'][0], 'monthly')).join(', ');
+  return 'Long-term growth rate' + (key === 'ltCagrLga' ? ' (council area)' : '') + ' is the yearly compound growth from the first 12-month median on record for ' + who + ' (' + from + ') to each month.';
+}
 const typeWords = pts => pts.length > 1 ? 'Houses and units' : PT[pts[0]];
 const VR_NOTE = lga => 'Vacancy rate is Cotality\'s reading for the ' + lga + ' council area. Cotality does not publish vacancy by suburb.';
 const S_SOURCE = 'Source: Cotality (CoreLogic). Rent, sales and listing figures are 12-month measures, updated monthly.';
+const LT_NOTE = 'Long-term growth rate is the yearly compound growth in the 12-month median sale price, from the first median on record for the place (Cotality\'s history starts in 1980) to the month shown. It is left blank where that is under 8 years.';
 const M_SOURCE = 'Source: Performance Property Data Forge (ABS, RBA, Cotality and other providers).';
 
 function finishGrid(g){
@@ -897,6 +947,7 @@ function suburbGrid(P, pl){
     const held = Object.keys(lga || {}).sort()[0];
     if (held && months.length && held > months[0]) foot.push('Vacancy for this council area is held from ' + pLabel(held, 'monthly') + ', so earlier months are blank.');
   }
+  [ltNote(cols, 'ltCagr', d.lt && d.lt.s, 'the suburb'), ltNote(cols, 'ltCagrLga', d.lt && d.lt.l, 'the ' + P.lga + ' council area')].forEach(t => { if (t) foot.push(t); });
   pl.ptypes.filter(pt => !d.rows[pt]).forEach(pt => foot.push('Cotality publishes no ' + PT[pt].toLowerCase().replace(/s$/, '') + ' figures for this suburb.'));
   if (missing.length) foot.push('Nothing published for this suburb: ' + missing.join(', ') + '.');
   return finishGrid({
@@ -929,6 +980,7 @@ function latestSuburbGrid(pl){
   const cols = idc.concat(pl.sPoints.filter((sp, j) => keep[j]).map(sp => ({ t: 'data', key: sp.key, label: sp.label, fam: sp.fam, kind: sp.kind, def: sp.def, ax: AX })));
   const foot = [S_SOURCE];
   if (keep[pl.sPoints.findIndex(sp => sp.key === 'lgaVr')]) foot.push('Vacancy rate is Cotality\'s reading for each suburb\'s council area. Cotality does not publish vacancy by suburb.');
+  if (pl.sPoints.some((sp, j) => keep[j] && (sp.key === 'ltCagr' || sp.key === 'ltCagrLga'))) foot.push(LT_NOTE);
   const gone = pl.sPoints.filter((sp, j) => !keep[j]).map(sp => sp.label);
   if (gone.length) foot.push('Nothing published for ' + (pl.subs.length > 1 ? 'these suburbs' : 'this suburb') + ': ' + gone.join(', ') + '.');
   if (noType.length) foot.push('No figures published for: ' + noType.join(', ') + '.');
@@ -1311,13 +1363,14 @@ function writeAbout(wb, logoId, used, G){
   r++;
   head(['Data point', 'Topic', 'What it measures', 'Updated', 'Source']);
   const av = pl.mks.length ? availability(pl.mks) : null;
-  pl.sPoints.forEach(sp => line([sp.label, FAM[sp.fam].label, sp.def, 'Monthly', sp.key === 'lgaVr' ? 'Cotality (CoreLogic) rent and vacancy export' : 'Cotality (CoreLogic) Market Trends'], true));
+  pl.sPoints.forEach(sp => line([sp.label, FAM[sp.fam].label, sp.def, 'Monthly', sp.key === 'lgaVr' ? 'Cotality (CoreLogic) rent and vacancy export' : /^ltCagr/.test(sp.key) ? 'Cotality (CoreLogic) Market Trends and price history from 1980' : 'Cotality (CoreLogic) Market Trends'], true));
   pl.mPoints.forEach(mp => { const a = av && av[mp.code];
     line([mp.label, FAM[mp.fam].label, 'Market-level series' + (a ? ', ' + String(a.first).slice(0, 4) + ' to ' + String(a.last).slice(0, 4) : '') + '.', a ? FREQ_WORD[finest(a.freqs)] : '', 'Performance Property Data Forge'], true); });
   r++;
   const notes = ['A blank cell means no figure was published for that place and period, usually because there were too few sales or listings.',
     'Rents are dollars a week. Percentages are shown as published.'];
   if (pl.sPoints.some(sp => sp.key === 'lgaVr')) notes.push('Vacancy rate: Cotality publishes vacancy by council area, not by suburb. Each suburb shows the rate for the council area it sits in.');
+  if (pl.sPoints.some(sp => /^ltCagr/.test(sp.key))) notes.push(LT_NOTE);
   notes.forEach(t => { const c = ws.getCell(r++, 1); c.value = t; c.font = xfont(9, false, X.gray); });
   sheetPrint(ws);
 }

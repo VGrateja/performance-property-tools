@@ -57,6 +57,8 @@ is kept, but it is neither listed nor exported.
 |---|---|
 | `forge_cl_suburbs` | level `suburb`: 34 metrics a month, houses and units. Keyed by `state` + `name_key` |
 | `forge_cotality` row `lga_vacancy_history` | `data.lgas[<key>].months['YYYY-MM'] = { h:{vr,rent}, u:{vr,rent} }`, vacancy in PERCENT |
+| `forge_cotality` row `cl_start_medians` | `data.suburbs[<key>] = { h:['YYYY-MM', price], u:[…] }` and `data.lgas[<key>] = { name, h, u }`: the first 12-month median on record for each suburb and council area, from the 1980 to 2018 history |
+| `forge_cl_suburbs` level `lga` | a council area's 12-month median by month, read only for the council-area long-term growth rate |
 | `rdp_regions` | the 45 research markets (36 markets, states, Australia) |
 | `rdp_metric_catalog` (mig 086) | label and unit of each market series |
 | `rdp_metric_coverage` (mig 137) | which markets each series covers, with frequencies and span |
@@ -106,7 +108,44 @@ The tool asks PostgREST for only the councils it needs (`data->lgas-><key>`), so
 - Family colours are brand accents or steps of their tone ramps. Rent, prices, people, rates and jobs keep the colours
   Van approved on 2026-07-31.
 
+## How the long-term growth rate works
+
+Added 2026-11-17 because an advisor wanted the Suburb Scoring "Fixed House LT CAGR" for two places the tool does not
+score (Tailem Bend SA 5260 and Mount Barker SA 5251). Van's call: offer it in the Extractor for any suburb and leave
+Suburb Scoring alone.
+
+- **The rule** is Suburb Scoring's: yearly compound growth from the EARLIEST 12-month median on record to the month
+  shown, `(median now / first median)^(12 / months between) − 1`, blank under 8 years (96 months). It is worked
+  out in the tool for every month (`ltRate`, `sVal`); nothing is stored but the starting point.
+- **Two data points**, both under Price growth: "Long-term growth rate" (the suburb's own history) and "Long-term growth
+  rate (council area)". The council one exists for two reasons: some suburbs have no history of their own (Tailem
+  Bend), and Suburb Scoring itself scores Adelaide and Melbourne suburbs by council. Like every data point, each is
+  offered only where the picked suburb has a figure.
+- **Where the start comes from:** the Forge holds suburb medians from July 2018 only. The earlier months are in a
+  one-off CoreLogic extract, CSTDAT4294, monthly from January 1980 to June 2018: 12 suburb files and one council file,
+  about 4.6 GB, on the shared drive under "CoreLogic files / Historic". They are kept outside the repo
+  (`~/Downloads/corelogic-history`). `node scripts/build-cl-start-medians.mjs --write` reads all 7.6 million rows and
+  stores one thing per place and type: the first month with a median, and that median. The history is closed, so this
+  ran once and needs no monthly step.
+- **Keys:** a suburb is `lgaKey(state, name_key)` ("SA", "MOUNT BARKER|5251" gives `sa_mount_barker_5251`). A council is
+  `lgaKey(state, canonLga(name))`: the name without its "(DC)" / "(C)" / "(SA)" suffix, "The", "and", "Shire", "Regional"
+  or "City", because Cotality has spelled one council three ways since 2018 ("The Coorong (DC)", "The Coorong",
+  "Coorong"). `canonLga` lives in the tool and in the build script and must stay identical. The council's monthly
+  median is read from `forge_cl_suburbs` level `lga` under every spelling.
+- **Coverage (August 2026):** 6,161 suburbs and 502 of 524 council areas have a start. Of the 4,658 suburbs with a
+  house median today, 4,478 (96%) have their own. The 22 council areas without one are remote NT, QLD and WA shires.
+- **It will not always equal the Suburb Scoring tile.** In Melbourne, Sydney, Ballarat, Bendigo and Geelong the tool
+  stops the window at the market's peak; the Extractor always runs to the month shown. The tool's stored Adelaide values
+  came from Saskia's workbook: recalculating five Adelaide councils with this rule landed within 0.34 points of them.
+  In South Australia sales records start in January 1993, so a first median can rest on 10 to 25 sales.
+- It is a different measure from Cotality's own "Annual growth rate (20 years)", which only looks back 20 years and
+  read about a point lower for both places.
+
 ## What the port needs
+
+- The long-term growth rate: a home for the starting medians (one store key, like the council vacancy one; copy the
+  hub's `cl_start_medians` row, about 374 KB of JSON, since the history never changes), the council-level rows of
+  `forge_cl_suburbs` readable by council name, and the `canonLga` rule.
 
 - `forge_cl_suburbs` and the market series in the pp-os database (pp-os already records `forge_cl_suburbs` monthly).
 - A home for council-area vacancy: the hub keeps it in one `forge_cotality` row. The pp-os Cotality parser would need to
@@ -121,7 +160,9 @@ The tool asks PostgREST for only the councils it needs (`data->lgas-><key>`), so
 councils with no vacancy), `_dx-hub-check.mjs` (card, search, Forge bar), `_dx-forge-lga-check.mjs` (the upload keeps
 the 28-market list unchanged and matches the seeded row), `_dx-samples.mjs` (sample downloads), `_dx-van-case.mjs`
 (Van's three cases: markets only, a state with none of the quick-pick data, and the typed number of years),
-`_dx-clipcheck.mjs` (lays a workbook out the way Excel does and lists any cell that would be cut off).
+`_dx-clipcheck.mjs` (lays a workbook out the way Excel does and lists any cell that would be cut off), `_dx-lt-check.mjs` (the
+long-term growth rate: Mount Barker's own and council figures against the history, Tailem Bend with only its council's,
+the monthly table, the workbook, the 8-year rule; both themes).
 
 ## Changelog
 
@@ -142,3 +183,9 @@ the 28-market list unchanged and matches the seeded row), `_dx-samples.mjs` (sam
   "1 year" and "5 years" buttons for "Last N years" with a typed number (an old remembered "1" or "5" comes back as
   that number). Found on the way: a click on the thin edge of the step 3 control read `data-period` off `<html>`,
   where the page shell keeps day or night, and the result stopped updating until a period button was clicked.
+- 2026-11-17, long-term growth rate: an advisor needed the Suburb Scoring "Fixed House LT CAGR" for Tailem Bend SA 5260
+  and Mount Barker SA 5251, which the tool does not score. Van chose to offer it here for any suburb. Two new data
+  points under Price growth, "Long-term growth rate" and "Long-term growth rate (council area)", measured from the
+  first median on record. The starting medians come from the CoreLogic 1980 to 2018 history, loaded once into
+  `forge_cotality` row `cl_start_medians` by `scripts/build-cl-start-medians.mjs`. Mount Barker houses: 7.06% for the
+  suburb, 6.78% for the council area. Tailem Bend has no history of its own, so only its council area shows: 7.96%.
