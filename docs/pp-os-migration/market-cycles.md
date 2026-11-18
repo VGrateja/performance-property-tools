@@ -89,3 +89,8 @@ the builder lists the two embeds and loads without an error.
   history row, the two entries in the presentation builder. Open with Saskia: whether to source Cotality's hedonic
   index so the falls match the published figures; long term or rolling 10 years for the growth chart; the AFR chart
   it was modelled on was described in the meeting but not seen.
+- 2026-11-18: live, and in the Vault. Van asked for it to be pushed and made available in the Vault: a Vault window
+  card and a search entry in `index.html`, both shown to whoever can open the Vault. The tool has NO registry key on
+  purpose: the page is embedded in slides, and a key would let the page gate turn away a staff member presenting a
+  deck when their group does not hold it. So the page opens for any signed-in staff member, and the card cannot be
+  ticked per group. The app bar says "The Vault".
