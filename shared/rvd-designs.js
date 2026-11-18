@@ -89,9 +89,13 @@
   var PHASE_ANGLE = { HL: 0, LL: 90, LH: 180, HH: 270 };
   var MONTH_LONG = { Jan: 'January', Feb: 'February', Mar: 'March', Apr: 'April', May: 'May', Jun: 'June', Jul: 'July', Aug: 'August', Sep: 'September', Oct: 'October', Nov: 'November', Dec: 'December' };
   var DEMAND_T = 30;
-  /* Fixed across months (handover §9). The handover's 55 / 40 put 83 of 828 house points and 226 of 828 unit
-     points past the rim over the history (Jan 2025 – Nov 2026); 80 / 55 leaves 1 and 7 (RVDD.clampStats()). */
-  var CLOCK_RUNWAY_SPAN = 80, CLOCK_DEMAND_SPAN = 55;
+  /* The clock's two scales (research feedback, 2026-11-19; it was the scatter turned 45° before). Runway runs AROUND
+     the dial: 12 o'clock = none left (the peak), 6 o'clock = 120% or more, so an hour is 20 points. Demand runs TOWARD
+     THE CENTRE: the rim track is −20, the innermost 80, so a stronger market has a shorter lap to travel. Both are
+     fixed across months and property types. The demand rings are numbered along the 4:30 line. */
+  var CLOCK_RUNWAY_MAX = 120, CLOCK_DS = [-20, 80], CLOCK_DS_SPOKE = 135;
+  /* What a sector says now that the angle is runway and the side of 12 is the cycle (keys = the tokens' sector ids) */
+  var PHASE_NOTE = { HL: 'Least room, at the peak', LL: 'Past the peak', LH: 'Most room to grow', HH: 'Rising toward the peak' };
 
   function isLight() { return document.documentElement.getAttribute('data-theme') === 'light'; }
   function tkB() { return TK.b[isLight() ? 'light' : 'dark']; }
@@ -381,27 +385,54 @@
   var GEO = {
     a: { vb: [80, 132, 1760, 842], X0: 150, X1: 1650, Y0: 196, Y1: 886, rw: [-15, 135], ds: [-30, 92], r: 9, size: 16 },
     b: { vb: [80, 132, 1760, 828], X0: 196, X1: 1650, Y0: 172, Y1: 882, rw: [-15, 135], ds: [-26, 90], r: 8, size: 15 },
-    c: { vb: [66, 116, 1430, 850], cx: 1078, cy: 540, R: 366, r: 7, size: 13 }
+    c: { vb: [66, 116, 1430, 850], cx: 1078, cy: 540, R: 366, rIn: 73, rOut: 326, r: 7, size: 13 }
   };
   function scatterPos(G, rw, ds, mid) {
     var shift = mid - 60;
     var x = G.X0 + (rw - shift - G.rw[0]) / (G.rw[1] - G.rw[0]) * (G.X1 - G.X0);
     var y = G.Y0 + (G.ds[1] - ds) / (G.ds[1] - G.ds[0]) * (G.Y1 - G.Y0);
     var m = G.r + 3;
-    return { x: Math.max(G.X0 + m, Math.min(G.X1 - m, x)), y: Math.max(G.Y0 + m, Math.min(G.Y1 - m, y)), clamped: false };
+    return { x: Math.max(G.X0 + m, Math.min(G.X1 - m, x)), y: Math.max(G.Y0 + m, Math.min(G.Y1 - m, y)) };
   }
   function sx(G, nominal) { return G.X0 + (nominal - G.rw[0]) / (G.rw[1] - G.rw[0]) * (G.X1 - G.X0); }
   function sy(G, ds) { return G.Y0 + (G.ds[1] - ds) / (G.ds[1] - G.ds[0]) * (G.Y1 - G.Y0); }
-  /* clock_xy() of the reference: the scatter rotated so the two thresholds form an X */
-  function clockRaw(rw, ds, mid) { return { rn: (rw - mid) / CLOCK_RUNWAY_SPAN, dn: (ds - DEMAND_T) / CLOCK_DEMAND_SPAN }; }
-  function clockMap(G, rn, dn) { return { x: G.cx - G.R * (dn + rn) / Math.SQRT2, y: G.cy - G.R * (dn - rn) / Math.SQRT2 }; }
-  /* A market past the rim is pinned just inside it (whole dot inside the dial; a chevron marks it). */
-  function clockPos(G, rw, ds, mid) {
-    var c = clockRaw(rw, ds, mid), rho = Math.hypot(c.rn, c.dn), lim = (G.R - G.r - 4) / G.R, k = rho > lim ? lim / rho : 1;
-    var p = clockMap(G, c.rn * k, c.dn * k);
-    p.clamped = rho > 1; p.rn = c.rn * k; p.dn = c.dn * k; return p;
-  }
   function polar(G, deg, rad) { var a = deg * Math.PI / 180; return { x: G.cx + rad * Math.sin(a), y: G.cy - rad * Math.cos(a) }; }
+  /* The clock: degrees clockwise from 12 for a runway, on the side of 12 the market is on; the radius for a demand. */
+  function clockAngle(rw, after) { var t = Math.max(0, Math.min(1, (rw || 0) / CLOCK_RUNWAY_MAX)) * 180; return after ? t : (360 - t) % 360; }
+  function clockRadius(G, ds) {
+    var d = Math.max(CLOCK_DS[0], Math.min(CLOCK_DS[1], ds));
+    return G.rIn + (G.rOut - G.rIn) * (CLOCK_DS[1] - d) / (CLOCK_DS[1] - CLOCK_DS[0]);
+  }
+  function clockPos(G, rw, ds, after) { var a = clockAngle(rw, after), p = polar(G, a, clockRadius(G, ds)); p.ang = a; return p; }
+  function phaseOf(ang) { return ang < 45 || ang >= 315 ? 'HL' : ang < 135 ? 'LL' : ang < 225 ? 'LH' : 'HH'; }
+
+  /* ── THE CLOCK: WHICH SIDE OF 12 ──
+     Runway alone cannot say whether a market is approaching its peak or past it (10% left reads as 11:30 or as
+     12:30), and this tool holds no price series; its runway also moves whenever the borrowing assumptions do. So the
+     side is the research team's own call: the hour each market is recorded at on the Property Clock (clock_state,
+     readable by every signed-in user; houses and units are separate lists). After 12 and up to 6 = past the peak.
+     Read once. Until it arrives, or if it fails, or for a market the clock does not list, the market is drawn before
+     the peak. The hour as it stands TODAY is used for every month, so a trail never changes side. */
+  var clockHours = null, clockHoursState = 'idle';
+  function clockName(s) { return String(s || '').toUpperCase().replace(/\(.*?\)/g, '').replace(/^\s*GREATER\s+/, '').replace(/[^A-Z]+/g, ' ').trim(); }
+  function loadClockHours() {
+    if (clockHoursState !== 'idle' || !window.sb) return;
+    clockHoursState = 'loading';
+    var index = function (list) { var o = {}; (list || []).forEach(function (m) { var h = m && m.hour != null ? +m.hour : NaN; if (m && m.name && isFinite(h)) o[clockName(m.name)] = h; }); return o; };
+    window.sb.from('clock_state').select('houses:payload->houses,units:payload->units').eq('id', 1).maybeSingle().then(function (r) {
+      if (r.error || !r.data) { clockHoursState = 'failed'; return; }
+      clockHours = { house: index(r.data.houses), unit: index(r.data.units) }; clockHoursState = 'ok';
+    }, function () { clockHoursState = 'failed'; }).then(function () { if (design === 'c' && typeof render === 'function') render(false); });
+  }
+  function clockHourOf(city, kind) {
+    var m = clockHours && clockHours[kind === 'unit' ? 'unit' : 'house']; if (!m) return null;
+    var n = clockName(city); if (m[n] != null) return m[n];
+    for (var k in m) if ((' ' + k + ' ').indexOf(' ' + n + ' ') >= 0) return m[k];   /* the clock's one ALBURY-WODONGA serves both */
+    return null;
+  }
+  function afterPeak(hour) { var h = ((hour % 12) + 12) % 12; return h > 0 && h <= 6; }
+  function isAfter(city, kind) { var h = clockHourOf(city, kind); return h != null && afterPeak(h); }
+  function hourText(h) { var H = Math.floor(h), M = Math.round((h - H) * 60); if (M === 60) { H++; M = 0; } return ((H + 11) % 12 + 1) + ':' + (M < 10 ? '0' : '') + M; }
 
   /* ════════════════════════════ RENDER ════════════════════════════ */
   var lastScene = null;
@@ -418,6 +449,7 @@
     updateTimeline();
     try { renderCompareTable(month); } catch (e) {}
 
+    if (design === 'c') loadClockHours();
     var D = collect();
     var th = design === 'b' ? tkB() : design === 'a' ? TK.a[isLight() ? 'light' : 'dark'] : TK.c[isLight() ? 'light' : 'dark'];
     var G = GEO[design];
@@ -432,10 +464,13 @@
     D.pts.forEach(function (p) {
       var hlR = p.hl ? 2 : 0;
       p.r = G.r + hlR;
-      var q = design === 'c' ? clockPos(G, p.rw, p.ds, D.mid) : scatterPos(G, p.rw, p.ds, D.mid);
-      p.x = q.x; p.y = q.y; p.clamped = q.clamped; p.rn = q.rn; p.dn = q.dn;
+      var q = design === 'c' ? clockPos(G, p.rw, p.ds, isAfter(p.city, p.kind)) : scatterPos(G, p.rw, p.ds, D.mid);
+      p.x = q.x; p.y = q.y;
+      if (design === 'c') p.phase = phaseOf(q.ang);
       p.col = colourOf(ctx, p);
     });
+    /* on the clock a phase is the sector a market stands in, so the counts are of sectors, not of the four quarters */
+    if (design === 'c') { D.counts = { HH: 0, HL: 0, LH: 0, LL: 0 }; D.pts.forEach(function (p) { if (p.kind === D.tab) D.counts[p.phase]++; }); }
     dodge(D.pts);
 
     clearLayer('bg'); clearLayer('guide'); clearLayer('top');
@@ -614,8 +649,6 @@
       var a = PHASE_ANGLE[s], p0 = polar(G, a - 45, R), p1 = polar(G, a + 45, R);
       el(g, 'path', { d: 'M' + G.cx + ',' + G.cy + 'L' + p0.x + ',' + p0.y + 'A' + R + ',' + R + ' 0 0 1 ' + p1.x + ',' + p1.y + 'Z', fill: th.tint[s] });
     });
-    el(g, 'circle', { cx: G.cx, cy: G.cy, r: R / 3, fill: 'none', stroke: th.ring, 'stroke-width': 1 });
-    el(g, 'circle', { cx: G.cx, cy: G.cy, r: 2 * R / 3, fill: 'none', stroke: th.ring, 'stroke-width': 1 });
     [45, 135, 225, 315].forEach(function (a) { var p = polar(G, a, R); el(g, 'line', { x1: G.cx, y1: G.cy, x2: p.x, y2: p.y, stroke: th.sep, 'stroke-width': 3 }); });
     /* bezel: four arrow segments pointing clockwise, phase name + count on a curve */
     var Ro = R + 39, Ri = R + 5, Rm = R + 22;
@@ -631,15 +664,7 @@
       el(tp, 'tspan', { 'font-weight': 700 }, PHASE[s]);
       el(tp, 'tspan', { 'font-weight': 500 }, '  ·  ' + (D.counts[s] ? plural(D.counts[s], 'market') : 'no markets'));
     });
-    /* "Demand threshold" / "Runway midpoint" along the two lower lines */
-    [['Runway midpoint', 135, 45], ['Demand threshold', 225, -45]].forEach(function (k) {
-      /* 14px off the line, toward the Value sector (as in the mockup) */
-      var p = polar(G, k[1], R * 0.66), x = p.x + (k[1] === 135 ? -9.9 : 9.9), y = p.y + 9.9;
-      txt(g, x, y, k[0], { size: 13, fill: th.ink2, anchor: 'middle', base: 'central', transform: 'rotate(' + k[2] + ' ' + x + ' ' + y + ')' });
-      var m = measure(k[0], 13, 500), half = (m.w * Math.SQRT1_2 + m.h * Math.SQRT1_2) / 2;
-      obstacles.push([x - half, y - half, 2 * half, 2 * half]);
-    });
-    drawSpokeScales(ctx, obstacles);
+    drawDialScales(ctx, obstacles);
     /* empty phases say so inside their sector */
     ['HL', 'LL', 'LH', 'HH'].forEach(function (s) {
       if (D.counts[s]) return;
@@ -653,42 +678,29 @@
     obstacles.push([G.cx - 26, G.cy - 26, 52, 52]);
     drawClockColumn(ctx);
   }
-  /* The two straight axes inside the dial: 10:30–4:30 is demand, 1:30–7:30 is runway. */
-  function drawSpokeScales(ctx, obstacles) {
-    var g = layers.bg, G = ctx.G, th = ctx.th, D = ctx.D;
+  /* The dial's two scales. Runway on the rim: a tick an hour, numbered with the hours, or with the runway each hour
+     stands for when the advisor's runway numbers are on. Demand on rings (30, the threshold, dashed), numbered along
+     the 4:30 line on its Value side; a highlighted market's own figure goes on the other side (guideFor). */
+  function drawDialScales(ctx, obstacles) {
+    var g = layers.bg, G = ctx.G, th = ctx.th;
     var tickCol = ctx.light ? 'rgba(23,27,36,0.45)' : 'rgba(255,255,255,0.45)';
-    var words = { 70: '10%+', 50: '5%+', 10: 'flat', '-10': 'falling' };   /* likely rent growth, as on the other designs' right axis */
-    /* demand ticks every 10 points (30 = the hub) */
-    for (var d = Math.ceil((DEMAND_T - CLOCK_DEMAND_SPAN) / 10) * 10; d <= DEMAND_T + CLOCK_DEMAND_SPAN; d += 10) {
-      if (d === DEMAND_T) continue;
-      var p = clockMap(G, 0, (d - DEMAND_T) / CLOCK_DEMAND_SPAN), up = d > DEMAND_T;
-      /* tick perpendicular to the axis: the axis runs along (−1,−1)/√2, its normal is (1,−1)/√2 */
+    for (var h = 0; h < 12; h++) {
+      var t0 = polar(G, h * 30, G.R - 7), t1 = polar(G, h * 30, G.R - 1), c = polar(G, h * 30, G.R - 19);
+      el(g, 'line', { x1: t0.x, y1: t0.y, x2: t1.x, y2: t1.y, stroke: tickCol, 'stroke-width': 1.5 });
+      var s = ctx.on ? (h <= 6 ? h : 12 - h) * CLOCK_RUNWAY_MAX / 6 + '%' + (h === 6 ? '+' : '') : String(h || 12), m = measure(s, 11, 600);
+      txt(g, c.x, c.y - m.top - m.h / 2, s, { size: 11, weight: 600, fill: th.ink2, anchor: 'middle', cls: ctx.on ? 'rvdd-rw' : 'rvdd-hour' });
+      obstacles.push([c.x - m.w / 2 - 2, c.y - m.h / 2 - 1, m.w + 4, m.h + 2]);
+    }
+    var words = { 70: '10%+', 50: '5%+', 30: 'threshold' };   /* 70 and 50: likely rent growth, as on the other designs' right axis */
+    [0, 30, 50, 70].forEach(function (d) {
+      var rad = clockRadius(G, d), thr = d === DEMAND_T, p = polar(G, CLOCK_DS_SPOKE, rad);
+      el(g, 'circle', { cx: G.cx, cy: G.cy, r: rad, fill: 'none', stroke: thr ? tickCol : th.ring, 'stroke-width': 1, 'stroke-dasharray': thr ? '4 4' : null, 'class': 'rvdd-ring' });
+      /* the 4:30 line runs along (1,1)/√2; the tick crosses it */
       el(g, 'line', { x1: p.x - 4 * Math.SQRT1_2, y1: p.y + 4 * Math.SQRT1_2, x2: p.x + 4 * Math.SQRT1_2, y2: p.y - 4 * Math.SQRT1_2, stroke: tickCol, 'stroke-width': 1.5 });
-      var lab = String(d).replace('-', '−') + (words[d] ? ' · ' + words[d] : '');
-      var size = 11, m = measure(lab, size, 600);
-      /* upper half: label on the Momentum side (down-left); lower half: on the Correction side (up-right).
-         A label that would poke past the rim is nudged toward the hub along the axis. */
-      var lx = up ? p.x - 8 : p.x + 8, ly = up ? p.y + 8 : p.y - 8, anchor = up ? 'end' : 'start';
-      for (var k = 0; k < 20; k++) {
-        var x0 = anchor === 'end' ? lx - m.w : lx, inside = [x0, x0 + m.w].every(function (x) { return [ly - m.h / 2, ly + m.h / 2].every(function (y) { return Math.hypot(x - G.cx, y - G.cy) <= G.R - 6; }); });
-        if (inside) break;
-        lx += up ? 3 : -3; ly += up ? 3 : -3;
-      }
-      txt(g, lx, ly - m.top - m.h / 2, lab, { size: size, weight: 600, fill: th.ink2, anchor: anchor });
-      obstacles.push([anchor === 'end' ? lx - m.w : lx, ly - m.h / 2, m.w, m.h]);
-    }
-    /* runway ticks every 20 runway points; their numbers only when switched on */
-    var lo = Math.ceil((D.mid - 0.9 * CLOCK_RUNWAY_SPAN) / 20) * 20, hi = D.mid + 0.9 * CLOCK_RUNWAY_SPAN;   /* not on the rim, under the bezel */
-    for (var r = lo; r <= hi; r += 20) {
-      if (r === D.mid) continue;
-      var q = clockMap(G, (r - D.mid) / CLOCK_RUNWAY_SPAN, 0), more = r > D.mid;
-      el(g, 'line', { x1: q.x - 4 * Math.SQRT1_2, y1: q.y - 4 * Math.SQRT1_2, x2: q.x + 4 * Math.SQRT1_2, y2: q.y + 4 * Math.SQRT1_2, stroke: tickCol, 'stroke-width': 1.5 });
-      if (!ctx.on) continue;
-      var s = r + '%', mm = measure(s, 11, 600);
-      var qx = more ? q.x - 8 : q.x + 8, qy = more ? q.y - 8 : q.y + 8, an = more ? 'end' : 'start';
-      txt(g, qx, qy - mm.top - mm.h / 2, s, { size: 11, weight: 600, fill: th.ink2, anchor: an, cls: 'rvdd-rw' });
-      obstacles.push([an === 'end' ? qx - mm.w : qx, qy - mm.h / 2, mm.w, mm.h]);
-    }
+      var lab = d + (words[d] ? ' · ' + words[d] : ''), ml = measure(lab, 11, 600);
+      txt(g, p.x - 8, p.y + 8 - ml.top - ml.h / 2, lab, { size: 11, weight: 600, fill: th.ink2, anchor: 'end' });
+      obstacles.push([p.x - 8 - ml.w, p.y + 8 - ml.h / 2, ml.w, ml.h]);
+    });
   }
   /* Left column: generated summary, the four phases, how to read it (or the numbers), the key */
   function drawClockColumn(ctx) {
@@ -708,7 +720,7 @@
         el(g, 'rect', { x: x, y: y, width: 46, height: 46, rx: 8, fill: bz[s] });
         txt(g, x + 23, y + 23, String(c[s]), { size: 21, weight: 600, fill: '#FFFFFF', anchor: 'middle', base: 'central' });
         txtTop(g, x + 60, y + 4, PHASE[s], { size: 17, weight: 600, fill: th.ink });
-        txtTop(g, x + 60, y + 27, STATE_A[s], { size: 13.5, fill: th.ink2 });
+        txtTop(g, x + 60, y + 27, PHASE_NOTE[s], { size: 13.5, fill: th.ink2 });
       });
       y += 46 + 20;
     });
@@ -717,7 +729,8 @@
     var picked = D.pts.filter(function (p) { return p.hl && p.kind === D.tab; });
     if (!picked.length) {
       txtTop(g, X, y, 'How to read it', { size: 15, weight: 600, fill: th.ink }); y += 30;
-      [['Around the dial', 'Where a market is in the cycle. Markets travel clockwise.'], ['Out from the centre', 'How far past the two thresholds. Near the centre means close to a line.']].forEach(function (k, i) {
+      [['Around the dial', 'Runway. 12 is none left, 6 is the most. Left of 12 is before the peak, right of it is after.'],
+        ['Toward the centre', 'Demand. The stronger it is, the closer in, where there is less distance to travel.']].forEach(function (k, i) {
         var x = X + i * (colW + 24), yy = y;
         txtTop(g, x, yy, k[0], { size: 15, weight: 600, fill: th.ink }); yy += 24;
         wrapLines(k[1], colW, 14, 500).forEach(function (l) { txtTop(g, x, yy, l, { size: 14, fill: th.ink2 }); yy += 20; });
@@ -733,7 +746,7 @@
       if (on) txtTop(g, cols[2], y, 'Runway', { size: hs, weight: 600, fill: th.ink2, anchor: 'end', cls: 'rvdd-rw' });
       y += 22; el(g, 'rect', { x: X, y: y - 4, width: W, height: 1, fill: th.line });
       var rows = picked.slice().sort(function (a, b) { return b.ds - a.ds || String(a.city).localeCompare(b.city); });
-      var rowH = 21, max = Math.max(1, Math.floor((keyY - 30 - y) / rowH));
+      var rowH = 21, max = Math.max(1, Math.floor((keyY - 58 - y) / rowH));
       var shown = rows.length > max ? rows.slice(0, max - 1) : rows;
       shown.forEach(function (p) {
         var ch = change12(p);
@@ -748,6 +761,9 @@
       var since = change12(picked[0]);
       if (since) txtTop(g, X, y + 4, '12-month = demand points moved since ' + since.since, { size: 12, fill: th.ink2 });
     }
+    /* where the side of 12 comes from, always in view */
+    txtTop(g, X, keyY - 50, clockHoursState === 'ok' ? 'Before or after the peak: where each market sits on the Property Clock'
+      : clockHoursState === 'failed' ? 'Property Clock not read: every market is drawn before the peak' : 'Reading the Property Clock…', { size: 12.5, fill: th.ink2, cls: 'rvdd-side-source' });
     el(g, 'rect', { x: X, y: keyY - 26, width: W, height: 1, fill: th.line });
     var kx = X, items = [['smooth', 'Smooth market', th.type.S], ['workforce', 'Workforce market', th.type.W]];
     if (D.combined) items.push(['house', 'House', th.ink2], ['unit', 'Unit', th.ink2]);
@@ -774,7 +790,8 @@
       var pts = getTrailData(p.city, currentIdx, trailLen);
       if (pts.length < 2) return null;
       var prev = getTrailData(p.city, Math.max(0, currentIdx - 1), trailLen);
-      var pos = function (r) { var v = getRunwayValue(r, p.kind); return ctx.design === 'c' ? clockPos(G, v, r.ds, D.mid) : scatterPos(G, v, r.ds, D.mid); };
+      var after = ctx.design === 'c' && isAfter(p.city, p.kind);
+      var pos = function (r) { var v = getRunwayValue(r, p.kind); return ctx.design === 'c' ? clockPos(G, v, r.ds, after) : scatterPos(G, v, r.ds, D.mid); };
       var xy = pts.map(pos); xy[xy.length - 1] = { x: p.x, y: p.y };
       var pl = prev.length ? pos(prev[prev.length - 1]) : xy[xy.length - 1];
       return { key: p.key, p: p, xy: xy, prev: pl, start: pts[0].monthIdx, detail: D.hl };
@@ -868,17 +885,6 @@
       .attr('pointer-events', 'all').style('cursor', 'pointer')
       .attr('opacity', function (d) { return d.faded ? 0.3 : 1; })
       .transition(T).attr('transform', function (d) { return 'translate(' + d.x + ',' + d.y + ')'; });
-    /* the clock: a dot past the rim is pinned to it, with a small outward chevron */
-    var ch = d3.select(layers.dots).selectAll('path.rvdd-chev').data(design === 'c' ? D.pts.filter(function (p) { return p.clamped; }) : [], function (d) { return d.key; });
-    ch.exit().remove();
-    var chTf = function (d) {
-      var G = ctx.G, a = Math.atan2(d.y - G.cy, d.x - G.cx), k = d.r + 6;
-      return 'translate(' + (d.x + Math.cos(a) * k) + ',' + (d.y + Math.sin(a) * k) + ') rotate(' + (a * 180 / Math.PI) + ')';
-    };
-    ch.enter().append('path').attr('class', 'rvdd-chev').attr('d', 'M-2.5,-4L1.5,0L-2.5,4').attr('fill', 'none').attr('stroke-width', 2).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round').attr('pointer-events', 'none')
-      .attr('transform', chTf)
-      .merge(ch).attr('stroke', function (d) { return d.col; }).attr('opacity', function (d) { return d.faded ? 0.3 : 1; })
-      .transition(T).attr('transform', chTf);
   }
   function clickCity(city) {
     if (selectedCities.has(city)) selectedCities.delete(city); else selectedCities.add(city);
@@ -886,33 +892,55 @@
     updateRegionBtn(); render();
   }
 
-  /* ── CLOCK GUIDES: from the dot, parallel to the spokes, to each axis (feet carry the values) ── */
-  function guideFor(ctx, p, g, obstacles) {
-    var G = ctx.G, th = ctx.th;
-    var fd = clockMap(G, 0, p.dn), fr = clockMap(G, p.rn, 0);
-    var a = { stroke: p.col, 'stroke-width': 1, 'stroke-dasharray': '3 3', opacity: 0.7, 'pointer-events': 'none' };
-    el(g, 'line', Object.assign({ x1: p.x, y1: p.y, x2: fd.x, y2: fd.y }, a));
-    el(g, 'line', Object.assign({ x1: p.x, y1: p.y, x2: fr.x, y2: fr.y }, a));
-    el(g, 'circle', { cx: fd.x, cy: fd.y, r: 3, fill: p.col, 'pointer-events': 'none' });
-    el(g, 'circle', { cx: fr.x, cy: fr.y, r: 3, fill: p.col, 'pointer-events': 'none' });
-    var feet = [[fd, String(p.ds), false]];
-    if (ctx.on) feet.push([fr, (+p.rw).toFixed(1) + '%', true]);
+  /* ── CLOCK GUIDES: from the dot out to the rim (its runway) and round its ring to the demand scale (its demand) ── */
+  function guideFor(ctx, p, g, obstacles, taken) {
+    var G = ctx.G;
+    var rad = Math.hypot(p.x - G.cx, p.y - G.cy), ang = (Math.atan2(p.x - G.cx, G.cy - p.y) * 180 / Math.PI + 360) % 360;
+    var rim = polar(G, ang, G.R - 3), foot = polar(G, CLOCK_DS_SPOKE, rad);
+    var turn = ((CLOCK_DS_SPOKE - ang + 540) % 360) - 180;   /* the short way round to the scale; above 0 is clockwise */
+    var a = { fill: 'none', stroke: p.col, 'stroke-width': 1, 'stroke-dasharray': '3 3', opacity: 0.7, 'pointer-events': 'none' };
+    el(g, 'line', Object.assign({ x1: p.x, y1: p.y, x2: rim.x, y2: rim.y }, a));
+    el(g, 'path', Object.assign({ d: 'M' + p.x + ',' + p.y + 'A' + rad + ',' + rad + ' 0 0 ' + (turn > 0 ? 1 : 0) + ' ' + foot.x + ',' + foot.y }, a));
+    el(g, 'circle', { cx: rim.x, cy: rim.y, r: 3, fill: p.col, 'pointer-events': 'none' });
+    el(g, 'circle', { cx: foot.x, cy: foot.y, r: 3, fill: p.col, 'pointer-events': 'none' });
+    /* the runway figure sits inside the rim, beside its line; a step further in if another market's is already there */
+    if (ctx.on && p.rw != null) {
+      var s = (+p.rw).toFixed(1) + '%', m = measure(s, 12, 700), ar = ang * Math.PI / 180, off = (ang > 180 ? -1 : 1) * (m.w / 2 + 7), c, box;
+      for (var k = 0; k < 5; k++) {
+        c = polar(G, ang, G.R - 38 - k * 17); c.x += Math.cos(ar) * off; c.y += Math.sin(ar) * off;
+        box = [c.x - m.w / 2 - 3, c.y - m.h / 2 - 1, m.w + 6, m.h + 2];
+        if (!(taken || []).some(function (b) { return overlap(b, box) > 0; })) break;
+      }
+      if (taken) taken.push(box);
+      footLabel(ctx, g, c.x, c.y, 'middle', s, p.col, true, obstacles);
+    }
+    return { rad: rad, text: String(p.ds), col: p.col };
+  }
+  function footLabel(ctx, g, x, y, anchor, str, col, runway, obstacles) {
+    var m = measure(str, 12, 700), bx = anchor === 'middle' ? x - m.w / 2 : x, by = y - m.h / 2;
+    el(g, 'rect', { x: bx - 3, y: by - 1, width: m.w + 6, height: m.h + 2, rx: 3, fill: ctx.th.bg, opacity: 0.85, 'pointer-events': 'none' });
+    txt(g, x, y - m.top - m.h / 2, str, { size: 12, weight: 700, fill: col, anchor: anchor, cls: runway ? 'rvdd-rw rvdd-foot' : 'rvdd-foot' });
+    if (obstacles) obstacles.push([bx - 3, by - 1, m.w + 6, m.h + 2]);
+  }
+  /* The demand figures go across the 4:30 line from the ring numbers. Two markets on nearly the same ring would
+     print on top of each other, so the figures keep their order and are spaced out along the line, each joined back
+     to its own point on the scale. */
+  function demandFeet(ctx, feet, g, obstacles) {
+    var G = ctx.G, gap = 23, lim = G.R - 30;
+    feet.sort(function (a, b) { return a.rad - b.rad; });
+    feet.forEach(function (f, i) { f.at = i ? Math.max(f.rad, feet[i - 1].at + gap) : f.rad; });
+    for (var i = feet.length - 1; i >= 0; i--) feet[i].at = Math.min(feet[i].at, i === feet.length - 1 ? Math.max(lim, feet[i].rad) : feet[i + 1].at - gap);
     feet.forEach(function (f) {
-      var m = measure(f[1], 12, 700), up = f[0] === fd ? (p.dn >= 0) : (p.rn < 0);
-      /* the foot label sits on the side of the axis away from the tick numbers */
-      var lx = f[0] === fd ? (up ? f[0].x + 7 : f[0].x - 7) : (up ? f[0].x - 7 : f[0].x + 7);
-      var ly = f[0] === fd ? (up ? f[0].y - 7 : f[0].y + 7) : (up ? f[0].y - 7 : f[0].y + 7);
-      var an = (f[0] === fd ? up : !up) ? 'start' : 'end';
-      var bx = an === 'end' ? lx - m.w : lx, by = ly - m.h / 2;
-      el(g, 'rect', { x: bx - 3, y: by - 1, width: m.w + 6, height: m.h + 2, rx: 3, fill: th.bg, opacity: 0.85, 'pointer-events': 'none' });
-      txt(g, lx, ly - m.top - m.h / 2, f[1], { size: 12, weight: 700, fill: p.col, anchor: an, cls: f[2] ? 'rvdd-rw rvdd-foot' : 'rvdd-foot' });
-      if (obstacles) obstacles.push([bx - 3, by - 1, m.w + 6, m.h + 2]);
+      var q = polar(G, CLOCK_DS_SPOKE, f.at), o = polar(G, CLOCK_DS_SPOKE, f.rad);
+      if (Math.abs(f.at - f.rad) > 0.5) el(g, 'line', { x1: o.x, y1: o.y, x2: q.x + 5, y2: q.y - 5, stroke: f.col, 'stroke-width': 1, opacity: 0.7, 'pointer-events': 'none' });
+      footLabel(ctx, g, q.x + 7, q.y - 7, 'start', f.text, f.col, false, obstacles);
     });
   }
   function drawGuides(ctx, obstacles) {
     var hl = ctx.D.pts.filter(function (p) { return p.hl && p.kind === ctx.D.tab; });
     if (!hl.length || hl.length > 6) return;   /* more than six would bury the dial: hover still shows them */
-    hl.forEach(function (p) { guideFor(ctx, p, layers.guide, obstacles); });
+    var taken = [];
+    demandFeet(ctx, hl.map(function (p) { return guideFor(ctx, p, layers.guide, obstacles, taken); }), layers.guide, obstacles);
   }
 
   /* ── LABELS: placed live, tweened between months so they never jump ── */
@@ -998,9 +1026,9 @@
     var th = ctx.th, design = ctx.design, on = ctx.on;
     var ink = th.ink, ink2 = th.ink2, line = design === 'b' ? tkB().line : th.line;
     var bg = design === 'b' ? tkB().card : th.card;
-    var chipBg = design === 'b' ? tkB().chip[p.state] : design === 'a' ? th.zone[p.state] : th.tint[p.state];
-    var chipDot = design === 'c' ? TK.c.bezel[p.state] : th.dot[p.state];
-    var stateName = design === 'b' ? CHIP_B[p.state] : design === 'c' ? PHASE[p.state] : STATE_A[p.state];
+    var chipBg = design === 'b' ? tkB().chip[p.state] : design === 'a' ? th.zone[p.state] : th.tint[p.phase];
+    var chipDot = design === 'c' ? TK.c.bezel[p.phase] : th.dot[p.state];
+    var stateName = design === 'b' ? CHIP_B[p.state] : design === 'c' ? PHASE[p.phase] : STATE_A[p.state];
     var ch = change12(p);
     var esc = function (v) { return String(v == null ? '' : v).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
     var row = function (k, v, sub, cls) {
@@ -1013,6 +1041,12 @@
       moved = 'Demand ' + signed(ch.dDs) + (on ? ' · Runway ' + signed(ch.dRw) : (Math.round(ch.dRw) ? ' · ' + (ch.dRw > 0 ? 'more' : 'less') + ' room' : ''));
       movedSub = 'Points moved since ' + ch.since;
     }
+    /* the clock says which side of 12 it drew the market on, and the Property Clock hour that decided it */
+    var side = '';
+    if (design === 'c') {
+      var hr = clockHourOf(p.city, p.kind);
+      side = row('Side of the peak', hr == null ? 'Before (assumed)' : afterPeak(hr) ? 'After' : 'Before', hr == null ? 'Not on the Property Clock' : 'Property Clock: ' + hourText(hr));
+    }
     card.innerHTML =
       '<div style="font-size:16px;font-weight:600;color:' + ink + ';line-height:1.2">' + esc(p.city) + '</div>' +
       '<div style="font-size:11.5px;font-weight:500;color:' + ink2 + ';margin-top:3px">' + (p.type === 'workforce' ? 'Workforce' : 'Smooth') + ' market · ' + (p.kind === 'unit' ? 'Units' : 'Houses') + ' · ' + esc(longMonth(months[currentIdx])) + '</div>' +
@@ -1020,12 +1054,13 @@
       '<span style="width:8px;height:8px;border-radius:50%;background:' + chipDot + ';flex-shrink:0"></span><span style="font-size:11.5px;font-weight:600;color:' + ink + '">' + stateName + '</span></div>' +
       row('Demand score', esc(p.ds), rentWords(p.ds)) +
       row('Room to grow', p.rw > ctx.D.mid ? 'Above midpoint' : 'Below midpoint', on && p.rw != null ? 'Runway ' + (+p.rw).toFixed(1) + '%, shown in advisor view only' : '', on ? 'rvdd-rw' : '') +
+      side +
       row('Past 12 months', moved, movedSub);
     card.style.background = bg; card.style.border = '1px solid ' + line; card.style.color = ink;
     /* hovered dot gets a 2px ring */
     clearLayer('top');
     el(layers.top, 'circle', { cx: p.x, cy: p.y, r: p.r + 7, fill: 'none', stroke: ink, 'stroke-width': 2, 'pointer-events': 'none' });
-    if (design === 'c' && p.kind !== undefined) guideFor(ctx, p, layers.top, null);
+    if (design === 'c' && p.kind !== undefined) demandFeet(ctx, [guideFor(ctx, p, layers.top, null)], layers.top, null);
     /* position beside the dot, inside the card */
     var z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
     var wr = wrap.getBoundingClientRect(), nr = node.getBoundingClientRect();
@@ -1038,33 +1073,14 @@
   }
   function hideCard() { if (card) card.style.opacity = '0'; if (layers.top) clearLayer('top'); }
 
-  /* ════════════════════════════ CHECK HELPERS ════════════════════════════ */
-  /* How many points sit past the clock's rim, over the whole history, per property type. */
-  function clampStats(spanRw, spanDs) {
-    spanRw = spanRw || CLOCK_RUNWAY_SPAN; spanDs = spanDs || CLOCK_DEMAND_SPAN;
-    var out = {};
-    ['house', 'unit'].forEach(function (t) {
-      var n = 0, tot = 0, cities = {};
-      months.forEach(function (m, i) {
-        getData(t, m).forEach(function (d) {
-          var rw = getRunwayValue(Object.assign({}, d, { monthIdx: i }), t);
-          tot++;
-          if (Math.hypot((rw - runwayTickMid) / spanRw, (d.ds - DEMAND_T) / spanDs) > 1) { n++; cities[d.city] = (cities[d.city] || 0) + 1; }
-        });
-      });
-      out[t] = { clamped: n, of: tot, cities: cities };
-    });
-    return out;
-  }
-
   /* ════════════════════════════ BOOT ════════════════════════════ */
   window.RVDD = {
     design: function () { return design; },
     active: function () { return design !== 'original'; },
     render: renderDesign,
     setDesign: setDesign,
-    clampStats: clampStats,
-    spans: { runway: CLOCK_RUNWAY_SPAN, demand: CLOCK_DEMAND_SPAN }
+    /* for the check script: the clock's scales, and what it read from the Property Clock */
+    clock: function () { return { runwayMax: CLOCK_RUNWAY_MAX, demand: CLOCK_DS, rIn: GEO.c.rIn, rOut: GEO.c.rOut, cx: GEO.c.cx, cy: GEO.c.cy, state: clockHoursState, hourOf: clockHourOf }; }
   };
   function boot() {
     build(); wireDropdown(); applyVisibility();

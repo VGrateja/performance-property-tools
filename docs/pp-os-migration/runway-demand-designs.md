@@ -23,27 +23,39 @@ Manage Pushed Months, the hover card, embeds.
   the Original. `?design=a|b|c|original` in the URL picks a design for anyone.
 - **Remembered:** the dropdown choice is kept in `localStorage['ppa-rvd-design']`; the URL wins over it.
 - **Embeds (slides):** always the Original and no dropdown, unless the embed URL itself carries `&design=`.
-- **Runway numbers** stay hidden unless the advisor checkbox is ticked, in every design (tick labels, the clock's spoke
+- **Runway numbers** stay hidden unless the advisor checkbox is ticked, in every design (tick labels, the clock's rim
   percentages and feet, the hover card's runway line, the numbers table and the "PP variable rate" line).
 - **Themes:** A and C follow the light/dark switch; B is dark in both, as designed.
 
 ## How the clock fits the tool's numbers (Sample C)
 
-The mapping is the handover's `clock_xy` (the scatter rotated 45° so the two threshold lines cross at the hub), which
-keeps two straight, linear axes inside the dial:
+Since 2026-11-19 the dial is read the research lead's way (it was the handover's `clock_xy`, the scatter turned 45°):
 
-- **10:30 to 4:30 is the demand axis** (demand rises toward 10:30, 30 at the hub): a tick every 10 points with the
-  likely-rent words at 70 (10%+), 50 (5%+), 10 (flat) and −10 (falling).
-- **1:30 to 7:30 is the runway axis** (more room toward 7:30, the midpoint at the hub): a tick every 20 runway points;
-  the percentages appear only with runway numbers on. Both scales follow the midpoint (60, 40 Smooth, 70 Workforce).
-- **Guide lines:** hovering a dot (and, for up to six highlighted markets, always) draws two dashed lines parallel to the
-  spokes to each axis, with the value at each foot (the runway foot only with numbers on).
+- **Runway runs around the dial.** 12 o'clock is no runway left (the peak) and 6 o'clock is 120% or more, so an hour
+  is 20 points (`clockAngle`). The rim carries the twelve hours; with runway numbers on it carries the runway each hour
+  stands for instead (0% at 12 to 120%+ at 6). The scale is absolute: it does not follow the Smooth / Workforce
+  midpoint, and a runway under 0 sits at 12, over 120 at 6.
+- **Demand runs toward the centre.** The rim track is −20 and the innermost 80 (`clockRadius`), so the stronger a
+  market, the shorter its lap. Rings at 0, 30 (the threshold, dashed), 50 and 70 are numbered along the 4:30 line.
+- **Which side of 12.** Runway alone cannot say whether a market is approaching its peak or past it, and this tool
+  holds no price series (its runway also moves when the borrowing assumptions do: from September 2026 every market's
+  runway rose at once, so "runway rising = prices falling" would put 35 of 36 house markets past the peak). So the
+  side is the research team's own call: the hour each market is recorded at on the **Property Clock**
+  (`clock_state.payload.houses / units`, one small read, open to every signed-in user). After 12 and up to 6 is past
+  the peak (right half); otherwise before it (left half). The clock's single "ALBURY-WODONGA" unit entry serves both
+  markets. Until the read arrives, if it fails, or for a market the clock does not list, the market is drawn before
+  the peak and the chart says so under the left column.
+- **Limits to know.** Only the SIDE is taken from the Property Clock; the hour here comes from runway, so the two
+  clocks do not show the same hour for a market. The Property Clock hour as it stands today is used for every month,
+  so trails and playback never change side.
+- **The four phases** are now the sectors a market stands in (top Selling window, right Correction, bottom Value, left
+  Momentum; boundaries at 30% and 90% of runway), so the bezel counts and the hover card's phase follow the dial, not
+  the four quarters of the scatter. The hover card adds "Side of the peak" with the Property Clock hour behind it.
+- **Guide lines:** hovering a dot (and, for up to six highlighted markets, always) draws a dashed line out to the rim
+  (its runway, the figure only with numbers on) and a dashed arc round its ring to the demand scale (its demand).
+  Figures that would print on top of each other are spaced out in order.
 - **Numbers panel:** with markets highlighted, the left column swaps "How to read it" for a table: market, demand
   score, 12-month demand change, and runway % with numbers on.
-- **Rim:** a market further out than the rim is pinned just inside it with a small outward chevron. The divisors are
-  fixed across months. The handover's 55 (runway) / 40 (demand) put 83 of 828 house points and 226 of 828 unit points
-  (Jan 2025 – Nov 2026, midpoint 60) past the rim, so they were widened to **80 / 55**, which leaves 1 house and 7 unit
-  points clamped (`RVDD.clampStats()` in the console recounts).
 
 ## Where
 
@@ -83,3 +95,9 @@ fetch the export falls back to a system sans, as the Original's export does toda
   names clear of the paths. `node scratch/_rvd-designs-check.mjs`: 22 of 22 after both changes.
 - 2026-11-18, later: every trail carries its monthly dots and its start ring, also with nothing highlighted (they
   were drawn for highlighted markets only). The start-month label stays with highlighted markets.
+- 2026-11-19: Sample C remapped on research feedback: runway round the dial (12 = none left, 6 = 120% or more),
+  demand toward the centre, and the side of 12 read from the Property Clock (see the section above for why runway
+  cannot decide it). The two diagonal axes, the rim clamp and its chevrons, and `RVDD.clampStats()` are gone;
+  `RVDD.clock()` reports the scales and what was read. Check 11 added to `scratch/_rvd-designs-check.mjs` (every
+  dot on the formula for House and Unit, sides as the Property Clock has them, the rim with numbers off and on, and
+  the Property Clock unreachable).
