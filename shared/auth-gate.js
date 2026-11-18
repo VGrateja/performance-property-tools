@@ -82,6 +82,8 @@
       const basename = (window.location.pathname.split('/').pop() || '').toLowerCase();
       const keys = REG.keysForFile(basename);
       if (!keys.length) return;                      /* unregistered page → allow */
+      /* a page slides embed (registry `embedOpen`) draws for whoever presents the deck */
+      if (q.get('embed') === '1' && keys.some(function (k) { return REG.TOOLS && REG.TOOLS[k] && REG.TOOLS[k].embedOpen; })) return;
       const decide = function (st) {
         if (!st || st.mode !== 'set' || !st.keys) return;   /* all/external/unresolved → allow */
         const ok = keys.some(function (k) { return st.keys.has(k); });

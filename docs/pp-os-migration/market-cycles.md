@@ -94,3 +94,9 @@ the builder lists the two embeds and loads without an error.
   purpose: the page is embedded in slides, and a key would let the page gate turn away a staff member presenting a
   deck when their group does not hold it. So the page opens for any signed-in staff member, and the card cannot be
   ticked per group. The app bar says "The Vault".
+- 2026-11-18, later: it has a registry key after all. Van could not find it in Staff Groups and asked for every tool
+  to be tickable there. Key `market-cycles` (sec `vault`) on the card and the search entry, so a group sees them only
+  when ticked. The slide embed stays open to everyone: the registry entry carries `embedOpen`, and the page gate
+  (`shared/auth-gate.js`) lets a page with that flag load when it is opened with `?embed=1`. Opened on its own, the
+  page turns away a staff member whose groups do not hold the key. Median Prices got its key (`median-prices`) in the
+  same change; until then both cards showed to whoever could open the Vault.

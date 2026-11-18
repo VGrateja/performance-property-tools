@@ -39,6 +39,12 @@
     'traffic-lights':   { sec: 'vault',     file: 'traffic-lights.html',         label: 'Traffic Lights' },
     'demand-score':     { sec: 'vault',     file: 'demand-score.html',           label: 'Demand Score Dashboard' },
     'market-compare':   { sec: 'vault',     file: 'market-compare.html',         label: 'Market Compare' },
+    /* `embedOpen`: slides embed this page (presentation.html, Add embed), and a
+       deck must draw for whoever presents it. With ?embed=1 the group gate in
+       auth-gate.js lets the page load, ticked or not; the tick governs the
+       Vault card, search and the page opened on its own. */
+    'market-cycles':    { sec: 'vault',     file: 'market-cycles.html',          label: 'Market Cycles', embedOpen: true },
+    'median-prices':    { sec: 'vault',     file: 'median-prices.html',          label: 'Median Prices' },
     'bs-slides':        { sec: 'vault',     file: 'buying-selling-slides.html',  label: 'Buying/Selling Slides' },
     'suburb-data':      { sec: 'vault',     file: 'suburb-selection-data.html',  label: 'Suburb Selection Data' },
     'suburb-scoring':   { sec: 'vault',     file: 'suburb-scoring.html',         label: 'Suburb Scoring' },
