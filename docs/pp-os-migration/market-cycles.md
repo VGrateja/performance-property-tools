@@ -100,3 +100,11 @@ the builder lists the two embeds and loads without an error.
   (`shared/auth-gate.js`) lets a page with that flag load when it is opened with `?embed=1`. Opened on its own, the
   page turns away a staff member whose groups do not hold the key. Median Prices got its key (`median-prices`) in the
   same change; until then both cards showed to whoever could open the Vault.
+- 2026-11-18, polish (Van, with feedback passed on by Saskia). Fastest-growing capital: one colour per capital in the
+  bars and in the year-by-year strip (tokens `--syd` to `--cbr` on `.cy`, a step of the brand tone ramps each, a set per
+  ground; the Melbourne teal / Darwin orange / grey scheme is gone), and a Speed control beside the slider (Slow 2.4 s a
+  year, Normal 0.9 s, Fast 0.45 s; `?speed=slow|normal|fast` presets it for a slide; changing it mid-run carries on from
+  the year showing). Both charts: less text. Falls lost its paragraph and its three tiles (their facts are in the one
+  line under the title: how far, how it compares at the same stage, how long the five took to regain their peak); the
+  legend lines, the pace row, the footnotes and the growth subtitle are shorter; no label is set in spaced capitals.
+  Nothing about the figures changed. Check: `node scratch/_pres-charts/analyse.mjs && node scratch/_mc-check.mjs` (32).
