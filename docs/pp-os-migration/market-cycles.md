@@ -111,3 +111,14 @@ the builder lists the two embeds and loads without an error.
 - 2026-11-19: Speed control re-paced on the owner's word. Fast is now what Normal was (0.9 s a year), Slow is unchanged
   (2.4 s) and Normal is a new step between them (1.5 s). The old 0.45 s Fast is gone. Normal is still the starting
   speed, so the chart now opens slower than before; `?speed=` keeps its three names.
+- 2026-11-19, later (from the director and the research lead reviewing the chart): the growth chart is now called
+  **Rolling capital growth** (page tab and the Presentation builder's Add embed entry; the on-chart headline stays).
+  New: a **Rolling 7.5 years** window beside Rolling 10 years and Long term (7.5 is the middle of the firm's 6 to 9
+  year holding period; `WINDOWS`, `?mode=roll75`), and a **Yearly / Total** switch (the yearly compounding rate, or
+  the total growth over the window; `gTotal`, `?growth=total`). Total is switched off for Long term, where every
+  capital's period has a different length. **Play starts at 2007** when pressed at the end (`START_YEAR`); the years
+  from 1990 stay on the slider and Play from any other year carries on from there. Perth after 2018 was checked by
+  hand against the medians and is right: on 10 years it stays seventh or eighth until 2024 because the window still
+  holds the 2014 to 2019 fall; on 7.5 years it reaches third by 2025 while Melbourne goes from first (2019) to last.
+  Parked, waiting for the data: marking each capital by year as buying (blue), holding (yellow) or selling (red).
+  Check: `node scratch/_mc-check.mjs` (38).

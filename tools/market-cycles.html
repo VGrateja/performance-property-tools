@@ -15,8 +15,9 @@
 
      ?view=falls    the current fall in five-capital home values beside the five
                     biggest falls since 1980, each from its own peak (= 100)
-     ?view=growth   which capital's house prices have grown fastest, year by
-                    year: rolling 10 years, or since each capital's first record
+     ?view=growth   "Rolling capital growth": which capital's house prices have grown
+                    fastest, year by year: rolling 10 or 7.5 years, or since each
+                    capital's first record; as a yearly rate or the total
 
    ?embed=1 draws one chart at 1280 x 720 with no app bar, for a slide
    (Presentation > Add embed). ?theme=light|dark picks the ground; an embed is
@@ -114,7 +115,7 @@ body.embed-mode .cy{border-radius:0}
 <div class="cy-page">
   <div class="cy-tabs" role="tablist">
     <button class="cy-tab" data-view="falls" role="tab">The biggest falls</button>
-    <button class="cy-tab" data-view="growth" role="tab">Fastest-growing capital</button>
+    <button class="cy-tab" data-view="growth" role="tab">Rolling capital growth</button>
   </div>
   <div class="cy-fit" id="cyFit">
     <section class="cy" id="cy" data-ground="dark">
@@ -142,7 +143,8 @@ body.embed-mode .cy{border-radius:0}
         <h1>The fastest-growing capital keeps changing</h1>
         <p class="cy-sub" id="gSub"></p>
         <div class="cy-ctl">
-          <div class="cy-seg" id="gSeg"><button type="button" data-mode="roll" class="on">Rolling 10 years</button><button type="button" data-mode="long">Long term</button></div>
+          <div class="cy-seg" id="gSeg"><button type="button" data-mode="roll" class="on">Rolling 10 years</button><button type="button" data-mode="roll75">Rolling 7.5 years</button><button type="button" data-mode="long">Long term</button></div>
+          <div class="cy-seg" id="gMeasure" role="group" aria-label="Growth shown"><button type="button" data-total="0" class="on">Yearly</button><button type="button" data-total="1">Total</button></div>
           <button class="cy-play" id="gPlay" type="button" aria-label="Play"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="gPlayIcon" d="M4.5 3 13 8l-8.5 5Z" fill="currentColor"/></svg></button>
           <input class="cy-range" id="gRange" type="range" min="0" max="0" step="1" value="0" aria-label="Year">
           <label id="gSpeedLabel">Speed</label>
@@ -304,21 +306,30 @@ function drawFalls(){
 }
 
 /* ═════════════════════════════ view: growth ═════════════════════════════
-   Houses, 12-month median sale price. roll: the 10 years to each December. long: from the capital's first
-   median on record, once there are 8 years of it (the Suburb Scoring rule). */
-let gMode = QS.get('mode') === 'long' ? 'long' : 'roll', gFrames = [], gAt = 0, gTimer = null, gChart = null;
+   Houses, 12-month median sale price. roll / roll75: the 10 or 7.5 years to each December (7.5 is the middle of
+   the firm's 6 to 9 year holding period). long: from the capital's first median on record, once there are 8 years
+   of it (the Suburb Scoring rule). Shown as a yearly compounding rate, or as the total growth over the window;
+   total is not offered for long, where every capital's period has a different length.
+   ?mode=roll|roll75|long and ?growth=total preset them for a slide. */
+const WINDOWS = { roll: 120, roll75: 90 };   /* months */
+/* Play starts here when pressed at the end: 2007 is the last national crash before this one, the story the chart
+   is shown to tell. Earlier years stay on the slider, and Play from any other year carries on from that year. */
+const START_YEAR = 2007;
+let gMode = ['roll', 'roll75', 'long'].includes(QS.get('mode')) ? QS.get('mode') : 'roll', gFrames = [], gAt = 0, gTimer = null, gChart = null;
+let gTotal = QS.get('growth') === 'total' && gMode !== 'long';
 /* how long each year stays up when playing; ?speed=slow|normal|fast presets it for a slide.
    Fast is what Normal was (0.9 s) and Normal sits between it and Slow; the old 0.45 s was too quick to follow. */
 const SPEEDS = { slow: 2400, normal: 1500, fast: 900 };
 let gSpeed = SPEEDS[QS.get('speed')] ? QS.get('speed') : 'normal';
-function frames(mode){
+function frames(mode, total){
   const last = MONTHS[MONTHS.length - 1], med = (c, m) => { const r = S[c].H[m]; return r ? r.med12 : null; };
   const first = {}; CITIES.forEach(c => { first[c] = MONTHS.find(m => med(c, m) != null) || null; });
   const stops = []; for (let y = 1990; y < +last.slice(0, 4); y++) stops.push(y + '-12'); if (stops[stops.length - 1] !== last) stops.push(last);
+  const w = WINDOWS[mode];   /* undefined for long */
   return stops.map(m => {
     const v = {}; CITIES.forEach(c => {
-      const a = mode === 'roll' ? addM(m, -120) : first[c], n = a ? between(a, m) : 0, p0 = a ? med(c, a) : null, p1 = med(c, m);
-      v[c] = p0 && p1 && n >= (mode === 'roll' ? 120 : 96) ? Math.pow(p1 / p0, 12 / n) - 1 : null;
+      const a = w ? addM(m, -w) : first[c], n = a ? between(a, m) : 0, p0 = a ? med(c, a) : null, p1 = med(c, m);
+      v[c] = p0 && p1 && n >= (w || 96) ? (total && w ? p1 / p0 - 1 : Math.pow(p1 / p0, 12 / n) - 1) : null;
     });
     const lead = CITIES.filter(c => v[c] != null).sort((a, b) => v[b] - v[a])[0] || null;
     return { m, label: m.slice(5) === '12' ? m.slice(0, 4) : monLabel(m), v, lead };
@@ -334,7 +345,8 @@ function showFrame(i, quick){
   document.querySelectorAll('#gStrip div').forEach((d, k) => d.classList.toggle('now', k === gAt));
 }
 function drawGrowth(){
-  gFrames = frames(gMode);
+  const w = WINDOWS[gMode], total = gTotal && !!w, span = w ? (w / 12) + ' years' : '';
+  gFrames = frames(gMode, total);
   const ink = tok('--ink'), mut = tok('--mut'), grid = tok('--grid'), hi = Math.max(...gFrames.flatMap(f => Object.values(f.v).filter(x => x != null))) * 100, lo = Math.min(0, ...gFrames.flatMap(f => Object.values(f.v).filter(x => x != null))) * 100;
   const n = gFrames.length, cols = 'repeat(' + n + ',1fr)';
   $('#gStrip').style.gridTemplateColumns = cols; $('#gStripYears').style.gridTemplateColumns = cols;
@@ -342,17 +354,20 @@ function drawGrowth(){
   $('#gStrip').innerHTML = gFrames.map(f => '<div style="' + fill[f.lead] + '" title="' + f.label + ': ' + f.lead + ' ' + pct(f.v[f.lead]) + '">' + CODE[f.lead] + '</div>').join('');
   $('#gStripYears').innerHTML = gFrames.map((f, k) => '<span>' + (k === n - 1 || +f.m.slice(0, 4) % 5 === 0 ? "'" + f.m.slice(2, 4) : '') + '</span>').join('');
   $('#gRange').max = n - 1;
-  $('#gSub').textContent = gMode === 'roll' ? 'Yearly growth in house prices over the previous 10 years.' : 'Yearly growth in house prices since each capital\'s first year on record.';
-  $('#gFoot').textContent = '12-month median sale price of houses. ' + (gMode === 'roll' ? 'A capital appears once it has 10 years of sales on record.' : 'A capital appears once it has 8 years of sales on record.')
+  $('#gSub').textContent = w ? (total ? 'Total' : 'Yearly') + ' growth in house prices over the previous ' + span + '.' : 'Yearly growth in house prices since each capital\'s first year on record.';
+  $('#gFoot').textContent = '12-month median sale price of houses. A capital appears once it has ' + (w ? span : '8 years') + ' of sales on record.'
     + ' Source: Cotality. Analysis: Performance Property. © ' + new Date().getFullYear() + ' PPA Services Pty Ltd';
+  document.querySelectorAll('#gMeasure button').forEach(x => { const on = (x.dataset.total === '1') === total; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); if (x.dataset.total === '1') { x.disabled = !w; x.title = w ? '' : 'Total growth needs the same period for every capital'; } });
   if (!gChart) gChart = echarts.init($('#gChart'), null, { renderer: 'canvas' }); else gChart.resize();
+  /* a yearly rate runs to about 15%, a total to a few hundred: the axis steps and the bar figures follow */
+  const step = hi > 60 ? 50 : hi > 30 ? 10 : 3;
   gChart.setOption({
     textStyle: { fontFamily: 'Montserrat' }, grid: { left: 96, right: 70, top: 8, bottom: 26 },
-    xAxis: { type: 'value', min: Math.floor(lo), max: Math.ceil((hi + 0.5) / 3) * 3, axisLabel: { color: mut, fontSize: 11, formatter: v => v + '%', showMinLabel: lo >= 0 }, splitLine: { lineStyle: { color: grid } }, axisLine: { show: false }, axisTick: { show: false } },
+    xAxis: { type: 'value', min: total ? Math.floor(lo / 10) * 10 : Math.floor(lo), max: Math.ceil((hi + 0.5) / step) * step, axisLabel: { color: mut, fontSize: 11, formatter: v => v + '%', showMinLabel: lo >= 0 }, splitLine: { lineStyle: { color: grid } }, axisLine: { show: false }, axisTick: { show: false } },
     yAxis: { type: 'category', inverse: true, data: CITIES, animationDuration: 300, animationDurationUpdate: 500, axisLine: { show: false }, axisTick: { show: false },
       axisLabel: { color: ink, fontSize: 14, fontWeight: 600, fontFamily: 'Montserrat' } },
     series: [{ type: 'bar', realtimeSort: true, barMaxWidth: 36, data: barsFor(gFrames[gFrames.length - 1]),
-      label: { show: true, position: 'right', valueAnimation: true, color: ink, fontFamily: 'Montserrat', fontWeight: 700, fontSize: 14, formatter: p => p.data.none ? '' : p.value.toFixed(1) + '%' } }],
+      label: { show: true, position: 'right', valueAnimation: true, color: ink, fontFamily: 'Montserrat', fontWeight: 700, fontSize: 14, formatter: p => p.data.none ? '' : p.value.toFixed(total ? 0 : 1) + '%' } }],
     animationDuration: 0, animationDurationUpdate: 650, animationEasing: 'linear', animationEasingUpdate: 'linear',
   }, true);
   showFrame(n - 1, true);
@@ -361,7 +376,7 @@ function play(on){
   clearInterval(gTimer); gTimer = null;
   $('#gPlayIcon').setAttribute('d', on ? 'M4 3h3v10H4zM9 3h3v10H9z' : 'M4.5 3 13 8l-8.5 5Z'); $('#gPlay').setAttribute('aria-label', on ? 'Pause' : 'Play');
   if (!on) return;
-  if (gAt >= gFrames.length - 1) showFrame(0, true);
+  if (gAt >= gFrames.length - 1) showFrame(Math.max(0, gFrames.findIndex(f => +f.m.slice(0, 4) >= START_YEAR)), true);
   gTimer = setInterval(() => { if (gAt >= gFrames.length - 1) { play(false); return; } showFrame(gAt + 1); }, SPEEDS[gSpeed]);
 }
 /* a new speed takes effect on the next year, from where the run is, without sending it back to the start */
@@ -388,6 +403,7 @@ function paint(){
 }
 document.querySelectorAll('.cy-tab').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
 $('#gSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; gMode = b.dataset.mode; document.querySelectorAll('#gSeg button').forEach(x => x.classList.toggle('on', x === b)); play(false); drawGrowth(); });
+$('#gMeasure').addEventListener('click', e => { const b = e.target.closest('button'); if (!b || b.disabled) return; gTotal = b.dataset.total === '1'; play(false); drawGrowth(); });
 $('#gPlay').addEventListener('click', () => play(!gTimer));
 $('#gSpeed').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setSpeed(b.dataset.speed); });
 setSpeed(gSpeed);
