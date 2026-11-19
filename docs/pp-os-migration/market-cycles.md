@@ -122,3 +122,9 @@ the builder lists the two embeds and loads without an error.
   holds the 2014 to 2019 fall; on 7.5 years it reaches third by 2025 while Melbourne goes from first (2019) to last.
   Parked, waiting for the data: marking each capital by year as buying (blue), holding (yellow) or selling (red).
   Check: `node scratch/_mc-check.mjs` (38).
+- 2026-11-19, later still: **Buying tags** on Rolling capital growth. Each year, a blue "Buying" tag sits beside the
+  figure of every capital the firm was buying in (`BUYING`, `buyingIn`; tokens `--buy` / `--buyink`, a cobalt step
+  per ground), with a key on the line under the title. The years, from the research lead: Adelaide to 2021,
+  Brisbane to 2022, Perth 2019 to 2025, Melbourne and Darwin from 2025. Taken from the director's words in the
+  review, to be confirmed: Sydney in 2014, and 2015 as the first year for Adelaide and Brisbane. Hold (yellow) and
+  sell (red) are to follow when the years are known; they go in the same place. Check: `node scratch/_mc-check.mjs` (40).
