@@ -4143,7 +4143,8 @@
 <div class="pres-dl-menu" id="pres-dl-menu" role="menu" aria-label="Download format">
   <button type="button" data-fmt="pdf" role="menuitem">PDF document<span class="pdm-sub">One file, every page</span></button>
   <button type="button" data-fmt="pdf-fresh" role="menuitem" hidden>PDF — fresh render<span class="pdm-sub">Ignore the pre-rendered copy (~1s per page)</span></button>
-  <button type="button" data-fmt="pptx" role="menuitem">PowerPoint (.pptx)<span class="pdm-sub">One image slide per page</span></button>
+  <button type="button" data-fmt="pptx" role="menuitem">PowerPoint (.pptx)<span class="pdm-sub">One image per page, exact look</span></button>
+  <button type="button" data-fmt="pptx-edit" role="menuitem">PowerPoint, editable (.pptx)<span class="pdm-sub">Text, shapes and tables stay editable</span></button>
   <button type="button" data-fmt="jpg" role="menuitem">JPG images (.zip)<span class="pdm-sub">One picture per page</span></button>
 </div>
 
@@ -22519,6 +22520,716 @@ async function downloadDeck(format, opts) {
     _presExportBusy = false;
   }
 }
+
+/* ── PPTX, EDITABLE (Van 2026-11-19) ─────────────────────────────────────────
+   The second PowerPoint download. Built from the deck's DATA (overlays + slide
+   backgrounds), not from screenshots, so text, shapes, tables, pictures and
+   links stay editable in PowerPoint. The image PPTX above is untouched and is
+   still the only download guaranteed to look identical to the builder.
+
+   Kept as pictures, because PowerPoint has no native equivalent: charts and
+   live-tool embeds (a still of that ELEMENT only), gradient shapes, gradient /
+   image slide backgrounds, and the base of a page drawn by a layout function
+   (any slide whose fn is not 'blank' — its overlays still go on top natively).
+
+   Library: PptxGenJS 3.12.0 from jsDelivr (cdnjs does not carry it), loaded on
+   demand. Its bundle carries JSZip and sets window.JSZip; the image exports
+   only fetch the cdnjs JSZip when window.JSZip is missing, and both are JSZip
+   3.x, so the two downloads work in either order in one session.
+   Feature note: docs/pp-os-migration/presentation-editable-pptx.md */
+const PRES_PPTXGEN_SRC = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
+const PRES_PPTXGEN_SRI = 'sha384-Cck14aA9cifjYolcnjebXRfWGkz5ltHMBiG4px/j8GS+xQcb7OhNQWZYyWjQ+UwQ';
+const _PX_FONT = 'Montserrat';
+const _pxIn = v => (+v || 0) / 96;                                  /* slide px -> inches (1280px = 13.333in) */
+const _pxPt = v => Math.round((+v || 0) * 0.75 * 100) / 100;       /* px -> pt */
+
+/* Any CSS colour -> { hex:'RRGGBB', alpha } via the canvas parser; null for
+   none / transparent / not a colour. */
+let _pxColorCtx = null;
+function _pxColor(css) {
+  if (css == null) return null;
+  const s = String(css).trim();
+  if (!s || s === 'none' || s === 'transparent') return null;
+  if (!_pxColorCtx) _pxColorCtx = document.createElement('canvas').getContext('2d');
+  const c = _pxColorCtx;
+  c.fillStyle = '#000000'; c.fillStyle = s; const a = c.fillStyle;
+  c.fillStyle = '#ffffff'; c.fillStyle = s; const b = c.fillStyle;
+  if (a !== b) return null;                     /* the browser rejected it: not a colour */
+  let m = /^#([0-9a-f]{6})$/i.exec(a);
+  if (m) return { hex: m[1].toUpperCase(), alpha: 1 };
+  m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(a);
+  if (!m) return null;
+  const al = m[4] != null ? +m[4] : 1;
+  if (!(al > 0)) return null;
+  const hx = n => ('0' + (+n).toString(16)).slice(-2);
+  return { hex: (hx(m[1]) + hx(m[2]) + hx(m[3])).toUpperCase(), alpha: al };
+}
+const _pxTransp = c => (c && c.alpha < 1) ? Math.round((1 - c.alpha) * 100) : 0;
+
+const _PX_KW_SIZE = { 'xx-small': 9, 'x-small': 10, small: 13, medium: 16, large: 18, 'x-large': 24, 'xx-large': 32, 'xxx-large': 48 };
+function _pxLen(v, emPx) {
+  v = String(v || '').trim().toLowerCase();
+  if (!v) return null;
+  if (_PX_KW_SIZE[v]) return _PX_KW_SIZE[v];
+  const m = /^(-?[\d.]+)(px|pt|em|rem|%)?$/.exec(v);
+  if (!m) return null;
+  const n = +m[1];
+  if (m[2] === 'pt') return n / 0.75;
+  if (m[2] === 'em') return n * emPx;
+  if (m[2] === 'rem') return n * 16;
+  if (m[2] === '%') return n / 100 * emPx;
+  return n;
+}
+function _pxFontFace(ff) {
+  const f = String(ff || '').split(',')[0].replace(/["']/g, '').trim();
+  return (f && !/^(inherit|initial|sans-serif|serif|system-ui|monospace)$/i.test(f)) ? f : _PX_FONT;
+}
+
+/* A web link, or #slide:<sid> as a jump to that slide's number. */
+function _pxLink(href, sidIdx) {
+  href = String(href || '').trim();
+  if (!href) return null;
+  if (_isSlideHref(href)) {
+    const n = sidIdx[href.slice(SLIDE_HREF_PREFIX.length)];
+    return n ? { slide: n } : null;
+  }
+  if (/^(https?:|mailto:|tel:)/i.test(href)) return { url: href };
+  try { return { url: new URL(href, location.href).href }; } catch (_) { return null; }
+}
+
+/* Inline formatting an element adds on top of what it inherits. */
+function _pxInlineStyle(el, st) {
+  const t = el.tagName.toLowerCase();
+  const s = Object.assign({}, st);
+  if (t === 'b' || t === 'strong') s.weight = 700;
+  if (t === 'i' || t === 'em') s.italic = true;
+  if (t === 'u' || t === 'ins') s.underline = true;
+  if (t === 's' || t === 'strike' || t === 'del') s.strike = true;
+  if (t === 'sup') s.baseline = 'sup';
+  if (t === 'sub') s.baseline = 'sub';
+  /* links inherit the text colour and are underlined unless the box says
+     "no underline" (the data-deco="none" rule) */
+  if (t === 'a' && el.getAttribute('href')) { s.href = el.getAttribute('href'); if (!st.noLinkUnderline) s.underline = true; }
+  if (t === 'font' && el.getAttribute('color')) s.color = el.getAttribute('color');
+  if (t === 'font' && el.getAttribute('face')) s.font = el.getAttribute('face');
+  const cs = el.style;
+  if (cs) {
+    if (cs.fontSize) { const v = _pxLen(cs.fontSize, st.size); if (v) s.size = v; }
+    if (cs.fontWeight) s.weight = /^bold/.test(cs.fontWeight) ? 700 : /^(normal|lighter)$/.test(cs.fontWeight) ? 400 : (+cs.fontWeight || s.weight);
+    if (cs.fontStyle) s.italic = /italic|oblique/.test(cs.fontStyle);
+    const deco = cs.textDecorationLine || cs.textDecoration || '';
+    if (/underline/.test(deco)) s.underline = true;
+    if (/line-through/.test(deco)) s.strike = true;
+    if (cs.color) s.color = cs.color;
+    if (cs.letterSpacing) { const v = cs.letterSpacing === 'normal' ? 0 : _pxLen(cs.letterSpacing, s.size); if (v != null) s.ls = v; }
+    if (cs.fontFamily) s.font = cs.fontFamily;
+    if (cs.backgroundColor) s.highlight = cs.backgroundColor;
+    if (cs.verticalAlign === 'super') s.baseline = 'sup';
+    else if (cs.verticalAlign === 'sub') s.baseline = 'sub';
+  }
+  return s;
+}
+
+/* Overlay html -> paragraphs of styled pieces. Block elements (div, p, li)
+   start paragraphs, <br> and newlines (the box is white-space:pre-wrap) are
+   line breaks inside one, lists carry their kind and depth. */
+function _pxHtmlParas(html, base, align) {
+  const doc = new DOMParser().parseFromString('<body>' + (html || '') + '</body>', 'text/html');
+  const paras = [];
+  let cur = null;
+  const open = (st, list, al) => { cur = { items: [], st: st, list: list, align: al }; paras.push(cur); };
+  const walk = (node, st, list, al) => {
+    Array.prototype.forEach.call(node.childNodes, ch => {
+      if (ch.nodeType === 3) {
+        const txt = ch.nodeValue || '';
+        if (!txt) return;
+        if (/^(UL|OL)$/.test((ch.parentNode && ch.parentNode.tagName) || '') && !txt.trim()) return;
+        txt.split(/\r\n|\r|\n/).forEach((part, k) => {
+          if (!cur) open(st, list, al);
+          if (k > 0) cur.items.push({ br: true, st: st });
+          if (part) cur.items.push({ text: part, st: st });
+        });
+        return;
+      }
+      if (ch.nodeType !== 1) return;
+      const tag = ch.tagName.toLowerCase();
+      if (tag === 'br') { if (!cur) open(st, list, al); cur.items.push({ br: true, st: st }); return; }
+      if (/^(script|style|img|svg|canvas|iframe|video)$/.test(tag)) return;
+      const s2 = _pxInlineStyle(ch, st);
+      const al2 = (ch.style && ch.style.textAlign) || ch.getAttribute('align') || al;
+      if (tag === 'ul' || tag === 'ol') {
+        const kind = tag === 'ol' ? 'ol' : (ch.classList.contains('pres-list-dash') ? 'dash' : 'ul');
+        const depth = list ? list.level + 1 : 0;
+        const sameDepth = list && list.kind === kind ? list.sameDepth + 1 : 0;
+        cur = null;
+        walk(ch, s2, { kind: kind, level: depth, sameDepth: sameDepth }, al2);
+        cur = null;
+        return;
+      }
+      if (tag === 'li') { open(s2, list, al2); walk(ch, s2, list, al2); cur = null; return; }
+      if (/^(div|p|h[1-6]|blockquote|section|article|header|footer|pre)$/.test(tag)) {
+        if (cur && cur.items.length) cur = null;      /* an empty paragraph (a fresh <li>) is reused */
+        if (cur) cur.align = al2;
+        walk(ch, s2, list, al2);
+        cur = null;
+        return;
+      }
+      walk(ch, s2, list, al2);
+    });
+  };
+  walk(doc.body, base, null, align);
+  return paras;
+}
+
+function _pxRunOpts(st, para, sidIdx) {
+  const c = _pxColor(st.color) || { hex: '0A1520', alpha: 1 };
+  const o = {
+    fontFace: _pxFontFace(st.font), fontSize: _pxPt(st.size),
+    bold: (+st.weight || 400) >= 600, italic: !!st.italic,
+    color: c.hex, align: para.align, bullet: para.bullet,
+  };
+  if (c.alpha < 1) o.transparency = _pxTransp(c);
+  if (st.underline) o.underline = { style: 'sng' };
+  if (st.strike) o.strike = 'sngStrike';
+  if (st.ls) o.charSpacing = _pxPt(st.ls);
+  if (st.baseline === 'sup') o.superscript = true;
+  else if (st.baseline === 'sub') o.subscript = true;
+  const hl = _pxColor(st.highlight);
+  if (hl) o.highlight = hl.hex;
+  if (st.href) {
+    const h = _pxLink(st.href, sidIdx);
+    if (h) { o.hyperlink = h; if (!st.underline) o.underline = { style: 'none' }; }
+  }
+  if (para.lineSpacing) o.lineSpacing = para.lineSpacing;
+  if (para.indentLevel) o.indentLevel = para.indentLevel;
+  return o;
+}
+
+/* Paragraphs -> PptxGenJS text runs. Every run carries its paragraph's
+   align/bullet/spacing: PptxGenJS starts a new paragraph when align changes
+   or when a run has a bullet and no align, so with align on every run only
+   breakLine ends a paragraph (the export's tidy pass then keeps one <a:pPr>
+   per paragraph). Line height becomes EXACT spacing — CSS line-height x the
+   largest size in the paragraph, which is what the browser's line box is. */
+const _PX_UL_CHARS = ['2022', '25E6', '25AA'];                 /* disc, circle, square — the browser's nesting order */
+const _PX_OL_STYLES = ['arabicPeriod', 'alphaLcPeriod', 'romanLcPeriod'];
+function _pxRuns(paras, base, lh, sidIdx) {
+  const out = [];
+  paras.forEach(p => {
+    const items = p.items.slice();
+    /* a trailing <br> in a block adds no line (unless the block is only breaks) */
+    if (items.length && items[items.length - 1].br && items.some(x => !x.br)) items.pop();
+    const maxPx = items.reduce((m, x) => Math.max(m, x.text ? (+x.st.size || 0) : 0), 0) || +p.st.size || base.size;
+    const para = { align: p.align || 'left', bullet: false, lineSpacing: lh ? Math.round(lh * maxPx * 0.75 * 100) / 100 : null, indentLevel: 0 };
+    if (p.list) {
+      const ind = _pxPt(2.4 * base.size);       /* ul/ol margin 1.2em + padding 1.2em */
+      para.indentLevel = p.list.level;
+      if (p.list.kind === 'ol') para.bullet = { type: 'number', style: _PX_OL_STYLES[Math.min(2, p.list.sameDepth)], indent: ind };
+      else if (p.list.kind === 'dash') para.bullet = { characterCode: '2013', indent: ind };
+      else para.bullet = { characterCode: _PX_UL_CHARS[Math.min(2, p.list.sameDepth)], indent: ind };
+    }
+    let n = 0, br = 0, lastSt = p.st;
+    const push = (text, st, soft) => {
+      const ro = _pxRunOpts(st, para, sidIdx);
+      if (soft) ro.softBreakBefore = true;
+      out.push({ text: text, options: ro });
+      n++;
+    };
+    items.forEach(x => {
+      lastSt = x.st;
+      if (x.br) { br++; return; }
+      if (br && !n) push('', x.st, false);
+      while (br > 1) { push('', x.st, true); br--; }
+      push(x.text, x.st, br === 1 && n > 0);
+      br = 0;
+    });
+    if (br && !n) { push('', lastSt, false); br--; }
+    while (br > 0) { push('', lastSt, true); br--; }
+    if (!n) push('', p.st, false);              /* an empty block is an empty line */
+    out[out.length - 1].options.breakLine = true;
+  });
+  if (!out.length) out.push({ text: '', options: _pxRunOpts(base, { align: 'left', bullet: false }, sidIdx) });
+  return out;
+}
+
+/* An SVG string -> PNG data URL at k x its size. */
+function _pxSvgPng(svg, w, h, k) {
+  return new Promise(res => {
+    const im = new Image();
+    im.onload = () => {
+      try {
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(w * k)); cv.height = Math.max(1, Math.round(h * k));
+        cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height);
+        res(cv.toDataURL('image/png'));
+      } catch (_) { res(null); }
+    };
+    im.onerror = () => res(null);
+    setTimeout(() => res(null), 5000);
+    im.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  });
+}
+function _pxLoadImg(url) {
+  return new Promise(res => {
+    const im = new Image();
+    im.onload = () => res(im); im.onerror = () => res(null);
+    setTimeout(() => res(null), 15000);
+    im.src = url;
+  });
+}
+function _pxBlobData(blob) {
+  return new Promise(res => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result); fr.onerror = () => res(null);
+    fr.readAsDataURL(blob);
+  });
+}
+/* Where object-fit + object-position put the picture inside its box. */
+function _pxFitRect(nw, nh, bw, bh, fit, pos) {
+  if (fit === 'fill' || !nw || !nh) return { x: 0, y: 0, w: bw, h: bh };
+  let k = (fit === 'cover') ? Math.max(bw / nw, bh / nh) : (fit === 'none') ? 1 : Math.min(bw / nw, bh / nh);
+  if (fit === 'scale-down') k = Math.min(1, Math.min(bw / nw, bh / nh));
+  const w = nw * k, h = nh * k;
+  const p = String(pos || '50% 50%').split(/\s+/);
+  const px = parseFloat(p[0]), py = parseFloat(p[1] != null ? p[1] : p[0]);
+  return { x: (bw - w) * ((isNaN(px) ? 50 : px) / 100), y: (bh - h) * ((isNaN(py) ? 50 : py) / 100), w: w, h: h };
+}
+
+/* Image overlay -> { data, rect } in slide px. Fetched the way the builder
+   resolves it (clock image / signed Storage URL / src relative to this page).
+   A plain picture is embedded as is, placed where object-fit puts it; a crop,
+   a radius or a cover fit is drawn to a canvas exactly as the builder shows
+   it and that is embedded at the box. */
+async function _pxImage(o) {
+  let url = null;
+  try {
+    if (o.clockImage) url = await _getClockImageUrl();
+    else if (o.storage) url = await _getSignedImageUrl(o.storage);
+    else if (o.src) url = o.src;
+  } catch (_) { url = null; }
+  if (!url) return null;
+  let blob;
+  try { const r = await fetch(url); if (!r.ok) return null; blob = await r.blob(); } catch (_) { return null; }
+  const objUrl = URL.createObjectURL(blob);
+  try {
+    const im = await _pxLoadImg(objUrl);
+    if (!im || !im.naturalWidth) return null;
+    const nw = im.naturalWidth, nh = im.naturalHeight;
+    const cl = +o.cropFracL || 0, cr = +o.cropFracR || 0, ct = +o.cropFracT || 0, cb = +o.cropFracB || 0;
+    const crop = !!(cl || cr || ct || cb);
+    const rad = (Number.isFinite(+o.radius) && +o.radius > 0) ? +o.radius : 0;
+    const fit = o.clockImage ? 'contain' : (o.objectFit || 'contain');
+    if (!crop && !rad && fit !== 'cover' && /^image\/(png|jpeg|gif)$/.test(blob.type)) {
+      const r = _pxFitRect(nw, nh, o.w, o.h, fit, o.objectPos);
+      const data = await _pxBlobData(blob);
+      return data ? { data: data, rect: { x: o.x + r.x, y: o.y + r.y, w: r.w, h: r.h } } : null;
+    }
+    const S = Math.max(1, Math.min(3, 4000 / Math.max(o.w, o.h, 1)));
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.round(o.w * S)); cv.height = Math.max(1, Math.round(o.h * S));
+    const ctx = cv.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    if (rad && ctx.roundRect) { ctx.beginPath(); ctx.roundRect(0, 0, cv.width, cv.height, rad * S); ctx.clip(); }
+    if (crop) {
+      const vw = Math.max(0.02, 1 - cl - cr), vh = Math.max(0.02, 1 - ct - cb);
+      ctx.drawImage(im, cl * nw, ct * nh, vw * nw, vh * nh, 0, 0, cv.width, cv.height);
+    } else {
+      const r = _pxFitRect(nw, nh, o.w, o.h, fit, o.objectPos);
+      ctx.drawImage(im, r.x * S, r.y * S, r.w * S, r.h * S);
+    }
+    const opaque = !rad && (crop || fit === 'cover' || fit === 'fill') && blob.type === 'image/jpeg';
+    return { data: opaque ? cv.toDataURL('image/jpeg', 0.92) : cv.toDataURL('image/png'), rect: { x: o.x, y: o.y, w: o.w, h: o.h } };
+  } finally { URL.revokeObjectURL(objUrl); }
+}
+
+/* html2canvas the live slide with some of it hidden (same options as the image
+   export). Used for a layout page's base and for a single chart/other element. */
+async function _pxShootSlide(slideEl, hideCss, bg) {
+  const st = document.createElement('style');
+  st.textContent = hideCss;
+  document.head.appendChild(st);
+  const undo = _presFlattenImages(slideEl);
+  try {
+    return await window.html2canvas(slideEl, {
+      scale: PRES_EXPORT_SCALE, useCORS: true, logging: false, backgroundColor: bg,
+      width: 1280, height: 720, windowWidth: 1280, windowHeight: 720,
+    });
+  } finally { undo(); st.remove(); }
+}
+async function _pxShootBase(slideEl) {
+  const cv = await _pxShootSlide(slideEl, '#pres-slide .pres-overlay, #pres-slide .pres-connector-layer{ visibility:hidden !important; }', '#ffffff');
+  const png = cv.toDataURL('image/png');
+  return (png.length * 0.75 <= PRES_EXPORT_PNG_MAX) ? png : cv.toDataURL('image/jpeg', PRES_EXPORT_JPEG_Q);
+}
+async function _pxShootElement(slideEl, o) {
+  const sel = '.pres-overlay[data-id="' + CSS.escape(String(o.id)) + '"]';
+  if (!slideEl.querySelector(sel)) return null;
+  const cv = await _pxShootSlide(slideEl,
+    '#pres-slide > *:not(' + sel + '){ visibility:hidden !important; } #pres-slide{ background:transparent !important; box-shadow:none !important; }', null);
+  const k = PRES_EXPORT_SCALE;
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, Math.round(o.w * k)); out.height = Math.max(1, Math.round(o.h * k));
+  out.getContext('2d').drawImage(cv, Math.round(o.x * k), Math.round(o.y * k), out.width, out.height, 0, 0, out.width, out.height);
+  return out.toDataURL('image/png');
+}
+/* A still of a live-tool embed, contained in its box on white the way the image
+   export covers it. Runway v Demand uses the B/S still (Houses view). */
+async function _pxShootEmbed(slideEl, o) {
+  let src = null;
+  try {
+    const rvd = _presRvdEmbed(o);
+    if (rvd && window.PP_BSS && window.PP_BSS.rvdShot) {
+      const shot = await window.PP_BSS.rvdShot({ wg: rvd.wg, view: 'house' });
+      src = shot && shot.src;
+    }
+    if (!src) {
+      const host = slideEl.querySelector('.pres-overlay[data-id="' + CSS.escape(String(o.id)) + '"]');
+      const fr = host && host.querySelector('iframe');
+      src = fr ? await _presShootIframe(fr) : null;
+    }
+  } catch (_) { src = null; }
+  if (!src) return null;
+  const im = await _pxLoadImg(src);
+  if (!im || !im.naturalWidth) return null;
+  const k = 2;
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(o.w * k)); cv.height = Math.max(1, Math.round(o.h * k));
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  const r = _pxFitRect(im.naturalWidth, im.naturalHeight, cv.width, cv.height, 'contain');
+  ctx.drawImage(im, r.x, r.y, r.w, r.h);
+  return cv.toDataURL('image/jpeg', PRES_EXPORT_JPEG_Q);
+}
+
+function _pxAddText(slide, o, sidIdx) {
+  const size = +o.fontSize || 24;
+  const base = {
+    size: size, weight: _tpWeight(o), italic: !!o.italic, underline: o.underline === 'underline', strike: !!o.strike,
+    color: o.color || '#0a1520', font: o.fontFamily || _PX_FONT, noLinkUnderline: o.underline === 'none',
+  };
+  const paras = _pxHtmlParas(presResolveTokens(o.html != null ? o.html : ''), base, o.align || 'left');
+  const runs = _pxRuns(paras, base, +o.lineHeight || 1.4, sidIdx);
+  const bg = _pxColor(o.bgColor);
+  if (!bg && !runs.some(r => r.text && r.text.trim())) return;
+  const opts = {
+    x: _pxIn(o.x), y: _pxIn(o.y), w: _pxIn(o.w), h: _pxIn(o.h),
+    margin: [_pxPt(10), _pxPt(10), _pxPt(6), _pxPt(6)],          /* PptxGenJS order: left, right, bottom, top — the box's 6px 10px padding */
+    valign: o.valign === 'middle' ? 'middle' : o.valign === 'bottom' ? 'bottom' : 'top',
+    fit: 'none', wrap: true, isTextBox: true, objectName: 'pp-' + o.id,
+    fontFace: _pxFontFace(base.font), fontSize: _pxPt(size),
+  };
+  if (bg) opts.fill = { color: bg.hex, transparency: _pxTransp(bg) };
+  slide.addText(runs, opts);
+}
+
+/* Shape overlay -> nearest native preset. False when it must be a picture
+   (a gradient fill or outline: PptxGenJS has no gradient fill). */
+function _pxAddShape(slide, o, sidIdx) {
+  const fill = _psNormColor(o.fill), stroke = _psNormColor(o.stroke);
+  if (fill.type === 'gradient' || stroke.type === 'gradient') return false;
+  const w = Math.max(2, +o.w || 2), h = Math.max(2, +o.h || 2);
+  const sw = (o.strokeWidth != null ? Math.max(0, +o.strokeWidth) : 2);
+  const lineish = (o.kind === 'line' || o.kind === 'arrow');
+  const sc = stroke.type === 'solid' ? _pxColor(stroke.color) : null;
+  let dash = 'solid';
+  if (o.dash) { const d = parseFloat(String(o.dash)) || 0; dash = d <= Math.max(2, sw * 1.5) ? 'sysDot' : 'dash'; }
+  const line = (sc && sw > 0) ? { color: sc.hex, width: _pxPt(sw), dashType: dash, transparency: _pxTransp(sc) } : { type: 'none' };
+  const opts = { x: _pxIn(o.x), y: _pxIn(o.y), w: _pxIn(w), h: _pxIn(h), line: line, objectName: 'pp-' + o.id };
+  const fc = (!lineish && fill.type === 'solid') ? _pxColor(fill.color) : null;
+  if (fc) opts.fill = { color: fc.hex, transparency: _pxTransp(fc) };
+  const link = o.link ? _pxLink(o.link, sidIdx) : null;
+  if (link) {
+    opts.hyperlink = link;
+    /* a transparent hotspot stays invisible but clickable over its whole box */
+    if (!opts.fill) opts.fill = { color: 'FFFFFF', transparency: 100 };
+  }
+  let prst;
+  switch (o.kind) {
+    case 'rect': {
+      const rad = (o.radius != null && Number.isFinite(+o.radius)) ? Math.max(0, +o.radius) : 6;
+      const rx = Math.min(rad, w / 2, h / 2);
+      if (rx > 0) { prst = 'roundRect'; opts.rectRadius = _pxIn(rx); } else prst = 'rect';
+      break;
+    }
+    case 'rectSharp': prst = 'rect'; break;
+    case 'ellipse': prst = 'ellipse'; break;
+    case 'star': prst = 'star5'; break;
+    case 'heart': prst = 'heart'; break;
+    case 'triangle': prst = 'triangle'; break;
+    case 'triangleDown': prst = 'triangle'; opts.flipV = true; break;
+    case 'parallelogram': {
+      /* the builder leans by slant x WIDTH; PowerPoint's adj is a fraction of the
+         SHORT side. rectRadius is what PptxGenJS writes as the preset's "adj"
+         guide (inches -> adj = r / short side), so it sets the lean exactly. */
+      const sl = (o.slant != null && Number.isFinite(+o.slant)) ? Math.max(0, Math.min(0.95, +o.slant)) : 0.25;
+      prst = 'parallelogram';
+      if (sl > 0) opts.rectRadius = _pxIn(sl * w);
+      break;
+    }
+    case 'line':
+    case 'arrow':
+      prst = 'line';
+      opts.y = _pxIn(o.y + h / 2); opts.h = 0; delete opts.fill;
+      if (o.kind === 'arrow' && line.type !== 'none') line.endArrowType = 'triangle';
+      break;
+    default: return true;                       /* the builder draws nothing for an unknown kind */
+  }
+  slide.addShape(prst, opts);
+  return true;
+}
+/* The shape exactly as the builder draws it (its own SVG), as a picture.
+   The SVG reaches pad px past the box (centred stroke), so the picture does too. */
+async function _pxShapePicture(slide, o) {
+  const w = Math.max(2, +o.w || 2), h = Math.max(2, +o.h || 2);
+  const sw = (o.strokeWidth != null ? Math.max(0, +o.strokeWidth) : 2);
+  const pad = Math.ceil(sw / 2) + 1;
+  const svg = shapeSVG(o)
+    .replace(/^<svg width="100%" height="100%"/, '<svg xmlns="http://www.w3.org/2000/svg" width="' + (w + 2 * pad) + '" height="' + (h + 2 * pad) + '"')
+    .replace(/ style="[^"]*"/, '')
+    .replace(/ vector-effect="non-scaling-stroke"/g, '');
+  const png = await _pxSvgPng(svg, w + 2 * pad, h + 2 * pad, PRES_EXPORT_SCALE);
+  if (!png) return false;
+  slide.addImage({ data: png, x: _pxIn(o.x - pad), y: _pxIn(o.y - pad), w: _pxIn(w + 2 * pad), h: _pxIn(h + 2 * pad), objectName: 'pp-' + o.id });
+  return true;
+}
+/* Table overlay -> native table: column widths, row heights, cell html as runs,
+   fills, borders (table-wide then per-side), padding, merges. The overlay box
+   carries 6px of padding around the table. */
+function _pxAddTable(slide, o, sidIdx) {
+  const pad = (_tableCellPad(o, null) || '6px 10px 6px 10px');
+  const defBw = typeof o.borderWidth === 'number' ? o.borderWidth : 1;
+  const defBc = (o.borderColor || typeof o.borderWidth === 'number') ? (o.borderColor || '#5a6478') : '#5a6478';
+  const border = (wpx, col) => {
+    const c = _pxColor(col);
+    return (wpx > 0 && c) ? { type: 'solid', pt: _pxPt(wpx), color: c.hex } : { type: 'none' };
+  };
+  const rows = (o.cells || []).map(row => (row || []).filter(cell => cell && !cell._hidden).map(cell => {
+    const size = +cell.fontSize || 18;
+    const base = { size: size, weight: 400, color: cell.textColor || '#0a1520', font: cell.fontFamily || _PX_FONT };
+    const runs = _pxRuns(_pxHtmlParas(presResolveTokens(cell.html || ''), base, cell.align || 'left'), base, cell.lineHeight ? +cell.lineHeight : null, sidIdx);
+    const p = (_tableCellPad(o, cell) || pad).split(/\s+/).map(v => parseFloat(v) || 0);
+    while (p.length < 4) p.push(p[p.length === 3 ? 1 : 0]);
+    const sides = [defBw, defBw, defBw, defBw].map(wpx => border(wpx, defBc));
+    if (cell.borders && typeof cell.borders === 'object') {
+      ['t', 'r', 'b', 'l'].forEach((k, i) => {
+        const v = cell.borders[k];
+        if (Array.isArray(v) && v.length >= 2 && Number.isFinite(+v[0])) sides[i] = border(Math.min(20, +v[0]), v[1]);
+      });
+    }
+    const opts = {
+      margin: p.map(v => v / 96),                   /* inches, [top, right, bottom, left] (values under 1 are read as inches) */
+      valign: cell.vAlign === 'middle' ? 'middle' : cell.vAlign === 'bottom' ? 'bottom' : 'top',
+      border: sides, fontFace: _pxFontFace(base.font), fontSize: _pxPt(size),
+    };
+    const bg = _pxColor(cell.bgColor || '#ffffff');
+    if (bg) opts.fill = { color: bg.hex, transparency: _pxTransp(bg) };
+    if ((cell.colspan || 1) > 1) opts.colspan = cell.colspan;
+    if ((cell.rowspan || 1) > 1) opts.rowspan = cell.rowspan;
+    return { text: runs, options: opts };
+  }));
+  if (!rows.length || !rows[0].length) return;
+  slide.addTable(rows, {
+    x: _pxIn(o.x + 6), y: _pxIn(o.y + 6), w: _pxIn(_tableSumW(o)),
+    colW: (o.cols || []).map(c => _pxIn(c.w)), rowH: (o.rows || []).map(r => _pxIn(r.h)),
+    objectName: 'pp-' + o.id,
+  });
+}
+/* Connector -> one native line per segment of its elbow path, read from the
+   same geometry the builder draws (_connGeometry). The builder draws no
+   arrowhead on connectors, so none is added. */
+function _pxAddConnector(slide, c, byId) {
+  const f = byId[c.fromId], t = byId[c.toId];
+  if (!f || !t) return;
+  const nums = (_connGeometry(f, t, c).d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  const col = _pxColor(c.color || '#9299a3') || { hex: '9299A3', alpha: 1 };
+  for (let i = 2; i + 1 < nums.length; i += 2) {
+    const ax = nums[i - 2], ay = nums[i - 1], bx = nums[i], by = nums[i + 1];
+    if (ax === bx && ay === by) continue;
+    slide.addShape('line', {
+      x: _pxIn(Math.min(ax, bx)), y: _pxIn(Math.min(ay, by)), w: _pxIn(Math.abs(bx - ax)), h: _pxIn(Math.abs(by - ay)),
+      flipH: bx < ax, flipV: by < ay,
+      line: { color: col.hex, width: _pxPt(c.width || 2) }, objectName: 'pp-' + c.id + '-' + (i / 2),
+    });
+  }
+}
+function _pxPlaceholder(slide, o) {
+  slide.addText('Live tool: ' + (o.title || 'embed') + ' (open the deck in the hub to see it)', {
+    x: _pxIn(o.x), y: _pxIn(o.y), w: _pxIn(o.w), h: _pxIn(o.h), shape: 'rect',
+    fill: { color: 'F6F8FB' }, line: { color: '9299A3', width: 1, dashType: 'dash' },
+    align: 'center', valign: 'middle', fontFace: _PX_FONT, fontSize: 12, color: '5A6B7B', objectName: 'pp-' + o.id,
+  });
+}
+
+/* PptxGenJS writes an <a:pPr> for EVERY run, so a paragraph with several runs
+   carries several — schema-invalid. Keep the first in each paragraph, and give
+   every shape on a slide its own id (tables reuse ids). */
+async function _pxTidyPptx(pptx) {
+  const buf = await pptx.write({ outputType: 'arraybuffer' });
+  const zip = await window.JSZip.loadAsync(buf);
+  const names = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n));
+  for (let i = 0; i < names.length; i++) {
+    let xml = await zip.file(names[i]).async('string');
+    xml = xml.replace(/<a:p>([\s\S]*?)<\/a:p>/g, (all, inner) => {
+      let seen = false;
+      return '<a:p>' + inner.replace(/<a:pPr\b[^>]*\/>|<a:pPr\b[^>]*>[\s\S]*?<\/a:pPr>/g, m => { if (seen) return ''; seen = true; return m; }) + '</a:p>';
+    });
+    let id = 0;
+    xml = xml.replace(/<p:cNvPr id="\d+"/g, () => '<p:cNvPr id="' + (++id) + '"');
+    zip.file(names[i], xml);
+  }
+  return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    compression: 'DEFLATE', compressionOptions: { level: 4 } });
+}
+
+function _pxSummary(n, cnt) {
+  const kinds = [['chart', 'chart', 'charts'], ['embed', 'live tool', 'live tools'], ['shape', 'gradient shape', 'gradient shapes'],
+    ['bg', 'slide background', 'slide backgrounds'], ['page', 'page layout', 'page layouts'], ['other', 'other item', 'other items']];
+  const parts = [];
+  let total = 0;
+  kinds.forEach(k => { const v = cnt[k[0]] || 0; if (v) { parts.push(v + ' ' + (v === 1 ? k[1] : k[2])); total += v; } });
+  let msg = 'Downloaded ' + n + ' slide' + (n === 1 ? '' : 's') + ' as an editable PowerPoint.';
+  if (parts.length) {
+    const list = parts.length === 1 ? parts[0] : parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
+    msg += ' ' + list + (total === 1 ? ' was kept as a picture.' : ' were kept as pictures.');
+  }
+  if (cnt.placeholder) msg += ' ' + cnt.placeholder + ' live tool' + (cnt.placeholder === 1 ? ' could not be captured and is a labelled box.' : 's could not be captured and are labelled boxes.');
+  return msg;
+}
+
+async function downloadDeckEditable() {
+  if (_presExportBusy) return;
+  if (!_activeDeck || !(_activeDeck.slides || []).length) {
+    showPresToast('This deck has no pages to download yet.', { warn: true });
+    return;
+  }
+  window.__presDownloadSource = 'live';
+  _presExportBusy = true;
+  const btn = document.getElementById('pres-download');
+  if (btn) btn.disabled = true;
+  const slideIdxWas = _slideIdx;
+  const editWas = !!_editMode;
+  const zoomWas = document.documentElement.style.zoom;
+  document.body.classList.add('pres-exporting');
+  _presExportProgress('Preparing…', '', 0);
+  try {
+    await Promise.all([_presExportLibs('pptx-edit'), window.PptxGenJS ? null : _presLoadScript(PRES_PPTXGEN_SRC, PRES_PPTXGEN_SRI)]);
+    if (_presOpenRefresh) {
+      _presExportProgress('Preparing…', 'Refreshing chart data', 0.005);
+      await Promise.race([_presOpenRefresh, new Promise(function (r) { setTimeout(r, 20000); })]);
+    }
+    if (editWas) { try { setEditMode(false); } catch (_) {} }
+    document.documentElement.style.zoom = '1';
+    try { if (window.PresentChart && window.PresentChart.setExporting) window.PresentChart.setExporting(true); } catch (_) {}
+    try { await document.fonts.ready; } catch (_) {}
+    _presExportProgress('Preparing…', 'Loading images', 0.01);
+    try { await _presPreloadImages(); } catch (_) {}
+
+    const deck = _activeDeck;
+    const slides = deck.slides;
+    const total = slides.length;
+    const sidIdx = {};
+    slides.forEach(function (s, i) { if (s && s.sid) sidIdx[s.sid] = i + 1; });
+    /* data tokens resolve from Forge; load them once so text exports as shown */
+    const hasTok = Object.keys(_overlays).some(function (k) {
+      return k.indexOf(deck.id + '/') === 0 && (_overlays[k] || []).some(function (o) {
+        return (o.type === 'text' && _tokHas(o.html)) || (o.type === 'table' && (o.cells || []).some(function (r) { return (r || []).some(function (c) { return c && _tokHas(c.html); }); }));
+      });
+    });
+    if (hasTok) { try { await Promise.race([_tokLoad(), new Promise(function (r) { setTimeout(r, 15000); })]); } catch (_) {} }
+
+    const pptx = new window.PptxGenJS();
+    pptx.layout = 'LAYOUT_WIDE';
+    pptx.title = String(deck.title || 'Presentation');
+    pptx.company = 'Performance Property';
+    const cnt = {};
+    const bump = function (k) { cnt[k] = (cnt[k] || 0) + 1; };
+    const slideEl = document.getElementById('pres-slide');
+
+    for (let i = 0; i < total; i++) {
+      _presExportProgress('Rendering ' + (i + 1) + ' of ' + total + '…', 'Page ' + (i + 1), i / total);
+      const entry = slides[i] || {};
+      const key = deck.id + '/' + i;
+      const ovs = _overlays[key] || [];
+      const bgCss = _slideBgs[key];
+      const blank = entry.fn === 'blank' || !SLIDES[entry.fn];
+      const bgSolid = bgCss ? _pxColor(bgCss) : { hex: 'FFFFFF', alpha: 1 };
+      const pictureTypes = function (o) { return o && o.type !== 'text' && o.type !== 'shape' && o.type !== 'image' && o.type !== 'table' && o.type !== 'connector'; };
+      const needDom = !blank || !bgSolid || ovs.some(pictureTypes);
+      const s = pptx.addSlide();
+
+      if (needDom) {
+        renderSlide(i);
+        /* renderSlide paints after a 120ms fade; wait for it */
+        const t0 = Date.now();
+        await new Promise(function (r) { setTimeout(r, 30); });
+        while (slot.style.opacity !== '1' && Date.now() - t0 < 2000) await new Promise(function (r) { setTimeout(r, 30); });
+        await _presSlideSettled(ovs.some(function (o) { return o.type === 'chart'; }));
+        const embeds = ovs.filter(function (o) { return o && o.type === 'embed'; });
+        if (embeds.length) {
+          const until = Date.now() + 3000;
+          while (Date.now() < until && embeds.some(function (o) { return !slideEl.querySelector('.pres-overlay[data-id="' + CSS.escape(String(o.id)) + '"]'); })) {
+            await new Promise(function (r) { setTimeout(r, 80); });
+          }
+        }
+      }
+      if (!blank || !bgSolid) {
+        /* a layout page, or a gradient / image background: the base as a picture */
+        const baseShot = await _pxShootBase(slideEl);
+        s.background = { data: baseShot, path: /^data:image\/jpeg/.test(baseShot) ? 'background.jpeg' : 'background.png' };
+        bump(blank ? 'bg' : 'page');
+      } else {
+        s.background = { color: bgSolid.hex };
+      }
+
+      const byId = {};
+      ovs.forEach(function (o) { if (o && o.id) byId[o.id] = o; });
+      /* connectors first: the builder draws them in a layer beneath every overlay */
+      ovs.forEach(function (o) { if (o && o.type === 'connector') _pxAddConnector(s, o, byId); });
+      for (let k = 0; k < ovs.length; k++) {
+        const o = ovs[k];
+        if (!o || o.type === 'connector') continue;
+        if (o.type === 'text') _pxAddText(s, o, sidIdx);
+        else if (o.type === 'shape') {
+          if (!_pxAddShape(s, o, sidIdx)) { if (await _pxShapePicture(s, o)) bump('shape'); }
+        } else if (o.type === 'image') {
+          const im = await _pxImage(o);
+          if (im) {
+            const opt = { data: im.data, x: _pxIn(im.rect.x), y: _pxIn(im.rect.y), w: _pxIn(im.rect.w), h: _pxIn(im.rect.h), objectName: 'pp-' + o.id };
+            if (o.opacity != null && +o.opacity < 1) opt.transparency = Math.round((1 - Math.max(0, +o.opacity)) * 100);
+            s.addImage(opt);
+          }
+        } else if (o.type === 'table') _pxAddTable(s, o, sidIdx);
+        else if (o.type === 'embed') {
+          const still = await _pxShootEmbed(slideEl, o);
+          if (still) { s.addImage({ data: still, x: _pxIn(o.x), y: _pxIn(o.y), w: _pxIn(o.w), h: _pxIn(o.h), objectName: 'pp-' + o.id }); bump('embed'); }
+          else { _pxPlaceholder(s, o); bump('placeholder'); }
+        } else {
+          const pic = await _pxShootElement(slideEl, o);
+          if (pic) { s.addImage({ data: pic, x: _pxIn(o.x), y: _pxIn(o.y), w: _pxIn(o.w), h: _pxIn(o.h), objectName: 'pp-' + o.id }); bump(o.type === 'chart' ? 'chart' : 'other'); }
+        }
+      }
+    }
+
+    _presExportProgress('Packaging…', total + ' pages', 1);
+    const blob = await _pxTidyPptx(pptx);
+    _presSaveBlob(blob, _presExportName() + ' (editable).pptx');
+    const msg = _pxSummary(total, cnt);
+    window.__presEditableSummary = { slides: total, counts: cnt, message: msg };
+    showPresToast(msg, { duration: 6000 });
+  } catch (e) {
+    console.error('Deck export (editable):', e);
+    showPresToast('Download failed — ' + ((e && e.message) || 'see the console.'), { duration: 7000, warn: true });
+  } finally {
+    try { if (window.PresentChart && window.PresentChart.setExporting) window.PresentChart.setExporting(false); } catch (_) {}
+    document.body.classList.remove('pres-exporting');
+    document.documentElement.style.zoom = zoomWas || '';
+    try { if (editWas) setEditMode(true); } catch (_) {}
+    try { renderSlide(slideIdxWas); } catch (_) {}
+    try { fitSlide(); } catch (_) {}
+    if (btn) btn.disabled = false;
+    _presExportBusy = false;
+  }
+}
 {
   const _dlBtn = document.getElementById('pres-download');
   const _dlMenu = document.getElementById('pres-dl-menu');
@@ -22548,6 +23259,7 @@ async function downloadDeck(format, opts) {
       if (!b) return;
       _dlClose();
       if (b.dataset.fmt === 'pdf-fresh') downloadDeck('pdf', { fresh: true });
+      else if (b.dataset.fmt === 'pptx-edit') downloadDeckEditable();
       else downloadDeck(b.dataset.fmt);
     });
     document.addEventListener('click', function (ev) {
