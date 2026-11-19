@@ -32,18 +32,23 @@
        icon (ppSectionAllowed) with nothing behind it. */
     'data-extractor':   { sec: 'analytics', file: 'data-extractor.html',         label: 'Data Extractor' },
     /* vault */
-    'runway-workbook':  { sec: 'vault',     file: 'runway-workbook.html',        label: 'Runway Workbook' },
-    'vr-projection':    { sec: 'vault',     file: 'vr-projection.html',          label: 'Vacancy Rate Projection' },
-    'population-forecast':{ sec: 'vault',   file: 'population-forecast.html',    label: 'Population Forecast' },
+    /* `linkOpen` (2026-11-19): a deck slide links to this page (the picture and "Open the tool"), and whoever
+       is shown the deck must be able to follow the link. The group gate in auth-gate.js lets the page load for any
+       signed-in staff member, ticked or not; the tick still governs the hub card, the dock and search, so the tool
+       stays hidden where it is not ticked. Viewing only: what a person may change is still decided by their role
+       and the database. Never set this on a page that loads client records. */
+    'runway-workbook':  { sec: 'vault',     file: 'runway-workbook.html',        label: 'Runway Workbook', linkOpen: true },
+    'vr-projection':    { sec: 'vault',     file: 'vr-projection.html',          label: 'Vacancy Rate Projection', linkOpen: true },
+    'population-forecast':{ sec: 'vault',   file: 'population-forecast.html',    label: 'Population Forecast', linkOpen: true },
     'forge':            { sec: 'vault',     file: 'data-forge.html',             label: 'Data Forge' },
     'traffic-lights':   { sec: 'vault',     file: 'traffic-lights.html',         label: 'Traffic Lights' },
-    'demand-score':     { sec: 'vault',     file: 'demand-score.html',           label: 'Demand Score Dashboard' },
+    'demand-score':     { sec: 'vault',     file: 'demand-score.html',           label: 'Demand Score Dashboard', linkOpen: true },
     'market-compare':   { sec: 'vault',     file: 'market-compare.html',         label: 'Market Compare' },
     /* `embedOpen`: slides embed this page (presentation.html, Add embed), and a
        deck must draw for whoever presents it. With ?embed=1 the group gate in
        auth-gate.js lets the page load, ticked or not; the tick governs the
        Vault card, search and the page opened on its own. */
-    'market-cycles':    { sec: 'vault',     file: 'market-cycles.html',          label: 'Market Cycles', embedOpen: true },
+    'market-cycles':    { sec: 'vault',     file: 'market-cycles.html',          label: 'Market Cycles', embedOpen: true, linkOpen: true },
     'median-prices':    { sec: 'vault',     file: 'median-prices.html',          label: 'Median Prices' },
     'bs-slides':        { sec: 'vault',     file: 'buying-selling-slides.html',  label: 'Buying/Selling Slides' },
     'suburb-data':      { sec: 'vault',     file: 'suburb-selection-data.html',  label: 'Suburb Selection Data' },

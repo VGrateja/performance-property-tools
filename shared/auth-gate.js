@@ -84,6 +84,8 @@
       if (!keys.length) return;                      /* unregistered page → allow */
       /* a page slides embed (registry `embedOpen`) draws for whoever presents the deck */
       if (q.get('embed') === '1' && keys.some(function (k) { return REG.TOOLS && REG.TOOLS[k] && REG.TOOLS[k].embedOpen; })) return;
+      /* a page deck slides link to (registry `linkOpen`) opens by its address for any signed-in staff member */
+      if (keys.some(function (k) { return REG.TOOLS && REG.TOOLS[k] && REG.TOOLS[k].linkOpen; })) return;
       const decide = function (st) {
         if (!st || st.mode !== 'set' || !st.keys) return;   /* all/external/unresolved → allow */
         const ok = keys.some(function (k) { return st.keys.has(k); });
