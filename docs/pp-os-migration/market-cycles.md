@@ -128,3 +128,15 @@ the builder lists the two embeds and loads without an error.
   Brisbane to 2022, Perth 2019 to 2025, Melbourne and Darwin from 2025. Taken from the director's words in the
   review, to be confirmed: Sydney in 2014, and 2015 as the first year for Adelaide and Brisbane. Hold (yellow) and
   sell (red) are to follow when the years are known; they go in the same place. Check: `node scratch/_mc-check.mjs` (40).
+- 2026-11-19, afternoon (owner): the growth chart's headline is now "Rolling capital growth" (it was "The
+  fastest-growing capital keeps changing") and the line under it is gone; the Buying key sits beside the headline.
+  New **House / Unit** switch (`gType`, `?type=unit`): the same chart on the units' 12-month medians, which the
+  history row and the Forge already hold for all eight capitals. The window buttons read "10 years", "7.5 years",
+  "Long term" (the headline carries "rolling") so the year slider keeps its room.
+  **Known and not yet fixed: the two sources do not meet at mid-2018.** The 12-month median steps where the history
+  file (to June 2018) hands over to the Forge's own months (from July 2018): houses Melbourne about +10%, Perth +8%,
+  Brisbane +4%; units Adelaide about -8%, Darwin -7%, Perth -6%. Any window that starts before July 2018 and ends
+  after it carries that step (up to about one point a year on 10 years; the latest 7.5-year frames are clear of it).
+  Rescaling the history to meet the Forge would, for example, make Melbourne houses in 2018 about 6.3% (second to
+  Sydney) where the chart shows 7.3% (first). Sizing: `node scratch/_mc-seam-size.mjs`. A fix needs the research
+  lead's call on the method. Check: `node scratch/_mc-check.mjs` (44).
