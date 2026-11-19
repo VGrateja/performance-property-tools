@@ -108,3 +108,6 @@ the builder lists the two embeds and loads without an error.
   line under the title: how far, how it compares at the same stage, how long the five took to regain their peak); the
   legend lines, the pace row, the footnotes and the growth subtitle are shorter; no label is set in spaced capitals.
   Nothing about the figures changed. Check: `node scratch/_pres-charts/analyse.mjs && node scratch/_mc-check.mjs` (32).
+- 2026-11-19: Speed control re-paced on the owner's word. Fast is now what Normal was (0.9 s a year), Slow is unchanged
+  (2.4 s) and Normal is a new step between them (1.5 s). The old 0.45 s Fast is gone. Normal is still the starting
+  speed, so the chart now opens slower than before; `?speed=` keeps its three names.
