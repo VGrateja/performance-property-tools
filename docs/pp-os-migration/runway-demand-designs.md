@@ -101,3 +101,8 @@ fetch the export falls back to a system sans, as the Original's export does toda
   `RVDD.clock()` reports the scales and what was read. Check 11 added to `scratch/_rvd-designs-check.mjs` (every
   dot on the formula for House and Unit, sides as the Property Clock has them, the rim with numbers off and on, and
   the Property Clock unreachable).
+- 2026-11-19, later: **Sample A approved** by the research lead; the switch goes to production so it can be shown to
+  the advisers before it replaces the Original. The Original stays the default. The dropdown now offers Original and
+  Sample A only, still for dev and admin only. Samples B and C were not taken up: they left the dropdown, a remembered
+  B or C is ignored, and they open by address only (`?design=b`, `?design=c`); their code is kept, unused by the
+  dropdown. When Sample A becomes the default, B and C and the dropdown can be removed together.

@@ -37,3 +37,8 @@ month (the reason Nov 2026 would not build: no rent 36 months back once the hist
 
 - 2026-11-12: built. Nov 2026 added; A and B computed for Jan 2025 – Nov 2026 (1,656 market-months). Current matches
   `rvd_v3` exactly (0 of 1,584 differ).
+- 2026-11-19: **Option A approved** by the research lead; the switch goes to production so it can be shown to the
+  advisers before it replaces Current. Current stays the default, and embeds still show Current only. The dropdown now
+  offers Current and Option A only, and shows for dev and admin only (it showed for all staff on staging). Option B
+  was not taken up: it left the dropdown; the builder still writes `dsB` on every row. Going to production moves the
+  page from `rvd_v3` to `rvd_v3_methods`, so Nov 2026 becomes the latest month there too (the owner confirmed).

@@ -24,6 +24,8 @@
   'use strict';
   var NS = 'http://www.w3.org/2000/svg';
   var DESIGNS = ['original', 'a', 'b', 'c'];
+  /* What the dropdown offers since Sample A was approved (2026-11-19). B and C open by address only. */
+  var OFFERED = ['original', 'a'];
   var STORE_KEY = 'ppa-rvd-design';
   /* 'RVDD Montserrat' is the page's own Montserrat, embedded in the svg as data URIs (embedFont below)
      so the html2canvas export, which rasterises the svg as an image with no access to webfonts,
@@ -31,13 +33,14 @@
   var FONT = "'RVDD Montserrat', Montserrat, sans-serif";
 
   /* ── THE DESIGN IN USE ── ?design= wins; an embed (slides) is Original unless
-     its URL says otherwise; else the last choice from the dropdown. */
+     its URL says otherwise; else the last choice from the dropdown (a remembered
+     B or C from the review is ignored: the dropdown no longer offers them). */
   function resolveDesign() {
     var qs = new URLSearchParams(location.search);
     var q = String(qs.get('design') || '').toLowerCase();
     if (DESIGNS.indexOf(q) >= 0) return q;
     if (qs.get('embed') === '1') return 'original';
-    try { var s = localStorage.getItem(STORE_KEY); if (DESIGNS.indexOf(s) >= 0) return s; } catch (e) {}
+    try { var s = localStorage.getItem(STORE_KEY); if (OFFERED.indexOf(s) >= 0) return s; } catch (e) {}
     return 'original';
   }
   var design = resolveDesign();
