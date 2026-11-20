@@ -1,7 +1,7 @@
 # Adelaide Returns — feature note for the pp-os port
 
 A public client page that shows what Performance Property's Adelaide purchases did for a client's deposit, set against Australian
-shares, US shares (NASDAQ-100 in AUD), Australian bonds, A-REITs, cash and the residential market over the same years; plus a
+shares, Australian bonds, A-REITs, cash and the residential market over the same years; plus a
 "selection, not just the market" comparison and a risk v return scatter. A Vault editor in the hub lets research staff change every
 figure, table cell, label, sentence and the legal text without a code change. Built 2026-10-14.
 
@@ -71,7 +71,8 @@ Text tokens (filled on render, "—" when the figure is blank): `{deposit} {pric
 - PP: deposit = medianPurchasePrice × depositPct; end = deposit × (1 + medianIrr)^hold.
 - `compute(payload)` → `{ window, deposit, pp, rows[], selection[] }` — what the page draws.
 
-Hand check (seed, 7.8 years to 30 Sep 2026, deposit $117,706.25): NASDAQ-100 AUD 23.6% p.a. → $612,635 · ASX 200 9.8% → $244,532 ·
+Hand check (seed, 7.8 years to 30 Sep 2026, deposit $117,706.25; US shares, NASDAQ-100 AUD 23.6% p.a. → $612,635, was an option
+until 20 Nov 2026, when it was removed from both Returns pages by request): ASX 200 9.8% → $244,532 ·
 Australian residential (growth + yield) 9.0% → $229,817 · A-REITs 5.5% → $178,079 · cash 2.4% → $141,634 · AusBond 1.3% → $130,402 ·
 Adelaide residential (hidden by default) 12.9% → $303,631. Growth only: Adelaide 9.0% p.a., national 5.3% p.a.
 
