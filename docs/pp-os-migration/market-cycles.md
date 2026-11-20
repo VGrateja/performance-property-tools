@@ -169,3 +169,7 @@ the builder lists the two embeds and loads without an error.
   Growth chart: 10-year house rate to 2018, Melbourne 6.3% (Original 7.3%); to August 2026, Melbourne 3.1% (4.1%),
   Perth 5.6% (6.5%). The July 2023 step in the estimated values is not part of this fix. Check: `node
   scratch/_mc-check.mjs` (74).
+- 2026-11-20, evening (owner: "make 9 years the default on the market cycles page"): the growth chart now opens on
+  **9 years** (`gMode` default `roll9`, and the 9 years button carries `on` in the markup). `?mode=roll` still presets
+  10 years; 7.5 years, Long term and Custom are unchanged. The deck's growth slide already shows 9 years and links to
+  `?view=growth&mode=roll9`. Check: `node scratch/_mc-check.mjs` (75, with "opens on 9 years by default").
