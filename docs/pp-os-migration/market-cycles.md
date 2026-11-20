@@ -173,3 +173,12 @@ the builder lists the two embeds and loads without an error.
   **9 years** (`gMode` default `roll9`, and the 9 years button carries `on` in the markup). `?mode=roll` still presets
   10 years; 7.5 years, Long term and Custom are unchanged. The deck's growth slide already shows 9 years and links to
   `?view=growth&mode=roll9`. Check: `node scratch/_mc-check.mjs` (75, with "opens on 9 years by default").
+- 2026-11-20, evening (owner: "add a legend - interest rates at the peak, interest rate at the turn"): each fall in the
+  falls legend now has a third line, **Cash rate <at the peak> → <at the turn>**, where the turn is the month of the
+  low; the 2026 line reads **<at the peak> → <latest> now**. A key under the legend reads "Cash rate at the peak → at
+  the turn (the low)", and the footnote adds "Cash rate: RBA, end of month (mid-1989: RBA Annual Report 1991)."
+  The figures come from the Forge's monthly RBA cash rate (`rdp_raw_series` source `rba`, metric `cash_rate`, freq
+  `M`, from January 1990), loaded with the other data. If that read fails the chart still draws and the rate line
+  is left out. Mid-1989 predates the series, so it shows "about 18%", the RBA's own words. Today: 1989–90 about 18%
+  → 17.00%; 2008 7.25% → 4.25%; 2010–12 4.50% → 4.25%; 2017–19 1.50% → 1.25%; 2022–23 0.10% → 3.10%; 2026 4.10% →
+  4.85% now. Check: `node scratch/_mc-check.mjs` (76; the new check reads the Forge independently of the page).

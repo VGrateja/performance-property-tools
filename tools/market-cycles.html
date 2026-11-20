@@ -83,6 +83,8 @@ body.embed-mode .cy{border-radius:0}
 .cy-leg b{font-size:14px;font-weight:700;color:var(--ink)}
 .cy-leg b span{font-weight:600;color:var(--ink2);margin-left:7px;font-variant-numeric:tabular-nums}
 .cy-leg small{display:block;font-size:11px;color:var(--mut);margin-top:1px;white-space:nowrap}
+.cy-leg small.rt{margin-top:2px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.cy-legkey{font-size:10.5px;line-height:1.35;color:var(--mut);margin-top:-2px}
 .cy-leg.hot{margin-top:2px;padding-top:12px;border-top:1px solid var(--rule)}
 .cy-leg.hot i{height:5px;margin-top:8px}
 .cy-leg.hot b,.cy-leg.hot b span{color:var(--hot)}
@@ -223,16 +225,25 @@ const pct = (v, d = 1) => (v < 0 ? '−' : '') + Math.abs(v * 100).toFixed(d) + 
 /* ═════════════════════════════ data ═════════════════════════════
    S[city][H|U][month] = { avm, n, med12 }: the history row to June 2018, the Forge's capital rows after. */
 const S = {}; let MONTHS = [];
+/* CASH: the RBA cash rate at the end of each month, as the Forge holds it (rdp_raw_series rba/cash_rate/M, from
+   January 1990). The falls legend shows it at each fall's peak and at its turn (the low). Mid-1989 is before that
+   series; the RBA puts it at about 18% ("cash rates reaching 18 per cent in mid 1989", Annual Report 1991). Owner,
+   20 Nov 2026. */
+let CASH = {};
+const cashAt = m => CASH[m] != null ? pct(CASH[m], 2) : m >= '1989-01' && m < '1990-01' ? 'about 18%' : null;
 /* SF: the same figures with the mid-2018 join levelled (buildFixed). D() is whichever the switch shows. */
 let SF = {}, gFixed = QS.get('join') === 'fixed';
 const D = () => gFixed ? SF : S;
 async function pageAll(build){ const rows = []; for (let from = 0; ; from += 1000) { const { data, error } = await build().range(from, from + 999); if (error) throw error; rows.push(...(data || [])); if (!data || data.length < 1000) break; } return rows; }
 async function load(){
   await sb.auth.getSession();
-  const [hist, live] = await Promise.all([
+  const [hist, live, cash] = await Promise.all([
     sb.from('forge_cotality').select('data').eq('id', 'cl_capital_history').maybeSingle(),
     pageAll(() => sb.from('forge_cl_suburbs').select('month,name,ptype,avm:metrics->avm,med12:metrics->med12,props:metrics->props').eq('level', 'capital').order('month').order('name').order('ptype').order('state')),
+    /* the charts draw without it: the legend then leaves the rate line out */
+    pageAll(() => sb.from('rdp_raw_series').select('period,value').eq('source', 'rba').eq('metric', 'cash_rate').eq('freq', 'M').order('period')).catch(() => []),
   ]);
+  CASH = Object.fromEntries(cash.filter(r => r.value != null).map(r => [String(r.period).slice(0, 7), +r.value]));
   if (hist.error) throw hist.error;
   if (!hist.data || !hist.data.data || !hist.data.data.cities) throw new Error('The capital city history is not in the Forge yet.');
   const H = hist.data.data, put = (city, pt, m, v) => { ((S[city] = S[city] || {})[pt] = S[city][pt] || {})[m] = v; };
@@ -337,8 +348,12 @@ function drawFalls(){
   const series = F.top.map((e, i) => ({ name: e.name, type: 'line', data: e.pts, showSymbol: false, smooth: 0.25, lineStyle: { width: 2.25, color: colOf[e.peak] }, itemStyle: { color: colOf[e.peak] }, emphasis: { focus: 'series' }, z: 2, animationDuration: 1400, animationDelay: i * 250 }));
   if (now) series.push({ name: now.name, type: 'line', data: now.pts, showSymbol: true, symbol: 'circle', symbolSize: (v, p) => p.dataIndex === now.pts.length - 1 ? 12 : 0, smooth: 0.15, lineStyle: { width: 5, color: hot, cap: 'round' }, itemStyle: { color: hot, borderColor: tok('--bg'), borderWidth: 2 }, z: 5, animationDuration: 1600, animationDelay: 1500,
     endLabel: { show: true, formatter: () => now.name + ': ' + pct(-now.fall) + ' so far', color: hot, fontFamily: 'Montserrat', fontWeight: 700, fontSize: 15, offset: [8, 14], textBorderColor: tok('--bg'), textBorderWidth: 4 } });
-  $('#fLegend').innerHTML = F.top.map((e, i) => '<div class="cy-leg"><i style="background:' + colOf[e.peak] + '"></i><div><b>' + e.name + '<span>' + pct(-e.fall) + '</span></b><small>Low at ' + mo(e.toTrough) + ' · back in ' + e.toBack + '</small></div></div>').join('')
-    + (now ? '<div class="cy-leg hot"><i style="background:' + hot + '"></i><div><b>' + now.name + '<span>' + pct(-now.fall) + '</span></b><small>' + mo(now.months) + ' in, to ' + monLabel(last) + '</small></div></div>' : '');
+  /* the cash rate at the peak and at the turn (the low); for 2026, at the peak and now (the latest month on record) */
+  const cashMonths = Object.keys(CASH).sort(), cashNow = cashMonths[cashMonths.length - 1];
+  const rateLine = (a, b, tail) => a && b ? '<small class="rt">Cash rate ' + a + ' → ' + b + (tail || '') + '</small>' : '';
+  $('#fLegend').innerHTML = F.top.map((e, i) => '<div class="cy-leg"><i style="background:' + colOf[e.peak] + '"></i><div><b>' + e.name + '<span>' + pct(-e.fall) + '</span></b><small>Low at ' + mo(e.toTrough) + ' · back in ' + e.toBack + '</small>' + rateLine(cashAt(e.peak), cashAt(e.trough)) + '</div></div>').join('')
+    + (now ? '<div class="cy-leg hot"><i style="background:' + hot + '"></i><div><b>' + now.name + '<span>' + pct(-now.fall) + '</span></b><small>' + mo(now.months) + ' in, to ' + monLabel(last) + '</small>' + rateLine(cashAt(now.peak), cashNow && cashAt(cashNow), ' now') + '</div></div>' : '')
+    + (cashMonths.length ? '<div class="cy-legkey">Cash rate at the peak → at the turn (the low)</div>' : '');
   /* three months, as a yearly rate: each capital's own houses and units, then the five together */
   const rate = legs => { const x = chain(legs), a = x[addM(last, -3)], b = x[last]; return a && b ? Math.pow(b / a, 4) - 1 : null; };
   $('#fPace').innerHTML = FIVE.map(c => [c, rate([[c, 'H'], [c, 'U']])]).concat([['Five capitals', rate(FIVE.flatMap(c => [[c, 'H'], [c, 'U']]))]])
@@ -347,6 +362,7 @@ function drawFalls(){
   /* only the capitals that join after the series starts need saying */
   const starts = FIVE.map(c => [c, (MONTHS.find(m => S[c].H[m] && S[c].H[m].avm) || '').slice(0, 4)]), firstYear = starts.map(x => x[1]).filter(Boolean).sort()[0], later = starts.filter(x => x[1] && x[1] !== firstYear);
   $('#fFoot').textContent = 'Median estimated value of all dwellings, weighted by dwelling numbers, to ' + monthLabel(last) + '.' + (later.length ? ' ' + sinceWords(later) + '.' : '') + (gFixed ? ' The step where the data changes source in mid-2018 is levelled.' : '')
+    + (Object.keys(CASH).length ? ' Cash rate: RBA, end of month (mid-1989: RBA Annual Report 1991).' : '')
     + ' Source: Cotality. Analysis: Performance Property. © ' + new Date().getFullYear() + ' PPA Services Pty Ltd';
   if (!fChart) fChart = echarts.init($('#fChart'), null, { renderer: 'svg' }); else fChart.resize();
   fChart.setOption({
