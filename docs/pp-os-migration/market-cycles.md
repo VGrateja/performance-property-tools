@@ -140,3 +140,19 @@ the builder lists the two embeds and loads without an error.
   Rescaling the history to meet the Forge would, for example, make Melbourne houses in 2018 about 6.3% (second to
   Sydney) where the chart shows 7.3% (first). Sizing: `node scratch/_mc-seam-size.mjs`. A fix needs the research
   lead's call on the method. Check: `node scratch/_mc-check.mjs` (44).
+- 2026-11-20 (owner): Rolling capital growth gains a **9 years** period and a **Custom** period. The period buttons read
+  "7.5 years | 9 years | 10 years | Long term | Custom" (`WINDOWS`, `windowOf`); Custom opens a years box (any 1 to 30
+  years, to one decimal, applied on Enter or on leaving the box; anything else is refused and the box goes back to the
+  last good figure) and starts from the period on screen. `?mode=roll9` and `?years=N` preset them for a slide. The
+  controls now take two rows, what to show and playing it, so the year slider keeps its width (about 890 px).
+- 2026-11-20: **data check of "the biggest falls"** (`node scratch/_mc-falls-verify.mjs`, `_mc-falls-verify2.mjs`,
+  `_mc-falls-levelled.mjs`). The stored history equals the CoreLogic file to the dollar (22,176 figures); the Forge
+  rows run July 2018 to August 2026 for every capital and type with no gap or duplicate; the page's index and falls
+  equal an independent recomputation. **Two breaks in the source, not fixed (waiting on the owner and the research
+  lead):** (1) the mid-2018 join: the Forge's estimated values sit above the history's trend for Melbourne houses
+  (+5.4%), Perth houses (+6.3%) and others, which takes about two points off the 2017–19 fall: shown −9.1% (second),
+  levelled about −11.1% (the biggest, back in 28 months). Cotality's published capital-city figures also put 2017–19
+  (about −10.1%) deeper than 2022–23 (about −9.6%). (2) July 2023: several capitals' estimated values step and stay
+  (Melbourne houses −6.9%, Perth houses −4.0%, Adelaide houses −3.7% against the months either side), which only moves
+  2022–23's recovery from about 21 to 24 months. The 2026 line, the other three falls and the pace row are unaffected.
+  The 12-month medians the growth chart uses carry the mid-2018 join (see 2026-11-19) but not July 2023.
