@@ -119,6 +119,10 @@ body.embed-mode .cy{border-radius:0}
 .cy-strip div.now{outline:2px solid var(--ink);outline-offset:1px}
 .cy-stripyears{display:grid;gap:2px;margin-top:4px;font-size:9.5px;color:var(--mut);font-variant-numeric:tabular-nums}
 .cy-stripyears span{text-align:center}
+/* the 2018 join switch: dev and admin only, never in an embed */
+.cy-join{position:absolute;top:16px;right:44px;z-index:2;display:flex;align-items:center;gap:8px}
+.cy-join[hidden]{display:none}
+.cy-join label{font-size:12px;font-weight:600;color:var(--mut)}
 </style>
 </head>
 <body>
@@ -130,6 +134,10 @@ body.embed-mode .cy{border-radius:0}
   <div class="cy-fit" id="cyFit">
     <section class="cy" id="cy" data-ground="dark">
       <div class="cy-msg" id="cyMsg">Loading the capital city figures…</div>
+      <div class="cy-join" id="cyJoin" hidden title="The data changes source in mid-2018 (the CoreLogic history file to June, the monthly Cotality data from July) and each capital's figures step where the two meet. Fixed levels that step. Original is what everyone else sees.">
+        <label id="cyJoinLabel">2018 join</label>
+        <div class="cy-seg" id="cyJoinSeg" role="group" aria-labelledby="cyJoinLabel"><button type="button" data-fixed="0">Original</button><button type="button" data-fixed="1">Fixed</button></div>
+      </div>
 
       <!-- ── view: falls ── -->
       <div id="vFalls" hidden style="display:contents">
@@ -215,6 +223,9 @@ const pct = (v, d = 1) => (v < 0 ? '−' : '') + Math.abs(v * 100).toFixed(d) + 
 /* ═════════════════════════════ data ═════════════════════════════
    S[city][H|U][month] = { avm, n, med12 }: the history row to June 2018, the Forge's capital rows after. */
 const S = {}; let MONTHS = [];
+/* SF: the same figures with the mid-2018 join levelled (buildFixed). D() is whichever the switch shows. */
+let SF = {}, gFixed = QS.get('join') === 'fixed';
+const D = () => gFixed ? SF : S;
 async function pageAll(build){ const rows = []; for (let from = 0; ; from += 1000) { const { data, error } = await build().range(from, from + 999); if (error) throw error; rows.push(...(data || [])); if (!data || data.length < 1000) break; } return rows; }
 async function load(){
   await sb.auth.getSession();
@@ -234,23 +245,51 @@ async function load(){
      either side (Sydney houses 986k, 1,098k, 974k). Bridge that one month so it cannot pass for a peak. */
   for (const city of CITIES) for (const pt of ['H', 'U']) { const L = S[city] && S[city][pt]; if (L && L['2018-06'] && L['2018-07'] && L['2018-08'] && L['2018-06'].avm && L['2018-08'].avm) L['2018-07'].avm = Math.sqrt(L['2018-06'].avm * L['2018-08'].avm); }
   MONTHS = [...new Set(Object.values(S).flatMap(c => Object.values(c).flatMap(p => Object.keys(p))))].sort();
+  SF = buildFixed();
+}
+
+/* THE 2018 JOIN, FIXED (owner, 2026-11-20, to compare with the research lead; not yet the default).
+   The figures change source in mid-2018: the CoreLogic history file to June, the Forge's monthly Cotality rows from
+   July. For several capitals the two do not meet: Melbourne houses' estimated value sits about 5% above its own
+   trend in August 2018, its 12-month median about 10%, while the market barely moved. For each capital, type and
+   measure (estimated value and 12-month median), the Forge's months from July 2018 are scaled so that June to
+   August 2018 moves at the average of the three months before (history) and the three after (Forge), and July is
+   bridged between them. Nothing before July 2018 changes, so a fall wholly before or wholly after the join reads
+   as on the Original. A leg without March, June, August and November 2018 is left as it is. */
+function buildFixed(){
+  const out = {};
+  for (const city of CITIES) for (const pt of ['H', 'U']) {
+    const L = S[city] && S[city][pt]; if (!L) continue;
+    const F = {}; for (const m of Object.keys(L)) F[m] = { ...L[m] };
+    for (const k of ['avm', 'med12']) {
+      const v = m => L[m] && L[m][k];
+      if (!(v('2018-03') && v('2018-06') && v('2018-08') && v('2018-11'))) continue;
+      const before = Math.pow(v('2018-06') / v('2018-03'), 1 / 3), after = Math.pow(v('2018-11') / v('2018-08'), 1 / 3);
+      const step = v('2018-08') / (v('2018-06') * Math.pow((before + after) / 2, 2));   /* the Forge's August over the trend */
+      for (const m of Object.keys(F)) if (m >= '2018-07' && F[m][k]) F[m][k] = F[m][k] / step;
+      if (F['2018-07'] && F['2018-06'][k] && F['2018-08'][k]) F['2018-07'][k] = Math.sqrt(F['2018-06'][k] * F['2018-08'][k]);
+    }
+    (out[city] = out[city] || {})[pt] = F;
+  }
+  return out;
 }
 
 /* A value index over some city-and-type legs: each month moves by the legs' growth in estimated value,
    each weighted by its value x dwellings the month before. A leg with no figure yet has no weight. */
-function chain(legs){
+function chain(legs, src = D()){
   const out = {}; let level = 100; out[MONTHS[0]] = level;
   for (let i = 1; i < MONTHS.length; i++) {
     let w = 0, g = 0;
-    for (const [city, pt] of legs) { const a = S[city][pt][MONTHS[i - 1]], b = S[city][pt][MONTHS[i]]; if (!a || !b || !a.avm || !b.avm || !a.n) continue; const k = a.avm * a.n; w += k; g += k * (b.avm / a.avm); }
+    /* the weight is always the Original's; only the month's growth comes from the view shown, so Fixed differs at the join alone */
+    for (const [city, pt] of legs) { const a = src[city][pt][MONTHS[i - 1]], b = src[city][pt][MONTHS[i]], o = S[city][pt][MONTHS[i - 1]]; if (!a || !b || !a.avm || !b.avm || !o || !o.avm || !o.n) continue; const k = o.avm * o.n; w += k; g += k * (b.avm / a.avm); }
     if (w > 0) level *= g / w; out[MONTHS[i]] = level;
   }
   return out;
 }
 
 /* ═════════════════════════════ view: falls ═════════════════════════════ */
-function falls(){
-  const idx = chain(FIVE.flatMap(c => [[c, 'H'], [c, 'U']])), eps = [];
+function falls(src = D()){
+  const idx = chain(FIVE.flatMap(c => [[c, 'H'], [c, 'U']]), src), eps = [];
   let peak = MONTHS[0], trough = null;
   for (const m of MONTHS) {
     if (idx[m] >= idx[peak]) { if (trough) eps.push({ peak, trough, fall: 1 - idx[trough] / idx[peak], back: m }); peak = m; trough = null; }
@@ -276,6 +315,9 @@ let fChart = null;
 function drawFalls(){
   const F = falls(), last = MONTHS[MONTHS.length - 1], cols = ['--c1', '--c2', '--c3', '--c4', '--c5'].map(tok), hot = tok('--hot'), ink2 = tok('--ink2'), mut = tok('--mut'), grid = tok('--grid'), rule = tok('--rule');
   const now = F.now, at = (e, k) => { const p = e.pts.find(x => x[0] >= k); return p ? p[1] : null; };
+  /* each fall keeps the colour it has on the Original, so the switch re-orders the falls without repainting them */
+  const colOf = {}; (gFixed ? falls(S) : F).top.forEach((e, i) => { colOf[e.peak] = cols[i]; });
+  const spare = cols.filter(c => !Object.values(colOf).includes(c)); F.top.forEach(e => { if (!colOf[e.peak]) colOf[e.peak] = spare.shift() || cols[0]; });
   /* the one line under the title follows the data, and carries what three tiles used to say */
   const mo = n => n + (n === 1 ? ' month' : ' months'), backs = F.top.map(e => e.toBack);
   const regained = 'All five were back at their peak within ' + Math.min(...backs) + ' to ' + Math.max(...backs) + ' months.';
@@ -292,10 +334,10 @@ function drawFalls(){
     $('#fKey').textContent = 'Values are at or near their peak in ' + monthLabel(last) + '. ' + regained;
   }
   const lo = Math.min(...F.top.concat(now ? [now] : []).flatMap(e => e.pts.map(p => p[1])));
-  const series = F.top.map((e, i) => ({ name: e.name, type: 'line', data: e.pts, showSymbol: false, smooth: 0.25, lineStyle: { width: 2.25, color: cols[i] }, itemStyle: { color: cols[i] }, emphasis: { focus: 'series' }, z: 2, animationDuration: 1400, animationDelay: i * 250 }));
+  const series = F.top.map((e, i) => ({ name: e.name, type: 'line', data: e.pts, showSymbol: false, smooth: 0.25, lineStyle: { width: 2.25, color: colOf[e.peak] }, itemStyle: { color: colOf[e.peak] }, emphasis: { focus: 'series' }, z: 2, animationDuration: 1400, animationDelay: i * 250 }));
   if (now) series.push({ name: now.name, type: 'line', data: now.pts, showSymbol: true, symbol: 'circle', symbolSize: (v, p) => p.dataIndex === now.pts.length - 1 ? 12 : 0, smooth: 0.15, lineStyle: { width: 5, color: hot, cap: 'round' }, itemStyle: { color: hot, borderColor: tok('--bg'), borderWidth: 2 }, z: 5, animationDuration: 1600, animationDelay: 1500,
     endLabel: { show: true, formatter: () => now.name + ': ' + pct(-now.fall) + ' so far', color: hot, fontFamily: 'Montserrat', fontWeight: 700, fontSize: 15, offset: [8, 14], textBorderColor: tok('--bg'), textBorderWidth: 4 } });
-  $('#fLegend').innerHTML = F.top.map((e, i) => '<div class="cy-leg"><i style="background:' + cols[i] + '"></i><div><b>' + e.name + '<span>' + pct(-e.fall) + '</span></b><small>Low at ' + mo(e.toTrough) + ' · back in ' + e.toBack + '</small></div></div>').join('')
+  $('#fLegend').innerHTML = F.top.map((e, i) => '<div class="cy-leg"><i style="background:' + colOf[e.peak] + '"></i><div><b>' + e.name + '<span>' + pct(-e.fall) + '</span></b><small>Low at ' + mo(e.toTrough) + ' · back in ' + e.toBack + '</small></div></div>').join('')
     + (now ? '<div class="cy-leg hot"><i style="background:' + hot + '"></i><div><b>' + now.name + '<span>' + pct(-now.fall) + '</span></b><small>' + mo(now.months) + ' in, to ' + monLabel(last) + '</small></div></div>' : '');
   /* three months, as a yearly rate: each capital's own houses and units, then the five together */
   const rate = legs => { const x = chain(legs), a = x[addM(last, -3)], b = x[last]; return a && b ? Math.pow(b / a, 4) - 1 : null; };
@@ -304,7 +346,7 @@ function drawFalls(){
   $('#fPaceAsAt').textContent = 'as a yearly rate, to ' + monLabel(last);
   /* only the capitals that join after the series starts need saying */
   const starts = FIVE.map(c => [c, (MONTHS.find(m => S[c].H[m] && S[c].H[m].avm) || '').slice(0, 4)]), firstYear = starts.map(x => x[1]).filter(Boolean).sort()[0], later = starts.filter(x => x[1] && x[1] !== firstYear);
-  $('#fFoot').textContent = 'Median estimated value of all dwellings, weighted by dwelling numbers, to ' + monthLabel(last) + '.' + (later.length ? ' ' + sinceWords(later) + '.' : '')
+  $('#fFoot').textContent = 'Median estimated value of all dwellings, weighted by dwelling numbers, to ' + monthLabel(last) + '.' + (later.length ? ' ' + sinceWords(later) + '.' : '') + (gFixed ? ' The step where the data changes source in mid-2018 is levelled.' : '')
     + ' Source: Cotality. Analysis: Performance Property. © ' + new Date().getFullYear() + ' PPA Services Pty Ltd';
   if (!fChart) fChart = echarts.init($('#fChart'), null, { renderer: 'svg' }); else fChart.resize();
   fChart.setOption({
@@ -348,7 +390,7 @@ let gType = QS.get('type') === 'unit' ? 'U' : 'H';   /* houses or units; ?type=u
 const SPEEDS = { slow: 2400, normal: 1500, fast: 900 };
 let gSpeed = SPEEDS[QS.get('speed')] ? QS.get('speed') : 'normal';
 function frames(mode, total, type = gType){
-  const last = MONTHS[MONTHS.length - 1], med = (c, m) => { const r = ((S[c] || {})[type] || {})[m]; return r ? r.med12 : null; };
+  const last = MONTHS[MONTHS.length - 1], src = D(), med = (c, m) => { const r = ((src[c] || {})[type] || {})[m]; return r ? r.med12 : null; };
   const first = {}; CITIES.forEach(c => { first[c] = MONTHS.find(m => med(c, m) != null) || null; });
   const stops = []; for (let y = 1990; y < +last.slice(0, 4); y++) stops.push(y + '-12'); if (stops[stops.length - 1] !== last) stops.push(last);
   const w = windowOf(mode);   /* undefined for long */
@@ -386,7 +428,7 @@ function drawGrowth(){
   $('#gRange').max = n - 1;
   $('#gEyebrow').textContent = what[0].toUpperCase() + what.slice(1) + ' prices · eight capital cities';
   document.querySelectorAll('#gType button').forEach(x => { const on = x.dataset.type === gType; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); });
-  $('#gFoot').textContent = '12-month median sale price of ' + what + 's. A capital appears once it has ' + (w ? span : '8 years') + ' of sales on record.'
+  $('#gFoot').textContent = '12-month median sale price of ' + what + 's. A capital appears once it has ' + (w ? span : '8 years') + ' of sales on record.' + (gFixed ? ' The step where the data changes source in mid-2018 is levelled.' : '')
     + ' Source: Cotality. Analysis: Performance Property. © ' + new Date().getFullYear() + ' PPA Services Pty Ltd';
   document.querySelectorAll('#gMeasure button').forEach(x => { const on = (x.dataset.total === '1') === total; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); if (x.dataset.total === '1') { x.disabled = !w; x.title = w ? '' : 'Total growth needs the same period for every capital'; } });
   if (!gChart) gChart = echarts.init($('#gChart'), null, { renderer: 'canvas' }); else gChart.resize();
@@ -427,6 +469,7 @@ function show(view){
   VIEW = view; play(false);
   document.querySelectorAll('.cy-tab').forEach(b => b.classList.toggle('on', b.dataset.view === view));
   $('#vFalls').hidden = view !== 'falls'; $('#vGrowth').hidden = view !== 'growth';
+  document.querySelectorAll('#cyJoinSeg button').forEach(x => { const on = (x.dataset.fixed === '1') === gFixed; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); });
   if (view === 'falls') drawFalls(); else drawGrowth();
 }
 function paint(){
@@ -434,6 +477,7 @@ function paint(){
   if (MONTHS.length) show(VIEW);
 }
 document.querySelectorAll('.cy-tab').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
+$('#cyJoinSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; const v = b.dataset.fixed === '1'; if (v === gFixed) return; gFixed = v; play(false); show(VIEW); });
 $('#gSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return;
   /* Custom starts from the period on screen, so the chart does not jump until a new figure is typed */
   if (b.dataset.mode === 'custom' && gMode !== 'custom' && WINDOWS[gMode]) gCustom = Math.round(WINDOWS[gMode] / 12 * 10) / 10;
@@ -463,6 +507,8 @@ fit();
     await load();
     document.querySelectorAll('#gSeg button').forEach(x => x.classList.toggle('on', x.dataset.mode === gMode));
     $('#cyMsg').hidden = true; paint();
+    /* the switch is for dev and admin while the fix is under review; an embed (a slide) never shows it */
+    $('#cyJoin').hidden = EMBED || !(typeof isAdmin === 'function' && isAdmin());
     if (QS.get('play') === '1' && VIEW === 'growth') setTimeout(() => play(true), 600);
   } catch (e) {
     $('#cyMsg').textContent = 'The capital city figures could not be loaded. ' + (e && e.message ? e.message : '');

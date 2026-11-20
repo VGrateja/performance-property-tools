@@ -156,3 +156,16 @@ the builder lists the two embeds and loads without an error.
   (Melbourne houses −6.9%, Perth houses −4.0%, Adelaide houses −3.7% against the months either side), which only moves
   2022–23's recovery from about 21 to 24 months. The 2026 line, the other three falls and the pace row are unaffected.
   The 12-month medians the growth chart uses carry the mid-2018 join (see 2026-11-19) but not July 2023.
+- 2026-11-20, later (owner: "apply the 2018 data fix to both charts but make it like an option, so I can show it to
+  Saskia. So keep the original and the fixed"): a **2018 join** switch, **Original | Fixed**, top right of the slide,
+  page-wide (both charts). Original stays the default and is unchanged. It shows for dev and admin only, never in an
+  embed; `?join=fixed` presets Fixed for anyone, and the footnote then says the mid-2018 step is levelled.
+  Fixed (`buildFixed`, `SF`, `D()`): for each capital, type and measure (estimated value, 12-month median), the Forge's
+  months from July 2018 are scaled so that June to August 2018 moves at the average monthly rate of March to June
+  (history) and August to November (Forge), and July is bridged between them. The falls index keeps the Original's
+  weights and takes only each month's growth from the fixed figures, so only what crosses the join changes: 2017–19
+  becomes the biggest fall (−11.2%, back in 28 months; Original −9.1%, 26), while 1989–90, 2008, 2010–12, 2022–23,
+  the 2026 line and the pace row are exactly the Original's. Each fall keeps its Original colour across the switch.
+  Growth chart: 10-year house rate to 2018, Melbourne 6.3% (Original 7.3%); to August 2026, Melbourne 3.1% (4.1%),
+  Perth 5.6% (6.5%). The July 2023 step in the estimated values is not part of this fix. Check: `node
+  scratch/_mc-check.mjs` (74).
