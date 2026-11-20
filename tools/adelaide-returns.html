@@ -181,9 +181,7 @@ const SEED = {
     { key: 'asx200', label: 'Australian shares (ASX 200)', kind: 'total', include: true,
       annual: { '2015': 0.0256, '2016': 0.118, '2017': 0.118, '2018': -0.0284, '2019': 0.234, '2020': 0.014, '2021': 0.1723, '2022': -0.0108, '2023': 0.1242, '2024': 0.1144, '2025': 0.1032, '2026YTD': 0.0374 },
       source: 'S&P/ASX 200 Accumulation (S&P DJI total-return levels and factsheet; 2015 FIIG/Schroders)' },
-    { key: 'us_shares', label: 'US shares (NASDAQ-100, in AUD)', kind: 'total', include: true,
-      annual: { '2015': 0.2321, '2016': 0.0831, '2017': 0.2338, '2018': 0.1055, '2019': 0.4049, '2020': 0.3542, '2021': 0.3534, '2022': -0.2758, '2023': 0.5366, '2024': 0.385, '2025': 0.1242, '2026YTD': 0.1608 },
-      source: 'NASDAQ-100 Total Return (Nasdaq XNDX levels) converted to AUD with RBA F11 month-end AUD/USD' },
+    /* US shares (NASDAQ-100, in AUD) removed from the investment options, by request (20 Nov 2026). */
     { key: 'au_bonds', label: 'Australian bonds (AusBond Composite)', kind: 'total', include: true,
       annual: { '2015': 0.026, '2016': 0.029, '2017': 0.037, '2018': 0.045, '2019': 0.073, '2020': 0.045, '2021': -0.0287, '2022': -0.0971, '2023': 0.0506, '2024': 0.0293, '2025': 0.0317, '2026YTD': 0.0076 },
       source: 'Bloomberg AusBond Composite 0+Yr (BlackRock IAF benchmark 2021-26; Schroders 2015-20)' },
@@ -255,8 +253,9 @@ const SEED = {
     title: 'Adelaide: what research-led property did for your deposit',
     subtitle: 'Our Adelaide purchases set against shares, bonds, listed property, cash and the property market over the same years',
     meta: 'Medians across the {properties} Adelaide properties our clients have sold · Performance Property IRR calculator',
+    tilesNote: 'Each figure is the median of its own measure across the properties our clients have sold, so together they do not describe a single property. Net return is net profit over all the cash invested: the deposit and purchase costs, plus the holding costs paid while the property was owned.',
     beforeTax: { title: 'All figures on this page are before tax', body: 'Our Adelaide results and every investment we compare them with are shown before tax, so they compare like for like. The tax you pay depends on your own circumstances.' },
-    tiles: { entry: 'Median entry price', exit: 'Median exit price', growth: 'Median total growth', medIrr: 'Median IRR', compound: 'Median compound growth (CAGR)', netReturn: 'Median net return', properties: 'Adelaide properties sold' },
+    tiles: { entry: 'Median entry price', exit: 'Median exit price', growth: 'Median total growth', medIrr: 'Median IRR', compound: 'Median compound growth (CAGR)', netReturn: 'Median net return on cash invested', properties: 'Adelaide properties sold' },
     headings: {
       deposit: 'Investment Options', yearByYear: 'Net Worth by Year',
       risk: 'Investment Options: Risk V Potential Return', legal: 'Legal notices', disclaimer: 'Disclaimer', riskWarning: 'Risk warning',
@@ -374,6 +373,12 @@ function swapCityDeep(node, from, to) {
    is whether that row currently carries a draftPp AND/OR a draftText.
    `textDraft` is the locally-edited text object, present only while there
    are unsaved keystrokes in the panel below. */
+/* Investment options taken off the page for good. The live row still
+   carries them until someone publishes, so a row that has one shows as a
+   pending draft without it: the preview drops it, and Publish writes the
+   row back without it. US shares, by request, 20 Nov 2026. */
+const REMOVED_BENCHMARKS = ['us_shares'];
+
 const S = { draft: null, savedAt: null, origin: '', pvReady: false,
   publishedPayload: null, hasPendingDraft: false, draftSavedAt: null, textDraft: null };
 
@@ -551,9 +556,12 @@ async function loadRow() {
          a bare one missing everything the client page needs. Shallow
          assign is enough: SEED only fills keys the row never set at all. */
       S.publishedPayload = Object.assign({}, SEED, data.payload);
+      const gone = (S.publishedPayload.benchmarks || []).filter(b => REMOVED_BENCHMARKS.includes(b.key));
+      S.removedLabels = gone.map(b => b.label);
+      if (gone.length) S.publishedPayload.benchmarks = S.publishedPayload.benchmarks.filter(b => !REMOVED_BENCHMARKS.includes(b.key));
       S.origin = 'row';
       S.savedAt = new Date(data.updated_at).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
-      S.hasPendingDraft = !!(data.payload.draftPp || data.payload.draftText);
+      S.hasPendingDraft = !!(data.payload.draftPp || data.payload.draftText || gone.length);
       if (S.hasPendingDraft) {
         S.draftSavedAt = data.payload.draftSavedAt
           ? new Date(data.payload.draftSavedAt).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -595,6 +603,7 @@ $('#btnPublish').addEventListener('click', async () => {
     ', CAGR ' + (typeof pp.medianCagr === 'number' ? (pp.medianCagr * 100).toFixed(1) + '%' : '—') +
     ', ' + (pp.properties != null ? pp.properties : '—') + ' properties');
   if (hasTextDraft) parts.push('updated wording');
+  if (S.removedLabels && S.removedLabels.length) parts.push('the removal of ' + S.removedLabels.join(', '));
   if (!confirm('Publish ' + (parts.join(' and ') || 'this draft') +
     ' to the live client page? Anyone with the link will see it immediately.')) return;
   const btn = $('#btnPublish'); btn.disabled = true;
@@ -607,7 +616,7 @@ $('#btnPublish').addEventListener('click', async () => {
     delete payload.draftText;
     const { error } = await sb.from('client_pages').upsert({ key: KEY, payload }, { onConflict: 'key' });
     if (error) throw error;
-    S.publishedPayload = payload; S.hasPendingDraft = false; S.draftSavedAt = null; S.textDraft = null;
+    S.publishedPayload = payload; S.hasPendingDraft = false; S.draftSavedAt = null; S.textDraft = null; S.removedLabels = [];
     S.draft = payload; S.origin = 'row';
     S.savedAt = new Date().toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
     status('ok', 'Loaded', 'Published · saved ' + S.savedAt);
