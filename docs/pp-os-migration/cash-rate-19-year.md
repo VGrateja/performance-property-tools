@@ -47,3 +47,8 @@ config back to the 18-year rate.
 - 2026-10-22 — 18 → 19 years, completed months only; config 2.63% / 4.88% → 2.87% / 5.12%; IR Builder footnote now says
   "plus the 1.75% bank margin and 0.50% APRA buffer" (it said "plus 2.29 percentage points", which the tools never
   used).
+- 2026-11-20 — the window now includes the current month (the 228 newest months on record), matching the IC rate
+  sheet, which now runs to the current month (Shaene: 19-year average 2.85%, Dec 2007 – Nov 2026). Owner: "to have
+  5.10 rate of borrowing". Config 2.86% / 5.11% → 2.85% / 5.10%. Changed in sync-rolling-cash-to-runway-config.mjs
+  (`.lte`), ingest-rba-rates.mjs and the Data Forge cash rate card (`<=`). pp-os still counts completed months only
+  (rolling-cash.ts) until its own change lands.

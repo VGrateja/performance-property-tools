@@ -105,15 +105,15 @@ try {
 } catch (e) { console.error('\n✗ RBA fetch failed:', e.message); await recordStatus('cash_rate', 'Cash Rate', 'RBA cash rate target', 'error', `fetch failed: ${e.message}`); process.exit(1); }
 
 const C = buildRows(cash, 'cash_rate'), B = buildRows(bank, 'bank_rate');
-// 228-month (19-year) average of the monthly cash rate over COMPLETED months —
-// the current Sydney month is left out (Runway Workbook long-run assumption;
-// same rule as sync-rolling-cash-to-runway-config.mjs)
+// 228-month (19-year) average of the monthly cash rate over the 228 newest
+// months, the current Sydney month included (Runway Workbook long-run
+// assumption; same rule as sync-rolling-cash-to-runway-config.mjs, 2026-11-20)
 const thisMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit' }).format(new Date());
-const cashM = C.months.filter(m => m < thisMonth).map(m => cash[m]); const last228 = cashM.slice(-228); const avg228 = last228.reduce((a, b) => a + b, 0) / last228.length;
+const cashM = C.months.filter(m => m <= thisMonth).map(m => cash[m]); const last228 = cashM.slice(-228); const avg228 = last228.reduce((a, b) => a + b, 0) / last228.length;
 
 const latestCash = C.months[C.months.length - 1], latestBank = B.months[B.months.length - 1];
 console.log(`Cash rate (target, month-end): ${C.months.length} months ${C.months[0]}..${latestCash} = ${cash[latestCash]}%`);
-console.log(`  228-month (19-year) avg = ${avg228.toFixed(2)}%  (${last228.length} completed months; Runway Workbook long-run cash rate)`);
+console.log(`  228-month (19-year) avg = ${avg228.toFixed(2)}%  (${last228.length} newest months, this month included; Runway Workbook long-run cash rate)`);
 console.log(`Bank rate (FLRHOFVA+0.5): ${B.months.length} months ${B.months[0]}..${latestBank} = ${bank[latestBank].toFixed(2)}%`);
 const dbCmp = async (metric) => { const { data } = await sb.from('rdp_raw_series').select('period,value').eq('source', 'rba').eq('metric', metric).eq('freq', 'A').gte('period', '2023-01-01').order('period'); return (data || []).map(r => r.period.slice(0, 4) + '=' + (+r.value * 100).toFixed(2)).join(', '); };
 console.log('\nANNUAL (new = year last month):');

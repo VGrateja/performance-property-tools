@@ -1,9 +1,12 @@
 // ============================================================================
 // sync-rolling-cash-to-runway-config.mjs — keep the Runway forecast cash rate
-// equal to the rolling 228-month (19-year) average of the RBA cash rate over
-// COMPLETED months (Van 2026-08-11; 18 -> 19 years by IC decision 2026-10-22).
-// "Completed" = before the current Sydney calendar month, exactly as the IC's
-// "Other Data Auto Gathering" sheet computes it (Oct 2007 - Sep 2026 = 2.87%).
+// equal to the rolling 228-month (19-year) average of the RBA cash rate
+// (Van 2026-08-11; 18 -> 19 years by IC decision 2026-10-22). The window is the
+// 228 NEWEST months on record, the current Sydney month included, exactly as
+// the IC's "Other Data Auto Gathering" sheet now computes it (Dec 2007 - Nov
+// 2026 = 2.85% -> 5.10%; Van 2026-11-20, "to have 5.10", matching the sheet).
+// Until 2026-11-20 the current month was left out (completed months only,
+// Oct 2007 - Sep 2026 = 2.87%), which is what the sheet did at the time.
 //
 // Since Mar 2026 the PP IC's forecast method IS the rolling average, but the
 // number lived in rdp_runway_config as a hand-typed assumption: the GATHER
@@ -35,7 +38,7 @@ const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_R
 const MONTHS = 228;   // 19 years (IC 2026-10-22; was 216 = 18 years)
 const thisMonth = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit' }).format(new Date()) + '-01';
 const { data: rows, error: rerr } = await sb.from('rdp_raw_series').select('period,value')
-  .eq('source', 'rba').eq('metric', 'cash_rate').eq('freq', 'M').lt('period', thisMonth)   // completed months only
+  .eq('source', 'rba').eq('metric', 'cash_rate').eq('freq', 'M').lte('period', thisMonth)   // the current month included, as the sheet does
   .order('period', { ascending: false }).limit(MONTHS);
 if (rerr) { console.error('✗ cash series read failed: ' + rerr.message); process.exit(1); }
 if (!rows || rows.length < MONTHS) { console.error(`✗ cash series too short: ${rows ? rows.length : 0} months (need ${MONTHS}) — refusing to move the average.`); process.exit(1); }
