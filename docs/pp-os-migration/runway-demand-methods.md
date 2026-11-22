@@ -42,3 +42,8 @@ month (the reason Nov 2026 would not build: no rent 36 months back once the hist
   offers Current and Option A only, and shows for dev and admin only (it showed for all staff on staging). Option B
   was not taken up: it left the dropdown; the builder still writes `dsB` on every row. Going to production moves the
   page from `rvd_v3` to `rvd_v3_methods`, so Nov 2026 becomes the latest month there too (the owner confirmed).
+- 2026-11-23: **Investment Committee approved** (relayed by the research lead): Option A (fixed benchmark, `dsA`) and
+  Sample A are now the only method and the only design, for every viewer. The Demand Method and Design dropdowns, the
+  Original, Samples B and C, and Option B are removed from the page (`rvdDsField` and the switch are gone; `rvdDsOf`
+  returns `dsA`, falling back to `ds` only for a row without `dsA`, of which `rvd_v3_methods` has none). Option B's
+  `dsB` is still written by the builder, and the builder is unchanged. Embeds now show Sample A + Option A.

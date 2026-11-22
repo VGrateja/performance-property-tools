@@ -788,6 +788,13 @@ function classifyMarket(name, propertyType) {
      O = clamp( ((N - Nbench)/Nbench)*100, -20, 80 )   (Score v Benchmark = Demand Score)
    Benchmark row uses fixed VR=3, DOM=45, rentalGrowth=0.1, and F = median of F
    over ALL supplied rows incl. National (matches the sheet's MEDIAN(F4:F40)).
+   FIXED BENCHMARK (Option A, Investment Committee 2026-11-23): compute() and
+   benchmark() take an optional `fb`; when given, F of the benchmark row is that
+   constant instead of the month's median. The dashboard always passes it (the
+   per-type constant build-cotality-rvd-history.mjs stores as benchFixed, see
+   DS_FIXED). Without it the engine grades on the median as before, which is
+   what the scripts that load this block (the RvD builders' "Current" ds, the
+   capture scripts) still rely on.
    Grading table: grade(i) = 100 - 0.5*i; A-thresholds step 1 (0..20), 5 (20..100),
    10 (100..3740) — generates the sheet's 401-row table exactly.
    ============================================================================ */
@@ -816,8 +823,9 @@ const PP_DEMAND_ENGINE = (function () {
   /* rows: [{ population, listings, vr, dom, rentGrowth }] with rentGrowth as a
      decimal. Pass EVERY region incl. National so the benchmark median matches
      the sheet; drop National for display AFTER. Adds listingsPer1k, supplyScore,
-     rawDS, scoreInversion, demandScore to each row (mutates + returns). */
-  function compute(rows) {
+     rawDS, scoreInversion, demandScore to each row (mutates + returns).
+     fb (optional): a fixed benchmark listings per 1,000 in place of the median. */
+  function compute(rows, fb) {
     rows.forEach(r => {
       const pop = Number(r.population) || 0, list = Number(r.listings) || 0;
       r._F = pop > 0 ? (list / pop * E1) : 0;
@@ -825,7 +833,7 @@ const PP_DEMAND_ENGINE = (function () {
       r._L = (Number(r.dom) || 0) * (1 - (Number(r.rentGrowth) || 0));
       r._M = r._L * r._H;
     });
-    const Fb = median(rows.map(r => r._F));
+    const Fb = fb != null ? fb : median(rows.map(r => r._F));
     const Nb = grade((BENCH.dom * (1 - BENCH.rentGrowth)) * (BENCH.vr * Fb));
     rows.forEach(r => {
       const N = grade(r._M);
@@ -861,9 +869,9 @@ const PP_DEMAND_ENGINE = (function () {
   const RULE_LABEL = { approvals95: "95% of building approvals", approvals90: "90% of building approvals", oe: "Oxford Economics commencements", forge_approvals: "Forge building approvals" };
   const _rule = code => RULE_LABEL[code] || (code ? String(code).replace(/[_-]+/g, " ") : "new");
   const _basis = (sqm, small) => { if (!sqm) return ""; const pc = String(sqm).match(/postcode=(\d{4})/); const rg = String(sqm).match(/region=([^&]+)/); const lab = pc ? "postcode " + pc[1] : rg ? decodeURIComponent(rg[1].replace(/\+/g, " ")) : String(sqm); return " (SQM basis: " + lab + (small && pc ? " — a single postcode, small sample" : "") + ")"; };
-  function benchmark(rows) {
+  function benchmark(rows, fb) {
     const Fs = rows.map(r => { const pop = Number(r.population) || 0, list = Number(r.listings) || 0; return pop > 0 ? list / pop * E1 : 0; });
-    const Fb = median(Fs);
+    const Fb = fb != null ? fb : median(Fs);
     return { Fb, Nb: grade((BENCH.dom * (1 - BENCH.rentGrowth)) * (BENCH.vr * Fb)) };
   }
   function scoreOne(r, Nb) {
@@ -874,7 +882,9 @@ const PP_DEMAND_ENGINE = (function () {
     return Nb ? Math.min(80, Math.max(-20, ((N - Nb) / Nb) * 100)) : null;
   }
   /* cur / prev: the per-market snapshot shape {ds, pop, listings, avr, rg, dom?, vrr?, sqm?, vrRule?, vrAt?}
-     ctx: { Nb, prevAt, curAt, domFallback, knownCase: {rg: "recommendation text"}, bench: {prevFb, curFb, prevNb, curNb} } */
+     ctx: { Nb, prevAt, curAt, domFallback, knownCase: {rg: "recommendation text"} }
+     Both months are graded against the same FIXED benchmark (Nb), so a move is the market's own inputs only:
+     the "Market-wide benchmark" driver (2026-10-13) was removed with the moving median on 2026-11-23. */
   function explain(cur, prev, ctx) {
     ctx = ctx || {};
     if (!cur || !prev || _n(cur.ds) == null || _n(prev.ds) == null) return null;
@@ -938,18 +948,6 @@ const PP_DEMAND_ENGINE = (function () {
       const recon = scoreOne({ population: prev.pop, listings: prev.listings, vr: prev.avr, dom: domCur, rentGrowth: (_n(prev.rg) || 0) / 100 }, Nb);
       unexplained = { pts: Math.abs(prev.ds - recon), dom: domCur };
     }
-    /* The score is RELATIVE: it is graded against a benchmark built from the median listings per 1,000 across
-       every market. When that median moves, every market moves with it even if its own inputs did not
-       (Saskia 2026-10-13: Brisbane +9 while its listings, VR and rent growth all got worse). */
-    const B = ctx.bench;
-    if (B && canScore && _n(B.prevNb) != null && _n(B.curNb) != null && B.prevNb !== B.curNb) {
-      const effect = scoreOne(base, B.curNb) - scoreOne(base, B.prevNb), pct = pctTxt(B.prevFb, B.curFb);
-      /* own = every own input at once, against LAST month's benchmark: one-at-a-time swaps can each miss a grade step the combination crosses */
-      const prevBase = { population: prev.pop, listings: prev.listings, vr: prev.avr, dom: domPrev != null ? domPrev : domCur, rentGrowth: (_n(prev.rg) || 0) / 100 };
-      const own = scoreOne(base, B.prevNb) - scoreOne(prevBase, B.prevNb);
-      drivers.push({ key: "bench", label: "Market-wide benchmark", prev: B.prevFb, cur: B.curFb, fmt: _f2, effect, cls: "market",
-        note: "median listings per 1,000 across all markets " + _f2(B.prevFb) + " → " + _f2(B.curFb) + (pct != null ? " (" + sgn(pct) + ")" : "") + ", which moves every market’s score, not just this one", detail: null, rec: null, summary: "benchmark moved", own });
-    }
     drivers.sort((a, b) => Math.abs(b.effect || 0) - Math.abs(a.effect || 0));
     /* Verdict: a flagged input only carries the verdict when it MATTERED (≥ 3 pts,
        or its share is unknown); a flagged input that barely moved the score is a
@@ -962,7 +960,6 @@ const PP_DEMAND_ENGINE = (function () {
     if (size === "small") verdict = { cls: "ok", headline: "Normal — a small month-to-month move.", detail: null };
     else if (flaggedMain.length) { const f = flaggedMain[0]; verdict = { cls: f.cls, headline: (f.cls === "source" ? "Check the source" : "Check the capture") + " — " + f.label.toLowerCase() + " moved more than one month of data should.", detail: null }; }
     else { const top = drivers[0]; verdict = (top && top.cls === "method") ? { cls: "method", headline: "Expected — method change, not a market move.", detail: top.detail }
-      : (top && top.key === "bench") ? { cls: "market", headline: "Mostly a market-wide shift — the benchmark moved, more than this market’s own inputs.", detail: null }
       : { cls: "market", headline: "Market move — the inputs moved within their normal ranges.", detail: null }; }
     return { delta, size, drivers, verdict, vcls: verdict.cls, sideChecks, unexplained, dsBase, material: MATERIAL };
   }
@@ -2539,8 +2536,8 @@ function resolveShownData() {
   const snap = state.showLive ? null : (state.snapshots || [])[0];
   if (!snap || !snap.data) return { houses: lh, units: lu, shown: null };
   return {
-    houses: _overlayCapture(lh, _dsReRate(snap.data.houses || {}, snap.version)),
-    units: _overlayCapture(lu, _dsReRate(snap.data.units || {}, snap.version)),
+    houses: _overlayCapture(lh, _dsFix(_dsReRate(snap.data.houses || {}, snap.version), 'houses', snap.version)),
+    units: _overlayCapture(lu, _dsFix(_dsReRate(snap.data.units || {}, snap.version), 'units', snap.version)),
     shown: { version: snap.version, label: snap.label || snap.version, at: snap.captured_at || null },
   };
 }
@@ -2555,9 +2552,42 @@ const DS_KNOWN_CASES = {
   newcastle: { rg: "Newcastle’s rent and vacancy come from SQM postcode 2300 (inner Newcastle only — a small house sample). Consider SQM’s “Hunter Region” series (type=r&region=NSW-Hunter+Region) for both inputs.",
                vr: "Newcastle’s vacancy comes from SQM postcode 2300 (inner Newcastle only). Consider SQM’s “Hunter Region” series." },
 };
-// Benchmark (Nb) of the CURRENT live set per property type — frozen by
+// Benchmark (Nb) per property type, from the FIXED benchmark — set by
 // buildForgeMarkets so the compare view can re-score single rows against it.
 const DS_BENCH = { houses: null, units: null };
+/* THE FIXED BENCHMARK (Option A, Investment Committee 2026-11-23).
+   Every score on this page is graded against one constant listings-per-1,000
+   benchmark per property type, not the month's median across all markets: the
+   average of the monthly medians Jan 2025 – Nov 2026 (houses ≈3.569, units
+   ≈4.474). ONE source: loadForgeAll reads it from where the Runway v Demand
+   builder stores it (forge_cotality id rvd_v3_methods, data.benchFixed; see
+   section 4a of build-cotality-rvd-history.mjs), so this page and RvD's
+   Option A (dsA) cannot drift apart. `delta` is that timeline's own method
+   difference (dsA − ds) by month and market slug, for _dsFix below. */
+const DS_FIXED = { fb: { houses: null, units: null }, delta: {} };
+/* A stored capture holds `ds` on the old median method (the capture button
+   still stores that, so every other reader of the snapshots is unchanged).
+   This re-grades it for display, never rewriting the record:
+   - a capture that froze its inputs (Aug 2026 on) is re-scored from them
+     against the fixed benchmark, exactly as the live month is scored;
+   - an older one (copied from the RvD timeline, inputs not kept) takes the
+     timeline's method difference: ds + (dsA − ds), the builder's anchoring.
+   A market with neither gets no score rather than one on the old method. */
+function _dsFix(map, key, version) {
+  if (!map) return map;
+  const Nb = DS_BENCH[key], tl = (DS_FIXED.delta[String(version || '').replace(/^cot-/, '').slice(0, 7)] || {})[key] || {};
+  const n = v => typeof v === 'number' && isFinite(v);
+  const out = {};
+  for (const slug in map) {
+    const c = map[slug];
+    if (!c) { out[slug] = c; continue; }
+    let ds = null;
+    if (Nb && [c.pop, c.listings, c.avr, c.rg, c.dom].every(n)) ds = PP_DEMAND_ENGINE.scoreOne({ population: c.pop, listings: c.listings, vr: c.avr, dom: c.dom, rentGrowth: c.rg / 100 }, Nb);
+    else if (n(c.ds) && n(tl[slug])) ds = Math.min(80, Math.max(-20, c.ds + tl[slug]));
+    out[slug] = Object.assign({}, c, { ds });
+  }
+  return out;
+}
 // Render an engine explanation as tooltip text. Only a notable/big move gets the
 // full "why" block; a small one gets a single reassuring line.
 function _explainText(ex) {
@@ -2583,9 +2613,6 @@ function _explainText(ex) {
     if (d.effect == null || Math.abs(d.effect) >= 0.5) { minor.push(d.summary || d.label.toLowerCase()); minorPts += d.effect || 0; }
   });
   if (minor.length) L.push("• Other inputs (" + minor.join(", ") + "): " + pts(minorPts) + " together, within normal ranges.");
-  // with a benchmark move in play, say what the market's OWN inputs did on their own — the question a reader actually asks
-  const bd = ex.drivers.find(d => d.key === "bench");
-  if (bd && bd.own != null) L.push("• This market’s own inputs, all together: ≈ " + (bd.own > 0 ? "+" : bd.own < 0 ? "−" : "") + Math.abs(bd.own).toFixed(1) + " pts.");
   (ex.sideChecks || []).forEach(s => L.push("Also check — " + s + "."));
   if (ex.unexplained && ex.unexplained.pts >= 1) L.push("Days on market" + (ex.unexplained.dom != null ? " (now " + Math.round(ex.unexplained.dom) + ")" : "") + " was not stored for the earlier month, so " + pts(ex.unexplained.pts).replace("+", "") + " of the move cannot be assigned.");
   return "\n" + L.join("\n");
@@ -2736,15 +2763,15 @@ function compareView(tab) {
     curLabel = "Live (" + _monthLabel(now) + ")";
     curAt = now.toISOString();
     const pv = snaps[0];
-    prevMap = _dsReRate((pv && pv.data && pv.data[key]) || {}, pv && pv.version);
+    prevMap = _dsFix(_dsReRate((pv && pv.data && pv.data[key]) || {}, pv && pv.version), key, pv && pv.version);
     prevLabel = pv ? (pv.label || pv.version) : "—";
     prevAt = pv && pv.captured_at || null;
   } else {
     const i = snaps.findIndex(s => s.version === sel), cur = snaps[i], pv = snaps[i + 1];
-    curMap = _dsReRate((cur && cur.data && cur.data[key]) || {}, cur && cur.version);
+    curMap = _dsFix(_dsReRate((cur && cur.data && cur.data[key]) || {}, cur && cur.version), key, cur && cur.version);
     curLabel = cur ? (cur.label || cur.version) : sel;
     curAt = cur && cur.captured_at || null;
-    prevMap = _dsReRate((pv && pv.data && pv.data[key]) || {}, pv && pv.version);
+    prevMap = _dsFix(_dsReRate((pv && pv.data && pv.data[key]) || {}, pv && pv.version), key, pv && pv.version);
     prevLabel = pv ? (pv.label || pv.version) : "— (earliest month)";
     prevAt = pv && pv.captured_at || null;
   }
@@ -2752,10 +2779,6 @@ function compareView(tab) {
   const liveBySlug = {};
   (tab === "Houses" ? state.liveHouse : state.liveUnit || []).forEach(m => { const s = _fSlug(m.name); if (s) liveBySlug[s] = m; });
   const aiAt = (state.meta && state.meta.aiCeilingAt) || null;
-  // the benchmark each side was graded against, from the same 36 markets the table shows
-  const _bRows = mp => Object.values(mp).map(s => ({ population: s.pop, listings: s.listings }));
-  let bench = null;
-  try { const bp = PP_DEMAND_ENGINE.benchmark(_bRows(prevMap)), bc = PP_DEMAND_ENGINE.benchmark(_bRows(curMap)); if (Object.keys(prevMap).length) bench = { prevFb: bp.Fb, curFb: bc.Fb, prevNb: bp.Nb, curNb: bc.Nb }; } catch (e) {}
 
   const picker = h("select", { style: { padding: "7px 12px", borderRadius: "7px", border: "1px solid var(--ds-surface-4)", background: "var(--ds-surface-2)", color: "var(--ds-fg-1)", fontSize: "12px", fontWeight: "700", cursor: "pointer" }, onChange: e => { state.compareMonth = e.target.value; render(); } },
     ...options.map(o => h("option", { value: o.v, style: { background: "var(--ds-surface-2)", color: "var(--ds-fg-1)" } }, o.label)));
@@ -2765,7 +2788,7 @@ function compareView(tab) {
     h("div", {},
       h("div", { style: { fontSize: "14px", fontWeight: "800", color: "var(--ds-fg-1)" } }, curLabel + " vs " + prevLabel + " — " + tab),
       h("div", { style: { fontSize: "11px", color: "var(--ds-fg-muted)", marginTop: "3px", maxWidth: "640px", lineHeight: "1.5" } },
-        "Δ = current − previous; sorted by biggest Demand-Score move. Pick a month to compare it against the month before it.")),
+        "Δ = current − previous; sorted by biggest Demand-Score move. Pick a month to compare it against the month before it. Every month is measured against a fixed benchmark: the average market listings level, Jan 2025 – Nov 2026.")),
     h("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" } },
       h("label", { style: { fontSize: "11px", fontWeight: "700", color: "var(--ds-fg-muted)" } }, "Month"),
       picker,
@@ -2784,7 +2807,7 @@ function compareView(tab) {
     const live = liveBySlug[slug] || {};
     const domLine = (p.dom != null && c.dom != null) ? "\nDays on market: " + _arrow(p.dom, c.dom, _int0) : "";   // both months or nothing — a lone dash reads as noise
     let ex = null;
-    try { ex = PP_DEMAND_ENGINE.explain(c, p, { Nb: DS_BENCH[key], prevAt, curAt, domFallback: live.dom, knownCase: DS_KNOWN_CASES[slug], bench }); } catch (e) { ex = null; }
+    try { ex = PP_DEMAND_ENGINE.explain(c, p, { Nb: DS_BENCH[key], prevAt, curAt, domFallback: live.dom, knownCase: DS_KNOWN_CASES[slug] }); } catch (e) { ex = null; }
     const dsTitle = "What changed (prev → now):\n"
       + "Population: " + _arrow(p.pop, c.pop, _int0) + "\n"
       + "Listings: " + _arrow(p.listings, c.listings, _int0) + "\n"
@@ -2854,7 +2877,11 @@ async function captureMonth() {
   try { await loadData(); } catch (e) { /* fall back to the data already in state */ }
   /* LIVE, never what the table is showing — the table is showing the previous
      capture, and freezing that would record last month a second time. */
-  const data = { houses: _snapMap(state.liveHouse), units: _snapMap(state.liveUnit), basis: dsBasis() };
+  /* `ds` is stored on the old median method (demandScoreCurrent) so the
+     snapshots keep one meaning for every tool that reads them; this page
+     re-grades it on the fixed benchmark when it shows it (_dsFix). */
+  const _cur = arr => _snapMap((arr || []).map(m => Object.assign({}, m, { demandScore: m.demandScoreCurrent })));
+  const data = { houses: _cur(state.liveHouse), units: _cur(state.liveUnit), basis: dsBasis() };
   let email = null; try { const p = await sbCurrentProfile(); email = p && p.email; } catch (e) {}
   const { error } = await window.sb.from("forge_demand_snapshots").upsert({ version: ver, label, data, captured_at: new Date().toISOString(), captured_by: email }, { onConflict: "version" });
   if (error) { alert("Save failed (writers only): " + error.message); return; }
@@ -2927,7 +2954,7 @@ function buildPushPayload() {
   const toRow = m => ({
     city: m.name,
     rw: Math.round((Number(m.runway) || 0) * 100 * 100) / 100,
-    ds: Math.round(Number(m.demandScore) || 0)
+    ds: Math.round(Number(m.demandScoreCurrent) || 0)   // the median method, the `ds` Runway v Demand's timeline holds
   });
   // Snapshot the legend block so the Runway v Demand "Demand
   // Dashboard" mode can read its year + variable rate from the most
@@ -3249,7 +3276,7 @@ function _mpStats(arr){
 async function loadForgeAll(){
   for (let i = 0; i < 50 && !window.sb; i++) await new Promise(r => setTimeout(r, 100));
   if (!window.sb) throw new Error('No database connection.');
-  const [reg, di, vr, rw, mp, pop, cot, rc, cotRV, cotHist, rentHist] = await Promise.all([
+  const [reg, di, vr, rw, mp, pop, cot, rc, cotRV, cotHist, rentHist, fixed] = await Promise.all([
     window.sb.from('rdp_regions').select('slug,name,state,cluster'),
     window.sb.from('forge_demand_inputs').select('data').eq('id', 'latest').maybeSingle(),
     window.sb.from('rdp_vr_forecast').select('region_slug,payload'),
@@ -3277,11 +3304,22 @@ async function loadForgeAll(){
        the source-tag decoder — the tag lies, the data is Cotality. */
     window.sb.from('rdp_raw_series').select('region_slug,metric,period,value')
       .in('metric', ['rent_h', 'rent_u']).eq('source', 'sqm').gte('period', '2018-01-01'),
+    /* The FIXED benchmark (DS_FIXED) and the RvD timeline's per-market ds/dsA, from the one row that stores them. */
+    window.sb.from('forge_cotality').select('bench:data->benchFixed,months:data->months').eq('id', 'rvd_v3_methods').maybeSingle(),
   ]);
   // Check EVERY read — a silent cot/mp/rc failure would zero DOM/medians/legend
   // and corrupt the computed scores without surfacing the error UI.
   const err = reg.error || di.error || vr.error || rw.error || pop.error || cot.error || mp.error || rc.error;
   if (err) throw new Error(err.message || 'Forge read failed');
+  /* No fixed benchmark, no score: grading on anything else would show numbers on the retired method. */
+  const fb = fixed.data && fixed.data.bench;
+  if (fixed.error || !fb || !(fb.h > 0) || !(fb.u > 0)) throw new Error('The fixed Demand Score benchmark could not be read (forge_cotality rvd_v3_methods, benchFixed)' + (fixed.error ? ': ' + fixed.error.message : '.'));
+  DS_FIXED.fb = { houses: fb.h, units: fb.u };
+  DS_FIXED.delta = {};
+  for (const m of (Array.isArray(fixed.data.months) ? fixed.data.months : [])) {
+    const d = DS_FIXED.delta[m.month] = { houses: {}, units: {} };
+    for (const k of ['houses', 'units']) for (const r of (m[k] || [])) if (typeof r.ds === 'number' && typeof r.dsA === 'number') d[k][_fSlug(r.city)] = r.dsA - r.ds;
+  }
   /* The two V2 reads are NOT in that guard on purpose. A dashboard on the SQM
      basis must still open if the Cotality drop is missing or the series read
      fails; the toggle reports the basis as unavailable instead. Failing the
@@ -3500,8 +3538,10 @@ function buildForgeMarkets(propertyType, DI, M){
       isNational: slug === 'australia',
     };
   });
-  PP_DEMAND_ENGINE.compute(rawRows);   // National kept in the set for the benchmark median
-  try { DS_BENCH[propertyType] = PP_DEMAND_ENGINE.benchmark(rawRows).Nb; } catch (e) {}   // frozen for the compare view's per-row re-scoring
+  PP_DEMAND_ENGINE.compute(rawRows, DS_FIXED.fb[propertyType]);   // graded against the FIXED benchmark (see DS_FIXED)
+  DS_BENCH[propertyType] = PP_DEMAND_ENGINE.benchmark(rawRows, DS_FIXED.fb[propertyType]).Nb;   // for the compare view's per-row re-scoring
+  /* the old median method (National kept in the set), still what captures and the push store */
+  const nbMedian = PP_DEMAND_ENGINE.benchmark(rawRows).Nb;
 
   const markets = [];
   rawRows.forEach(r => {
@@ -3518,6 +3558,7 @@ function buildForgeMarkets(propertyType, DI, M){
       listingsPer1k: r.listingsPer1k, adjustedVR: Math.round(r.vr * 100) / 100,
       supplyScore: r.supplyScore, dom: r.dom, rentalGrowth36m: Math.round(r.rentGrowth * 10000) / 100,
       rawDS: r.rawDS, demandScore: r.demandScore, scoreInversion: r.scoreInversion,
+      demandScoreCurrent: PP_DEMAND_ENGINE.scoreOne(r, nbMedian),
       runway: (isU ? rw.u : rw.h) != null ? Math.round((isU ? rw.u : rw.h) * 10000) / 10000 : 0,
       prevRW: 0, rwDiff: 0, prevDS: 0, dsDiff: 0,
       medianPrice: st.median, priceGrowth12m: st.g12, priceGrowth3m: st.g3,

@@ -106,3 +106,12 @@ fetch the export falls back to a system sans, as the Original's export does toda
   Sample A only, still for dev and admin only. Samples B and C were not taken up: they left the dropdown, a remembered
   B or C is ignored, and they open by address only (`?design=b`, `?design=c`); their code is kept, unused by the
   dropdown. When Sample A becomes the default, B and C and the dropdown can be removed together.
+- 2026-11-23: **Investment Committee approved** (relayed by the research lead): Sample A and Option A (fixed benchmark,
+  `dsA`) are now the only design and the only method, for every viewer. The Design and Demand Method dropdowns, the
+  Original, Samples B and C (with the clock's Property Clock reading) and Option B are removed from the page; Option B's
+  `dsB` is still written by the builder. Embeds (`?embed=1`, decks and B/S slides) now show Sample A + Option A;
+  `?design=` and a remembered `ppa-rvd-design` no longer do anything. `render()` is now `RVDD.render()`; the page's own
+  `#chart` svg stays built but hidden (its `runwayAxisLabel` text and `runwayTickMid` are still read by
+  `shared/rvd-designs.js`). The deck capture in `shared/bss-slides.js` now waits for `#rvddChart path.rvdd-dot` (it
+  waited for the Original's `circle.city-dot`). Checks: `scratch/_rvd-designs-check.mjs` (12 of 12) and
+  `scratch/_rvd-admin-reveal.mjs` rewritten for the new behaviour.

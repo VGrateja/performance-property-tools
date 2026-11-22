@@ -436,7 +436,8 @@
       try {
         const wrap = () => { try { return f.contentDocument.querySelector('#runwayView .chart-wrap'); } catch (e) { return null; } };
         /* Wait for the DATA to be plotted, not just for the scene to exist.
-           circle.city-dot is one market; the axes, quadrant bands and legend are
+           #rvddChart path.rvdd-dot is one market (the Original's circle.city-dot
+           until 2026-11-23); the axes, quadrant bands and legend are
            drawn before the fetch returns, so anything less specific breaks early
            and photographs an empty plot. (Counting the svg's direct children
            doesn't work either — D3 nests everything under two <g> groups, so the
@@ -444,7 +445,7 @@
         const until = Date.now() + 45000;
         while (Date.now() < until) {
           const w = wrap();
-          if (w && w.querySelectorAll('circle.city-dot').length > 2) break;
+          if (w && w.querySelectorAll('#rvddChart path.rvdd-dot').length > 2) break;
           await sleep(250);
         }
         const el = wrap();
