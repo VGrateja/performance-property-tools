@@ -675,9 +675,28 @@ const payload = {
   }
 }
 
+/* WHEN THE LIVE TIMELINE WAS BUILT (Van, 2026-11-23: gather -> check -> publish
+   -> Runway v Demand built and approved -> only then copied to the OS). The live
+   row records itself as forge_data_status/pipeline_rvd, so the Data Forge can show
+   the chain and say when the OS copy is behind. Other --id rows are trials. */
+const recordBuilt = async (status, message) => {
+  if (ROW_ID !== 'rvd_v3_methods') return;
+  const now = new Date().toISOString();
+  const row = { data_key: 'pipeline_rvd', label: 'Runway v Demand built', source: 'build-cotality-rvd-history', status, message, last_run_at: now, updated_at: now };
+  if (status === 'ok') row.last_ok_at = now;
+  const { error } = await sb.from('forge_data_status').upsert(row, { onConflict: 'data_key' });
+  if (error) console.warn('  (forge_data_status not updated? ' + error.message + ')');
+  else console.log('recorded forge_data_status/pipeline_rvd = ' + status);
+};
+
 const { error: writeErr } = await sb.from('forge_cotality').upsert(
   { id: ROW_ID, data: payload, file_name: 'runway-demand ' + (LISTINGS === 'rea' ? 'V3' : 'V2') + ' timeline', uploaded_by: 'build-cotality-rvd-history.mjs' },
   { onConflict: 'id' });
-if (writeErr) { console.error('\nFAILED to write forge_cotality/' + ROW_ID + ': ' + writeErr.message); process.exit(1); }
+if (writeErr) {
+  console.error('\nFAILED to write forge_cotality/' + ROW_ID + ': ' + writeErr.message);
+  await recordBuilt('error', 'could not write forge_cotality/' + ROW_ID + ': ' + writeErr.message);
+  process.exit(1);
+}
 console.log('\nstored ' + payload.months.length + ' months in forge_cotality id=' + ROW_ID + ' ('
   + Math.round(JSON.stringify(payload).length / 1024) + ' kB).');
+await recordBuilt('ok', payload.months.length + ' months, newest ' + (payload.months.map(m => m.month).sort().pop() || '—'));

@@ -1191,26 +1191,33 @@ async function loadStatus(){
       + '<span class="gct">' + cards.length + '</span></div>'
       + cards.map(cardHtml).join('');
   }).join('');
-  // Pipeline health — the GATHER/PUBLISH heartbeat rows pulled out above.
-  // Red if either failed · amber if GATHER outran PUBLISH by >2 days (mart is
-  // pending) · else a subtle green one-liner.
-  const pg = pipe.pipeline_gather, pp = pipe.pipeline_publish;
+  // Pipeline health — the heartbeat rows pulled out above.
+  // Red if any step failed · amber if GATHER outran PUBLISH by >2 days (mart is
+  // pending) · then the chain as one line (Van 2026-11-23: gather → check →
+  // publish → Runway v Demand built → only then sent to the OS), amber while the
+  // OS copy is older than the newest Publish / Runway v Demand build or has never run.
+  const pg = pipe.pipeline_gather, pp = pipe.pipeline_publish, pr = pipe.pipeline_rvd, po = pipe.pipeline_os_copy;
   // scan EVERY pipeline_* row (incl. the watchdog's verdict) — hardcoding two
   // keys would leave a red watchdog invisible, its whole reason to exist.
-  const PIPE_LABEL = { pipeline_gather: 'GATHER', pipeline_publish: 'PUBLISH', pipeline_watchdog: 'WATCHDOG' };
+  const PIPE_LABEL = { pipeline_gather: 'GATHER', pipeline_publish: 'PUBLISH', pipeline_rvd: 'RUNWAY V DEMAND', pipeline_os_copy: 'SENT TO OS', pipeline_watchdog: 'WATCHDOG' };
   const failed = Object.values(pipe).filter(r => r && r.status === 'error');
   let pipeHtml = '';
   if (failed.length) {
-    pipeHtml = '<div class="df-freshbanner err">⛔ Pipeline failed: '
+    pipeHtml = '<div class="df-freshbanner err">⛔ <span>Pipeline failed: '
       + failed.map(r => '<b>' + (PIPE_LABEL[r.data_key] || esc(r.data_key)) + '</b>' + (r.message ? ' — ' + esc(r.message) : '')).join(' &nbsp;·&nbsp; ')
-      + '</div>';
+      + '</span></div>';
   } else if (pg && pg.last_ok_at && (!pp || !pp.last_ok_at || Date.parse(pg.last_ok_at) - Date.parse(pp.last_ok_at) > 2 * 86400000)) {
     pipeHtml = '<div class="df-freshbanner warn">⚠️ <b>PUBLISH is pending</b> — GATHER ran ' + esc(fmtDate(pg.last_ok_at))
       + ' but the mart was last published ' + (pp && pp.last_ok_at ? esc(fmtDate(pp.last_ok_at)) : '<b>never</b>')
       + ' — run “Data Forge — 2/ PUBLISH” once the data is confirmed.</div>';
-  } else if (pg || pp) {
-    const ago = r => { const d = r ? ageDays(r.last_ok_at) : null; return d == null ? '—' : d + 'd ago'; };
-    pipeHtml = '<div class="df-freshbanner ok sub">pipeline health — GATHER ' + ago(pg) + ' · PUBLISH ' + ago(pp) + '</div>';
+  }
+  if (pg || pp || pr || po) {
+    const day = r => r && r.last_ok_at ? esc(new Date(r.last_ok_at).toLocaleDateString('en-AU', { timeZone: 'Australia/Sydney', day: 'numeric', month: 'short' })) : '—';
+    const okAt = r => r && r.last_ok_at ? Date.parse(r.last_ok_at) : 0;
+    const chain = 'Gather ' + day(pg) + ' → Publish ' + day(pp) + ' → Runway v Demand ' + day(pr) + ' → Sent to OS ' + day(po);
+    pipeHtml += (!okAt(po) || okAt(po) < Math.max(okAt(pp), okAt(pr)))
+      ? '<div class="df-freshbanner warn sub">⚠️ <span><b>Waiting to be sent to OS</b> — ' + chain + '</span></div>'
+      : '<div class="df-freshbanner ok sub">pipeline health — ' + chain + '</div>';
   }
   // Stale-fallback visibility — enrich-marts flags regions it had to serve from
   // the old rdp copy (payload.extras._sources = 'rdp_stale') because the forge

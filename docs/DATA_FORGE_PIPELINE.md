@@ -40,6 +40,36 @@ Three principles hold the design together:
 
 ---
 
+## 2a. The monthly order, hub first then the OS (from 2026-11-23)
+
+*The step lists elsewhere in this doc predate this section. Where they disagree on the order, this section wins.*
+
+The owner set this order on 2026-11-23. The hub's Data Forge is the master; the new app (pp-os, "OS") gathers, checks and publishes nothing of its own.
+
+1. **Gather** in the hub (GATHER workflow on the 10th, plus the manual drops). Records `pipeline_gather`.
+2. **Check** it in the hub's Data Forge (every card current, or "✓ No new data").
+3. **Publish** from the hub (`forge-publish.yml`). Records `pipeline_publish`.
+4. **Build Runway v Demand** and have it approved:
+   `node scripts/build-cotality-rvd-history.mjs --listings=rea --id=rvd_v3_methods --write`
+   writes `forge_cotality` id `rvd_v3_methods`. Built for that id, it records `pipeline_rvd`
+   (label "Runway v Demand built", message "`<n>` months, newest `<YYYY-MM>`"; `status 'error'` if the write fails).
+   Other `--id` builds are trials and record nothing.
+5. **Copy to the OS**: Van runs the pp-os command `sync-from-hub`. When the copy succeeds on production it records
+   `pipeline_os_copy` (label "Sent to OS", source `pp-os sync-from-hub`), with a message such as
+   "hub publish 2026-11-20 · RvD built 2026-11-12 · 24 tables identical".
+
+All four rows live in `forge_data_status` with the other `pipeline_*` heartbeats. The Data Forge home shows them as one
+line, `Gather <date> → Publish <date> → Runway v Demand <date> → Sent to OS <date>` (Sydney days). The line is amber,
+"Waiting to be sent to OS", while the OS copy is older than the newest Publish or Runway v Demand build, or has never
+run. Any of the rows in error turns the "Pipeline failed" banner red with its message.
+
+- The PUBLISH readiness gate (`scripts/publish-readiness-gate.mjs`) ignores every `pipeline_*` row, these two included
+  (an error there is a warning, never a block).
+- The watchdog (`scripts/forge-watchdog.mjs`) fails on any `forge_data_status` row in error other than its own, so a
+  failed Runway v Demand build or OS copy turns the watchdog red. It does not check that the copy happened at all.
+
+---
+
 ## 3. Stage 1 — GATHER
 
 **Workflow:** `.github/workflows/forge-ingests.yml` — *"Data Forge — 1/ GATHER (API ingests)"*.
