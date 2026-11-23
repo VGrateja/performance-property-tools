@@ -17,6 +17,8 @@ The "Wholesale Client Consultation - October 2026 - Refresh" deck (deck id `user
 | Parallelogram shape (the brand slash) | shape `kind: 'parallelogram'`, `slant` = fraction of the width (default 0.25) | `shapeSVG` (editor, present, rail, picker card, PDF/JPG/PPTX exports); shape picker button; "Slant %" row in the Shape panel |
 | Rounded image corners | image `radius` (px of the 1280-wide slide; 0 or unset = square) | `_applyImageRadius`, beside `_applyImageCrop` in all three image renderers; "Corners" row in the Image panel |
 | Links between slides (e.g. a table of contents) | every slide entry carries a permanent `sid` (`s_…`); text link = `<a href="#slide:<sid>" class="pres-slide-link">` (no `target`); shape link = `o.link = '#slide:<sid>'`. Web links unchanged (`target="_blank"`) | "Links between slides" block after `saveActiveDeckIfCustom`: `_ensureSlideSids`, `_backfillSlideSids` (open-time, once, saved through the guarded save; an ids-only write keeps `lastUpdated` via `_sidsOnlySig` in `_persistDeckRow`), one delegated click handler (View / Present; Edit = Ctrl/Cmd-click), toast on a missing target. Text Settings "Link…" → Web address… / Slide in this deck; Shape Settings → Link tabs. Paste gives new sids and remaps links inside the pasted batch; Duplicate deck keeps sids; delete warns when other slides link to the slide. `?deck=<id>&slide=<number or sid>` opens on that slide |
+| Slide number (page-number footers) | the token `{page}` typed in any text box; the stored text keeps the token | `presResolveTokens(html, page)`: `{page}` → the slide's 1-based position, resolved before (and without) the Forge token data, so it renumbers itself on add / delete / reorder. Passed by `buildOverlayEl` (editor, Present, and the PDF / picture-PowerPoint / JPG exports, which capture the live slide), `buildThumbOverlayEl(o, page)` (rail), `_buildThumbOverlay` (library card = slide 1) and `_pxAddText(…, page)` (editable PowerPoint: the number as plain text, not a PowerPoint field). Shown raw while the box is being edited, like every token. Not resolved in table cells or slide-link titles. Listed in the Text Settings "Data tokens" cheat sheet |
+| Calibri falls back to Carlito | text / cell `fontFamily: "Calibri"` (unchanged) | Carlito (metric-compatible, 400/700 + italics) added to the Google Fonts link; `_presFontCss()` turns the stored "Calibri" into the CSS stack `Calibri, Carlito` in every renderer (editor, rail, library card, table cells). Before this, a machine without Calibri (Mac, Linux — including the nightly PDF renderer — phones) drew Calibri text in the browser's default serif. The stored value, the font picker and the editable PowerPoint (`_pxFontFace` takes the first family) still say Calibri |
 
 ## pp-os
 
@@ -32,6 +34,13 @@ with links remapped inside a pasted batch, sids kept on deck duplicate, and the 
 Not built in the hub: internal links in the PDF download (the cached PDF comes from the server
 renderer and the live one from html2canvas images, so a link would exist in one and not the other).
 
+Slide number and Calibri → Carlito (2026-11-23): pp-os needs the same `{page}` token wherever it
+resolves deck text (editor, Present, thumbnails, exports — it must come from the slide's position at
+render time, never be stored as a number), and the same `Calibri, Carlito` stack with Carlito loaded.
+Not built: lining figures for Playfair Display. The browser can draw them (`font-variant-numeric`),
+but html2canvas draws text on a canvas of its own, which ignores that property, so the PDF / JPG /
+picture PowerPoint would show old-style figures while the screen showed lining ones.
+
 ## Changelog
 
 - 2026-10-26 — Source Serif 4, parallelogram + slant, image corner radius (for the Wholesale
@@ -39,3 +48,6 @@ renderer and the live one from html2canvas images, so a link would exist in one 
 - 2026-10-27 — Links between slides (text + shapes), permanent slide ids with a once-per-deck
   backfill on open that keeps the "Updated" date, and the `&slide=` deep link (for the Advisors
   Manual table of contents).
+- 2026-11-23 — `{page}` slide-number token and the Calibri → Carlito fallback (for the dark restyle of
+  "Summary of PPA proprietary tools", `user-ppa-tools-oct28`; restyle script
+  `scratch/ppa-tools-cycles/restyle-dark.mjs`, not yet written to the deck).
