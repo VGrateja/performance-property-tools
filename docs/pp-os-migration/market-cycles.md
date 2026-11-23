@@ -182,3 +182,7 @@ the builder lists the two embeds and loads without an error.
   is left out. Mid-1989 predates the series, so it shows "about 18%", the RBA's own words. Today: 1989–90 about 18%
   → 17.00%; 2008 7.25% → 4.25%; 2010–12 4.50% → 4.25%; 2017–19 1.50% → 1.25%; 2022–23 0.10% → 3.10%; 2026 4.10% →
   4.85% now. Check: `node scratch/_mc-check.mjs` (76; the new check reads the Forge independently of the page).
+- 2026-11-23 (owner: "Remove the buying tag in the capital graph"): the **Buying tags are gone** from Rolling capital
+  growth, with their key beside the headline (`BUYING`, `buyingIn`, the `--buy` / `--buyink` tokens and the label's
+  `rich` style removed; the chart's right margin is back to 70 px). The hold/sell idea goes with them. Check: `node
+  scratch/_mc-check.mjs` (75; the buying-years check is replaced by one that no tag or key shows).
