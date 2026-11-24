@@ -57,3 +57,8 @@ before relying on it.
 - 2026-11-09 — Tool added (hub #23), WF from the major projects Google Sheet (#24). Registered under Vault with a search
   entry and a window card; `vr_workforce.y3` added (mig 135) and filled for the eight WF markets from the VR workbook's WF
   Modifier tab (2028 row); "Use hub table" fixed to stick (saves an empty link instead of a delete that RLS ignored).
+- 2026-11-24 (Shaene, hub PR #35, merged a8ec1db): the **All markets** list keeps its ranking (growth to 2028-29,
+  highest first) but fills the left column top to bottom, then the right (`grid-auto-flow: column`, `--ovrows` set to
+  half the list on each redraw, so All / Capitals / Regional stay right); one column below 880px. The same PR does the
+  same to VR projection's list (1-year forecast VR, tightest first), and matches the Runway tool (b549bc2). pp-os:
+  the same column order wherever OS shows these lists.

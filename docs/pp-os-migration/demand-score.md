@@ -129,3 +129,9 @@ gap is now gone.
   constants are read from `rvd_v3_methods.benchFixed`. The benchmark driver, the own-inputs line and the "market-wide
   shift" verdict are removed. Captures and the push still store the median `ds`. Consumer map added. Not committed;
   Van gates it.
+- 2026-11-24 (Van: the Map view showed "API KEY REQUIRED" on every tile): CARTO's basemaps now answer every keyless
+  request with an "API KEY REQUIRED" tile, so the Map view uses OpenStreetMap's standard tiles
+  (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`, as the IR Builder does), attribution "© OpenStreetMap
+  contributors", darkened by `.ds-map-tiles` (invert + hue-rotate) so the white market labels stay readable in both
+  themes. pp-os: OS has no Demand Score map and no CARTO tiles (grep), so nothing to port. Check:
+  `scratch/_ds-map-probe.mjs` (24/24 OpenStreetMap tiles load, darkened, 72 market marks, both themes).
