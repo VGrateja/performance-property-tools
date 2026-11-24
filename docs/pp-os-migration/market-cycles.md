@@ -193,3 +193,10 @@ the builder lists the two embeds and loads without an error.
   (`#gTicks`): one label per frame ('90 to '26) under the slider thumb's positions, the year on screen lit, and a click
   jumps to that year. Play from the end still restarts at 2007. Check: `node scratch/_mc-check.mjs` (81; the yearly-rate
   checks now preset `growth=yearly`).
+- 2026-11-24, later (owner: "remove the fixed option. We will bring it up next time."): the **2018 join switch is
+  gone**. The page has only the Original figures again: `#cyJoin`, `gFixed`, `SF`, `D()`, `buildFixed`, the
+  per-fall colour map and the "levelled" footnote are removed, and `?join=fixed` is ignored. `chain`, `falls` and
+  `frames` read `S` directly, exactly as before 2026-11-20. The July 2018 bridge in `load()` (one month, so it cannot
+  pass for a peak) stays; it predates the switch. To bring Fixed back, start from commit `c506862`. The port carries
+  no switch. Check: `node scratch/_mc-check.mjs` (69; the Fixed checks are replaced by one that the switch is gone
+  and `?join=fixed` reads as the Original, and staff and admin both see no switch).
