@@ -186,3 +186,10 @@ the builder lists the two embeds and loads without an error.
   growth, with their key beside the headline (`BUYING`, `buyingIn`, the `--buy` / `--buyink` tokens and the label's
   `rich` style removed; the chart's right margin is back to 70 px). The hold/sell idea goes with them. Check: `node
   scratch/_mc-check.mjs` (75; the buying-years check is replaced by one that no tag or key shows).
+- 2026-11-24 (owner, for the research lead): Rolling capital growth now **opens on Houses, 9 years, Total capital
+  growth, at 1990** (the first year), instead of the yearly rate at the latest month. The Total button reads "Total
+  capital growth"; `?growth=yearly` presets the yearly rate (`?growth=total` still works). Switching House/Unit, the
+  period or Yearly/Total keeps the year on screen instead of jumping to the latest. A **year row under the play line**
+  (`#gTicks`): one label per frame ('90 to '26) under the slider thumb's positions, the year on screen lit, and a click
+  jumps to that year. Play from the end still restarts at 2007. Check: `node scratch/_mc-check.mjs` (81; the yearly-rate
+  checks now preset `growth=yearly`).

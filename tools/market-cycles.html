@@ -110,7 +110,15 @@ body.embed-mode .cy{border-radius:0}
 .cy-ctl label{font-size:12px;font-weight:600;color:var(--mut);flex:none;margin-right:-4px}
 .cy-play{width:36px;height:36px;border-radius:50%;border:0;background:var(--teal);color:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex:none}
 .cy-play svg{width:14px;height:14px}
-.cy-range{flex:1;accent-color:var(--teal);min-width:0}
+.cy-track{flex:1;min-width:0;position:relative;height:36px}
+.cy-range{position:absolute;left:0;right:0;top:0;width:100%;height:18px;margin:0;accent-color:var(--teal)}
+/* one label per year under the play line: the year on screen is lit, any year jumps there. Each sits under the
+   thumb's centre for its frame: 8px in from either end (the 16px thumb), evenly between. */
+.cy-ticks{position:absolute;left:0;right:0;top:19px;height:16px}
+.cy-ticks button{position:absolute;top:0;transform:translateX(-50%);border:0;background:transparent;color:var(--mut);font:inherit;font-size:9.5px;font-weight:600;line-height:16px;padding:0 2px;border-radius:999px;cursor:pointer;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cy-ticks button:hover{color:var(--ink)}
+.cy-ticks button.now{background:var(--teal);color:#fff;padding:0 5px}
+.cy-ticks button:focus-visible{outline:2px solid var(--ink);outline-offset:1px}
 .cy-year{position:absolute;right:76px;bottom:34px;font-size:84px;font-weight:800;line-height:1;color:var(--ink);opacity:.13;font-variant-numeric:tabular-nums;pointer-events:none}
 .cy-striphead{margin-top:10px;font-size:11.5px;font-weight:600;color:var(--ink2)}
 .cy-strip{display:grid;gap:2px;margin-top:6px}
@@ -162,11 +170,11 @@ body.embed-mode .cy{border-radius:0}
           <div class="cy-seg" id="gType" role="group" aria-label="Property type"><button type="button" data-type="H" class="on">House</button><button type="button" data-type="U">Unit</button></div>
           <div class="cy-seg" id="gSeg" role="group" aria-label="Period"><button type="button" data-mode="roll75">7.5 years</button><button type="button" data-mode="roll9" class="on">9 years</button><button type="button" data-mode="roll">10 years</button><button type="button" data-mode="long">Long term</button><button type="button" data-mode="custom">Custom</button></div>
           <span class="cy-custom" id="gCustom" hidden><input id="gYears" type="text" inputmode="decimal" autocomplete="off" value="10" aria-label="Custom period in years, 1 to 30" title="Any period from 1 to 30 years. Press Enter to apply">years</span>
-          <div class="cy-seg" id="gMeasure" role="group" aria-label="Growth shown"><button type="button" data-total="0" class="on">Yearly</button><button type="button" data-total="1">Total</button></div>
+          <div class="cy-seg" id="gMeasure" role="group" aria-label="Growth shown"><button type="button" data-total="0">Yearly</button><button type="button" data-total="1" class="on">Total capital growth</button></div>
         </div>
         <div class="cy-ctl">
           <button class="cy-play" id="gPlay" type="button" aria-label="Play"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="gPlayIcon" d="M4.5 3 13 8l-8.5 5Z" fill="currentColor"/></svg></button>
-          <input class="cy-range" id="gRange" type="range" min="0" max="0" step="1" value="0" aria-label="Year">
+          <div class="cy-track"><input class="cy-range" id="gRange" type="range" min="0" max="0" step="1" value="0" aria-label="Year"><div class="cy-ticks" id="gTicks" role="group" aria-label="Jump to a year"></div></div>
           <label id="gSpeedLabel">Speed</label>
           <div class="cy-seg" id="gSpeed" role="group" aria-labelledby="gSpeedLabel"><button type="button" data-speed="slow">Slow</button><button type="button" data-speed="normal">Normal</button><button type="button" data-speed="fast">Fast</button></div>
         </div>
@@ -392,7 +400,7 @@ const QS_YEARS = Math.round(parseFloat(QS.get('years')) * 10) / 10;
 let gCustom = yearsOk(QS_YEARS) ? QS_YEARS : 10;   /* the custom period, in years */
 let gMode = yearsOk(QS_YEARS) ? 'custom' : ['roll', 'roll75', 'roll9', 'long'].includes(QS.get('mode')) ? QS.get('mode') : 'roll9', gFrames = [], gAt = 0, gTimer = null, gChart = null;
 const windowOf = mode => mode === 'custom' ? Math.round(gCustom * 12) : WINDOWS[mode];   /* months; undefined for long */
-let gTotal = QS.get('growth') === 'total' && gMode !== 'long';
+let gTotal = QS.get('growth') !== 'yearly' && gMode !== 'long';   /* Total by default (owner, 2026-11-24); ?growth=yearly for the yearly rate */
 let gType = QS.get('type') === 'unit' ? 'U' : 'H';   /* houses or units; ?type=unit presets it for a slide */
 /* how long each year stays up when playing; ?speed=slow|normal|fast presets it for a slide.
    Fast is what Normal was (0.9 s) and Normal sits between it and Slow; the old 0.45 s was too quick to follow. */
@@ -420,12 +428,14 @@ function showFrame(i, quick){
   gChart.setOption({ animationDurationUpdate: glide, yAxis: { animationDurationUpdate: Math.round(glide * 0.8) }, series: [{ data: barsFor(f) }] });
   $('#gYear').textContent = f.label; $('#gRange').value = gAt;
   document.querySelectorAll('#gStrip div').forEach((d, k) => d.classList.toggle('now', k === gAt));
+  document.querySelectorAll('#gTicks button').forEach((b, k) => { const on = k === gAt; b.classList.toggle('now', on); b.setAttribute('aria-current', on ? 'true' : 'false'); });
 }
 function drawGrowth(){
   const w = windowOf(gMode), total = gTotal && !!w, span = w ? yearWords(w) : '';
   document.querySelectorAll('#gSeg button').forEach(x => { const on = x.dataset.mode === gMode; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); });
   $('#gCustom').hidden = gMode !== 'custom';
   if (document.activeElement !== $('#gYears')) $('#gYears').value = fmtYears(gCustom);
+  const was = gFrames.length ? gFrames[gAt].m.slice(0, 4) : null;   /* the year on screen, kept across a switch */
   gFrames = frames(gMode, total, gType);
   const what = gType === 'U' ? 'unit' : 'house';
   const ink = tok('--ink'), mut = tok('--mut'), grid = tok('--grid'), hi = Math.max(...gFrames.flatMap(f => Object.values(f.v).filter(x => x != null))) * 100, lo = Math.min(0, ...gFrames.flatMap(f => Object.values(f.v).filter(x => x != null))) * 100;
@@ -435,6 +445,7 @@ function drawGrowth(){
   $('#gStrip').innerHTML = gFrames.map(f => '<div style="' + fill[f.lead] + '" title="' + f.label + ': ' + f.lead + ' ' + pct(f.v[f.lead]) + '">' + CODE[f.lead] + '</div>').join('');
   $('#gStripYears').innerHTML = gFrames.map((f, k) => '<span>' + (k === n - 1 || +f.m.slice(0, 4) % 5 === 0 ? "'" + f.m.slice(2, 4) : '') + '</span>').join('');
   $('#gRange').max = n - 1;
+  $('#gTicks').innerHTML = gFrames.map((f, k) => '<button type="button" data-k="' + k + '" style="left:calc(8px + (100% - 16px) * ' + (n > 1 ? k / (n - 1) : 0) + ')" aria-label="Jump to ' + f.label + '" title="' + f.label + '">&#39;' + f.m.slice(2, 4) + '</button>').join('');
   $('#gEyebrow').textContent = what[0].toUpperCase() + what.slice(1) + ' prices · eight capital cities';
   document.querySelectorAll('#gType button').forEach(x => { const on = x.dataset.type === gType; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); });
   $('#gFoot').textContent = '12-month median sale price of ' + what + 's. A capital appears once it has ' + (w ? span : '8 years') + ' of sales on record.' + (gFixed ? ' The step where the data changes source in mid-2018 is levelled.' : '')
@@ -452,7 +463,9 @@ function drawGrowth(){
       label: { show: true, position: 'right', valueAnimation: true, color: ink, fontFamily: 'Montserrat', fontWeight: 700, fontSize: 14, formatter: p => p.data.none ? '' : p.value.toFixed(total ? 0 : 1) + '%' } }],
     animationDuration: 0, animationDurationUpdate: 650, animationEasing: 'linear', animationEasingUpdate: 'linear',
   }, true);
-  showFrame(n - 1, true);
+  /* opens at the first year, 1990 (owner, 2026-11-24); a switch keeps the year that was on screen */
+  const keep = was ? gFrames.findIndex(f => f.m.slice(0, 4) === was) : -1;
+  showFrame(keep >= 0 ? keep : was && was > gFrames[n - 1].m ? n - 1 : 0, true);
 }
 function play(on){
   clearInterval(gTimer); gTimer = null;
@@ -507,6 +520,7 @@ $('#gPlay').addEventListener('click', () => play(!gTimer));
 $('#gSpeed').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setSpeed(b.dataset.speed); });
 setSpeed(gSpeed);
 $('#gRange').addEventListener('input', e => { play(false); showFrame(+e.target.value, true); });
+$('#gTicks').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; play(false); showFrame(+b.dataset.k, true); });
 addEventListener('resize', () => { fit(); if (fChart) fChart.resize(); if (gChart) gChart.resize(); });
 new MutationObserver(paint).observe(document.documentElement, { attributes: true, attributeFilter: ['data-shade'] });
 fit();
