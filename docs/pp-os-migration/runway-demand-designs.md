@@ -115,3 +115,9 @@ fetch the export falls back to a system sans, as the Original's export does toda
   `shared/rvd-designs.js`). The deck capture in `shared/bss-slides.js` now waits for `#rvddChart path.rvdd-dot` (it
   waited for the Original's `circle.city-dot`). Checks: `scratch/_rvd-designs-check.mjs` (12 of 12) and
   `scratch/_rvd-admin-reveal.mjs` rewritten for the new behaviour.
+- 2026-11-24 (Davey via Saskia, meeting 2026-11-24: "the default when you open up the runway is that this is ticked
+  on"): the unlabelled advisor tick box `#showRunwayAxis` now starts **ticked**, so the runway axis labels, the bottom
+  legend and the hover card's runway figure show on every open (markup `checked`, and the boot block sets
+  `checked = true` / `applyShowRunwayAxis(true)`); unticking still hides them. pp-os: OS's Runway v Demand has the same
+  reveal and needs the same default. Check: `scratch/_rw-rvd-probe.mjs`; `scratch/_rvd-designs-check.mjs` now
+  asserts the default and unticks before its "off" probe.

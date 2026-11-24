@@ -200,3 +200,11 @@ the builder lists the two embeds and loads without an error.
   pass for a peak) stays; it predates the switch. To bring Fixed back, start from commit `c506862`. The port carries
   no switch. Check: `node scratch/_mc-check.mjs` (69; the Fixed checks are replaced by one that the switch is gone
   and `?join=fixed` reads as the Original, and staff and admin both see no switch).
+- 2026-11-24, meeting (Davey via Saskia: remove 2022-23 from the falls; Van: "just four, don't add another"):
+  **`?skip=<year>`** (comma list) leaves out the fall that peaked in that year *after* the top five are picked, so no
+  sixth fall comes in; the words count what is left ("compares with four of the biggest since 1980", "any of the
+  four"). The one line under the title now says how long the falls lasted, then how long from the low back to the
+  peak: "All five fell for 7 to 19 months, then were back at their peak 7 to 29 months after the low." (was "All five
+  were back at their peak within 16 to 36 months"). The deck's falls slides link `?view=falls&skip=2022`. pp-os: the
+  same parameter and sentence if OS gets this tool. Check: `node scratch/_mc-check.mjs` (72; new: the sentence
+  follows the data, and three `?skip=2022` checks).
