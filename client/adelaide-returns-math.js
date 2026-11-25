@@ -19,6 +19,8 @@
  * kind 'growth+yield' (residential): r = growth + gross yield × period length
  * (a full year adds the whole year-end yield; the 9-month YTD adds 0.75 of it).
  * Selection uses the growth alone.
+ * leveraged() (25 Nov 2026): a growth+yield row can instead be geared like our
+ * purchases, through the IRR calculator's engine and pp.assumptions; see below.
  * ========================================================================== */
 (function (root) {
   'use strict';
@@ -113,13 +115,77 @@
     return (p.benchmarks || []).filter(function (b) { return b.key === key; })[0] || null;
   }
 
-  /* everything the page draws */
-  function compute(p) {
+  /* decimal year (month grid) → 'YYYY-MM-DD', the inverse of decYear to the day */
+  function isoOf(t) {
+    var y = Math.floor(t + 1e-9), r = (t - y) * 12, m = Math.floor(r + 1e-9);
+    if (m > 11) { y += 1; m = 0; r = 0; }
+    var dim = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    var d = Math.max(1, Math.min(dim, Math.round((r - m) * dim)));
+    return y + '-' + (m < 9 ? '0' : '') + (m + 1) + '-' + (d < 10 ? '0' : '') + d;
+  }
+
+  /* a benchmark's gross yield averaged over [t0, t1], each period weighted by
+     the time it has inside the window; null when no yield cell overlaps */
+  function avgYield(b, years, ytdEnd, t0, t1) {
+    var sum = 0, wt = 0;
+    (years || []).forEach(function (k) {
+      var per = periodOf(k, ytdEnd), y = b && b.yield ? b.yield[k] : null;
+      if (!per || !isNum(y)) return;
+      var a = Math.max(t0, per[0]), z = Math.min(t1, per[1]);
+      if (z <= a) return;
+      sum += y * (z - a); wt += z - a;
+    });
+    return wt > 0 ? sum / wt : null;
+  }
+
+  /* Residential property, leveraged like our purchases (25 Nov 2026, Saskia's
+     review: the client's figure is a geared IRR, so the property market it is
+     set against should be geared the same way). A typical property at the
+     median purchase price, bought at the window start and sold at its end,
+     its price growing as the benchmark's index did over the window, rented at
+     the benchmark's own average gross yield over the window, and run through
+     the IRR calculator's engine (`engine` = tools/irr-breakdown-engine.js)
+     with the calculator's own assumptions (pp.assumptions — deposit + costs,
+     loan, rate, running and selling costs — saved by "Update returns data").
+     Only the growth and the yield differ from our purchases. null — and the
+     row stays the unleveraged growth + gross yield it was — when there is no
+     engine, no saved assumptions, or the index does not cover the window. */
+  function leveraged(b, p, engine) {
+    var pp = p.pp || {}, a = pp.assumptions, w = windowOf(p);
+    if (!engine || !a || typeof a !== 'object' || !w || !b || b.kind !== 'growth+yield') return null;
+    if (!isNum(pp.medianPurchasePrice) || pp.medianPurchasePrice <= 0) return null;
+    var g = compound(b, p.years, p.window.ytdEnd, w.start, w.end, true);
+    if (g.covered < w.years - 1e-6) return null;
+    var y = avgYield(b, p.years, p.window.ytdEnd, w.start, w.end);
+    if (y == null) return null;
+    var opts = {}, k;
+    for (k in a) if (Object.prototype.hasOwnProperty.call(a, k)) opts[k] = a[k];
+    opts.rentalYield = y;
+    var P = pp.medianPurchasePrice, S = P * g.factor, s;
+    try {
+      s = engine.computeBreakdown({ purchasePrice: P, purchaseDate: isoOf(w.start), soldPrice: S, soldDate: p.window.endDate }, opts).summary;
+    } catch (e) { return null; }
+    if (!s || !isNum(s.irr)) return null;
+    return { irr: s.irr, cagr: Math.pow(g.factor, 1 / g.covered) - 1, rentYield: y, salePrice: S, netProfit: s.netProfit };
+  }
+
+  /* everything the page draws; `engine` (optional) turns on leveraged() */
+  function compute(p, engine) {
     var pp = p.pp || {};
     var w = windowOf(p);
     var deposit = (isNum(pp.medianPurchasePrice) && isNum(pp.depositPct)) ? pp.medianPurchasePrice * pp.depositPct : null;
     var ppRes = (w && deposit != null && isNum(pp.medianIrr)) ? ppGrowth(deposit, pp.medianIrr, w.years) : null;
     var rows = (p.benchmarks || []).filter(function (b) { return b.include !== false; }).map(function (b) {
+      var lev = (w && deposit != null) ? leveraged(b, p, engine) : null;
+      if (lev) {
+        /* the client's cash compounds at the leveraged IRR, exactly as the PP row does */
+        var g = ppGrowth(deposit, lev.irr, w.years), path = [], t;
+        path.push([w.start, 1]);
+        for (t = Math.floor(w.start) + 1; t < w.end - 1e-9; t++) path.push([t, Math.pow(1 + lev.irr, t - w.start)]);
+        path.push([w.end, g.factor]);
+        return { key: b.key, label: b.label, source: b.source, kind: b.kind, leveraged: lev,
+          pa: g.pa, total: g.total, end: g.end, covered: w.years, short: false, path: path };
+      }
       var r = annualise(b, p, deposit) || {};
       return { key: b.key, label: b.label, source: b.source, kind: b.kind,
         pa: r.pa, total: r.total, end: r.end, covered: r.covered, short: r.short, path: r.path || [] };
@@ -133,6 +199,7 @@
   }
 
   var api = { decYear: decYear, periodOf: periodOf, windowOf: windowOf, periodReturn: periodReturn,
-    compound: compound, annualise: annualise, ppGrowth: ppGrowth, compute: compute };
+    compound: compound, annualise: annualise, ppGrowth: ppGrowth, compute: compute,
+    isoOf: isoOf, avgYield: avgYield, leveraged: leveraged };
   root.ADLMath = api;
 })(typeof window !== 'undefined' ? window : this);
