@@ -208,3 +208,24 @@ the builder lists the two embeds and loads without an error.
   were back at their peak within 16 to 36 months"). The deck's falls slides link `?view=falls&skip=2022`. pp-os: the
   same parameter and sentence if OS gets this tool. Check: `node scratch/_mc-check.mjs` (72; new: the sentence
   follows the data, and three `?skip=2022` checks).
+- 2026-11-25 (owner: the 2026 line stops at August; "a faint line and dot per month … Sep, then Oct, then Nov"): after
+  the Forge's last month the falls chart's 2026 line carries on **faint** (hot colour at ~40% opacity, a dot per month,
+  each labelled "Sep −6.1%", "Oct −7.4%", "Nov (to 25th) −8.8%"), from **Cotality's Daily Home Value Index**,
+  five-capital aggregate, joined to the Forge's last month (each point = the last solid point × aggregate(month end) /
+  aggregate(Forge's last month end)); the month in progress uses the latest day. The solid line's label reads "2026:
+  −4.6% to Aug" when the faint months show; the 2026 legend adds "Faint: Cotality daily index, to 25 Nov"; the footnote
+  names the source and the join. The line under the title and the pace row stay on the Forge's months. Data: new
+  `forge_cotality` row **`cl_daily_hvi`** (`data.series[<City>|'Five capitals'] = { monthEnd: {YYYY-MM: value}, latest }`,
+  `data.latest`), written by **`node scripts/ingest-cotality-daily-hvi.mjs --write`** from Cotality's public feed
+  `https://au-indices.cotality.com/asx.json` (the indices page's rolling 365-day back series; Cotality revises the past
+  12 months on the 1st, so re-run after the 1st). Without the row the chart is as before. pp-os: the same store row
+  (via sync-from-hub) and the same faint extension, after 072.
+- 2026-11-25, later (Davey via Saskia, meeting 2026-11-25; Van: "do it in slide 9 too"): the line under the falls
+  title drops the time back to the peak: "All five fell for 7 to 19 months." (with `?skip=2022`, "All four …"). Check:
+  `node scratch/_mc-check.mjs` (74).
+- 2026-11-25, push (owner: "make sure 2022 is removed and 2026 biggest fall will show the Nov data"): with no `skip`
+  parameter the falls view now leaves 2022 out (`SKIP = ['2022']` by default; `?skip=none` shows all five), so the
+  plain address shows four falls. With the faint Cotality months, the 2026 legend entry reads at the latest of them
+  ("2026 −8.8%", "7 months in, to 25 Nov 2026", then "Faint: Cotality daily index from Sep"); the solid line's own
+  label stays "2026: −4.6% to Aug" and the line under the title stays on the Forge's months. Check:
+  `node scratch/_mc-check.mjs` (75; section 1 reads `?skip=none`).

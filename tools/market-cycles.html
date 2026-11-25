@@ -20,7 +20,9 @@
                     custom period, or since each capital's first record; as a
                     yearly rate or the total
      &skip=2022     leaves out the fall that peaked in that year (comma list allowed);
-                    the rest keep their places and the words count what is left
+                    the rest keep their places and the words count what is left.
+                    Without the parameter 2022 is left out (owner, 2026-11-25);
+                    &skip=none shows all five
 
    ?embed=1 draws one chart at 1280 x 720 with no app bar, for a slide
    (Presentation > Add embed). ?theme=light|dark picks the ground; an embed is
@@ -83,6 +85,7 @@ body.embed-mode .cy{border-radius:0}
 .cy-leg b span{font-weight:600;color:var(--ink2);margin-left:7px;font-variant-numeric:tabular-nums}
 .cy-leg small{display:block;font-size:11px;color:var(--mut);margin-top:1px;white-space:nowrap}
 .cy-leg small.rt{margin-top:2px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.cy-leg small.dx{margin-top:2px;color:var(--hot);opacity:.7;font-variant-numeric:tabular-nums}
 .cy-legkey{font-size:10.5px;line-height:1.35;color:var(--mut);margin-top:-2px}
 .cy-leg.hot{margin-top:2px;padding-top:12px;border-top:1px solid var(--rule)}
 .cy-leg.hot i{height:5px;margin-top:8px}
@@ -202,7 +205,8 @@ const MONTH = ['January', 'February', 'March', 'April', 'May', 'June', 'July', '
 const CITIES = ['Sydney', 'Melbourne', 'Brisbane', 'Adelaide', 'Perth', 'Hobart', 'Darwin', 'Canberra'];
 const CODE = { Sydney: 'SYD', Melbourne: 'MEL', Brisbane: 'BNE', Adelaide: 'ADL', Perth: 'PER', Hobart: 'HBA', Darwin: 'DRW', Canberra: 'CBR' };
 const FIVE = CITIES.slice(0, 5);
-const SKIP = (QS.get('skip') || '').split(',').map(s => s.trim()).filter(s => /^\d{4}$/.test(s));   /* peak years left out of the falls (owner, 2026-11-24) */
+/* peak years left out of the falls (owner, 2026-11-24); by default 2022 (owner, 2026-11-25: "make sure 2022 is removed"); ?skip=none keeps all */
+const SKIP = QS.has('skip') ? (QS.get('skip') || '').split(',').map(s => s.trim()).filter(s => /^\d{4}$/.test(s)) : ['2022'];
 const COUNT = ['no', 'one', 'two', 'three', 'four', 'five'];
 const CITY_TOKEN = { Sydney: '--syd', Melbourne: '--mel', Brisbane: '--bne', Adelaide: '--adl', Perth: '--per', Hobart: '--hba', Darwin: '--drw', Canberra: '--cbr' };   /* one colour per capital */
 
@@ -232,16 +236,23 @@ const S = {}; let MONTHS = [];
    20 Nov 2026. */
 let CASH = {};
 const cashAt = m => CASH[m] != null ? pct(CASH[m], 2) : m >= '1989-01' && m < '1990-01' ? 'about 18%' : null;
+/* Cotality's Daily Home Value Index, five capitals + aggregate, month-ends + latest day (scripts/ingest-cotality-daily-hvi.mjs) */
+let DAILY = null;
+const lastDayOf = ym => new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 0)).toISOString().slice(0, 10);
+const dayLabel = d => (+d.slice(8, 10)) + ' ' + MON[+d.slice(5, 7) - 1] + ' ' + d.slice(0, 4);
 async function pageAll(build){ const rows = []; for (let from = 0; ; from += 1000) { const { data, error } = await build().range(from, from + 999); if (error) throw error; rows.push(...(data || [])); if (!data || data.length < 1000) break; } return rows; }
 async function load(){
   await sb.auth.getSession();
-  const [hist, live, cash] = await Promise.all([
+  const [hist, live, cash, daily] = await Promise.all([
     sb.from('forge_cotality').select('data').eq('id', 'cl_capital_history').maybeSingle(),
     pageAll(() => sb.from('forge_cl_suburbs').select('month,name,ptype,avm:metrics->avm,med12:metrics->med12,props:metrics->props').eq('level', 'capital').order('month').order('name').order('ptype').order('state')),
     /* the charts draw without it: the legend then leaves the rate line out */
     pageAll(() => sb.from('rdp_raw_series').select('period,value').eq('source', 'rba').eq('metric', 'cash_rate').eq('freq', 'M').order('period')).catch(() => []),
+    /* the same: without it the 2026 line simply stops at the Forge's last month */
+    sb.from('forge_cotality').select('data').eq('id', 'cl_daily_hvi').maybeSingle().then(r => r, () => ({})),
   ]);
   CASH = Object.fromEntries(cash.filter(r => r.value != null).map(r => [String(r.period).slice(0, 7), +r.value]));
+  DAILY = (daily && daily.data && daily.data.data) || null;
   if (hist.error) throw hist.error;
   if (!hist.data || !hist.data.data || !hist.data.data.cities) throw new Error('The capital city history is not in the Forge yet.');
   const H = hist.data.data, put = (city, pt, m, v) => { ((S[city] = S[city] || {})[pt] = S[city][pt] || {})[m] = v; };
@@ -297,11 +308,22 @@ let fChart = null;
 function drawFalls(){
   const F = falls(), last = MONTHS[MONTHS.length - 1], cols = ['--c1', '--c2', '--c3', '--c4', '--c5'].map(tok), hot = tok('--hot'), ink2 = tok('--ink2'), mut = tok('--mut'), grid = tok('--grid'), rule = tok('--rule');
   const now = F.now, at = (e, k) => { const p = e.pts.find(x => x[0] >= k); return p ? p[1] : null; };
+  /* owner, 2026-11-25: after the Forge's last month the 2026 line carries on, faint, from Cotality's daily index
+     (five-capital aggregate) joined to that month: a dot per complete month, then the month in progress to its latest day */
+  const ext = [], agg = DAILY && DAILY.series && DAILY.series['Five capitals'], lp = now && now.pts[now.pts.length - 1];
+  if (now && agg && agg.monthEnd && agg.monthEnd[last] && lp[0] === now.months) {
+    const base = agg.monthEnd[last], add = (m, v, to) => ext.push({ m, x: now.months + between(last, m), y: +(lp[1] * v / base).toFixed(2), to });
+    Object.keys(agg.monthEnd).filter(m => m > last).sort().forEach(m => add(m, agg.monthEnd[m]));
+    const cur = String(DAILY.latest || '').slice(0, 7);
+    if (cur > last && agg.monthEnd[cur] == null && agg.latest) add(cur, agg.latest, DAILY.latest);
+  }
+  const extLab = e => MON[+e.m.slice(5, 7) - 1] + (e.to ? ' (to ' + (+e.to.slice(8, 10)) + 'th)' : '') + ' ' + pct(e.y / 100 - 1);
+  const tip = ext.length ? ext[ext.length - 1] : null;
   /* the one line under the title follows the data, and carries what three tiles used to say */
-  const mo = n => n + (n === 1 ? ' month' : ' months'), downs = F.top.map(e => e.toTrough), ups = F.top.map(e => e.toBack - e.toTrough);
-  /* owner, 2026-11-24: how long each fell, then how long from the low back to the peak */
+  const mo = n => n + (n === 1 ? ' month' : ' months'), downs = F.top.map(e => e.toTrough);
+  /* owner, 2026-11-24: how long each fell; 2026-11-25 (Davey): the time back to the peak is left off */
   const word = COUNT[F.top.length], few = SKIP.length ? word + ' of the biggest' : 'the ' + word + ' biggest';
-  const regained = 'All ' + word + ' fell for ' + Math.min(...downs) + ' to ' + Math.max(...downs) + ' months, then were back at their peak ' + Math.min(...ups) + ' to ' + Math.max(...ups) + ' months after the low.';
+  const regained = 'All ' + word + ' fell for ' + Math.min(...downs) + ' to ' + Math.max(...downs) + ' months.';
   if (now) {
     /* a quarter of a point either way is a tie, not a ranking */
     const here = now.pts[now.pts.length - 1][1], stage = F.top.map(e => [e, at(e, now.months)]).filter(x => x[1] != null);
@@ -314,15 +336,21 @@ function drawFalls(){
     $('#fTitle').textContent = few[0].toUpperCase() + few.slice(1) + ' falls in capital city home values since 1980';
     $('#fKey').textContent = 'Values are at or near their peak in ' + monthLabel(last) + '. ' + regained;
   }
-  const lo = Math.min(...F.top.concat(now ? [now] : []).flatMap(e => e.pts.map(p => p[1])));
+  const lo = Math.min(...F.top.concat(now ? [now] : []).flatMap(e => e.pts.map(p => p[1])), ...ext.map(e => e.y));
   const series = F.top.map((e, i) => ({ name: e.name, type: 'line', data: e.pts, showSymbol: false, smooth: 0.25, lineStyle: { width: 2.25, color: cols[i] }, itemStyle: { color: cols[i] }, emphasis: { focus: 'series' }, z: 2, animationDuration: 1400, animationDelay: i * 250 }));
   if (now) series.push({ name: now.name, type: 'line', data: now.pts, showSymbol: true, symbol: 'circle', symbolSize: (v, p) => p.dataIndex === now.pts.length - 1 ? 12 : 0, smooth: 0.15, lineStyle: { width: 5, color: hot, cap: 'round' }, itemStyle: { color: hot, borderColor: tok('--bg'), borderWidth: 2 }, z: 5, animationDuration: 1600, animationDelay: 1500,
-    endLabel: { show: true, formatter: () => now.name + ': ' + pct(-now.fall) + ' so far', color: hot, fontFamily: 'Montserrat', fontWeight: 700, fontSize: 15, offset: [8, 14], textBorderColor: tok('--bg'), textBorderWidth: 4 } });
+    endLabel: { show: true, formatter: () => now.name + ': ' + pct(-now.fall) + (ext.length ? ' to ' + MON[+last.slice(5, 7) - 1] : ' so far'), color: hot, fontFamily: 'Montserrat', fontWeight: 700, fontSize: 15, offset: [8, 14], textBorderColor: tok('--bg'), textBorderWidth: 4 } });
+  if (ext.length) series.push({ name: now.name + ', Cotality daily index', type: 'line', data: [[lp[0], lp[1]], ...ext.map(e => [e.x, e.y])], smooth: 0,
+    showSymbol: true, symbol: 'circle', symbolSize: (v, p) => p.dataIndex === 0 ? 0 : 9, lineStyle: { width: 3, color: hot, opacity: 0.38, cap: 'round' }, itemStyle: { color: hot, opacity: 0.55 },
+    label: { show: true, position: 'right', distance: 7, formatter: p => p.dataIndex === 0 ? '' : extLab(ext[p.dataIndex - 1]), color: hot, fontFamily: 'Montserrat', fontWeight: 600, fontSize: 12, opacity: 0.85, textBorderColor: tok('--bg'), textBorderWidth: 3 },
+    z: 4, animationDuration: 900, animationDelay: 3200 });
   /* the cash rate at the peak and at the turn (the low); for 2026, at the peak and now (the latest month on record) */
   const cashMonths = Object.keys(CASH).sort(), cashNow = cashMonths[cashMonths.length - 1];
   const rateLine = (a, b, tail) => a && b ? '<small class="rt">Cash rate ' + a + ' → ' + b + (tail || '') + '</small>' : '';
   $('#fLegend').innerHTML = F.top.map((e, i) => '<div class="cy-leg"><i style="background:' + cols[i] + '"></i><div><b>' + e.name + '<span>' + pct(-e.fall) + '</span></b><small>Low at ' + mo(e.toTrough) + ' · back in ' + e.toBack + '</small>' + rateLine(cashAt(e.peak), cashAt(e.trough)) + '</div></div>').join('')
-    + (now ? '<div class="cy-leg hot"><i style="background:' + hot + '"></i><div><b>' + now.name + '<span>' + pct(-now.fall) + '</span></b><small>' + mo(now.months) + ' in, to ' + monLabel(last) + '</small>' + rateLine(cashAt(now.peak), cashNow && cashAt(cashNow), ' now') + '</div></div>' : '')
+    /* owner, 2026-11-25: with the faint months, the 2026 entry reads at the latest of them (Cotality's daily index) */
+    + (now ? '<div class="cy-leg hot"><i style="background:' + hot + '"></i><div><b>' + now.name + '<span>' + (tip ? pct(tip.y / 100 - 1) : pct(-now.fall)) + '</span></b><small>' + (tip ? mo(tip.x) + ' in, to ' + dayLabel(tip.to || lastDayOf(tip.m)) : mo(now.months) + ' in, to ' + monLabel(last)) + '</small>' + rateLine(cashAt(now.peak), cashNow && cashAt(cashNow), ' now')
+      + (tip ? '<small class="dx">Faint: Cotality daily index from ' + MON[+ext[0].m.slice(5, 7) - 1] + '</small>' : '') + '</div></div>' : '')
     + (cashMonths.length ? '<div class="cy-legkey">Cash rate at the peak → at the turn (the low)</div>' : '');
   /* three months, as a yearly rate: each capital's own houses and units, then the five together */
   const rate = legs => { const x = chain(legs), a = x[addM(last, -3)], b = x[last]; return a && b ? Math.pow(b / a, 4) - 1 : null; };
@@ -333,6 +361,7 @@ function drawFalls(){
   const starts = FIVE.map(c => [c, (MONTHS.find(m => S[c].H[m] && S[c].H[m].avm) || '').slice(0, 4)]), firstYear = starts.map(x => x[1]).filter(Boolean).sort()[0], later = starts.filter(x => x[1] && x[1] !== firstYear);
   $('#fFoot').textContent = 'Median estimated value of all dwellings, weighted by dwelling numbers, to ' + monthLabel(last) + '.' + (later.length ? ' ' + sinceWords(later) + '.' : '')
     + (Object.keys(CASH).length ? ' Cash rate: RBA, end of month (mid-1989: RBA Annual Report 1991).' : '')
+    + (ext.length ? ' Faint: Cotality Daily Home Value Index, five-capital aggregate, joined to ' + monthLabel(last) + ', to ' + dayLabel(ext[ext.length - 1].to || lastDayOf(ext[ext.length - 1].m)) + '.' : '')
     + ' Source: Cotality. Analysis: Performance Property. © ' + new Date().getFullYear() + ' PPA Services Pty Ltd';
   if (!fChart) fChart = echarts.init($('#fChart'), null, { renderer: 'svg' }); else fChart.resize();
   fChart.setOption({
