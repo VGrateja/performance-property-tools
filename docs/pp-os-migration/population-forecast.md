@@ -62,3 +62,9 @@ before relying on it.
   half the list on each redraw, so All / Capitals / Regional stay right); one column below 880px. The same PR does the
   same to VR projection's list (1-year forecast VR, tightest first), and matches the Runway tool (b549bc2). pp-os:
   the same column order wherever OS shows these lists.
+- 2026-11-25 (Davey via Van: the runway list "to just be one long list, not two", then "Do the same one long list to VR
+  Projection tool and Pop Forecasting tool"): the **All markets** lists of Population Forecast (`#pfOverview`) and VR
+  projection (`#vrOv .ovgrid`) are now ONE column at every width, in their ranking (growth to 2028-29 highest first;
+  1-year forecast VR tightest first); the 11-24 two-column fill and `--ovrows` are gone. Same change as the Runway
+  Workbook (runway-workbook.md, f36efdc2). pp-os: these lists are one long list in OS too (075's Population Forecast
+  was ported from the two-column version). Check: `scratch/ppa-tools-cycles/probe-ov-lists-1125.mjs`.
