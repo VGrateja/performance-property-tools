@@ -64,6 +64,19 @@ body.embed-mode .appbar{display:none!important}
 body.embed-mode .cy-page{max-width:none;margin:0;padding:0}
 body.embed-mode .cy-tabs{display:none}
 body.embed-mode .cy{border-radius:0}
+/* Present (owner, 2026-11-25): one chart full screen, scaled to fit like an embed; arrows switch charts, Esc leaves */
+.cy-tab.cy-present{margin-left:auto}
+body.cy-presenting{overflow:hidden}
+body.cy-presenting .appbar,body.cy-presenting .cy-tabs{display:none!important}
+body.cy-presenting .cy-page{max-width:none;margin:0;padding:0}
+body.cy-presenting .cy{border-radius:0}
+.cy-presbar{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:max(16px,env(safe-area-inset-bottom,0px));z-index:50;display:none;align-items:center;gap:6px;padding:6px;border-radius:999px;background:rgba(10,13,19,.78);border:1px solid rgba(255,255,255,.14);color:#C9CFDA;font-size:13px;font-weight:600;transition:opacity .3s}
+body.cy-presenting .cy-presbar{display:flex}
+.cy-presbar button{border:0;background:transparent;color:#fff;font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px;cursor:pointer}
+.cy-presbar button:hover,.cy-presbar button:focus-visible{background:rgba(255,255,255,.12);outline:none}
+.cy-presbar span{padding:0 4px;white-space:nowrap}
+body.cy-presenting.cy-idle{cursor:none}
+body.cy-presenting.cy-idle .cy-presbar{opacity:0;pointer-events:none}
 
 .cy-eyebrow{font-size:13px;font-weight:600;color:var(--teal)}
 .cy h1{margin:5px 0 0;font-size:32px;line-height:1.12;font-weight:700;letter-spacing:-.012em;text-wrap:balance}
@@ -138,6 +151,13 @@ body.embed-mode .cy{border-radius:0}
   <div class="cy-tabs" role="tablist">
     <button class="cy-tab" data-view="falls" role="tab">The biggest falls</button>
     <button class="cy-tab" data-view="growth" role="tab">Rolling capital growth</button>
+    <button class="cy-tab cy-present" id="cyPresent" type="button" title="Show the chart full screen. ← → switch charts, Esc leaves.">▶ Present</button>
+  </div>
+  <div class="cy-presbar" id="cyPresBar" role="toolbar" aria-label="Present">
+    <button type="button" id="cyPrev" aria-label="Previous chart">‹</button>
+    <span id="cyPresName"></span>
+    <button type="button" id="cyNext" aria-label="Next chart">›</button>
+    <button type="button" id="cyExit">Exit</button>
   </div>
   <div class="cy-fit" id="cyFit">
     <section class="cy" id="cy" data-ground="dark">
@@ -449,7 +469,9 @@ function drawGrowth(){
   $('#gFoot').textContent = '12-month median sale price of ' + what + 's. A capital appears once it has ' + (w ? span : '8 years') + ' of sales on record.'
     + ' Source: Cotality. Analysis: Performance Property. © ' + new Date().getFullYear() + ' PPA Services Pty Ltd';
   document.querySelectorAll('#gMeasure button').forEach(x => { const on = (x.dataset.total === '1') === total; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); if (x.dataset.total === '1') { x.disabled = !w; x.title = w ? '' : 'Total growth needs the same period for every capital'; } });
-  if (!gChart) gChart = echarts.init($('#gChart'), null, { renderer: 'canvas' }); else gChart.resize();
+  /* drawn at 2x at least: Present scales the slide up with CSS (1.5x on a 1080p screen, 2x on 1440p), and a 1x canvas
+     would blur. Re-creating the chart at each scale instead left ECharts' tooltip timers on a disposed chart. */
+  if (!gChart) gChart = echarts.init($('#gChart'), null, { renderer: 'canvas', devicePixelRatio: Math.max(2, devicePixelRatio || 1) }); else gChart.resize();
   /* a yearly rate runs to about 15%, a total to a few hundred: the axis steps and the bar figures follow */
   const step = hi > 60 ? 50 : hi > 30 ? 10 : 3;
   gChart.setOption({
@@ -480,9 +502,15 @@ function setSpeed(s){
 }
 
 /* ═════════════════════════════ page ═════════════════════════════ */
+const presenting = () => document.body.classList.contains('cy-presenting');
+const slideScale = () => EMBED || presenting() ? Math.min(innerWidth / 1280, innerHeight / 720) : Math.min(1, ($('.cy-page').clientWidth - 40) / 1280);
 function fit(){
-  const host = $('#cyFit'), avail = EMBED ? Math.min(innerWidth / 1280, innerHeight / 720) : Math.min(1, ($('.cy-page').clientWidth - 40) / 1280);
+  const host = $('#cyFit'), avail = slideScale(), pres = presenting();
   host.style.transform = 'scale(' + avail + ')'; host.style.height = (720 * avail) + 'px'; host.style.width = '1280px';
+  /* Present centres the slide on the screen; the edges take the slide's own ground */
+  host.style.marginLeft = pres ? Math.max(0, (innerWidth - 1280 * avail) / 2) + 'px' : '';
+  host.style.marginTop = pres ? Math.max(0, (innerHeight - 720 * avail) / 2) + 'px' : '';
+  document.body.style.background = pres ? getComputedStyle($('#cy')).getPropertyValue('--bg').trim() : '';
 }
 function show(view){
   VIEW = view; play(false);
@@ -493,8 +521,42 @@ function show(view){
 function paint(){
   const g = ground(); $('#cy').dataset.ground = g; $('#fLogo').src = LOGO[g]; $('#gLogo').src = LOGO[g];
   if (MONTHS.length) show(VIEW);
+  if (presenting()) fit();
 }
-document.querySelectorAll('.cy-tab').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
+document.querySelectorAll('.cy-tab[data-view]').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
+/* ── Present (owner, 2026-11-25: "add a present feature in market Cycles for both graph") ──
+   The slide alone, full screen where the browser allows it, scaled to fit and centred like an embed. ← → (or Page
+   Up/Down, or the bar's arrows) switch between the two charts; Esc or Exit leaves. The bar hides after 2.5 s still. */
+const VIEW_NAME = { falls: 'The biggest falls', growth: 'Rolling capital growth' };
+let presIdle = null;
+function presWake(){ document.body.classList.remove('cy-idle'); clearTimeout(presIdle); if (presenting()) presIdle = setTimeout(() => document.body.classList.add('cy-idle'), 2500); }
+function presName(){ $('#cyPresName').textContent = VIEW_NAME[VIEW] + ' · ' + (VIEW === 'falls' ? 1 : 2) + ' of 2'; }
+/* a key redraws the chart under a still mouse, so an open tooltip is closed first, or its pending move lands on the
+   tooltip the redraw removed (ECharts: "Cannot read properties of null (reading 'offsetWidth')") */
+function closeTips(){ [fChart, gChart].forEach(c => { if (c) try { c.dispatchAction({ type: 'hideTip' }); } catch (e) {} }); }
+function present(on){
+  if (on === presenting()) return;
+  play(false); closeTips();
+  document.body.classList.toggle('cy-presenting', on);
+  if (on) { const el = document.documentElement; if (el.requestFullscreen && !document.fullscreenElement) el.requestFullscreen().catch(() => {}); }
+  else { clearTimeout(presIdle); document.body.classList.remove('cy-idle'); if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {}); }
+  fit();
+  if (MONTHS.length) show(VIEW);
+  presName(); presWake();
+}
+function presStep(){ closeTips(); show(VIEW === 'falls' ? 'growth' : 'falls'); presName(); presWake(); }
+$('#cyPresent').addEventListener('click', () => present(true));
+$('#cyExit').addEventListener('click', () => present(false));
+$('#cyPrev').addEventListener('click', presStep);
+$('#cyNext').addEventListener('click', presStep);
+addEventListener('mousemove', () => { if (presenting()) presWake(); });
+addEventListener('keydown', e => {
+  if (!presenting() || (e.target && e.target.closest && e.target.closest('input'))) return;   /* the years box keeps its keys */
+  if (['ArrowRight', 'ArrowLeft', 'PageDown', 'PageUp'].includes(e.key)) { e.preventDefault(); presStep(); }
+  else if (e.key === 'Escape') present(false);
+});
+/* the browser's own Esc leaves full screen without a keydown: leave Present with it */
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && presenting()) present(false); });
 $('#gSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return;
   /* Custom starts from the period on screen, so the chart does not jump until a new figure is typed */
   if (b.dataset.mode === 'custom' && gMode !== 'custom' && WINDOWS[gMode]) gCustom = Math.round(WINDOWS[gMode] / 12 * 10) / 10;

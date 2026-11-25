@@ -239,3 +239,12 @@ the builder lists the two embeds and loads without an error.
   the Forge's three months. pp-os: carry `ago3` in the `cl_daily_hvi` store key when that key is ported. The 1989 rate
   stays "about 18%" (the RBA Annual Report 1991 the footnote cites: "cash rates reaching 18 per cent in mid 1989"); the
   deck's slide 10 was changed to match it instead. Check: `node scratch/_mc-check.mjs` (77).
+- 2026-11-25, Present (owner: "add a present feature in market Cycles for both graph"): a "▶ Present" button at the
+  right of the tabs shows the slide alone, full screen where the browser allows it, scaled to fit and centred exactly
+  as an embed is (`slideScale()`; the edges take the slide's own ground). ← → (or Page Up/Down, or the bar's arrows)
+  switch between the falls and the growth chart; Esc, the bar's Exit, or leaving full screen ends it. A small bar at the
+  bottom right ("The biggest falls · 1 of 2") hides after 2.5 s without the mouse moving. The growth chart's canvas is
+  now always drawn at 2x at least, so it stays sharp at Present's scale (1.5x at 1080p, 2x at 1440p); open tooltips are
+  closed before a key redraws a chart (otherwise ECharts' pending tooltip move hit the removed tooltip). Checks:
+  `node scratch/_mc-present-check.mjs` (1920x1080 and 1440x900) and `node scratch/_mc-check.mjs` (77). pp-os: its
+  Market Cycles has no Present yet; carry this with the 11-25 follow-up.
