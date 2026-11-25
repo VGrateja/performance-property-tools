@@ -51,3 +51,6 @@ separate from "show it in this group's menu".
   know, opens on Adelaide as before (the default for everyone else is unchanged). The PPA tools deck's vacancy slide
   links `vr-projection.html?region=brisbane`. Same pattern as Population Forecast's `?region=&view=` (hub PR #37).
   pp-os: its VR Projection does not read a region from the address yet; carry this when the deck is copied there.
+- 2026-11-25, later (owner: "Runway page when clicking the image should show Brisbane too"): `tools/runway-workbook.html`
+  reads `?region=<slug>` the same way (no or an unknown region opens on Adelaide as before); the deck's runway slide
+  links `runway-workbook.html?region=brisbane`. pp-os: same note as VR Projection above.
