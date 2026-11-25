@@ -46,3 +46,8 @@ separate from "show it in this group's menu".
 
 - 2026-11-19: built. Found while fixing a deck whose three tool slides pointed at addresses that do not exist on the
   hub (`/vr-projection`, `/demand-score`, `/runway-workbook`); those links were corrected in the deck itself.
+- 2026-11-25 (owner: "Since in VR Slide the image shows Brisbane, make Brisbane as default when opening the tool"):
+  `tools/vr-projection.html` reads `?region=<slug>` on load and opens on that market; no region, or one it does not
+  know, opens on Adelaide as before (the default for everyone else is unchanged). The PPA tools deck's vacancy slide
+  links `vr-projection.html?region=brisbane`. Same pattern as Population Forecast's `?region=&view=` (hub PR #37).
+  pp-os: its VR Projection does not read a region from the address yet; carry this when the deck is copied there.
