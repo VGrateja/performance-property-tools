@@ -229,3 +229,13 @@ the builder lists the two embeds and loads without an error.
   ("2026 −8.8%", "7 months in, to 25 Nov 2026", then "Faint: Cotality daily index from Sep"); the solid line's own
   label stays "2026: −4.6% to Aug" and the line under the title stays on the Forge's months. Check:
   `node scratch/_mc-check.mjs` (75; section 1 reads `?skip=none`).
+- 2026-11-25, deck audit (owner: "fix … 10"): with the faint Cotality months, the line under the falls title now reads at
+  the latest of them too ("Down 8.8% in 7 months, further than any of the four at the same stage. …"), compared with
+  each fall at that same month; without them it is unchanged. The "Pace over the last 3 months" strip now runs to the
+  latest day from Cotality's daily index ("as a yearly rate, to 25 Nov 2026"): each series' latest / its value three
+  months back, to the 4th power, less 1; the footnote adds "Pace: Cotality Daily Home Value Index, 25 Aug 2026 to
+  25 Nov 2026 (Brisbane incl. Gold Coast)." For that, `scripts/ingest-cotality-daily-hvi.mjs` stores a third field per
+  series, `ago3: { day, value }` (the last day on or before the same date three months back); a row without it keeps
+  the Forge's three months. pp-os: carry `ago3` in the `cl_daily_hvi` store key when that key is ported. The 1989 rate
+  stays "about 18%" (the RBA Annual Report 1991 the footnote cites: "cash rates reaching 18 per cent in mid 1989"); the
+  deck's slide 10 was changed to match it instead. Check: `node scratch/_mc-check.mjs` (77).

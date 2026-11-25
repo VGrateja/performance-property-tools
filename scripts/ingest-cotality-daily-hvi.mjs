@@ -17,9 +17,12 @@
 // --------------
 //   forge_cotality / cl_daily_hvi
 //     data.latest = 'YYYY-MM-DD' (the newest day in the file)
-//     data.series[<City> | 'Five capitals'] = { monthEnd: { 'YYYY-MM': value }, latest: value }
+//     data.series[<City> | 'Five capitals'] = { monthEnd: { 'YYYY-MM': value }, latest: value,
+//                                               ago3: { day: 'YYYY-MM-DD', value } }
 //   monthEnd holds only COMPLETE months (the file has a day on or after the
-//   month's last day); the month in progress is `latest` alone.
+//   month's last day); the month in progress is `latest` alone. ago3 is the
+//   last day on or before the same date three months back (Van, 2026-11-25:
+//   the falls chart's "pace over the last 3 months" runs to the latest day).
 //
 // WHERE IT READS
 // --------------
@@ -58,7 +61,10 @@ for (const s of feed.worm) {
   const end = days[days.length - 1][0]; if (end > latest) latest = end;
   const monthEnd = {};
   for (const [d, v] of days) { const ym = d.slice(0, 7); if (end >= lastDay(ym)) monthEnd[ym] = v; }   /* the last day seen in each complete month */
-  series[name] = { monthEnd, latest: days[days.length - 1][1] };
+  /* ago3: the last day on or before the same date three months back, for the falls chart's pace over the last 3 months */
+  const [ey, em, ed] = end.split('-').map(Number), back = new Date(Date.UTC(ey, em - 4, 1)).toISOString().slice(0, 7);
+  const want = back + '-' + String(Math.min(ed, +lastDay(back).slice(8, 10))).padStart(2, '0'), prior = days.filter(([d]) => d <= want).pop();
+  series[name] = { monthEnd, latest: days[days.length - 1][1], ago3: prior ? { day: prior[0], value: prior[1] } : null };
 }
 const missing = Object.values(NAMES).filter(n => !series[n]);
 if (missing.length) throw new Error('missing from the feed: ' + missing.join(', ') + ' - stop');
@@ -68,11 +74,12 @@ console.log('feed generated ' + feed.generatedDate + ', latest day ' + latest + 
 const pc = (a, b) => ((b / a - 1) * 100).toFixed(2) + '%';
 for (const n of Object.values(NAMES)) {
   const me = series[n].monthEnd, ks = Object.keys(me).sort(), tail = ks.slice(-3);
-  console.log('  ' + n.padEnd(14) + tail.map((k, i) => k + ' ' + me[k] + (i ? ' (' + pc(me[tail[i - 1]], me[k]) + ')' : '')).join(' | ') + ' | to ' + latest + ' ' + series[n].latest + ' (' + pc(me[tail[tail.length - 1]], series[n].latest) + ')');
+  console.log('  ' + n.padEnd(14) + tail.map((k, i) => k + ' ' + me[k] + (i ? ' (' + pc(me[tail[i - 1]], me[k]) + ')' : '')).join(' | ') + ' | to ' + latest + ' ' + series[n].latest + ' (' + pc(me[tail[tail.length - 1]], series[n].latest) + ')'
+    + (series[n].ago3 ? ' | 3 months from ' + series[n].ago3.day + ' ' + series[n].ago3.value + ' (' + pc(series[n].ago3.value, series[n].latest) + ')' : ' | no day 3 months back'));
 }
 
 const payload = {
-  note: 'Cotality Daily Home Value Index, all dwellings: the five capitals (Brisbane incl. Gold Coast) and their aggregate. monthEnd = the value on the last day of each complete month in the rolling 365-day back series; latest = the newest day. Cotality revises the past 12 months on the 1st of each month.',
+  note: 'Cotality Daily Home Value Index, all dwellings: the five capitals (Brisbane incl. Gold Coast) and their aggregate. monthEnd = the value on the last day of each complete month in the rolling 365-day back series; latest = the newest day; ago3 = the day three months before it. Cotality revises the past 12 months on the 1st of each month.',
   source: URL, generated: String(feed.generatedDate), latest, updated: new Date().toISOString(), series,
 };
 console.log('payload ' + Math.round(JSON.stringify(payload).length / 1024) + ' KB');
