@@ -191,6 +191,8 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3" integrity="sha384-l8ah+VgaWtk1mvOe9VC+OirC6qHFF4yH7l7mKRidV9MSti3E9F463bMp6ZVN4kuC" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="../shared/supabase-client.js?v=afefc0c4"></script>
+<!-- the IRR calculator's own engine: residential property is geared the same way as our purchases (25 Nov 2026) -->
+<script src="../tools/irr-breakdown-engine.js?v=3"></script>
 <script src="adelaide-returns-math.js"></script>
 <script>
 'use strict';
@@ -252,7 +254,10 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
     (p.benchmarks || []).forEach(b => {
       const t = M.annualise(b, p, R.deposit) || {};
       const g = M.annualise(b, p, null, true) || {};
-      byKey[b.key] = { pa: pa(t.pa), total: pct(t.total), end: money(t.end), growth: pa(g.pa) };
+      /* a leveraged residential row (see ADLMath.leveraged) fills its tokens from the geared figures */
+      const lr = (R.rows || []).find(x => x.key === b.key && x.leveraged);
+      byKey[b.key] = lr ? { pa: pa(lr.pa), total: pct(lr.total), end: money(lr.end), growth: pa(lr.leveraged.cagr) }
+        : { pa: pa(t.pa), total: pct(t.total), end: money(t.end), growth: pa(g.pa) };
     });
     return {
       byKey,
@@ -320,18 +325,20 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
   function depositChart(R, p, ordered) {
     const items = [];
     if (R.pp) items.push({ name: p.pp.label, value: R.pp.end, color: TEAL });
-    ordered.forEach(r => { if (isNum(r.end)) items.push({ name: r.label, value: r.end, color: r.color }); });
+    ordered.forEach(r => { if (isNum(r.end)) items.push({ name: r.label, value: r.end, color: r.color, lev: r.leveraged || null }); });
+    const loanTxt = pct(isNum(p.pp.lvr) ? p.pp.lvr : 0.9);
     chart('chDeposit', {
       grid: { left: 8, right: narrow() ? 74 : 96, top: 8, bottom: 26, containLabel: true },
-      tooltip: { trigger: 'item', formatter: q => q.name + '<br><b>' + money(q.value) + '</b>' },
+      tooltip: { trigger: 'item', formatter: q => q.name + '<br><b>' + money(q.value) + '</b>' +
+        (q.data && q.data.lev ? '<br>' + pa(q.data.lev.irr) + ' on the client’s cash, with a ' + loanTxt + ' loan<br>Price growth ' + pa(q.data.lev.cagr) : '') },
       xAxis: { type: 'value', axisLabel: { color: MUT, fontSize: 11, formatter: moneyAxis }, splitLine: { lineStyle: { color: LINE } } },
       yAxis: { type: 'category', inverse: true, data: items.map(i => i.name), axisTick: { show: false }, axisLine: { lineStyle: { color: LINE } },
         axisLabel: { color: INK, fontSize: narrow() ? 10.5 : 12, fontWeight: 600, width: narrow() ? 110 : 230, overflow: 'break', lineHeight: 14 } },
       series: [{ type: 'bar', barMaxWidth: 26,
-        data: items.map(i => ({ value: i.value, name: i.name, itemStyle: { color: i.color, borderRadius: [0, 4, 4, 0] } })),
+        data: items.map(i => ({ value: i.value, name: i.name, lev: i.lev, itemStyle: { color: i.color, borderRadius: [0, 4, 4, 0] } })),
         label: { show: true, position: 'right', color: INK, fontSize: narrow() ? 10.5 : 12, fontWeight: 700, formatter: q => money(q.value) },
         markLine: isNum(R.deposit) ? { symbol: 'none', silent: true, lineStyle: { color: MUT, type: 'dashed' },
-          label: { formatter: 'Deposit ' + money(R.deposit), color: MUT, fontSize: 10.5, position: 'insideEndTop' },
+          label: { formatter: 'Upfront Cash ' + money(R.deposit), color: MUT, fontSize: 10.5, position: 'insideEndTop' },
           data: [{ xAxis: R.deposit }] } : undefined }],
     });
     $('chDeposit').setAttribute('aria-label', 'End value of the deposit: ' + items.map(i => i.name + ' ' + money(i.value)).join('; '));
@@ -411,7 +418,7 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
   function valid(p) { return p && typeof p === 'object' && p.pp && Array.isArray(p.benchmarks) && p.text && p.window; }
 
   function render(p) {
-    const R = M.compute(p);
+    const R = M.compute(p, window.IRRBreakdown);
     const T = tokensFor(p, R);
     const tx = p.text || {}, h = tx.headings || {}, k = tx.takeaways || {}, n = tx.notes || {}, f = tx.footnotes || {}, tl = tx.tiles || {}, pp = p.pp;
     R.rows.forEach((r, i) => { r.color = PALETTE[i % PALETTE.length]; });
@@ -483,8 +490,17 @@ footer.doc-foot img{height:36px;width:auto;display:block;flex:none;margin-left:a
     /* 6 · footnotes · 7 · legal */
     /* the leverage footnote keeps the comparison honest: a blanked one falls
        back to this wording (text only — the figures still come from the payload) */
-    setText('fLeverage', String(f.leverage || '').trim() ? f.leverage : LEVERAGE_FALLBACK, T);
-    setText('fMethod', f.method, T);
+    /* residential property geared like our purchases (ADLMath.leveraged): the footnote says how,
+       and the method note's "growth plus gross rental yield" line no longer applies to it */
+    const levRows = R.rows.filter(r => r.leveraged);
+    const levNote = levRows.map(r => r.label + ' is worked out the same way as our purchases: a typical property at the median purchase price of ' +
+      money(pp.medianPurchasePrice) + ', bought with the same ' + pct(pp.depositPct) + ' of the client’s own cash and a ' + pct(isNum(pp.lvr) ? pp.lvr : 0.9) +
+      ' loan, at the same interest rate and running and selling costs, held over the same ' + num(pp.medianHoldYears) + ' years, with its price growing as the index did (' +
+      pa(r.leveraged.cagr) + ') and rented at the index’s average gross yield (' + pct(r.leveraged.rentYield, 2) + '). That is ' + pa(r.leveraged.irr) +
+      ' on the client’s cash. The other alternatives are not leveraged.').join(' ');
+    const levBase = String(f.leverage || '').trim() ? f.leverage : LEVERAGE_FALLBACK;
+    setText('fLeverage', (levNote ? String(levBase).replace(/\s*(The alternatives are|Every alternative is) shown unleveraged[^.]*\./, '') + ' ' + levNote : levBase), T);
+    setText('fMethod', levRows.length ? String(f.method || '').replace(/\s*Residential property = [^.]*\./, '') : f.method, T);
     setText('hLegal', h.legal, T);
     setText('hDisclaimer', h.disclaimer, T);
     setText('lDisclaimer', p.legal && p.legal.disclaimer, T);

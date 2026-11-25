@@ -98,3 +98,54 @@ test('PP deposit path = deposit × (1 + IRR)^years; blank IRR gives no PP result
   assert.equal(out.pp, null);
   close(out.deposit, 117706.25, 1e-9, 'deposit = 636,250 × 18.5%');
 });
+
+/* ── residential property leveraged like our purchases (25 Nov 2026) ──────────
+   ADLMath.leveraged runs the IRR calculator's own engine (loaded here into the
+   same sandbox) on a typical property: Adelaide's live figures as at 20 Nov 2026
+   (median price $608,000, hold 7.59 years to 30 Sep 2026), the national
+   dwellings series from the published Adelaide payload, and the calculator's
+   assumptions at that date. Expected values were checked against the IRR
+   calculator itself (and a Perl port of it): 9.99% on the client's cash, 5.40%
+   price growth, 3.66% average gross yield. */
+vm.runInContext(readFileSync(join(ROOT, 'tools/irr-breakdown-engine.js'), 'utf8'), sandbox);
+const ENGINE = sandbox.IRRBreakdown;
+const AUS_RESI = {
+  key: 'aus_resi', kind: 'growth+yield', label: 'Australian residential property',
+  annual: row([0.083, 0.058, 0.042, -0.048, 0.023, 0.03, 0.245, -0.049, 0.085, 0.049, 0.086, -0.03]),
+  yield: row([0.04, 0.038, 0.039, 0.04, 0.038, 0.037, 0.032, 0.038, 0.037, 0.037, 0.036, 0.039]),
+};
+const ASSUMPTIONS = { depositAndFee: 0.185, lvr: 0.9, runningCostPa: 0.012, rentalYield: 0.035, normalisedRate: 0.0512,
+  marginalTaxRate: 0.47, sellingCommission: 0.018, sellingMarketSpend: 10000, bankMargin: 0.0175, apraBuffer: 0.005,
+  cashRateBasis: 'Normalised', negativeGearing: 'Off', rentBasis: 'Flat', cgt: 'Off' };
+const adl = (assumptions) => ({
+  years: YEARS, window: { endDate: '2026-09-30', ytdEnd: '2026-09-30' },
+  pp: { medianPurchasePrice: 608000, depositPct: 0.185, lvr: 0.9, medianHoldYears: 7.59, medianIrr: 0.181026854682932, assumptions },
+  benchmarks: [AUS_RESI],
+});
+
+test('isoOf is the inverse of decYear on the month grid', () => {
+  // the Adelaide window start: 2026.75 − 7.59 = 2019.16 → 0.92 of February → day 26
+  assert.equal(M.isoOf(2026.75 - 7.59), '2019-02-26');
+  assert.equal(M.isoOf(M.decYear('2019-02-26')), '2019-02-26');
+  assert.equal(M.isoOf(M.decYear('2017-05-02')), '2017-05-02');
+});
+
+test('leveraged residential: same engine and assumptions as our purchases, the index growth and yield', () => {
+  const lev = M.leveraged(AUS_RESI, adl(ASSUMPTIONS), ENGINE);
+  close(lev.cagr, 0.0540, 5e-4, 'price growth over Feb 2019 → Sep 2026');
+  close(lev.rentYield, 0.0366, 5e-4, 'time-weighted gross yield');
+  close(lev.irr, 0.0999, 5e-4, 'IRR on the client cash');
+  const out = M.compute(adl(ASSUMPTIONS), ENGINE);
+  const r = out.rows[0];
+  assert.ok(r.leveraged, 'row is leveraged');
+  close(r.end, 112480 * Math.pow(1 + lev.irr, 7.59), 1e-6, 'end = deposit × (1 + IRR)^years');
+  close(r.path[r.path.length - 1][1], Math.pow(1 + lev.irr, 7.59), 1e-9, 'path ends at the same factor');
+});
+
+test('leveraged residential falls back to growth + yield without an engine or saved assumptions', () => {
+  const unlev = M.annualise(AUS_RESI, adl(null), 112480).end;
+  assert.equal(M.leveraged(AUS_RESI, adl(null), ENGINE), null);
+  assert.equal(M.leveraged(AUS_RESI, adl(ASSUMPTIONS), null), null);
+  close(M.compute(adl(null), ENGINE).rows[0].end, unlev, 1e-9, 'no assumptions → unchanged');
+  close(M.compute(adl(ASSUMPTIONS)).rows[0].end, unlev, 1e-9, 'no engine → unchanged');
+});
