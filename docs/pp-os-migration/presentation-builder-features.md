@@ -56,3 +56,13 @@ same `"PP Lining Figures", "Playfair Display"` stack wherever Presentations sets
   digits"). Checked on the PPA tools deck (20 slides) in the editor, rail, Present and the PDF
   download: level digits everywhere, no new text overflow (slide 10's table headers already
   overflowed before this change).
+- 2026-11-26 — Imported numbered lists count on (Van: "when enter, it will put the same number instead of
+  the next number. check the two 7"). Lists brought in from Google Slides store a fixed marker on every
+  line (`<li style="list-style-type:'7) '">`), so Enter copied the line, marker and all, and the new line
+  said 7) again (Advisors Manual, slide 31). `_renumberFixedMarkerLists` now runs on every `input` in a
+  text overlay or table cell and renumbers each such list in order from its first number, each line keeping
+  its own ") " / ". "; only a line whose number is wrong is touched, so stored HTML keeps its shape and a
+  plain or nested list is left alone. Check: `scratch/ppa-tools-cycles/probe-list-renumber-1126.mjs`
+  (without the fix Enter repeats 7), with it 8); deleting a line renumbers 1-7). pp-os: OS's editor
+  (`components/presentations/rich-text.tsx`) edits the same stored HTML in a contenteditable, so Enter
+  should repeat the marker there too — the OS port takes the same renumber-on-input.
