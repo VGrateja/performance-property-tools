@@ -121,3 +121,10 @@ fetch the export falls back to a system sans, as the Original's export does toda
   `checked = true` / `applyShowRunwayAxis(true)`); unticking still hides them. pp-os: OS's Runway v Demand has the same
   reveal and needs the same default. Check: `scratch/_rw-rvd-probe.mjs`; `scratch/_rvd-designs-check.mjs` now
   asserts the default and unticks before its "off" probe.
+- 2026-11-25 (owner: "PP variable should be 5.10 right?", seen on the PPA tools deck's Runway v Demand picture): the
+  chart's runway line printed "PP variable rate: 5.12%" while the page ran on 5.10%. Sample A copies that line from
+  `runwayAxisLabel` as it draws, and the live 19-year average (`rdp_runway_config` `rates.forecast.rate`, 5.10%, the
+  same value Demand Score and the Runway Workbook read) arrives after the first draw: the loader re-rated and redrew
+  the chart but never refreshed the label, so the 5.12% fallback stayed. The loader now calls `applyRunwayLegend()`
+  before `render(false)`. The dots were already on 5.10%; only the printed rate was wrong. pp-os: check the same
+  ordering in its Runway v Demand when the deck is copied there.
