@@ -128,3 +128,9 @@ fetch the export falls back to a system sans, as the Original's export does toda
   the chart but never refreshed the label, so the 5.12% fallback stayed. The loader now calls `applyRunwayLegend()`
   before `render(false)`. The dots were already on 5.10%; only the printed rate was wrong. pp-os: check the same
   ordering in its Runway v Demand when the deck is copied there.
+- 2026-11-25, embed padding (owner: "Embed runway v demand too", the PPA tools deck's slide 18): in `?embed=1` the body
+  kept its 24px page padding, while the Builder sizes the iframe to the content (base width 1136 = 1120 + 2x8, height
+  = `.runway-inner`'s measured height). So every Runway v Demand embed in every deck lost its bottom 24px (the timeline
+  scrubber fell below the frame) and showed 24px gaps either side. `body.embed-mode{padding:0}` now; the content sits at
+  0,0, 1136 x 710, and the timeline is inside the frame. Check: `scratch/ppa-tools-cycles/embed-rvd-check.mjs`. pp-os:
+  its embed route draws its own frame; check the timeline there when the deck is copied.
